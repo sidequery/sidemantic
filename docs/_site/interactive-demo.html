@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Sidemantic</title>
+<title>Interactive Demo – Sidemantic</title>
 <style>
 code{white-space: pre-wrap;}
 span.smallcaps{font-variant: small-caps;}
@@ -19,41 +19,6 @@ ul.task-list li input[type="checkbox"] {
   width: 0.8em;
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
-}
-/* CSS for syntax highlighting */
-html { -webkit-text-size-adjust: 100%; }
-pre > code.sourceCode { white-space: pre; position: relative; }
-pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
-pre > code.sourceCode > span:empty { height: 1.2em; }
-.sourceCode { overflow: visible; }
-code.sourceCode > span { color: inherit; text-decoration: inherit; }
-div.sourceCode { margin: 1em 0; }
-pre.sourceCode { margin: 0; }
-@media screen {
-div.sourceCode { overflow: auto; }
-}
-@media print {
-pre > code.sourceCode { white-space: pre-wrap; }
-pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
-}
-pre.numberSource code
-  { counter-reset: source-line 0; }
-pre.numberSource code > span
-  { position: relative; left: -4em; counter-increment: source-line; }
-pre.numberSource code > span > a:first-child::before
-  { content: counter(source-line);
-    position: relative; left: -1em; text-align: right; vertical-align: baseline;
-    border: none; display: inline-block;
-    -webkit-touch-callout: none; -webkit-user-select: none;
-    -khtml-user-select: none; -moz-user-select: none;
-    -ms-user-select: none; user-select: none;
-    padding: 0 4px; width: 4em;
-  }
-pre.numberSource { margin-left: 3em;  padding-left: 4px; }
-div.sourceCode
-  {   }
-@media screen {
-pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
 }
 </style>
 
@@ -103,11 +68,18 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "search-label": "Search"
   }
 }</script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/@marimo-team/islands@0.16.4/dist/main.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/@marimo-team/islands@0.16.4/dist/style.css" rel="stylesheet" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Mono:wght@400;500;700&amp;family=Lora&amp;family=PT+Sans:wght@400;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css" integrity="sha384-wcIxkf4k558AjM3Yz3BBFQUbk/zgIYC2R0QpeeYb+TwlBVMrlgLqwRjRtGZiK7ww" crossorigin="anonymous">
+</head><body class="nav-fixed quarto-light"><marimo-filename hidden=""></marimo-filename>
 
 
-</head>
 
-<body class="nav-fixed quarto-light">
+
+
 
 <div id="quarto-search-results"></div>
   <header id="quarto-header" class="headroom fixed-top">
@@ -127,7 +99,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
           <div class="collapse navbar-collapse" id="navbarCollapse">
             <ul class="navbar-nav navbar-nav-scroll me-auto">
   <li class="nav-item">
-    <a class="nav-link active" href="./index.html" aria-current="page"> 
+    <a class="nav-link" href="./index.html"> 
 <span class="menu-text">Home</span></a>
   </li>  
   <li class="nav-item">
@@ -135,7 +107,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span class="menu-text">Getting Started</span></a>
   </li>  
   <li class="nav-item">
-    <a class="nav-link" href="./interactive-demo.html"> 
+    <a class="nav-link active" href="./interactive-demo.html" aria-current="page"> 
 <span class="menu-text">Interactive Demo</span></a>
   </li>  
   <li class="nav-item dropdown ">
@@ -195,25 +167,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
 <!-- sidebar -->
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
-        <nav id="TOC" role="doc-toc" class="toc-active">
-    <h2 id="toc-title">On this page</h2>
-   
-  <ul>
-  <li><a href="#what-is-sidemantic" id="toc-what-is-sidemantic" class="nav-link active" data-scroll-target="#what-is-sidemantic">What is Sidemantic?</a></li>
-  <li><a href="#key-features" id="toc-key-features" class="nav-link" data-scroll-target="#key-features">Key Features</a></li>
-  <li><a href="#quick-example" id="toc-quick-example" class="nav-link" data-scroll-target="#quick-example">Quick Example</a></li>
-  <li><a href="#learn-more" id="toc-learn-more" class="nav-link" data-scroll-target="#learn-more">Learn More</a></li>
-  </ul>
-</nav>
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
+        
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title">Sidemantic</h1>
-<p class="subtitle lead">SQLGlot-based semantic layer</p>
+<h1 class="title">Interactive Demo</h1>
 </div>
 
 
@@ -230,70 +192,72 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </header>
 
 
-<section id="what-is-sidemantic" class="level2">
-<h2 class="anchored" data-anchor-id="what-is-sidemantic">What is Sidemantic?</h2>
-<p>Sidemantic is a semantic layer that lets you define metrics once and query them with SQL. It automatically handles joins, aggregations, and complex calculations.</p>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Define once</span></span>
-<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">models</span><span class="kw">:</span></span>
-<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> orders</span></span>
-<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">table</span><span class="kw">:</span><span class="at"> orders</span></span>
-<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">measures</span><span class="kw">:</span></span>
-<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> revenue</span></span>
-<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> sum</span></span>
-<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">expr</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Query anywhere with SQL</span></span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>layer.sql(<span class="st">"SELECT revenue FROM orders"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-</section>
-<section id="key-features" class="level2">
-<h2 class="anchored" data-anchor-id="key-features">Key Features</h2>
+<p>Try the semantic layer interactively with real data.</p>
+<marimo-island data-app-id="main" data-cell-id="Hbol" data-reactive="true">
+    <marimo-cell-output>
+    <marimo-mime-renderer data-mime="&quot;application/vnd.marimo+error&quot;" data-data="[{&quot;type&quot;:&quot;exception&quot;,&quot;msg&quot;:&quot;No module named 'duckdb'&quot;,&quot;exception_type&quot;:&quot;ModuleNotFoundError&quot;,&quot;raising_cell&quot;:null}]"></marimo-mime-renderer>
+    </marimo-cell-output>
+    <marimo-cell-code hidden="">import%20marimo%20as%20mo%0Aimport%20duckdb%0Afrom%20sidemantic%20import%20SemanticLayer%2C%20Model%2C%20Dimension%2C%20Measure%2C%20Join%2C%20Parameter%0Afrom%20datetime%20import%20datetime%2C%20timedelta%0Aimport%20pandas%20as%20pd%0A%0A%23%20Setup%20database%20with%20sample%20data%0Aconn%20%3D%20duckdb.connect(%22%3Amemory%3A%22)%0A%0A%23%20Create%20tables%0Aconn.execute(%22%22%22%0A%20%20%20%20CREATE%20TABLE%20orders%20(%0A%20%20%20%20%20%20%20%20id%20INTEGER%2C%0A%20%20%20%20%20%20%20%20customer_id%20INTEGER%2C%0A%20%20%20%20%20%20%20%20status%20VARCHAR%2C%0A%20%20%20%20%20%20%20%20order_date%20DATE%2C%0A%20%20%20%20%20%20%20%20amount%20DECIMAL(10%2C%202)%0A%20%20%20%20)%0A%22%22%22)%0A%0Aconn.execute(%22%22%22%0A%20%20%20%20INSERT%20INTO%20orders%20VALUES%0A%20%20%20%20%20%20%20%20(1%2C%201%2C%20'completed'%2C%20'2024-01-15'%2C%20250.00)%2C%0A%20%20%20%20%20%20%20%20(2%2C%201%2C%20'completed'%2C%20'2024-02-10'%2C%20180.00)%2C%0A%20%20%20%20%20%20%20%20(3%2C%202%2C%20'pending'%2C%20'2024-02-15'%2C%20320.00)%2C%0A%20%20%20%20%20%20%20%20(4%2C%202%2C%20'completed'%2C%20'2024-03-01'%2C%20410.00)%2C%0A%20%20%20%20%20%20%20%20(5%2C%203%2C%20'completed'%2C%20'2024-03-10'%2C%20190.00)%2C%0A%20%20%20%20%20%20%20%20(6%2C%203%2C%20'cancelled'%2C%20'2024-03-15'%2C%2075.00)%2C%0A%20%20%20%20%20%20%20%20(7%2C%201%2C%20'completed'%2C%20'2024-04-01'%2C%20290.00)%2C%0A%20%20%20%20%20%20%20%20(8%2C%202%2C%20'completed'%2C%20'2024-04-15'%2C%20350.00)%0A%22%22%22)%0A%0Aconn.execute(%22%22%22%0A%20%20%20%20CREATE%20TABLE%20customers%20(%0A%20%20%20%20%20%20%20%20id%20INTEGER%2C%0A%20%20%20%20%20%20%20%20name%20VARCHAR%2C%0A%20%20%20%20%20%20%20%20region%20VARCHAR%2C%0A%20%20%20%20%20%20%20%20tier%20VARCHAR%0A%20%20%20%20)%0A%22%22%22)%0A%0Aconn.execute(%22%22%22%0A%20%20%20%20INSERT%20INTO%20customers%20VALUES%0A%20%20%20%20%20%20%20%20(1%2C%20'Alice'%2C%20'US'%2C%20'premium')%2C%0A%20%20%20%20%20%20%20%20(2%2C%20'Bob'%2C%20'EU'%2C%20'standard')%2C%0A%20%20%20%20%20%20%20%20(3%2C%20'Charlie'%2C%20'US'%2C%20'premium')%0A%22%22%22)%0A%0A%23%20Create%20semantic%20layer%0Alayer%20%3D%20SemanticLayer(connection%3D%22duckdb%3A%2F%2F%2F%3Amemory%3A%22)%0A%0A%23%20Copy%20data%20to%20layer's%20connection%0Alayer.conn%20%3D%20conn%0A%0A%23%20Define%20models%0Aorders%20%3D%20Model(%0A%20%20%20%20name%3D%22orders%22%2C%0A%20%20%20%20table%3D%22orders%22%2C%0A%20%20%20%20primary_key%3D%22id%22%2C%0A%20%20%20%20dimensions%3D%5B%0A%20%20%20%20%20%20%20%20Dimension(name%3D%22status%22%2C%20type%3D%22categorical%22%2C%20sql%3D%22status%22)%2C%0A%20%20%20%20%20%20%20%20Dimension(name%3D%22order_date%22%2C%20type%3D%22time%22%2C%20sql%3D%22order_date%22%2C%20granularity%3D%22day%22)%0A%20%20%20%20%5D%2C%0A%20%20%20%20measures%3D%5B%0A%20%20%20%20%20%20%20%20Measure(name%3D%22revenue%22%2C%20agg%3D%22sum%22%2C%20expr%3D%22amount%22)%2C%0A%20%20%20%20%20%20%20%20Measure(name%3D%22order_count%22%2C%20agg%3D%22count%22)%2C%0A%20%20%20%20%20%20%20%20Measure(name%3D%22avg_order_value%22%2C%20agg%3D%22avg%22%2C%20expr%3D%22amount%22)%0A%20%20%20%20%5D%2C%0A%20%20%20%20joins%3D%5B%0A%20%20%20%20%20%20%20%20Join(name%3D%22customers%22%2C%20type%3D%22belongs_to%22%2C%20foreign_key%3D%22customer_id%22)%0A%20%20%20%20%5D%0A)%0A%0Acustomers%20%3D%20Model(%0A%20%20%20%20name%3D%22customers%22%2C%0A%20%20%20%20table%3D%22customers%22%2C%0A%20%20%20%20primary_key%3D%22id%22%2C%0A%20%20%20%20dimensions%3D%5B%0A%20%20%20%20%20%20%20%20Dimension(name%3D%22region%22%2C%20type%3D%22categorical%22%2C%20sql%3D%22region%22)%2C%0A%20%20%20%20%20%20%20%20Dimension(name%3D%22tier%22%2C%20type%3D%22categorical%22%2C%20sql%3D%22tier%22)%0A%20%20%20%20%5D%2C%0A%20%20%20%20measures%3D%5B%0A%20%20%20%20%20%20%20%20Measure(name%3D%22customer_count%22%2C%20agg%3D%22count%22)%0A%20%20%20%20%5D%0A)%0A%0Alayer.add_model(orders)%0Alayer.add_model(customers)%0A%0Amo.md(%22%23%23%20Semantic%20Layer%20Interactive%20Demo%22)</marimo-cell-code>
+</marimo-island>
+<marimo-island data-app-id="main" data-cell-id="MJUe" data-reactive="true">
+    <marimo-cell-output>
+    <marimo-mime-renderer data-mime="&quot;application/vnd.marimo+error&quot;" data-data="[{&quot;type&quot;:&quot;exception&quot;,&quot;msg&quot;:&quot;An ancestor raised an exception (ModuleNotFoundError): &quot;,&quot;exception_type&quot;:&quot;Ancestor raised&quot;,&quot;raising_cell&quot;:&quot;Hbol&quot;}]"></marimo-mime-renderer>
+    </marimo-cell-output>
+    <marimo-cell-code hidden="">%23%20Filters%0Astatus_select%20%3D%20mo.ui.dropdown(%0A%20%20%20%20options%3D%5B%22all%22%2C%20%22completed%22%2C%20%22pending%22%2C%20%22cancelled%22%5D%2C%0A%20%20%20%20value%3D%22all%22%2C%0A%20%20%20%20label%3D%22Order%20Status%22%0A)%0A%0Aregion_select%20%3D%20mo.ui.dropdown(%0A%20%20%20%20options%3D%5B%22all%22%2C%20%22US%22%2C%20%22EU%22%5D%2C%0A%20%20%20%20value%3D%22all%22%2C%0A%20%20%20%20label%3D%22Region%22%0A)%0A%0Amo.hstack(%5Bstatus_select%2C%20region_select%5D)</marimo-cell-code>
+</marimo-island>
+<marimo-island data-app-id="main" data-cell-id="vblA" data-reactive="true">
+    <marimo-cell-output>
+    <marimo-mime-renderer data-mime="&quot;application/vnd.marimo+error&quot;" data-data="[{&quot;type&quot;:&quot;exception&quot;,&quot;msg&quot;:&quot;An ancestor raised an exception (ModuleNotFoundError): &quot;,&quot;exception_type&quot;:&quot;Ancestor raised&quot;,&quot;raising_cell&quot;:&quot;Hbol&quot;}]"></marimo-mime-renderer>
+    </marimo-cell-output>
+    <marimo-cell-code hidden="">%23%20Build%20filters%0Afilters%20%3D%20%5B%5D%0A%0Aif%20status_select.value%20!%3D%20%22all%22%3A%0A%20%20%20%20filters.append(f%22orders.status%20%3D%20'%7Bstatus_select.value%7D'%22)%0A%0A%23%20Only%20add%20region%20filter%20if%20we're%20selecting%20customers%20dimension%20too%0Ainclude_region%20%3D%20region_select.value%20!%3D%20%22all%22%0A%0Amo.md(f%22**Active%20Filters%3A**%20%7B'%2C%20'.join(filters)%20if%20filters%20else%20'None'%7D%22)</marimo-cell-code>
+</marimo-island>
+<marimo-island data-app-id="main" data-cell-id="bkHC" data-reactive="true">
+    <marimo-cell-output>
+    <marimo-mime-renderer data-mime="&quot;application/vnd.marimo+error&quot;" data-data="[{&quot;type&quot;:&quot;exception&quot;,&quot;msg&quot;:&quot;An ancestor raised an exception (ModuleNotFoundError): &quot;,&quot;exception_type&quot;:&quot;Ancestor raised&quot;,&quot;raising_cell&quot;:&quot;Hbol&quot;}]"></marimo-mime-renderer>
+    </marimo-cell-output>
+    <marimo-cell-code hidden="">%23%20Query%20metrics%0Aif%20include_region%20and%20region_select.value%20!%3D%20%22all%22%3A%0A%20%20%20%20%23%20Include%20customers%20dimension%20and%20filter%0A%20%20%20%20filters_with_region%20%3D%20filters%20%2B%20%5Bf%22customers.region%20%3D%20'%7Bregion_select.value%7D'%22%5D%0A%0A%20%20%20%20result%20%3D%20layer.query(%0A%20%20%20%20%20%20%20%20metrics%3D%5B%22orders.revenue%22%2C%20%22orders.order_count%22%2C%20%22orders.avg_order_value%22%5D%2C%0A%20%20%20%20%20%20%20%20dimensions%3D%5B%22customers.region%22%5D%2C%0A%20%20%20%20%20%20%20%20filters%3Dfilters_with_region%0A%20%20%20%20)%0Aelse%3A%0A%20%20%20%20%23%20Orders%20only%0A%20%20%20%20result%20%3D%20layer.query(%0A%20%20%20%20%20%20%20%20metrics%3D%5B%22orders.revenue%22%2C%20%22orders.order_count%22%2C%20%22orders.avg_order_value%22%5D%2C%0A%20%20%20%20%20%20%20%20dimensions%3D%5B%5D%2C%0A%20%20%20%20%20%20%20%20filters%3Dfilters%0A%20%20%20%20)%0A%0Adf%20%3D%20result.fetchdf()%0A%0Amo.md(f%22%22%22%0A%23%23%20Key%20Metrics%0A%0A**Total%20Revenue%3A**%20%24%7Bdf%5B'revenue'%5D.sum()%3A%2C.2f%7D%0A%0A**Order%20Count%3A**%20%7Bdf%5B'order_count'%5D.sum()%3A%2C.0f%7D%0A%0A**Avg%20Order%20Value%3A**%20%24%7Bdf%5B'avg_order_value'%5D.mean()%3A%2C.2f%7D%0A%22%22%22)</marimo-cell-code>
+</marimo-island>
+<marimo-island data-app-id="main" data-cell-id="lEQa" data-reactive="true">
+    <marimo-cell-output>
+    <marimo-mime-renderer data-mime="&quot;application/vnd.marimo+error&quot;" data-data="[{&quot;type&quot;:&quot;exception&quot;,&quot;msg&quot;:&quot;An ancestor raised an exception (ModuleNotFoundError): &quot;,&quot;exception_type&quot;:&quot;Ancestor raised&quot;,&quot;raising_cell&quot;:&quot;Hbol&quot;}]"></marimo-mime-renderer>
+    </marimo-cell-output>
+    <marimo-cell-code hidden="">%23%20Revenue%20by%20status%0Astatus_result%20%3D%20layer.query(%0A%20%20%20%20metrics%3D%5B%22orders.revenue%22%2C%20%22orders.order_count%22%5D%2C%0A%20%20%20%20dimensions%3D%5B%22orders.status%22%5D%2C%0A%20%20%20%20filters%3Dfilters%20if%20not%20include_region%20else%20filters%20%2B%20%5Bf%22customers.region%20%3D%20'%7Bregion_select.value%7D'%22%5D%20if%20region_select.value%20!%3D%20%22all%22%20else%20filters%0A)%0A%0Astatus_df%20%3D%20status_result.fetchdf()%0A%0Amo.ui.table(status_df)</marimo-cell-code>
+</marimo-island>
+
+<p>“““)</p>
+<pre><code>
+```{.marimo}
+mo.md("""
+## Try Your Own Query
+
+Write SQL directly against the semantic layer:
+""")</code></pre>
+<marimo-island data-app-id="main" data-cell-id="Xref" data-reactive="true">
+    <marimo-cell-output>
+    <marimo-mime-renderer data-mime="&quot;application/vnd.marimo+error&quot;" data-data="[{&quot;type&quot;:&quot;exception&quot;,&quot;msg&quot;:&quot;An ancestor raised an exception (ModuleNotFoundError): &quot;,&quot;exception_type&quot;:&quot;Ancestor raised&quot;,&quot;raising_cell&quot;:&quot;Hbol&quot;}]"></marimo-mime-renderer>
+    </marimo-cell-output>
+    <marimo-cell-code hidden="">query_input%20%3D%20mo.ui.text_area(%0A%20%20%20%20value%3D%22SELECT%20revenue%2C%20status%20FROM%20orders%20WHERE%20status%20%3D%20'completed'%22%2C%0A%20%20%20%20label%3D%22SQL%20Query%22%0A)%0A%0Aquery_input</marimo-cell-code>
+</marimo-island>
+<marimo-island data-app-id="main" data-cell-id="SFPL" data-reactive="true">
+    <marimo-cell-output>
+    <marimo-mime-renderer data-mime="&quot;application/vnd.marimo+error&quot;" data-data="[{&quot;type&quot;:&quot;exception&quot;,&quot;msg&quot;:&quot;An ancestor raised an exception (ModuleNotFoundError): &quot;,&quot;exception_type&quot;:&quot;Ancestor raised&quot;,&quot;raising_cell&quot;:&quot;Hbol&quot;}]"></marimo-mime-renderer>
+    </marimo-cell-output>
+    <marimo-cell-code hidden="">%23%20Execute%20custom%20query%0Atry%3A%0A%20%20%20%20custom_result%20%3D%20layer.sql(query_input.value)%0A%20%20%20%20custom_df%20%3D%20custom_result.fetchdf()%0A%0A%20%20%20%20mo.ui.table(custom_df)%0Aexcept%20Exception%20as%20e%3A%0A%20%20%20%20mo.md(f%22**Error%3A**%20%7Bstr(e)%7D%22)</marimo-cell-code>
+</marimo-island>
+<marimo-island data-app-id="main" data-cell-id="BYtC" data-reactive="true">
+            <marimo-cell-output>
+            <span class="markdown prose dark:prose-invert"><h2 id="what-just-happened" class="anchored">What Just Happened?</h2>
 <ul>
-<li><strong>YAML definitions</strong> with JSON Schema for autocomplete</li>
-<li><strong>SQL query interface</strong> - write familiar SQL, get semantic results</li>
-<li><strong>Automatic joins</strong> - define relationships once, query across models</li>
-<li><strong>Complex measures</strong> - ratios, formulas, cumulative metrics, time comparisons</li>
-<li><strong>Multi-dialect</strong> - SQLGlot powers cross-database SQL generation</li>
+<li><strong>Automatic Joins</strong>: When you filter by region, the semantic layer automatically joins orders → customers</li>
+<li><strong>Consistent Metrics</strong>: Revenue is always calculated the same way</li>
+<li><strong>SQL Rewriting</strong>: Your simple SQL gets rewritten to use proper aggregations and joins</li>
 </ul>
-</section>
-<section id="quick-example" class="level2">
-<h2 class="anchored" data-anchor-id="quick-example">Quick Example</h2>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># semantic_layer.yml</span></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">models</span><span class="kw">:</span></span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> orders</span></span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">table</span><span class="kw">:</span><span class="at"> orders</span></span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">primary_key</span><span class="kw">:</span><span class="at"> id</span></span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">dimensions</span><span class="kw">:</span></span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> status</span></span>
-<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">type</span><span class="kw">:</span><span class="at"> categorical</span></span>
-<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> status</span></span>
-<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">measures</span><span class="kw">:</span></span>
-<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> revenue</span></span>
-<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> sum</span></span>
-<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">expr</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> sidemantic <span class="im">import</span> SemanticLayer</span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>layer <span class="op">=</span> SemanticLayer.from_yaml(<span class="st">"semantic_layer.yml"</span>)</span>
-<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Query with SQL</span></span>
-<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> layer.sql(<span class="st">"""</span></span>
-<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="st">    SELECT revenue, status</span></span>
-<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="st">    FROM orders</span></span>
-<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="st">    WHERE status = 'completed'</span></span>
-<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="st">"""</span>)</span>
-<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>df <span class="op">=</span> result.fetchdf()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-</section>
-<section id="learn-more" class="level2">
-<h2 class="anchored" data-anchor-id="learn-more">Learn More</h2>
-<ul>
-<li><a href="./getting-started.html">Getting Started</a> - Step-by-step tutorial</li>
-<li><a href="./examples.html">Examples</a> - Real-world examples</li>
-<li><a href="./YAML_FORMAT.html">YAML Reference</a> - Complete YAML specification</li>
-</ul>
+<span class="paragraph">Try changing the filters or writing your own queries above!</span></span>
+            </marimo-cell-output>
+            <marimo-cell-code hidden="">mo.md(%22%22%22%0A%23%23%20What%20Just%20Happened%3F%0A%0A-%20**Automatic%20Joins**%3A%20When%20you%20filter%20by%20region%2C%20the%20semantic%20layer%20automatically%20joins%20orders%20%E2%86%92%20customers%0A-%20**Consistent%20Metrics**%3A%20Revenue%20is%20always%20calculated%20the%20same%20way%0A-%20**SQL%20Rewriting**%3A%20Your%20simple%20SQL%20gets%20rewritten%20to%20use%20proper%20aggregations%20and%20joins%0A%0ATry%20changing%20the%20filters%20or%20writing%20your%20own%20queries%20above!%0A%22%22%22)</marimo-cell-code>
+        </marimo-island>
 
 
-</section>
 
 </main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">

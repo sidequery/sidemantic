@@ -9,6 +9,8 @@ website:
         href: index.qmd
       - text: "Getting Started"
         href: getting-started.qmd
+      - text: "Interactive Demo"
+        href: interactive-demo.qmd
       - text: "Core Concepts"
         menu:
           - text: "Models"

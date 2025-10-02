@@ -290,11 +290,27 @@ class QueryRewriter:
                 else:
                     raise ValueError(f"Column '{name}' must have table prefix (e.g., orders.{name})")
 
-        # Handle functions like COUNT(*), SUM(amount)
-        # These should be defined as metrics in the semantic layer
+        # Handle aggregate functions - must be pre-defined as measures
         if isinstance(column, exp.Func):
+            func_sql = column.sql(dialect=self.dialect)
+            func_name = column.key.upper()
+
+            # Extract the expression being aggregated
+            if column.args.get('this'):
+                arg = column.args['this']
+                arg_sql = arg.sql(dialect=self.dialect) if not isinstance(arg, exp.Star) else '*'
+            else:
+                arg_sql = '*'
+
+            # Provide helpful error with YAML example
             raise ValueError(
-                f"Function {column.sql(dialect=self.dialect)} must be defined as a metric in the semantic layer"
+                f"Aggregate functions must be defined as measures.\n\n"
+                f"To use {func_sql}, add to your model:\n\n"
+                f"measures:\n"
+                f"  - name: my_metric\n"
+                f"    agg: {func_name.lower()}\n"
+                f"    expr: {arg_sql}\n\n"
+                f"Then query with: SELECT my_metric FROM {self.inferred_table or 'your_model'}"
             )
 
         return None

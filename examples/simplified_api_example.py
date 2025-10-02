@@ -86,4 +86,4 @@ result = layer.sql("SELECT revenue, status FROM orders")
 print(result.fetchdf())
 print()
 
-print("✅ One class (Measure) for everything - simple and powerful!")
+print("One class (Measure) for everything - simple and powerful!")

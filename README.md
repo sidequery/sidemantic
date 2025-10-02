@@ -15,13 +15,62 @@ SQLGlot-based semantic layer with multi-format adapter support.
 
 ## Quick Start
 
+### Define your semantic layer (YAML)
+
+```yaml
+# semantic_layer.yml
+# yaml-language-server: $schema=./sidemantic-schema.json
+
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+
+      - name: order_date
+        type: time
+        sql: order_date
+        granularity: day
+
+    measures:
+      - name: revenue
+        agg: sum
+        expr: amount
+
+      - name: order_count
+        agg: count
+```
+
+### Query with SQL
+
+```python
+from sidemantic import SemanticLayer
+
+# Load semantic layer
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+
+# Query with familiar SQL - automatically rewritten
+result = layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    WHERE status = 'completed'
+""")
+
+df = result.fetchdf()
+```
+
+<details>
+<summary>Alternative: Python API</summary>
+
 ```python
 from sidemantic import SemanticLayer, Model, Measure, Dimension
 
-# Create semantic layer
 layer = SemanticLayer()
 
-# Define a model with measures
 orders = Model(
     name="orders",
     table="orders",
@@ -37,11 +86,7 @@ orders = Model(
 )
 layer.add_model(orders)
 
-# Query with SQL
-result = layer.sql("SELECT revenue, status FROM orders WHERE status = 'completed'")
-df = result.fetchdf()
-
-# Or programmatic API
+# Programmatic query
 result = layer.query(
     metrics=["orders.revenue"],
     dimensions=["orders.status"],
@@ -49,50 +94,20 @@ result = layer.query(
 )
 df = result.fetchdf()
 ```
+</details>
 
-## YAML Format
+## Editor Support
 
-```yaml
-models:
-  - name: orders
-    table: public.orders
+Generate JSON Schema for autocomplete in VS Code, IntelliJ, etc:
 
-    entities:
-      - name: order
-        type: primary
-        expr: order_id
-      - name: customer
-        type: foreign
-        expr: customer_id
-
-    dimensions:
-      - name: status
-        type: categorical
-
-      - name: order_date
-        type: time
-        granularity: day
-        expr: created_at
-
-    measures:
-      - name: revenue
-        agg: sum
-        expr: order_amount
-
-metrics:
-  - name: total_revenue
-    type: simple
-    measure: orders.revenue
-
-  - name: revenue_per_order
-    type: derived
-    expr: "total_revenue / order_count"
-    metrics:
-      - total_revenue
-      - order_count
+```bash
+uv run python -m sidemantic.schema
 ```
 
-See [docs/YAML_FORMAT.md](docs/YAML_FORMAT.md) for complete format specification.
+Add to your YAML files:
+```yaml
+# yaml-language-server: $schema=./sidemantic-schema.json
+```
 
 ## Adapters
 
@@ -129,68 +144,86 @@ Full round-trip support: Sidemantic ↔ Cube ↔ MetricFlow
 
 ## Advanced Features
 
-### SQL Query Interface
-Write familiar SQL that gets rewritten to use the semantic layer:
-
-```python
-# SQL queries are automatically rewritten
-result = sl.sql("""
-    SELECT
-        orders.revenue,
-        orders.order_count,
-        customers.region
-    FROM orders
-    WHERE orders.status = 'completed'
-    ORDER BY orders.revenue DESC
-    LIMIT 10
-""")
-
-# Metrics are automatically aggregated
-# Joins happen automatically when you reference multiple models
-# All semantic layer features work transparently
-```
-
-See `examples/sql_query_example.py` for comprehensive examples.
-
 ### Complex Measures
 
-Beyond simple aggregations, define ratios, formulas, and more:
+Define ratios, formulas, cumulative metrics:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+
+    measures:
+      # Simple aggregation
+      - name: revenue
+        agg: sum
+        expr: amount
+
+      # Ratio
+      - name: conversion_rate
+        type: ratio
+        numerator: completed_revenue
+        denominator: total_revenue
+
+      # Formula
+      - name: profit_margin
+        type: derived
+        expr: "(revenue - cost) / revenue"
+
+      # Cumulative
+      - name: running_total
+        type: cumulative
+        expr: revenue
+        window: "7 days"
+```
+
+<details>
+<summary>Python alternative</summary>
 
 ```python
-# Ratio
-Measure(
-    name="conversion_rate",
-    type="ratio",
-    numerator="orders.completed_revenue",
-    denominator="orders.total_revenue"
-)
+Measure(name="conversion_rate", type="ratio",
+        numerator="completed_revenue", denominator="total_revenue")
 
-# Formula
-Measure(
-    name="profit_margin",
-    type="derived",
-    expr="(revenue - cost) / revenue"
-)
+Measure(name="profit_margin", type="derived",
+        expr="(revenue - cost) / revenue")
 
-# Cumulative
-Measure(
-    name="running_total",
-    type="cumulative",
-    expr="revenue",
-    window="7 days"
-)
+Measure(name="running_total", type="cumulative",
+        expr="revenue", window="7 days")
 ```
+</details>
 
 ### Automatic Joins
 
-Query across models - joins happen automatically:
+Define relationships once, query across models:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    joins:
+      - name: customers
+        type: belongs_to
+        foreign_key: customer_id
+
+  - name: customers
+    table: customers
+    primary_key: id
+    joins:
+      - name: regions
+        type: belongs_to
+        foreign_key: region_id
+```
+
+Query spans 2 hops automatically:
 
 ```python
-# Spans orders -> customers -> regions (2 hops)
-result = layer.query(
-    metrics=["orders.revenue"],
-    dimensions=["regions.region_name"]
-)
+# Automatically joins orders -> customers -> regions
+result = layer.sql("""
+    SELECT orders.revenue, regions.region_name
+    FROM orders
+""")
 ```
 
 ## Test Coverage

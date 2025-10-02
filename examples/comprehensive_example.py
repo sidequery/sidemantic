@@ -18,7 +18,6 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.entity import Entity
 from sidemantic.core.join import Join
 from sidemantic.core.measure import Measure
-from sidemantic.core.measure import Measure
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -110,8 +109,8 @@ def main():
         primary_key="id",
         entities=[Entity(name="order_id", type="primary", expr="id")],
         dimensions=[
-            Dimension(name="order_date", type="time", sql_expr="order_date"),
-            Dimension(name="status", type="categorical", sql_expr="status"),
+            Dimension(name="order_date", type="time", sql="order_date"),
+            Dimension(name="status", type="categorical", sql="status"),
         ],
         measures=[
             Measure(name="revenue", agg="sum", expr="amount"),
@@ -130,7 +129,7 @@ def main():
         primary_key="id",
         entities=[Entity(name="item_id", type="primary", expr="id")],
         dimensions=[
-            Dimension(name="product_name", type="categorical", sql_expr="product_name"),
+            Dimension(name="product_name", type="categorical", sql="product_name"),
         ],
         measures=[
             Measure(name="total_quantity", agg="sum", expr="quantity"),
@@ -147,7 +146,7 @@ def main():
         primary_key="id",
         entities=[Entity(name="shipment_id", type="primary", expr="id")],
         dimensions=[
-            Dimension(name="shipment_date", type="time", sql_expr="shipment_date"),
+            Dimension(name="shipment_date", type="time", sql="shipment_date"),
         ],
         measures=[
             Measure(name="shipment_count", agg="count", expr="*"),
@@ -345,28 +344,28 @@ def main():
     print_section("Summary of Features Demonstrated")
 
     print("""
-1. ✅ Parameters
+1. Parameters
    - User input with {{ parameter_name }} syntax
    - Type safety (string, number, date, etc.)
    - Default values and allowed values
 
-2. ✅ Symmetric Aggregates
+2. Symmetric Aggregates
    - Automatic detection of fan-out joins
    - Prevents double-counting with HASH-based formula
    - Only applies when needed (2+ one-to-many joins)
 
-3. ✅ Table Calculations
+3. Table Calculations
    - Post-query runtime calculations
    - Percent of total, running total, rank, etc.
    - Applied after SQL execution
 
-4. ✅ Advanced Metrics
+4. Advanced Metrics
    - Grain-to-date (MTD, QTD, YTD)
    - Offset ratios (MoM, YoY growth)
    - Conversion metrics (funnels)
    - Fill nulls with defaults
 
-5. ✅ Comprehensive Type System
+5. Comprehensive Type System
    - Models with Rails-like joins
    - Entities for graph traversal
    - Dimensions and measures

@@ -76,7 +76,7 @@ orders = Model(
     table="orders",
     primary_key="id",
     entities=[Entity(name="order_id", type="primary", expr="id")],
-    dimensions=[Dimension(name="order_date", type="time", sql_expr="order_date")],
+    dimensions=[Dimension(name="order_date", type="time", sql="order_date")],
     measures=[Measure(name="revenue", agg="sum", expr="amount")],
     joins=[
         Join(name="order_items", type="has_many", foreign_key="order_id"),
@@ -204,8 +204,8 @@ print()
 
 # With symmetric aggregates
 print("With symmetric aggregates (sidemantic):")
-print("  ✓ Order 1: revenue = 100 (correct)")
-print("  ✓ Order 2: revenue = 200 (correct)")
+print("  Order 1: revenue = 100 (correct)")
+print("  Order 2: revenue = 200 (correct)")
 print()
 
 print("=" * 80)

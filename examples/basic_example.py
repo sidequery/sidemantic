@@ -1,6 +1,6 @@
 """Basic example of using Sidemantic."""
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer
 
 # Create semantic layer
 sl = SemanticLayer()

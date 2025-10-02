@@ -46,8 +46,8 @@ orders = Model(
     primary_key="id",
     entities=[Entity(name="order_id", type="primary", expr="id")],
     dimensions=[
-        Dimension(name="order_date", type="time", sql_expr="order_date"),
-        Dimension(name="status", type="categorical", sql_expr="status"),
+        Dimension(name="order_date", type="time", sql="order_date"),
+        Dimension(name="status", type="categorical", sql="status"),
     ],
     measures=[
         Measure(name="revenue", agg="sum", expr="amount"),
@@ -135,8 +135,8 @@ print()
 
 print("=" * 80)
 print("Parameters provide type-safe user input with:")
-print("  ✓ Default values")
-print("  ✓ Allowed values (for dropdowns)")
-print("  ✓ Type safety (string, number, date, etc.)")
-print("  ✓ SQL-safe interpolation with {{ }} syntax")
+print("  Default values")
+print("  Allowed values (for dropdowns)")
+print("  Type safety (string, number, date, etc.)")
+print("  SQL-safe interpolation with {{ }} syntax")
 print("=" * 80)

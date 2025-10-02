@@ -1,0 +1,1621 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sidemantic Semantic Layer",
+  "description": "Schema for Sidemantic semantic layer YAML configuration",
+  "type": "object",
+  "properties": {
+    "models": {
+      "type": "array",
+      "description": "Model definitions",
+      "items": {
+        "$defs": {
+          "Dimension": {
+            "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
+            "properties": {
+              "name": {
+                "description": "Unique dimension name within model",
+                "title": "Name",
+                "type": "string"
+              },
+              "type": {
+                "description": "Dimension type",
+                "enum": [
+                  "categorical",
+                  "time",
+                  "boolean",
+                  "numeric"
+                ],
+                "title": "Type",
+                "type": "string"
+              },
+              "expr": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "SQL expression (defaults to name)",
+                "title": "Expr"
+              },
+              "granularity": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "hour",
+                      "day",
+                      "week",
+                      "month",
+                      "quarter",
+                      "year"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Base granularity for time dimensions",
+                "title": "Granularity"
+              },
+              "supported_granularities": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Supported granularities for time dimensions",
+                "title": "Supported Granularities"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Human-readable description",
+                "title": "Description"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Display label",
+                "title": "Label"
+              }
+            },
+            "required": [
+              "name",
+              "type"
+            ],
+            "title": "Dimension",
+            "type": "object"
+          },
+          "Entity": {
+            "description": "Entity (join key) definition.\n\nEntities enable automatic join discovery between models.",
+            "properties": {
+              "name": {
+                "description": "Unique entity name",
+                "title": "Name",
+                "type": "string"
+              },
+              "type": {
+                "description": "Entity type (primary, foreign, or unique)",
+                "enum": [
+                  "primary",
+                  "foreign",
+                  "unique"
+                ],
+                "title": "Type",
+                "type": "string"
+              },
+              "expr": {
+                "description": "SQL expression or column name",
+                "title": "Expr",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "type",
+              "expr"
+            ],
+            "title": "Entity",
+            "type": "object"
+          },
+          "Join": {
+            "description": "Represents a join relationship between models.\n\nRails-like syntax:\n- belongs_to: This model has a foreign key to another (many-to-one)\n- has_one: This model is referenced by another with unique constraint (one-to-one)\n- has_many: This model is referenced by another (one-to-many)",
+            "properties": {
+              "name": {
+                "description": "Name of the related model",
+                "title": "Name",
+                "type": "string"
+              },
+              "type": {
+                "description": "Type of relationship",
+                "enum": [
+                  "belongs_to",
+                  "has_one",
+                  "has_many"
+                ],
+                "title": "Type",
+                "type": "string"
+              },
+              "foreign_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key column (defaults to {name}_id for belongs_to, id for has_*)",
+                "title": "Foreign Key"
+              },
+              "primary_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Primary key column in related model (defaults to id)",
+                "title": "Primary Key"
+              }
+            },
+            "required": [
+              "name",
+              "type"
+            ],
+            "title": "Join",
+            "type": "object"
+          },
+          "Measure": {
+            "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate",
+            "properties": {
+              "name": {
+                "description": "Unique measure name",
+                "title": "Name",
+                "type": "string"
+              },
+              "agg": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "sum",
+                      "count",
+                      "count_distinct",
+                      "avg",
+                      "min",
+                      "max",
+                      "median"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Aggregation function (for simple measures)",
+                "title": "Agg"
+              },
+              "expr": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "SQL expression or formula",
+                "title": "Expr"
+              },
+              "type": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "simple",
+                      "ratio",
+                      "derived",
+                      "cumulative",
+                      "time_comparison",
+                      "conversion"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Metric type for complex calculations",
+                "title": "Type"
+              },
+              "numerator": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Numerator measure for ratio",
+                "title": "Numerator"
+              },
+              "denominator": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Denominator measure for ratio",
+                "title": "Denominator"
+              },
+              "offset_window": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Time offset for denominator (e.g., '1 month')",
+                "title": "Offset Window"
+              },
+              "window": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Time window for cumulative (e.g., '7 days')",
+                "title": "Window"
+              },
+              "grain_to_date": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "day",
+                      "week",
+                      "month",
+                      "quarter",
+                      "year"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Grain for period-to-date (e.g., 'month' for MTD)",
+                "title": "Grain To Date"
+              },
+              "base_metric": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Base metric for time comparison",
+                "title": "Base Metric"
+              },
+              "comparison_type": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "yoy",
+                      "mom",
+                      "wow",
+                      "dod",
+                      "qoq",
+                      "prior_period"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Type of time comparison",
+                "title": "Comparison Type"
+              },
+              "time_offset": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Custom time offset (e.g., '1 month')",
+                "title": "Time Offset"
+              },
+              "calculation": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "difference",
+                      "percent_change",
+                      "ratio"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Comparison calculation (default: percent_change)",
+                "title": "Calculation"
+              },
+              "entity": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Entity to track (e.g., 'user_id')",
+                "title": "Entity"
+              },
+              "base_event": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Starting event filter",
+                "title": "Base Event"
+              },
+              "conversion_event": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Target event filter",
+                "title": "Conversion Event"
+              },
+              "conversion_window": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Conversion time window",
+                "title": "Conversion Window"
+              },
+              "filters": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional WHERE clause filters",
+                "title": "Filters"
+              },
+              "fill_nulls_with": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Default value when result is NULL",
+                "title": "Fill Nulls With"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Human-readable description",
+                "title": "Description"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Display label",
+                "title": "Label"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "title": "Measure",
+            "type": "object"
+          }
+        },
+        "description": "Model (dataset) definition.\n\nModels are the foundation of the semantic layer, mapping to physical tables\nor SQL expressions. Auto-registers with the current semantic layer context if available.",
+        "properties": {
+          "name": {
+            "description": "Unique model name",
+            "title": "Name",
+            "type": "string"
+          },
+          "table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Physical table name (schema.table)",
+            "title": "Table"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL expression for derived tables",
+            "title": "Sql"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Human-readable description",
+            "title": "Description"
+          },
+          "entities": {
+            "description": "Entity (join key) definitions",
+            "items": {
+              "$ref": "#/$defs/Entity"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "joins": {
+            "description": "Join relationships (belongs_to, has_one, has_many)",
+            "items": {
+              "$ref": "#/$defs/Join"
+            },
+            "title": "Joins",
+            "type": "array"
+          },
+          "primary_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Primary key column (defaults to 'id')",
+            "title": "Primary Key"
+          },
+          "dimensions": {
+            "description": "Dimension definitions",
+            "items": {
+              "$ref": "#/$defs/Dimension"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "measures": {
+            "description": "Measure definitions",
+            "items": {
+              "$ref": "#/$defs/Measure"
+            },
+            "title": "Measures",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "Model",
+        "type": "object"
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "description": "Top-level measure definitions (optional - can also define in models)",
+      "items": {
+        "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate",
+        "properties": {
+          "name": {
+            "description": "Unique measure name",
+            "title": "Name",
+            "type": "string"
+          },
+          "agg": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sum",
+                  "count",
+                  "count_distinct",
+                  "avg",
+                  "min",
+                  "max",
+                  "median"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Aggregation function (for simple measures)",
+            "title": "Agg"
+          },
+          "expr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL expression or formula",
+            "title": "Expr"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "simple",
+                  "ratio",
+                  "derived",
+                  "cumulative",
+                  "time_comparison",
+                  "conversion"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Metric type for complex calculations",
+            "title": "Type"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Numerator measure for ratio",
+            "title": "Numerator"
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Denominator measure for ratio",
+            "title": "Denominator"
+          },
+          "offset_window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Time offset for denominator (e.g., '1 month')",
+            "title": "Offset Window"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Time window for cumulative (e.g., '7 days')",
+            "title": "Window"
+          },
+          "grain_to_date": {
+            "anyOf": [
+              {
+                "enum": [
+                  "day",
+                  "week",
+                  "month",
+                  "quarter",
+                  "year"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Grain for period-to-date (e.g., 'month' for MTD)",
+            "title": "Grain To Date"
+          },
+          "base_metric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Base metric for time comparison",
+            "title": "Base Metric"
+          },
+          "comparison_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yoy",
+                  "mom",
+                  "wow",
+                  "dod",
+                  "qoq",
+                  "prior_period"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Type of time comparison",
+            "title": "Comparison Type"
+          },
+          "time_offset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Custom time offset (e.g., '1 month')",
+            "title": "Time Offset"
+          },
+          "calculation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "difference",
+                  "percent_change",
+                  "ratio"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Comparison calculation (default: percent_change)",
+            "title": "Calculation"
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Entity to track (e.g., 'user_id')",
+            "title": "Entity"
+          },
+          "base_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Starting event filter",
+            "title": "Base Event"
+          },
+          "conversion_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Target event filter",
+            "title": "Conversion Event"
+          },
+          "conversion_window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Conversion time window",
+            "title": "Conversion Window"
+          },
+          "filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional WHERE clause filters",
+            "title": "Filters"
+          },
+          "fill_nulls_with": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Default value when result is NULL",
+            "title": "Fill Nulls With"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Human-readable description",
+            "title": "Description"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Display label",
+            "title": "Label"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "Measure",
+        "type": "object"
+      }
+    },
+    "parameters": {
+      "type": "array",
+      "description": "Parameter definitions for dynamic queries",
+      "items": {
+        "description": "Parameter definition for user input.\n\nParameters can be referenced in filters, SQL expressions, and metric definitions\nto create dynamic, user-configurable queries.",
+        "properties": {
+          "name": {
+            "description": "Unique parameter name",
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "description": "Parameter data type",
+            "enum": [
+              "string",
+              "number",
+              "date",
+              "unquoted",
+              "yesno"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Human-readable description",
+            "title": "Description"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Display label for UI",
+            "title": "Label"
+          },
+          "default_value": {
+            "default": null,
+            "description": "Default value if not provided",
+            "title": "Default Value"
+          },
+          "allowed_values": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "List of allowed values (for dropdown/select)",
+            "title": "Allowed Values"
+          },
+          "default_to_today": {
+            "default": false,
+            "description": "Default to current date (for date parameters)",
+            "title": "Default To Today",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "Parameter",
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "models"
+  ],
+  "$defs": {
+    "Dimension": {
+      "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
+      "properties": {
+        "name": {
+          "description": "Unique dimension name within model",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Dimension type",
+          "enum": [
+            "categorical",
+            "time",
+            "boolean",
+            "numeric"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "expr": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL expression (defaults to name)",
+          "title": "Expr"
+        },
+        "granularity": {
+          "anyOf": [
+            {
+              "enum": [
+                "hour",
+                "day",
+                "week",
+                "month",
+                "quarter",
+                "year"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Base granularity for time dimensions",
+          "title": "Granularity"
+        },
+        "supported_granularities": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Supported granularities for time dimensions",
+          "title": "Supported Granularities"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable description",
+          "title": "Description"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display label",
+          "title": "Label"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "Dimension",
+      "type": "object"
+    },
+    "Measure": {
+      "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate",
+      "properties": {
+        "name": {
+          "description": "Unique measure name",
+          "title": "Name",
+          "type": "string"
+        },
+        "agg": {
+          "anyOf": [
+            {
+              "enum": [
+                "sum",
+                "count",
+                "count_distinct",
+                "avg",
+                "min",
+                "max",
+                "median"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Aggregation function (for simple measures)",
+          "title": "Agg"
+        },
+        "expr": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL expression or formula",
+          "title": "Expr"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "enum": [
+                "simple",
+                "ratio",
+                "derived",
+                "cumulative",
+                "time_comparison",
+                "conversion"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Metric type for complex calculations",
+          "title": "Type"
+        },
+        "numerator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Numerator measure for ratio",
+          "title": "Numerator"
+        },
+        "denominator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Denominator measure for ratio",
+          "title": "Denominator"
+        },
+        "offset_window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Time offset for denominator (e.g., '1 month')",
+          "title": "Offset Window"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Time window for cumulative (e.g., '7 days')",
+          "title": "Window"
+        },
+        "grain_to_date": {
+          "anyOf": [
+            {
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "quarter",
+                "year"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Grain for period-to-date (e.g., 'month' for MTD)",
+          "title": "Grain To Date"
+        },
+        "base_metric": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Base metric for time comparison",
+          "title": "Base Metric"
+        },
+        "comparison_type": {
+          "anyOf": [
+            {
+              "enum": [
+                "yoy",
+                "mom",
+                "wow",
+                "dod",
+                "qoq",
+                "prior_period"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Type of time comparison",
+          "title": "Comparison Type"
+        },
+        "time_offset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom time offset (e.g., '1 month')",
+          "title": "Time Offset"
+        },
+        "calculation": {
+          "anyOf": [
+            {
+              "enum": [
+                "difference",
+                "percent_change",
+                "ratio"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comparison calculation (default: percent_change)",
+          "title": "Calculation"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Entity to track (e.g., 'user_id')",
+          "title": "Entity"
+        },
+        "base_event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Starting event filter",
+          "title": "Base Event"
+        },
+        "conversion_event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Target event filter",
+          "title": "Conversion Event"
+        },
+        "conversion_window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Conversion time window",
+          "title": "Conversion Window"
+        },
+        "filters": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional WHERE clause filters",
+          "title": "Filters"
+        },
+        "fill_nulls_with": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Default value when result is NULL",
+          "title": "Fill Nulls With"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable description",
+          "title": "Description"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display label",
+          "title": "Label"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Measure",
+      "type": "object"
+    },
+    "Join": {
+      "description": "Represents a join relationship between models.\n\nRails-like syntax:\n- belongs_to: This model has a foreign key to another (many-to-one)\n- has_one: This model is referenced by another with unique constraint (one-to-one)\n- has_many: This model is referenced by another (one-to-many)",
+      "properties": {
+        "name": {
+          "description": "Name of the related model",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Type of relationship",
+          "enum": [
+            "belongs_to",
+            "has_one",
+            "has_many"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key column (defaults to {name}_id for belongs_to, id for has_*)",
+          "title": "Foreign Key"
+        },
+        "primary_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Primary key column in related model (defaults to id)",
+          "title": "Primary Key"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "Join",
+      "type": "object"
+    },
+    "Entity": {
+      "description": "Entity (join key) definition.\n\nEntities enable automatic join discovery between models.",
+      "properties": {
+        "name": {
+          "description": "Unique entity name",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Entity type (primary, foreign, or unique)",
+          "enum": [
+            "primary",
+            "foreign",
+            "unique"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "expr": {
+          "description": "SQL expression or column name",
+          "title": "Expr",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type",
+        "expr"
+      ],
+      "title": "Entity",
+      "type": "object"
+    },
+    "Parameter": {
+      "description": "Parameter definition for user input.\n\nParameters can be referenced in filters, SQL expressions, and metric definitions\nto create dynamic, user-configurable queries.",
+      "properties": {
+        "name": {
+          "description": "Unique parameter name",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Parameter data type",
+          "enum": [
+            "string",
+            "number",
+            "date",
+            "unquoted",
+            "yesno"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable description",
+          "title": "Description"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display label for UI",
+          "title": "Label"
+        },
+        "default_value": {
+          "default": null,
+          "description": "Default value if not provided",
+          "title": "Default Value"
+        },
+        "allowed_values": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "List of allowed values (for dropdown/select)",
+          "title": "Allowed Values"
+        },
+        "default_to_today": {
+          "default": false,
+          "description": "Default to current date (for date parameters)",
+          "title": "Default To Today",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "Parameter",
+      "type": "object"
+    }
+  }
+}

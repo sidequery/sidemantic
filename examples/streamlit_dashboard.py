@@ -23,7 +23,6 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.entity import Entity
 from sidemantic.core.join import Join
 from sidemantic.core.measure import Measure
-from sidemantic.core.measure import Measure
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -33,7 +32,6 @@ from sidemantic.sql.generator_v2 import SQLGenerator
 # Set page config
 st.set_page_config(
     page_title="Sidemantic Dashboard",
-    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -157,8 +155,8 @@ def setup_semantic_layer():
             Entity(name="customer_id", type="foreign", expr="customer_id")
         ],
         dimensions=[
-            Dimension(name="order_date", type="time", sql_expr="order_date"),
-            Dimension(name="status", type="categorical", sql_expr="status")
+            Dimension(name="order_date", type="time", sql="order_date"),
+            Dimension(name="status", type="categorical", sql="status")
         ],
         measures=[
             Measure(name="revenue", agg="sum", expr="amount"),
@@ -180,9 +178,9 @@ def setup_semantic_layer():
             Entity(name="customer_id", type="primary", expr="id")
         ],
         dimensions=[
-            Dimension(name="name", type="categorical", sql_expr="name"),
-            Dimension(name="region", type="categorical", sql_expr="region"),
-            Dimension(name="tier", type="categorical", sql_expr="tier")
+            Dimension(name="name", type="categorical", sql="name"),
+            Dimension(name="region", type="categorical", sql="region"),
+            Dimension(name="tier", type="categorical", sql="tier")
         ],
         measures=[
             Measure(name="customer_count", agg="count", expr="*")
@@ -198,7 +196,7 @@ def setup_semantic_layer():
             Entity(name="item_id", type="primary", expr="id")
         ],
         dimensions=[
-            Dimension(name="product_id", type="numeric", sql_expr="product_id")
+            Dimension(name="product_id", type="numeric", sql="product_id")
         ],
         measures=[
             Measure(name="total_quantity", agg="sum", expr="quantity"),
@@ -263,7 +261,7 @@ def query_data(conn, generator, metrics, dimensions, filters, parameters, order_
 
 def main():
     """Main Streamlit app."""
-    st.title("📊 Sidemantic Interactive Dashboard")
+    st.title("Sidemantic Interactive Dashboard")
     st.markdown("**Real-time parameterized queries with DuckDB**")
 
     # Setup
@@ -272,7 +270,7 @@ def main():
     generator = SQLGenerator(graph)
 
     # Sidebar - Filters
-    st.sidebar.header("🎛️ Filters")
+    st.sidebar.header("Filters")
 
     # Date range
     col1, col2 = st.sidebar.columns(2)
@@ -329,17 +327,17 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.subheader("Active Filters")
     if status != "all":
-        st.sidebar.markdown(f"✓ Status: **{status}**")
+        st.sidebar.markdown(f"Status: **{status}**")
     if region != "all":
-        st.sidebar.markdown(f"✓ Region: **{region}**")
+        st.sidebar.markdown(f"Region: **{region}**")
     if tier != "all":
-        st.sidebar.markdown(f"✓ Tier: **{tier}**")
-    st.sidebar.markdown(f"✓ Date: **{start_date}** to **{end_date}**")
+        st.sidebar.markdown(f"Tier: **{tier}**")
+    st.sidebar.markdown(f"Date: **{start_date}** to **{end_date}**")
 
     # Main content
 
     # KPIs
-    st.header("📈 Key Metrics")
+    st.header("Key Metrics")
 
     kpi_df, kpi_sql = query_data(
         conn, generator,
@@ -370,7 +368,7 @@ def main():
         )
 
     # Revenue over time
-    st.header("📊 Revenue Trend")
+    st.header("Revenue Trend")
 
     time_df, time_sql = query_data(
         conn, generator,
@@ -410,7 +408,7 @@ def main():
 
     # Revenue by region
     with col1:
-        st.subheader("🌍 Revenue by Region")
+        st.subheader("Revenue by Region")
 
         region_df, region_sql = query_data(
             conn, generator,
@@ -434,7 +432,7 @@ def main():
 
     # Revenue by tier
     with col2:
-        st.subheader("👥 Revenue by Tier")
+        st.subheader("Revenue by Tier")
 
         tier_df, tier_sql = query_data(
             conn, generator,
@@ -458,7 +456,7 @@ def main():
             st.info("No data available.")
 
     # Monthly breakdown
-    st.header("📅 Monthly Breakdown")
+    st.header("Monthly Breakdown")
 
     monthly_df, monthly_sql = query_data(
         conn, generator,
@@ -482,12 +480,12 @@ def main():
         st.info("No data available.")
 
     # Show SQL (expandable)
-    with st.expander("🔍 View Generated SQL"):
+    with st.expander("View Generated SQL"):
         st.code(kpi_sql, language="sql")
         st.caption("This SQL was generated from your semantic layer and parameter selections.")
 
     # Symmetric aggregates demo
-    st.header("🔄 Symmetric Aggregates Demo")
+    st.header("Symmetric Aggregates Demo")
     st.markdown("Querying across **orders + order_items** (fan-out scenario)")
 
     fanout_df, fanout_sql = query_data(
@@ -504,7 +502,7 @@ def main():
     with col1:
         if not fanout_df.empty:
             st.dataframe(fanout_df, use_container_width=True, hide_index=True)
-            st.success("✅ Revenue is correctly calculated using symmetric aggregates!")
+            st.success("Revenue is correctly calculated using symmetric aggregates!")
         else:
             st.info("No data available.")
 
@@ -520,10 +518,10 @@ def main():
         aggregates to prevent double-counting!
         """)
 
-    with st.expander("🔍 View Symmetric Aggregate SQL"):
+    with st.expander("View Symmetric Aggregate SQL"):
         st.code(fanout_sql, language="sql")
         if "HASH" in fanout_sql:
-            st.success("✅ Symmetric aggregates detected! Look for HASH() function.")
+            st.success("Symmetric aggregates detected! Look for HASH() function.")
         else:
             st.info("No symmetric aggregates needed for this query.")
 

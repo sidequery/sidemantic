@@ -31,7 +31,6 @@ import duckdb
 from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.measure import Measure
-from sidemantic.core.measure import Measure
 from sidemantic.core.join import Join
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -123,9 +122,9 @@ def main():
         ]
     )
 
-    print("✓ Created customers model with 3 records")
-    print("✓ Created orders model with 5 records")
-    print("✓ Configured Rails-like belongs_to join from orders → customers")
+    print("Created customers model with 3 records")
+    print("Created orders model with 5 records")
+    print("Configured Rails-like belongs_to join from orders -> customers")
 
     # =========================================================================
     # 2. Define metrics with auto-detected dependencies
@@ -139,7 +138,7 @@ def main():
         expr="orders.amount",
         description="Total revenue from all orders"
     )
-    print("✓ Simple metric: total_revenue")
+    print("Simple metric: total_revenue")
 
     # Ratio metric
     avg_order_value = Measure(
@@ -149,16 +148,16 @@ def main():
         denominator="orders.order_count",
         description="Average order value"
     )
-    print("✓ Ratio metric: avg_order_value")
+    print("Ratio metric: avg_order_value")
 
-    # Derived metric - NO manual dependency specification needed!
+    # Derived metric
     revenue_per_customer = Measure(
         name="revenue_per_customer",
         type="derived",
-        expr="total_revenue / order_count",  # Dependencies auto-detected from expr!
+        expr="total_revenue / order_count",
         description="Revenue divided by number of orders"
     )
-    print("✓ Derived metric: revenue_per_customer (auto-detects total_revenue, order_count)")
+    print("Derived metric: revenue_per_customer")
 
     # Cumulative metric
     running_total = Measure(
@@ -168,7 +167,7 @@ def main():
         window="all",
         description="Running total of revenue"
     )
-    print("✓ Cumulative metric: running_total")
+    print("Cumulative metric: running_total")
 
     # Build semantic graph
     graph = SemanticGraph()
@@ -179,7 +178,7 @@ def main():
     graph.add_metric(revenue_per_customer)
     graph.add_metric(running_total)
 
-    print(f"\n✓ Semantic graph built with {len(graph.models)} models and {len(graph.metrics)} metrics")
+    print(f"\nSemantic graph built with {len(graph.models)} models and {len(graph.metrics)} metrics")
 
     # =========================================================================
     # 3. Traditional API: Generate SQL directly
@@ -208,7 +207,7 @@ def main():
     rewriter = SemanticSQLRewriter(graph)
 
     # Example 1: Simple query without GROUP BY
-    print("\n📝 Example 1: Query without GROUP BY (auto-inferred!)")
+    print("\nExample 1: Query without GROUP BY")
     user_sql = """
         SELECT
             status,
@@ -222,10 +221,10 @@ def main():
     print_sql(rewritten)
 
     results = conn.execute(rewritten).fetchall()
-    print_results(results, "Revenue Metrics by Status (no GROUP BY needed!)")
+    print_results(results, "Revenue Metrics by Status")
 
     # Example 2: Join semantic layer with regular table
-    print("\n📝 Example 2: Join semantic layer with regular table")
+    print("\nExample 2: Join semantic layer with regular table")
 
     # Create a regular table
     conn.execute("""
@@ -253,7 +252,7 @@ def main():
     print_results(results, "Revenue + Promotions")
 
     # Example 3: Cross-model join (using Rails relationships)
-    print("\n📝 Example 3: Cross-model join using Rails-like relationships")
+    print("\nExample 3: Cross-model join using Rails-like relationships")
 
     user_sql = """
         SELECT
@@ -285,7 +284,7 @@ def main():
     print_sql(view_sql)
 
     conn.execute(view_sql)
-    print("✓ Created view 'revenue_summary'")
+    print("Created view 'revenue_summary'")
 
     # Query the view
     results = conn.execute("SELECT * FROM revenue_summary ORDER BY status").fetchall()
@@ -308,7 +307,7 @@ def main():
     # =========================================================================
     print_section("6. Dependency Auto-Detection")
 
-    print("\n✓ Metric dependencies (auto-detected from SQL expressions):")
+    print("\nMetric dependencies (auto-detected from SQL expressions):")
     for metric_name, metric in graph.metrics.items():
         deps = metric.get_dependencies(graph)
         print(f"  {metric_name}: {deps}")
@@ -331,27 +330,19 @@ def main():
     # =========================================================================
     # Summary
     # =========================================================================
-    print_section("Demo Complete! 🎉")
+    print_section("Demo Complete")
 
     print("""
 Key Features Demonstrated:
 
-✓ Auto-detecting metric dependencies from SQL expressions (no manual specs!)
-✓ SQL rewriting - query semantic layer using SQL syntax
-✓ No GROUP BY needed - automatically inferred from metrics
-✓ Join semantic layer models with regular tables
-✓ Cross-model joins using Rails-like relationships (belongs_to)
-✓ Multiple metric types: simple, ratio, derived, cumulative
-✓ Generate reusable views for composition
-✓ Full SQLGlot integration for parsing and transforming SQL
-
-Next Steps:
-- Add percentile aggregation support
-- Add grain-to-date metrics (MTD, QTD, YTD)
-- Add time offsets for ratio/derived metrics
-- Add conversion/funnel metrics
-- Add fill_nulls_with for metrics
-- Add time spine support for complete time series
+Auto-detecting metric dependencies from SQL expressions
+SQL rewriting - query semantic layer using SQL syntax
+No GROUP BY needed - automatically inferred from metrics
+Join semantic layer models with regular tables
+Cross-model joins using Rails-like relationships (belongs_to)
+Multiple metric types: simple, ratio, derived, cumulative
+Generate reusable views for composition
+Full SQLGlot integration for parsing and transforming SQL
     """)
 
 

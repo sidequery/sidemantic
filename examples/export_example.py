@@ -32,4 +32,4 @@ print("\nDemonstrating MetricFlow round-trip...")
 mf_graph = mf_adapter.parse("/tmp/semantic_models_exported.yml")
 print(f"Re-imported {len(mf_graph.models)} models and {len(mf_graph.metrics)} metrics from MetricFlow")
 
-print("\n✓ All exports successful!")
+print("\nAll exports successful!")

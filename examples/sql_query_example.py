@@ -212,11 +212,11 @@ def main():
     print("=" * 80)
     print("Key Benefits:")
     print("-" * 80)
-    print("✓ Write familiar SQL - no need to learn a new query language")
-    print("✓ Metrics are automatically aggregated correctly")
-    print("✓ Joins happen automatically when you reference multiple models")
-    print("✓ All semantic layer features (symmetric aggregates, etc.) work transparently")
-    print("✓ SQL is rewritten to use optimized semantic layer queries")
+    print("Write familiar SQL - no need to learn a new query language")
+    print("Metrics are automatically aggregated correctly")
+    print("Joins happen automatically when you reference multiple models")
+    print("All semantic layer features (symmetric aggregates, etc.) work transparently")
+    print("SQL is rewritten to use optimized semantic layer queries")
     print("=" * 80)
 
 

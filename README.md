@@ -4,44 +4,50 @@ SQLGlot-based semantic layer with multi-format adapter support.
 
 ## Features
 
-- **SQL query interface**: Write familiar SQL queries that get automatically rewritten to use the semantic layer
-- **Entity-based automatic joins**: Define entities once, joins discovered automatically via BFS graph traversal
-- **Multi-format adapters**: Import/export from Cube, MetricFlow (dbt), and native Sidemantic YAML
-- **Rich metric types**: Simple, ratio, derived (formula-based), and cumulative metrics
+- **Simple API**: Define measures once, use them everywhere
+- **SQL query interface**: Write familiar SQL that gets rewritten to use semantic layer
+- **Automatic joins**: Define relationships, joins happen automatically via graph traversal
+- **Multi-format adapters**: Import/export from Cube, MetricFlow (dbt), and native YAML
+- **Rich measure types**: Aggregations, ratios, formulas, cumulative, time comparisons, conversions
 - **SQLGlot-powered**: Dialect-agnostic SQL generation with transpilation support
-- **Multi-hop joins**: Automatic discovery of 2+ hop join paths with intermediate model inclusion
-- **Python-first API**: Type-safe with Pydantic models
+- **Multi-hop joins**: Automatic 2+ hop join discovery with intermediate models
+- **Type-safe**: Pydantic models with validation
 
 ## Quick Start
 
 ```python
-from sidemantic import SemanticLayer
+from sidemantic import SemanticLayer, Model, Measure, Dimension
 
-# Load from native YAML
-sl = SemanticLayer.from_yaml("semantic_layer.yml")
+# Create semantic layer
+layer = SemanticLayer()
 
-# Option 1: Write SQL queries (automatically rewritten to use semantic layer)
-result = sl.sql("""
-    SELECT orders.revenue, customers.region
-    FROM orders
-    WHERE orders.status = 'completed'
-""")
+# Define a model with measures
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    dimensions=[
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+    ],
+    measures=[
+        Measure(name="revenue", agg="sum", expr="amount"),
+        Measure(name="order_count", agg="count"),
+    ]
+)
+layer.add_model(orders)
+
+# Query with SQL
+result = layer.sql("SELECT revenue, status FROM orders WHERE status = 'completed'")
 df = result.fetchdf()
 
-# Option 2: Programmatic API
-result = sl.query(
-    metrics=["orders.revenue", "total_revenue"],
-    dimensions=["orders.status", "orders.order_date__month"],
+# Or programmatic API
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
     filters=["orders.status = 'completed'"]
 )
-df = result.df()
-
-# Option 3: Just compile to SQL
-sql = sl.compile(
-    metrics=["revenue_per_order"],
-    dimensions=["customers.region"]
-)
-print(sql)
+df = result.fetchdf()
 ```
 
 ## YAML Format
@@ -146,38 +152,44 @@ result = sl.sql("""
 
 See `examples/sql_query_example.py` for comprehensive examples.
 
-### Cross-Model Metrics
-Metrics can reference measures from multiple models:
+### Complex Measures
+
+Beyond simple aggregations, define ratios, formulas, and more:
 
 ```python
-# Measure using measure from different model
-conversion_rate = Measure(
+# Ratio
+Measure(
     name="conversion_rate",
     type="ratio",
-    numerator="orders.completed_revenue",  # from orders model
-    denominator="orders.total_revenue"      # from orders model
+    numerator="orders.completed_revenue",
+    denominator="orders.total_revenue"
 )
-```
 
-### Multi-Hop Joins
-Automatic join path discovery across 2+ models:
-
-```python
-# Query across orders -> customers -> regions (2 hops)
-result = sl.query(
-    metrics=["orders.revenue"],
-    dimensions=["regions.region_name"]  # Automatically joins through customers
-)
-```
-
-### Derived Metrics
-Formula-based metrics with recursive dependency resolution:
-
-```python
+# Formula
 Measure(
-    name="revenue_per_order",
+    name="profit_margin",
     type="derived",
-    expr="total_revenue / order_count"
+    expr="(revenue - cost) / revenue"
+)
+
+# Cumulative
+Measure(
+    name="running_total",
+    type="cumulative",
+    expr="revenue",
+    window="7 days"
+)
+```
+
+### Automatic Joins
+
+Query across models - joins happen automatically:
+
+```python
+# Spans orders -> customers -> regions (2 hops)
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["regions.region_name"]
 )
 ```
 

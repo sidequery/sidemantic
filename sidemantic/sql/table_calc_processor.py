@@ -1,0 +1,224 @@
+"""Post-query processor for table calculations.
+
+Table calculations are applied to query results after they're fetched from the database.
+"""
+
+from typing import Any
+import re
+
+from sidemantic.core.table_calculation import TableCalculation
+
+
+class TableCalculationProcessor:
+    """Processes table calculations on query results."""
+
+    def __init__(self, calculations: list[TableCalculation]):
+        """Initialize processor with table calculations.
+
+        Args:
+            calculations: List of table calculations to apply
+        """
+        self.calculations = calculations
+
+    def process(self, results: list[tuple], column_names: list[str]) -> tuple[list[tuple], list[str]]:
+        """Apply table calculations to query results.
+
+        Args:
+            results: Query results as list of tuples
+            column_names: Names of columns in results
+
+        Returns:
+            Tuple of (processed_results, updated_column_names)
+        """
+        if not self.calculations or not results:
+            return results, column_names
+
+        # Convert to list of dicts for easier processing
+        rows = [dict(zip(column_names, row)) for row in results]
+
+        # Apply each calculation
+        for calc in self.calculations:
+            rows = self._apply_calculation(calc, rows, column_names)
+            # Add new column name
+            if calc.name not in column_names:
+                column_names = column_names + [calc.name]
+
+        # Convert back to tuples
+        processed_results = [tuple(row.get(col) for col in column_names) for row in rows]
+
+        return processed_results, column_names
+
+    def _apply_calculation(
+        self,
+        calc: TableCalculation,
+        rows: list[dict],
+        column_names: list[str]
+    ) -> list[dict]:
+        """Apply a single table calculation to rows.
+
+        Args:
+            calc: Table calculation to apply
+            rows: Rows as list of dicts
+            column_names: Available column names
+
+        Returns:
+            Updated rows with calculation applied
+        """
+        if calc.type == "formula":
+            return self._apply_formula(calc, rows)
+        elif calc.type == "percent_of_total":
+            return self._apply_percent_of_total(calc, rows)
+        elif calc.type == "percent_of_previous":
+            return self._apply_percent_of_previous(calc, rows)
+        elif calc.type == "percent_of_column_total":
+            return self._apply_percent_of_column_total(calc, rows)
+        elif calc.type == "running_total":
+            return self._apply_running_total(calc, rows)
+        elif calc.type == "rank":
+            return self._apply_rank(calc, rows)
+        elif calc.type == "row_number":
+            return self._apply_row_number(calc, rows)
+        elif calc.type == "moving_average":
+            return self._apply_moving_average(calc, rows)
+        else:
+            raise ValueError(f"Unknown table calculation type: {calc.type}")
+
+    def _apply_formula(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Apply formula calculation.
+
+        Formulas use ${field_name} syntax to reference columns.
+        Example: "${revenue} / ${cost}"
+        """
+        if not calc.expression:
+            raise ValueError(f"Formula calculation {calc.name} missing expression")
+
+        for row in rows:
+            # Replace ${field} with actual values
+            expr = calc.expression
+            for field_name, value in row.items():
+                expr = expr.replace(f"${{{field_name}}}", str(value if value is not None else 0))
+
+            # Evaluate the expression
+            try:
+                result = eval(expr)
+                row[calc.name] = result
+            except Exception as e:
+                row[calc.name] = None
+
+        return rows
+
+    def _apply_percent_of_total(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Calculate percent of total for a field."""
+        if not calc.field:
+            raise ValueError(f"percent_of_total calculation {calc.name} missing field")
+
+        # Calculate total
+        total = sum(row.get(calc.field, 0) or 0 for row in rows)
+
+        # Calculate percentage for each row
+        for row in rows:
+            value = row.get(calc.field, 0) or 0
+            row[calc.name] = (value / total * 100) if total != 0 else 0
+
+        return rows
+
+    def _apply_percent_of_previous(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Calculate percent change from previous row."""
+        if not calc.field:
+            raise ValueError(f"percent_of_previous calculation {calc.name} missing field")
+
+        prev_value = None
+        for row in rows:
+            value = row.get(calc.field)
+            if prev_value is not None and prev_value != 0:
+                row[calc.name] = ((value - prev_value) / prev_value * 100) if value is not None else None
+            else:
+                row[calc.name] = None
+            prev_value = value
+
+        return rows
+
+    def _apply_percent_of_column_total(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Calculate percent of column total (within partition)."""
+        if not calc.field:
+            raise ValueError(f"percent_of_column_total calculation {calc.name} missing field")
+
+        # If partition_by is specified, calculate total per partition
+        if calc.partition_by:
+            # Group by partition
+            partitions = {}
+            for row in rows:
+                partition_key = tuple(row.get(p) for p in calc.partition_by)
+                if partition_key not in partitions:
+                    partitions[partition_key] = []
+                partitions[partition_key].append(row)
+
+            # Calculate percent within each partition
+            for partition_rows in partitions.values():
+                total = sum(r.get(calc.field, 0) or 0 for r in partition_rows)
+                for row in partition_rows:
+                    value = row.get(calc.field, 0) or 0
+                    row[calc.name] = (value / total * 100) if total != 0 else 0
+        else:
+            # Same as percent_of_total
+            return self._apply_percent_of_total(calc, rows)
+
+        return rows
+
+    def _apply_running_total(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Calculate running total."""
+        if not calc.field:
+            raise ValueError(f"running_total calculation {calc.name} missing field")
+
+        running_sum = 0
+        for row in rows:
+            value = row.get(calc.field, 0) or 0
+            running_sum += value
+            row[calc.name] = running_sum
+
+        return rows
+
+    def _apply_rank(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Assign rank based on field value."""
+        if not calc.field:
+            raise ValueError(f"rank calculation {calc.name} missing field")
+
+        # Sort by field value descending
+        sorted_rows = sorted(rows, key=lambda r: r.get(calc.field, 0) or 0, reverse=True)
+
+        # Assign ranks (handles ties)
+        rank = 1
+        prev_value = None
+        for i, row in enumerate(sorted_rows):
+            value = row.get(calc.field)
+            if value != prev_value:
+                rank = i + 1
+            row[calc.name] = rank
+            prev_value = value
+
+        return rows
+
+    def _apply_row_number(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Assign sequential row number."""
+        for i, row in enumerate(rows, 1):
+            row[calc.name] = i
+
+        return rows
+
+    def _apply_moving_average(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Calculate moving average."""
+        if not calc.field or not calc.window_size:
+            raise ValueError(f"moving_average calculation {calc.name} missing field or window_size")
+
+        for i, row in enumerate(rows):
+            # Get window of values
+            start_idx = max(0, i - calc.window_size + 1)
+            window_values = [
+                rows[j].get(calc.field, 0) or 0
+                for j in range(start_idx, i + 1)
+            ]
+
+            # Calculate average
+            row[calc.name] = sum(window_values) / len(window_values) if window_values else 0
+
+        return rows

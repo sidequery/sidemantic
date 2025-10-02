@@ -1,0 +1,85 @@
+semantic_models:
+  - name: orders
+    model: ref('orders')
+    description: "Order fact table"
+
+    config:
+      meta:
+        hex:
+          table: public.orders
+
+    defaults:
+      agg_time_dimension: order_date
+
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+
+    dimensions:
+      - name: order_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: created_at
+
+      - name: status
+        type: categorical
+        expr: status
+
+    measures:
+      - name: order_count
+        agg: count
+        description: "Count of orders"
+        create_metric: true
+
+      - name: revenue
+        agg: sum
+        expr: order_amount
+        description: "Total revenue"
+
+      - name: avg_order_value
+        agg: average
+        expr: order_amount
+        description: "Average order value"
+
+  - name: customers
+    model: ref('customers')
+    description: "Customer dimension"
+
+    config:
+      meta:
+        hex:
+          table: public.customers
+
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_id
+
+    dimensions:
+      - name: region
+        type: categorical
+        expr: region
+
+      - name: tier
+        type: categorical
+        expr: tier
+
+metrics:
+  - name: total_revenue
+    type: simple
+    description: "Total revenue from all orders"
+    type_params:
+      measure:
+        name: revenue
+
+  - name: average_order_value
+    type: ratio
+    description: "Average value per order"
+    type_params:
+      numerator: revenue
+      denominator: order_count

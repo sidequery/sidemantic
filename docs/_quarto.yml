@@ -1,0 +1,51 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Sidemantic"
+  description: "A universal semantic layer for data modeling"
+  navbar:
+    left:
+      - text: "Home"
+        href: index.qmd
+      - text: "Getting Started"
+        href: getting-started.qmd
+      - text: "Core Concepts"
+        menu:
+          - text: "Models"
+            href: concepts/models.qmd
+          - text: "Metrics"
+            href: concepts/metrics.qmd
+          - text: "Dimensions & Measures"
+            href: concepts/dimensions-measures.qmd
+          - text: "Joins"
+            href: concepts/joins.qmd
+      - text: "Features"
+        menu:
+          - text: "Parameters"
+            href: features/parameters.qmd
+          - text: "Symmetric Aggregates"
+            href: features/symmetric-aggregates.qmd
+          - text: "Table Calculations"
+            href: features/table-calculations.qmd
+          - text: "Advanced Metrics"
+            href: features/advanced-metrics.qmd
+      - text: "API Reference"
+        href: api/index.qmd
+      - text: "Examples"
+        href: examples.qmd
+    right:
+      - icon: github
+        href: https://github.com/anthropics/sidemantic
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+    code-copy: true
+    code-fold: false
+
+execute:
+  freeze: auto

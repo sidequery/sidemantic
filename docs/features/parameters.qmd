@@ -1,0 +1,480 @@
+---
+title: "Parameters"
+subtitle: "Dynamic User Input for Queries"
+---
+
+## Overview
+
+Parameters provide type-safe user input for your semantic layer queries. They enable:
+
+- **Dashboard filters**: Let users select date ranges, categories, etc.
+- **Dynamic queries**: Change query behavior without modifying code
+- **Type safety**: Automatic validation and SQL escaping
+- **Reusability**: Define once, use in multiple queries
+
+## Basic Usage
+
+### Define a Parameter
+
+```python
+from sidemantic import Parameter
+
+status_param = Parameter(
+    name="order_status",
+    type="string",
+    default_value="completed",
+    description="Filter orders by status"
+)
+
+graph.add_parameter(status_param)
+```
+
+### Use in Query
+
+```python
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date"],
+    filters=["orders.status = {{ order_status }}"],
+    parameters={"order_status": "pending"}
+)
+```
+
+The `{{ order_status }}` placeholder is replaced with the SQL-safe value:
+
+```sql
+WHERE orders_cte.status = 'pending'
+```
+
+## Parameter Types
+
+### String
+
+String parameters are quoted for SQL safety:
+
+```python
+Parameter(
+    name="category",
+    type="string",
+    default_value="electronics"
+)
+
+# Usage: filters=["products.category = {{ category }}"]
+# Result: WHERE products_cte.category = 'electronics'
+```
+
+### Number
+
+Number parameters are inserted without quotes:
+
+```python
+Parameter(
+    name="min_amount",
+    type="number",
+    default_value=100
+)
+
+# Usage: filters=["orders.amount >= {{ min_amount }}"]
+# Result: WHERE orders_cte.amount_raw >= 100
+```
+
+### Date
+
+Date parameters are formatted as SQL dates:
+
+```python
+Parameter(
+    name="start_date",
+    type="date",
+    default_value="2024-01-01",
+    default_to_today=False  # Use today's date if not provided
+)
+
+# Usage: filters=["orders.order_date >= {{ start_date }}"]
+# Result: WHERE orders_cte.order_date >= CAST('2024-01-01' AS DATE)
+```
+
+### Unquoted
+
+Unquoted parameters insert values directly (use with caution):
+
+```python
+Parameter(
+    name="limit",
+    type="unquoted",
+    default_value="100"
+)
+
+# Usage: limit={{ limit }}
+# Result: LIMIT 100
+```
+
+### Yes/No (Boolean)
+
+Boolean parameters for true/false conditions:
+
+```python
+Parameter(
+    name="include_cancelled",
+    type="yesno",
+    default_value=False
+)
+
+# Usage: filters=["orders.include_cancelled = {{ include_cancelled }}"]
+# Result: WHERE orders_cte.include_cancelled = FALSE
+```
+
+## Advanced Features
+
+### Default Values
+
+Parameters always have defaults for safety:
+
+```python
+Parameter(
+    name="status",
+    type="string",
+    default_value="active"  # Used if no value provided
+)
+
+# Query without parameter
+sql = generator.generate(
+    filters=["customers.status = {{ status }}"],
+    parameters={}  # Empty - uses default
+)
+# Result: WHERE customers_cte.status = 'active'
+```
+
+### Allowed Values
+
+Restrict parameters to specific values (great for dropdowns):
+
+```python
+Parameter(
+    name="region",
+    type="string",
+    default_value="US",
+    allowed_values=["US", "EU", "APAC", "LATAM"]
+)
+```
+
+The `allowed_values` list helps build UI dropdowns but doesn't enforce validation (yet).
+
+### Multiple Parameters
+
+Use multiple parameters in a single query:
+
+```python
+# Define parameters
+graph.add_parameter(Parameter(
+    name="status",
+    type="string",
+    default_value="completed"
+))
+
+graph.add_parameter(Parameter(
+    name="start_date",
+    type="date",
+    default_value="2024-01-01"
+))
+
+graph.add_parameter(Parameter(
+    name="min_amount",
+    type="number",
+    default_value=0
+))
+
+# Use in query
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date"],
+    filters=[
+        "orders.status = {{ status }}",
+        "orders.order_date >= {{ start_date }}",
+        "orders.amount >= {{ min_amount }}"
+    ],
+    parameters={
+        "status": "pending",
+        "start_date": "2024-02-01",
+        "min_amount": 100
+    }
+)
+```
+
+## Common Patterns
+
+### Date Range Filters
+
+```python
+# Define parameters
+graph.add_parameter(Parameter(
+    name="date_from",
+    type="date",
+    default_value="2024-01-01"
+))
+
+graph.add_parameter(Parameter(
+    name="date_to",
+    type="date",
+    default_value="2024-12-31",
+    default_to_today=True  # Use today if not provided
+))
+
+# Query with date range
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date__month"],
+    filters=[
+        "orders.order_date >= {{ date_from }}",
+        "orders.order_date < {{ date_to }}"
+    ],
+    parameters={
+        "date_from": "2024-06-01",
+        "date_to": "2024-07-01"
+    }
+)
+```
+
+### Multi-Select Filters
+
+While single parameters handle one value, you can use SQL IN for multiple:
+
+```python
+# This requires special handling or multiple parameters
+# Future enhancement: array-type parameters
+
+# Workaround: pass SQL directly
+filters=["orders.status IN ('pending', 'processing')"]
+```
+
+### Conditional Logic
+
+Parameters work in any filter expression:
+
+```python
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    filters=[
+        "CASE WHEN {{ include_tax }} THEN orders.amount ELSE orders.amount_before_tax END > 100"
+    ],
+    parameters={"include_tax": True}
+)
+```
+
+## Real-World Example
+
+### Dashboard with User Filters
+
+```python
+from sidemantic import Parameter, SemanticGraph, SQLGenerator
+
+# Set up graph with parameters
+graph = SemanticGraph()
+
+# Add parameters for dashboard
+graph.add_parameter(Parameter(
+    name="selected_region",
+    type="string",
+    default_value="All",
+    allowed_values=["All", "US", "EU", "APAC"],
+    description="Region filter for dashboard"
+))
+
+graph.add_parameter(Parameter(
+    name="date_range",
+    type="date",
+    default_value="2024-01-01",
+    description="Start date for analysis"
+))
+
+graph.add_parameter(Parameter(
+    name="customer_tier",
+    type="string",
+    default_value="All",
+    allowed_values=["All", "free", "basic", "premium"],
+    description="Customer tier filter"
+))
+
+# Generate query based on user selection
+def generate_dashboard_query(user_selections):
+    filters = []
+
+    # Only add filters if not "All"
+    if user_selections.get("selected_region") != "All":
+        filters.append("customers.region = {{ selected_region }}")
+
+    if user_selections.get("customer_tier") != "All":
+        filters.append("customers.tier = {{ customer_tier }}")
+
+    filters.append("orders.order_date >= {{ date_range }}")
+
+    return generator.generate(
+        metrics=["orders.revenue", "orders.order_count"],
+        dimensions=["orders.order_date__month"],
+        filters=filters,
+        parameters=user_selections,
+        order_by=["orders.order_date__month"]
+    )
+
+# User selects filters in UI
+user_selections = {
+    "selected_region": "US",
+    "customer_tier": "premium",
+    "date_range": "2024-06-01"
+}
+
+sql = generate_dashboard_query(user_selections)
+```
+
+## Integration with BI Tools
+
+### Tableau
+
+Tableau parameters map directly to sidemantic parameters:
+
+```python
+# Tableau parameter: @Status
+# Sidemantic parameter: {{ status }}
+
+# Pass Tableau parameter value to sidemantic
+parameters = {"status": tableau_param["@Status"]}
+```
+
+### Looker
+
+Looker Studio filters can be converted:
+
+```python
+# Looker filter: {% parameter status_filter %}
+# Sidemantic parameter: {{ status_filter }}
+```
+
+### Streamlit
+
+Build interactive dashboards:
+
+```python
+import streamlit as st
+
+# Create UI widgets
+status = st.selectbox("Order Status", ["completed", "pending", "cancelled"])
+start_date = st.date_input("Start Date")
+
+# Generate SQL with user input
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date"],
+    filters=[
+        "orders.status = {{ status }}",
+        "orders.order_date >= {{ start_date }}"
+    ],
+    parameters={
+        "status": status,
+        "start_date": start_date.isoformat()
+    }
+)
+
+# Execute and display
+results = conn.execute(sql).fetchdf()
+st.dataframe(results)
+```
+
+## Security Considerations
+
+### SQL Injection Protection
+
+Parameters are automatically escaped:
+
+```python
+# User input: "completed' OR '1'='1"
+parameters = {"status": "completed' OR '1'='1"}
+
+# Generated SQL (safe):
+WHERE orders_cte.status = 'completed'' OR ''1''=''1'
+```
+
+Quotes are escaped, preventing SQL injection.
+
+### Type Validation
+
+Parameters enforce their type:
+
+```python
+Parameter(name="amount", type="number", default_value=100)
+
+# Good
+parameters = {"amount": 250}  # Works
+
+# Bad - will use default
+parameters = {"amount": "invalid"}  # Falls back to default_value
+```
+
+## Best Practices
+
+### Name Parameters Clearly
+
+```python
+# Good
+Parameter(name="start_date", ...)
+Parameter(name="customer_region", ...)
+
+# Avoid
+Parameter(name="param1", ...)
+Parameter(name="x", ...)
+```
+
+### Provide Sensible Defaults
+
+```python
+# Good - won't break if user doesn't provide value
+Parameter(
+    name="status",
+    type="string",
+    default_value="all"
+)
+
+# Bad - might break query
+Parameter(
+    name="status",
+    type="string",
+    default_value=None  # Avoid None defaults
+)
+```
+
+### Document Parameters
+
+```python
+Parameter(
+    name="lookback_days",
+    type="number",
+    default_value=30,
+    description="Number of days to look back for trend analysis"
+)
+```
+
+### Group Related Parameters
+
+```python
+# Date range parameters
+date_from = Parameter(name="date_from", type="date", ...)
+date_to = Parameter(name="date_to", type="date", ...)
+
+# Filter parameters
+region = Parameter(name="region", type="string", ...)
+tier = Parameter(name="tier", type="string", ...)
+```
+
+## Limitations
+
+Current limitations (potential future enhancements):
+
+- No array/list parameters (for IN clauses)
+- No validation enforcement for `allowed_values`
+- No parameter dependencies (param A depends on param B)
+- No computed parameters (param C = param A + param B)
+
+## Next Steps
+
+- See [Examples](../examples.qmd) for complete parameter examples
+- Learn about [Advanced Metrics](advanced-metrics.qmd)
+- Explore [Table Calculations](table-calculations.qmd)

@@ -1,0 +1,58 @@
+cubes:
+  - name: orders
+    sql_table: public.orders
+    description: "Order transactions"
+
+    dimensions:
+      - name: id
+        sql: order_id
+        type: number
+        primary_key: true
+
+      - name: status
+        sql: status
+        type: string
+        description: "Order status"
+
+      - name: created_at
+        sql: created_at
+        type: time
+        description: "Order creation timestamp"
+
+    measures:
+      - name: count
+        type: count
+        description: "Total number of orders"
+
+      - name: revenue
+        type: sum
+        sql: order_amount
+        description: "Total revenue"
+
+      - name: avg_order_value
+        type: avg
+        sql: order_amount
+        description: "Average order value"
+
+    joins:
+      - name: customer
+        sql: "{orders.customer_id} = {customer.id}"
+        relationship: many_to_one
+
+  - name: customer
+    sql_table: public.customers
+    description: "Customer dimension"
+
+    dimensions:
+      - name: id
+        sql: customer_id
+        type: number
+        primary_key: true
+
+      - name: region
+        sql: region
+        type: string
+
+      - name: tier
+        sql: tier
+        type: string

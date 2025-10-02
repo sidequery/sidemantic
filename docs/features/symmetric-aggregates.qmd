@@ -1,0 +1,492 @@
+---
+title: "Symmetric Aggregates"
+subtitle: "Preventing Double-Counting in Fan-out Joins"
+---
+
+## The Problem: Fan-out Joins
+
+When you join a table to multiple "many" side tables, you create a **fan-out** where each row from the base table appears multiple times in the result:
+
+```sql
+-- Orders: 2 rows
+-- Order Items: 3 rows (2 for order 1, 1 for order 2)
+-- Shipments: 3 rows (2 for order 1, 1 for order 2)
+
+SELECT
+    o.id,
+    o.amount,
+    i.quantity,
+    s.shipment_id
+FROM orders o
+LEFT JOIN order_items i ON o.id = i.order_id
+LEFT JOIN shipments s ON o.id = s.order_id
+
+-- Result: Order 1 appears 4 times (2 items × 2 shipments)
+-- Order 2 appears 1 time (1 item × 1 shipment)
+```
+
+If you naively sum order amounts, you get:
+
+```sql
+-- WRONG!
+SUM(o.amount)  -- 100 × 4 + 200 × 1 = 600 (should be 300)
+```
+
+## The Solution: Symmetric Aggregates
+
+Sidemantic automatically detects fan-out situations and applies **symmetric aggregates** to ensure each row is counted exactly once.
+
+### How It Works
+
+The formula:
+
+```sql
+SUM(DISTINCT HASH(primary_key) * 2^20 + value)
+  - SUM(DISTINCT HASH(primary_key) * 2^20)
+```
+
+**Why this works:**
+
+1. Hash the primary key to get a unique large number
+2. Multiply by 2^20 (~ 1 million) to create space
+3. Add the value to the hash
+4. `SUM(DISTINCT ...)` ensures each unique hash+value is counted once
+5. Subtract the hash offset to get the correct sum
+
+## Automatic Detection
+
+Sidemantic automatically applies symmetric aggregates when:
+
+1. Query includes measures from a base model
+2. Query joins to **2 or more** one-to-many related models
+3. Those joins create a fan-out effect
+
+```python
+# Single one-to-many join - NO symmetric aggregates
+sql = generator.generate(
+    metrics=["orders.revenue", "order_items.quantity"],
+    dimensions=["orders.order_date"]
+)
+# Result: Regular SUM(orders_cte.revenue_raw)
+
+# Multiple one-to-many joins - YES symmetric aggregates
+sql = generator.generate(
+    metrics=[
+        "orders.revenue",        # Symmetric aggregate!
+        "order_items.quantity",
+        "shipments.count"
+    ],
+    dimensions=["orders.order_date"]
+)
+# Result: SUM(DISTINCT HASH(orders_cte.id) * ... + revenue) - SUM(DISTINCT HASH(...))
+```
+
+## Example with Data
+
+### Setup
+
+```python
+# Orders table
+orders = [
+    (1, '2024-01-01', 100),
+    (2, '2024-01-15', 200)
+]
+
+# Order items (2 items for order 1, 1 for order 2)
+order_items = [
+    (1, 1, 5),   # order 1, quantity 5
+    (2, 1, 3),   # order 1, quantity 3
+    (3, 2, 10)   # order 2, quantity 10
+]
+
+# Shipments (2 shipments for order 1, 1 for order 2)
+shipments = [
+    (1, 1),  # order 1
+    (2, 1),  # order 1
+    (3, 2)   # order 2
+]
+```
+
+### Without Symmetric Aggregates (WRONG)
+
+```sql
+SELECT
+    o.order_date,
+    SUM(o.amount) as revenue    -- WRONG!
+FROM orders o
+LEFT JOIN order_items i ON o.id = i.order_id
+LEFT JOIN shipments s ON o.id = s.order_id
+GROUP BY o.order_date
+
+-- Results:
+-- 2024-01-01: 400  (100 × 2 items × 2 shipments) ❌ WRONG
+-- 2024-01-15: 200  (200 × 1 item × 1 shipment)
+```
+
+### With Symmetric Aggregates (CORRECT)
+
+```python
+sql = generator.generate(
+    metrics=["orders.revenue", "order_items.quantity", "shipments.count"],
+    dimensions=["orders.order_date"]
+)
+
+# Results:
+# 2024-01-01: 100  ✅ CORRECT
+# 2024-01-15: 200  ✅ CORRECT
+```
+
+Generated SQL:
+
+```sql
+SELECT
+  orders_cte.order_date,
+  (
+    SUM(DISTINCT (HASH(orders_cte.id)::HUGEINT * (1::HUGEINT << 20))
+                 + orders_cte.revenue_raw)
+    - SUM(DISTINCT (HASH(orders_cte.id)::HUGEINT * (1::HUGEINT << 20)))
+  ) AS revenue,
+  SUM(order_items_cte.quantity_raw) AS quantity,
+  COUNT(shipments_cte.shipment_count_raw) AS shipment_count
+FROM orders_cte
+LEFT JOIN order_items_cte ON ...
+LEFT JOIN shipments_cte ON ...
+GROUP BY 1
+```
+
+## When Symmetric Aggregates Apply
+
+### Applied ✅
+
+**Multiple one-to-many from base model:**
+
+```python
+# Orders has_many items AND has_many shipments
+sql = generator.generate(
+    metrics=["orders.revenue", "order_items.quantity", "shipments.count"]
+)
+# ✅ Symmetric aggregates applied to orders.revenue
+```
+
+**Fan-out scenario:**
+
+```python
+# Customers → Orders → Items (creates fan-out)
+sql = generator.generate(
+    metrics=["customers.lifetime_value", "orders.revenue", "items.quantity"]
+)
+# ✅ Symmetric aggregates applied where needed
+```
+
+### Not Applied ❌
+
+**Single one-to-many:**
+
+```python
+# Only joining orders to items (no fan-out)
+sql = generator.generate(
+    metrics=["orders.revenue", "order_items.quantity"]
+)
+# ❌ No symmetric aggregates (regular SUM)
+```
+
+**Many-to-one joins:**
+
+```python
+# Orders belongs_to customers (no fan-out)
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["customers.region"]
+)
+# ❌ No symmetric aggregates needed
+```
+
+**No joins:**
+
+```python
+# Single model query
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"]
+)
+# ❌ No joins, no symmetric aggregates
+```
+
+## Supported Aggregations
+
+Symmetric aggregates work with:
+
+### SUM
+
+```python
+Measure(name="revenue", agg="sum", expr="amount")
+
+# Generated:
+# SUM(DISTINCT HASH(pk) * 2^20 + amount) - SUM(DISTINCT HASH(pk) * 2^20)
+```
+
+### AVG
+
+```python
+Measure(name="avg_order_value", agg="avg", expr="amount")
+
+# Generated:
+# (SUM(DISTINCT HASH(pk) * 2^20 + amount) - SUM(DISTINCT HASH(pk) * 2^20))
+#   / NULLIF(COUNT(DISTINCT pk), 0)
+```
+
+### COUNT
+
+```python
+Measure(name="order_count", agg="count", expr="*")
+
+# Generated:
+# COUNT(DISTINCT pk)
+```
+
+### COUNT DISTINCT
+
+```python
+Measure(name="customer_count", agg="count_distinct", expr="customer_id")
+
+# Generated:
+# COUNT(DISTINCT customer_id)  -- No hash needed
+```
+
+## Performance Considerations
+
+### Impact
+
+Symmetric aggregates add overhead:
+
+- Hash computation
+- DISTINCT operations
+- Memory for hash table
+
+For large datasets with fan-out, the correctness benefit outweighs the cost.
+
+### Optimization
+
+Sidemantic only applies symmetric aggregates when needed:
+
+```python
+# Checks if query has ≥2 one-to-many joins
+if has_fanout:
+    use_symmetric_aggregates()
+else:
+    use_regular_aggregates()  # Faster
+```
+
+### Alternative Approaches
+
+If performance is critical:
+
+**1. Pre-aggregate in CTEs**
+
+```python
+# Instead of joining items and shipments to orders,
+# aggregate them first, then join
+WITH item_counts AS (
+    SELECT order_id, COUNT(*) as item_count
+    FROM order_items
+    GROUP BY order_id
+),
+shipment_counts AS (
+    SELECT order_id, COUNT(*) as shipment_count
+    FROM shipments
+    GROUP BY order_id
+)
+SELECT
+    o.order_date,
+    SUM(o.amount) as revenue,  -- No fan-out, no symmetric agg needed
+    SUM(i.item_count) as items,
+    SUM(s.shipment_count) as shipments
+FROM orders o
+LEFT JOIN item_counts i ON o.id = i.order_id
+LEFT JOIN shipment_counts s ON o.id = s.order_id
+GROUP BY o.order_date
+```
+
+**2. Separate queries**
+
+Query each model independently to avoid joins:
+
+```python
+# Query 1: Orders
+orders_revenue = execute("SELECT SUM(amount) FROM orders")
+
+# Query 2: Items
+items_quantity = execute("SELECT SUM(quantity) FROM order_items")
+
+# Combine in application layer
+```
+
+**3. Materialized views**
+
+Pre-compute aggregates in the database:
+
+```sql
+CREATE MATERIALIZED VIEW order_metrics AS
+SELECT
+    order_id,
+    order_date,
+    amount,
+    (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,
+    (SELECT COUNT(*) FROM shipments WHERE order_id = o.id) as shipment_count
+FROM orders o
+```
+
+## Troubleshooting
+
+### Results Don't Match Expectations
+
+**Check primary key is set:**
+
+```python
+# Symmetric aggregates require primary_key
+orders = Model(
+    name="orders",
+    primary_key="id",  # ← Must be set!
+    # ...
+)
+```
+
+**Verify relationships:**
+
+```python
+# Make sure has_many relationships are defined
+orders = Model(
+    name="orders",
+    joins=[
+        Join(name="order_items", type="has_many", ...),
+        Join(name="shipments", type="has_many", ...)
+    ]
+)
+```
+
+### Performance Issues
+
+**Check query explains fan-out:**
+
+```python
+# Look at cardinality in EXPLAIN
+EXPLAIN ANALYZE
+SELECT ... FROM orders
+LEFT JOIN order_items ...
+LEFT JOIN shipments ...
+```
+
+If join creates millions of rows, consider pre-aggregation.
+
+## LookML Compatibility
+
+Sidemantic's symmetric aggregates match LookML's `symmetric_aggregates: yes`:
+
+**LookML:**
+```lookml
+explore: orders {
+  symmetric_aggregates: yes
+
+  join: order_items {
+    relationship: one_to_many
+  }
+
+  join: shipments {
+    relationship: one_to_many
+  }
+}
+```
+
+**Sidemantic:**
+```python
+# Automatic - no configuration needed!
+orders = Model(
+    name="orders",
+    joins=[
+        Join(name="order_items", type="has_many"),
+        Join(name="shipments", type="has_many")
+    ]
+)
+```
+
+## Under the Hood
+
+### Detection Logic
+
+```python
+def _has_fanout_joins(base_model, other_models):
+    one_to_many_count = 0
+
+    for other_model in other_models:
+        join_path = find_join_path(base_model, other_model)
+        if join_path[0].relationship == "one_to_many":
+            one_to_many_count += 1
+
+    return one_to_many_count >= 2
+```
+
+### SQL Generation
+
+```python
+if needs_symmetric_aggregates:
+    # Build hash-based formula
+    pk = model.primary_key
+    agg_expr = f"""
+        (SUM(DISTINCT (HASH({pk})::HUGEINT * (1::HUGEINT << 20)) + {measure})
+         - SUM(DISTINCT (HASH({pk})::HUGEINT * (1::HUGEINT << 20))))
+    """
+else:
+    # Regular aggregation
+    agg_expr = f"SUM({measure})"
+```
+
+## Best Practices
+
+### Always Set Primary Keys
+
+```python
+# Required for symmetric aggregates
+Model(
+    name="orders",
+    primary_key="id"  # ← Essential
+)
+```
+
+### Define Relationships Correctly
+
+```python
+# Parent (one side)
+orders = Model(
+    joins=[
+        Join(name="order_items", type="has_many")
+    ]
+)
+
+# Child (many side)
+order_items = Model(
+    joins=[
+        Join(name="orders", type="belongs_to")
+    ]
+)
+```
+
+### Test with Real Data
+
+```python
+# Verify correctness by comparing:
+# 1. Query with symmetric aggregates
+# 2. Query without joins (baseline)
+
+baseline = "SELECT SUM(amount) FROM orders"
+with_joins = generator.generate(
+    metrics=["orders.revenue", "items.quantity", "shipments.count"]
+)
+
+assert results_match(baseline, with_joins)
+```
+
+## Next Steps
+
+- See [complete example](../examples.qmd#symmetric-aggregates) with data
+- Learn about [Joins](../concepts/joins.qmd)
+- Explore [Advanced Metrics](advanced-metrics.qmd)

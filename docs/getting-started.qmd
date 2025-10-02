@@ -1,0 +1,364 @@
+---
+title: "Getting Started"
+---
+
+## Installation
+
+Install sidemantic using pip:
+
+```bash
+pip install sidemantic
+```
+
+Or with uv (recommended):
+
+```bash
+uv pip install sidemantic
+```
+
+## Your First Semantic Layer
+
+Let's build a simple semantic layer for an e-commerce database.
+
+### Step 1: Define Models
+
+Models represent tables in your database with their business meaning:
+
+```python
+from sidemantic import Model, Entity, Dimension, Measure
+
+# Orders model
+orders = Model(
+    name="orders",
+    table="raw_orders",
+    primary_key="id",
+    entities=[
+        Entity(name="order_id", type="primary", expr="id"),
+        Entity(name="customer_id", type="foreign", expr="customer_id")
+    ],
+    dimensions=[
+        Dimension(
+            name="order_date",
+            type="time",
+            sql_expr="created_at"
+        ),
+        Dimension(
+            name="status",
+            type="categorical",
+            sql_expr="status"
+        )
+    ],
+    measures=[
+        Measure(
+            name="revenue",
+            agg="sum",
+            expr="amount"
+        ),
+        Measure(
+            name="order_count",
+            agg="count",
+            expr="*"
+        )
+    ]
+)
+```
+
+### Step 2: Create Semantic Graph
+
+The semantic graph holds all your models and metrics:
+
+```python
+from sidemantic import SemanticGraph
+
+graph = SemanticGraph()
+graph.add_model(orders)
+```
+
+### Step 3: Generate SQL
+
+Use the SQL generator to create queries:
+
+```python
+from sidemantic import SQLGenerator
+
+generator = SQLGenerator(graph)
+
+sql = generator.generate(
+    metrics=["orders.revenue", "orders.order_count"],
+    dimensions=["orders.status"]
+)
+
+print(sql)
+```
+
+Output:
+
+```sql
+WITH orders_cte AS (
+  SELECT
+    id AS order_id,
+    status AS status,
+    amount AS revenue_raw,
+    * AS order_count_raw
+  FROM raw_orders
+)
+SELECT
+  orders_cte.status AS status,
+  SUM(orders_cte.revenue_raw) AS revenue,
+  COUNT(orders_cte.order_count_raw) AS order_count
+FROM orders_cte
+GROUP BY 1
+```
+
+## Adding Time Granularity
+
+Query with different time granularities using the `__` suffix:
+
+```python
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date__month"],
+    order_by=["orders.order_date__month"]
+)
+```
+
+Available granularities:
+
+- `__day`
+- `__week`
+- `__month`
+- `__quarter`
+- `__year`
+
+## Joining Multiple Models
+
+Define relationships between models:
+
+```python
+from sidemantic import Join
+
+# Add customers model
+customers = Model(
+    name="customers",
+    table="raw_customers",
+    primary_key="id",
+    entities=[
+        Entity(name="customer_id", type="primary", expr="id")
+    ],
+    dimensions=[
+        Dimension(name="region", type="categorical", sql_expr="region"),
+        Dimension(name="tier", type="categorical", sql_expr="tier")
+    ]
+)
+
+# Add join to orders model
+orders.joins = [
+    Join(
+        name="customers",
+        type="belongs_to",
+        foreign_key="customer_id"
+    )
+]
+
+graph.add_model(customers)
+
+# Query across models
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["customers.region", "orders.status"]
+)
+```
+
+Sidemantic automatically:
+
+- Finds the join path between models
+- Generates the appropriate JOIN clauses
+- Handles multi-hop joins
+
+## Adding Metrics
+
+Define reusable metrics:
+
+```python
+from sidemantic import Metric
+
+# Simple metric
+total_revenue = Metric(
+    name="total_revenue",
+    type="simple",
+    measure="orders.revenue",
+    description="Total revenue from all orders"
+)
+
+# Ratio metric
+conversion_rate = Metric(
+    name="conversion_rate",
+    type="ratio",
+    numerator="orders.completed_revenue",
+    denominator="orders.revenue",
+    description="Percentage of completed orders"
+)
+
+graph.add_metric(total_revenue)
+graph.add_metric(conversion_rate)
+
+# Use metrics in queries
+sql = generator.generate(
+    metrics=["total_revenue", "conversion_rate"],
+    dimensions=["customers.region"]
+)
+```
+
+## Filtering Data
+
+Add filters to your queries:
+
+```python
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date"],
+    filters=[
+        "orders.status = 'completed'",
+        "orders.revenue > 100"
+    ]
+)
+```
+
+## Using Parameters
+
+Make queries dynamic with parameters:
+
+```python
+from sidemantic import Parameter
+
+# Define parameter
+status_param = Parameter(
+    name="status_filter",
+    type="string",
+    default_value="completed",
+    allowed_values=["pending", "completed", "cancelled"]
+)
+
+graph.add_parameter(status_param)
+
+# Use parameter in query
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date"],
+    filters=["orders.status = {{ status_filter }}"],
+    parameters={"status_filter": "pending"}
+)
+```
+
+## Executing Queries
+
+Sidemantic generates SQL that you can execute against your database:
+
+```python
+import duckdb
+
+# Create connection
+conn = duckdb.connect("my_database.db")
+
+# Generate SQL
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"]
+)
+
+# Execute
+results = conn.execute(sql).fetchall()
+
+for row in results:
+    print(f"Status: {row[0]}, Revenue: {row[1]}")
+```
+
+## Next Steps
+
+Now that you understand the basics:
+
+- Learn about [Models](concepts/models.qmd) in depth
+- Explore [Advanced Metrics](features/advanced-metrics.qmd)
+- Understand [Symmetric Aggregates](features/symmetric-aggregates.qmd)
+- Check out [Examples](examples.qmd)
+
+## Common Patterns
+
+### Time-based Analysis
+
+```python
+# Daily revenue
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date__day"],
+    filters=["orders.order_date >= '2024-01-01'"],
+    order_by=["orders.order_date__day"]
+)
+
+# Monthly trends
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date__month"],
+    order_by=["orders.order_date__month"]
+)
+```
+
+### Customer Segmentation
+
+```python
+sql = generator.generate(
+    metrics=["orders.revenue", "orders.order_count"],
+    dimensions=["customers.tier", "customers.region"],
+    filters=["customers.tier != 'free'"]
+)
+```
+
+### Cohort Analysis
+
+```python
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=[
+        "customers.signup_date__month",
+        "orders.order_date__month"
+    ]
+)
+```
+
+## Troubleshooting
+
+### Model Not Found
+
+```python
+# Error: Model 'orders' not found
+sql = generator.generate(metrics=["orders.revenue"])
+
+# Solution: Add model to graph
+graph.add_model(orders)
+```
+
+### No Join Path
+
+```python
+# Error: No join path between 'orders' and 'products'
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["products.name"]
+)
+
+# Solution: Add intermediate model or direct join
+```
+
+### Invalid Granularity
+
+```python
+# Error: Invalid granularity 'hour'
+sql = generator.generate(
+    dimensions=["orders.order_date__hour"]
+)
+
+# Solution: Use supported granularity
+sql = generator.generate(
+    dimensions=["orders.order_date__day"]
+)
+```

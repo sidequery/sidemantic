@@ -1,0 +1,459 @@
+---
+title: "Models"
+---
+
+## What are Models?
+
+Models are the foundation of your semantic layer. They represent tables or views in your database, enriched with business meaning through:
+
+- **Entities**: Keys that define relationships
+- **Dimensions**: Attributes for grouping and filtering
+- **Measures**: Numeric values to aggregate
+- **Joins**: Relationships to other models
+
+## Basic Model Structure
+
+```python
+from sidemantic import Model, Entity, Dimension, Measure
+
+orders = Model(
+    name="orders",              # Unique identifier
+    table="raw_orders",         # Source table/view
+    primary_key="id",           # Primary key column
+    entities=[...],             # Key definitions
+    dimensions=[...],           # Grouping attributes
+    measures=[...],             # Aggregatable values
+    joins=[]                    # Relationships (optional)
+)
+```
+
+## Entities
+
+Entities define the keys that enable joins between models.
+
+### Entity Types
+
+**Primary Entity**
+```python
+Entity(
+    name="order_id",
+    type="primary",
+    expr="id"  # Column expression
+)
+```
+
+**Foreign Entity**
+```python
+Entity(
+    name="customer_id",
+    type="foreign",
+    expr="customer_id"
+)
+```
+
+### Why Entities?
+
+Entities serve two purposes:
+
+1. **Join Resolution**: Sidemantic uses entities to find join paths between models
+2. **Semantic Clarity**: They document the relationships in your data
+
+Example:
+
+```python
+# Orders model has both
+orders = Model(
+    name="orders",
+    entities=[
+        Entity(name="order_id", type="primary", expr="id"),
+        Entity(name="customer_id", type="foreign", expr="customer_id")
+    ]
+)
+
+# Customers model has one
+customers = Model(
+    name="customers",
+    entities=[
+        Entity(name="customer_id", type="primary", expr="id")
+    ]
+)
+
+# Sidemantic can join them via customer_id entity
+```
+
+## Dimensions
+
+Dimensions are attributes used for:
+
+- Grouping (GROUP BY)
+- Filtering (WHERE)
+- Segmentation
+
+### Dimension Types
+
+**Categorical**
+```python
+Dimension(
+    name="status",
+    type="categorical",
+    sql_expr="status"
+)
+```
+
+**Time**
+```python
+Dimension(
+    name="order_date",
+    type="time",
+    sql_expr="created_at",
+    granularity="day"  # Optional default
+)
+```
+
+**Boolean**
+```python
+Dimension(
+    name="is_premium",
+    type="boolean",
+    sql_expr="tier = 'premium'"
+)
+```
+
+**Numeric**
+```python
+Dimension(
+    name="age_group",
+    type="numeric",
+    sql_expr="FLOOR(age / 10) * 10"
+)
+```
+
+### Derived Dimensions
+
+Dimensions can contain SQL expressions:
+
+```python
+# Bucket customers by order value
+Dimension(
+    name="customer_segment",
+    type="categorical",
+    sql_expr="""
+        CASE
+            WHEN total_orders > 100 THEN 'high'
+            WHEN total_orders > 10 THEN 'medium'
+            ELSE 'low'
+        END
+    """
+)
+
+# Extract date parts
+Dimension(
+    name="day_of_week",
+    type="categorical",
+    sql_expr="DAYNAME(order_date)"
+)
+```
+
+### Time Granularities
+
+Time dimensions support automatic granularity conversion:
+
+```python
+# Define base dimension
+Dimension(
+    name="order_date",
+    type="time",
+    sql_expr="created_at"
+)
+
+# Query with different granularities
+sql = generator.generate(
+    dimensions=[
+        "orders.order_date__day",
+        "orders.order_date__week",
+        "orders.order_date__month",
+        "orders.order_date__quarter",
+        "orders.order_date__year"
+    ]
+)
+```
+
+Generated SQL uses `DATE_TRUNC`:
+
+```sql
+DATE_TRUNC('month', orders_cte.order_date) AS order_date__month
+```
+
+## Measures
+
+Measures are numeric values that get aggregated.
+
+### Aggregation Types
+
+**Sum**
+```python
+Measure(
+    name="revenue",
+    agg="sum",
+    expr="amount"
+)
+```
+
+**Count**
+```python
+Measure(
+    name="order_count",
+    agg="count",
+    expr="*"
+)
+```
+
+**Count Distinct**
+```python
+Measure(
+    name="customer_count",
+    agg="count_distinct",
+    expr="customer_id"
+)
+```
+
+**Average**
+```python
+Measure(
+    name="avg_order_value",
+    agg="avg",
+    expr="amount"
+)
+```
+
+**Min/Max**
+```python
+Measure(
+    name="max_order_value",
+    agg="max",
+    expr="amount"
+)
+```
+
+### Filtered Measures
+
+Apply filters to specific measures:
+
+```python
+Measure(
+    name="completed_revenue",
+    agg="sum",
+    expr="amount",
+    filters=["status = 'completed'"]
+)
+
+Measure(
+    name="new_customer_count",
+    agg="count_distinct",
+    expr="customer_id",
+    filters=["is_first_order = true"]
+)
+```
+
+### Derived Measures
+
+Measures can use complex expressions:
+
+```python
+# Revenue after discount
+Measure(
+    name="net_revenue",
+    agg="sum",
+    expr="amount * (1 - discount_pct)"
+)
+
+# Weighted average
+Measure(
+    name="weighted_rating",
+    agg="sum",
+    expr="rating * order_count"
+)
+```
+
+## Primary Keys
+
+The `primary_key` field is crucial for:
+
+- **Symmetric aggregates**: Preventing double-counting in fan-out joins
+- **Uniqueness**: Identifying distinct rows
+- **Performance**: Optimizing queries
+
+```python
+Model(
+    name="orders",
+    primary_key="id",  # Column name in source table
+    # ...
+)
+```
+
+## Model Examples
+
+### E-commerce Orders
+
+```python
+orders = Model(
+    name="orders",
+    table="prod.orders",
+    primary_key="id",
+    entities=[
+        Entity(name="order_id", type="primary", expr="id"),
+        Entity(name="customer_id", type="foreign", expr="customer_id")
+    ],
+    dimensions=[
+        Dimension(name="order_date", type="time", sql_expr="created_at"),
+        Dimension(name="status", type="categorical", sql_expr="status"),
+        Dimension(name="channel", type="categorical", sql_expr="sales_channel"),
+        Dimension(name="is_first_order", type="boolean",
+                 sql_expr="order_number = 1")
+    ],
+    measures=[
+        Measure(name="revenue", agg="sum", expr="total_amount"),
+        Measure(name="order_count", agg="count", expr="*"),
+        Measure(name="avg_order_value", agg="avg", expr="total_amount"),
+        Measure(name="completed_revenue", agg="sum", expr="total_amount",
+               filters=["status = 'completed'"])
+    ]
+)
+```
+
+### Customers
+
+```python
+customers = Model(
+    name="customers",
+    table="prod.customers",
+    primary_key="id",
+    entities=[
+        Entity(name="customer_id", type="primary", expr="id")
+    ],
+    dimensions=[
+        Dimension(name="signup_date", type="time", sql_expr="created_at"),
+        Dimension(name="region", type="categorical", sql_expr="region"),
+        Dimension(name="tier", type="categorical", sql_expr="subscription_tier"),
+        Dimension(name="is_active", type="boolean",
+                 sql_expr="last_order_date > CURRENT_DATE - INTERVAL 90 DAY")
+    ],
+    measures=[
+        Measure(name="customer_count", agg="count", expr="*"),
+        Measure(name="lifetime_value", agg="sum", expr="total_spent")
+    ]
+)
+```
+
+### Products
+
+```python
+products = Model(
+    name="products",
+    table="prod.products",
+    primary_key="id",
+    entities=[
+        Entity(name="product_id", type="primary", expr="id")
+    ],
+    dimensions=[
+        Dimension(name="category", type="categorical", sql_expr="category"),
+        Dimension(name="brand", type="categorical", sql_expr="brand"),
+        Dimension(name="price_tier", type="categorical",
+                 sql_expr="""
+                     CASE
+                         WHEN price < 20 THEN 'budget'
+                         WHEN price < 100 THEN 'mid'
+                         ELSE 'premium'
+                     END
+                 """)
+    ],
+    measures=[
+        Measure(name="product_count", agg="count", expr="*"),
+        Measure(name="avg_price", agg="avg", expr="price")
+    ]
+)
+```
+
+## Best Practices
+
+### Naming Conventions
+
+- Use descriptive, business-friendly names
+- Use snake_case for consistency
+- Avoid abbreviations unless common
+
+```python
+# Good
+Dimension(name="order_date", ...)
+Measure(name="revenue", ...)
+
+# Avoid
+Dimension(name="ord_dt", ...)
+Measure(name="rev", ...)
+```
+
+### Organize by Domain
+
+Group related models together:
+
+```python
+# Sales domain
+orders = Model(name="orders", ...)
+order_items = Model(name="order_items", ...)
+
+# Customer domain
+customers = Model(name="customers", ...)
+customer_segments = Model(name="customer_segments", ...)
+
+# Product domain
+products = Model(name="products", ...)
+product_categories = Model(name="product_categories", ...)
+```
+
+### Document Your Models
+
+Use descriptions to clarify purpose:
+
+```python
+orders = Model(
+    name="orders",
+    table="prod.orders",
+    description="Customer orders including completed, pending, and cancelled"
+)
+
+Dimension(
+    name="status",
+    type="categorical",
+    sql_expr="status",
+    description="Order status: pending, completed, cancelled, or returned"
+)
+```
+
+### Keep SQL Simple
+
+If a dimension/measure needs complex SQL, consider:
+
+1. Creating a database view
+2. Using a derived table
+3. Breaking into multiple simpler dimensions
+
+```python
+# Complex - consider a view instead
+Dimension(
+    name="customer_segment",
+    sql_expr="""
+        CASE
+            WHEN total_revenue > 10000 AND order_count > 50 THEN 'vip'
+            WHEN total_revenue > 5000 OR order_count > 20 THEN 'high_value'
+            WHEN order_count > 5 THEN 'regular'
+            ELSE 'new'
+        END
+    """
+)
+```
+
+## Next Steps
+
+- Learn about [Joins](joins.qmd) between models
+- Understand [Metrics](metrics.qmd) built on models
+- Explore [Dimensions & Measures](dimensions-measures.qmd) in detail

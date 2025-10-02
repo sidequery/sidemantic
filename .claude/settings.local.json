@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:cube.dev)",
+      "WebFetch(domain:hex.tech)",
+      "WebFetch(domain:docs.getdbt.com)",
+      "WebFetch(domain:learn.hex.tech)",
+      "WebFetch(domain:gist.github.com)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

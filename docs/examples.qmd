@@ -1,0 +1,449 @@
+---
+title: "Examples"
+---
+
+## Running Examples
+
+All examples are in the `examples/` directory and can be run with:
+
+```bash
+uv run python examples/<example_name>.py
+```
+
+## Basic Example
+
+Introduction to core concepts.
+
+**File**: `examples/basic_example.py`
+
+**Demonstrates**:
+
+- Defining models with entities, dimensions, measures
+- Creating simple and ratio metrics
+- Querying single models
+- Cross-model joins
+- SQL dialect transpilation
+
+**Run it**:
+```bash
+uv run python examples/basic_example.py
+```
+
+## Parameters Example
+
+Type-safe user input for dynamic queries.
+
+**File**: `examples/parameters_example.py`
+
+**Demonstrates**:
+
+- String, number, and date parameters
+- Default values
+- `{{ parameter_name }}` syntax
+- Using parameters in filters
+
+**Key Code**:
+
+```python
+# Define parameter
+status_param = Parameter(
+    name="order_status",
+    type="string",
+    default_value="completed",
+    allowed_values=["pending", "completed", "cancelled"]
+)
+
+graph.add_parameter(status_param)
+
+# Use in query
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    filters=["orders.status = {{ order_status }}"],
+    parameters={"order_status": "pending"}
+)
+```
+
+**Output**:
+
+```sql
+WHERE orders_cte.status = 'pending'
+```
+
+**Run it**:
+```bash
+uv run python examples/parameters_example.py
+```
+
+## Symmetric Aggregates Example
+
+Preventing double-counting in fan-out joins with real data.
+
+**File**: `examples/symmetric_aggregates_example.py`
+
+**Demonstrates**:
+
+- What fan-out joins are
+- How they cause double-counting
+- Automatic symmetric aggregate application
+- Comparison: naive vs. symmetric aggregates
+
+**Key Scenario**:
+
+```
+Orders:
+  Order 1: $100
+  Order 2: $200
+
+Order Items:
+  Order 1: 2 items (quantities: 5, 3)
+  Order 2: 1 item (quantity: 10)
+
+Shipments:
+  Order 1: 2 shipments
+  Order 2: 1 shipment
+
+Join Result:
+  Order 1: 4 rows (2 items × 2 shipments)
+  Order 2: 1 row (1 item × 1 shipment)
+```
+
+**Without Symmetric Aggregates**:
+```
+Revenue: $100 × 4 + $200 × 1 = $600 ❌ WRONG
+```
+
+**With Symmetric Aggregates**:
+```
+Revenue: $100 + $200 = $300 ✅ CORRECT
+```
+
+**Run it**:
+```bash
+uv run python examples/symmetric_aggregates_example.py
+```
+
+## Comprehensive Example
+
+Complete feature showcase with DuckDB.
+
+**File**: `examples/comprehensive_example.py`
+
+**Demonstrates**:
+
+- Parameters (dynamic filters)
+- Symmetric aggregates (fan-out handling)
+- Advanced metrics (MTD, YTD)
+- Table calculations (percent of total, running total)
+- Working with real data
+
+**Run it**:
+```bash
+uv run python examples/comprehensive_example.py
+```
+
+**Sample Output**:
+
+```
+================================================================================
+ Example 1: Basic Query with Parameters
+================================================================================
+
+SQL with parameters (status='completed'):
+WITH orders_cte AS (
+  SELECT
+    id AS order_id,
+    order_date AS order_date,
+    status AS status,
+    amount AS revenue_raw
+  FROM orders
+)
+SELECT
+  orders_cte.order_date AS order_date,
+  SUM(orders_cte.revenue_raw) AS revenue
+FROM orders_cte
+WHERE
+  orders_cte.status = 'completed'
+GROUP BY 1
+
+Results:
+  (datetime.date(2024, 1, 1), 100)
+  (datetime.date(2024, 1, 15), 200)
+  (datetime.date(2024, 2, 1), 300)
+```
+
+## Export Example
+
+Exporting semantic layer to YAML.
+
+**File**: `examples/export_example.py`
+
+**Run it**:
+```bash
+uv run python examples/export_example.py
+```
+
+## Code Snippets
+
+### Complete E-commerce Setup
+
+```python
+from sidemantic import (
+    Model, Entity, Dimension, Measure, Metric, Join,
+    SemanticGraph, SQLGenerator
+)
+
+# Create graph
+graph = SemanticGraph()
+
+# Orders model
+orders = Model(
+    name="orders",
+    table="prod.orders",
+    primary_key="id",
+    entities=[
+        Entity(name="order_id", type="primary", expr="id"),
+        Entity(name="customer_id", type="foreign", expr="customer_id")
+    ],
+    dimensions=[
+        Dimension(name="order_date", type="time", sql_expr="created_at"),
+        Dimension(name="status", type="categorical", sql_expr="status")
+    ],
+    measures=[
+        Measure(name="revenue", agg="sum", expr="amount"),
+        Measure(name="order_count", agg="count", expr="*")
+    ],
+    joins=[
+        Join(name="customers", type="belongs_to", foreign_key="customer_id")
+    ]
+)
+
+# Customers model
+customers = Model(
+    name="customers",
+    table="prod.customers",
+    primary_key="id",
+    entities=[
+        Entity(name="customer_id", type="primary", expr="id")
+    ],
+    dimensions=[
+        Dimension(name="region", type="categorical", sql_expr="region"),
+        Dimension(name="tier", type="categorical", sql_expr="tier")
+    ],
+    measures=[
+        Measure(name="customer_count", agg="count", expr="*")
+    ]
+)
+
+# Add to graph
+graph.add_model(orders)
+graph.add_model(customers)
+
+# Create metrics
+total_revenue = Metric(
+    name="total_revenue",
+    type="simple",
+    measure="orders.revenue"
+)
+
+graph.add_metric(total_revenue)
+
+# Generate SQL
+generator = SQLGenerator(graph)
+
+sql = generator.generate(
+    metrics=["total_revenue", "orders.order_count"],
+    dimensions=["customers.region", "orders.status"],
+    filters=["orders.order_date >= '2024-01-01'"],
+    order_by=["customers.region"]
+)
+
+print(sql)
+```
+
+### Advanced Metrics
+
+```python
+# Month-to-date revenue
+mtd_revenue = Metric(
+    name="mtd_revenue",
+    type="cumulative",
+    measure="orders.revenue",
+    grain_to_date="month"
+)
+
+# Month-over-month growth
+mom_growth = Metric(
+    name="mom_growth",
+    type="ratio",
+    numerator="orders.revenue",
+    denominator="orders.revenue",
+    offset_window="1 month"
+)
+
+# Conversion rate
+conversion_rate = Metric(
+    name="conversion_rate",
+    type="ratio",
+    numerator="orders.completed_revenue",
+    denominator="orders.revenue"
+)
+
+graph.add_metric(mtd_revenue)
+graph.add_metric(mom_growth)
+graph.add_metric(conversion_rate)
+
+# Query
+sql = generator.generate(
+    metrics=["mtd_revenue", "mom_growth"],
+    dimensions=["orders.order_date"]
+)
+```
+
+### With DuckDB
+
+```python
+import duckdb
+
+# Connect to database
+conn = duckdb.connect("analytics.db")
+
+# Generate SQL
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["customers.region"]
+)
+
+# Execute
+results = conn.execute(sql).fetchall()
+
+# Display
+for region, revenue in results:
+    print(f"{region}: ${revenue:,.2f}")
+
+# Or as DataFrame
+df = conn.execute(sql).fetchdf()
+print(df)
+```
+
+### Building a Dashboard
+
+```python
+from sidemantic import Parameter
+
+# Define dashboard parameters
+graph.add_parameter(Parameter(
+    name="selected_region",
+    type="string",
+    default_value="US",
+    allowed_values=["US", "EU", "APAC"]
+))
+
+graph.add_parameter(Parameter(
+    name="date_from",
+    type="date",
+    default_value="2024-01-01"
+))
+
+graph.add_parameter(Parameter(
+    name="date_to",
+    type="date",
+    default_value="2024-12-31"
+))
+
+# Generate dashboard query
+def get_dashboard_data(user_filters):
+    sql = generator.generate(
+        metrics=["orders.revenue", "orders.order_count"],
+        dimensions=["orders.order_date__month"],
+        filters=[
+            "customers.region = {{ selected_region }}",
+            "orders.order_date >= {{ date_from }}",
+            "orders.order_date < {{ date_to }}"
+        ],
+        parameters=user_filters,
+        order_by=["orders.order_date__month"]
+    )
+    return conn.execute(sql).fetchdf()
+
+# Use with different filters
+q1_data = get_dashboard_data({
+    "selected_region": "US",
+    "date_from": "2024-01-01",
+    "date_to": "2024-04-01"
+})
+
+q2_data = get_dashboard_data({
+    "selected_region": "EU",
+    "date_from": "2024-04-01",
+    "date_to": "2024-07-01"
+})
+```
+
+## Interactive Examples
+
+### Jupyter Notebook
+
+Create a notebook to explore your semantic layer:
+
+```python
+# Cell 1: Setup
+from sidemantic import *
+import duckdb
+
+conn = duckdb.connect(":memory:")
+graph = SemanticGraph()
+
+# Cell 2: Load data
+conn.execute("CREATE TABLE orders AS SELECT * FROM 'data/orders.parquet'")
+
+# Cell 3: Define models
+orders = Model(...)
+graph.add_model(orders)
+
+# Cell 4: Query and visualize
+sql = generator.generate(...)
+df = conn.execute(sql).fetchdf()
+
+import plotly.express as px
+fig = px.line(df, x='order_date', y='revenue')
+fig.show()
+```
+
+### Streamlit App
+
+Build an interactive dashboard:
+
+```python
+import streamlit as st
+
+st.title("Sales Dashboard")
+
+# User inputs
+region = st.selectbox("Region", ["US", "EU", "APAC"])
+date_range = st.date_input("Date Range", [])
+
+# Generate query
+sql = generator.generate(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_date"],
+    filters=[
+        "customers.region = {{ region }}",
+        "orders.order_date BETWEEN {{ start }} AND {{ end }}"
+    ],
+    parameters={
+        "region": region,
+        "start": date_range[0],
+        "end": date_range[1]
+    }
+)
+
+# Execute and display
+df = conn.execute(sql).fetchdf()
+st.line_chart(df, x='order_date', y='revenue')
+```
+
+## Next Steps
+
+- Explore [Features](features/parameters.qmd) documentation
+- Read [API Reference](api/index.qmd)
+- Check the [GitHub repository](https://github.com/anthropics/sidemantic) for more examples

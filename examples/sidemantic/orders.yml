@@ -1,0 +1,79 @@
+models:
+  - name: orders
+    table: public.orders
+    description: "Order transactions"
+
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+
+    dimensions:
+      - name: status
+        type: categorical
+        description: "Order status"
+
+      - name: order_date
+        type: time
+        granularity: day
+        expr: created_at
+        description: "Order creation date"
+
+      - name: is_high_value
+        type: boolean
+        expr: "order_amount > 100"
+
+    measures:
+      - name: order_count
+        agg: count
+        description: "Total number of orders"
+
+      - name: revenue
+        agg: sum
+        expr: order_amount
+        description: "Total revenue"
+
+      - name: completed_revenue
+        agg: sum
+        expr: order_amount
+        filters:
+          - "status = 'completed'"
+        description: "Revenue from completed orders"
+
+  - name: customers
+    table: public.customers
+    description: "Customer dimension"
+
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_id
+
+    dimensions:
+      - name: region
+        type: categorical
+      - name: tier
+        type: categorical
+
+metrics:
+  - name: total_revenue
+    type: simple
+    measure: orders.revenue
+    description: "Total revenue from all orders"
+
+  - name: conversion_rate
+    type: ratio
+    numerator: orders.completed_revenue
+    denominator: orders.revenue
+    description: "Percentage of revenue from completed orders"
+
+  - name: revenue_per_order
+    type: derived
+    expr: "total_revenue / order_count"
+    metrics:
+      - total_revenue
+      - order_count
+    description: "Average revenue per order"

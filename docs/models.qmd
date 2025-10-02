@@ -1,0 +1,244 @@
+---
+title: "Models"
+---
+
+Models define your data sources and their structure.
+
+## Basic Model
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+```
+
+Or in Python:
+
+```python
+from sidemantic import Model
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="id"
+)
+```
+
+## Properties
+
+### Required
+
+- **name**: Unique identifier for the model
+- **table**: Physical table name (or use `sql` for derived tables)
+- **primary_key**: Primary key column (required for joins and symmetric aggregates)
+
+### Optional
+
+- **sql**: SQL query instead of table name (for derived models)
+- **description**: Human-readable description
+
+## Dimensions
+
+Dimensions are attributes for grouping and filtering:
+
+```yaml
+models:
+  - name: orders
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+
+      - name: order_date
+        type: time
+        sql: created_at
+        granularity: day
+
+      - name: is_weekend
+        type: boolean
+        sql: "DAYOFWEEK(order_date) IN (6, 7)"
+
+      - name: amount
+        type: numeric
+        sql: total_amount
+```
+
+### Dimension Types
+
+- **categorical**: Text/enum values (status, region, product)
+- **time**: Dates/timestamps with granularity (day, week, month, year)
+- **boolean**: True/false values
+- **numeric**: Numeric dimensions (price tier, quantity bucket)
+
+### Time Granularity
+
+```yaml
+- name: order_date
+  type: time
+  sql: created_at
+  granularity: day  # hour, day, week, month, quarter, year
+```
+
+Query with: `orders.order_date__month` to automatically roll up to month.
+
+## Measures
+
+Measures define aggregations:
+
+```yaml
+models:
+  - name: orders
+    measures:
+      # Simple aggregations
+      - name: revenue
+        agg: sum
+        expr: amount
+
+      - name: order_count
+        agg: count
+
+      - name: avg_order_value
+        agg: avg
+        expr: amount
+
+      # With filters
+      - name: completed_revenue
+        agg: sum
+        expr: amount
+        filters: ["status = 'completed'"]
+
+      # SQL expressions
+      - name: total_value
+        agg: sum
+        expr: "quantity * price"
+```
+
+### Aggregation Types
+
+- **sum**: Sum values
+- **count**: Count rows
+- **count_distinct**: Count unique values
+- **avg**: Average
+- **min**: Minimum value
+- **max**: Maximum value
+- **median**: Median value
+
+### Complex Measures
+
+Measures can also be complex metrics:
+
+```yaml
+measures:
+  # Ratio
+  - name: conversion_rate
+    type: ratio
+    numerator: completed_orders
+    denominator: total_orders
+
+  # Formula
+  - name: profit_margin
+    type: derived
+    expr: "(revenue - cost) / revenue"
+
+  # Cumulative
+  - name: running_total
+    type: cumulative
+    expr: revenue
+    window: "7 days"
+```
+
+See [Measures](measures.qmd) for complete details.
+
+## Derived Models
+
+Use SQL instead of a table:
+
+```yaml
+models:
+  - name: weekly_summary
+    sql: |
+      SELECT
+        DATE_TRUNC('week', order_date) as week,
+        SUM(amount) as total
+      FROM orders
+      GROUP BY 1
+    primary_key: week
+```
+
+## Complete Example
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    description: "Customer orders"
+
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+
+      - name: order_date
+        type: time
+        sql: created_at
+        granularity: day
+
+      - name: customer_tier
+        type: categorical
+        sql: |
+          CASE
+            WHEN total_amount > 1000 THEN 'premium'
+            WHEN total_amount > 100 THEN 'standard'
+            ELSE 'basic'
+          END
+
+    measures:
+      - name: revenue
+        agg: sum
+        expr: amount
+        description: "Total order revenue"
+
+      - name: order_count
+        agg: count
+        description: "Number of orders"
+
+      - name: avg_order_value
+        agg: avg
+        expr: amount
+
+      - name: completed_revenue
+        agg: sum
+        expr: amount
+        filters: ["status = 'completed'"]
+
+      - name: large_orders
+        agg: count
+        filters: ["amount > 1000"]
+```
+
+## Best Practices
+
+::: {.callout-tip}
+## Naming Conventions
+- Models: plural nouns (`orders`, `customers`)
+- Dimensions: descriptive names (`status`, `order_date`, `customer_region`)
+- Measures: what they measure (`revenue`, `order_count`, `avg_order_value`)
+:::
+
+::: {.callout-warning}
+## Primary Keys Required
+Always set `primary_key` - it's required for:
+- Joins between models
+- Symmetric aggregates (fan-out handling)
+- Proper deduplication
+:::
+
+::: {.callout-tip}
+## SQL Expressions
+Use SQL expressions in `sql` and `expr` fields:
+- `sql: "UPPER(status)"` - transform dimension
+- `expr: "quantity * price"` - calculated measure
+- Supports any SQL your database supports
+:::

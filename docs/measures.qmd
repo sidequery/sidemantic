@@ -1,0 +1,276 @@
+---
+title: "Measures"
+---
+
+Measures define how to aggregate and calculate metrics.
+
+## Simple Aggregations
+
+Basic aggregations on a single column:
+
+```yaml
+measures:
+  - name: revenue
+    agg: sum
+    expr: amount
+
+  - name: order_count
+    agg: count
+
+  - name: avg_price
+    agg: avg
+    expr: price
+
+  - name: max_amount
+    agg: max
+    expr: amount
+```
+
+Available aggregations: `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`
+
+## Filtered Measures
+
+Apply filters to specific measures:
+
+```yaml
+measures:
+  - name: completed_revenue
+    agg: sum
+    expr: amount
+    filters: ["status = 'completed'"]
+
+  - name: us_orders
+    agg: count
+    filters: ["country = 'US'", "amount > 0"]
+```
+
+Filters are ANDed together.
+
+## Ratio Measures
+
+Divide one measure by another:
+
+```yaml
+measures:
+  - name: conversion_rate
+    type: ratio
+    numerator: completed_orders
+    denominator: total_orders
+
+  - name: profit_margin
+    type: ratio
+    numerator: profit
+    denominator: revenue
+```
+
+Results in: `numerator / NULLIF(denominator, 0)`
+
+### Time-Offset Ratios
+
+Compare to a previous period:
+
+```yaml
+measures:
+  - name: mom_growth
+    type: ratio
+    numerator: revenue
+    denominator: revenue
+    offset_window: "1 month"
+```
+
+Calculates: current revenue / last month's revenue
+
+## Derived Measures
+
+Formula-based calculations:
+
+```yaml
+measures:
+  - name: profit
+    type: derived
+    expr: "revenue - cost"
+
+  - name: margin_pct
+    type: derived
+    expr: "(revenue - cost) / revenue * 100"
+
+  - name: items_per_order
+    type: derived
+    expr: "total_items / order_count"
+```
+
+Can reference other measures by name.
+
+## Cumulative Measures
+
+Running totals and period-to-date:
+
+```yaml
+measures:
+  # Rolling window
+  - name: last_7_days_revenue
+    type: cumulative
+    expr: revenue
+    window: "7 days"
+
+  # Month-to-date
+  - name: mtd_revenue
+    type: cumulative
+    expr: revenue
+    grain_to_date: month
+
+  # Year-to-date
+  - name: ytd_revenue
+    type: cumulative
+    expr: revenue
+    grain_to_date: year
+```
+
+Requires a time dimension in the query.
+
+## Time Comparison Measures
+
+Year-over-year, month-over-month changes:
+
+```yaml
+measures:
+  # Year-over-year growth
+  - name: yoy_revenue_growth
+    type: time_comparison
+    base_metric: revenue
+    comparison_type: yoy
+    calculation: percent_change
+
+  # Month-over-month
+  - name: mom_revenue
+    type: time_comparison
+    base_metric: revenue
+    comparison_type: mom
+    calculation: difference
+
+  # Custom offset
+  - name: vs_last_quarter
+    type: time_comparison
+    base_metric: revenue
+    time_offset: "3 months"
+    calculation: ratio
+```
+
+Calculation types:
+- `percent_change`: `(current - prior) / prior * 100`
+- `difference`: `current - prior`
+- `ratio`: `current / prior`
+
+## Conversion Metrics
+
+Track funnel conversions:
+
+```yaml
+measures:
+  - name: signup_to_purchase
+    type: conversion
+    entity: user_id
+    base_event: signup
+    conversion_event: purchase
+    conversion_window: "7 days"
+```
+
+Calculates: users who did conversion_event within window after base_event / total users who did base_event
+
+## Measure Properties
+
+### All Measures
+
+- **name**: Unique identifier
+- **description**: Human-readable description
+- **label**: Display name (defaults to name)
+
+### Simple Aggregations
+
+- **agg**: Aggregation function (sum, count, avg, etc.)
+- **expr**: SQL expression to aggregate (defaults to `*` for count)
+- **filters**: WHERE conditions for this measure
+
+### Complex Measures
+
+- **type**: Measure type (ratio, derived, cumulative, time_comparison, conversion)
+- Type-specific properties (see sections above)
+
+### Null Handling
+
+```yaml
+measures:
+  - name: revenue
+    agg: sum
+    expr: amount
+    fill_nulls_with: 0  # Return 0 instead of NULL
+```
+
+## Python API
+
+```python
+from sidemantic import Measure
+
+# Simple
+revenue = Measure(name="revenue", agg="sum", expr="amount")
+
+# Filtered
+completed = Measure(
+    name="completed_revenue",
+    agg="sum",
+    expr="amount",
+    filters=["status = 'completed'"]
+)
+
+# Ratio
+margin = Measure(
+    name="margin",
+    type="ratio",
+    numerator="profit",
+    denominator="revenue"
+)
+
+# Derived
+profit = Measure(
+    name="profit",
+    type="derived",
+    expr="revenue - cost"
+)
+
+# Cumulative
+running_total = Measure(
+    name="running_total",
+    type="cumulative",
+    expr="revenue",
+    window="7 days"
+)
+```
+
+## Best Practices
+
+::: {.callout-tip}
+## Start Simple
+Define basic aggregations first, then build complex measures on top:
+1. Base measures (revenue, count)
+2. Filtered measures (completed_revenue)
+3. Ratios (conversion_rate = completed / total)
+4. Derived (margin = profit / revenue)
+:::
+
+::: {.callout-warning}
+## SQL Expressions
+Measures support full SQL in the `expr` field:
+```yaml
+- name: total_value
+  agg: sum
+  expr: "quantity * price * (1 - discount_pct)"
+```
+:::
+
+::: {.callout-tip}
+## Reusability
+Define measures once, use everywhere:
+- In SQL queries: `SELECT revenue FROM orders`
+- In Python: `layer.query(metrics=["orders.revenue"])`
+- In other measures: `expr: "revenue - cost"`
+:::

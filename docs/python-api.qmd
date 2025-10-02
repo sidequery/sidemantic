@@ -1,0 +1,453 @@
+---
+title: "Python API"
+---
+
+Complete Python API reference.
+
+## SemanticLayer
+
+Main entry point:
+
+```python
+from sidemantic import SemanticLayer
+
+# Create
+layer = SemanticLayer()
+
+# From YAML
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+
+# With custom connection
+layer = SemanticLayer(connection="duckdb:///data.db")
+```
+
+### Methods
+
+#### query()
+
+Execute a query and return results:
+
+```python
+result = layer.query(
+    metrics=["orders.revenue", "orders.order_count"],
+    dimensions=["orders.status"],
+    filters=["orders.status = 'completed'"],
+    order_by=["orders.revenue DESC"],
+    limit=10,
+    offset=5
+)
+
+df = result.fetchdf()  # Get DataFrame
+```
+
+#### sql()
+
+Query with SQL:
+
+```python
+result = layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    WHERE status = 'completed'
+    LIMIT 10
+""")
+
+df = result.fetchdf()
+```
+
+With parameters:
+
+```python
+result = layer.sql(
+    "SELECT revenue FROM orders WHERE order_date >= {{ start_date }}",
+    parameters={"start_date": "2024-01-01"}
+)
+```
+
+#### compile()
+
+Generate SQL without executing:
+
+```python
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    filters=["orders.status = 'completed'"]
+)
+
+print(sql)
+```
+
+#### add_model()
+
+Add a model:
+
+```python
+from sidemantic import Model, Dimension, Measure
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    dimensions=[...],
+    measures=[...]
+)
+
+layer.add_model(orders)
+```
+
+#### add_metric()
+
+Add a top-level measure:
+
+```python
+from sidemantic import Measure
+
+total_revenue = Measure(
+    name="total_revenue",
+    type="simple",
+    expr="orders.revenue"
+)
+
+layer.add_metric(total_revenue)
+```
+
+#### from_yaml() / to_yaml()
+
+Load/save YAML:
+
+```python
+# Load
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+
+# Save
+layer.to_yaml("output.yml")
+```
+
+## Model
+
+Define a data model:
+
+```python
+from sidemantic import Model, Dimension, Measure, Join
+
+model = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    description="Customer orders",
+
+    dimensions=[
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="created_at", granularity="day")
+    ],
+
+    measures=[
+        Measure(name="revenue", agg="sum", expr="amount"),
+        Measure(name="order_count", agg="count")
+    ],
+
+    joins=[
+        Join(name="customers", type="belongs_to", foreign_key="customer_id")
+    ]
+)
+```
+
+### Properties
+
+- **name**: Unique identifier
+- **table**: Physical table name (or use `sql`)
+- **sql**: SQL query for derived models
+- **primary_key**: Primary key column
+- **dimensions**: List of Dimension objects
+- **measures**: List of Measure objects
+- **joins**: List of Join objects
+- **description**: Human-readable description
+
+## Dimension
+
+Define a dimension:
+
+```python
+from sidemantic import Dimension
+
+# Categorical
+status = Dimension(
+    name="status",
+    type="categorical",
+    sql="status"
+)
+
+# Time
+order_date = Dimension(
+    name="order_date",
+    type="time",
+    sql="created_at",
+    granularity="day"
+)
+
+# Boolean
+is_active = Dimension(
+    name="is_active",
+    type="boolean",
+    sql="active"
+)
+
+# Numeric
+tier = Dimension(
+    name="tier",
+    type="numeric",
+    sql="customer_tier"
+)
+```
+
+### Properties
+
+- **name**: Unique identifier
+- **type**: `categorical`, `time`, `boolean`, or `numeric`
+- **sql**: SQL expression (defaults to name)
+- **granularity**: For time dimensions: `hour`, `day`, `week`, `month`, `quarter`, `year`
+- **description**: Human-readable description
+
+## Measure
+
+Define a measure:
+
+```python
+from sidemantic import Measure
+
+# Simple aggregation
+revenue = Measure(
+    name="revenue",
+    agg="sum",
+    expr="amount"
+)
+
+# With filter
+completed_revenue = Measure(
+    name="completed_revenue",
+    agg="sum",
+    expr="amount",
+    filters=["status = 'completed'"]
+)
+
+# Ratio
+conversion_rate = Measure(
+    name="conversion_rate",
+    type="ratio",
+    numerator="completed_orders",
+    denominator="total_orders"
+)
+
+# Derived
+profit = Measure(
+    name="profit",
+    type="derived",
+    expr="revenue - cost"
+)
+
+# Cumulative
+running_total = Measure(
+    name="running_total",
+    type="cumulative",
+    expr="revenue",
+    window="7 days"
+)
+
+# Time comparison
+yoy_growth = Measure(
+    name="yoy_growth",
+    type="time_comparison",
+    base_metric="revenue",
+    comparison_type="yoy",
+    calculation="percent_change"
+)
+```
+
+### Properties
+
+#### Simple Aggregations
+
+- **name**: Unique identifier
+- **agg**: `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`
+- **expr**: SQL expression (defaults to `*` for count)
+- **filters**: List of WHERE conditions
+- **description**: Human-readable description
+
+#### Ratio Measures
+
+- **type**: `"ratio"`
+- **numerator**: Numerator measure name
+- **denominator**: Denominator measure name
+- **offset_window**: Time offset for denominator (e.g., `"1 month"`)
+
+#### Derived Measures
+
+- **type**: `"derived"`
+- **expr**: Formula expression
+
+#### Cumulative Measures
+
+- **type**: `"cumulative"`
+- **expr**: Base measure name
+- **window**: Rolling window (e.g., `"7 days"`)
+- **grain_to_date**: Period-to-date (`day`, `week`, `month`, `quarter`, `year`)
+
+#### Time Comparison Measures
+
+- **type**: `"time_comparison"`
+- **base_metric**: Base measure name
+- **comparison_type**: `yoy`, `mom`, `wow`, `dod`, `qoq`, `prior_period`
+- **time_offset**: Custom offset (e.g., `"3 months"`)
+- **calculation**: `percent_change`, `difference`, or `ratio`
+
+## Join
+
+Define a join relationship:
+
+```python
+from sidemantic import Join
+
+# belongs_to (foreign key in THIS table)
+customers_join = Join(
+    name="customers",
+    type="belongs_to",
+    foreign_key="customer_id"
+)
+
+# has_many (foreign key in OTHER table)
+orders_join = Join(
+    name="orders",
+    type="has_many",
+    foreign_key="customer_id"
+)
+
+# has_one (foreign key in OTHER table, unique)
+invoice_join = Join(
+    name="invoice",
+    type="has_one",
+    foreign_key="order_id"
+)
+```
+
+### Properties
+
+- **name**: Name of related model
+- **type**: `belongs_to`, `has_many`, or `has_one`
+- **foreign_key**: Foreign key column name
+
+## Parameter
+
+Define query parameters:
+
+```python
+from sidemantic import Parameter
+
+start_date = Parameter(
+    name="start_date",
+    type="date",
+    default_value="2024-01-01"
+)
+
+min_amount = Parameter(
+    name="min_amount",
+    type="number",
+    default_value=100
+)
+
+region = Parameter(
+    name="region",
+    type="string",
+    default_value="US",
+    allowed_values=["US", "EU", "APAC"]
+)
+```
+
+### Properties
+
+- **name**: Parameter name
+- **type**: `string`, `number`, `date`, `unquoted`, `yesno`
+- **default_value**: Default value
+- **allowed_values**: List of valid values
+- **description**: Human-readable description
+
+## Complete Example
+
+```python
+from sidemantic import (
+    SemanticLayer, Model, Dimension, Measure, Join, Parameter
+)
+
+# Create semantic layer
+layer = SemanticLayer()
+
+# Define orders model
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+
+    dimensions=[
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="created_at", granularity="day")
+    ],
+
+    measures=[
+        Measure(name="revenue", agg="sum", expr="amount"),
+        Measure(name="order_count", agg="count"),
+        Measure(
+            name="conversion_rate",
+            type="ratio",
+            numerator="completed_orders",
+            denominator="total_orders"
+        )
+    ],
+
+    joins=[
+        Join(name="customers", type="belongs_to", foreign_key="customer_id")
+    ]
+)
+
+# Define customers model
+customers = Model(
+    name="customers",
+    table="customers",
+    primary_key="id",
+
+    dimensions=[
+        Dimension(name="region", type="categorical", sql="region")
+    ],
+
+    measures=[
+        Measure(name="customer_count", agg="count")
+    ],
+
+    joins=[
+        Join(name="orders", type="has_many", foreign_key="customer_id")
+    ]
+)
+
+# Add models
+layer.add_model(orders)
+layer.add_model(customers)
+
+# Query with SQL
+result = layer.sql("""
+    SELECT orders.revenue, customers.region
+    FROM orders
+    WHERE orders.status = 'completed'
+""")
+
+df = result.fetchdf()
+print(df)
+
+# Or programmatically
+result = layer.query(
+    metrics=["orders.revenue", "customers.customer_count"],
+    dimensions=["customers.region"],
+    filters=["orders.status = 'completed'"]
+)
+
+df = result.fetchdf()
+print(df)
+```

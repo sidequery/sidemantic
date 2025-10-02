@@ -9,10 +9,22 @@ website:
         href: index.qmd
       - text: "Getting Started"
         href: getting-started.qmd
+      - text: "Core Concepts"
+        menu:
+          - text: "Models"
+            href: models.qmd
+          - text: "Measures"
+            href: measures.qmd
+          - text: "Joins"
+            href: joins.qmd
+          - text: "SQL Queries"
+            href: sql-queries.qmd
       - text: "Examples"
         href: examples.qmd
       - text: "Reference"
         menu:
+          - text: "Python API"
+            href: python-api.qmd
           - text: "YAML Format"
             href: YAML_FORMAT.md
           - text: "Gotchas"

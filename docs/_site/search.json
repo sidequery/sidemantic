@@ -1,0 +1,723 @@
+[
+  {
+    "objectID": "YAML_FORMAT.html",
+    "href": "YAML_FORMAT.html",
+    "title": "Sidemantic Native YAML Format",
+    "section": "",
+    "text": "Sidemantic’s native YAML format is designed for simplicity and clarity while supporting all core features.\n\n\n\n# semantic_layer.yml\nmodels:\n  - name: string               # Required\n    table: string              # Optional (use table or sql, not both)\n    sql: string                # Optional (use table or sql, not both)\n    description: string        # Optional\n\n    entities:                  # Required\n      - name: string\n        type: primary|foreign|unique\n        expr: string           # Optional, defaults to name\n\n    dimensions:                # Optional\n      - name: string\n        type: categorical|time|boolean|numeric\n        expr: string           # Optional, defaults to name\n        granularity: hour|day|week|month|quarter|year  # For time dimensions\n        description: string\n        label: string\n\n    measures:                  # Optional\n      - name: string\n        agg: sum|count|count_distinct|avg|min|max|median\n        expr: string           # Optional, defaults to * for count\n        filters: [string]      # Optional WHERE clauses\n        description: string\n        label: string\n\nmetrics:                       # Optional\n  - name: string\n    type: simple|ratio|derived|cumulative\n    description: string\n    label: string\n\n    # Simple metric\n    measure: string            # model.measure reference\n\n    # Ratio metric\n    numerator: string          # model.measure or metric reference\n    denominator: string        # model.measure or metric reference\n\n    # Derived metric\n    expr: string               # Formula (e.g., \"revenue / orders\")\n    metrics: [string]          # Referenced metrics\n\n    # Cumulative metric\n    window: string             # e.g., \"7 days\", \"3 months\"\n\n    # Common\n    filters: [string]          # Optional WHERE clauses\n\n\n\nmodels:\n  - name: orders\n    table: public.orders\n    description: \"Order transactions\"\n\n    entities:\n      - name: order\n        type: primary\n        expr: order_id\n      - name: customer\n        type: foreign\n        expr: customer_id\n\n    dimensions:\n      - name: status\n        type: categorical\n        description: \"Order status\"\n\n      - name: order_date\n        type: time\n        granularity: day\n        expr: created_at\n        description: \"Order creation date\"\n\n      - name: is_high_value\n        type: boolean\n        expr: \"order_amount &gt; 100\"\n\n    measures:\n      - name: order_count\n        agg: count\n        description: \"Total number of orders\"\n\n      - name: revenue\n        agg: sum\n        expr: order_amount\n        description: \"Total revenue\"\n\n      - name: completed_revenue\n        agg: sum\n        expr: order_amount\n        filters:\n          - \"status = 'completed'\"\n        description: \"Revenue from completed orders\"\n\n  - name: customers\n    table: public.customers\n    description: \"Customer dimension\"\n\n    entities:\n      - name: customer\n        type: primary\n        expr: customer_id\n\n    dimensions:\n      - name: region\n        type: categorical\n      - name: tier\n        type: categorical\n\nmetrics:\n  - name: total_revenue\n    type: simple\n    measure: orders.revenue\n    description: \"Total revenue from all orders\"\n\n  - name: conversion_rate\n    type: ratio\n    numerator: orders.completed_revenue\n    denominator: orders.revenue\n    description: \"Percentage of revenue from completed orders\"\n\n  - name: revenue_per_order\n    type: derived\n    expr: \"total_revenue / order_count\"\n    metrics:\n      - total_revenue\n      - order_count\n    description: \"Average revenue per order\"\n\n\n\n\nSimple structure: Flat hierarchy, no nested complexity\nFamiliar syntax: Similar to MetricFlow/Cube for easy adoption\nEntity-first: Entities are explicit and central to join discovery\nOptional SQL: Can use table for simple cases or sql for complex queries\nMeasure vs Metric: Clear separation between aggregations (measures) and business logic (metrics)\nFormula-based derived metrics: Simple string formulas for derived metrics\nType safety: Explicit types for dimensions and metrics\n\n\n\n\nfrom sidemantic.adapters import SidemanticAdapter\n\nadapter = SidemanticAdapter()\nsl = adapter.parse(\"path/to/semantic_layer.yml\")\n\n# Or load directly\nsl = SemanticLayer.from_yaml(\"path/to/semantic_layer.yml\")\n\n\n\nfrom sidemantic.adapters import SidemanticAdapter\n\nadapter = SidemanticAdapter()\nadapter.export(sl, \"output/semantic_layer.yml\")\n\n# Or export directly\nsl.to_yaml(\"output/semantic_layer.yml\")"
+  },
+  {
+    "objectID": "YAML_FORMAT.html#overview",
+    "href": "YAML_FORMAT.html#overview",
+    "title": "Sidemantic Native YAML Format",
+    "section": "",
+    "text": "Sidemantic’s native YAML format is designed for simplicity and clarity while supporting all core features."
+  },
+  {
+    "objectID": "YAML_FORMAT.html#file-structure",
+    "href": "YAML_FORMAT.html#file-structure",
+    "title": "Sidemantic Native YAML Format",
+    "section": "",
+    "text": "# semantic_layer.yml\nmodels:\n  - name: string               # Required\n    table: string              # Optional (use table or sql, not both)\n    sql: string                # Optional (use table or sql, not both)\n    description: string        # Optional\n\n    entities:                  # Required\n      - name: string\n        type: primary|foreign|unique\n        expr: string           # Optional, defaults to name\n\n    dimensions:                # Optional\n      - name: string\n        type: categorical|time|boolean|numeric\n        expr: string           # Optional, defaults to name\n        granularity: hour|day|week|month|quarter|year  # For time dimensions\n        description: string\n        label: string\n\n    measures:                  # Optional\n      - name: string\n        agg: sum|count|count_distinct|avg|min|max|median\n        expr: string           # Optional, defaults to * for count\n        filters: [string]      # Optional WHERE clauses\n        description: string\n        label: string\n\nmetrics:                       # Optional\n  - name: string\n    type: simple|ratio|derived|cumulative\n    description: string\n    label: string\n\n    # Simple metric\n    measure: string            # model.measure reference\n\n    # Ratio metric\n    numerator: string          # model.measure or metric reference\n    denominator: string        # model.measure or metric reference\n\n    # Derived metric\n    expr: string               # Formula (e.g., \"revenue / orders\")\n    metrics: [string]          # Referenced metrics\n\n    # Cumulative metric\n    window: string             # e.g., \"7 days\", \"3 months\"\n\n    # Common\n    filters: [string]          # Optional WHERE clauses"
+  },
+  {
+    "objectID": "YAML_FORMAT.html#example",
+    "href": "YAML_FORMAT.html#example",
+    "title": "Sidemantic Native YAML Format",
+    "section": "",
+    "text": "models:\n  - name: orders\n    table: public.orders\n    description: \"Order transactions\"\n\n    entities:\n      - name: order\n        type: primary\n        expr: order_id\n      - name: customer\n        type: foreign\n        expr: customer_id\n\n    dimensions:\n      - name: status\n        type: categorical\n        description: \"Order status\"\n\n      - name: order_date\n        type: time\n        granularity: day\n        expr: created_at\n        description: \"Order creation date\"\n\n      - name: is_high_value\n        type: boolean\n        expr: \"order_amount &gt; 100\"\n\n    measures:\n      - name: order_count\n        agg: count\n        description: \"Total number of orders\"\n\n      - name: revenue\n        agg: sum\n        expr: order_amount\n        description: \"Total revenue\"\n\n      - name: completed_revenue\n        agg: sum\n        expr: order_amount\n        filters:\n          - \"status = 'completed'\"\n        description: \"Revenue from completed orders\"\n\n  - name: customers\n    table: public.customers\n    description: \"Customer dimension\"\n\n    entities:\n      - name: customer\n        type: primary\n        expr: customer_id\n\n    dimensions:\n      - name: region\n        type: categorical\n      - name: tier\n        type: categorical\n\nmetrics:\n  - name: total_revenue\n    type: simple\n    measure: orders.revenue\n    description: \"Total revenue from all orders\"\n\n  - name: conversion_rate\n    type: ratio\n    numerator: orders.completed_revenue\n    denominator: orders.revenue\n    description: \"Percentage of revenue from completed orders\"\n\n  - name: revenue_per_order\n    type: derived\n    expr: \"total_revenue / order_count\"\n    metrics:\n      - total_revenue\n      - order_count\n    description: \"Average revenue per order\""
+  },
+  {
+    "objectID": "YAML_FORMAT.html#key-design-decisions",
+    "href": "YAML_FORMAT.html#key-design-decisions",
+    "title": "Sidemantic Native YAML Format",
+    "section": "",
+    "text": "Simple structure: Flat hierarchy, no nested complexity\nFamiliar syntax: Similar to MetricFlow/Cube for easy adoption\nEntity-first: Entities are explicit and central to join discovery\nOptional SQL: Can use table for simple cases or sql for complex queries\nMeasure vs Metric: Clear separation between aggregations (measures) and business logic (metrics)\nFormula-based derived metrics: Simple string formulas for derived metrics\nType safety: Explicit types for dimensions and metrics"
+  },
+  {
+    "objectID": "YAML_FORMAT.html#loading-example",
+    "href": "YAML_FORMAT.html#loading-example",
+    "title": "Sidemantic Native YAML Format",
+    "section": "",
+    "text": "from sidemantic.adapters import SidemanticAdapter\n\nadapter = SidemanticAdapter()\nsl = adapter.parse(\"path/to/semantic_layer.yml\")\n\n# Or load directly\nsl = SemanticLayer.from_yaml(\"path/to/semantic_layer.yml\")"
+  },
+  {
+    "objectID": "YAML_FORMAT.html#export-example",
+    "href": "YAML_FORMAT.html#export-example",
+    "title": "Sidemantic Native YAML Format",
+    "section": "",
+    "text": "from sidemantic.adapters import SidemanticAdapter\n\nadapter = SidemanticAdapter()\nadapter.export(sl, \"output/semantic_layer.yml\")\n\n# Or export directly\nsl.to_yaml(\"output/semantic_layer.yml\")"
+  },
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "Sidemantic",
+    "section": "",
+    "text": "Sidemantic is a semantic layer that lets you define metrics once and query them with SQL. It automatically handles joins, aggregations, and complex calculations.\n# Define once\nmodels:\n  - name: orders\n    table: orders\n    measures:\n      - name: revenue\n        agg: sum\n        expr: amount\n# Query anywhere with SQL\nlayer.sql(\"SELECT revenue FROM orders\")"
+  },
+  {
+    "objectID": "index.html#what-is-sidemantic",
+    "href": "index.html#what-is-sidemantic",
+    "title": "Sidemantic",
+    "section": "",
+    "text": "Sidemantic is a semantic layer that lets you define metrics once and query them with SQL. It automatically handles joins, aggregations, and complex calculations.\n# Define once\nmodels:\n  - name: orders\n    table: orders\n    measures:\n      - name: revenue\n        agg: sum\n        expr: amount\n# Query anywhere with SQL\nlayer.sql(\"SELECT revenue FROM orders\")"
+  },
+  {
+    "objectID": "index.html#key-features",
+    "href": "index.html#key-features",
+    "title": "Sidemantic",
+    "section": "Key Features",
+    "text": "Key Features\n\nYAML definitions with JSON Schema for autocomplete\nSQL query interface - write familiar SQL, get semantic results\nAutomatic joins - define relationships once, query across models\nComplex measures - ratios, formulas, cumulative metrics, time comparisons\nMulti-dialect - SQLGlot powers cross-database SQL generation"
+  },
+  {
+    "objectID": "index.html#quick-example",
+    "href": "index.html#quick-example",
+    "title": "Sidemantic",
+    "section": "Quick Example",
+    "text": "Quick Example\n# semantic_layer.yml\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id\n\n    dimensions:\n      - name: status\n        type: categorical\n        sql: status\n\n    measures:\n      - name: revenue\n        agg: sum\n        expr: amount\nfrom sidemantic import SemanticLayer\n\nlayer = SemanticLayer.from_yaml(\"semantic_layer.yml\")\n\n# Query with SQL\nresult = layer.sql(\"\"\"\n    SELECT revenue, status\n    FROM orders\n    WHERE status = 'completed'\n\"\"\")\n\ndf = result.fetchdf()"
+  },
+  {
+    "objectID": "index.html#learn-more",
+    "href": "index.html#learn-more",
+    "title": "Sidemantic",
+    "section": "Learn More",
+    "text": "Learn More\n\nGetting Started - Step-by-step tutorial\nExamples - Real-world examples\nYAML Reference - Complete YAML specification"
+  },
+  {
+    "objectID": "VIEW_DOCS.html",
+    "href": "VIEW_DOCS.html",
+    "title": "Viewing Sidemantic Documentation",
+    "section": "",
+    "text": "The easiest way to view the docs:\ncd docs\nuv run --with markdown python serve.py\nThis will: - Start a local server on http://localhost:8000 - Automatically open your browser - Convert .qmd files to HTML on the fly\nPress Ctrl+C to stop the server.\n\n\n\nFor the full Quarto experience with all features:\n\n\n# macOS\nbrew install --cask quarto\n\n# Or download from https://quarto.org/docs/get-started/\n\n\n\ncd docs\nquarto render\nquarto preview\nThis generates a complete static site in _site/.\n\n\n\n\nAll .qmd files are just markdown with YAML frontmatter. You can read them directly:\n# View in terminal\ncat docs/index.qmd\ncat docs/getting-started.qmd\ncat docs/features/parameters.qmd\n\n# Or open in your editor\ncode docs/\n\n\n\ndocs/\n├── index.qmd                    # Homepage\n├── getting-started.qmd          # Tutorial\n├── concepts/\n│   └── models.qmd              # Models guide\n├── features/\n│   ├── parameters.qmd          # Parameters\n│   └── symmetric-aggregates.qmd # Symmetric aggregates\n└── examples.qmd                # Code examples\n\n\n\n✅ 8 documentation files covering: - Getting started guide - Core concepts (Models) - Features (Parameters, Symmetric Aggregates) - Examples with runnable code - API patterns and best practices\n✅ 112 passing tests backing all documented features\n✅ 5 runnable examples in examples/ directory\n\n\n\nWhen viewing in the browser: - Home: Overview and quick start - Getting Started: Step-by-step tutorial - Models: Understanding the core abstraction - Parameters: Dynamic user input - Symmetric Aggregates: Preventing double-counting - Examples: Complete code samples\n\n\n\n\n\n# Kill existing server\npkill -f \"serve.py\"\n\n# Or use a different port\n# Edit serve.py and change PORT = 8000 to PORT = 8001\n\n\n\nuv pip install markdown\n\n\n\nManually navigate to: http://localhost:8000/index.qmd"
+  },
+  {
+    "objectID": "VIEW_DOCS.html#quick-start---python-server-no-installation",
+    "href": "VIEW_DOCS.html#quick-start---python-server-no-installation",
+    "title": "Viewing Sidemantic Documentation",
+    "section": "",
+    "text": "The easiest way to view the docs:\ncd docs\nuv run --with markdown python serve.py\nThis will: - Start a local server on http://localhost:8000 - Automatically open your browser - Convert .qmd files to HTML on the fly\nPress Ctrl+C to stop the server."
+  },
+  {
+    "objectID": "VIEW_DOCS.html#option-2-install-quarto-full-featured",
+    "href": "VIEW_DOCS.html#option-2-install-quarto-full-featured",
+    "title": "Viewing Sidemantic Documentation",
+    "section": "",
+    "text": "For the full Quarto experience with all features:\n\n\n# macOS\nbrew install --cask quarto\n\n# Or download from https://quarto.org/docs/get-started/\n\n\n\ncd docs\nquarto render\nquarto preview\nThis generates a complete static site in _site/."
+  },
+  {
+    "objectID": "VIEW_DOCS.html#option-3-read-as-markdown",
+    "href": "VIEW_DOCS.html#option-3-read-as-markdown",
+    "title": "Viewing Sidemantic Documentation",
+    "section": "",
+    "text": "All .qmd files are just markdown with YAML frontmatter. You can read them directly:\n# View in terminal\ncat docs/index.qmd\ncat docs/getting-started.qmd\ncat docs/features/parameters.qmd\n\n# Or open in your editor\ncode docs/"
+  },
+  {
+    "objectID": "VIEW_DOCS.html#documentation-structure",
+    "href": "VIEW_DOCS.html#documentation-structure",
+    "title": "Viewing Sidemantic Documentation",
+    "section": "",
+    "text": "docs/\n├── index.qmd                    # Homepage\n├── getting-started.qmd          # Tutorial\n├── concepts/\n│   └── models.qmd              # Models guide\n├── features/\n│   ├── parameters.qmd          # Parameters\n│   └── symmetric-aggregates.qmd # Symmetric aggregates\n└── examples.qmd                # Code examples"
+  },
+  {
+    "objectID": "VIEW_DOCS.html#whats-included",
+    "href": "VIEW_DOCS.html#whats-included",
+    "title": "Viewing Sidemantic Documentation",
+    "section": "",
+    "text": "✅ 8 documentation files covering: - Getting started guide - Core concepts (Models) - Features (Parameters, Symmetric Aggregates) - Examples with runnable code - API patterns and best practices\n✅ 112 passing tests backing all documented features\n✅ 5 runnable examples in examples/ directory"
+  },
+  {
+    "objectID": "VIEW_DOCS.html#navigation",
+    "href": "VIEW_DOCS.html#navigation",
+    "title": "Viewing Sidemantic Documentation",
+    "section": "",
+    "text": "When viewing in the browser: - Home: Overview and quick start - Getting Started: Step-by-step tutorial - Models: Understanding the core abstraction - Parameters: Dynamic user input - Symmetric Aggregates: Preventing double-counting - Examples: Complete code samples"
+  },
+  {
+    "objectID": "VIEW_DOCS.html#troubleshooting",
+    "href": "VIEW_DOCS.html#troubleshooting",
+    "title": "Viewing Sidemantic Documentation",
+    "section": "",
+    "text": "# Kill existing server\npkill -f \"serve.py\"\n\n# Or use a different port\n# Edit serve.py and change PORT = 8000 to PORT = 8001\n\n\n\nuv pip install markdown\n\n\n\nManually navigate to: http://localhost:8000/index.qmd"
+  },
+  {
+    "objectID": "GOTCHAS.html",
+    "href": "GOTCHAS.html",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "This document covers common pitfalls and their solutions when working with Sidemantic.\n\n\n\n\n# WRONG - creates double quotes\nfilters = [f\"orders.order_date &gt;= '{{{{ start_date }}}}'\"]\n# Result: orders.order_date &gt;= ''2024-01-01'' (BREAKS!)\n\n# CORRECT\nfilters = [\"orders.order_date &gt;= {{ start_date }}\"]\n# Result: orders.order_date &gt;= '2024-01-01' ✓\nWhy: Parameters are automatically formatted with quotes based on their type. Adding extra quotes creates ''value'' which SQLGlot can’t parse.\nParameter formatting: - string: Adds quotes → 'value' - date: Adds quotes → '2024-01-01' - number: No quotes → 100 - unquoted: No quotes → table_name\n\n\n\n# WRONG - customers table not in query\nsql = generator.generate(\n    metrics=[\"orders.revenue\"],  # Only orders\n    dimensions=[],               # Only orders\n    filters=[\"customers.region = 'US'\"]  # References customers!\n)\n# Error: Table \"customers\" not found\nWhy: Sidemantic only joins tables when they’re needed (referenced in metrics or dimensions). If you filter on a table that’s not joined, the query fails.\nSolutions:\n\nAdd a dimension from the filtered table:\n\nsql = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"customers.region\"],  # Forces customers join\n    filters=[\"customers.region = 'US'\"]\n)\n\nConditionally build filters:\n\ndef build_filters(include_customers=False):\n    filters = [\"orders.order_date &gt;= '2024-01-01'\"]\n    if include_customers:\n        filters.append(\"customers.region = 'US'\")\n    return filters\n\n# Query without customers\nsql1 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    filters=build_filters(include_customers=False)\n)\n\n# Query with customers\nsql2 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"customers.region\"],\n    filters=build_filters(include_customers=True)\n)\n\n\n\n\n\n\nFilters are parsed and transformed:\n# Input filter\n\"orders.order_date &gt;= '2024-01-01'\"\n\n# After parameter interpolation\n\"orders.order_date &gt;= '2024-01-01'\"\n\n# After field replacement (adds CTE prefix, handles measures)\n\"orders_cte.order_date &gt;= '2024-01-01'\"\nPotential issues: - Complex SQL expressions might not parse correctly - Subqueries in filters are not supported - Regex replacement can match inside strings (we fixed this but it’s fragile)\nWorkaround for complex filters: Use metrics with filters instead:\n# Instead of complex filter\nfilters = [\"CASE WHEN orders.status = 'X' THEN ... END\"]\n\n# Create a filtered measure\nMeasure(\n    name=\"filtered_revenue\",\n    agg=\"sum\",\n    expr=\"amount\",\n    filters=[\"status = 'completed'\"]\n)\n\n\n\n\n\n\n# Single one-to-many join - NO symmetric aggregates\nsql = generator.generate(\n    metrics=[\"orders.revenue\", \"order_items.quantity\"]\n)\n# Uses: SUM(orders_cte.revenue_raw) - regular sum\n\n# Multiple one-to-many joins - YES symmetric aggregates\nsql = generator.generate(\n    metrics=[\"orders.revenue\", \"order_items.quantity\", \"shipments.count\"]\n)\n# Uses: SUM(DISTINCT HASH(...) + revenue) - symmetric aggregates\nWhy: Symmetric aggregates only apply when you have ≥2 one-to-many joins creating fan-out. With a single join, regular aggregation is correct and faster.\nTo verify:\nsql = generator.generate(...)\nprint(sql)\n# Look for: HASH(primary_key) in the SQL\n\n\n\n\n\n\n# WRONG\norders = Model(\n    name=\"orders\",\n    joins=[\n        # has_many: foreign_key is on the OTHER table\n        Join(name=\"order_items\", type=\"has_many\", foreign_key=\"id\")  # WRONG!\n    ]\n)\n\n# CORRECT\norders = Model(\n    name=\"orders\",\n    joins=[\n        # has_many: foreign_key is the column in order_items table\n        Join(name=\"order_items\", type=\"has_many\", foreign_key=\"order_id\")\n    ]\n)\n\norder_items = Model(\n    name=\"order_items\",\n    joins=[\n        # belongs_to: foreign_key is the column in THIS table\n        Join(name=\"orders\", type=\"belongs_to\", foreign_key=\"order_id\")\n    ]\n)\nRule of thumb: - has_many: foreign_key is in the other (child) table - belongs_to: foreign_key is in this table - has_one: foreign_key is in the other table (like has_many but unique)\n\n\n\n\n\n\n# WRONG - no primary key\norders = Model(\n    name=\"orders\",\n    # primary_key missing!\n)\n\n# Result: Symmetric aggregates won't work\n# Result: Defaults to \"id\" which might not exist\nWhy: Symmetric aggregates require primary_key to hash for deduplication.\n# CORRECT\norders = Model(\n    name=\"orders\",\n    primary_key=\"id\",  # or whatever your PK is\n)\n\n\n\n\n\n\n# WRONG\nsql = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\"],\n    order_by=[\"orders.order_date\"]  # Full reference\n)\n# Error: Table \"orders\" not found (it's \"orders_cte\")\n# CORRECT\nsql = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\"],\n    order_by=[\"order_date\"]  # Just column name\n)\nWhy: ORDER BY uses the column alias from SELECT, not the table reference.\n\n\n\n\n\n\nCause: Filtering on a table that’s not joined. Fix: Add a dimension from that table, or remove the filter.\n\n\n\nCause: Trying to reference a measure directly. Fix: Measures are stored as {name}_raw in CTEs. Use measures in metrics, not in custom SQL.\n\n\n\nCause: Parameter produced invalid SQL (usually quoting issue). Fix: Don’t add quotes around { param } placeholders.\n\n\n\nCause: Symmetric aggregate hash overflow (old bug, should be fixed). Fix: We use HUGEINT now, but if this happens, check DuckDB version.\n\n\n\n\n\n\nCheck:\n# See if you actually need all those joins\nsql = generator.generate(\n    metrics=[\"orders.revenue\", \"items.qty\", \"shipments.count\", \"notes.count\"]\n)\n# 3 one-to-many joins = slow!\nConsider: 1. Pre-aggregate in separate queries 2. Use materialized views in your database 3. Denormalize your data model 4. Query subsets separately and combine in application\n\n\n\n\n\n\nsql = generator.generate(...)\nprint(sql)  # Always check the actual SQL!\n\n\n\nif \"HASH(\" in sql:\n    print(\"Using symmetric aggregates\")\nelse:\n    print(\"Using regular aggregation\")\n\n\n\nif \"LEFT JOIN customers_cte\" in sql:\n    print(\"Customers table is joined\")\n\n\n\n# Start simple\nsql1 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\"]\n)\n\n# Add complexity gradually\nsql2 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\", \"customers.region\"]\n)\n\n# Add filters last\nsql3 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\", \"customers.region\"],\n    filters=[\"customers.region = 'US'\"]\n)\n\n\n\n\n\nAlways read the generated SQL - Don’t trust, verify\nStart simple - Add complexity incrementally\nUse parameters correctly - Don’t add quotes around placeholders\nMatch filters to data - Only filter on tables that are joined\nSet primary keys - Required for symmetric aggregates\nTest with real data - Edge cases matter\nCheck performance - EXPLAIN ANALYZE your queries\nUse descriptive names - Future you will thank you\n\n\n\n\nIf you’re stuck:\n\nPrint the generated SQL and look for obvious errors\nRun the SQL directly in DuckDB/your database\nCheck if tables referenced in filters are actually joined\nVerify parameter interpolation with simple test cases\nCheck the test suite for similar examples\n\n\n\n\nSee these working examples:\n\nexamples/parameters_example.py - Correct parameter usage\nexamples/symmetric_aggregates_example.py - Fan-out handling\nexamples/streamlit_dashboard.py - Complete interactive app\ntests/test_parameters.py - Parameter test cases\ntests/test_symmetric_aggregates.py - Join test cases"
+  },
+  {
+    "objectID": "GOTCHAS.html#parameters-and-filters",
+    "href": "GOTCHAS.html#parameters-and-filters",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "# WRONG - creates double quotes\nfilters = [f\"orders.order_date &gt;= '{{{{ start_date }}}}'\"]\n# Result: orders.order_date &gt;= ''2024-01-01'' (BREAKS!)\n\n# CORRECT\nfilters = [\"orders.order_date &gt;= {{ start_date }}\"]\n# Result: orders.order_date &gt;= '2024-01-01' ✓\nWhy: Parameters are automatically formatted with quotes based on their type. Adding extra quotes creates ''value'' which SQLGlot can’t parse.\nParameter formatting: - string: Adds quotes → 'value' - date: Adds quotes → '2024-01-01' - number: No quotes → 100 - unquoted: No quotes → table_name\n\n\n\n# WRONG - customers table not in query\nsql = generator.generate(\n    metrics=[\"orders.revenue\"],  # Only orders\n    dimensions=[],               # Only orders\n    filters=[\"customers.region = 'US'\"]  # References customers!\n)\n# Error: Table \"customers\" not found\nWhy: Sidemantic only joins tables when they’re needed (referenced in metrics or dimensions). If you filter on a table that’s not joined, the query fails.\nSolutions:\n\nAdd a dimension from the filtered table:\n\nsql = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"customers.region\"],  # Forces customers join\n    filters=[\"customers.region = 'US'\"]\n)\n\nConditionally build filters:\n\ndef build_filters(include_customers=False):\n    filters = [\"orders.order_date &gt;= '2024-01-01'\"]\n    if include_customers:\n        filters.append(\"customers.region = 'US'\")\n    return filters\n\n# Query without customers\nsql1 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    filters=build_filters(include_customers=False)\n)\n\n# Query with customers\nsql2 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"customers.region\"],\n    filters=build_filters(include_customers=True)\n)"
+  },
+  {
+    "objectID": "GOTCHAS.html#filter-parsing",
+    "href": "GOTCHAS.html#filter-parsing",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "Filters are parsed and transformed:\n# Input filter\n\"orders.order_date &gt;= '2024-01-01'\"\n\n# After parameter interpolation\n\"orders.order_date &gt;= '2024-01-01'\"\n\n# After field replacement (adds CTE prefix, handles measures)\n\"orders_cte.order_date &gt;= '2024-01-01'\"\nPotential issues: - Complex SQL expressions might not parse correctly - Subqueries in filters are not supported - Regex replacement can match inside strings (we fixed this but it’s fragile)\nWorkaround for complex filters: Use metrics with filters instead:\n# Instead of complex filter\nfilters = [\"CASE WHEN orders.status = 'X' THEN ... END\"]\n\n# Create a filtered measure\nMeasure(\n    name=\"filtered_revenue\",\n    agg=\"sum\",\n    expr=\"amount\",\n    filters=[\"status = 'completed'\"]\n)"
+  },
+  {
+    "objectID": "GOTCHAS.html#symmetric-aggregates",
+    "href": "GOTCHAS.html#symmetric-aggregates",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "# Single one-to-many join - NO symmetric aggregates\nsql = generator.generate(\n    metrics=[\"orders.revenue\", \"order_items.quantity\"]\n)\n# Uses: SUM(orders_cte.revenue_raw) - regular sum\n\n# Multiple one-to-many joins - YES symmetric aggregates\nsql = generator.generate(\n    metrics=[\"orders.revenue\", \"order_items.quantity\", \"shipments.count\"]\n)\n# Uses: SUM(DISTINCT HASH(...) + revenue) - symmetric aggregates\nWhy: Symmetric aggregates only apply when you have ≥2 one-to-many joins creating fan-out. With a single join, regular aggregation is correct and faster.\nTo verify:\nsql = generator.generate(...)\nprint(sql)\n# Look for: HASH(primary_key) in the SQL"
+  },
+  {
+    "objectID": "GOTCHAS.html#join-relationships",
+    "href": "GOTCHAS.html#join-relationships",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "# WRONG\norders = Model(\n    name=\"orders\",\n    joins=[\n        # has_many: foreign_key is on the OTHER table\n        Join(name=\"order_items\", type=\"has_many\", foreign_key=\"id\")  # WRONG!\n    ]\n)\n\n# CORRECT\norders = Model(\n    name=\"orders\",\n    joins=[\n        # has_many: foreign_key is the column in order_items table\n        Join(name=\"order_items\", type=\"has_many\", foreign_key=\"order_id\")\n    ]\n)\n\norder_items = Model(\n    name=\"order_items\",\n    joins=[\n        # belongs_to: foreign_key is the column in THIS table\n        Join(name=\"orders\", type=\"belongs_to\", foreign_key=\"order_id\")\n    ]\n)\nRule of thumb: - has_many: foreign_key is in the other (child) table - belongs_to: foreign_key is in this table - has_one: foreign_key is in the other table (like has_many but unique)"
+  },
+  {
+    "objectID": "GOTCHAS.html#sql-generation",
+    "href": "GOTCHAS.html#sql-generation",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "# WRONG - no primary key\norders = Model(\n    name=\"orders\",\n    # primary_key missing!\n)\n\n# Result: Symmetric aggregates won't work\n# Result: Defaults to \"id\" which might not exist\nWhy: Symmetric aggregates require primary_key to hash for deduplication.\n# CORRECT\norders = Model(\n    name=\"orders\",\n    primary_key=\"id\",  # or whatever your PK is\n)"
+  },
+  {
+    "objectID": "GOTCHAS.html#order-by",
+    "href": "GOTCHAS.html#order-by",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "# WRONG\nsql = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\"],\n    order_by=[\"orders.order_date\"]  # Full reference\n)\n# Error: Table \"orders\" not found (it's \"orders_cte\")\n# CORRECT\nsql = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\"],\n    order_by=[\"order_date\"]  # Just column name\n)\nWhy: ORDER BY uses the column alias from SELECT, not the table reference."
+  },
+  {
+    "objectID": "GOTCHAS.html#common-error-messages",
+    "href": "GOTCHAS.html#common-error-messages",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "Cause: Filtering on a table that’s not joined. Fix: Add a dimension from that table, or remove the filter.\n\n\n\nCause: Trying to reference a measure directly. Fix: Measures are stored as {name}_raw in CTEs. Use measures in metrics, not in custom SQL.\n\n\n\nCause: Parameter produced invalid SQL (usually quoting issue). Fix: Don’t add quotes around { param } placeholders.\n\n\n\nCause: Symmetric aggregate hash overflow (old bug, should be fixed). Fix: We use HUGEINT now, but if this happens, check DuckDB version."
+  },
+  {
+    "objectID": "GOTCHAS.html#performance",
+    "href": "GOTCHAS.html#performance",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "Check:\n# See if you actually need all those joins\nsql = generator.generate(\n    metrics=[\"orders.revenue\", \"items.qty\", \"shipments.count\", \"notes.count\"]\n)\n# 3 one-to-many joins = slow!\nConsider: 1. Pre-aggregate in separate queries 2. Use materialized views in your database 3. Denormalize your data model 4. Query subsets separately and combine in application"
+  },
+  {
+    "objectID": "GOTCHAS.html#debugging",
+    "href": "GOTCHAS.html#debugging",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "sql = generator.generate(...)\nprint(sql)  # Always check the actual SQL!\n\n\n\nif \"HASH(\" in sql:\n    print(\"Using symmetric aggregates\")\nelse:\n    print(\"Using regular aggregation\")\n\n\n\nif \"LEFT JOIN customers_cte\" in sql:\n    print(\"Customers table is joined\")\n\n\n\n# Start simple\nsql1 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\"]\n)\n\n# Add complexity gradually\nsql2 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\", \"customers.region\"]\n)\n\n# Add filters last\nsql3 = generator.generate(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.order_date\", \"customers.region\"],\n    filters=[\"customers.region = 'US'\"]\n)"
+  },
+  {
+    "objectID": "GOTCHAS.html#best-practices",
+    "href": "GOTCHAS.html#best-practices",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "Always read the generated SQL - Don’t trust, verify\nStart simple - Add complexity incrementally\nUse parameters correctly - Don’t add quotes around placeholders\nMatch filters to data - Only filter on tables that are joined\nSet primary keys - Required for symmetric aggregates\nTest with real data - Edge cases matter\nCheck performance - EXPLAIN ANALYZE your queries\nUse descriptive names - Future you will thank you"
+  },
+  {
+    "objectID": "GOTCHAS.html#getting-help",
+    "href": "GOTCHAS.html#getting-help",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "If you’re stuck:\n\nPrint the generated SQL and look for obvious errors\nRun the SQL directly in DuckDB/your database\nCheck if tables referenced in filters are actually joined\nVerify parameter interpolation with simple test cases\nCheck the test suite for similar examples"
+  },
+  {
+    "objectID": "GOTCHAS.html#examples-that-work",
+    "href": "GOTCHAS.html#examples-that-work",
+    "title": "Common Gotchas and Solutions",
+    "section": "",
+    "text": "See these working examples:\n\nexamples/parameters_example.py - Correct parameter usage\nexamples/symmetric_aggregates_example.py - Fan-out handling\nexamples/streamlit_dashboard.py - Complete interactive app\ntests/test_parameters.py - Parameter test cases\ntests/test_symmetric_aggregates.py - Join test cases"
+  },
+  {
+    "objectID": "examples.html",
+    "href": "examples.html",
+    "title": "Examples",
+    "section": "",
+    "text": "models:\n  - name: orders\n    table: orders\n    primary_key: id\n    measures:\n      - name: revenue\n        agg: sum\n        expr: amount\nlayer.sql(\"SELECT revenue FROM orders\")"
+  },
+  {
+    "objectID": "examples.html#basic-query",
+    "href": "examples.html#basic-query",
+    "title": "Examples",
+    "section": "",
+    "text": "models:\n  - name: orders\n    table: orders\n    primary_key: id\n    measures:\n      - name: revenue\n        agg: sum\n        expr: amount\nlayer.sql(\"SELECT revenue FROM orders\")"
+  },
+  {
+    "objectID": "examples.html#filtering-and-grouping",
+    "href": "examples.html#filtering-and-grouping",
+    "title": "Examples",
+    "section": "Filtering and Grouping",
+    "text": "Filtering and Grouping\nlayer.sql(\"\"\"\n    SELECT revenue, status\n    FROM orders\n    WHERE status IN ('completed', 'shipped')\n\"\"\")\n\n\n\n\n\n\nTipNo GROUP BY Needed\n\n\n\nThe semantic layer automatically groups by dimensions. Just select what you want!"
+  },
+  {
+    "objectID": "examples.html#time-dimensions",
+    "href": "examples.html#time-dimensions",
+    "title": "Examples",
+    "section": "Time Dimensions",
+    "text": "Time Dimensions\ndimensions:\n  - name: order_date\n    type: time\n    sql: order_date\n    granularity: day\n# Automatic time grouping\nlayer.sql(\"\"\"\n    SELECT revenue, order_date\n    FROM orders\n\"\"\")"
+  },
+  {
+    "objectID": "examples.html#cross-model-queries",
+    "href": "examples.html#cross-model-queries",
+    "title": "Examples",
+    "section": "Cross-Model Queries",
+    "text": "Cross-Model Queries\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id\n    joins:\n      - name: customers\n        type: belongs_to\n        foreign_key: customer_id\n\n  - name: customers\n    table: customers\n    primary_key: id\n    dimensions:\n      - name: region\n        type: categorical\n        sql: region\n# Automatic join\nlayer.sql(\"\"\"\n    SELECT orders.revenue, customers.region\n    FROM orders\n\"\"\")\n\n\n\n\n\n\nWarningFilter on Joined Tables\n\n\n\nOnly filter on tables that are joined via metrics or dimensions: - ❌ SELECT orders.revenue WHERE customers.region = 'US' (customers not joined!) - ✅ SELECT orders.revenue, customers.region WHERE customers.region = 'US'\nAdding a dimension from the table ensures it gets joined."
+  },
+  {
+    "objectID": "examples.html#ratio-measures",
+    "href": "examples.html#ratio-measures",
+    "title": "Examples",
+    "section": "Ratio Measures",
+    "text": "Ratio Measures\nmeasures:\n  - name: completed_revenue\n    agg: sum\n    expr: amount\n    filters: [\"status = 'completed'\"]\n\n  - name: total_revenue\n    agg: sum\n    expr: amount\n\n  - name: completion_rate\n    type: ratio\n    numerator: completed_revenue\n    denominator: total_revenue\nlayer.sql(\"SELECT completion_rate FROM orders\")"
+  },
+  {
+    "objectID": "examples.html#derived-measures",
+    "href": "examples.html#derived-measures",
+    "title": "Examples",
+    "section": "Derived Measures",
+    "text": "Derived Measures\nmeasures:\n  - name: revenue\n    agg: sum\n    expr: amount\n\n  - name: cost\n    agg: sum\n    expr: cost\n\n  - name: profit\n    type: derived\n    expr: \"revenue - cost\"\n\n  - name: margin\n    type: derived\n    expr: \"profit / revenue\"\nlayer.sql(\"SELECT revenue, profit, margin FROM orders\")"
+  },
+  {
+    "objectID": "examples.html#cumulative-metrics",
+    "href": "examples.html#cumulative-metrics",
+    "title": "Examples",
+    "section": "Cumulative Metrics",
+    "text": "Cumulative Metrics\nmeasures:\n  - name: daily_revenue\n    agg: sum\n    expr: amount\n\n  - name: running_total\n    type: cumulative\n    expr: daily_revenue\n    window: \"7 days\"\n\n  - name: mtd_revenue\n    type: cumulative\n    expr: daily_revenue\n    grain_to_date: month\nlayer.sql(\"\"\"\n    SELECT order_date, running_total, mtd_revenue\n    FROM orders\n\"\"\")"
+  },
+  {
+    "objectID": "examples.html#parameterized-queries",
+    "href": "examples.html#parameterized-queries",
+    "title": "Examples",
+    "section": "Parameterized Queries",
+    "text": "Parameterized Queries\nparameters:\n  - name: start_date\n    type: date\n    default_value: \"2024-01-01\"\n\n  - name: min_amount\n    type: number\n    default_value: 100\nlayer.sql(\n    \"SELECT revenue FROM orders WHERE order_date &gt;= {{ start_date }}\",\n    parameters={\"start_date\": \"2024-06-01\"}\n)\n\n\n\n\n\n\nWarningParameter Syntax\n\n\n\nDON’T add quotes around { param } - they’re added automatically based on type: - ❌ WHERE date &gt;= '{{ start_date }}' (double quotes!) - ✅ WHERE date &gt;= {{ start_date }}"
+  },
+  {
+    "objectID": "examples.html#multi-hop-joins",
+    "href": "examples.html#multi-hop-joins",
+    "title": "Examples",
+    "section": "Multi-Hop Joins",
+    "text": "Multi-Hop Joins\nmodels:\n  - name: orders\n    joins:\n      - name: customers\n        type: belongs_to\n        foreign_key: customer_id\n\n  - name: customers\n    joins:\n      - name: regions\n        type: belongs_to\n        foreign_key: region_id\n\n  - name: regions\n    dimensions:\n      - name: country\n        type: categorical\n        sql: country\n# Spans 2 hops: orders -&gt; customers -&gt; regions\nlayer.sql(\"\"\"\n    SELECT orders.revenue, regions.country\n    FROM orders\n\"\"\")"
+  },
+  {
+    "objectID": "examples.html#real-examples",
+    "href": "examples.html#real-examples",
+    "title": "Examples",
+    "section": "Real Examples",
+    "text": "Real Examples\nSee /examples directory for:\n\nsql_query_example.py - SQL interface examples\nparameters_example.py - Parameterized queries\nsymmetric_aggregates_example.py - Fan-out handling\nstreamlit_dashboard.py - Interactive dashboard"
+  },
+  {
+    "objectID": "STATUS.html",
+    "href": "STATUS.html",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "✅ Model, Entity, Dimension, Measure, Metric abstractions with Pydantic\n✅ SemanticGraph with BFS-based join path discovery\n✅ Entity-based automatic join relationships\n✅ Python-first API with SemanticLayer class\n\n\n\n\n\n✅ SQLGlot builder API-based SQL generation\n✅ CTE-based query structure\n✅ Time dimension granularity support (hour, day, week, month, quarter, year)\n✅ Measure aggregation (sum, count, count_distinct, avg, min, max, median)\n✅ Simple, ratio, and derived metrics\n✅ Filter support with table prefix handling\n✅ Multi-model queries with automatic joins\n✅ Recursive metric dependency resolution\n\n\n\n\n\n✅ Base adapter interface with parse/export methods\n✅ Sidemantic native YAML adapter (import/export)\n✅ Cube adapter (import/export)\n✅ MetricFlow adapter (import/export) with all 5 metric types\n✅ LookML adapter (placeholder - requires full grammar parser)\n\n\n\n\n\n✅ .query() method for execution\n✅ .compile() method for SQL generation\n✅ DuckDB integration\n✅ Dialect transpilation support\n\n\n\n\n\n✅ uv-based Python package management\n✅ Proper package structure\n✅ Pydantic models for type safety\n✅ Basic examples and tests\n\n\n\n\n\n\n\nThe SQL generator had an issue with SQLGlot AST construction. RESOLVED by refactoring to use SQLGlot’s builder API. Now generates complete queries with CTEs, SELECT, FROM, JOIN, WHERE, GROUP BY, ORDER BY, and LIMIT clauses.\nExample Output:\nWITH orders_cte AS (\n  SELECT\n    order_id AS order,\n    customer_id AS customer,\n    status AS status,\n    order_amount AS revenue_raw\n  FROM public.orders\n)\nSELECT\n  orders_cte.status AS status,\n  SUM(orders_cte.revenue_raw) AS revenue\nFROM orders_cte\nGROUP BY 1\n\n\n\n\n\n\n\n✅ Cross-model metrics: Metrics can reference measures from multiple models via recursive dependency resolution\n✅ Multi-hop joins: BFS join path discovery supports 2+ hop joins with intermediate model inclusion\n✅ Derived metrics: Formula parsing with recursive metric dependency expansion\n✅ Native YAML format: Complete Sidemantic YAML schema with import/export (see docs/YAML_FORMAT.md)\n✅ Export adapters: Full round-trip support for Sidemantic ↔︎ Cube ↔︎ MetricFlow\n\n\n\n\n\n✅ 35 passing tests across core, adapters, SQL generation, and advanced features\n✅ Real DuckDB integration tests\n✅ Round-trip adapter tests (Sidemantic → Cube/MetricFlow → Sidemantic)\n\n\n\n\n\n\nCumulative metrics: Complete subquery pattern for window functions (basic structure exists, needs proper aggregation-then-window pattern)\nQuery optimization: Add query plan optimization and pushdown strategies\nPre-aggregations: Implement caching layer similar to Cube’s rollups\nLookML adapter: Requires full grammar parser for complete import support\n\n\n\n\nsidemantic/\n├── sidemantic/\n│   ├── core/\n│   │   ├── dimension.py         ✅ Dimension types with granularity\n│   │   ├── entity.py            ✅ Entity (join key) definitions\n│   │   ├── measure.py           ✅ Measure aggregations\n│   │   ├── metric.py            ✅ Metric types (simple, ratio, derived, cumulative)\n│   │   ├── model.py             ✅ Model (dataset) definitions\n│   │   ├── semantic_graph.py    ✅ Graph with join path discovery\n│   │   └── semantic_layer.py    ✅ Main API\n│   ├── sql/\n│   │   └── generator_v2.py      ✅ SQLGlot builder-based SQL generation\n│   ├── adapters/\n│   │   ├── base.py              ✅ Base adapter interface\n│   │   ├── sidemantic.py        ✅ Native YAML (import/export)\n│   │   ├── cube.py              ✅ Cube YAML (import/export)\n│   │   ├── metricflow.py        ✅ MetricFlow YAML (import/export)\n│   │   └── lookml.py            ⚠️  LookML (placeholder)\n│   ├── filters/                 📁 Empty (for future filter parsing)\n│   └── api/                     📁 Empty (for future REST API)\n├── tests/\n│   ├── test_basic.py            ✅ Core functionality tests\n│   ├── test_adapters.py         ✅ Adapter import tests\n│   ├── test_sidemantic_adapter.py ✅ Native YAML adapter tests\n│   ├── test_export_adapters.py  ✅ Export and round-trip tests\n│   ├── test_with_data.py        ✅ End-to-end with real DuckDB\n│   ├── test_derived_metrics.py  ✅ Formula parsing tests\n│   ├── test_multi_hop_joins.py  ✅ Multi-hop join tests\n│   └── test_cumulative_metrics.py ⚠️  Window functions (partial)\n├── examples/\n│   ├── basic_example.py         ✅ Usage examples\n│   ├── export_example.py        ✅ Export demonstration\n│   ├── cube/                    📁 Cube YAML examples\n│   ├── metricflow/              📁 MetricFlow YAML examples\n│   └── sidemantic/              📁 Native YAML examples\n└── docs/\n    ├── STATUS.md                📄 This file\n    └── YAML_FORMAT.md           📄 Native YAML format specification\n\n\n\n\n\nInspired by MetricFlow, entities eliminate manual join configuration. Models share entity names → automatic join discovery via graph traversal.\n\n\n\n\nDialect-agnostic SQL generation\nParse, transform, and transpile SQL across databases\nEnables Snowflake/BigQuery/Postgres compatibility from single codebase\n\n\n\n\n\nMore readable than nested subqueries\nEasier to debug generated SQL\nBetter query optimizer hints on modern databases\n\n\n\n\n\nType safety for semantic model definitions\nValidation out of the box\nJSON/YAML serialization support\nGood IDE autocomplete\n\n\n\n\n\nImmediate (to make functional): 1. Fix SQL generator using builder API or string templates 2. Run test suite and verify end-to-end queries work 3. Test with real DuckDB data\nShort-term (to make useful): 1. Add more metric types (derived with formulas, cumulative with windows) 2. Test adapters with real Cube/MetricFlow YAML files 3. Add export functionality 4. Documentation and examples\nLong-term (to make production-ready): 1. Query caching and optimization 2. REST/GraphQL API layer 3. Pre-aggregation support (like Cube’s rollups) 4. dbt integration 5. Data governance and access control\n\n\n\nThe implementation incorporates best practices from:\n\nCube: Pre-aggregations, API-first design, multi-tenancy\nMetricFlow: Entity-based joins, 5 metric types, semantic graph\nLookML: Explores/views separation, dimension groups, drill-down\nHex: Multi-format import, interoperability focus\n\nKey insight: All semantic layers share core abstractions (models, dimensions, measures, metrics, relationships) but differ in query optimization, caching, and consumption patterns."
+  },
+  {
+    "objectID": "STATUS.html#completed",
+    "href": "STATUS.html#completed",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "✅ Model, Entity, Dimension, Measure, Metric abstractions with Pydantic\n✅ SemanticGraph with BFS-based join path discovery\n✅ Entity-based automatic join relationships\n✅ Python-first API with SemanticLayer class\n\n\n\n\n\n✅ SQLGlot builder API-based SQL generation\n✅ CTE-based query structure\n✅ Time dimension granularity support (hour, day, week, month, quarter, year)\n✅ Measure aggregation (sum, count, count_distinct, avg, min, max, median)\n✅ Simple, ratio, and derived metrics\n✅ Filter support with table prefix handling\n✅ Multi-model queries with automatic joins\n✅ Recursive metric dependency resolution\n\n\n\n\n\n✅ Base adapter interface with parse/export methods\n✅ Sidemantic native YAML adapter (import/export)\n✅ Cube adapter (import/export)\n✅ MetricFlow adapter (import/export) with all 5 metric types\n✅ LookML adapter (placeholder - requires full grammar parser)\n\n\n\n\n\n✅ .query() method for execution\n✅ .compile() method for SQL generation\n✅ DuckDB integration\n✅ Dialect transpilation support\n\n\n\n\n\n✅ uv-based Python package management\n✅ Proper package structure\n✅ Pydantic models for type safety\n✅ Basic examples and tests"
+  },
+  {
+    "objectID": "STATUS.html#recently-fixed",
+    "href": "STATUS.html#recently-fixed",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "The SQL generator had an issue with SQLGlot AST construction. RESOLVED by refactoring to use SQLGlot’s builder API. Now generates complete queries with CTEs, SELECT, FROM, JOIN, WHERE, GROUP BY, ORDER BY, and LIMIT clauses.\nExample Output:\nWITH orders_cte AS (\n  SELECT\n    order_id AS order,\n    customer_id AS customer,\n    status AS status,\n    order_amount AS revenue_raw\n  FROM public.orders\n)\nSELECT\n  orders_cte.status AS status,\n  SUM(orders_cte.revenue_raw) AS revenue\nFROM orders_cte\nGROUP BY 1"
+  },
+  {
+    "objectID": "STATUS.html#recently-completed",
+    "href": "STATUS.html#recently-completed",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "✅ Cross-model metrics: Metrics can reference measures from multiple models via recursive dependency resolution\n✅ Multi-hop joins: BFS join path discovery supports 2+ hop joins with intermediate model inclusion\n✅ Derived metrics: Formula parsing with recursive metric dependency expansion\n✅ Native YAML format: Complete Sidemantic YAML schema with import/export (see docs/YAML_FORMAT.md)\n✅ Export adapters: Full round-trip support for Sidemantic ↔︎ Cube ↔︎ MetricFlow\n\n\n\n\n\n✅ 35 passing tests across core, adapters, SQL generation, and advanced features\n✅ Real DuckDB integration tests\n✅ Round-trip adapter tests (Sidemantic → Cube/MetricFlow → Sidemantic)"
+  },
+  {
+    "objectID": "STATUS.html#to-complete",
+    "href": "STATUS.html#to-complete",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "Cumulative metrics: Complete subquery pattern for window functions (basic structure exists, needs proper aggregation-then-window pattern)\nQuery optimization: Add query plan optimization and pushdown strategies\nPre-aggregations: Implement caching layer similar to Cube’s rollups\nLookML adapter: Requires full grammar parser for complete import support"
+  },
+  {
+    "objectID": "STATUS.html#file-structure",
+    "href": "STATUS.html#file-structure",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "sidemantic/\n├── sidemantic/\n│   ├── core/\n│   │   ├── dimension.py         ✅ Dimension types with granularity\n│   │   ├── entity.py            ✅ Entity (join key) definitions\n│   │   ├── measure.py           ✅ Measure aggregations\n│   │   ├── metric.py            ✅ Metric types (simple, ratio, derived, cumulative)\n│   │   ├── model.py             ✅ Model (dataset) definitions\n│   │   ├── semantic_graph.py    ✅ Graph with join path discovery\n│   │   └── semantic_layer.py    ✅ Main API\n│   ├── sql/\n│   │   └── generator_v2.py      ✅ SQLGlot builder-based SQL generation\n│   ├── adapters/\n│   │   ├── base.py              ✅ Base adapter interface\n│   │   ├── sidemantic.py        ✅ Native YAML (import/export)\n│   │   ├── cube.py              ✅ Cube YAML (import/export)\n│   │   ├── metricflow.py        ✅ MetricFlow YAML (import/export)\n│   │   └── lookml.py            ⚠️  LookML (placeholder)\n│   ├── filters/                 📁 Empty (for future filter parsing)\n│   └── api/                     📁 Empty (for future REST API)\n├── tests/\n│   ├── test_basic.py            ✅ Core functionality tests\n│   ├── test_adapters.py         ✅ Adapter import tests\n│   ├── test_sidemantic_adapter.py ✅ Native YAML adapter tests\n│   ├── test_export_adapters.py  ✅ Export and round-trip tests\n│   ├── test_with_data.py        ✅ End-to-end with real DuckDB\n│   ├── test_derived_metrics.py  ✅ Formula parsing tests\n│   ├── test_multi_hop_joins.py  ✅ Multi-hop join tests\n│   └── test_cumulative_metrics.py ⚠️  Window functions (partial)\n├── examples/\n│   ├── basic_example.py         ✅ Usage examples\n│   ├── export_example.py        ✅ Export demonstration\n│   ├── cube/                    📁 Cube YAML examples\n│   ├── metricflow/              📁 MetricFlow YAML examples\n│   └── sidemantic/              📁 Native YAML examples\n└── docs/\n    ├── STATUS.md                📄 This file\n    └── YAML_FORMAT.md           📄 Native YAML format specification"
+  },
+  {
+    "objectID": "STATUS.html#design-decisions",
+    "href": "STATUS.html#design-decisions",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "Inspired by MetricFlow, entities eliminate manual join configuration. Models share entity names → automatic join discovery via graph traversal.\n\n\n\n\nDialect-agnostic SQL generation\nParse, transform, and transpile SQL across databases\nEnables Snowflake/BigQuery/Postgres compatibility from single codebase\n\n\n\n\n\nMore readable than nested subqueries\nEasier to debug generated SQL\nBetter query optimizer hints on modern databases\n\n\n\n\n\nType safety for semantic model definitions\nValidation out of the box\nJSON/YAML serialization support\nGood IDE autocomplete"
+  },
+  {
+    "objectID": "STATUS.html#next-steps",
+    "href": "STATUS.html#next-steps",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "Immediate (to make functional): 1. Fix SQL generator using builder API or string templates 2. Run test suite and verify end-to-end queries work 3. Test with real DuckDB data\nShort-term (to make useful): 1. Add more metric types (derived with formulas, cumulative with windows) 2. Test adapters with real Cube/MetricFlow YAML files 3. Add export functionality 4. Documentation and examples\nLong-term (to make production-ready): 1. Query caching and optimization 2. REST/GraphQL API layer 3. Pre-aggregation support (like Cube’s rollups) 4. dbt integration 5. Data governance and access control"
+  },
+  {
+    "objectID": "STATUS.html#research-summary",
+    "href": "STATUS.html#research-summary",
+    "title": "Sidemantic Implementation Status",
+    "section": "",
+    "text": "The implementation incorporates best practices from:\n\nCube: Pre-aggregations, API-first design, multi-tenancy\nMetricFlow: Entity-based joins, 5 metric types, semantic graph\nLookML: Explores/views separation, dimension groups, drill-down\nHex: Multi-format import, interoperability focus\n\nKey insight: All semantic layers share core abstractions (models, dimensions, measures, metrics, relationships) but differ in query optimization, caching, and consumption patterns."
+  },
+  {
+    "objectID": "getting-started.html",
+    "href": "getting-started.html",
+    "title": "Getting Started",
+    "section": "",
+    "text": "pip install sidemantic\n# or\nuv add sidemantic"
+  },
+  {
+    "objectID": "getting-started.html#installation",
+    "href": "getting-started.html#installation",
+    "title": "Getting Started",
+    "section": "",
+    "text": "pip install sidemantic\n# or\nuv add sidemantic"
+  },
+  {
+    "objectID": "getting-started.html#your-first-semantic-layer",
+    "href": "getting-started.html#your-first-semantic-layer",
+    "title": "Getting Started",
+    "section": "Your First Semantic Layer",
+    "text": "Your First Semantic Layer\n\n1. Define Models (YAML)\nCreate semantic_layer.yml:\n# yaml-language-server: $schema=./sidemantic-schema.json\n\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id\n\n    dimensions:\n      - name: order_date\n        type: time\n        sql: order_date\n        granularity: day\n\n      - name: status\n        type: categorical\n        sql: status\n\n    measures:\n      - name: revenue\n        agg: sum\n        expr: amount\n\n      - name: order_count\n        agg: count\n\n\n2. Query with SQL\nfrom sidemantic import SemanticLayer\n\n# Load semantic layer\nlayer = SemanticLayer.from_yaml(\"semantic_layer.yml\")\n\n# Query with SQL\nresult = layer.sql(\"\"\"\n    SELECT revenue, order_count, status\n    FROM orders\n    WHERE status = 'completed'\n\"\"\")\n\ndf = result.fetchdf()\nprint(df)\n\n\n3. Add Relationships\nDefine joins between models:\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id\n    joins:\n      - name: customers\n        type: belongs_to\n        foreign_key: customer_id\n\n  - name: customers\n    table: customers\n    primary_key: id\nQuery across models:\n# Automatic join\nresult = layer.sql(\"\"\"\n    SELECT orders.revenue, customers.region\n    FROM orders\n\"\"\")\n\n\n4. Complex Measures\nAdd ratios, formulas, cumulative metrics:\nmeasures:\n  # Ratio\n  - name: conversion_rate\n    type: ratio\n    numerator: completed_orders\n    denominator: total_orders\n\n  # Formula\n  - name: profit_margin\n    type: derived\n    expr: \"(revenue - cost) / revenue\"\n\n  # Cumulative\n  - name: running_total\n    type: cumulative\n    expr: revenue\n    window: \"7 days\""
+  },
+  {
+    "objectID": "getting-started.html#editor-autocomplete",
+    "href": "getting-started.html#editor-autocomplete",
+    "title": "Getting Started",
+    "section": "Editor Autocomplete",
+    "text": "Editor Autocomplete\nGenerate JSON Schema for IDE support:\nuv run python -m sidemantic.schema\nThis creates sidemantic-schema.json. Add to your YAML:\n# yaml-language-server: $schema=./sidemantic-schema.json\nNow get autocomplete in VS Code, IntelliJ, and other editors!"
+  },
+  {
+    "objectID": "getting-started.html#next-steps",
+    "href": "getting-started.html#next-steps",
+    "title": "Getting Started",
+    "section": "Next Steps",
+    "text": "Next Steps\n\nExamples - Real-world use cases\nYAML Reference - Complete specification\nGOTCHAS - Common pitfalls and solutions"
+  },
+  {
+    "objectID": "joins.html",
+    "href": "joins.html",
+    "title": "Joins",
+    "section": "",
+    "text": "Define relationships between models for automatic joining."
+  },
+  {
+    "objectID": "joins.html#join-types",
+    "href": "joins.html#join-types",
+    "title": "Joins",
+    "section": "Join Types",
+    "text": "Join Types\n\nbelongs_to\nThe foreign key is in THIS model:\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id\n    joins:\n      - name: customers\n        type: belongs_to\n        foreign_key: customer_id  # Column in orders table\nSQL: LEFT JOIN customers ON orders.customer_id = customers.id\n\n\nhas_many\nThe foreign key is in the OTHER model:\nmodels:\n  - name: customers\n    table: customers\n    primary_key: id\n    joins:\n      - name: orders\n        type: has_many\n        foreign_key: customer_id  # Column in orders table\nSQL: LEFT JOIN orders ON customers.id = orders.customer_id\n\n\nhas_one\nLike has_many but expects one record:\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id\n    joins:\n      - name: invoice\n        type: has_one\n        foreign_key: order_id  # Column in invoice table\nSQL: LEFT JOIN invoice ON orders.id = invoice.order_id"
+  },
+  {
+    "objectID": "joins.html#bidirectional-joins",
+    "href": "joins.html#bidirectional-joins",
+    "title": "Joins",
+    "section": "Bidirectional Joins",
+    "text": "Bidirectional Joins\nDefine from both sides for flexibility:\nmodels:\n  - name: orders\n    joins:\n      - name: customers\n        type: belongs_to\n        foreign_key: customer_id\n\n  - name: customers\n    joins:\n      - name: orders\n        type: has_many\n        foreign_key: customer_id\nNow you can query from either direction: - SELECT orders.revenue, customers.name FROM orders - SELECT customers.name, orders.revenue FROM customers"
+  },
+  {
+    "objectID": "joins.html#multi-hop-joins",
+    "href": "joins.html#multi-hop-joins",
+    "title": "Joins",
+    "section": "Multi-Hop Joins",
+    "text": "Multi-Hop Joins\nDefine relationships and query across 2+ models automatically:\nmodels:\n  - name: orders\n    joins:\n      - name: customers\n        type: belongs_to\n        foreign_key: customer_id\n\n  - name: customers\n    joins:\n      - name: regions\n        type: belongs_to\n        foreign_key: region_id\n\n  - name: regions\n    table: regions\n    primary_key: id\nQuery spans 2 hops automatically:\n# orders -&gt; customers -&gt; regions\nlayer.sql(\"\"\"\n    SELECT orders.revenue, regions.country\n    FROM orders\n\"\"\")"
+  },
+  {
+    "objectID": "joins.html#join-properties",
+    "href": "joins.html#join-properties",
+    "title": "Joins",
+    "section": "Join Properties",
+    "text": "Join Properties\n\nname: Name of the related model\ntype: belongs_to, has_many, or has_one\nforeign_key: The foreign key column name"
+  },
+  {
+    "objectID": "joins.html#python-api",
+    "href": "joins.html#python-api",
+    "title": "Joins",
+    "section": "Python API",
+    "text": "Python API\nfrom sidemantic import Model, Join\n\norders = Model(\n    name=\"orders\",\n    table=\"orders\",\n    primary_key=\"id\",\n    joins=[\n        Join(name=\"customers\", type=\"belongs_to\", foreign_key=\"customer_id\"),\n        Join(name=\"order_items\", type=\"has_many\", foreign_key=\"order_id\")\n    ]\n)\n\ncustomers = Model(\n    name=\"customers\",\n    table=\"customers\",\n    primary_key=\"id\",\n    joins=[\n        Join(name=\"orders\", type=\"has_many\", foreign_key=\"customer_id\")\n    ]\n)"
+  },
+  {
+    "objectID": "joins.html#symmetric-aggregates",
+    "href": "joins.html#symmetric-aggregates",
+    "title": "Joins",
+    "section": "Symmetric Aggregates",
+    "text": "Symmetric Aggregates\nWhen you have fan-out (one-to-many joins), Sidemantic automatically uses symmetric aggregates to prevent double-counting:\nmodels:\n  - name: orders\n    measures:\n      - name: revenue\n        agg: sum\n        expr: amount\n\n    joins:\n      - name: order_items\n        type: has_many\n        foreign_key: order_id\n# Query with fan-out\nlayer.sql(\"\"\"\n    SELECT orders.revenue, order_items.quantity\n    FROM orders\n\"\"\")\nAutomatically generates:\nSUM(DISTINCT HASH(orders.id)::HUGEINT * (1::HUGEINT &lt;&lt; 20) + orders.revenue)\nThis ensures revenue is counted once per order, not once per item."
+  },
+  {
+    "objectID": "joins.html#best-practices",
+    "href": "joins.html#best-practices",
+    "title": "Joins",
+    "section": "Best Practices",
+    "text": "Best Practices\n\n\n\n\n\n\nTipForeign Key Rules\n\n\n\n\nbelongs_to: foreign_key is in THIS table\nhas_many: foreign_key is in the OTHER table\nhas_one: foreign_key is in the OTHER table (unique)\n\n\n\n\n\n\n\n\n\nWarningPrimary Keys Required\n\n\n\nSet primary_key on all models involved in joins:\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id  # Required!\n\n\n\n\n\n\n\n\nTipDefine Both Sides\n\n\n\nFor maximum flexibility, define joins from both models:\n# orders -&gt; customers\n- name: orders\n  joins:\n    - name: customers\n      type: belongs_to\n      foreign_key: customer_id\n\n# customers -&gt; orders\n- name: customers\n  joins:\n    - name: orders\n      type: has_many\n      foreign_key: customer_id"
+  },
+  {
+    "objectID": "joins.html#common-patterns",
+    "href": "joins.html#common-patterns",
+    "title": "Joins",
+    "section": "Common Patterns",
+    "text": "Common Patterns\n\nOne-to-Many\n# Order has many items\n- name: orders\n  joins:\n    - name: order_items\n      type: has_many\n      foreign_key: order_id\n\n# Item belongs to order\n- name: order_items\n  joins:\n    - name: orders\n      type: belongs_to\n      foreign_key: order_id\n\n\nMany-to-One\n# Order belongs to customer\n- name: orders\n  joins:\n    - name: customers\n      type: belongs_to\n      foreign_key: customer_id\n\n# Customer has many orders\n- name: customers\n  joins:\n    - name: orders\n      type: has_many\n      foreign_key: customer_id\n\n\nOne-to-One\n# Order has one invoice\n- name: orders\n  joins:\n    - name: invoice\n      type: has_one\n      foreign_key: order_id\n\n# Invoice belongs to order\n- name: invoice\n  joins:\n    - name: orders\n      type: belongs_to\n      foreign_key: order_id"
+  },
+  {
+    "objectID": "joins.html#troubleshooting",
+    "href": "joins.html#troubleshooting",
+    "title": "Joins",
+    "section": "Troubleshooting",
+    "text": "Troubleshooting\n\n\n\n\n\n\nWarning“No join path found”\n\n\n\nEnsure you’ve defined joins between the models:\nmodels:\n  - name: orders\n    joins:\n      - name: customers\n        type: belongs_to\n        foreign_key: customer_id\n\n\n\n\n\n\n\n\nWarningWrong foreign_key\n\n\n\nIf joins aren’t working, check the foreign_key: - belongs_to: Column in THIS table - has_many/has_one: Column in OTHER table"
+  },
+  {
+    "objectID": "measures.html",
+    "href": "measures.html",
+    "title": "Measures",
+    "section": "",
+    "text": "Measures define how to aggregate and calculate metrics."
+  },
+  {
+    "objectID": "measures.html#simple-aggregations",
+    "href": "measures.html#simple-aggregations",
+    "title": "Measures",
+    "section": "Simple Aggregations",
+    "text": "Simple Aggregations\nBasic aggregations on a single column:\nmeasures:\n  - name: revenue\n    agg: sum\n    expr: amount\n\n  - name: order_count\n    agg: count\n\n  - name: avg_price\n    agg: avg\n    expr: price\n\n  - name: max_amount\n    agg: max\n    expr: amount\nAvailable aggregations: sum, count, count_distinct, avg, min, max, median"
+  },
+  {
+    "objectID": "measures.html#filtered-measures",
+    "href": "measures.html#filtered-measures",
+    "title": "Measures",
+    "section": "Filtered Measures",
+    "text": "Filtered Measures\nApply filters to specific measures:\nmeasures:\n  - name: completed_revenue\n    agg: sum\n    expr: amount\n    filters: [\"status = 'completed'\"]\n\n  - name: us_orders\n    agg: count\n    filters: [\"country = 'US'\", \"amount &gt; 0\"]\nFilters are ANDed together."
+  },
+  {
+    "objectID": "measures.html#ratio-measures",
+    "href": "measures.html#ratio-measures",
+    "title": "Measures",
+    "section": "Ratio Measures",
+    "text": "Ratio Measures\nDivide one measure by another:\nmeasures:\n  - name: conversion_rate\n    type: ratio\n    numerator: completed_orders\n    denominator: total_orders\n\n  - name: profit_margin\n    type: ratio\n    numerator: profit\n    denominator: revenue\nResults in: numerator / NULLIF(denominator, 0)\n\nTime-Offset Ratios\nCompare to a previous period:\nmeasures:\n  - name: mom_growth\n    type: ratio\n    numerator: revenue\n    denominator: revenue\n    offset_window: \"1 month\"\nCalculates: current revenue / last month’s revenue"
+  },
+  {
+    "objectID": "measures.html#derived-measures",
+    "href": "measures.html#derived-measures",
+    "title": "Measures",
+    "section": "Derived Measures",
+    "text": "Derived Measures\nFormula-based calculations:\nmeasures:\n  - name: profit\n    type: derived\n    expr: \"revenue - cost\"\n\n  - name: margin_pct\n    type: derived\n    expr: \"(revenue - cost) / revenue * 100\"\n\n  - name: items_per_order\n    type: derived\n    expr: \"total_items / order_count\"\nCan reference other measures by name."
+  },
+  {
+    "objectID": "measures.html#cumulative-measures",
+    "href": "measures.html#cumulative-measures",
+    "title": "Measures",
+    "section": "Cumulative Measures",
+    "text": "Cumulative Measures\nRunning totals and period-to-date:\nmeasures:\n  # Rolling window\n  - name: last_7_days_revenue\n    type: cumulative\n    expr: revenue\n    window: \"7 days\"\n\n  # Month-to-date\n  - name: mtd_revenue\n    type: cumulative\n    expr: revenue\n    grain_to_date: month\n\n  # Year-to-date\n  - name: ytd_revenue\n    type: cumulative\n    expr: revenue\n    grain_to_date: year\nRequires a time dimension in the query."
+  },
+  {
+    "objectID": "measures.html#time-comparison-measures",
+    "href": "measures.html#time-comparison-measures",
+    "title": "Measures",
+    "section": "Time Comparison Measures",
+    "text": "Time Comparison Measures\nYear-over-year, month-over-month changes:\nmeasures:\n  # Year-over-year growth\n  - name: yoy_revenue_growth\n    type: time_comparison\n    base_metric: revenue\n    comparison_type: yoy\n    calculation: percent_change\n\n  # Month-over-month\n  - name: mom_revenue\n    type: time_comparison\n    base_metric: revenue\n    comparison_type: mom\n    calculation: difference\n\n  # Custom offset\n  - name: vs_last_quarter\n    type: time_comparison\n    base_metric: revenue\n    time_offset: \"3 months\"\n    calculation: ratio\nCalculation types: - percent_change: (current - prior) / prior * 100 - difference: current - prior - ratio: current / prior"
+  },
+  {
+    "objectID": "measures.html#conversion-metrics",
+    "href": "measures.html#conversion-metrics",
+    "title": "Measures",
+    "section": "Conversion Metrics",
+    "text": "Conversion Metrics\nTrack funnel conversions:\nmeasures:\n  - name: signup_to_purchase\n    type: conversion\n    entity: user_id\n    base_event: signup\n    conversion_event: purchase\n    conversion_window: \"7 days\"\nCalculates: users who did conversion_event within window after base_event / total users who did base_event"
+  },
+  {
+    "objectID": "measures.html#measure-properties",
+    "href": "measures.html#measure-properties",
+    "title": "Measures",
+    "section": "Measure Properties",
+    "text": "Measure Properties\n\nAll Measures\n\nname: Unique identifier\ndescription: Human-readable description\nlabel: Display name (defaults to name)\n\n\n\nSimple Aggregations\n\nagg: Aggregation function (sum, count, avg, etc.)\nexpr: SQL expression to aggregate (defaults to * for count)\nfilters: WHERE conditions for this measure\n\n\n\nComplex Measures\n\ntype: Measure type (ratio, derived, cumulative, time_comparison, conversion)\nType-specific properties (see sections above)\n\n\n\nNull Handling\nmeasures:\n  - name: revenue\n    agg: sum\n    expr: amount\n    fill_nulls_with: 0  # Return 0 instead of NULL"
+  },
+  {
+    "objectID": "measures.html#python-api",
+    "href": "measures.html#python-api",
+    "title": "Measures",
+    "section": "Python API",
+    "text": "Python API\nfrom sidemantic import Measure\n\n# Simple\nrevenue = Measure(name=\"revenue\", agg=\"sum\", expr=\"amount\")\n\n# Filtered\ncompleted = Measure(\n    name=\"completed_revenue\",\n    agg=\"sum\",\n    expr=\"amount\",\n    filters=[\"status = 'completed'\"]\n)\n\n# Ratio\nmargin = Measure(\n    name=\"margin\",\n    type=\"ratio\",\n    numerator=\"profit\",\n    denominator=\"revenue\"\n)\n\n# Derived\nprofit = Measure(\n    name=\"profit\",\n    type=\"derived\",\n    expr=\"revenue - cost\"\n)\n\n# Cumulative\nrunning_total = Measure(\n    name=\"running_total\",\n    type=\"cumulative\",\n    expr=\"revenue\",\n    window=\"7 days\"\n)"
+  },
+  {
+    "objectID": "measures.html#best-practices",
+    "href": "measures.html#best-practices",
+    "title": "Measures",
+    "section": "Best Practices",
+    "text": "Best Practices\n\n\n\n\n\n\nTipStart Simple\n\n\n\nDefine basic aggregations first, then build complex measures on top: 1. Base measures (revenue, count) 2. Filtered measures (completed_revenue) 3. Ratios (conversion_rate = completed / total) 4. Derived (margin = profit / revenue)\n\n\n\n\n\n\n\n\nWarningSQL Expressions\n\n\n\nMeasures support full SQL in the expr field:\n- name: total_value\n  agg: sum\n  expr: \"quantity * price * (1 - discount_pct)\"\n\n\n\n\n\n\n\n\nTipReusability\n\n\n\nDefine measures once, use everywhere: - In SQL queries: SELECT revenue FROM orders - In Python: layer.query(metrics=[\"orders.revenue\"]) - In other measures: expr: \"revenue - cost\""
+  },
+  {
+    "objectID": "python-api.html",
+    "href": "python-api.html",
+    "title": "Python API",
+    "section": "",
+    "text": "Complete Python API reference."
+  },
+  {
+    "objectID": "python-api.html#semanticlayer",
+    "href": "python-api.html#semanticlayer",
+    "title": "Python API",
+    "section": "SemanticLayer",
+    "text": "SemanticLayer\nMain entry point:\nfrom sidemantic import SemanticLayer\n\n# Create\nlayer = SemanticLayer()\n\n# From YAML\nlayer = SemanticLayer.from_yaml(\"semantic_layer.yml\")\n\n# With custom connection\nlayer = SemanticLayer(connection=\"duckdb:///data.db\")\n\nMethods\n\nquery()\nExecute a query and return results:\nresult = layer.query(\n    metrics=[\"orders.revenue\", \"orders.order_count\"],\n    dimensions=[\"orders.status\"],\n    filters=[\"orders.status = 'completed'\"],\n    order_by=[\"orders.revenue DESC\"],\n    limit=10,\n    offset=5\n)\n\ndf = result.fetchdf()  # Get DataFrame\n\n\nsql()\nQuery with SQL:\nresult = layer.sql(\"\"\"\n    SELECT revenue, status\n    FROM orders\n    WHERE status = 'completed'\n    LIMIT 10\n\"\"\")\n\ndf = result.fetchdf()\nWith parameters:\nresult = layer.sql(\n    \"SELECT revenue FROM orders WHERE order_date &gt;= {{ start_date }}\",\n    parameters={\"start_date\": \"2024-01-01\"}\n)\n\n\ncompile()\nGenerate SQL without executing:\nsql = layer.compile(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.status\"],\n    filters=[\"orders.status = 'completed'\"]\n)\n\nprint(sql)\n\n\nadd_model()\nAdd a model:\nfrom sidemantic import Model, Dimension, Measure\n\norders = Model(\n    name=\"orders\",\n    table=\"orders\",\n    primary_key=\"id\",\n    dimensions=[...],\n    measures=[...]\n)\n\nlayer.add_model(orders)\n\n\nadd_metric()\nAdd a top-level measure:\nfrom sidemantic import Measure\n\ntotal_revenue = Measure(\n    name=\"total_revenue\",\n    type=\"simple\",\n    expr=\"orders.revenue\"\n)\n\nlayer.add_metric(total_revenue)\n\n\nfrom_yaml() / to_yaml()\nLoad/save YAML:\n# Load\nlayer = SemanticLayer.from_yaml(\"semantic_layer.yml\")\n\n# Save\nlayer.to_yaml(\"output.yml\")"
+  },
+  {
+    "objectID": "python-api.html#model",
+    "href": "python-api.html#model",
+    "title": "Python API",
+    "section": "Model",
+    "text": "Model\nDefine a data model:\nfrom sidemantic import Model, Dimension, Measure, Join\n\nmodel = Model(\n    name=\"orders\",\n    table=\"orders\",\n    primary_key=\"id\",\n    description=\"Customer orders\",\n\n    dimensions=[\n        Dimension(name=\"status\", type=\"categorical\", sql=\"status\"),\n        Dimension(name=\"order_date\", type=\"time\", sql=\"created_at\", granularity=\"day\")\n    ],\n\n    measures=[\n        Measure(name=\"revenue\", agg=\"sum\", expr=\"amount\"),\n        Measure(name=\"order_count\", agg=\"count\")\n    ],\n\n    joins=[\n        Join(name=\"customers\", type=\"belongs_to\", foreign_key=\"customer_id\")\n    ]\n)\n\nProperties\n\nname: Unique identifier\ntable: Physical table name (or use sql)\nsql: SQL query for derived models\nprimary_key: Primary key column\ndimensions: List of Dimension objects\nmeasures: List of Measure objects\njoins: List of Join objects\ndescription: Human-readable description"
+  },
+  {
+    "objectID": "python-api.html#dimension",
+    "href": "python-api.html#dimension",
+    "title": "Python API",
+    "section": "Dimension",
+    "text": "Dimension\nDefine a dimension:\nfrom sidemantic import Dimension\n\n# Categorical\nstatus = Dimension(\n    name=\"status\",\n    type=\"categorical\",\n    sql=\"status\"\n)\n\n# Time\norder_date = Dimension(\n    name=\"order_date\",\n    type=\"time\",\n    sql=\"created_at\",\n    granularity=\"day\"\n)\n\n# Boolean\nis_active = Dimension(\n    name=\"is_active\",\n    type=\"boolean\",\n    sql=\"active\"\n)\n\n# Numeric\ntier = Dimension(\n    name=\"tier\",\n    type=\"numeric\",\n    sql=\"customer_tier\"\n)\n\nProperties\n\nname: Unique identifier\ntype: categorical, time, boolean, or numeric\nsql: SQL expression (defaults to name)\ngranularity: For time dimensions: hour, day, week, month, quarter, year\ndescription: Human-readable description"
+  },
+  {
+    "objectID": "python-api.html#measure",
+    "href": "python-api.html#measure",
+    "title": "Python API",
+    "section": "Measure",
+    "text": "Measure\nDefine a measure:\nfrom sidemantic import Measure\n\n# Simple aggregation\nrevenue = Measure(\n    name=\"revenue\",\n    agg=\"sum\",\n    expr=\"amount\"\n)\n\n# With filter\ncompleted_revenue = Measure(\n    name=\"completed_revenue\",\n    agg=\"sum\",\n    expr=\"amount\",\n    filters=[\"status = 'completed'\"]\n)\n\n# Ratio\nconversion_rate = Measure(\n    name=\"conversion_rate\",\n    type=\"ratio\",\n    numerator=\"completed_orders\",\n    denominator=\"total_orders\"\n)\n\n# Derived\nprofit = Measure(\n    name=\"profit\",\n    type=\"derived\",\n    expr=\"revenue - cost\"\n)\n\n# Cumulative\nrunning_total = Measure(\n    name=\"running_total\",\n    type=\"cumulative\",\n    expr=\"revenue\",\n    window=\"7 days\"\n)\n\n# Time comparison\nyoy_growth = Measure(\n    name=\"yoy_growth\",\n    type=\"time_comparison\",\n    base_metric=\"revenue\",\n    comparison_type=\"yoy\",\n    calculation=\"percent_change\"\n)\n\nProperties\n\nSimple Aggregations\n\nname: Unique identifier\nagg: sum, count, count_distinct, avg, min, max, median\nexpr: SQL expression (defaults to * for count)\nfilters: List of WHERE conditions\ndescription: Human-readable description\n\n\n\nRatio Measures\n\ntype: \"ratio\"\nnumerator: Numerator measure name\ndenominator: Denominator measure name\noffset_window: Time offset for denominator (e.g., \"1 month\")\n\n\n\nDerived Measures\n\ntype: \"derived\"\nexpr: Formula expression\n\n\n\nCumulative Measures\n\ntype: \"cumulative\"\nexpr: Base measure name\nwindow: Rolling window (e.g., \"7 days\")\ngrain_to_date: Period-to-date (day, week, month, quarter, year)\n\n\n\nTime Comparison Measures\n\ntype: \"time_comparison\"\nbase_metric: Base measure name\ncomparison_type: yoy, mom, wow, dod, qoq, prior_period\ntime_offset: Custom offset (e.g., \"3 months\")\ncalculation: percent_change, difference, or ratio"
+  },
+  {
+    "objectID": "python-api.html#join",
+    "href": "python-api.html#join",
+    "title": "Python API",
+    "section": "Join",
+    "text": "Join\nDefine a join relationship:\nfrom sidemantic import Join\n\n# belongs_to (foreign key in THIS table)\ncustomers_join = Join(\n    name=\"customers\",\n    type=\"belongs_to\",\n    foreign_key=\"customer_id\"\n)\n\n# has_many (foreign key in OTHER table)\norders_join = Join(\n    name=\"orders\",\n    type=\"has_many\",\n    foreign_key=\"customer_id\"\n)\n\n# has_one (foreign key in OTHER table, unique)\ninvoice_join = Join(\n    name=\"invoice\",\n    type=\"has_one\",\n    foreign_key=\"order_id\"\n)\n\nProperties\n\nname: Name of related model\ntype: belongs_to, has_many, or has_one\nforeign_key: Foreign key column name"
+  },
+  {
+    "objectID": "python-api.html#parameter",
+    "href": "python-api.html#parameter",
+    "title": "Python API",
+    "section": "Parameter",
+    "text": "Parameter\nDefine query parameters:\nfrom sidemantic import Parameter\n\nstart_date = Parameter(\n    name=\"start_date\",\n    type=\"date\",\n    default_value=\"2024-01-01\"\n)\n\nmin_amount = Parameter(\n    name=\"min_amount\",\n    type=\"number\",\n    default_value=100\n)\n\nregion = Parameter(\n    name=\"region\",\n    type=\"string\",\n    default_value=\"US\",\n    allowed_values=[\"US\", \"EU\", \"APAC\"]\n)\n\nProperties\n\nname: Parameter name\ntype: string, number, date, unquoted, yesno\ndefault_value: Default value\nallowed_values: List of valid values\ndescription: Human-readable description"
+  },
+  {
+    "objectID": "python-api.html#complete-example",
+    "href": "python-api.html#complete-example",
+    "title": "Python API",
+    "section": "Complete Example",
+    "text": "Complete Example\nfrom sidemantic import (\n    SemanticLayer, Model, Dimension, Measure, Join, Parameter\n)\n\n# Create semantic layer\nlayer = SemanticLayer()\n\n# Define orders model\norders = Model(\n    name=\"orders\",\n    table=\"orders\",\n    primary_key=\"id\",\n\n    dimensions=[\n        Dimension(name=\"status\", type=\"categorical\", sql=\"status\"),\n        Dimension(name=\"order_date\", type=\"time\", sql=\"created_at\", granularity=\"day\")\n    ],\n\n    measures=[\n        Measure(name=\"revenue\", agg=\"sum\", expr=\"amount\"),\n        Measure(name=\"order_count\", agg=\"count\"),\n        Measure(\n            name=\"conversion_rate\",\n            type=\"ratio\",\n            numerator=\"completed_orders\",\n            denominator=\"total_orders\"\n        )\n    ],\n\n    joins=[\n        Join(name=\"customers\", type=\"belongs_to\", foreign_key=\"customer_id\")\n    ]\n)\n\n# Define customers model\ncustomers = Model(\n    name=\"customers\",\n    table=\"customers\",\n    primary_key=\"id\",\n\n    dimensions=[\n        Dimension(name=\"region\", type=\"categorical\", sql=\"region\")\n    ],\n\n    measures=[\n        Measure(name=\"customer_count\", agg=\"count\")\n    ],\n\n    joins=[\n        Join(name=\"orders\", type=\"has_many\", foreign_key=\"customer_id\")\n    ]\n)\n\n# Add models\nlayer.add_model(orders)\nlayer.add_model(customers)\n\n# Query with SQL\nresult = layer.sql(\"\"\"\n    SELECT orders.revenue, customers.region\n    FROM orders\n    WHERE orders.status = 'completed'\n\"\"\")\n\ndf = result.fetchdf()\nprint(df)\n\n# Or programmatically\nresult = layer.query(\n    metrics=[\"orders.revenue\", \"customers.customer_count\"],\n    dimensions=[\"customers.region\"],\n    filters=[\"orders.status = 'completed'\"]\n)\n\ndf = result.fetchdf()\nprint(df)"
+  },
+  {
+    "objectID": "sql-queries.html",
+    "href": "sql-queries.html",
+    "title": "SQL Queries",
+    "section": "",
+    "text": "Query the semantic layer with familiar SQL syntax."
+  },
+  {
+    "objectID": "sql-queries.html#basic-queries",
+    "href": "sql-queries.html#basic-queries",
+    "title": "SQL Queries",
+    "section": "Basic Queries",
+    "text": "Basic Queries\nlayer.sql(\"SELECT revenue FROM orders\")\n\nlayer.sql(\"\"\"\n    SELECT revenue, status\n    FROM orders\n    WHERE status = 'completed'\n\"\"\")"
+  },
+  {
+    "objectID": "sql-queries.html#supported-features",
+    "href": "sql-queries.html#supported-features",
+    "title": "SQL Queries",
+    "section": "Supported Features",
+    "text": "Supported Features\n\nSELECT\nSelect measures and dimensions:\nSELECT revenue, order_count, status\nFROM orders\nTable prefixes optional (inferred from FROM):\n-- Both work\nSELECT orders.revenue FROM orders\nSELECT revenue FROM orders\n\n\nWHERE\nFilter with standard SQL conditions:\nSELECT revenue\nFROM orders\nWHERE status = 'completed'\n  AND order_date &gt;= '2024-01-01'\n  AND amount &gt; 100\n\n\nORDER BY\nSELECT revenue, status\nFROM orders\nORDER BY revenue DESC, status ASC\n\n\nLIMIT / OFFSET\nSELECT revenue FROM orders LIMIT 10\n\nSELECT revenue FROM orders LIMIT 10 OFFSET 5\n\n\nCross-Model Queries\nReference multiple models - joins happen automatically:\nSELECT\n    orders.revenue,\n    customers.region,\n    regions.country\nFROM orders\n\n\nSELECT *\nExpands to all dimensions and measures:\nSELECT * FROM orders\n-- Expands to all dimensions + measures in orders model"
+  },
+  {
+    "objectID": "sql-queries.html#parameters",
+    "href": "sql-queries.html#parameters",
+    "title": "SQL Queries",
+    "section": "Parameters",
+    "text": "Parameters\nUse { param } syntax:\nlayer.sql(\n    \"\"\"\n    SELECT revenue\n    FROM orders\n    WHERE order_date &gt;= {{ start_date }}\n      AND region = {{ region }}\n    \"\"\",\n    parameters={\n        \"start_date\": \"2024-01-01\",\n        \"region\": \"US\"\n    }\n)\n\n\n\n\n\n\nWarningDon’t Quote Parameters\n\n\n\nParameters are automatically quoted based on type: - ❌ WHERE date &gt;= '{{ start_date }}' (creates ''2024-01-01'') - ✅ WHERE date &gt;= {{ start_date }}"
+  },
+  {
+    "objectID": "sql-queries.html#limitations",
+    "href": "sql-queries.html#limitations",
+    "title": "SQL Queries",
+    "section": "Limitations",
+    "text": "Limitations\nThese SQL features are NOT supported:\n\nNo Explicit JOINs\n❌ Can’t write:\nSELECT *\nFROM orders\nJOIN customers ON orders.customer_id = customers.id\n✅ Instead:\n-- Just reference both models - joins happen automatically\nSELECT orders.revenue, customers.name\nFROM orders\n\n\nNo GROUP BY\n❌ Can’t write:\nSELECT status, SUM(amount)\nFROM orders\nGROUP BY status\n✅ Instead:\n-- Grouping is automatic based on dimensions\nSELECT revenue, status\nFROM orders\n\n\nNo Aggregate Functions\n❌ Can’t write:\nSELECT COUNT(*), SUM(amount)\nFROM orders\n✅ Instead, define measures:\nmeasures:\n  - name: order_count\n    agg: count\n  - name: revenue\n    agg: sum\n    expr: amount\nThen:\nSELECT order_count, revenue FROM orders\n\n\nNo Subqueries\n❌ Can’t write:\nSELECT * FROM (\n    SELECT revenue FROM orders\n) AS subquery\n\n\nNo CTEs/WITH\n❌ Can’t write:\nWITH temp AS (SELECT * FROM orders)\nSELECT * FROM temp\n\n\nNo HAVING\n❌ Can’t write:\nSELECT status, revenue\nFROM orders\nHAVING revenue &gt; 1000\n✅ Use WHERE on measures instead:\nSELECT status, revenue\nFROM orders\nWHERE revenue &gt; 1000  -- This works!\n\n\nNo Window Functions\n❌ Can’t write:\nSELECT revenue, ROW_NUMBER() OVER (PARTITION BY status)\nFROM orders\n✅ Use table calculations or cumulative measures instead.\n\n\nNo DISTINCT\n❌ Can’t write:\nSELECT DISTINCT status FROM orders\n✅ Just select the dimension:\nSELECT status FROM orders\n\n\nNo UNION/INTERSECT/EXCEPT\n❌ Set operations not supported.\n\n\nNo INSERT/UPDATE/DELETE\nRead-only semantic layer."
+  },
+  {
+    "objectID": "sql-queries.html#why-these-limitations",
+    "href": "sql-queries.html#why-these-limitations",
+    "title": "SQL Queries",
+    "section": "Why These Limitations?",
+    "text": "Why These Limitations?\nThe semantic layer rewrites your SQL to use pre-defined measures and handle joins automatically. This means:\n\nMeasures must be pre-defined - No ad-hoc SUM() in SELECT\nJoins are automatic - Based on model relationships\nGrouping is automatic - Based on dimensions selected\n\nThis trade-off ensures: - ✅ Consistent metric definitions - ✅ Automatic join handling - ✅ Symmetric aggregate deduplication - ✅ Centralized business logic"
+  },
+  {
+    "objectID": "sql-queries.html#best-practices",
+    "href": "sql-queries.html#best-practices",
+    "title": "SQL Queries",
+    "section": "Best Practices",
+    "text": "Best Practices\n\n\n\n\n\n\nTipDefine Once, Query Anywhere\n\n\n\nDefine measures in YAML:\nmeasures:\n  - name: revenue\n    agg: sum\n    expr: amount\nThen query with simple SQL:\nSELECT revenue FROM orders\n\n\n\n\n\n\n\n\nTipComplex Logic in Measures\n\n\n\nPut complex logic in measure definitions, not queries:\n# Define complex measure\nmeasures:\n  - name: high_value_revenue\n    agg: sum\n    expr: \"CASE WHEN amount &gt; 1000 THEN amount ELSE 0 END\"\n-- Simple query\nSELECT high_value_revenue FROM orders\n\n\n\n\n\n\n\n\nWarningFilter on Joined Tables\n\n\n\nOnly filter on tables that are actually joined:\n❌ This fails (customers not joined):\nSELECT orders.revenue\nWHERE customers.region = 'US'\n✅ Include a dimension to force join:\nSELECT orders.revenue, customers.region\nWHERE customers.region = 'US'"
+  },
+  {
+    "objectID": "sql-queries.html#programmatic-alternative",
+    "href": "sql-queries.html#programmatic-alternative",
+    "title": "SQL Queries",
+    "section": "Programmatic Alternative",
+    "text": "Programmatic Alternative\nFor full flexibility, use the programmatic API:\nresult = layer.query(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.status\"],\n    filters=[\"orders.status = 'completed'\"],\n    order_by=[\"orders.revenue DESC\"],\n    limit=10\n)\nOr generate SQL and execute yourself:\nsql = layer.compile(\n    metrics=[\"orders.revenue\"],\n    dimensions=[\"orders.status\"]\n)\n\n# Modify as needed\nsql += \" UNION SELECT ...\"\n\n# Execute directly\nconn.execute(sql)"
+  },
+  {
+    "objectID": "models.html",
+    "href": "models.html",
+    "title": "Models",
+    "section": "",
+    "text": "Models define your data sources and their structure."
+  },
+  {
+    "objectID": "models.html#basic-model",
+    "href": "models.html#basic-model",
+    "title": "Models",
+    "section": "Basic Model",
+    "text": "Basic Model\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id\nOr in Python:\nfrom sidemantic import Model\n\norders = Model(\n    name=\"orders\",\n    table=\"orders\",\n    primary_key=\"id\"\n)"
+  },
+  {
+    "objectID": "models.html#properties",
+    "href": "models.html#properties",
+    "title": "Models",
+    "section": "Properties",
+    "text": "Properties\n\nRequired\n\nname: Unique identifier for the model\ntable: Physical table name (or use sql for derived tables)\nprimary_key: Primary key column (required for joins and symmetric aggregates)\n\n\n\nOptional\n\nsql: SQL query instead of table name (for derived models)\ndescription: Human-readable description"
+  },
+  {
+    "objectID": "models.html#dimensions",
+    "href": "models.html#dimensions",
+    "title": "Models",
+    "section": "Dimensions",
+    "text": "Dimensions\nDimensions are attributes for grouping and filtering:\nmodels:\n  - name: orders\n    dimensions:\n      - name: status\n        type: categorical\n        sql: status\n\n      - name: order_date\n        type: time\n        sql: created_at\n        granularity: day\n\n      - name: is_weekend\n        type: boolean\n        sql: \"DAYOFWEEK(order_date) IN (6, 7)\"\n\n      - name: amount\n        type: numeric\n        sql: total_amount\n\nDimension Types\n\ncategorical: Text/enum values (status, region, product)\ntime: Dates/timestamps with granularity (day, week, month, year)\nboolean: True/false values\nnumeric: Numeric dimensions (price tier, quantity bucket)\n\n\n\nTime Granularity\n- name: order_date\n  type: time\n  sql: created_at\n  granularity: day  # hour, day, week, month, quarter, year\nQuery with: orders.order_date__month to automatically roll up to month."
+  },
+  {
+    "objectID": "models.html#measures",
+    "href": "models.html#measures",
+    "title": "Models",
+    "section": "Measures",
+    "text": "Measures\nMeasures define aggregations:\nmodels:\n  - name: orders\n    measures:\n      # Simple aggregations\n      - name: revenue\n        agg: sum\n        expr: amount\n\n      - name: order_count\n        agg: count\n\n      - name: avg_order_value\n        agg: avg\n        expr: amount\n\n      # With filters\n      - name: completed_revenue\n        agg: sum\n        expr: amount\n        filters: [\"status = 'completed'\"]\n\n      # SQL expressions\n      - name: total_value\n        agg: sum\n        expr: \"quantity * price\"\n\nAggregation Types\n\nsum: Sum values\ncount: Count rows\ncount_distinct: Count unique values\navg: Average\nmin: Minimum value\nmax: Maximum value\nmedian: Median value\n\n\n\nComplex Measures\nMeasures can also be complex metrics:\nmeasures:\n  # Ratio\n  - name: conversion_rate\n    type: ratio\n    numerator: completed_orders\n    denominator: total_orders\n\n  # Formula\n  - name: profit_margin\n    type: derived\n    expr: \"(revenue - cost) / revenue\"\n\n  # Cumulative\n  - name: running_total\n    type: cumulative\n    expr: revenue\n    window: \"7 days\"\nSee Measures for complete details."
+  },
+  {
+    "objectID": "models.html#derived-models",
+    "href": "models.html#derived-models",
+    "title": "Models",
+    "section": "Derived Models",
+    "text": "Derived Models\nUse SQL instead of a table:\nmodels:\n  - name: weekly_summary\n    sql: |\n      SELECT\n        DATE_TRUNC('week', order_date) as week,\n        SUM(amount) as total\n      FROM orders\n      GROUP BY 1\n    primary_key: week"
+  },
+  {
+    "objectID": "models.html#complete-example",
+    "href": "models.html#complete-example",
+    "title": "Models",
+    "section": "Complete Example",
+    "text": "Complete Example\nmodels:\n  - name: orders\n    table: orders\n    primary_key: id\n    description: \"Customer orders\"\n\n    dimensions:\n      - name: status\n        type: categorical\n        sql: status\n\n      - name: order_date\n        type: time\n        sql: created_at\n        granularity: day\n\n      - name: customer_tier\n        type: categorical\n        sql: |\n          CASE\n            WHEN total_amount &gt; 1000 THEN 'premium'\n            WHEN total_amount &gt; 100 THEN 'standard'\n            ELSE 'basic'\n          END\n\n    measures:\n      - name: revenue\n        agg: sum\n        expr: amount\n        description: \"Total order revenue\"\n\n      - name: order_count\n        agg: count\n        description: \"Number of orders\"\n\n      - name: avg_order_value\n        agg: avg\n        expr: amount\n\n      - name: completed_revenue\n        agg: sum\n        expr: amount\n        filters: [\"status = 'completed'\"]\n\n      - name: large_orders\n        agg: count\n        filters: [\"amount &gt; 1000\"]"
+  },
+  {
+    "objectID": "models.html#best-practices",
+    "href": "models.html#best-practices",
+    "title": "Models",
+    "section": "Best Practices",
+    "text": "Best Practices\n\n\n\n\n\n\nTipNaming Conventions\n\n\n\n\nModels: plural nouns (orders, customers)\nDimensions: descriptive names (status, order_date, customer_region)\nMeasures: what they measure (revenue, order_count, avg_order_value)\n\n\n\n\n\n\n\n\n\nWarningPrimary Keys Required\n\n\n\nAlways set primary_key - it’s required for: - Joins between models - Symmetric aggregates (fan-out handling) - Proper deduplication\n\n\n\n\n\n\n\n\nTipSQL Expressions\n\n\n\nUse SQL expressions in sql and expr fields: - sql: \"UPPER(status)\" - transform dimension - expr: \"quantity * price\" - calculated measure - Supports any SQL your database supports"
+  }
+]

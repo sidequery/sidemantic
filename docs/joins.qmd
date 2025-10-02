@@ -1,0 +1,296 @@
+---
+title: "Joins"
+---
+
+Define relationships between models for automatic joining.
+
+## Join Types
+
+### belongs_to
+
+The foreign key is in THIS model:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    joins:
+      - name: customers
+        type: belongs_to
+        foreign_key: customer_id  # Column in orders table
+```
+
+SQL: `LEFT JOIN customers ON orders.customer_id = customers.id`
+
+### has_many
+
+The foreign key is in the OTHER model:
+
+```yaml
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+    joins:
+      - name: orders
+        type: has_many
+        foreign_key: customer_id  # Column in orders table
+```
+
+SQL: `LEFT JOIN orders ON customers.id = orders.customer_id`
+
+### has_one
+
+Like `has_many` but expects one record:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    joins:
+      - name: invoice
+        type: has_one
+        foreign_key: order_id  # Column in invoice table
+```
+
+SQL: `LEFT JOIN invoice ON orders.id = invoice.order_id`
+
+## Bidirectional Joins
+
+Define from both sides for flexibility:
+
+```yaml
+models:
+  - name: orders
+    joins:
+      - name: customers
+        type: belongs_to
+        foreign_key: customer_id
+
+  - name: customers
+    joins:
+      - name: orders
+        type: has_many
+        foreign_key: customer_id
+```
+
+Now you can query from either direction:
+- `SELECT orders.revenue, customers.name FROM orders`
+- `SELECT customers.name, orders.revenue FROM customers`
+
+## Multi-Hop Joins
+
+Define relationships and query across 2+ models automatically:
+
+```yaml
+models:
+  - name: orders
+    joins:
+      - name: customers
+        type: belongs_to
+        foreign_key: customer_id
+
+  - name: customers
+    joins:
+      - name: regions
+        type: belongs_to
+        foreign_key: region_id
+
+  - name: regions
+    table: regions
+    primary_key: id
+```
+
+Query spans 2 hops automatically:
+
+```python
+# orders -> customers -> regions
+layer.sql("""
+    SELECT orders.revenue, regions.country
+    FROM orders
+""")
+```
+
+## Join Properties
+
+- **name**: Name of the related model
+- **type**: `belongs_to`, `has_many`, or `has_one`
+- **foreign_key**: The foreign key column name
+
+## Python API
+
+```python
+from sidemantic import Model, Join
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    joins=[
+        Join(name="customers", type="belongs_to", foreign_key="customer_id"),
+        Join(name="order_items", type="has_many", foreign_key="order_id")
+    ]
+)
+
+customers = Model(
+    name="customers",
+    table="customers",
+    primary_key="id",
+    joins=[
+        Join(name="orders", type="has_many", foreign_key="customer_id")
+    ]
+)
+```
+
+## Symmetric Aggregates
+
+When you have fan-out (one-to-many joins), Sidemantic automatically uses symmetric aggregates to prevent double-counting:
+
+```yaml
+models:
+  - name: orders
+    measures:
+      - name: revenue
+        agg: sum
+        expr: amount
+
+    joins:
+      - name: order_items
+        type: has_many
+        foreign_key: order_id
+```
+
+```python
+# Query with fan-out
+layer.sql("""
+    SELECT orders.revenue, order_items.quantity
+    FROM orders
+""")
+```
+
+Automatically generates:
+```sql
+SUM(DISTINCT HASH(orders.id)::HUGEINT * (1::HUGEINT << 20) + orders.revenue)
+```
+
+This ensures revenue is counted once per order, not once per item.
+
+## Best Practices
+
+::: {.callout-tip}
+## Foreign Key Rules
+- **belongs_to**: foreign_key is in THIS table
+- **has_many**: foreign_key is in the OTHER table
+- **has_one**: foreign_key is in the OTHER table (unique)
+:::
+
+::: {.callout-warning}
+## Primary Keys Required
+Set `primary_key` on all models involved in joins:
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: id  # Required!
+```
+:::
+
+::: {.callout-tip}
+## Define Both Sides
+For maximum flexibility, define joins from both models:
+```yaml
+# orders -> customers
+- name: orders
+  joins:
+    - name: customers
+      type: belongs_to
+      foreign_key: customer_id
+
+# customers -> orders
+- name: customers
+  joins:
+    - name: orders
+      type: has_many
+      foreign_key: customer_id
+```
+:::
+
+## Common Patterns
+
+### One-to-Many
+
+```yaml
+# Order has many items
+- name: orders
+  joins:
+    - name: order_items
+      type: has_many
+      foreign_key: order_id
+
+# Item belongs to order
+- name: order_items
+  joins:
+    - name: orders
+      type: belongs_to
+      foreign_key: order_id
+```
+
+### Many-to-One
+
+```yaml
+# Order belongs to customer
+- name: orders
+  joins:
+    - name: customers
+      type: belongs_to
+      foreign_key: customer_id
+
+# Customer has many orders
+- name: customers
+  joins:
+    - name: orders
+      type: has_many
+      foreign_key: customer_id
+```
+
+### One-to-One
+
+```yaml
+# Order has one invoice
+- name: orders
+  joins:
+    - name: invoice
+      type: has_one
+      foreign_key: order_id
+
+# Invoice belongs to order
+- name: invoice
+  joins:
+    - name: orders
+      type: belongs_to
+      foreign_key: order_id
+```
+
+## Troubleshooting
+
+::: {.callout-warning}
+## "No join path found"
+Ensure you've defined joins between the models:
+```yaml
+models:
+  - name: orders
+    joins:
+      - name: customers
+        type: belongs_to
+        foreign_key: customer_id
+```
+:::
+
+::: {.callout-warning}
+## Wrong foreign_key
+If joins aren't working, check the foreign_key:
+- `belongs_to`: Column in THIS table
+- `has_many`/`has_one`: Column in OTHER table
+:::

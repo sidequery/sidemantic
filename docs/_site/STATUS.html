@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.8.25">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>status – Sidemantic</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/axe/axe-check.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-7b89279ff1a6dce999919e0e67d4d9ec.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-5b4ad623e5705c0698d39aec6f10cf02.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+
+
+</head>
+
+<body class="nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a href="./index.html" class="navbar-brand navbar-brand-logo">
+    </a>
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">Sidemantic</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link" href="./index.html"> 
+<span class="menu-text">Home</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./getting-started.html"> 
+<span class="menu-text">Getting Started</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./examples.html"> 
+<span class="menu-text">Examples</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-reference" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Reference</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-reference">    
+        <li>
+    <a class="dropdown-item" href="./YAML_FORMAT.html">
+ <span class="dropdown-text">YAML Format</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./GOTCHAS.html">
+ <span class="dropdown-text">Gotchas</span></a>
+  </li>  
+    </ul>
+  </li>
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#sidemantic-implementation-status" id="toc-sidemantic-implementation-status" class="nav-link active" data-scroll-target="#sidemantic-implementation-status">Sidemantic Implementation Status</a>
+  <ul class="collapse">
+  <li><a href="#completed" id="toc-completed" class="nav-link" data-scroll-target="#completed">✅ Completed</a>
+  <ul class="collapse">
+  <li><a href="#core-architecture" id="toc-core-architecture" class="nav-link" data-scroll-target="#core-architecture">Core Architecture</a></li>
+  <li><a href="#sql-generation" id="toc-sql-generation" class="nav-link" data-scroll-target="#sql-generation">SQL Generation</a></li>
+  <li><a href="#adapters" id="toc-adapters" class="nav-link" data-scroll-target="#adapters">Adapters</a></li>
+  <li><a href="#query-interface" id="toc-query-interface" class="nav-link" data-scroll-target="#query-interface">Query Interface</a></li>
+  <li><a href="#project-setup" id="toc-project-setup" class="nav-link" data-scroll-target="#project-setup">Project Setup</a></li>
+  </ul></li>
+  <li><a href="#recently-fixed" id="toc-recently-fixed" class="nav-link" data-scroll-target="#recently-fixed">✅ Recently Fixed</a>
+  <ul class="collapse">
+  <li><a href="#sql-generation-fixed" id="toc-sql-generation-fixed" class="nav-link" data-scroll-target="#sql-generation-fixed">SQL Generation (FIXED)</a></li>
+  </ul></li>
+  <li><a href="#recently-completed" id="toc-recently-completed" class="nav-link" data-scroll-target="#recently-completed">✅ Recently Completed</a>
+  <ul class="collapse">
+  <li><a href="#advanced-features" id="toc-advanced-features" class="nav-link" data-scroll-target="#advanced-features">Advanced Features</a></li>
+  <li><a href="#test-coverage" id="toc-test-coverage" class="nav-link" data-scroll-target="#test-coverage">Test Coverage</a></li>
+  </ul></li>
+  <li><a href="#to-complete" id="toc-to-complete" class="nav-link" data-scroll-target="#to-complete">🚧 To Complete</a></li>
+  <li><a href="#file-structure" id="toc-file-structure" class="nav-link" data-scroll-target="#file-structure">📁 File Structure</a></li>
+  <li><a href="#design-decisions" id="toc-design-decisions" class="nav-link" data-scroll-target="#design-decisions">🎯 Design Decisions</a>
+  <ul class="collapse">
+  <li><a href="#why-entity-based-joins" id="toc-why-entity-based-joins" class="nav-link" data-scroll-target="#why-entity-based-joins">Why Entity-Based Joins?</a></li>
+  <li><a href="#why-sqlglot" id="toc-why-sqlglot" class="nav-link" data-scroll-target="#why-sqlglot">Why SQLGlot?</a></li>
+  <li><a href="#why-cte-based" id="toc-why-cte-based" class="nav-link" data-scroll-target="#why-cte-based">Why CTE-Based?</a></li>
+  <li><a href="#why-pydantic" id="toc-why-pydantic" class="nav-link" data-scroll-target="#why-pydantic">Why Pydantic?</a></li>
+  </ul></li>
+  <li><a href="#next-steps" id="toc-next-steps" class="nav-link" data-scroll-target="#next-steps">🔄 Next Steps</a></li>
+  <li><a href="#research-summary" id="toc-research-summary" class="nav-link" data-scroll-target="#research-summary">📊 Research Summary</a></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content"><header id="title-block-header" class="quarto-title-block"></header>
+
+
+
+
+<section id="sidemantic-implementation-status" class="level1">
+<h1>Sidemantic Implementation Status</h1>
+<section id="completed" class="level2">
+<h2 class="anchored" data-anchor-id="completed">✅ Completed</h2>
+<section id="core-architecture" class="level3">
+<h3 class="anchored" data-anchor-id="core-architecture">Core Architecture</h3>
+<ul>
+<li>✅ Model, Entity, Dimension, Measure, Metric abstractions with Pydantic</li>
+<li>✅ SemanticGraph with BFS-based join path discovery</li>
+<li>✅ Entity-based automatic join relationships</li>
+<li>✅ Python-first API with SemanticLayer class</li>
+</ul>
+</section>
+<section id="sql-generation" class="level3">
+<h3 class="anchored" data-anchor-id="sql-generation">SQL Generation</h3>
+<ul>
+<li>✅ SQLGlot builder API-based SQL generation</li>
+<li>✅ CTE-based query structure</li>
+<li>✅ Time dimension granularity support (hour, day, week, month, quarter, year)</li>
+<li>✅ Measure aggregation (sum, count, count_distinct, avg, min, max, median)</li>
+<li>✅ Simple, ratio, and derived metrics</li>
+<li>✅ Filter support with table prefix handling</li>
+<li>✅ Multi-model queries with automatic joins</li>
+<li>✅ Recursive metric dependency resolution</li>
+</ul>
+</section>
+<section id="adapters" class="level3">
+<h3 class="anchored" data-anchor-id="adapters">Adapters</h3>
+<ul>
+<li>✅ Base adapter interface with parse/export methods</li>
+<li>✅ Sidemantic native YAML adapter (import/export)</li>
+<li>✅ Cube adapter (import/export)</li>
+<li>✅ MetricFlow adapter (import/export) with all 5 metric types</li>
+<li>✅ LookML adapter (placeholder - requires full grammar parser)</li>
+</ul>
+</section>
+<section id="query-interface" class="level3">
+<h3 class="anchored" data-anchor-id="query-interface">Query Interface</h3>
+<ul>
+<li>✅ <code>.query()</code> method for execution</li>
+<li>✅ <code>.compile()</code> method for SQL generation</li>
+<li>✅ DuckDB integration</li>
+<li>✅ Dialect transpilation support</li>
+</ul>
+</section>
+<section id="project-setup" class="level3">
+<h3 class="anchored" data-anchor-id="project-setup">Project Setup</h3>
+<ul>
+<li>✅ uv-based Python package management</li>
+<li>✅ Proper package structure</li>
+<li>✅ Pydantic models for type safety</li>
+<li>✅ Basic examples and tests</li>
+</ul>
+</section>
+</section>
+<section id="recently-fixed" class="level2">
+<h2 class="anchored" data-anchor-id="recently-fixed">✅ Recently Fixed</h2>
+<section id="sql-generation-fixed" class="level3">
+<h3 class="anchored" data-anchor-id="sql-generation-fixed">SQL Generation (FIXED)</h3>
+<p><del>The SQL generator had an issue with SQLGlot AST construction.</del> <strong>RESOLVED</strong> by refactoring to use SQLGlot’s builder API. Now generates complete queries with CTEs, SELECT, FROM, JOIN, WHERE, GROUP BY, ORDER BY, and LIMIT clauses.</p>
+<p><strong>Example Output:</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode sql code-with-copy"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">WITH</span> orders_cte <span class="kw">AS</span> (</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  <span class="kw">SELECT</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    order_id <span class="kw">AS</span> <span class="kw">order</span>,</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    customer_id <span class="kw">AS</span> customer,</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    status <span class="kw">AS</span> status,</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    order_amount <span class="kw">AS</span> revenue_raw</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>  <span class="kw">FROM</span> <span class="kw">public</span>.orders</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>  orders_cte.status <span class="kw">AS</span> status,</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>  <span class="fu">SUM</span>(orders_cte.revenue_raw) <span class="kw">AS</span> revenue</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> orders_cte</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a><span class="kw">GROUP</span> <span class="kw">BY</span> <span class="dv">1</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+</section>
+<section id="recently-completed" class="level2">
+<h2 class="anchored" data-anchor-id="recently-completed">✅ Recently Completed</h2>
+<section id="advanced-features" class="level3">
+<h3 class="anchored" data-anchor-id="advanced-features">Advanced Features</h3>
+<ul>
+<li>✅ <strong>Cross-model metrics</strong>: Metrics can reference measures from multiple models via recursive dependency resolution</li>
+<li>✅ <strong>Multi-hop joins</strong>: BFS join path discovery supports 2+ hop joins with intermediate model inclusion</li>
+<li>✅ <strong>Derived metrics</strong>: Formula parsing with recursive metric dependency expansion</li>
+<li>✅ <strong>Native YAML format</strong>: Complete Sidemantic YAML schema with import/export (see <code>docs/YAML_FORMAT.md</code>)</li>
+<li>✅ <strong>Export adapters</strong>: Full round-trip support for Sidemantic ↔︎ Cube ↔︎ MetricFlow</li>
+</ul>
+</section>
+<section id="test-coverage" class="level3">
+<h3 class="anchored" data-anchor-id="test-coverage">Test Coverage</h3>
+<ul>
+<li>✅ 35 passing tests across core, adapters, SQL generation, and advanced features</li>
+<li>✅ Real DuckDB integration tests</li>
+<li>✅ Round-trip adapter tests (Sidemantic → Cube/MetricFlow → Sidemantic)</li>
+</ul>
+</section>
+</section>
+<section id="to-complete" class="level2">
+<h2 class="anchored" data-anchor-id="to-complete">🚧 To Complete</h2>
+<ol type="1">
+<li><strong>Cumulative metrics</strong>: Complete subquery pattern for window functions (basic structure exists, needs proper aggregation-then-window pattern)</li>
+<li><strong>Query optimization</strong>: Add query plan optimization and pushdown strategies</li>
+<li><strong>Pre-aggregations</strong>: Implement caching layer similar to Cube’s rollups</li>
+<li><strong>LookML adapter</strong>: Requires full grammar parser for complete import support</li>
+</ol>
+</section>
+<section id="file-structure" class="level2">
+<h2 class="anchored" data-anchor-id="file-structure">📁 File Structure</h2>
+<pre><code>sidemantic/
+├── sidemantic/
+│   ├── core/
+│   │   ├── dimension.py         ✅ Dimension types with granularity
+│   │   ├── entity.py            ✅ Entity (join key) definitions
+│   │   ├── measure.py           ✅ Measure aggregations
+│   │   ├── metric.py            ✅ Metric types (simple, ratio, derived, cumulative)
+│   │   ├── model.py             ✅ Model (dataset) definitions
+│   │   ├── semantic_graph.py    ✅ Graph with join path discovery
+│   │   └── semantic_layer.py    ✅ Main API
+│   ├── sql/
+│   │   └── generator_v2.py      ✅ SQLGlot builder-based SQL generation
+│   ├── adapters/
+│   │   ├── base.py              ✅ Base adapter interface
+│   │   ├── sidemantic.py        ✅ Native YAML (import/export)
+│   │   ├── cube.py              ✅ Cube YAML (import/export)
+│   │   ├── metricflow.py        ✅ MetricFlow YAML (import/export)
+│   │   └── lookml.py            ⚠️  LookML (placeholder)
+│   ├── filters/                 📁 Empty (for future filter parsing)
+│   └── api/                     📁 Empty (for future REST API)
+├── tests/
+│   ├── test_basic.py            ✅ Core functionality tests
+│   ├── test_adapters.py         ✅ Adapter import tests
+│   ├── test_sidemantic_adapter.py ✅ Native YAML adapter tests
+│   ├── test_export_adapters.py  ✅ Export and round-trip tests
+│   ├── test_with_data.py        ✅ End-to-end with real DuckDB
+│   ├── test_derived_metrics.py  ✅ Formula parsing tests
+│   ├── test_multi_hop_joins.py  ✅ Multi-hop join tests
+│   └── test_cumulative_metrics.py ⚠️  Window functions (partial)
+├── examples/
+│   ├── basic_example.py         ✅ Usage examples
+│   ├── export_example.py        ✅ Export demonstration
+│   ├── cube/                    📁 Cube YAML examples
+│   ├── metricflow/              📁 MetricFlow YAML examples
+│   └── sidemantic/              📁 Native YAML examples
+└── docs/
+    ├── STATUS.md                📄 This file
+    └── YAML_FORMAT.md           📄 Native YAML format specification</code></pre>
+</section>
+<section id="design-decisions" class="level2">
+<h2 class="anchored" data-anchor-id="design-decisions">🎯 Design Decisions</h2>
+<section id="why-entity-based-joins" class="level3">
+<h3 class="anchored" data-anchor-id="why-entity-based-joins">Why Entity-Based Joins?</h3>
+<p>Inspired by MetricFlow, entities eliminate manual join configuration. Models share entity names → automatic join discovery via graph traversal.</p>
+</section>
+<section id="why-sqlglot" class="level3">
+<h3 class="anchored" data-anchor-id="why-sqlglot">Why SQLGlot?</h3>
+<ul>
+<li>Dialect-agnostic SQL generation</li>
+<li>Parse, transform, and transpile SQL across databases</li>
+<li>Enables Snowflake/BigQuery/Postgres compatibility from single codebase</li>
+</ul>
+</section>
+<section id="why-cte-based" class="level3">
+<h3 class="anchored" data-anchor-id="why-cte-based">Why CTE-Based?</h3>
+<ul>
+<li>More readable than nested subqueries</li>
+<li>Easier to debug generated SQL</li>
+<li>Better query optimizer hints on modern databases</li>
+</ul>
+</section>
+<section id="why-pydantic" class="level3">
+<h3 class="anchored" data-anchor-id="why-pydantic">Why Pydantic?</h3>
+<ul>
+<li>Type safety for semantic model definitions</li>
+<li>Validation out of the box</li>
+<li>JSON/YAML serialization support</li>
+<li>Good IDE autocomplete</li>
+</ul>
+</section>
+</section>
+<section id="next-steps" class="level2">
+<h2 class="anchored" data-anchor-id="next-steps">🔄 Next Steps</h2>
+<p><strong>Immediate</strong> (to make functional): 1. Fix SQL generator using builder API or string templates 2. Run test suite and verify end-to-end queries work 3. Test with real DuckDB data</p>
+<p><strong>Short-term</strong> (to make useful): 1. Add more metric types (derived with formulas, cumulative with windows) 2. Test adapters with real Cube/MetricFlow YAML files 3. Add export functionality 4. Documentation and examples</p>
+<p><strong>Long-term</strong> (to make production-ready): 1. Query caching and optimization 2. REST/GraphQL API layer 3. Pre-aggregation support (like Cube’s rollups) 4. dbt integration 5. Data governance and access control</p>
+</section>
+<section id="research-summary" class="level2">
+<h2 class="anchored" data-anchor-id="research-summary">📊 Research Summary</h2>
+<p>The implementation incorporates best practices from:</p>
+<ul>
+<li><strong>Cube</strong>: Pre-aggregations, API-first design, multi-tenancy</li>
+<li><strong>MetricFlow</strong>: Entity-based joins, 5 metric types, semantic graph</li>
+<li><strong>LookML</strong>: Explores/views separation, dimension groups, drill-down</li>
+<li><strong>Hex</strong>: Multi-format import, interoperability focus</li>
+</ul>
+<p>Key insight: All semantic layers share core abstractions (models, dimensions, measures, metrics, relationships) but differ in query optimization, caching, and consumption patterns.</p>
+
+
+</section>
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

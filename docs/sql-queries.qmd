@@ -1,0 +1,329 @@
+---
+title: "SQL Queries"
+---
+
+Query the semantic layer with familiar SQL syntax.
+
+## Basic Queries
+
+```python
+layer.sql("SELECT revenue FROM orders")
+
+layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    WHERE status = 'completed'
+""")
+```
+
+## Supported Features
+
+### SELECT
+
+Select measures and dimensions:
+
+```sql
+SELECT revenue, order_count, status
+FROM orders
+```
+
+Table prefixes optional (inferred from FROM):
+
+```sql
+-- Both work
+SELECT orders.revenue FROM orders
+SELECT revenue FROM orders
+```
+
+### WHERE
+
+Filter with standard SQL conditions:
+
+```sql
+SELECT revenue
+FROM orders
+WHERE status = 'completed'
+  AND order_date >= '2024-01-01'
+  AND amount > 100
+```
+
+### ORDER BY
+
+```sql
+SELECT revenue, status
+FROM orders
+ORDER BY revenue DESC, status ASC
+```
+
+### LIMIT / OFFSET
+
+```sql
+SELECT revenue FROM orders LIMIT 10
+
+SELECT revenue FROM orders LIMIT 10 OFFSET 5
+```
+
+### Cross-Model Queries
+
+Reference multiple models - joins happen automatically:
+
+```sql
+SELECT
+    orders.revenue,
+    customers.region,
+    regions.country
+FROM orders
+```
+
+### SELECT *
+
+Expands to all dimensions and measures:
+
+```sql
+SELECT * FROM orders
+-- Expands to all dimensions + measures in orders model
+```
+
+## Parameters
+
+Use `{{ param }}` syntax:
+
+```python
+layer.sql(
+    """
+    SELECT revenue
+    FROM orders
+    WHERE order_date >= {{ start_date }}
+      AND region = {{ region }}
+    """,
+    parameters={
+        "start_date": "2024-01-01",
+        "region": "US"
+    }
+)
+```
+
+::: {.callout-warning}
+## Don't Quote Parameters
+Parameters are automatically quoted based on type:
+- ❌ `WHERE date >= '{{ start_date }}'` (creates `''2024-01-01''`)
+- ✅ `WHERE date >= {{ start_date }}`
+:::
+
+## Limitations
+
+These SQL features are **NOT supported**:
+
+### No Explicit JOINs
+
+❌ Can't write:
+```sql
+SELECT *
+FROM orders
+JOIN customers ON orders.customer_id = customers.id
+```
+
+✅ Instead:
+```sql
+-- Just reference both models - joins happen automatically
+SELECT orders.revenue, customers.name
+FROM orders
+```
+
+### No GROUP BY
+
+❌ Can't write:
+```sql
+SELECT status, SUM(amount)
+FROM orders
+GROUP BY status
+```
+
+✅ Instead:
+```sql
+-- Grouping is automatic based on dimensions
+SELECT revenue, status
+FROM orders
+```
+
+### No Aggregate Functions
+
+❌ Can't write:
+```sql
+SELECT COUNT(*), SUM(amount)
+FROM orders
+```
+
+✅ Instead, define measures:
+```yaml
+measures:
+  - name: order_count
+    agg: count
+  - name: revenue
+    agg: sum
+    expr: amount
+```
+
+Then:
+```sql
+SELECT order_count, revenue FROM orders
+```
+
+### No Subqueries
+
+❌ Can't write:
+```sql
+SELECT * FROM (
+    SELECT revenue FROM orders
+) AS subquery
+```
+
+### No CTEs/WITH
+
+❌ Can't write:
+```sql
+WITH temp AS (SELECT * FROM orders)
+SELECT * FROM temp
+```
+
+### No HAVING
+
+❌ Can't write:
+```sql
+SELECT status, revenue
+FROM orders
+HAVING revenue > 1000
+```
+
+✅ Use WHERE on measures instead:
+```sql
+SELECT status, revenue
+FROM orders
+WHERE revenue > 1000  -- This works!
+```
+
+### No Window Functions
+
+❌ Can't write:
+```sql
+SELECT revenue, ROW_NUMBER() OVER (PARTITION BY status)
+FROM orders
+```
+
+✅ Use table calculations or cumulative measures instead.
+
+### No DISTINCT
+
+❌ Can't write:
+```sql
+SELECT DISTINCT status FROM orders
+```
+
+✅ Just select the dimension:
+```sql
+SELECT status FROM orders
+```
+
+### No UNION/INTERSECT/EXCEPT
+
+❌ Set operations not supported.
+
+### No INSERT/UPDATE/DELETE
+
+Read-only semantic layer.
+
+## Why These Limitations?
+
+The semantic layer rewrites your SQL to use pre-defined measures and handle joins automatically. This means:
+
+1. **Measures must be pre-defined** - No ad-hoc `SUM()` in SELECT
+2. **Joins are automatic** - Based on model relationships
+3. **Grouping is automatic** - Based on dimensions selected
+
+This trade-off ensures:
+- ✅ Consistent metric definitions
+- ✅ Automatic join handling
+- ✅ Symmetric aggregate deduplication
+- ✅ Centralized business logic
+
+## Best Practices
+
+::: {.callout-tip}
+## Define Once, Query Anywhere
+Define measures in YAML:
+```yaml
+measures:
+  - name: revenue
+    agg: sum
+    expr: amount
+```
+
+Then query with simple SQL:
+```sql
+SELECT revenue FROM orders
+```
+:::
+
+::: {.callout-tip}
+## Complex Logic in Measures
+Put complex logic in measure definitions, not queries:
+
+```yaml
+# Define complex measure
+measures:
+  - name: high_value_revenue
+    agg: sum
+    expr: "CASE WHEN amount > 1000 THEN amount ELSE 0 END"
+```
+
+```sql
+-- Simple query
+SELECT high_value_revenue FROM orders
+```
+:::
+
+::: {.callout-warning}
+## Filter on Joined Tables
+Only filter on tables that are actually joined:
+
+❌ This fails (customers not joined):
+```sql
+SELECT orders.revenue
+WHERE customers.region = 'US'
+```
+
+✅ Include a dimension to force join:
+```sql
+SELECT orders.revenue, customers.region
+WHERE customers.region = 'US'
+```
+:::
+
+## Programmatic Alternative
+
+For full flexibility, use the programmatic API:
+
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    filters=["orders.status = 'completed'"],
+    order_by=["orders.revenue DESC"],
+    limit=10
+)
+```
+
+Or generate SQL and execute yourself:
+
+```python
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"]
+)
+
+# Modify as needed
+sql += " UNION SELECT ..."
+
+# Execute directly
+conn.execute(sql)
+```

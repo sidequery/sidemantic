@@ -2,6 +2,12 @@
 title: "Interactive Demo"
 filters:
   - marimo
+marimo:
+  pyproject:
+    dependencies:
+      - duckdb
+      - pandas
+      - sidemantic
 ---
 
 Try the semantic layer interactively with real data.

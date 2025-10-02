@@ -1,205 +1,73 @@
 ---
 title: "Sidemantic"
-subtitle: "A Universal Semantic Layer for Data Modeling"
+subtitle: "SQLGlot-based semantic layer"
 ---
 
 ## What is Sidemantic?
 
-Sidemantic is a Python framework for building semantic layers that translate business logic into SQL. It provides a unified interface for defining metrics, dimensions, and their relationships, then compiles them into optimized SQL queries.
+Sidemantic is a semantic layer that lets you define metrics once and query them with SQL. It automatically handles joins, aggregations, and complex calculations.
 
-### Key Features
-
-::: {.grid}
-
-::: {.g-col-6}
-**🔗 Universal Format**
-
-- Import from Cube, MetricFlow, LookML
-- Export to multiple formats
-- SQL dialect transpilation
-:::
-
-::: {.g-col-6}
-**📊 Advanced Metrics**
-
-- Grain-to-date (MTD, YTD)
-- Offset ratios (MoM growth)
-- Conversion funnels
-- Table calculations
-:::
-
-::: {.g-col-6}
-**🎯 Smart Joins**
-
-- Automatic join path detection
-- Symmetric aggregates for fan-out
-- Rails-like relationship syntax
-:::
-
-::: {.g-col-6}
-**⚙️ Dynamic Queries**
-
-- Type-safe parameters
-- SQL rewriting
-- Dependency resolution
-:::
-
-:::
-
-## Quick Start
-
-Install sidemantic:
-
-```bash
-pip install sidemantic
+```yaml
+# Define once
+models:
+  - name: orders
+    table: orders
+    measures:
+      - name: revenue
+        agg: sum
+        expr: amount
 ```
-
-Define your semantic layer:
 
 ```python
-from sidemantic import Model, Dimension, Measure, Entity
-
-orders = Model(
-    name="orders",
-    table="raw_orders",
-    entities=[
-        Entity(name="order_id", type="primary", expr="id")
-    ],
-    dimensions=[
-        Dimension(name="order_date", type="time", sql_expr="created_at"),
-        Dimension(name="status", type="categorical", sql_expr="status")
-    ],
-    measures=[
-        Measure(name="revenue", agg="sum", expr="amount"),
-        Measure(name="order_count", agg="count", expr="*")
-    ]
-)
+# Query anywhere with SQL
+layer.sql("SELECT revenue FROM orders")
 ```
 
-Generate SQL:
+## Key Features
+
+- **YAML definitions** with JSON Schema for autocomplete
+- **SQL query interface** - write familiar SQL, get semantic results
+- **Automatic joins** - define relationships once, query across models
+- **Complex measures** - ratios, formulas, cumulative metrics, time comparisons
+- **Multi-dialect** - SQLGlot powers cross-database SQL generation
+
+## Quick Example
+
+```yaml
+# semantic_layer.yml
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+
+    measures:
+      - name: revenue
+        agg: sum
+        expr: amount
+```
 
 ```python
-from sidemantic import SemanticGraph, SQLGenerator
+from sidemantic import SemanticLayer
 
-graph = SemanticGraph()
-graph.add_model(orders)
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
 
-generator = SQLGenerator(graph)
-sql = generator.generate(
-    metrics=["orders.revenue", "orders.order_count"],
-    dimensions=["orders.order_date__month"]
-)
+# Query with SQL
+result = layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    WHERE status = 'completed'
+""")
+
+df = result.fetchdf()
 ```
 
-## Why Sidemantic?
+## Learn More
 
-### Problem: Metric Inconsistency
-
-Different tools define the same metrics differently, leading to:
-
-- Inconsistent results across dashboards
-- Duplicate metric definitions
-- Hard-to-maintain SQL
-- Tribal knowledge in BI teams
-
-### Solution: Single Source of Truth
-
-Sidemantic provides:
-
-- **One metric definition** used everywhere
-- **Automatic SQL generation** from high-level queries
-- **Type safety** and validation
-- **Cross-tool compatibility**
-
-## Architecture
-
-```{mermaid}
-graph LR
-    A[Business Logic] --> B[Semantic Layer]
-    B --> C[SQL Generator]
-    C --> D[DuckDB]
-    C --> E[Snowflake]
-    C --> F[BigQuery]
-    C --> G[PostgreSQL]
-
-    H[Cube] --> B
-    I[MetricFlow] --> B
-    J[LookML] --> B
-```
-
-## Feature Highlights
-
-### Parameters - Dynamic User Input
-
-```python
-# Define parameter
-status_param = Parameter(
-    name="status_filter",
-    type="string",
-    default_value="completed"
-)
-
-# Use in query
-sql = generator.generate(
-    metrics=["orders.revenue"],
-    filters=["orders.status = {{ status_filter }}"],
-    parameters={"status_filter": "pending"}
-)
-```
-
-### Symmetric Aggregates - Prevent Double-Counting
-
-When querying across multiple one-to-many joins, sidemantic automatically applies symmetric aggregates to prevent inflated totals:
-
-```python
-# Query orders + items + shipments
-# Without symmetric aggregates: revenue = 100 × 4 = 400 (WRONG)
-# With symmetric aggregates: revenue = 100 (CORRECT)
-
-sql = generator.generate(
-    metrics=[
-        "orders.revenue",      # Uses symmetric aggregates
-        "order_items.quantity",
-        "shipments.count"
-    ]
-)
-```
-
-### Advanced Metrics
-
-```python
-# Month-to-date revenue
-mtd_revenue = Measure(
-    name="mtd_revenue",
-    type="cumulative",
-    expr="orders.revenue",
-    grain_to_date="month"
-)
-
-# Month-over-month growth
-mom_growth = Measure(
-    name="mom_growth",
-    type="ratio",
-    numerator="orders.revenue",
-    denominator="orders.revenue",
-    offset_window="1 month"
-)
-```
-
-## What's Next?
-
-- [Getting Started Guide](getting-started.qmd) - Build your first semantic layer
-- [Core Concepts](concepts/models.qmd) - Learn the fundamentals
-- [Features](features/parameters.qmd) - Explore advanced capabilities
-- [API Reference](api/index.qmd) - Detailed API documentation
-- [Examples](examples.qmd) - See it in action
-
-## Community
-
-- **GitHub**: [anthropics/sidemantic](https://github.com/anthropics/sidemantic)
-- **Issues**: Report bugs and request features
-- **Discussions**: Ask questions and share ideas
-
-## License
-
-MIT License - see LICENSE file for details
+- [Getting Started](getting-started.qmd) - Step-by-step tutorial
+- [Examples](examples.qmd) - Real-world examples
+- [YAML Reference](YAML_FORMAT.md) - Complete YAML specification

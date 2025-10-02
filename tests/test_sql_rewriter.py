@@ -190,11 +190,13 @@ def test_invalid_field(semantic_layer):
 
 
 def test_missing_table_prefix(semantic_layer):
-    """Test error for missing table prefix."""
+    """Test that table prefix can be inferred from FROM clause."""
     sql = "SELECT revenue FROM orders"
 
-    with pytest.raises(ValueError, match="must have table prefix"):
-        semantic_layer.sql(sql)
+    # Should work now with table inference
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+    assert len(df) == 1  # Should aggregate all rows
 
 
 def test_unsupported_aggregation(semantic_layer):

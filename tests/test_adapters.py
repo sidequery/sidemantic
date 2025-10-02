@@ -91,7 +91,7 @@ def test_metricflow_adapter():
     assert "total_revenue" in graph.metrics
     total_revenue = graph.get_metric("total_revenue")
     assert total_revenue.type == "simple"
-    assert total_revenue.measure == "revenue"
+    assert total_revenue.expr == "revenue"
 
     assert "average_order_value" in graph.metrics
     avg_order = graph.get_metric("average_order_value")

@@ -8,7 +8,6 @@ from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.entity import Entity
 from sidemantic.core.measure import Measure
-from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -241,14 +240,14 @@ class MetricFlowAdapter(BaseAdapter):
             label=measure_def.get("label"),
         )
 
-    def _parse_metric(self, metric_def: dict) -> Metric | None:
-        """Parse MetricFlow metric into Sidemantic metric.
+    def _parse_metric(self, metric_def: dict) -> Measure | None:
+        """Parse MetricFlow metric into Sidemantic measure.
 
         Args:
-            metric_def: Metric definition dictionary
+            metric_def: Measure definition dictionary
 
         Returns:
-            Metric instance or None
+            Measure instance or None
         """
         name = metric_def.get("name")
         if not name:
@@ -273,13 +272,13 @@ class MetricFlowAdapter(BaseAdapter):
         type_params = metric_def.get("type_params", {})
 
         # Simple metric
-        measure = None
+        expr = None
         if metric_type == "simple":
             measure_def = type_params.get("measure", {})
             if isinstance(measure_def, dict):
-                measure = measure_def.get("name")
+                expr = measure_def.get("name")
             else:
-                measure = measure_def
+                expr = measure_def
 
         # Ratio metric
         numerator = None
@@ -299,12 +298,8 @@ class MetricFlowAdapter(BaseAdapter):
                 denominator = denominator_def
 
         # Derived metric
-        expr = None
-        metrics = None
         if metric_type == "derived":
             expr = type_params.get("expr")
-            metrics_list = type_params.get("metrics", [])
-            metrics = [m.get("name") if isinstance(m, dict) else m for m in metrics_list]
 
         # Cumulative metric
         window = None
@@ -316,16 +311,14 @@ class MetricFlowAdapter(BaseAdapter):
         filter_expr = metric_def.get("filter")
         filters = [filter_expr] if filter_expr else None
 
-        return Metric(
+        return Measure(
             name=name,
             type=sidemantic_type,
             description=metric_def.get("description"),
             label=metric_def.get("label"),
-            measure=measure,
+            expr=expr,
             numerator=numerator,
             denominator=denominator,
-            expr=expr,
-            metrics=metrics,
             window=window,
             filters=filters,
         )
@@ -435,52 +428,52 @@ class MetricFlowAdapter(BaseAdapter):
 
         return result
 
-    def _export_metric(self, metric: Metric, graph) -> dict:
-        """Export metric to MetricFlow format.
+    def _export_metric(self, measure: Measure, graph) -> dict:
+        """Export measure to MetricFlow format.
 
         Args:
-            metric: Metric to export
+            measure: Measure to export
 
         Returns:
-            Metric definition dictionary
+            Measure definition dictionary
         """
         result = {
-            "name": metric.name,
-            "type": metric.type,
+            "name": measure.name,
+            "type": measure.type,
         }
 
-        if metric.description:
-            result["description"] = metric.description
-        if metric.label:
-            result["label"] = metric.label
+        if measure.description:
+            result["description"] = measure.description
+        if measure.label:
+            result["label"] = measure.label
 
         # Type-specific params
         type_params = {}
 
-        if metric.type == "simple" and metric.measure:
-            type_params["measure"] = {"name": metric.measure}
+        if measure.type == "simple" and measure.expr:
+            type_params["measure"] = {"name": measure.expr}
 
-        elif metric.type == "ratio":
-            if metric.numerator:
-                type_params["numerator"] = {"name": metric.numerator}
-            if metric.denominator:
-                type_params["denominator"] = {"name": metric.denominator}
+        elif measure.type == "ratio":
+            if measure.numerator:
+                type_params["numerator"] = {"name": measure.numerator}
+            if measure.denominator:
+                type_params["denominator"] = {"name": measure.denominator}
 
-        elif metric.type == "derived":
-            if metric.expr:
-                type_params["expr"] = metric.expr
+        elif measure.type == "derived":
+            if measure.expr:
+                type_params["expr"] = measure.expr
             # Auto-detect dependencies from expression using graph for resolution
-            dependencies = metric.get_dependencies(graph)
+            dependencies = measure.get_dependencies(graph)
             if dependencies:
                 type_params["metrics"] = [{"name": m} for m in dependencies]
 
-        elif metric.type == "cumulative" and metric.window:
-            type_params["cumulative_type_params"] = {"window": metric.window}
+        elif measure.type == "cumulative" and measure.window:
+            type_params["cumulative_type_params"] = {"window": measure.window}
 
         if type_params:
             result["type_params"] = type_params
 
-        if metric.filters:
-            result["filter"] = metric.filters[0]  # MetricFlow uses single filter string
+        if measure.filters:
+            result["filter"] = measure.filters[0]  # MetricFlow uses single filter string
 
         return result

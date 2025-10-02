@@ -38,8 +38,8 @@ def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
     deps = set()
 
     # Simple metric - depends on its measure
-    if metric_obj.type == "simple" and metric_obj.measure:
-        deps.add(metric_obj.measure)
+    if metric_obj.type == "simple" and metric_obj.expr:
+        deps.add(metric_obj.expr)
 
     # Ratio metric - depends on numerator and denominator
     elif metric_obj.type == "ratio":
@@ -88,9 +88,12 @@ def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
             # Without graph, just return raw column names
             deps.update(refs)
 
-    # Cumulative metric - depends on its measure
-    elif metric_obj.type == "cumulative" and metric_obj.measure:
-        deps.add(metric_obj.measure)
+    # Cumulative metric - depends on its base measure (stored in expr)
+    elif metric_obj.type == "cumulative":
+        if metric_obj.expr:
+            deps.add(metric_obj.expr)
+        elif metric_obj.base_metric:
+            deps.add(metric_obj.base_metric)
 
     # Time comparison - depends on base metric
     elif metric_obj.type == "time_comparison" and metric_obj.base_metric:

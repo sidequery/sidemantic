@@ -201,8 +201,8 @@ class SQLGenerator:
                 try:
                     metric = self.graph.get_metric(metric_ref)
                     if metric:
-                        if metric.type == "simple" and metric.measure:
-                            collect_models_from_metric(metric.measure)
+                        if metric.type == "simple" and metric.expr:
+                            collect_models_from_metric(metric.expr)
                         elif metric.type == "ratio":
                             if metric.numerator:
                                 collect_models_from_metric(metric.numerator)
@@ -597,8 +597,8 @@ class SQLGenerator:
         """
         if metric.type == "simple":
             # Reference the measure directly
-            if "." in metric.measure:
-                model_name, measure_name = metric.measure.split(".")
+            if "." in metric.expr:
+                model_name, measure_name = metric.expr.split(".")
                 model = self.graph.get_model(model_name)
                 measure = model.get_measure(measure_name)
 
@@ -809,8 +809,8 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 if metric and metric.type == "cumulative":
                     cumulative_metrics.append(m)
                     # Add the base measure/metric to base_metrics
-                    if metric.measure:
-                        base_metrics.append(metric.measure)
+                    if metric.expr:
+                        base_metrics.append(metric.expr)
                 elif metric and metric.type == "time_comparison":
                     time_comparison_metrics.append(m)
                     # Add the base metric to base_metrics
@@ -877,7 +877,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
         # Add cumulative metrics with window functions
         for m in cumulative_metrics:
             metric = self.graph.get_metric(m)
-            if not metric or not metric.measure:
+            if not metric or not metric.expr:
                 continue
 
             # Find the time dimension to order by
@@ -900,19 +900,19 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
 
             # Get base measure/metric to apply window function to
-            base_ref = metric.measure
+            base_ref = metric.expr
             if "." in base_ref:
                 # It's a direct measure reference - extract just the measure name
                 base_alias = base_ref.split(".")[1]
             else:
                 # It's a metric reference - check if it exists and get its underlying measure
                 base_metric = self.graph.get_metric(base_ref)
-                if base_metric and base_metric.measure:
+                if base_metric and base_metric.expr:
                     # Use the underlying measure name
-                    if "." in base_metric.measure:
-                        base_alias = base_metric.measure.split(".")[1]
+                    if "." in base_metric.expr:
+                        base_alias = base_metric.expr.split(".")[1]
                     else:
-                        base_alias = base_metric.measure
+                        base_alias = base_metric.expr
                 else:
                     # Fallback to the metric name itself
                     base_alias = base_ref

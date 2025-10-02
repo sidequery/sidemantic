@@ -7,7 +7,7 @@ Examples: running_total_revenue, 7_day_rolling_average
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
 
 
 @pytest.fixture
@@ -55,10 +55,10 @@ def test_running_total(timeseries_db):
     sl.add_model(orders)
 
     # Define cumulative metric
-    running_total = Metric(
+    running_total = Measure(
         name="running_total_revenue",
         type="cumulative",
-        measure="orders.daily_revenue",
+        expr="orders.daily_revenue",
     )
     sl.add_metric(running_total)
 
@@ -102,10 +102,10 @@ def test_rolling_window(timeseries_db):
     sl.add_model(orders)
 
     # Define 3-day rolling window metric
-    rolling_metric = Metric(
+    rolling_metric = Measure(
         name="rolling_3day_revenue",
         type="cumulative",
-        measure="orders.daily_revenue",
+        expr="orders.daily_revenue",
         window="2 days"  # Current + 2 preceding = 3 days total
     )
     sl.add_metric(rolling_metric)
@@ -155,15 +155,15 @@ def test_cumulative_with_regular_metric(timeseries_db):
     sl.add_model(orders)
 
     # Define both regular and cumulative metrics
-    total_revenue = Metric(
+    total_revenue = Measure(
         name="total_revenue",
         type="simple",
-        measure="orders.daily_revenue"
+        expr="orders.daily_revenue"
     )
-    running_total = Metric(
+    running_total = Measure(
         name="running_total",
         type="cumulative",
-        measure="orders.daily_revenue"
+        expr="orders.daily_revenue"
     )
 
     sl.add_metric(total_revenue)

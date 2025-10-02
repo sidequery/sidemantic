@@ -1,6 +1,6 @@
 """Basic example of using Sidemantic."""
 
-from sidemantic import Dimension, Entity, Measure, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
 
 # Create semantic layer
 sl = SemanticLayer()
@@ -49,16 +49,16 @@ sl.add_model(customers)
 
 # Define metrics
 sl.add_metric(
-    Metric(
+    Measure(
         name="total_revenue",
         type="simple",
-        measure="orders.revenue",
+        expr="orders.revenue",
         description="Total revenue from all orders",
     )
 )
 
 sl.add_metric(
-    Metric(
+    Measure(
         name="conversion_rate",
         type="ratio",
         numerator="orders.completed_revenue",

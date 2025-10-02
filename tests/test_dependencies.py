@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic.core.metric import Metric
+from sidemantic.core.measure import Measure
 from sidemantic.core.dependency_analyzer import extract_column_references, extract_metric_dependencies
 
 
@@ -29,10 +29,10 @@ def test_extract_column_references_with_case():
 
 def test_simple_metric_dependencies():
     """Test simple metric returns its measure."""
-    metric = Metric(
+    metric = Measure(
         name="total_revenue",
         type="simple",
-        measure="revenue"
+        expr="revenue"
     )
     deps = metric.get_dependencies()
     assert deps == {"revenue"}
@@ -40,7 +40,7 @@ def test_simple_metric_dependencies():
 
 def test_ratio_metric_dependencies():
     """Test ratio metric returns numerator and denominator."""
-    metric = Metric(
+    metric = Measure(
         name="profit_margin",
         type="ratio",
         numerator="profit",
@@ -52,7 +52,7 @@ def test_ratio_metric_dependencies():
 
 def test_derived_metric_dependencies():
     """Test derived metric parses expr for dependencies."""
-    metric = Metric(
+    metric = Measure(
         name="net_margin",
         type="derived",
         expr="(revenue - cost) / revenue"
@@ -63,10 +63,10 @@ def test_derived_metric_dependencies():
 
 def test_cumulative_metric_dependencies():
     """Test cumulative metric returns its measure."""
-    metric = Metric(
+    metric = Measure(
         name="running_total",
         type="cumulative",
-        measure="daily_revenue",
+        expr="daily_revenue",
         window="7 days"
     )
     deps = metric.get_dependencies()
@@ -75,7 +75,7 @@ def test_cumulative_metric_dependencies():
 
 def test_time_comparison_metric_dependencies():
     """Test time comparison metric returns base metric."""
-    metric = Metric(
+    metric = Measure(
         name="revenue_yoy",
         type="time_comparison",
         base_metric="revenue",

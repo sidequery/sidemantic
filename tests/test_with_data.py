@@ -6,7 +6,7 @@ This test verifies end-to-end functionality with actual database queries.
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
 
 
 @pytest.fixture

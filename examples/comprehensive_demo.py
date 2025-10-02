@@ -31,7 +31,7 @@ import duckdb
 from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.measure import Measure
-from sidemantic.core.metric import Metric
+from sidemantic.core.measure import Measure
 from sidemantic.core.join import Join
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -133,16 +133,16 @@ def main():
     print_section("2. Defining Metrics (Dependencies Auto-Detected!)")
 
     # Simple metric
-    total_revenue = Metric(
+    total_revenue = Measure(
         name="total_revenue",
         type="simple",
-        measure="orders.amount",
+        expr="orders.amount",
         description="Total revenue from all orders"
     )
     print("✓ Simple metric: total_revenue")
 
     # Ratio metric
-    avg_order_value = Metric(
+    avg_order_value = Measure(
         name="avg_order_value",
         type="ratio",
         numerator="orders.amount",
@@ -152,7 +152,7 @@ def main():
     print("✓ Ratio metric: avg_order_value")
 
     # Derived metric - NO manual dependency specification needed!
-    revenue_per_customer = Metric(
+    revenue_per_customer = Measure(
         name="revenue_per_customer",
         type="derived",
         expr="total_revenue / order_count",  # Dependencies auto-detected from expr!
@@ -161,10 +161,10 @@ def main():
     print("✓ Derived metric: revenue_per_customer (auto-detects total_revenue, order_count)")
 
     # Cumulative metric
-    running_total = Metric(
+    running_total = Measure(
         name="running_total",
         type="cumulative",
-        measure="orders.amount",
+        expr="orders.amount",
         window="all",
         description="Running total of revenue"
     )

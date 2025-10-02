@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
 from sidemantic.validation import (
     MetricValidationError,
     ModelValidationError,
@@ -61,12 +61,12 @@ def test_metric_validation_simple_no_measure():
     )
 
     # Try to add invalid metric
-    invalid_metric = Metric(name="bad_metric", type="simple")
+    invalid_metric = Measure(name="bad_metric", type="simple")
 
     with pytest.raises(MetricValidationError) as exc_info:
         sl.add_metric(invalid_metric)
 
-    assert "must have 'measure' defined" in str(exc_info.value)
+    assert "must have 'expr' defined" in str(exc_info.value)
 
 
 def test_metric_validation_measure_not_found():
@@ -85,10 +85,10 @@ def test_metric_validation_measure_not_found():
     )
 
     # Try to reference non-existent measure
-    invalid_metric = Metric(
+    invalid_metric = Measure(
         name="bad_metric",
         type="simple",
-        measure="orders.nonexistent"
+        expr="orders.nonexistent"
     )
 
     with pytest.raises(MetricValidationError) as exc_info:
@@ -114,7 +114,7 @@ def test_metric_validation_self_reference():
 
     # Try to add self-referencing metric
     # Note: dependencies are auto-detected from expr now
-    invalid_metric = Metric(
+    invalid_metric = Measure(
         name="metric_a",
         type="derived",
         expr="metric_a + 1",

@@ -12,7 +12,7 @@ class Model(BaseModel):
     """Model (dataset) definition.
 
     Models are the foundation of the semantic layer, mapping to physical tables
-    or SQL expressions.
+    or SQL expressions. Auto-registers with the current semantic layer context if available.
     """
 
     name: str = Field(..., description="Unique model name")
@@ -37,6 +37,13 @@ class Model(BaseModel):
 
     dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
     measures: list[Measure] = Field(default_factory=list, description="Measure definitions")
+
+    def __init__(self, **data):
+        super().__init__(**data)
+
+        # Auto-register with current layer if in context
+        from .registry import auto_register_model
+        auto_register_model(self)
 
     def __hash__(self) -> int:
         return hash(self.name)

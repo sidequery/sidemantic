@@ -150,8 +150,8 @@ See `examples/sql_query_example.py` for comprehensive examples.
 Metrics can reference measures from multiple models:
 
 ```python
-# Metric using measure from different model
-conversion_rate = Metric(
+# Measure using measure from different model
+conversion_rate = Measure(
     name="conversion_rate",
     type="ratio",
     numerator="orders.completed_revenue",  # from orders model
@@ -174,11 +174,10 @@ result = sl.query(
 Formula-based metrics with recursive dependency resolution:
 
 ```python
-Metric(
+Measure(
     name="revenue_per_order",
     type="derived",
-    expr="total_revenue / order_count",
-    metrics=["total_revenue", "order_count"]  # Dependencies
+    expr="total_revenue / order_count"
 )
 ```
 

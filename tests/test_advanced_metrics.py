@@ -6,7 +6,7 @@ import duckdb
 from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.measure import Measure
-from sidemantic.core.metric import Metric
+from sidemantic.core.measure import Measure
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 
@@ -32,10 +32,10 @@ def test_month_to_date_metric():
     )
 
     # MTD cumulative - resets each month
-    mtd_revenue = Metric(
+    mtd_revenue = Measure(
         name="mtd_revenue",
         type="cumulative",
-        measure="sales.amount",
+        expr="sales.amount",
         grain_to_date="month"
     )
 
@@ -89,10 +89,10 @@ def test_year_to_date_metric():
         ]
     )
 
-    ytd_revenue = Metric(
+    ytd_revenue = Measure(
         name="ytd_revenue",
         type="cumulative",
-        measure="sales.amount",
+        expr="sales.amount",
         grain_to_date="year"
     )
 
@@ -141,10 +141,10 @@ def test_fill_nulls_with_zero():
     )
 
     # Metric with fill_nulls_with
-    total_revenue = Metric(
+    total_revenue = Measure(
         name="total_revenue",
         type="simple",
-        measure="orders.amount",
+        expr="orders.amount",
         fill_nulls_with=0
     )
 
@@ -223,7 +223,7 @@ def test_offset_ratio_metric():
     )
 
     # Month-over-month growth: current / previous month
-    mom_growth = Metric(
+    mom_growth = Measure(
         name="mom_growth",
         type="ratio",
         numerator="sales.revenue",
@@ -285,7 +285,7 @@ def test_conversion_metric():
     )
 
     # Conversion: users who purchase within 7 days of signup
-    signup_conversion = Metric(
+    signup_conversion = Measure(
         name="signup_conversion",
         type="conversion",
         entity="user_id",

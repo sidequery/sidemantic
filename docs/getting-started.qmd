@@ -180,18 +180,18 @@ Sidemantic automatically:
 Define reusable metrics:
 
 ```python
-from sidemantic import Metric
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer
 
 # Simple metric
-total_revenue = Metric(
+total_revenue = Measure(
     name="total_revenue",
     type="simple",
-    measure="orders.revenue",
+    expr="orders.revenue",
     description="Total revenue from all orders"
 )
 
 # Ratio metric
-conversion_rate = Metric(
+conversion_rate = Measure(
     name="conversion_rate",
     type="ratio",
     numerator="orders.completed_revenue",

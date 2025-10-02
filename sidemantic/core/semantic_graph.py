@@ -3,7 +3,7 @@
 from collections import deque
 from dataclasses import dataclass
 
-from sidemantic.core.metric import Metric
+from sidemantic.core.measure import Measure
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.table_calculation import TableCalculation
@@ -29,7 +29,7 @@ class SemanticGraph:
 
     def __init__(self):
         self.models: dict[str, Model] = {}
-        self.metrics: dict[str, Metric] = {}
+        self.metrics: dict[str, Measure] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
         self._adjacency: dict[str, list[tuple[str, str]]] = {}  # model -> [(entity, target_model)]
@@ -46,16 +46,16 @@ class SemanticGraph:
         self.models[model.name] = model
         self._build_adjacency()
 
-    def add_metric(self, metric: Metric) -> None:
-        """Add a metric to the graph.
+    def add_metric(self, measure: Measure) -> None:
+        """Add a measure to the graph.
 
         Args:
-            metric: Metric to add
+            measure: Measure to add
         """
-        if metric.name in self.metrics:
-            raise ValueError(f"Metric {metric.name} already exists")
+        if measure.name in self.metrics:
+            raise ValueError(f"Measure {measure.name} already exists")
 
-        self.metrics[metric.name] = metric
+        self.metrics[measure.name] = measure
 
     def add_table_calculation(self, calc: TableCalculation) -> None:
         """Add a table calculation to the graph.
@@ -116,16 +116,16 @@ class SemanticGraph:
 
         return self.parameters[name]
 
-    def _add_metric_impl(self, metric: Metric) -> None:
-        """Internal method to add a metric without checks (for legacy compatibility).
+    def _add_metric_impl(self, measure: Measure) -> None:
+        """Internal method to add a measure without checks (for legacy compatibility).
 
         Args:
-            metric: Metric to add
+            measure: Measure to add
         """
-        if metric.name in self.metrics:
-            raise ValueError(f"Metric {metric.name} already exists")
+        if measure.name in self.metrics:
+            raise ValueError(f"Measure {measure.name} already exists")
 
-        self.metrics[metric.name] = metric
+        self.metrics[measure.name] = measure
 
     def get_model(self, name: str) -> Model:
         """Get model by name.
@@ -143,20 +143,20 @@ class SemanticGraph:
             raise KeyError(f"Model {name} not found")
         return self.models[name]
 
-    def get_metric(self, name: str) -> Metric:
-        """Get metric by name.
+    def get_metric(self, name: str) -> Measure:
+        """Get measure by name.
 
         Args:
-            name: Metric name
+            name: Measure name
 
         Returns:
-            Metric instance
+            Measure instance
 
         Raises:
-            KeyError: If metric not found
+            KeyError: If measure not found
         """
         if name not in self.metrics:
-            raise KeyError(f"Metric {name} not found")
+            raise KeyError(f"Measure {name} not found")
         return self.metrics[name]
 
     def _build_adjacency(self) -> None:

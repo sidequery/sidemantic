@@ -6,7 +6,7 @@ import duckdb
 from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.measure import Measure
-from sidemantic.core.metric import Metric
+from sidemantic.core.measure import Measure
 from sidemantic.core.join import Join
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -63,10 +63,10 @@ def test_view_can_be_queried():
         ]
     )
 
-    total_revenue = Metric(
+    total_revenue = Measure(
         name="total_revenue",
         type="simple",
-        measure="orders.amount"
+        expr="orders.amount"
     )
 
     graph = SemanticGraph()
@@ -108,10 +108,10 @@ def test_join_view_against_other_tables():
         ]
     )
 
-    avg_price = Metric(
+    avg_price = Measure(
         name="avg_price",
         type="simple",
-        measure="products.price"
+        expr="products.price"
     )
 
     graph = SemanticGraph()

@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sidemantic.core.metric import Metric
+    from sidemantic.core.measure import Measure
     from sidemantic.core.model import Model
     from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -86,11 +86,11 @@ def validate_model(model: "Model") -> list[str]:
     return errors
 
 
-def validate_metric(metric: "Metric", graph: "SemanticGraph") -> list[str]:
-    """Validate a metric definition.
+def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
+    """Validate a measure definition.
 
     Args:
-        metric: Metric to validate
+        measure: Measure to validate
         graph: Semantic graph containing models
 
     Returns:
@@ -98,114 +98,114 @@ def validate_metric(metric: "Metric", graph: "SemanticGraph") -> list[str]:
     """
     errors = []
 
-    # Check metric type
-    if metric.type not in ["simple", "ratio", "derived", "cumulative"]:
+    # Check measure type
+    if measure.type and measure.type not in ["simple", "ratio", "derived", "cumulative", "time_comparison", "conversion"]:
         errors.append(
-            f"Metric '{metric.name}' has invalid type '{metric.type}'. "
-            f"Must be one of: simple, ratio, derived, cumulative"
+            f"Measure '{measure.name}' has invalid type '{measure.type}'. "
+            f"Must be one of: simple, ratio, derived, cumulative, time_comparison, conversion"
         )
         return errors  # Can't continue validation with invalid type
 
     # Validate based on type
-    if metric.type == "simple":
-        if not metric.measure:
-            errors.append(f"Simple metric '{metric.name}' must have 'measure' defined")
+    if measure.type == "simple":
+        if not measure.expr:
+            errors.append(f"Simple measure '{measure.name}' must have 'expr' defined")
         else:
             # Validate measure reference
-            if "." in metric.measure:
-                model_name, measure_name = metric.measure.split(".")
+            if "." in measure.expr:
+                model_name, measure_name = measure.expr.split(".")
                 model = graph.models.get(model_name)
                 if not model:
                     errors.append(
-                        f"Simple metric '{metric.name}': model '{model_name}' not found"
+                        f"Simple measure '{measure.name}': model '{model_name}' not found"
                     )
                 elif not model.get_measure(measure_name):
                     errors.append(
-                        f"Simple metric '{metric.name}': measure '{measure_name}' not found in model '{model_name}'"
+                        f"Simple measure '{measure.name}': measure '{measure_name}' not found in model '{model_name}'"
                     )
             else:
                 errors.append(
-                    f"Simple metric '{metric.name}': measure must be in 'model.measure' format"
+                    f"Simple measure '{measure.name}': expr must be in 'model.measure' format"
                 )
 
-    elif metric.type == "ratio":
-        if not metric.numerator:
-            errors.append(f"Ratio metric '{metric.name}' must have 'numerator' defined")
-        if not metric.denominator:
-            errors.append(f"Ratio metric '{metric.name}' must have 'denominator' defined")
+    elif measure.type == "ratio":
+        if not measure.numerator:
+            errors.append(f"Ratio measure '{measure.name}' must have 'numerator' defined")
+        if not measure.denominator:
+            errors.append(f"Ratio measure '{measure.name}' must have 'denominator' defined")
 
         # Validate references
-        for ref_type, ref in [("numerator", metric.numerator), ("denominator", metric.denominator)]:
+        for ref_type, ref in [("numerator", measure.numerator), ("denominator", measure.denominator)]:
             if ref and "." in ref:
                 model_name, measure_name = ref.split(".")
                 model = graph.models.get(model_name)
                 if not model:
                     errors.append(
-                        f"Ratio metric '{metric.name}': {ref_type} model '{model_name}' not found"
+                        f"Ratio measure '{measure.name}': {ref_type} model '{model_name}' not found"
                     )
                 elif not model.get_measure(measure_name):
                     errors.append(
-                        f"Ratio metric '{metric.name}': {ref_type} measure '{measure_name}' not found in model '{model_name}'"
+                        f"Ratio measure '{measure.name}': {ref_type} measure '{measure_name}' not found in model '{model_name}'"
                     )
 
-    elif metric.type == "derived":
-        if not metric.expr:
-            errors.append(f"Derived metric '{metric.name}' must have 'expr' defined")
+    elif measure.type == "derived":
+        if not measure.expr:
+            errors.append(f"Derived measure '{measure.name}' must have 'expr' defined")
 
         # Auto-detect dependencies and check for circular references
-        dependencies = metric.get_dependencies(graph)
+        dependencies = measure.get_dependencies(graph)
 
         # Check for self-reference first
-        if metric.name in dependencies:
-            errors.append(f"Derived metric '{metric.name}' cannot reference itself")
+        if measure.name in dependencies:
+            errors.append(f"Derived measure '{measure.name}' cannot reference itself")
         else:
-            circular_deps = _check_circular_dependencies(metric, graph, set())
+            circular_deps = _check_circular_dependencies(measure, graph, set())
             if circular_deps:
                 errors.append(
-                    f"Derived metric '{metric.name}' has circular dependency: {' -> '.join(circular_deps)}"
+                    f"Derived measure '{measure.name}' has circular dependency: {' -> '.join(circular_deps)}"
                 )
 
-    elif metric.type == "cumulative":
-        if not metric.measure:
-            errors.append(f"Cumulative metric '{metric.name}' must have 'measure' defined")
+    elif measure.type == "cumulative":
+        if not measure.expr:
+            errors.append(f"Cumulative measure '{measure.name}' must have 'expr' defined")
 
     return errors
 
 
 def _check_circular_dependencies(
-    metric: "Metric", graph: "SemanticGraph", visited: set[str], path: list[str] | None = None
+    measure: "Measure", graph: "SemanticGraph", visited: set[str], path: list[str] | None = None
 ) -> list[str] | None:
-    """Check for circular dependencies in derived metrics.
+    """Check for circular dependencies in derived measures.
 
     Args:
-        metric: Metric to check
+        measure: Measure to check
         graph: Semantic graph
-        visited: Set of visited metric names
+        visited: Set of visited measure names
         path: Current dependency path
 
     Returns:
-        List of metric names in circular path, or None if no cycle
+        List of measure names in circular path, or None if no cycle
     """
     if path is None:
         path = []
 
-    if metric.name in visited:
+    if measure.name in visited:
         # Found a cycle
-        cycle_start = path.index(metric.name)
-        return path[cycle_start:] + [metric.name]
+        cycle_start = path.index(measure.name)
+        return path[cycle_start:] + [measure.name]
 
-    if metric.type != "derived":
+    if measure.type != "derived":
         return None
 
-    visited.add(metric.name)
-    path.append(metric.name)
+    visited.add(measure.name)
+    path.append(measure.name)
 
-    dependencies = metric.get_dependencies(graph)
+    dependencies = measure.get_dependencies(graph)
     for dep_name in dependencies:
         try:
-            dep_metric = graph.get_metric(dep_name)
-            if dep_metric:
-                cycle = _check_circular_dependencies(dep_metric, graph, visited.copy(), path.copy())
+            dep_measure = graph.get_metric(dep_name)
+            if dep_measure:
+                cycle = _check_circular_dependencies(dep_measure, graph, visited.copy(), path.copy())
                 if cycle:
                     return cycle
         except KeyError:
@@ -281,9 +281,9 @@ def validate_query(
             model_names.add(metric_ref.split(".")[0])
         else:
             try:
-                metric = graph.get_metric(metric_ref)
-                if metric and metric.measure and "." in metric.measure:
-                    model_names.add(metric.measure.split(".")[0])
+                measure = graph.get_metric(metric_ref)
+                if measure and measure.expr and "." in measure.expr:
+                    model_names.add(measure.expr.split(".")[0])
             except KeyError:
                 pass  # Already reported as error above
 

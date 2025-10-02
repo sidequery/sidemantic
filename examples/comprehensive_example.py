@@ -18,7 +18,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.entity import Entity
 from sidemantic.core.join import Join
 from sidemantic.core.measure import Measure
-from sidemantic.core.metric import Metric
+from sidemantic.core.measure import Measure
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -165,25 +165,25 @@ def main():
     # Define advanced metrics
 
     # Month-to-date revenue (grain-to-date)
-    mtd_revenue = Metric(
+    mtd_revenue = Measure(
         name="mtd_revenue",
         type="cumulative",
-        measure="orders.revenue",
+        expr="orders.revenue",
         grain_to_date="month",
         description="Month-to-date cumulative revenue"
     )
 
     # Year-to-date revenue
-    ytd_revenue = Metric(
+    ytd_revenue = Measure(
         name="ytd_revenue",
         type="cumulative",
-        measure="orders.revenue",
+        expr="orders.revenue",
         grain_to_date="year",
         description="Year-to-date cumulative revenue"
     )
 
     # Month-over-month growth (offset ratio)
-    mom_growth = Metric(
+    mom_growth = Measure(
         name="mom_growth",
         type="ratio",
         numerator="orders.revenue",

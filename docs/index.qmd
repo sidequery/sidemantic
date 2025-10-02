@@ -169,15 +169,15 @@ sql = generator.generate(
 
 ```python
 # Month-to-date revenue
-mtd_revenue = Metric(
+mtd_revenue = Measure(
     name="mtd_revenue",
     type="cumulative",
-    measure="orders.revenue",
+    expr="orders.revenue",
     grain_to_date="month"
 )
 
 # Month-over-month growth
-mom_growth = Metric(
+mom_growth = Measure(
     name="mom_growth",
     type="ratio",
     numerator="orders.revenue",

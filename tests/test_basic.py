@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
 
 
 def test_create_model():
@@ -89,16 +89,16 @@ def test_measure_aggregation():
 
 def test_simple_metric():
     """Test creating a simple metric."""
-    metric = Metric(name="total_revenue", type="simple", measure="orders.revenue")
+    metric = Measure(name="total_revenue", type="simple", expr="orders.revenue")
 
     assert metric.name == "total_revenue"
     assert metric.type == "simple"
-    assert metric.measure == "orders.revenue"
+    assert metric.expr == "orders.revenue"
 
 
 def test_ratio_metric():
     """Test creating a ratio metric."""
-    metric = Metric(
+    metric = Measure(
         name="conversion_rate",
         type="ratio",
         numerator="orders.completed_revenue",

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import duckdb
 
-from sidemantic.core.metric import Metric
+from sidemantic.core.measure import Measure
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -16,12 +16,13 @@ class SemanticLayer:
     Provides a high-level API for defining models and querying data.
     """
 
-    def __init__(self, connection: str = "duckdb:///:memory:", dialect: str = "duckdb"):
+    def __init__(self, connection: str = "duckdb:///:memory:", dialect: str = "duckdb", auto_register: bool = False):
         """Initialize semantic layer.
 
         Args:
             connection: Database connection string (default: in-memory DuckDB)
             dialect: SQL dialect for query generation (default: duckdb)
+            auto_register: Set as current layer for auto-registration (default: True)
         """
         self.graph = SemanticGraph()
         self.dialect = dialect
@@ -33,6 +34,22 @@ class SemanticLayer:
             self.conn = duckdb.connect(db_path)
         else:
             raise NotImplementedError(f"Connection type {connection} not yet supported")
+
+        # Set as current layer for auto-registration
+        if auto_register:
+            from .registry import set_current_layer
+            set_current_layer(self)
+
+    def __enter__(self):
+        """Context manager entry - set as current layer."""
+        from .registry import set_current_layer
+        set_current_layer(self)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - clear current layer."""
+        from .registry import set_current_layer
+        set_current_layer(None)
 
     def add_model(self, model: Model) -> None:
         """Add a model to the semantic layer.
@@ -53,24 +70,24 @@ class SemanticLayer:
 
         self.graph.add_model(model)
 
-    def add_metric(self, metric: Metric) -> None:
-        """Add a metric to the semantic layer.
+    def add_metric(self, measure: Measure) -> None:
+        """Add a measure to the semantic layer.
 
         Args:
-            metric: Metric to add
+            measure: Measure to add
 
         Raises:
-            MetricValidationError: If metric validation fails
+            MetricValidationError: If measure validation fails
         """
         from sidemantic.validation import MetricValidationError, validate_metric
 
-        errors = validate_metric(metric, self.graph)
+        errors = validate_metric(measure, self.graph)
         if errors:
             raise MetricValidationError(
-                f"Metric '{metric.name}' validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+                f"Measure '{measure.name}' validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
             )
 
-        self.graph.add_metric(metric)
+        self.graph.add_metric(measure)
 
     def query(
         self,
@@ -154,14 +171,14 @@ class SemanticLayer:
         """
         return self.graph.get_model(name)
 
-    def get_metric(self, name: str) -> Metric:
-        """Get metric by name.
+    def get_metric(self, name: str) -> Measure:
+        """Get measure by name.
 
         Args:
-            name: Metric name
+            name: Measure name
 
         Returns:
-            Metric instance
+            Measure instance
         """
         return self.graph.get_metric(name)
 

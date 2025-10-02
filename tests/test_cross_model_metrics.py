@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
 
 # Create test data
 conn = duckdb.connect(":memory:")
@@ -74,7 +74,7 @@ print("Test 1: Cross-model ratio metric (revenue per customer)")
 print("=" * 80)
 
 sl.add_metric(
-    Metric(
+    Measure(
         name="revenue_per_customer",
         type="ratio",
         numerator="orders.revenue",
@@ -107,11 +107,11 @@ print("=" * 80)
 print("Test 2: Derived metric with cross-model references")
 print("=" * 80)
 
-sl.add_metric(Metric(name="total_revenue", type="simple", measure="orders.revenue"))
-sl.add_metric(Metric(name="total_customers", type="simple", measure="customers.customer_count"))
+sl.add_metric(Measure(name="total_revenue", type="simple", expr="orders.revenue"))
+sl.add_metric(Measure(name="total_customers", type="simple", expr="customers.customer_count"))
 
 sl.add_metric(
-    Metric(
+    Measure(
         name="revenue_per_customer_derived",
         type="derived",
         expr="total_revenue / total_customers",

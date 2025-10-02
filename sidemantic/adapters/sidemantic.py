@@ -8,7 +8,6 @@ from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.entity import Entity
 from sidemantic.core.measure import Measure
-from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -144,31 +143,29 @@ class SidemanticAdapter(BaseAdapter):
             measures=measures,
         )
 
-    def _parse_metric(self, metric_def: dict) -> Metric | None:
-        """Parse metric definition.
+    def _parse_metric(self, metric_def: dict) -> Measure | None:
+        """Parse measure definition.
 
         Args:
-            metric_def: Metric definition dictionary
+            metric_def: Measure definition dictionary
 
         Returns:
-            Metric instance or None
+            Measure instance or None
         """
         name = metric_def.get("name")
         metric_type = metric_def.get("type")
 
-        if not name or not metric_type:
+        if not name:
             return None
 
-        return Metric(
+        return Measure(
             name=name,
             type=metric_type,
             description=metric_def.get("description"),
             label=metric_def.get("label"),
-            measure=metric_def.get("measure"),
+            expr=metric_def.get("expr") or metric_def.get("measure"),
             numerator=metric_def.get("numerator"),
             denominator=metric_def.get("denominator"),
-            expr=metric_def.get("expr"),
-            metrics=metric_def.get("metrics"),
             window=metric_def.get("window"),
             filters=metric_def.get("filters"),
         )
@@ -239,42 +236,42 @@ class SidemanticAdapter(BaseAdapter):
 
         return result
 
-    def _export_metric(self, metric: Metric, graph) -> dict:
-        """Export metric to dictionary.
+    def _export_metric(self, measure: Measure, graph) -> dict:
+        """Export measure to dictionary.
 
         Args:
-            metric: Metric to export
+            measure: Measure to export
 
         Returns:
-            Metric definition dictionary
+            Measure definition dictionary
         """
         result = {
-            "name": metric.name,
-            "type": metric.type,
+            "name": measure.name,
         }
 
-        if metric.description:
-            result["description"] = metric.description
-        if metric.label:
-            result["label"] = metric.label
+        if measure.type:
+            result["type"] = measure.type
+
+        if measure.description:
+            result["description"] = measure.description
+        if measure.label:
+            result["label"] = measure.label
 
         # Type-specific fields
-        if metric.measure:
-            result["measure"] = metric.measure
-        if metric.numerator:
-            result["numerator"] = metric.numerator
-        if metric.denominator:
-            result["denominator"] = metric.denominator
-        if metric.expr:
-            result["expr"] = metric.expr
-            # Auto-detect and export dependencies for derived metrics
-            if metric.type == "derived":
-                dependencies = metric.get_dependencies(graph)
+        if measure.numerator:
+            result["numerator"] = measure.numerator
+        if measure.denominator:
+            result["denominator"] = measure.denominator
+        if measure.expr:
+            result["expr"] = measure.expr
+            # Auto-detect and export dependencies for derived measures
+            if measure.type == "derived":
+                dependencies = measure.get_dependencies(graph)
                 if dependencies:
                     result["metrics"] = list(dependencies)
-        if metric.window:
-            result["window"] = metric.window
-        if metric.filters:
-            result["filters"] = metric.filters
+        if measure.window:
+            result["window"] = measure.window
+        if measure.filters:
+            result["filters"] = measure.filters
 
         return result

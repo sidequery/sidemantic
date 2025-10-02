@@ -239,10 +239,10 @@ graph.add_model(orders)
 graph.add_model(customers)
 
 # Create metrics
-total_revenue = Metric(
+total_revenue = Measure(
     name="total_revenue",
     type="simple",
-    measure="orders.revenue"
+    expr="orders.revenue"
 )
 
 graph.add_metric(total_revenue)
@@ -264,15 +264,15 @@ print(sql)
 
 ```python
 # Month-to-date revenue
-mtd_revenue = Metric(
+mtd_revenue = Measure(
     name="mtd_revenue",
     type="cumulative",
-    measure="orders.revenue",
+    expr="orders.revenue",
     grain_to_date="month"
 )
 
 # Month-over-month growth
-mom_growth = Metric(
+mom_growth = Measure(
     name="mom_growth",
     type="ratio",
     numerator="orders.revenue",
@@ -281,7 +281,7 @@ mom_growth = Metric(
 )
 
 # Conversion rate
-conversion_rate = Metric(
+conversion_rate = Measure(
     name="conversion_rate",
     type="ratio",
     numerator="orders.completed_revenue",

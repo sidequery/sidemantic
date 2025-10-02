@@ -23,7 +23,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.entity import Entity
 from sidemantic.core.join import Join
 from sidemantic.core.measure import Measure
-from sidemantic.core.metric import Metric
+from sidemantic.core.measure import Measure
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -214,10 +214,10 @@ def setup_semantic_layer():
     graph.add_model(order_items)
 
     # Add metrics
-    graph.add_metric(Metric(
+    graph.add_metric(Measure(
         name="total_revenue",
         type="simple",
-        measure="orders.revenue",
+        expr="orders.revenue",
         description="Total revenue from all orders"
     ))
 

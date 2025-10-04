@@ -233,6 +233,7 @@ layer.to_yaml("semantic_layer.yml")
 ### Cube
 
 **Import (Cube → Sidemantic):**
+
 - `cubes` → `models`
 - `dimensions` → `dimensions`
 - `measures` → `metrics`
@@ -243,6 +244,7 @@ layer.to_yaml("semantic_layer.yml")
 - `rolling_window` → cumulative metrics
 
 **Export (Sidemantic → Cube):**
+
 - Ratio metrics → calculated measures with division SQL
 - Cumulative metrics → measures with `rolling_window`
 - Segments → native segment definitions
@@ -252,6 +254,7 @@ layer.to_yaml("semantic_layer.yml")
 ### MetricFlow
 
 **Import (MetricFlow → Sidemantic):**
+
 - `semantic_models` → `models`
 - `entities` → inferred `relationships`
 - `dimensions` → `dimensions`
@@ -260,6 +263,7 @@ layer.to_yaml("semantic_layer.yml")
 - Segments/hierarchies from `meta` field → preserved
 
 **Export (Sidemantic → MetricFlow):**
+
 - Segments → stored in `meta` (no native support)
 - Hierarchies → stored in dimension `meta`
 - Inheritance info in `meta` then stripped (definitions fully resolved)
@@ -268,6 +272,7 @@ layer.to_yaml("semantic_layer.yml")
 ### LookML
 
 **Import (LookML → Sidemantic):**
+
 - `views` → `models`
 - `dimensions` → `dimensions`
 - `dimension_group` → multiple time dimensions (one per timeframe)
@@ -278,6 +283,7 @@ layer.to_yaml("semantic_layer.yml")
 - Measure filters parsed from `filters__all`
 
 **Export (Sidemantic → LookML):**
+
 - Multiple time dimensions with same base name → single `dimension_group` with multiple timeframes
 - Segments → view-level `filters`
 - Ratio/derived metrics → type=number measures
@@ -286,6 +292,7 @@ layer.to_yaml("semantic_layer.yml")
 ### Hex
 
 **Import (Hex → Sidemantic):**
+
 - Model `id` and `base_sql_table`/`base_sql_query` → `models`
 - `dimensions` with `expr_sql` or `expr_calc` → `dimensions`
 - `measures` with `func`/`func_sql`/`func_calc` → `metrics`
@@ -295,6 +302,7 @@ layer.to_yaml("semantic_layer.yml")
 - `timestamp_tz`/`timestamp_naive`/`date` types → time dimensions
 
 **Export (Sidemantic → Hex):**
+
 - Each model → separate YAML file
 - Time dimensions → specific type variants (date vs timestamp_tz)
 - Ratio/derived metrics → `func_sql`

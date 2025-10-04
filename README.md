@@ -297,7 +297,6 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 **Future:**
 - Query optimization
 - Pre-aggregations/caching
-- Time comparison metrics (YoY, MoM) - structure exists, needs lag/offset calculations
 - LookML adapter (requires grammar parser)
 
 ## Examples

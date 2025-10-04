@@ -123,11 +123,12 @@ GROUP BY 1
 - ✅ **Derived metrics**: Formula parsing with automatic dependency detection
 - ✅ **Cumulative metrics**: Running totals and rolling windows with window functions (tested with real data)
 - ✅ **Conversion funnel metrics**: Self-join pattern for event-based conversion tracking (tested with real data)
+- ✅ **Time comparison metrics**: YoY, MoM, WoW, DoD, QoQ with percent_change, difference, and ratio calculations using LAG window functions
 - ✅ **Native YAML format**: Complete Sidemantic YAML schema with import/export (see `docs/YAML_FORMAT.md`)
 - ✅ **Export adapters**: Full round-trip support for Sidemantic ↔ Cube ↔ MetricFlow
 
 ### Test Coverage
-- ✅ **117 passing tests** across core, adapters, SQL generation, and advanced features
+- ✅ **120 passing tests** across core, adapters, SQL generation, and advanced features
 - ✅ Real DuckDB integration tests
 - ✅ Round-trip adapter tests (Sidemantic → Cube/MetricFlow → Sidemantic)
 - ✅ Multi-hop join verification
@@ -137,8 +138,7 @@ GROUP BY 1
 
 1. **Query optimization**: Add query plan optimization and pushdown strategies
 2. **Pre-aggregations**: Implement caching layer similar to Cube's rollups
-3. **Time comparison metrics**: Complete YoY/MoM/WoW calculations (structure exists, needs LAG/LEAD window functions)
-4. **LookML adapter**: Requires full grammar parser for complete import support
+3. **LookML adapter**: Requires full grammar parser for complete import support
 
 ## 📁 File Structure
 

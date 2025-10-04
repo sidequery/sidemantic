@@ -124,15 +124,37 @@ GROUP BY 1
 - ✅ **Cumulative metrics**: Running totals and rolling windows with window functions (tested with real data)
 - ✅ **Conversion funnel metrics**: Self-join pattern for event-based conversion tracking (tested with real data)
 - ✅ **Time comparison metrics**: YoY, MoM, WoW, DoD, QoQ with percent_change, difference, and ratio calculations using LAG window functions
+- ✅ **Segments**: Reusable named filters with `{model}` placeholder templating
+- ✅ **Metric-level filters**: Automatically applied filters for consistent business logic
+- ✅ **Jinja2 templating**: Full conditional logic, loops, and filters in SQL fields
+- ✅ **Model inheritance**: `extends` field for inheriting dimensions, metrics, relationships, segments
+- ✅ **Metric inheritance**: Extend base metrics with additional filters or overrides
+- ✅ **Hierarchies**: Parent/child dimension relationships for drill-down navigation
+- ✅ **Drill-down API**: `get_hierarchy_path()`, `get_drill_down()`, `get_drill_up()` helpers
+- ✅ **Relative date ranges**: Natural language parsing ("last 7 days", "this month", etc.)
+- ✅ **Ungrouped queries**: Raw row access without aggregation for detail views
 - ✅ **Native YAML format**: Complete Sidemantic YAML schema with import/export (see `docs/YAML_FORMAT.md`)
 - ✅ **Export adapters**: Full round-trip support for Sidemantic ↔ Cube ↔ MetricFlow
 
+### Metadata & Governance
+- ✅ **Display formatting**: `format` and `value_format_name` on metrics and dimensions
+- ✅ **Drill fields**: Define drill-down paths for BI tool integration
+- ✅ **Non-additivity markers**: `non_additive_dimension` to prevent incorrect aggregation
+- ✅ **Default dimensions**: `default_time_dimension` and `default_grain` for metrics
+- ✅ **Comprehensive metadata**: Labels, descriptions on all objects
+
 ### Test Coverage
-- ✅ **120 passing tests** across core, adapters, SQL generation, and advanced features
+- ✅ **202 passing tests** across all features with comprehensive coverage
 - ✅ Real DuckDB integration tests
 - ✅ Round-trip adapter tests (Sidemantic → Cube/MetricFlow → Sidemantic)
 - ✅ Multi-hop join verification
 - ✅ Automatic dependency detection tests
+- ✅ Jinja template integration tests
+- ✅ Inheritance resolution tests
+- ✅ Hierarchy navigation tests
+- ✅ Relative date parsing tests
+- ✅ Ungrouped query tests
+- ✅ Segment and metric-level filter tests
 
 ## 🚧 Future Work
 

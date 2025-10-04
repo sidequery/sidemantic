@@ -4,15 +4,39 @@ SQLGlot-based semantic layer with multi-format adapter support.
 
 ## Features
 
+### Core Capabilities
 - **Simple API**: Define metrics once, use them everywhere
 - **SQL query interface**: Write familiar SQL that gets rewritten to use semantic layer
 - **Automatic joins**: Define relationships, joins happen automatically via graph traversal
 - **Multi-format adapters**: Import/export from Cube, MetricFlow (dbt), and native YAML
-- **Rich metric types**: Aggregations, ratios, formulas, cumulative, time comparisons, conversions
-- **Auto-detected dependencies**: No manual dependency declarations needed
 - **SQLGlot-powered**: Dialect-agnostic SQL generation with transpilation support
-- **Multi-hop joins**: Automatic 2+ hop join discovery with intermediate models
 - **Type-safe**: Pydantic models with validation
+
+### Rich Metric Types
+- **Aggregations**: sum, avg, count, count_distinct, min, max
+- **Ratios**: revenue / order_count
+- **Derived formulas**: (revenue - cost) / revenue
+- **Cumulative**: running totals, rolling windows
+- **Time comparisons**: YoY, MoM, WoW with LAG window functions
+- **Conversion funnels**: signup → purchase rate
+
+### Advanced Features
+- **Segments**: Reusable named filters with template placeholders
+- **Metric-level filters**: Auto-applied filters for consistent business logic
+- **Jinja2 templating**: Full conditional logic and loops in SQL
+- **Inheritance**: Extend models and metrics (DRY principles)
+- **Hierarchies**: Parent/child dimensions with drill-down API
+- **Relative dates**: Natural language like "last 7 days", "this month"
+- **Ungrouped queries**: Raw row access without aggregation
+- **Multi-hop joins**: Automatic 2+ hop join discovery
+- **Auto-detected dependencies**: No manual dependency declarations needed
+
+### Metadata & Governance
+- **Display formatting**: Format strings and named formats (USD, percent, etc.)
+- **Drill fields**: Define drill-down paths for BI tools
+- **Non-additivity markers**: Prevent incorrect aggregation
+- **Default dimensions**: Default time dimensions and granularity
+- **Comprehensive descriptions**: Labels, descriptions on all objects
 
 ## Quick Start
 
@@ -262,15 +286,102 @@ Use explicit, readable relationship types:
 - **one_to_many**: One record in THIS table → many records in OTHER table (e.g., customer → orders)
 - **one_to_one**: One record in THIS table → one record in OTHER table (e.g., order → invoice)
 
+## New Features Showcase
+
+### Segments - Reusable Filters
+```yaml
+models:
+  - name: orders
+    segments:
+      - name: completed
+        sql: "{model}.status = 'completed'"
+        description: "Only completed orders"
+      - name: high_value
+        sql: "{model}.amount > 100"
+
+# Use in queries
+layer.compile(metrics=["orders.revenue"], segments=["orders.completed"])
+```
+
+### Metric-Level Filters
+```yaml
+metrics:
+  - name: completed_revenue
+    agg: sum
+    sql: amount
+    filters: ["{model}.status = 'completed'"]  # Auto-applied!
+```
+
+### Jinja2 Templates
+```yaml
+metrics:
+  - name: taxed_revenue
+    agg: sum
+    sql: "{% if include_tax %}amount * 1.1{% else %}amount{% endif %}"
+
+# Use with parameters
+layer.compile(metrics=["orders.taxed_revenue"], parameters={"include_tax": True})
+```
+
+### Inheritance
+```yaml
+models:
+  - name: base_sales
+    table: sales
+    dimensions: [...]
+
+  - name: filtered_sales
+    extends: base_sales  # Inherits all dimensions!
+    segments: [...]
+```
+
+### Hierarchies & Drill-Down
+```python
+# Define hierarchy
+Dimension(name="country", type="categorical")
+Dimension(name="state", type="categorical", parent="country")
+Dimension(name="city", type="categorical", parent="state")
+
+# Navigate hierarchy
+model.get_hierarchy_path("city")  # ['country', 'state', 'city']
+model.get_drill_down("country")   # 'state'
+model.get_drill_up("city")        # 'state'
+```
+
+### Relative Dates
+```python
+# Natural language date filters
+layer.compile(
+    metrics=["orders.revenue"],
+    filters=["orders_cte.created_at >= 'last 7 days'"]
+)
+# Auto-converts to: created_at >= CURRENT_DATE - 7
+
+# Supports: "last N days/weeks/months", "this/last/next month/quarter/year", "today", etc.
+```
+
+### Ungrouped Queries
+```python
+# Get raw rows without aggregation (for detail views)
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.customer_id"],
+    ungrouped=True  # Returns raw rows
+)
+```
+
 ## Test Coverage
 
-- 117 passing tests
+- **202 passing tests** - comprehensive coverage
 - Real DuckDB integration
 - SQL query rewriting
 - Round-trip adapter tests
 - Multi-hop join verification
 - Formula parsing validation
 - Automatic dependency detection
+- Jinja template integration
+- Inheritance resolution
+- Hierarchy navigation
 
 Run tests:
 ```bash
@@ -288,11 +399,19 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 - ✅ Multi-hop join discovery
 - ✅ Derived metrics with automatic dependency detection
 - ✅ Cumulative metrics (running totals, rolling windows)
-- ✅ Conversion funnel metrics (self-join pattern for event-based conversions)
+- ✅ Conversion funnel metrics
+- ✅ Time comparison metrics (YoY, MoM, WoW)
+- ✅ Segments (reusable filters)
+- ✅ Metric-level filters
+- ✅ Jinja2 templating
+- ✅ Model and metric inheritance
+- ✅ Hierarchies with drill-down API
+- ✅ Relative date parsing
+- ✅ Ungrouped queries (raw row access)
+- ✅ Metadata fields (format, drill_fields, non-additivity, defaults)
 - ✅ Native YAML format with import/export
 - ✅ Cube and MetricFlow adapters (import/export)
 - ✅ DuckDB integration
-- ✅ Unified metrics terminology (no more measures/metrics confusion!)
 
 **Future:**
 - Query optimization

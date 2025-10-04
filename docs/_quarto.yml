@@ -27,14 +27,14 @@ website:
             href: relationships.qmd
           - text: "SQL Queries"
             href: sql-queries.qmd
+      - text: "Integrations"
+        href: adapters.qmd
       - text: "Reference"
         menu:
           - text: "Python API"
             href: python-api.qmd
           - text: "YAML Format"
             href: YAML_FORMAT.md
-          - text: "Format Adapters"
-            href: adapters.qmd
           - text: "Gotchas"
             href: GOTCHAS.md
       - text: "Examples"

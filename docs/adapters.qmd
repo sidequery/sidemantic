@@ -355,14 +355,14 @@ If you encounter issues with format conversion:
 1. Check the [compatibility table](#feature-compatibility) for known limitations
 2. Validate your source format is correctly structured
 3. Test with a simple model first before converting complex definitions
-4. File an issue at [github.com/anthropics/sidemantic](https://github.com/anthropics/sidemantic/issues) with:
+4. File an issue at [github.com/sidequery/sidemantic](https://github.com/sidequery/sidemantic/issues) with:
    - Source format and file
    - Expected vs actual behavior
    - Generated SQL or error messages
 
 ## Contributing Adapters
 
-Want to add support for another format? See our [adapter development guide](https://github.com/anthropics/sidemantic/blob/main/CONTRIBUTING.md) or file a feature request.
+Want to add support for another format? See our [adapter development guide](https://github.com/sidequery/sidemantic/blob/main/CONTRIBUTING.md) or file a feature request.
 
 Popular formats we'd like to support:
 - **Malloy** - Google's semantic modeling language

@@ -15,7 +15,7 @@ uv add sidemantic
 Try the interactive demo locally:
 
 ```bash
-git clone https://github.com/anthropics/sidemantic
+git clone https://github.com/sidequery/sidemantic
 cd sidemantic
 uv run marimo run examples/demo.py
 ```

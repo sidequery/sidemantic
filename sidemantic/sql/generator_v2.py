@@ -57,6 +57,7 @@ class SQLGenerator:
         limit: int | None = None,
         offset: int | None = None,
         parameters: dict[str, any] | None = None,
+        ungrouped: bool = False,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -69,6 +70,7 @@ class SQLGenerator:
             limit: Maximum number of rows to return
             offset: Number of rows to skip
             parameters: User-provided parameter values for interpolation
+            ungrouped: If True, return raw rows without aggregation (no GROUP BY)
 
         Returns:
             SQL query string
@@ -153,6 +155,7 @@ class SQLGenerator:
             order_by=order_by,
             limit=limit,
             offset=offset,
+            ungrouped=ungrouped,
         )
 
         # Combine CTEs and main query
@@ -422,6 +425,7 @@ class SQLGenerator:
         order_by: list[str] | None,
         limit: int | None,
         offset: int | None = None,
+        ungrouped: bool = False,
     ) -> str:
         """Build main SELECT using SQLGlot builder API.
 
@@ -433,6 +437,8 @@ class SQLGenerator:
             filters: Filter expressions
             order_by: Order by fields
             limit: Row limit
+            offset: Row offset
+            ungrouped: If True, return raw rows without aggregation
 
         Returns:
             SQL SELECT statement
@@ -460,29 +466,33 @@ class SQLGenerator:
                 measure = model.get_metric(measure_name)
 
                 if measure:
-                    # Check if this model needs symmetric aggregates
-                    if symmetric_agg_needed.get(model_name, False):
-                        # Use symmetric aggregates to prevent double-counting
-                        # Get primary key for this model
-                        model_obj = self.graph.get_model(model_name)
-                        pk = model_obj.primary_key or "id"
-
-                        agg_expr = build_symmetric_aggregate_sql(
-                            measure_expr=f"{measure_name}_raw",
-                            primary_key=pk,
-                            agg_type=measure.agg,
-                            model_alias=f"{model_name}_cte",
-                        )
+                    if ungrouped:
+                        # For ungrouped queries, select raw column without aggregation
+                        select_exprs.append(f"{model_name}_cte.{measure_name}_raw AS {measure_name}")
                     else:
-                        # Regular aggregation
-                        agg_func = measure.agg.upper()
-                        if agg_func == "COUNT_DISTINCT":
-                            agg_func = "COUNT(DISTINCT"
-                            agg_expr = f"{agg_func} {model_name}_cte.{measure_name}_raw)"
-                        else:
-                            agg_expr = f"{agg_func}({model_name}_cte.{measure_name}_raw)"
+                        # Check if this model needs symmetric aggregates
+                        if symmetric_agg_needed.get(model_name, False):
+                            # Use symmetric aggregates to prevent double-counting
+                            # Get primary key for this model
+                            model_obj = self.graph.get_model(model_name)
+                            pk = model_obj.primary_key or "id"
 
-                    select_exprs.append(f"{agg_expr} AS {measure_name}")
+                            agg_expr = build_symmetric_aggregate_sql(
+                                measure_expr=f"{measure_name}_raw",
+                                primary_key=pk,
+                                agg_type=measure.agg,
+                                model_alias=f"{model_name}_cte",
+                            )
+                        else:
+                            # Regular aggregation
+                            agg_func = measure.agg.upper()
+                            if agg_func == "COUNT_DISTINCT":
+                                agg_func = "COUNT(DISTINCT"
+                                agg_expr = f"{agg_func} {model_name}_cte.{measure_name}_raw)"
+                            else:
+                                agg_expr = f"{agg_func}({model_name}_cte.{measure_name}_raw)"
+
+                        select_exprs.append(f"{agg_expr} AS {measure_name}")
                 else:
                     # Try as metric
                     metric = self.graph.get_metric(metric_ref)
@@ -611,7 +621,8 @@ class SQLGenerator:
                 query = query.where(parsed_filter)
 
         # Add GROUP BY (all dimensions by position)
-        if parsed_dims:
+        # Skip GROUP BY for ungrouped queries
+        if parsed_dims and not ungrouped:
             group_by_positions = list(range(1, len(parsed_dims) + 1))
             query = query.group_by(*group_by_positions)
 

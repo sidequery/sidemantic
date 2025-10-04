@@ -97,6 +97,7 @@ class SemanticLayer:
         segments: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
+        ungrouped: bool = False,
     ):
         """Execute a query against the semantic layer.
 
@@ -107,12 +108,13 @@ class SemanticLayer:
             segments: List of segment references (e.g., ["orders.active_users"])
             order_by: List of fields to order by
             limit: Maximum number of rows to return
+            ungrouped: If True, return raw rows without aggregation (no GROUP BY)
 
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
         """
         sql = self.compile(
-            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit
+            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, ungrouped=ungrouped
         )
 
         return self.conn.execute(sql)
@@ -127,6 +129,7 @@ class SemanticLayer:
         limit: int | None = None,
         offset: int | None = None,
         dialect: str | None = None,
+        ungrouped: bool = False,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -139,6 +142,7 @@ class SemanticLayer:
             limit: Maximum number of rows to return
             offset: Number of rows to skip
             dialect: SQL dialect override (defaults to layer's dialect)
+            ungrouped: If True, return raw rows without aggregation (no GROUP BY)
 
         Returns:
             SQL query string
@@ -161,7 +165,7 @@ class SemanticLayer:
         generator = SQLGenerator(self.graph, dialect=dialect or self.dialect)
 
         return generator.generate(
-            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, offset=offset
+            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, offset=offset, ungrouped=ungrouped
         )
 
     def get_model(self, name: str) -> Model:

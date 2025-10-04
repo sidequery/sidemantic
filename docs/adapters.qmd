@@ -309,23 +309,17 @@ layer.to_yaml("semantic_layer.yml")
 - Segments not directly supported (can use measure filters)
 - `${interpolation}` references preserved where possible
 
-## Round-Trip Guarantees
-
-### Lossless Round-Trips
-
-These conversions preserve all information:
-
-- **Sidemantic → Sidemantic**: Perfect round-trip (native format)
-
-### Lossy Round-Trips
+## Round-Trip Considerations
 
 These conversions lose some information:
 
 - **Sidemantic → Cube → Sidemantic**: Loses segments, cumulative metrics, time comparisons
 - **Sidemantic → MetricFlow → Sidemantic**: Loses segments, ungrouped query support, hierarchies
+- **Sidemantic → LookML → Sidemantic**: Loses relationship details (views don't declare joins)
+- **Sidemantic → Hex → Sidemantic**: Loses segment support
 - **Any format → Sidemantic**: May lose format-specific metadata
 
-**Best Practice:** Keep your source of truth in one format and export to others as needed. Don't round-trip unless necessary.
+Keep your source of truth in one format and export to others as needed. Don't round-trip unless necessary.
 
 ## Validating Conversions
 

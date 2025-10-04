@@ -90,6 +90,39 @@ class SQLGenerator:
         param_set = ParameterSet(self.graph.parameters, parameters)
         filters = [param_set.interpolate(f) for f in filters]
 
+        # Process relative date expressions in filters
+        from sidemantic.core.relative_date import RelativeDateRange
+        processed_filters = []
+        for f in filters:
+            # Check if filter contains a relative date expression
+            # Pattern: column_name operator 'relative_date_expr'
+            # e.g., "created_at >= 'last 7 days'"
+            import re
+            match = re.match(r"^(.+?)\s*(>=|<=|>|<|=)\s*['\"](.+?)['\"]$", f)
+            if match:
+                column, operator, value = match.groups()
+                if RelativeDateRange.is_relative_date(value):
+                    # Convert relative date to SQL expression
+                    if operator in [">=", ">"]:
+                        # For >= or >, just use the start date
+                        sql_expr = RelativeDateRange.parse(value)
+                        processed_filters.append(f"{column} {operator} {sql_expr}")
+                    elif operator == "=":
+                        # For =, use to_range to get proper range
+                        range_expr = RelativeDateRange.to_range(value, column.strip())
+                        if range_expr:
+                            processed_filters.append(range_expr)
+                        else:
+                            processed_filters.append(f)
+                    else:
+                        processed_filters.append(f)
+                else:
+                    processed_filters.append(f)
+            else:
+                processed_filters.append(f)
+
+        filters = processed_filters
+
         # Check if any metrics need window functions (cumulative or time_comparison)
         def metric_needs_window(m):
             if "." in m:

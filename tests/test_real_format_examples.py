@@ -9,6 +9,7 @@ from sidemantic.adapters.cube import CubeAdapter
 from sidemantic.adapters.hex import HexAdapter
 from sidemantic.adapters.lookml import LookMLAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 
 
@@ -699,6 +700,25 @@ def test_query_imported_lookml_example():
     assert "status" in sql.lower()
 
 
+def test_lookml_explore_parsing():
+    """Test parsing LookML explore files for relationships."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse("examples/lookml/")
+
+    # Verify orders model exists
+    assert "orders" in graph.models
+    orders = graph.models["orders"]
+
+    # Verify relationship was parsed from explore
+    assert len(orders.relationships) == 1
+
+    # Verify relationship details
+    customer_rel = orders.relationships[0]
+    assert customer_rel.name == "customers"
+    assert customer_rel.type == "many_to_one"
+    assert customer_rel.foreign_key == "customer_id"
+
+
 def test_query_with_time_dimension_lookml():
     """Test querying time dimensions from LookML import."""
     from sidemantic import SemanticLayer
@@ -1055,6 +1075,271 @@ def test_roundtrip_real_hex_example():
 
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+def test_import_real_rill_example():
+    """Test importing a real Rill metrics view YAML file."""
+    adapter = RillAdapter()
+    graph = adapter.parse("examples/rill/orders.yaml")
+
+    # Verify models loaded
+    assert "orders" in graph.models
+    orders = graph.models["orders"]
+
+    # Verify dimensions
+    dim_names = [d.name for d in orders.dimensions]
+    assert "status" in dim_names
+    assert "customer_id" in dim_names
+    assert "country" in dim_names
+    assert "product_category" in dim_names
+
+    # Verify measures
+    measure_names = [m.name for m in orders.metrics]
+    assert "total_orders" in measure_names
+    assert "total_revenue" in measure_names
+    assert "avg_order_value" in measure_names
+    assert "completed_orders" in measure_names
+
+    # Verify timeseries dimension was created
+    # Should have timeseries as a time dimension
+    time_dims = [d for d in orders.dimensions if d.type == "time"]
+    assert len(time_dims) > 0
+
+
+def test_import_rill_with_derived_measures():
+    """Test importing Rill metrics view with derived measures."""
+    adapter = RillAdapter()
+    graph = adapter.parse("examples/rill/users.yaml")
+
+    assert "users" in graph.models
+    users = graph.models["users"]
+
+    # Verify derived measures were detected
+    derived_metrics = [m for m in users.metrics if m.type == "derived"]
+    assert len(derived_metrics) == 2
+
+    derived_names = [m.name for m in derived_metrics]
+    assert "avg_revenue_per_user" in derived_names
+    assert "activation_rate" in derived_names
+
+
+def test_import_rill_with_table_reference():
+    """Test importing Rill metrics view that references a table."""
+    adapter = RillAdapter()
+    graph = adapter.parse("examples/rill/sales.yaml")
+
+    assert "sales" in graph.models
+    sales = graph.models["sales"]
+
+    # Verify table reference was captured
+    assert sales.table == "public.sales"
+
+    # Verify dimensions
+    dim_names = [d.name for d in sales.dimensions]
+    assert "store_id" in dim_names
+    assert "product_id" in dim_names
+    assert "sales_rep" in dim_names
+    assert "region" in dim_names
+
+
+def test_rill_to_sidemantic_to_rill_roundtrip():
+    """Test Rill roundtrip conversion."""
+    adapter = RillAdapter()
+
+    # Import original
+    graph1 = adapter.parse("examples/rill/orders.yaml")
+
+    # Export
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        adapter.export(graph1, output_path)
+
+        # Import exported version
+        graph2 = adapter.parse(output_path / "orders.yaml")
+
+        # Verify models match
+        assert set(graph1.models.keys()) == set(graph2.models.keys())
+
+        orders1 = graph1.models["orders"]
+        orders2 = graph2.models["orders"]
+
+        # Verify dimensions count preserved
+        assert len(orders1.dimensions) == len(orders2.dimensions)
+
+        # Verify metrics count preserved
+        assert len(orders1.metrics) == len(orders2.metrics)
+
+
+def test_rill_to_cube_conversion():
+    """Test converting Rill format to Cube format."""
+    # Import from Rill
+    rill_adapter = RillAdapter()
+    graph = rill_adapter.parse("examples/rill/orders.yaml")
+
+    # Export to Cube
+    cube_adapter = CubeAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        cube_adapter.export(graph, temp_path)
+
+        # Re-import as Cube and verify structure
+        graph2 = cube_adapter.parse(temp_path)
+
+        assert "orders" in graph2.models
+        orders = graph2.models["orders"]
+
+        # Verify dimensions converted
+        dim_names = [d.name for d in orders.dimensions]
+        assert "status" in dim_names
+
+        # Verify measures converted
+        measure_names = [m.name for m in orders.metrics]
+        assert "total_revenue" in measure_names
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_to_rill_conversion():
+    """Test converting Cube format to Rill format."""
+    # Import from Cube
+    cube_adapter = CubeAdapter()
+    graph = cube_adapter.parse("examples/cube/orders.yml")
+
+    # Export to Rill
+    rill_adapter = RillAdapter()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        rill_adapter.export(graph, output_path)
+
+        # Re-import as Rill and verify structure
+        graph2 = rill_adapter.parse(output_path / "orders.yaml")
+
+        assert "orders" in graph2.models
+        orders = graph2.models["orders"]
+
+        # Verify dimensions converted
+        dim_names = [d.name for d in orders.dimensions]
+        assert "status" in dim_names
+
+        # Verify measures converted
+        measure_names = [m.name for m in orders.metrics]
+        assert "revenue" in measure_names
+
+
+def test_rill_to_metricflow_conversion():
+    """Test converting Rill format to MetricFlow format."""
+    # Import from Rill
+    rill_adapter = RillAdapter()
+    graph = rill_adapter.parse("examples/rill/orders.yaml")
+
+    # Export to MetricFlow
+    mf_adapter = MetricFlowAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        mf_adapter.export(graph, temp_path)
+
+        # Re-import as MetricFlow and verify structure
+        graph2 = mf_adapter.parse(temp_path)
+
+        assert "orders" in graph2.models
+        orders = graph2.models["orders"]
+
+        # Verify dimensions converted
+        dim_names = [d.name for d in orders.dimensions]
+        assert "status" in dim_names
+
+        # Verify measures converted
+        measure_names = [m.name for m in orders.metrics]
+        assert "total_revenue" in measure_names
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_rill_to_lookml_conversion():
+    """Test converting Rill format to LookML format."""
+    # Import from Rill
+    rill_adapter = RillAdapter()
+    graph = rill_adapter.parse("examples/rill/orders.yaml")
+
+    # Export to LookML
+    lookml_adapter = LookMLAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        lookml_adapter.export(graph, temp_path)
+
+        # Re-import as LookML and verify structure
+        graph2 = lookml_adapter.parse(temp_path)
+
+        assert "orders" in graph2.models
+        orders = graph2.models["orders"]
+
+        # Verify dimensions converted
+        dim_names = [d.name for d in orders.dimensions]
+        assert "status" in dim_names
+
+        # Verify measures converted
+        measure_names = [m.name for m in orders.metrics]
+        assert "total_revenue" in measure_names
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_query_imported_rill_example():
+    """Test that we can compile queries from imported Rill schema."""
+    from sidemantic import SemanticLayer
+
+    adapter = RillAdapter()
+    graph = adapter.parse("examples/rill/orders.yaml")
+
+    layer = SemanticLayer()
+    layer.graph = graph
+
+    # Simple metric query
+    sql = layer.compile(metrics=["orders.total_orders"])
+    assert "COUNT" in sql.upper()
+
+    # Query with dimension
+    sql = layer.compile(
+        metrics=["orders.total_revenue"],
+        dimensions=["orders.status"]
+    )
+    assert "GROUP BY" in sql.upper()
+
+
+def test_roundtrip_real_rill_example():
+    """Test Rill example roundtrip using actual example files."""
+    adapter = RillAdapter()
+
+    # Import original
+    graph1 = adapter.parse("examples/rill/orders.yaml")
+
+    # Export
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        adapter.export(graph1, output_path)
+
+        # Import exported version
+        graph2 = adapter.parse(output_path / "orders.yaml")
+
+        # Verify models match
+        assert set(graph1.models.keys()) == set(graph2.models.keys())
+
+        # Verify dimensions count preserved
+        orders1 = graph1.models["orders"]
+        orders2 = graph2.models["orders"]
+        assert len(orders1.dimensions) == len(orders2.dimensions)
+
+        # Verify metrics count preserved
+        assert len(orders1.metrics) == len(orders2.metrics)
 
 
 if __name__ == "__main__":

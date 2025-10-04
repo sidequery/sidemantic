@@ -1,0 +1,43 @@
+type: metrics_view
+display_name: Orders Analytics
+description: Metrics and dimensions for order analysis
+model: orders
+timeseries: created_at
+smallest_time_grain: day
+
+dimensions:
+  - name: status
+    display_name: Order Status
+    description: Current status of the order
+    column: status
+
+  - name: customer_id
+    display_name: Customer ID
+    column: customer_id
+
+  - name: country
+    display_name: Country
+    column: country
+
+  - name: product_category
+    display_name: Product Category
+    expression: CASE WHEN product_type IN ('electronics', 'computers') THEN 'tech' ELSE 'other' END
+
+measures:
+  - name: total_orders
+    display_name: Total Orders
+    expression: COUNT(*)
+
+  - name: total_revenue
+    display_name: Total Revenue
+    expression: SUM(amount)
+    format_preset: currency_usd
+
+  - name: avg_order_value
+    display_name: Average Order Value
+    expression: AVG(amount)
+    format_preset: currency_usd
+
+  - name: completed_orders
+    display_name: Completed Orders
+    expression: COUNT(CASE WHEN status = 'completed' THEN 1 END)

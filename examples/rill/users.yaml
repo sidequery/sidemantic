@@ -1,0 +1,53 @@
+type: metrics_view
+display_name: User Metrics
+description: User engagement and activity metrics
+model: users
+timeseries: signup_date
+smallest_time_grain: day
+
+dimensions:
+  - name: plan_type
+    display_name: Subscription Plan
+    column: plan
+
+  - name: country
+    display_name: Country
+    column: country
+
+  - name: is_active
+    display_name: Active User
+    expression: CASE WHEN last_login_date >= CURRENT_DATE - INTERVAL '30 days' THEN true ELSE false END
+
+measures:
+  - name: total_users
+    display_name: Total Users
+    expression: COUNT(*)
+
+  - name: active_users
+    display_name: Active Users
+    expression: COUNT(CASE WHEN last_login_date >= CURRENT_DATE - INTERVAL '30 days' THEN 1 END)
+
+  - name: total_revenue
+    display_name: Total MRR
+    description: Monthly recurring revenue
+    expression: SUM(monthly_revenue)
+    format_preset: currency_usd
+
+  - name: avg_revenue_per_user
+    display_name: ARPU
+    description: Average revenue per user
+    type: derived
+    expression: total_revenue / total_users
+    format_preset: currency_usd
+    requires:
+      - total_revenue
+      - total_users
+
+  - name: activation_rate
+    display_name: Activation Rate
+    type: derived
+    expression: active_users / total_users
+    format_preset: percentage
+    requires:
+      - active_users
+      - total_users

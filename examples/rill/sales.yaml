@@ -1,0 +1,46 @@
+type: metrics_view
+display_name: Sales Dashboard
+description: Sales performance metrics
+table: public.sales
+timeseries: sale_date
+smallest_time_grain: hour
+
+dimensions:
+  - name: store_id
+    display_name: Store
+    column: store_id
+
+  - name: product_id
+    display_name: Product
+    column: product_id
+
+  - name: sales_rep
+    display_name: Sales Representative
+    column: sales_rep_name
+
+  - name: region
+    display_name: Region
+    column: region
+
+measures:
+  - name: total_sales
+    display_name: Total Sales
+    expression: SUM(sale_amount)
+    format_preset: currency_usd
+
+  - name: units_sold
+    display_name: Units Sold
+    expression: SUM(quantity)
+
+  - name: transactions
+    display_name: Transaction Count
+    expression: COUNT(DISTINCT transaction_id)
+
+  - name: avg_transaction_value
+    display_name: Average Transaction Value
+    type: derived
+    expression: total_sales / transactions
+    format_preset: currency_usd
+    requires:
+      - total_sales
+      - transactions

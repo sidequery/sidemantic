@@ -25,6 +25,10 @@ class Dimension(BaseModel):
     description: str | None = Field(None, description="Human-readable description")
     label: str | None = Field(None, description="Display label")
 
+    # Display formatting
+    format: str | None = Field(None, description="Display format string (e.g., '$#,##0.00', '0.00%')")
+    value_format_name: str | None = Field(None, description="Named format (e.g., 'usd', 'percent', 'decimal_2')")
+
     def __hash__(self) -> int:
         return hash((self.name, self.type, self.sql))
 

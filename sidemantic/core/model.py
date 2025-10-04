@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.segment import Segment
 
 
 class Model(BaseModel):
@@ -33,6 +34,7 @@ class Model(BaseModel):
 
     dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
     metrics: list[Metric] = Field(default_factory=list, description="Measure definitions")
+    segments: list[Segment] = Field(default_factory=list, description="Segment (named filter) definitions")
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -56,4 +58,11 @@ class Model(BaseModel):
         for metric in self.metrics:
             if metric.name == name:
                 return metric
+        return None
+
+    def get_segment(self, name: str) -> Segment | None:
+        """Get segment by name."""
+        for segment in self.segments:
+            if segment.name == name:
+                return segment
         return None

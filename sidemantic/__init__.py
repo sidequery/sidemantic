@@ -7,6 +7,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.segment import Segment
 
 # Backwards compatibility alias
 Measure = Metric
@@ -18,6 +19,7 @@ __all__ = [
     "Model",
     "Parameter",
     "Relationship",
+    "Segment",
     "SemanticLayer",
 ]
 

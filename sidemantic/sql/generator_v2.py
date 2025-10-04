@@ -52,6 +52,7 @@ class SQLGenerator:
         metrics: list[str] | None = None,
         dimensions: list[str] | None = None,
         filters: list[str] | None = None,
+        segments: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -63,6 +64,7 @@ class SQLGenerator:
             metrics: List of metric references (e.g., ["orders.revenue"])
             dimensions: List of dimension references (e.g., ["orders.status", "orders.order_date__month"])
             filters: List of filter expressions (e.g., ["orders.status = 'completed'"])
+            segments: List of segment references (e.g., ["orders.active_users"])
             order_by: List of fields to order by
             limit: Maximum number of rows to return
             offset: Number of rows to skip
@@ -74,7 +76,12 @@ class SQLGenerator:
         metrics = metrics or []
         dimensions = dimensions or []
         filters = filters or []
+        segments = segments or []
         parameters = parameters or {}
+
+        # Resolve segments to SQL filters
+        segment_filters = self._resolve_segments(segments)
+        filters = filters + segment_filters
 
         # Interpolate parameters into filters if provided
         from sidemantic.core.parameter import ParameterSet
@@ -175,6 +182,40 @@ class SQLGenerator:
             else:
                 parsed.append((dim, None))
         return parsed
+
+    def _resolve_segments(self, segments: list[str]) -> list[str]:
+        """Resolve segment references to SQL filter expressions.
+
+        Args:
+            segments: List of segment references (e.g., ["orders.active_users"])
+
+        Returns:
+            List of SQL filter expressions
+
+        Raises:
+            ValueError: If segment not found
+        """
+        filters = []
+        for seg_ref in segments:
+            # Parse model.segment format
+            if "." not in seg_ref:
+                raise ValueError(f"Segment reference must be in format 'model.segment': {seg_ref}")
+
+            model_name, segment_name = seg_ref.split(".", 1)
+            model = self.graph.get_model(model_name)
+            if not model:
+                raise ValueError(f"Model '{model_name}' not found for segment '{seg_ref}'")
+
+            segment = model.get_segment(segment_name)
+            if not segment:
+                raise ValueError(f"Segment '{segment_name}' not found on model '{model_name}'")
+
+            # Get SQL expression with model alias replaced
+            # Use model_cte as the alias (consistent with CTE naming)
+            filter_sql = segment.get_sql(f"{model_name}_cte")
+            filters.append(filter_sql)
+
+        return filters
 
     def _find_required_models(self, metrics: list[str], dimensions: list[str]) -> list[str]:
         """Find all models required for the query.

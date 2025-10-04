@@ -94,6 +94,7 @@ class SemanticLayer:
         metrics: list[str] | None = None,
         dimensions: list[str] | None = None,
         filters: list[str] | None = None,
+        segments: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
     ):
@@ -103,6 +104,7 @@ class SemanticLayer:
             metrics: List of metric references (e.g., ["orders.revenue"])
             dimensions: List of dimension references (e.g., ["orders.status", "orders.order_date__month"])
             filters: List of filter expressions (e.g., ["orders.status = 'completed'"])
+            segments: List of segment references (e.g., ["orders.active_users"])
             order_by: List of fields to order by
             limit: Maximum number of rows to return
 
@@ -110,7 +112,7 @@ class SemanticLayer:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
         """
         sql = self.compile(
-            metrics=metrics, dimensions=dimensions, filters=filters, order_by=order_by, limit=limit
+            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit
         )
 
         return self.conn.execute(sql)
@@ -120,6 +122,7 @@ class SemanticLayer:
         metrics: list[str] | None = None,
         dimensions: list[str] | None = None,
         filters: list[str] | None = None,
+        segments: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -131,6 +134,7 @@ class SemanticLayer:
             metrics: List of metric references
             dimensions: List of dimension references
             filters: List of filter expressions
+            segments: List of segment references (e.g., ["orders.active_users"])
             order_by: List of fields to order by
             limit: Maximum number of rows to return
             offset: Number of rows to skip
@@ -157,7 +161,7 @@ class SemanticLayer:
         generator = SQLGenerator(self.graph, dialect=dialect or self.dialect)
 
         return generator.generate(
-            metrics=metrics, dimensions=dimensions, filters=filters, order_by=order_by, limit=limit, offset=offset
+            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, offset=offset
         )
 
     def get_model(self, name: str) -> Model:

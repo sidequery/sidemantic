@@ -35,18 +35,25 @@ class LookMLAdapter(BaseAdapter):
         graph = SemanticGraph()
         source_path = Path(source)
 
+        # Collect all .lkml files
+        lkml_files = []
         if source_path.is_dir():
-            # Parse all .lkml files in directory
-            for lkml_file in source_path.rglob("*.lkml"):
-                self._parse_file(lkml_file, graph)
+            lkml_files = list(source_path.rglob("*.lkml"))
         else:
-            # Parse single file
-            self._parse_file(source_path, graph)
+            lkml_files = [source_path]
+
+        # First pass: parse all views
+        for lkml_file in lkml_files:
+            self._parse_views_from_file(lkml_file, graph)
+
+        # Second pass: parse explores and add relationships
+        for lkml_file in lkml_files:
+            self._parse_explores_from_file(lkml_file, graph)
 
         return graph
 
-    def _parse_file(self, file_path: Path, graph: SemanticGraph) -> None:
-        """Parse a single LookML file.
+    def _parse_views_from_file(self, file_path: Path, graph: SemanticGraph) -> None:
+        """Parse views from a single LookML file.
 
         Args:
             file_path: Path to .lkml file
@@ -65,6 +72,25 @@ class LookMLAdapter(BaseAdapter):
             model = self._parse_view(view_def)
             if model:
                 graph.add_model(model)
+
+    def _parse_explores_from_file(self, file_path: Path, graph: SemanticGraph) -> None:
+        """Parse explores from a single LookML file and add relationships.
+
+        Args:
+            file_path: Path to .lkml file
+            graph: Semantic graph to add relationships to
+        """
+        with open(file_path) as f:
+            content = f.read()
+
+        parsed = lkml.load(content)
+
+        if not parsed:
+            return
+
+        # Parse explores
+        for explore_def in parsed.get("explores", []):
+            self._parse_explore(explore_def, graph)
 
     def _parse_view(self, view_def: dict) -> Model | None:
         """Parse LookML view into Sidemantic model.
@@ -286,6 +312,81 @@ class LookMLAdapter(BaseAdapter):
             sql=sql,
             filters=filters if filters else None,
             description=measure_def.get("description"),
+        )
+
+    def _parse_explore(self, explore_def: dict, graph: SemanticGraph) -> None:
+        """Parse LookML explore and add relationships to models.
+
+        Args:
+            explore_def: Explore definition from parsed LookML
+            graph: Semantic graph to add relationships to
+        """
+        explore_name = explore_def.get("name")
+        if not explore_name:
+            return
+
+        # Check if base model exists
+        if explore_name not in graph.models:
+            return
+
+        base_model = graph.models[explore_name]
+
+        # Parse joins
+        for join_def in explore_def.get("joins", []):
+            relationship = self._parse_join(join_def, explore_name)
+            if relationship:
+                # Add relationship to the base model
+                base_model.relationships.append(relationship)
+
+    def _parse_join(self, join_def: dict, base_model_name: str) -> Relationship | None:
+        """Parse a join definition into a Relationship.
+
+        Args:
+            join_def: Join definition from explore
+            base_model_name: Name of the base model in the explore
+
+        Returns:
+            Relationship or None if parsing fails
+        """
+        join_name = join_def.get("name")
+        if not join_name:
+            return None
+
+        # Get relationship type from LookML
+        # LookML uses: one_to_one, one_to_many, many_to_one, many_to_many
+        lookml_relationship = join_def.get("relationship", "many_to_one")
+
+        # Map LookML relationship types to Sidemantic types
+        relationship_mapping = {
+            "many_to_one": "many_to_one",
+            "one_to_one": "one_to_one",
+            "one_to_many": "one_to_many",
+            "many_to_many": "many_to_many",
+        }
+
+        relationship_type = relationship_mapping.get(lookml_relationship, "many_to_one")
+
+        # Extract foreign key from sql_on if possible
+        # sql_on typically looks like: ${orders.customer_id} = ${customers.id}
+        foreign_key = None
+        sql_on = join_def.get("sql_on", "")
+
+        # Try to extract foreign key from sql_on
+        # Pattern: ${base_model.column} = ${joined_model.column}
+        if sql_on:
+            # Simple extraction - look for ${base_model_name.column_name}
+            import re
+            # Match ${model.column} patterns
+            matches = re.findall(r'\$\{(\w+)\.(\w+)\}', sql_on)
+            for model, column in matches:
+                if model == base_model_name:
+                    foreign_key = column
+                    break
+
+        return Relationship(
+            name=join_name,
+            type=relationship_type,
+            foreign_key=foreign_key,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:

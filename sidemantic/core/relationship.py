@@ -12,10 +12,11 @@ class Relationship(BaseModel):
     - many_to_one: This model has a foreign key to another
     - one_to_one: This model is referenced by another with unique constraint
     - one_to_many: This model is referenced by another
+    - many_to_many: This model relates to another through a junction table
     """
 
     name: str = Field(description="Name of the related model")
-    type: Literal["many_to_one", "one_to_one", "one_to_many"] = Field(
+    type: Literal["many_to_one", "one_to_one", "one_to_many", "many_to_many"] = Field(
         description="Type of relationship"
     )
     foreign_key: str | None = Field(

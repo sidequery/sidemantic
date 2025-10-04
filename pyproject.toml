@@ -1,16 +1,13 @@
 [project]
 name = "sidemantic"
-version = "0.1.0"
+version = "0.1.2"
 description = "SQLGlot-based semantic layer with multi-format adapter support"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "sqlglot>=25.0.0",
-    "duckdb>=1.0.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
-    "numpy>=2.3.3",
-    "pandas>=2.3.3",
 ]
 
 [project.optional-dependencies]
@@ -18,11 +15,28 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.6.0",
+    "duckdb>=1.0.0",
+    "pandas>=2.2,<3",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/.claude",
+  "/docs",
+  "/tests",
+  "/examples",
+  "*.pkg",
+  "*.md",
+  "test_*.py",
+  "uv.lock",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["sidemantic"]
 
 [tool.ruff]
 line-length = 100
@@ -37,5 +51,6 @@ pythonpath = ["."]
 
 [dependency-groups]
 dev = [
+    "marimo==0.16.5",
     "pytest>=8.4.2",
 ]

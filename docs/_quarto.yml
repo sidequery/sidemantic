@@ -1,5 +1,14 @@
 project:
   type: website
+  resources:
+    - assets/**
+
+# Enable marimo extension for interactive cells
+filters:
+  - marimo-team/marimo
+
+# Use the existing uv environment rather than creating a temp env
+external-env: true
 
 website:
   title: "Sidemantic"
@@ -9,8 +18,6 @@ website:
         href: index.qmd
       - text: "Getting Started"
         href: getting-started.qmd
-      - text: "Interactive Demo"
-        href: interactive-demo.qmd
       - text: "Core Concepts"
         menu:
           - text: "Models"
@@ -23,6 +30,8 @@ website:
             href: sql-queries.qmd
       - text: "Examples"
         href: examples.qmd
+      - text: "Interactive"
+        href: marimo-interactive.qmd
       - text: "Reference"
         menu:
           - text: "Python API"

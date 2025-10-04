@@ -1,0 +1,338 @@
+---
+title: "Interactive Notebook"
+page-layout: article
+description: "Explore Sidemantic with an interactive notebook."
+filters:
+  - marimo-team/marimo
+external-env: true
+---
+
+Interact with Sidemantic metrics and dimensions directly in the browser.
+
+```python {.marimo}
+import marimo as mo
+```
+
+```python {.marimo}
+# Install Python deps in-browser without upgrading core runtime packages
+import micropip
+
+# Core libs needed by Sidemantic components used here
+await micropip.install([
+    "sqlglot>=25,<26",
+    "pydantic>=2,<3",
+    "altair>=5,<6",
+])
+
+# Install sidemantic from PyPI; if PyPI metadata fetch fails in-browser, fall back to bundled wheel
+try:
+    await micropip.install("sidemantic==0.1.2", deps=False)
+except Exception as e:
+    print("pypi install failed, falling back to local wheel:", e)
+    await micropip.install("./assets/sidemantic-0.1.2-py3-none-any.whl", deps=False)
+```
+
+```python {.marimo}
+import pandas as pd
+import numpy as np
+import altair as alt
+from datetime import datetime
+
+mo.md("# Sidemantic Interactive Demo")
+```
+
+```python {.marimo}
+# Larger synthetic dataset (~20k orders) to better exercise the UI
+rng = np.random.default_rng(42)
+
+N = 20000
+days = pd.date_range("2024-01-01", "2024-12-31", freq="D")
+
+regions = ["US", "EU", "APAC"]
+statuses = ["completed", "shipped", "pending", "cancelled", "returned"]
+categories = ["electronics", "apparel", "home", "toys", "beauty", "outdoors"]
+
+orders = pd.DataFrame(
+    {
+        "id": np.arange(1, N + 1),
+        "customer_id": rng.integers(1, 501, size=N),
+        "status": rng.choice(statuses, size=N, p=[0.5, 0.2, 0.15, 0.1, 0.05]),
+        "order_date": rng.choice(days, size=N),
+        "amount": rng.lognormal(mean=5.2, sigma=0.75, size=N).round(2),
+        "region": rng.choice(regions, size=N, p=[0.5, 0.3, 0.2]),
+        "category": rng.choice(categories, size=N, p=[0.22, 0.18, 0.2, 0.15, 0.13, 0.12]),
+    }
+)
+orders["order_month"] = pd.to_datetime(orders["order_date"]).dt.to_period("M").dt.to_timestamp()
+# Add cost/profit for margin demos
+orders["cost"] = (orders["amount"] * rng.uniform(0.55, 0.85, size=N)).round(2)
+orders["profit"] = (orders["amount"] - orders["cost"]).round(2)
+
+# Customers (dim) and region groups (dim) for a multi-hop join demo
+customers = pd.DataFrame(
+    {
+        "id": np.arange(1, 501),
+        "tier": rng.choice(["premium", "standard"], size=500, p=[0.3, 0.7]),
+        "region": rng.choice(regions, size=500, p=[0.5, 0.3, 0.2]),
+    }
+)
+region_map = pd.DataFrame(
+    {
+        "region": ["US", "EU", "APAC"],
+        "region_group": ["Americas", "Europe", "Asia Pacific"],
+    }
+)
+# Dataset prepared in memory
+```
+
+```python {.marimo}
+# Controls
+status_select = mo.ui.dropdown(options=["all", *sorted(orders["status"].unique())], value="all", label="Status")
+region_select = mo.ui.dropdown(options=["all", *sorted(orders["region"].unique())], value="all", label="Region")
+category_select = mo.ui.dropdown(options=["all", *sorted(orders["category"].unique())], value="all", label="Category")
+tier_select = mo.ui.dropdown(options=["all", "premium", "standard"], value="all", label="Tier")
+month_options = sorted(orders["order_month"].dt.strftime("%Y-%m").unique())
+month_select = mo.ui.dropdown(options=month_options, value=month_options[-1], label="Month for *_TD")
+
+# Render all controls together so they show reliably
+mo.vstack([
+    mo.md('<div style="height:12px"></div>'),
+    mo.hstack([status_select, region_select, category_select]),
+    mo.hstack([tier_select, month_select]),
+    mo.md('<div style="height:12px"></div>'),
+])
+```
+
+```python {.marimo}
+# Build a minimal semantic model with Sidemantic (compile SQL only)
+from sidemantic.core.model import Model
+from sidemantic.core.dimension import Dimension
+from sidemantic.core.measure import Measure
+from sidemantic.core.join import Join
+from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.sql.generator_v2 import SQLGenerator
+
+graph = SemanticGraph()
+
+orders_model = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    dimensions=[
+        Dimension(name="status", type="categorical", expr="status"),
+        Dimension(name="order_date", type="time", expr="order_date", granularity="day"),
+        Dimension(name="region", type="categorical", expr="region"),
+        Dimension(name="category", type="categorical", expr="category"),
+    ],
+    measures=[
+        Measure(name="revenue", agg="sum", expr="amount"),
+        Measure(name="order_count", agg="count"),
+        Measure(name="avg_order_value", agg="avg", expr="amount"),
+        Measure(name="cost", agg="sum", expr="cost"),
+        Measure(name="profit", agg="sum", expr="profit"),
+        # Derived/ratio metrics
+        Measure(name="returns", agg="count", filters=["status = 'returned'"]),
+        Measure(name="return_rate", type="ratio", numerator="orders.returns", denominator="orders.order_count"),
+        # Period-to-date examples
+        Measure(name="mtd_revenue", type="cumulative", expr="orders.revenue", grain_to_date="month"),
+        Measure(name="qtd_revenue", type="cumulative", expr="orders.revenue", grain_to_date="quarter"),
+        Measure(name="ytd_revenue", type="cumulative", expr="orders.revenue", grain_to_date="year"),
+    ],
+    joins=[Join(name="customers", type="belongs_to", foreign_key="customer_id")],
+)
+
+customers_model = Model(
+    name="customers",
+    table="customers",
+    primary_key="id",
+    dimensions=[
+        Dimension(name="tier", type="categorical", expr="tier"),
+        Dimension(name="region", type="categorical", expr="region"),
+    ],
+    joins=[Join(name="region_map", type="belongs_to", foreign_key="region")],
+)
+
+region_map_model = Model(
+    name="region_map",
+    table="region_map",
+    primary_key="region",
+    dimensions=[Dimension(name="region_group", type="categorical", expr="region_group")],
+)
+
+graph.add_model(orders_model)
+graph.add_model(customers_model)
+graph.add_model(region_map_model)
+
+generator = SQLGenerator(graph, dialect="duckdb")
+```
+
+```python {.marimo}
+# Filtered data
+df = orders.copy()
+
+# Apply simple filters
+if status_select.value != "all":
+    df = df[df["status"] == status_select.value]
+if region_select.value != "all":
+    df = df[df["region"] == region_select.value]
+if category_select.value != "all":
+    df = df[df["category"] == category_select.value]
+
+# Apply tier filter via join to customers when needed
+if tier_select.value != "all":
+    df = df.merge(
+        customers[["id", "tier"]],
+        left_on="customer_id",
+        right_on="id",
+        how="left",
+        suffixes=("", "_cust"),
+    )
+    df = df[df["tier"] == tier_select.value]
+
+mo.md(
+    f"**Active Filters:** status={status_select.value}, region={region_select.value}, "
+    f"category={category_select.value}, tier={tier_select.value}"
+)
+```
+
+```python {.marimo}
+# KPIs and derived metrics
+total_revenue = float(df["amount"].sum())
+order_count = int(df.shape[0])
+avg_order_value = float(df["amount"].mean()) if order_count else 0.0
+
+returns = int((df["status"] == "returned").sum())
+return_rate = (returns / order_count) if order_count else 0.0
+
+total_profit = float(df["profit"].sum())
+margin = (total_profit / total_revenue) if total_revenue else 0.0
+
+sel_month = pd.to_datetime(month_select.value)
+in_month = df[df["order_month"] == sel_month]
+mtd_revenue = float(in_month["amount"].sum())
+qtd_revenue = float(df[df["order_month"].dt.to_period("Q") == sel_month.to_period("Q")]["amount"].sum())
+ytd_revenue = float(df[df["order_month"].dt.year == sel_month.year]["amount"].sum())
+
+mo.md(f"""
+## Key Metrics
+**Revenue:** ${total_revenue:,.2f}  
+**Orders:** {order_count}  
+**AOV:** ${avg_order_value:,.2f}  
+**Return Rate:** {return_rate:.1%}  
+**Margin:** {margin:.1%}
+
+### Period-to-date ({month_select.value})
+• MTD Revenue: ${mtd_revenue:,.2f}  
+• QTD Revenue: ${qtd_revenue:,.2f}  
+• YTD Revenue: ${ytd_revenue:,.2f}
+""")
+```
+
+```python {.marimo}
+# Revenue by month
+chart_month = (
+    alt.Chart(pd.DataFrame(df))
+    .mark_bar()
+    .encode(
+        x=alt.X("order_month:T", title="Month"),
+        y=alt.Y("sum(amount):Q", title="Revenue"),
+        color=alt.Color("status:N"),
+        tooltip=["order_month:T", "status:N", alt.Tooltip("sum(amount):Q", title="Revenue")],
+    )
+)
+mo.ui.altair_chart(chart_month)
+
+# Revenue by category (top 10)
+top_cat = (
+    pd.DataFrame(df)
+    .groupby("category")["amount"]
+    .sum()
+    .sort_values(ascending=False)
+    .head(10)
+    .reset_index()
+)
+chart_cat = (
+    alt.Chart(pd.DataFrame(top_cat))
+    .mark_bar()
+    .encode(
+        x=alt.X("amount:Q", title="Revenue"),
+        y=alt.Y("category:N", sort='-x', title="Category"),
+        tooltip=["category:N", alt.Tooltip("amount:Q", title="Revenue")],
+    )
+)
+mo.ui.altair_chart(chart_cat)
+
+# Avg order value by region over time
+chart_aov_region = (
+    alt.Chart(pd.DataFrame(df))
+    .mark_line()
+    .encode(
+        x=alt.X("order_month:T", title="Month"),
+        y=alt.Y("mean(amount):Q", title="Avg Order Value"),
+        color=alt.Color("region:N"),
+        tooltip=["order_month:T", "region:N", alt.Tooltip("mean(amount):Q", title="AOV")],
+    )
+)
+mo.ui.altair_chart(chart_aov_region)
+
+# Revenue by region
+chart_region = (
+    alt.Chart(pd.DataFrame(df))
+    .mark_bar()
+    .encode(
+        x=alt.X("region:N", sort='-y', title="Region"),
+        y=alt.Y("sum(amount):Q", title="Revenue"),
+        color=alt.Color("region:N"),
+        tooltip=["region:N", alt.Tooltip("sum(amount):Q", title="Revenue")],
+    )
+)
+mo.ui.altair_chart(chart_region)
+
+# Revenue heatmap (month x category)
+chart_heat = (
+    alt.Chart(pd.DataFrame(df))
+    .mark_rect()
+    .encode(
+        x=alt.X("order_month:T", title="Month"),
+        y=alt.Y("category:N", title="Category"),
+        color=alt.Color("sum(amount):Q", title="Revenue"),
+    )
+)
+mo.ui.altair_chart(chart_heat)
+```
+
+```python {.marimo}
+# Multi-hop join demo: orders -> customers -> region_map
+df_joined = pd.DataFrame(df).merge(
+    customers, left_on="customer_id", right_on="id", how="left", suffixes=("", "_cust")
+).merge(region_map, on="region", how="left")
+if tier_select.value != "all":
+    df_joined = df_joined[df_joined["tier"] == tier_select.value]
+
+# Revenue by region_group and tier
+chart_join = (
+    alt.Chart(pd.DataFrame(df_joined))
+    .mark_bar()
+    .encode(
+        x=alt.X("region_group:N", title="Region Group"),
+        y=alt.Y("sum(amount):Q", title="Revenue"),
+        color=alt.Color("tier:N"),
+        tooltip=["region_group:N", "tier:N", alt.Tooltip("sum(amount):Q", title="Revenue")],
+    )
+)
+mo.ui.altair_chart(chart_join)
+
+# Top customers table
+top_customers = (
+    df.groupby("customer_id")["amount"].sum().sort_values(ascending=False).head(20).reset_index()
+)
+mo.ui.table(top_customers)
+
+```
+
+```python {.marimo}
+# Detailed rows (filtered)
+mo.md("## Detailed Rows")
+mo.md(f"{len(df):,} rows after filters")
+mo.ui.table(pd.DataFrame(df).sort_values(["order_date", "customer_id"]))
+```

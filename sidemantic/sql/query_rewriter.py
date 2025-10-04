@@ -302,9 +302,9 @@ class QueryRewriter:
             else:
                 arg_sql = '*'
 
-            # Provide helpful error with YAML example
+            # Provide helpful error with YAML example (use wording expected by docs/tests)
             raise ValueError(
-                f"Aggregate functions must be defined as measures.\n\n"
+                f"Aggregate functions must be defined as a metric.\n\n"
                 f"To use {func_sql}, add to your model:\n\n"
                 f"measures:\n"
                 f"  - name: my_metric\n"

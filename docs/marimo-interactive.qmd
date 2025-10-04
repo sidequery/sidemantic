@@ -8,7 +8,7 @@ pyproject: |
   requires-python = ">=3.11"
   dependencies = [
       "marimo>=0.16.5",
-      "sidemantic==0.1.2",
+      "sidemantic==0.2.3",
       "duckdb>=1.0",
       "sqlglot>=25",
       "pydantic>=2",
@@ -17,10 +17,11 @@ pyproject: |
   ]
 ---
 
-Use Sidemantic’s semantic layer directly in the browser. This demo:
+Use Sidemantic's semantic layer directly in the browser. This demo:
 
-- Defines semantic models (orders, customers, region_map) with dimensions and measures (including a ratio metric `return_rate`).
-- Uses declarative joins (`belongs_to`, `has_many`) and automatic join-path discovery for multi-hop queries (e.g., region_group × tier).
+- Defines semantic models (orders, customers, region_map) with dimensions and metrics (including ratio metric `return_rate`).
+- Uses reusable segments (named filters) and metric-level filters that auto-apply in WHERE clauses.
+- Declares relationships (`many_to_one`, `one_to_many`) with automatic join-path discovery for multi-hop queries (e.g., region_group × tier).
 - Compiles metrics + dimensions + filters to SQL (DuckDB dialect) via the Sidemantic SQL generator.
 - Applies global filters (status, region, category, tier) that propagate across models; period-to-date metrics are computed by filtering time.
 - Shows an ER diagram generated from the semantic graph to explain relationships.
@@ -30,7 +31,7 @@ import micropip
 try:
     import sidemantic  # type: ignore
 except ModuleNotFoundError:
-    await micropip.install(["sidemantic==0.1.2"], deps=False)
+    await micropip.install(["sidemantic==0.2.3"], deps=False)
     import sidemantic  # type: ignore
 ```
 
@@ -125,8 +126,9 @@ mo.vstack([
 from importlib import import_module
 Model = import_module("sidemantic.core.model").Model
 Dimension = import_module("sidemantic.core.dimension").Dimension
-Measure = import_module("sidemantic.core.measure").Measure
-Join = import_module("sidemantic.core.join").Join
+Metric = import_module("sidemantic.core.metric").Metric
+Relationship = import_module("sidemantic.core.relationship").Relationship
+Segment = import_module("sidemantic.core.segment").Segment
 SemanticGraph = import_module("sidemantic.core.semantic_graph").SemanticGraph
 SQLGenerator = import_module("sidemantic.sql.generator_v2").SQLGenerator
 
@@ -142,17 +144,22 @@ orders_model = Model(
         Dimension(name="region", type="categorical", expr="region"),
         Dimension(name="category", type="categorical", expr="category"),
     ],
-    measures=[
-        Measure(name="revenue", agg="sum", expr="amount"),
-        Measure(name="order_count", agg="count"),
-        Measure(name="avg_order_value", agg="avg", expr="amount"),
-        Measure(name="cost", agg="sum", expr="cost"),
-        Measure(name="profit", agg="sum", expr="profit"),
-        # Derived/ratio metrics
-        Measure(name="returns", agg="count", filters=["status = 'returned'"]),
-        Measure(name="return_rate", type="ratio", numerator="orders.returns", denominator="orders.order_count"),
+    metrics=[
+        Metric(name="revenue", agg="sum", expr="amount"),
+        Metric(name="order_count", agg="count"),
+        Metric(name="avg_order_value", agg="avg", expr="amount"),
+        Metric(name="cost", agg="sum", expr="cost"),
+        Metric(name="profit", agg="sum", expr="profit"),
+        # Metric with filter (auto-applied in WHERE clause)
+        Metric(name="returns", agg="count", filters=["{model}.status = 'returned'"]),
+        # Ratio metric
+        Metric(name="return_rate", type="ratio", numerator="orders.returns", denominator="orders.order_count"),
     ],
-    joins=[Join(name="customers", type="belongs_to", foreign_key="customer_id")],
+    segments=[
+        Segment(name="completed", sql="{model}.status = 'completed'"),
+        Segment(name="high_value", sql="{model}.amount >= 300"),
+    ],
+    relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
 )
 
 customers_model = Model(
@@ -163,7 +170,7 @@ customers_model = Model(
         Dimension(name="tier", type="categorical", expr="tier"),
         Dimension(name="region", type="categorical", expr="region"),
     ],
-    joins=[Join(name="region_map", type="belongs_to", foreign_key="region", primary_key="region")],
+    relationships=[Relationship(name="region_map", type="many_to_one", foreign_key="region", primary_key="region")],
 )
 
 region_map_model = Model(
@@ -433,7 +440,7 @@ mo.md("### Interactive Query")
 # Build metric and dimension options from the semantic graph
 _metric_opts = []
 for _mname, _model in graph.models.items():
-    for _me in _model.measures:
+    for _me in _model.metrics:
         _metric_opts.append(f"{_mname}.{_me.name}")
 _metric_opts = sorted(set(_metric_opts))
 
@@ -484,16 +491,16 @@ if iq_run.value:
             iq_results.value = rows
     except Exception as e:
         iq_results.value = [{"error": str(e)}]
-
-mo.md("")
+```
 
 ```python {.marimo}
 # Data Model
 python_src = """
 from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.measure import Measure
-from sidemantic.core.join import Join
+from sidemantic.core.metric import Metric
+from sidemantic.core.relationship import Relationship
+from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 
@@ -509,16 +516,20 @@ orders_model = Model(
         Dimension(name="region", type="categorical", expr="region"),
         Dimension(name="category", type="categorical", expr="category"),
     ],
-    measures=[
-        Measure(name="revenue", agg="sum", expr="amount"),
-        Measure(name="order_count", agg="count"),
-        Measure(name="avg_order_value", agg="avg", expr="amount"),
-        Measure(name="cost", agg="sum", expr="cost"),
-        Measure(name="profit", agg="sum", expr="profit"),
-        Measure(name="returns", agg="count", filters=["status = 'returned'"]),
-        Measure(name="return_rate", type="ratio", numerator="orders.returns", denominator="orders.order_count"),
+    metrics=[
+        Metric(name="revenue", agg="sum", expr="amount"),
+        Metric(name="order_count", agg="count"),
+        Metric(name="avg_order_value", agg="avg", expr="amount"),
+        Metric(name="cost", agg="sum", expr="cost"),
+        Metric(name="profit", agg="sum", expr="profit"),
+        Metric(name="returns", agg="count", filters=["{model}.status = 'returned'"]),
+        Metric(name="return_rate", type="ratio", numerator="orders.returns", denominator="orders.order_count"),
     ],
-    joins=[Join(name="customers", type="belongs_to", foreign_key="customer_id")],
+    segments=[
+        Segment(name="completed", sql="{model}.status = 'completed'"),
+        Segment(name="high_value", sql="{model}.amount >= 300"),
+    ],
+    relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
 )
 
 customers_model = Model(
@@ -529,7 +540,7 @@ customers_model = Model(
         Dimension(name="tier", type="categorical", expr="tier"),
         Dimension(name="region", type="categorical", expr="region"),
     ],
-    joins=[Join(name="region_map", type="belongs_to", foreign_key="region", primary_key="region")],
+    relationships=[Relationship(name="region_map", type="many_to_one", foreign_key="region", primary_key="region")],
 )
 
 region_map_model = Model(
@@ -545,8 +556,6 @@ graph.add_model(region_map_model)
 
 generator = SQLGenerator(graph, dialect="duckdb")
 """
-
-mo.md("")
 ```
 
 ```python {.marimo}
@@ -569,7 +578,7 @@ models:
       - name: category
         type: categorical
         expr: category
-    measures:
+    metrics:
       - name: revenue
         agg: sum
         expr: amount
@@ -587,14 +596,19 @@ models:
       - name: returns
         agg: count
         filters:
-          - "status = 'returned'"
+          - "{model}.status = 'returned'"
       - name: return_rate
         type: ratio
         numerator: orders.returns
         denominator: orders.order_count
-    joins:
+    segments:
+      - name: completed
+        sql: "{model}.status = 'completed'"
+      - name: high_value
+        sql: "{model}.amount >= 300"
+    relationships:
       - name: customers
-        type: belongs_to
+        type: many_to_one
         foreign_key: customer_id
   - name: customers
     table: customers
@@ -606,9 +620,9 @@ models:
       - name: region
         type: categorical
         expr: region
-    joins:
+    relationships:
       - name: region_map
-        type: belongs_to
+        type: many_to_one
         foreign_key: region
         primary_key: region
   - name: region_map
@@ -619,7 +633,6 @@ models:
         type: categorical
         expr: region_group
 """
-mo.md("")
 ```
 
 ```python {.marimo}
@@ -657,7 +670,7 @@ def _build_er_mermaid(g):
         lines.append("}")
 
         # Separate <model>_metrics entity listing all metrics
-        metrics_list = m.measures[:8]
+        metrics_list = m.metrics[:8]
         if metrics_list:
             metric_attrs = [f"  metric {me.name}" for me in metrics_list]
             metrics_entity = f"{m_name}_metrics"
@@ -667,22 +680,22 @@ def _build_er_mermaid(g):
             # One-to-one conceptual link from model to its metrics definition
             lines.append(f"{m_name} ||--|| {metrics_entity} : metrics")
 
-    # Relationships using Rails-like joins
+    # Relationships
     for m_name, m in g.models.items():
-        for j in m.joins:
+        for rel in m.relationships:
             src = m_name
-            dst = j.name
-            if j.type == "belongs_to":
+            dst = rel.name
+            if rel.type == "many_to_one":
                 card = "}o--||"  # many-to-one (child to parent)
-            elif j.type == "has_many":
+            elif rel.type == "one_to_many":
                 card = "||--o{"  # one-to-many (parent to child)
-            elif j.type == "has_one":
+            elif rel.type == "one_to_one":
                 card = "||--||"  # one-to-one
             else:
                 card = "||--||"
             # Build a compact, single-token label to avoid Mermaid parsing issues
-            l_fk = j.sql_expr.replace(".", "_")
-            r_pk = (j.related_key or "id").replace(".", "_")
+            l_fk = rel.sql_expr.replace(".", "_")
+            r_pk = (rel.related_key or "id").replace(".", "_")
             label = f"{src}_{l_fk}_to_{dst}_{r_pk}"
             lines.append(f"{src} {card} {dst} : {label}")
 

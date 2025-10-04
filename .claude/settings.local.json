@@ -6,7 +6,10 @@
       "WebFetch(domain:hex.tech)",
       "WebFetch(domain:docs.getdbt.com)",
       "WebFetch(domain:learn.hex.tech)",
-      "WebFetch(domain:gist.github.com)"
+      "WebFetch(domain:gist.github.com)",
+      "Bash(for file in sidemantic/adapters/cube.py sidemantic/adapters/metricflow.py)",
+      "Bash(do)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []

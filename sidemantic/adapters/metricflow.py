@@ -138,6 +138,23 @@ class MetricFlowAdapter(BaseAdapter):
             if measure:
                 measures.append(measure)
 
+        # Parse segments from meta
+        from sidemantic.core.segment import Segment
+        segments = []
+        meta = model_def.get("meta", {})
+        for segment_def in meta.get("segments", []):
+            segment_name = segment_def.get("name")
+            segment_sql = segment_def.get("sql")
+            if segment_name and segment_sql:
+                segments.append(Segment(
+                    name=segment_name,
+                    sql=segment_sql,
+                    description=segment_def.get("description")
+                ))
+
+        # Parse inheritance
+        extends = meta.get("extends")
+
         return Model(
             name=name,
             table=table,
@@ -146,6 +163,8 @@ class MetricFlowAdapter(BaseAdapter):
             relationships=relationships,
             dimensions=dimensions,
             metrics=measures,
+            segments=segments,
+            extends=extends,
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -177,6 +196,12 @@ class MetricFlowAdapter(BaseAdapter):
             type_params = dim_def.get("type_params", {})
             granularity = type_params.get("time_granularity", "day")
 
+        # Parse metadata fields from meta
+        meta = dim_def.get("meta", {})
+        format_str = meta.get("format")
+        value_format_name = meta.get("value_format_name")
+        parent = meta.get("parent")
+
         return Dimension(
             name=name,
             type=sidemantic_type,
@@ -184,6 +209,9 @@ class MetricFlowAdapter(BaseAdapter):
             granularity=granularity,
             description=dim_def.get("description"),
             label=dim_def.get("label"),
+            format=format_str,
+            value_format_name=value_format_name,
+            parent=parent,
         )
 
     def _parse_measure(self, measure_def: dict) -> Metric | None:
@@ -216,12 +244,34 @@ class MetricFlowAdapter(BaseAdapter):
 
         sidemantic_agg = type_mapping.get(agg_type, "sum")
 
+        # Parse metadata and filters from meta
+        meta = measure_def.get("meta", {})
+        filters = meta.get("filters")
+        format_str = meta.get("format")
+        value_format_name = meta.get("value_format_name")
+        drill_fields = meta.get("drill_fields")
+        default_time_dimension = meta.get("default_time_dimension")
+        default_grain = meta.get("default_grain")
+
+        # Parse non_additive_dimension
+        non_additive = measure_def.get("non_additive_dimension")
+        non_additive_dimension = None
+        if non_additive and isinstance(non_additive, dict):
+            non_additive_dimension = non_additive.get("name")
+
         return Metric(
             name=name,
             agg=sidemantic_agg,
-            sql=measure_def.get("expr"),
+            expr=measure_def.get("expr"),
             description=measure_def.get("description"),
             label=measure_def.get("label"),
+            filters=filters,
+            format=format_str,
+            value_format_name=value_format_name,
+            drill_fields=drill_fields,
+            non_additive_dimension=non_additive_dimension,
+            default_time_dimension=default_time_dimension,
+            default_grain=default_grain,
         )
 
     def _parse_metric(self, metric_def: dict) -> Metric | None:
@@ -297,6 +347,13 @@ class MetricFlowAdapter(BaseAdapter):
         filter_expr = metric_def.get("filter")
         filters = [filter_expr] if filter_expr else None
 
+        # Parse metadata from meta
+        meta = metric_def.get("meta", {})
+        format_str = meta.get("format")
+        value_format_name = meta.get("value_format_name")
+        drill_fields = meta.get("drill_fields")
+        extends = meta.get("extends")
+
         return Metric(
             name=name,
             type=sidemantic_type,
@@ -307,6 +364,10 @@ class MetricFlowAdapter(BaseAdapter):
             denominator=denominator,
             window=window,
             filters=filters,
+            format=format_str,
+            value_format_name=value_format_name,
+            drill_fields=drill_fields,
+            extends=extends,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -318,17 +379,22 @@ class MetricFlowAdapter(BaseAdapter):
         """
         output_path = Path(output_path)
 
+        # Resolve inheritance first
+        from sidemantic.core.inheritance import resolve_model_inheritance, resolve_metric_inheritance
+        resolved_models = resolve_model_inheritance(graph.models)
+        resolved_metrics = resolve_metric_inheritance(graph.metrics) if graph.metrics else {}
+
         # Export semantic models
         semantic_models = []
-        for model in graph.models.values():
+        for model in resolved_models.values():
             semantic_model = self._export_semantic_model(model)
             semantic_models.append(semantic_model)
 
         data = {"semantic_models": semantic_models}
 
         # Export metrics if present
-        if graph.metrics:
-            data["metrics"] = [self._export_metric(metric, graph) for metric in graph.metrics.values()]
+        if resolved_metrics:
+            data["metrics"] = [self._export_metric(metric, graph) for metric in resolved_metrics.values()]
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -390,6 +456,19 @@ class MetricFlowAdapter(BaseAdapter):
                 if dim.label:
                     dim_def["label"] = dim.label
 
+                # Add metadata fields
+                if dim.format:
+                    dim_def["meta"] = dim_def.get("meta", {})
+                    dim_def["meta"]["format"] = dim.format
+                if dim.value_format_name:
+                    dim_def["meta"] = dim_def.get("meta", {})
+                    dim_def["meta"]["value_format_name"] = dim.value_format_name
+
+                # Add hierarchy parent info (MetricFlow doesn't have native hierarchies, use meta)
+                if dim.parent:
+                    dim_def["meta"] = dim_def.get("meta", {})
+                    dim_def["meta"]["parent"] = dim.parent
+
                 result["dimensions"].append(dim_def)
 
         # Export measures
@@ -418,7 +497,44 @@ class MetricFlowAdapter(BaseAdapter):
                 if measure.label:
                     measure_def["label"] = measure.label
 
+                # Add metric-level filters
+                if measure.filters:
+                    # MetricFlow supports filters in create_metric, but we can put in meta for now
+                    measure_def["meta"] = measure_def.get("meta", {})
+                    measure_def["meta"]["filters"] = measure.filters
+
+                # Add metadata fields
+                if measure.format:
+                    measure_def["meta"] = measure_def.get("meta", {})
+                    measure_def["meta"]["format"] = measure.format
+                if measure.value_format_name:
+                    measure_def["meta"] = measure_def.get("meta", {})
+                    measure_def["meta"]["value_format_name"] = measure.value_format_name
+                if measure.drill_fields:
+                    measure_def["meta"] = measure_def.get("meta", {})
+                    measure_def["meta"]["drill_fields"] = measure.drill_fields
+                if measure.non_additive_dimension:
+                    measure_def["non_additive_dimension"] = {"name": measure.non_additive_dimension}
+                if measure.default_time_dimension:
+                    measure_def["meta"] = measure_def.get("meta", {})
+                    measure_def["meta"]["default_time_dimension"] = measure.default_time_dimension
+                if measure.default_grain:
+                    measure_def["meta"] = measure_def.get("meta", {})
+                    measure_def["meta"]["default_grain"] = measure.default_grain
+
                 result["measures"].append(measure_def)
+
+        # Export segments (as meta since MetricFlow doesn't have native segment support)
+        if model.segments:
+            result["meta"] = result.get("meta", {})
+            result["meta"]["segments"] = []
+            for segment in model.segments:
+                segment_def = {"name": segment.name, "sql": segment.sql}
+                if segment.description:
+                    segment_def["description"] = segment.description
+                result["meta"]["segments"].append(segment_def)
+
+        # Note: inheritance is resolved before export, so extends field is not exported
 
         return result
 
@@ -473,5 +589,16 @@ class MetricFlowAdapter(BaseAdapter):
 
         if measure.filters:
             result["filter"] = measure.filters[0]  # MetricFlow uses single filter string
+
+        # Add metadata fields for graph-level metrics
+        if measure.format or measure.value_format_name or measure.drill_fields:
+            result["meta"] = result.get("meta", {})
+            if measure.format:
+                result["meta"]["format"] = measure.format
+            if measure.value_format_name:
+                result["meta"]["value_format_name"] = measure.value_format_name
+            if measure.drill_fields:
+                result["meta"]["drill_fields"] = measure.drill_fields
+            # Note: inheritance is resolved before export, so extends field is not exported
 
         return result

@@ -1,58 +1,65 @@
 cubes:
   - name: orders
     sql_table: public.orders
-    description: "Order transactions"
+    description: Customer orders with revenue and status tracking
 
     dimensions:
       - name: id
-        sql: order_id
+        sql: id
         type: number
         primary_key: true
 
       - name: status
         sql: status
         type: string
-        description: "Order status"
+        description: Order status (pending, completed, cancelled)
 
       - name: created_at
         sql: created_at
         type: time
-        description: "Order creation timestamp"
+
+      - name: customer_id
+        sql: customer_id
+        type: number
 
     measures:
       - name: count
         type: count
-        description: "Total number of orders"
+        description: Total number of orders
 
       - name: revenue
+        sql: amount
         type: sum
-        sql: order_amount
-        description: "Total revenue"
+        description: Total revenue from orders
+        format: usd
+
+      - name: completed_revenue
+        sql: amount
+        type: sum
+        filters:
+          - sql: "${CUBE}.status = 'completed'"
+        description: Revenue from completed orders only
 
       - name: avg_order_value
+        sql: amount
         type: avg
-        sql: order_amount
-        description: "Average order value"
+        description: Average order value
+
+      - name: conversion_rate
+        type: number
+        sql: "${completed_revenue} / NULLIF(${revenue}, 0)"
+        description: Percentage of revenue that is completed
+
+    segments:
+      - name: high_value
+        sql: "${CUBE}.amount >= 500"
+        description: Orders with amount >= $500
+
+      - name: completed
+        sql: "${CUBE}.status = 'completed'"
+        description: Completed orders
 
     joins:
-      - name: customer
-        sql: "{orders.customer_id} = {customer.id}"
+      - name: customers
+        sql: "${CUBE}.customer_id = ${customers.id}"
         relationship: many_to_one
-
-  - name: customer
-    sql_table: public.customers
-    description: "Customer dimension"
-
-    dimensions:
-      - name: id
-        sql: customer_id
-        type: number
-        primary_key: true
-
-      - name: region
-        sql: region
-        type: string
-
-      - name: tier
-        sql: tier
-        type: string

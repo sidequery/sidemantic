@@ -131,6 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span class="menu-text">Home</span></a>
   </li>  
   <li class="nav-item">
+    <a class="nav-link" href="./marimo-interactive.html"> 
+<span class="menu-text">Interactive Tour</span></a>
+  </li>  
+  <li class="nav-item">
     <a class="nav-link" href="./getting-started.html"> 
 <span class="menu-text">Getting Started</span></a>
   </li>  
@@ -144,12 +148,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="dropdown-text">Models</span></a>
   </li>  
         <li>
-    <a class="dropdown-item" href="./measures.html">
- <span class="dropdown-text">Measures</span></a>
+    <a class="dropdown-item" href="./metrics.html">
+ <span class="dropdown-text">Metrics</span></a>
   </li>  
         <li>
-    <a class="dropdown-item" href="./joins.html">
- <span class="dropdown-text">Joins</span></a>
+    <a class="dropdown-item" href="./relationships.html">
+ <span class="dropdown-text">Relationships</span></a>
   </li>  
         <li>
     <a class="dropdown-item" href="./sql-queries.html">
@@ -157,14 +161,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   </li>  
     </ul>
   </li>
-  <li class="nav-item">
-    <a class="nav-link" href="./examples.html"> 
-<span class="menu-text">Examples</span></a>
-  </li>  
-  <li class="nav-item">
-    <a class="nav-link" href="./marimo-interactive.html"> 
-<span class="menu-text">Interactive</span></a>
-  </li>  
   <li class="nav-item dropdown ">
     <a class="nav-link dropdown-toggle" href="#" id="nav-menu-reference" role="link" data-bs-toggle="dropdown" aria-expanded="false">
  <span class="menu-text">Reference</span>
@@ -184,6 +180,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   </li>  
     </ul>
   </li>
+  <li class="nav-item">
+    <a class="nav-link" href="./examples.html"> 
+<span class="menu-text">Examples</span></a>
+  </li>  
 </ul>
           </div> <!-- /navcollapse -->
             <div class="quarto-navbar-tools">
@@ -200,7 +200,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     <h2 id="toc-title">On this page</h2>
    
   <ul>
-  <li><a href="#basic-queries" id="toc-basic-queries" class="nav-link active" data-scroll-target="#basic-queries">Basic Queries</a></li>
+  <li><a href="#what-this-is-for" id="toc-what-this-is-for" class="nav-link active" data-scroll-target="#what-this-is-for">What This Is For</a></li>
+  <li><a href="#sql-support-overview" id="toc-sql-support-overview" class="nav-link" data-scroll-target="#sql-support-overview">SQL Support Overview</a></li>
+  <li><a href="#basic-queries" id="toc-basic-queries" class="nav-link" data-scroll-target="#basic-queries">Basic Queries</a></li>
   <li><a href="#supported-features" id="toc-supported-features" class="nav-link" data-scroll-target="#supported-features">Supported Features</a>
   <ul class="collapse">
   <li><a href="#select" id="toc-select" class="nav-link" data-scroll-target="#select">SELECT</a></li>
@@ -253,6 +255,112 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <p>Query the semantic layer with familiar SQL syntax.</p>
+<section id="what-this-is-for" class="level2">
+<h2 class="anchored" data-anchor-id="what-this-is-for">What This Is For</h2>
+<p>The SQL interface lets you query pre-defined metrics and dimensions using familiar SQL syntax. You can filter, sort, and combine data across models - the semantic layer handles joins and aggregations automatically.</p>
+<p><strong>Good for:</strong> - Exploring metrics across dimensions (<code>SELECT revenue, status FROM orders WHERE region = 'US'</code>) - Building dashboards and reports with consistent metric definitions - Querying across related models without writing joins - Using parameters for dynamic filters (<code>WHERE date &gt;= {{ start_date }}</code>)</p>
+<p><strong>Not for:</strong> - Ad-hoc analytics with <code>SUM()</code>, <code>COUNT()</code>, or other aggregation functions - Complex SQL operations like subqueries, CTEs, or window functions - One-off queries that don’t fit your metric definitions</p>
+<p><strong>If you need ad-hoc SQL:</strong> Use <code>layer.compile()</code> to generate base SQL, then modify and execute it yourself.</p>
+</section>
+<section id="sql-support-overview" class="level2">
+<h2 class="anchored" data-anchor-id="sql-support-overview">SQL Support Overview</h2>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Feature</th>
+<th>Supported</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><strong><a href="#select">SELECT</a></strong></td>
+<td>✅ Yes</td>
+<td>Metrics and dimensions</td>
+</tr>
+<tr class="even">
+<td><strong><a href="#select-1">SELECT *</a></strong></td>
+<td>✅ Yes</td>
+<td>Expands to all model fields</td>
+</tr>
+<tr class="odd">
+<td><strong><a href="#where">WHERE</a></strong></td>
+<td>✅ Yes</td>
+<td>Standard SQL conditions</td>
+</tr>
+<tr class="even">
+<td><strong><a href="#order-by">ORDER BY</a></strong></td>
+<td>✅ Yes</td>
+<td>Sort by any field</td>
+</tr>
+<tr class="odd">
+<td><strong><a href="#limit-offset">LIMIT / OFFSET</a></strong></td>
+<td>✅ Yes</td>
+<td>Pagination support</td>
+</tr>
+<tr class="even">
+<td><strong><a href="#parameters">Parameters</a></strong></td>
+<td>✅ Yes</td>
+<td><code>{ param }</code> syntax</td>
+</tr>
+<tr class="odd">
+<td><strong><a href="#cross-model-queries">Cross-Model Queries</a></strong></td>
+<td>✅ Yes</td>
+<td>Auto-joins via relationships</td>
+</tr>
+<tr class="even">
+<td><strong><a href="#no-explicit-joins">JOIN</a></strong></td>
+<td>❌ No</td>
+<td>Joins are automatic</td>
+</tr>
+<tr class="odd">
+<td><strong><a href="#no-group-by">GROUP BY</a></strong></td>
+<td>❌ No</td>
+<td>Grouping is automatic</td>
+</tr>
+<tr class="even">
+<td><strong><a href="#no-aggregate-functions">Aggregate Functions</a></strong></td>
+<td>❌ No</td>
+<td>Use pre-defined metrics</td>
+</tr>
+<tr class="odd">
+<td><strong><a href="#no-having">HAVING</a></strong></td>
+<td>❌ No</td>
+<td>Use WHERE on metrics instead</td>
+</tr>
+<tr class="even">
+<td><strong><a href="#no-subqueries">Subqueries</a></strong></td>
+<td>❌ No</td>
+<td>Not supported</td>
+</tr>
+<tr class="odd">
+<td><strong><a href="#no-cteswith">CTEs / WITH</a></strong></td>
+<td>❌ No</td>
+<td>Not supported</td>
+</tr>
+<tr class="even">
+<td><strong><a href="#no-window-functions">Window Functions</a></strong></td>
+<td>❌ No</td>
+<td>Use cumulative metrics</td>
+</tr>
+<tr class="odd">
+<td><strong><a href="#no-distinct">DISTINCT</a></strong></td>
+<td>❌ No</td>
+<td>Dimensions are auto-distinct</td>
+</tr>
+<tr class="even">
+<td><strong><a href="#no-unionintersectexcept">UNION / INTERSECT</a></strong></td>
+<td>❌ No</td>
+<td>Set operations not supported</td>
+</tr>
+<tr class="odd">
+<td><strong><a href="#no-insertupdatedelete">INSERT / UPDATE / DELETE</a></strong></td>
+<td>❌ No</td>
+<td>Read-only semantic layer</td>
+</tr>
+</tbody>
+</table>
+</section>
 <section id="basic-queries" class="level2">
 <h2 class="anchored" data-anchor-id="basic-queries">Basic Queries</h2>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>layer.sql(<span class="st">"SELECT revenue FROM orders"</span>)</span>
@@ -372,12 +480,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode sql code-with-copy"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> <span class="fu">COUNT</span>(<span class="op">*</span>), <span class="fu">SUM</span>(amount)</span>
 <span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="kw">FROM</span> orders</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>✅ Instead, define measures:</p>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="fu">measures</span><span class="kw">:</span></span>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="fu">metrics</span><span class="kw">:</span></span>
 <span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> order_count</span></span>
 <span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> count</span></span>
 <span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> revenue</span></span>
 <span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> sum</span></span>
-<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">expr</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>Then:</p>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode sql code-with-copy"><code class="sourceCode sql"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> order_count, revenue <span class="kw">FROM</span> orders</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </section>
@@ -450,11 +558,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 </div>
 <div class="callout-body-container callout-body">
-<p>Define measures in YAML:</p>
-<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb24"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="fu">measures</span><span class="kw">:</span></span>
+<p>Define metrics in YAML:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb24"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="fu">metrics</span><span class="kw">:</span></span>
 <span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> revenue</span></span>
 <span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> sum</span></span>
-<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">expr</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <p>Then query with simple SQL:</p>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb25"><pre class="sourceCode sql code-with-copy"><code class="sourceCode sql"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> revenue <span class="kw">FROM</span> orders</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div>
@@ -471,10 +579,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div class="callout-body-container callout-body">
 <p>Put complex logic in measure definitions, not queries:</p>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb26"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Define complex measure</span></span>
-<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a><span class="fu">measures</span><span class="kw">:</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a><span class="fu">metrics</span><span class="kw">:</span></span>
 <span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> high_value_revenue</span></span>
 <span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> sum</span></span>
-<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">expr</span><span class="kw">:</span><span class="at"> </span><span class="st">"CASE WHEN amount &gt; 1000 THEN amount ELSE 0 END"</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> </span><span class="st">"CASE WHEN amount &gt; 1000 THEN amount ELSE 0 END"</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb27"><pre class="sourceCode sql code-with-copy"><code class="sourceCode sql"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="co">-- Simple query</span></span>
 <span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a><span class="kw">SELECT</span> high_value_revenue <span class="kw">FROM</span> orders</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </div>

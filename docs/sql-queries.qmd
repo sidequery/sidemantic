@@ -4,6 +4,45 @@ title: "SQL Queries"
 
 Query the semantic layer with familiar SQL syntax.
 
+## What This Is For
+
+The SQL interface lets you query pre-defined metrics and dimensions using familiar SQL syntax. You can filter, sort, and combine data across models - the semantic layer handles joins and aggregations automatically.
+
+**Good for:**
+- Exploring metrics across dimensions (`SELECT revenue, status FROM orders WHERE region = 'US'`)
+- Building dashboards and reports with consistent metric definitions
+- Querying across related models without writing joins
+- Using parameters for dynamic filters (`WHERE date >= {{ start_date }}`)
+
+**Not for:**
+- Ad-hoc analytics with `SUM()`, `COUNT()`, or other aggregation functions
+- Complex SQL operations like subqueries, CTEs, or window functions
+- One-off queries that don't fit your metric definitions
+
+**If you need ad-hoc SQL:** Use `layer.compile()` to generate base SQL, then modify and execute it yourself.
+
+## SQL Support Overview
+
+| Feature | Supported | Notes |
+|---------|-----------|-------|
+| **[SELECT](#select)** | ✅ Yes | Metrics and dimensions |
+| **[SELECT *](#select-1)** | ✅ Yes | Expands to all model fields |
+| **[WHERE](#where)** | ✅ Yes | Standard SQL conditions |
+| **[ORDER BY](#order-by)** | ✅ Yes | Sort by any field |
+| **[LIMIT / OFFSET](#limit-offset)** | ✅ Yes | Pagination support |
+| **[Parameters](#parameters)** | ✅ Yes | `{{ param }}` syntax |
+| **[Cross-Model Queries](#cross-model-queries)** | ✅ Yes | Auto-joins via relationships |
+| **[JOIN](#no-explicit-joins)** | ❌ No | Joins are automatic |
+| **[GROUP BY](#no-group-by)** | ❌ No | Grouping is automatic |
+| **[Aggregate Functions](#no-aggregate-functions)** | ❌ No | Use pre-defined metrics |
+| **[HAVING](#no-having)** | ❌ No | Use WHERE on metrics instead |
+| **[Subqueries](#no-subqueries)** | ❌ No | Not supported |
+| **[CTEs / WITH](#no-cteswith)** | ❌ No | Not supported |
+| **[Window Functions](#no-window-functions)** | ❌ No | Use cumulative metrics |
+| **[DISTINCT](#no-distinct)** | ❌ No | Dimensions are auto-distinct |
+| **[UNION / INTERSECT](#no-unionintersectexcept)** | ❌ No | Set operations not supported |
+| **[INSERT / UPDATE / DELETE](#no-insertupdatedelete)** | ❌ No | Read-only semantic layer |
+
 ## Basic Queries
 
 ```python

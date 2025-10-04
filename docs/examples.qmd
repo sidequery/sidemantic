@@ -4,6 +4,9 @@ title: "Examples"
 
 ## Basic Query
 
+::: {.panel-tabset}
+
+### YAML
 ```yaml
 models:
   - name: orders
@@ -12,11 +15,43 @@ models:
     metrics:
       - name: revenue
         agg: sum
-        sql: amount
+        expr: amount
 ```
+
+### Python
+```python
+from sidemantic import SemanticLayer, Model, Metric
+
+layer = SemanticLayer()
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    metrics=[
+        Metric(name="revenue", agg="sum", expr="amount")
+    ]
+)
+
+layer.add_model(orders)
+```
+:::
+
+Query with SQL:
 
 ```python
 layer.sql("SELECT revenue FROM orders")
+```
+
+Or with native Python API:
+
+```python
+# Get SQL only
+sql = layer.compile(metrics=["orders.revenue"])
+
+# Execute and get results
+result = layer.query(metrics=["orders.revenue"])
+df = result.fetchdf()
 ```
 
 ## Filtering and Grouping
@@ -36,13 +71,29 @@ The semantic layer automatically groups by dimensions. Just select what you want
 
 ## Time Dimensions
 
+::: {.panel-tabset}
+
+### YAML
 ```yaml
 dimensions:
   - name: order_date
     type: time
-    sql: order_date
+    expr: order_date
     granularity: day
 ```
+
+### Python
+```python
+from sidemantic import Dimension
+
+Dimension(
+    name="order_date",
+    type="time",
+    expr="order_date",
+    granularity="day"
+)
+```
+:::
 
 ```python
 # Automatic time grouping
@@ -54,6 +105,9 @@ layer.sql("""
 
 ## Cross-Model Queries
 
+::: {.panel-tabset}
+
+### YAML
 ```yaml
 models:
   - name: orders
@@ -70,8 +124,32 @@ models:
     dimensions:
       - name: region
         type: categorical
-        sql: region
+        expr: region
 ```
+
+### Python
+```python
+from sidemantic import Model, Relationship, Dimension
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    relationships=[
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
+    ]
+)
+
+customers = Model(
+    name="customers",
+    table="customers",
+    primary_key="id",
+    dimensions=[
+        Dimension(name="region", type="categorical", expr="region")
+    ]
+)
+```
+:::
 
 ```python
 # Automatic join
@@ -81,27 +159,85 @@ layer.sql("""
 """)
 ```
 
-::: {.callout-warning}
-## Filter on Joined Tables
-Only filter on tables that are joined via metrics or dimensions:
-- ❌ `SELECT orders.revenue WHERE customers.region = 'US'` (customers not joined!)
-- ✅ `SELECT orders.revenue, customers.region WHERE customers.region = 'US'`
+## Segments (Named Filters)
 
-Adding a dimension from the table ensures it gets joined.
+::: {.panel-tabset}
+
+### YAML
+```yaml
+models:
+  - name: orders
+    segments:
+      - name: completed
+        sql: "{model}.status = 'completed'"
+      - name: high_value
+        sql: "{model}.amount >= 500"
+```
+
+### Python
+```python
+from sidemantic import Segment
+
+orders = Model(
+    name="orders",
+    segments=[
+        Segment(name="completed", sql="{model}.status = 'completed'"),
+        Segment(name="high_value", sql="{model}.amount >= 500")
+    ]
+)
+```
 :::
 
-## Ratio Metrics
+```python
+# Use segments in queries
+layer.compile(
+    metrics=["orders.revenue"],
+    segments=["orders.completed", "orders.high_value"]
+)
+```
 
+## Metric-Level Filters
+
+::: {.panel-tabset}
+
+### YAML
 ```yaml
 metrics:
   - name: completed_revenue
     agg: sum
-    sql: amount
-    filters: ["status = 'completed'"]
+    expr: amount
+    filters:
+      - "{model}.status = 'completed'"
+```
+
+### Python
+```python
+Metric(
+    name="completed_revenue",
+    agg="sum",
+    expr="amount",
+    filters=["{model}.status = 'completed'"]
+)
+```
+:::
+
+Filters are automatically applied in the WHERE clause whenever the metric is used.
+
+## Ratio Metrics
+
+::: {.panel-tabset}
+
+### YAML
+```yaml
+metrics:
+  - name: completed_revenue
+    agg: sum
+    expr: amount
+    filters: ["{model}.status = 'completed'"]
 
   - name: total_revenue
     agg: sum
-    sql: amount
+    expr: amount
 
   - name: completion_rate
     type: ratio
@@ -109,30 +245,52 @@ metrics:
     denominator: total_revenue
 ```
 
+### Python
+```python
+Metric(name="completed_revenue", agg="sum", expr="amount",
+       filters=["{model}.status = 'completed'"]),
+Metric(name="total_revenue", agg="sum", expr="amount"),
+Metric(name="completion_rate", type="ratio",
+       numerator="completed_revenue", denominator="total_revenue")
+```
+:::
+
 ```python
 layer.sql("SELECT completion_rate FROM orders")
 ```
 
 ## Derived Metrics
 
+::: {.panel-tabset}
+
+### YAML
 ```yaml
 metrics:
   - name: revenue
     agg: sum
-    sql: amount
+    expr: amount
 
   - name: cost
     agg: sum
-    sql: cost
+    expr: cost
 
   - name: profit
     type: derived
-    sql: "revenue - cost"
+    expr: "revenue - cost"
 
   - name: margin
     type: derived
-    sql: "profit / revenue"
+    expr: "profit / revenue"
 ```
+
+### Python
+```python
+Metric(name="revenue", agg="sum", expr="amount"),
+Metric(name="cost", agg="sum", expr="cost"),
+Metric(name="profit", type="derived", expr="revenue - cost"),
+Metric(name="margin", type="derived", expr="profit / revenue")
+```
+:::
 
 ```python
 layer.sql("SELECT revenue, profit, margin FROM orders")
@@ -140,22 +298,35 @@ layer.sql("SELECT revenue, profit, margin FROM orders")
 
 ## Cumulative Metrics
 
+::: {.panel-tabset}
+
+### YAML
 ```yaml
 metrics:
   - name: daily_revenue
     agg: sum
-    sql: amount
+    expr: amount
 
   - name: running_total
     type: cumulative
-    sql: daily_revenue
+    expr: daily_revenue
     window: "7 days"
 
   - name: mtd_revenue
     type: cumulative
-    sql: daily_revenue
+    expr: daily_revenue
     grain_to_date: month
 ```
+
+### Python
+```python
+Metric(name="daily_revenue", agg="sum", expr="amount"),
+Metric(name="running_total", type="cumulative",
+       expr="daily_revenue", window="7 days"),
+Metric(name="mtd_revenue", type="cumulative",
+       expr="daily_revenue", grain_to_date="month")
+```
+:::
 
 ```python
 layer.sql("""
@@ -164,8 +335,157 @@ layer.sql("""
 """)
 ```
 
+## Relative Date Ranges
+
+```python
+# Use natural language date ranges in filters
+layer.compile(
+    metrics=["orders.revenue"],
+    filters=["orders.order_date >= 'last 7 days'"]
+)
+
+# Other examples:
+# - "today"
+# - "yesterday"
+# - "last 30 days"
+# - "this week"
+# - "this month"
+# - "this quarter"
+# - "this year"
+```
+
+## Hierarchies & Drill-Down
+
+::: {.panel-tabset}
+
+### YAML
+```yaml
+dimensions:
+  - name: country
+    type: categorical
+    expr: country
+
+  - name: state
+    type: categorical
+    expr: state
+    parent: country
+
+  - name: city
+    type: categorical
+    expr: city
+    parent: state
+```
+
+### Python
+```python
+Dimension(name="country", type="categorical", expr="country"),
+Dimension(name="state", type="categorical", expr="state", parent="country"),
+Dimension(name="city", type="categorical", expr="city", parent="state")
+```
+:::
+
+```python
+# Use drill-down API
+model.get_hierarchy_path("city")  # ['country', 'state', 'city']
+model.get_drill_down("state")     # 'city'
+model.get_drill_up("city")        # 'state'
+```
+
+## Inheritance
+
+::: {.panel-tabset}
+
+### YAML
+```yaml
+models:
+  - name: base_orders
+    table: orders
+    dimensions:
+      - name: status
+        expr: status
+
+  - name: completed_orders
+    extends: base_orders
+    metrics:
+      - name: revenue
+        agg: sum
+        expr: amount
+```
+
+### Python
+```python
+base = Model(
+    name="base_orders",
+    table="orders",
+    dimensions=[Dimension(name="status", expr="status")]
+)
+
+extended = Model(
+    name="completed_orders",
+    extends="base_orders",
+    metrics=[Metric(name="revenue", agg="sum", expr="amount")]
+)
+```
+:::
+
+Child models inherit all dimensions, metrics, and relationships from parent.
+
+## Jinja2 Templates
+
+::: {.panel-tabset}
+
+### YAML
+```yaml
+metrics:
+  - name: filtered_revenue
+    agg: sum
+    expr: |
+      {% if include_tax %}
+        amount * 1.1
+      {% else %}
+        amount
+      {% endif %}
+```
+
+### Python
+```python
+Metric(
+    name="filtered_revenue",
+    agg="sum",
+    expr="""
+    {% if include_tax %}
+        amount * 1.1
+    {% else %}
+        amount
+    {% endif %}
+    """
+)
+```
+:::
+
+```python
+layer.compile(
+    metrics=["orders.filtered_revenue"],
+    parameters={"include_tax": True}
+)
+```
+
+## Ungrouped Queries
+
+```python
+# Get raw rows without aggregation
+layer.compile(
+    metrics=["orders.revenue"],  # Still available
+    dimensions=["orders.order_id", "orders.customer_id"],
+    ungrouped=True  # No GROUP BY
+)
+```
+
 ## Parameterized Queries
 
+::: {.panel-tabset}
+
+### YAML
 ```yaml
 parameters:
   - name: start_date
@@ -176,6 +496,15 @@ parameters:
     type: number
     default_value: 100
 ```
+
+### Python
+```python
+from sidemantic import Parameter
+
+Parameter(name="start_date", type="date", default_value="2024-01-01"),
+Parameter(name="min_amount", type="number", default_value=100)
+```
+:::
 
 ```python
 layer.sql(
@@ -193,6 +522,9 @@ DON'T add quotes around `{{ param }}` - they're added automatically based on typ
 
 ## Multi-Hop Joins
 
+::: {.panel-tabset}
+
+### YAML
 ```yaml
 models:
   - name: orders
@@ -211,8 +543,33 @@ models:
     dimensions:
       - name: country
         type: categorical
-        sql: country
+        expr: country
 ```
+
+### Python
+```python
+orders = Model(
+    name="orders",
+    relationships=[
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
+    ]
+)
+
+customers = Model(
+    name="customers",
+    relationships=[
+        Relationship(name="regions", type="many_to_one", foreign_key="region_id")
+    ]
+)
+
+regions = Model(
+    name="regions",
+    dimensions=[
+        Dimension(name="country", type="categorical", expr="country")
+    ]
+)
+```
+:::
 
 ```python
 # Spans 2 hops: orders -> customers -> regions
@@ -221,12 +578,3 @@ layer.sql("""
     FROM orders
 """)
 ```
-
-## Real Examples
-
-See `/examples` directory for:
-
-- `sql_query_example.py` - SQL interface examples
-- `parameters_example.py` - Parameterized queries
-- `symmetric_aggregates_example.py` - Fan-out handling
-- `streamlit_dashboard.py` - Interactive dashboard

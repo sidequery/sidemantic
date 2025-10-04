@@ -13,6 +13,8 @@ website:
     left:
       - text: "Home"
         href: index.qmd
+      - text: "Interactive Tour"
+        href: marimo-interactive.qmd
       - text: "Getting Started"
         href: getting-started.qmd
       - text: "Core Concepts"
@@ -25,18 +27,18 @@ website:
             href: relationships.qmd
           - text: "SQL Queries"
             href: sql-queries.qmd
-      - text: "Examples"
-        href: examples.qmd
-      - text: "Interactive"
-        href: marimo-interactive.qmd
       - text: "Reference"
         menu:
           - text: "Python API"
             href: python-api.qmd
           - text: "YAML Format"
             href: YAML_FORMAT.md
+          - text: "Format Adapters"
+            href: adapters.qmd
           - text: "Gotchas"
             href: GOTCHAS.md
+      - text: "Examples"
+        href: examples.qmd
 
 format:
   html:

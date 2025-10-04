@@ -1,0 +1,270 @@
+---
+title: "Format Adapters"
+---
+
+Sidemantic can import and export semantic models from other popular semantic layer formats, letting you migrate between tools or use Sidemantic alongside existing definitions.
+
+## Supported Formats
+
+| Format | Import | Export | Status |
+|--------|--------|--------|--------|
+| **Sidemantic** (native) | ✅ | ✅ | Full support |
+| **Cube** | ✅ | ✅ | Core features |
+| **MetricFlow** (dbt) | ✅ | ✅ | Core features |
+
+## Feature Compatibility
+
+This table shows which Sidemantic features are preserved when importing/exporting to other formats:
+
+| Feature | Cube | MetricFlow | Notes |
+|---------|------|------------|-------|
+| **Models** | ✅ | ✅ | Full bidirectional support |
+| **Dimensions** | ✅ | ✅ | Full bidirectional support |
+| **Time Dimensions** | ✅ | ✅ | Granularity preserved |
+| **Simple Metrics** | ✅ | ✅ | sum, count, avg, etc. |
+| **Ratio Metrics** | ✅ | ✅ | Cube: exported as calculated measure |
+| **Derived Metrics** | ✅ | ✅ | Formula-based metrics |
+| **Cumulative Metrics** | ✅ | ✅ | Cube: uses rolling_window |
+| **Time Comparison** | ⚠️ | ✅ | Cube: exported as calculated measure with note |
+| **Relationships** | ✅ | ✅ | many_to_one, one_to_many |
+| **Segments** | ✅ | ⚠️ | Cube: native support; MetricFlow: stored in meta |
+| **Metric Filters** | ✅ | ⚠️ | Cube: full support; MetricFlow: stored in meta |
+| **Parameters** | ❌ | ❌ | Not supported by target formats |
+| **Hierarchies** | ⚠️ | ⚠️ | Cube: uses drill_members; MetricFlow: stored in meta |
+| **Inheritance** | ✅ | ✅ | Resolved before export (fully merged) |
+| **Jinja Templates** | ✅ | ✅ | Preserved in SQL/expr fields |
+| **Metadata Fields** | ⚠️ | ⚠️ | format exported; others in meta |
+| **Ungrouped Queries** | ❌ | ❌ | Sidemantic-specific, not exportable |
+
+**Legend:**
+- ✅ Full support - feature works bidirectionally
+- ⚠️ Partial support - feature works with limitations
+- ❌ Not supported - feature lost on export
+- 🚧 Experimental - may have bugs or limitations
+
+**Important Notes:**
+
+- **Inheritance**: When exporting models or metrics with `extends`, the adapter automatically resolves the inheritance chain and exports the fully merged result. The parent model/metric and the `extends` field are not included in the export - only the complete, merged definition.
+- **Segments & Hierarchies in MetricFlow**: Since MetricFlow doesn't have native support for these features, they're stored in the `meta` field. They're preserved on round-trip but won't be used by MetricFlow's query engine.
+- **Metadata Fields**: Most metadata fields (format, drill_fields, etc.) are stored in `meta` fields for compatibility, but `format` is exported natively where supported.
+
+## Using Adapters
+
+### Import from Cube
+
+Convert Cube.js semantic models to Sidemantic:
+
+```python
+from sidemantic.adapters.cube import CubeAdapter
+
+# Import from Cube YAML
+adapter = CubeAdapter()
+graph = adapter.parse("cube/schema/Orders.yml")
+
+# Query with Sidemantic
+from sidemantic import SemanticLayer
+layer = SemanticLayer(graph=graph)
+result = layer.sql("SELECT revenue FROM orders")
+```
+
+### Import from MetricFlow
+
+Convert dbt MetricFlow models to Sidemantic:
+
+```python
+from sidemantic.adapters.metricflow import MetricFlowAdapter
+
+# Import from MetricFlow YAML
+adapter = MetricFlowAdapter()
+graph = adapter.parse("models/metrics/")  # Directory of YAML files
+
+# Query with Sidemantic
+layer = SemanticLayer(graph=graph)
+result = layer.sql("SELECT revenue FROM orders")
+```
+
+### Export to Cube
+
+Convert Sidemantic models to Cube format:
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.cube import CubeAdapter
+
+# Load Sidemantic model
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+
+# Export to Cube
+adapter = CubeAdapter()
+adapter.export(layer.graph, "cube/schema/output.yml")
+```
+
+### Export to MetricFlow
+
+Convert Sidemantic models to dbt MetricFlow:
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.metricflow import MetricFlowAdapter
+
+# Load Sidemantic model
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+
+# Export to MetricFlow
+adapter = MetricFlowAdapter()
+adapter.export(layer.graph, "models/metrics/semantic_layer.yml")
+```
+
+## Migration Examples
+
+### Cube → Sidemantic → MetricFlow
+
+Migrate from Cube to MetricFlow via Sidemantic:
+
+```python
+from sidemantic.adapters.cube import CubeAdapter
+from sidemantic.adapters.metricflow import MetricFlowAdapter
+
+# Import from Cube
+cube_adapter = CubeAdapter()
+graph = cube_adapter.parse("cube/schema/")
+
+# Export to MetricFlow
+mf_adapter = MetricFlowAdapter()
+mf_adapter.export(graph, "models/metrics/converted.yml")
+```
+
+### MetricFlow → Sidemantic (with enhancements)
+
+Import MetricFlow and add Sidemantic-specific features:
+
+```python
+from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sidemantic import SemanticLayer, Segment
+
+# Import from MetricFlow
+adapter = MetricFlowAdapter()
+graph = adapter.parse("models/metrics/")
+
+# Add Sidemantic features
+layer = SemanticLayer(graph=graph)
+
+# Add segments (not in MetricFlow)
+orders = layer.graph.get_model("orders")
+orders.segments.extend([
+    Segment(name="completed", sql="{model}.status = 'completed'"),
+    Segment(name="high_value", sql="{model}.amount >= 500")
+])
+
+# Save enhanced model
+layer.to_yaml("semantic_layer.yml")
+```
+
+## Format-Specific Notes
+
+### Cube
+
+**Strengths:**
+- Simple, JavaScript-friendly syntax
+- Good for basic aggregations and joins
+- Strong SQL generation
+
+**Limitations:**
+- No native support for ratio or cumulative metrics
+- Limited time comparison capabilities
+- Relationships must use explicit join definitions
+
+**Conversion Notes:**
+- Cube `cubes` → Sidemantic `models`
+- Cube `dimensions` → Sidemantic `dimensions`
+- Cube `measures` → Sidemantic `metrics`
+- Cube `joins` → Sidemantic `relationships` (inferred)
+
+### MetricFlow (dbt)
+
+**Strengths:**
+- Comprehensive metric type support
+- Native time comparisons and cumulative metrics
+- Entity-based relationship model
+- Jinja template support
+
+**Limitations:**
+- dbt-specific configuration requirements
+- More verbose YAML syntax
+- Requires dbt context for some features
+
+**Conversion Notes:**
+- MetricFlow `semantic_models` → Sidemantic `models`
+- MetricFlow `entities` → Inferred relationships
+- MetricFlow `dimensions` → Sidemantic `dimensions`
+- MetricFlow `measures` → Sidemantic `metrics` (model-level)
+- MetricFlow `metrics` → Sidemantic `metrics` (graph-level)
+
+## Round-Trip Guarantees
+
+### Lossless Round-Trips
+
+These conversions preserve all information:
+
+- **Sidemantic → Sidemantic**: Perfect round-trip (native format)
+
+### Lossy Round-Trips
+
+These conversions lose some information:
+
+- **Sidemantic → Cube → Sidemantic**: Loses segments, cumulative metrics, time comparisons
+- **Sidemantic → MetricFlow → Sidemantic**: Loses segments, ungrouped query support, hierarchies
+- **Any format → Sidemantic**: May lose format-specific metadata
+
+**Best Practice:** Keep your source of truth in one format and export to others as needed. Don't round-trip unless necessary.
+
+## Validating Conversions
+
+Always validate after import/export:
+
+```python
+# Import
+graph = adapter.parse("source.yml")
+
+# Verify models loaded
+print(f"Loaded {len(graph.models)} models")
+for name, model in graph.models.items():
+    print(f"  {name}: {len(model.metrics)} metrics, {len(model.dimensions)} dimensions")
+
+# Verify metrics
+print(f"Loaded {len(graph.metrics)} graph-level metrics")
+
+# Test query
+layer = SemanticLayer(graph=graph)
+sql = layer.compile(metrics=["orders.revenue"])
+print("Generated SQL:", sql)
+
+# Export and compare
+adapter.export(graph, "output.yml")
+graph2 = adapter.parse("output.yml")
+assert len(graph.models) == len(graph2.models)
+```
+
+## Getting Help
+
+If you encounter issues with format conversion:
+
+1. Check the [compatibility table](#feature-compatibility) for known limitations
+2. Validate your source format is correctly structured
+3. Test with a simple model first before converting complex definitions
+4. File an issue at [github.com/anthropics/sidemantic](https://github.com/anthropics/sidemantic/issues) with:
+   - Source format and file
+   - Expected vs actual behavior
+   - Generated SQL or error messages
+
+## Contributing Adapters
+
+Want to add support for another format? See our [adapter development guide](https://github.com/anthropics/sidemantic/blob/main/CONTRIBUTING.md) or file a feature request.
+
+Popular formats we'd like to support:
+- **LookML** (Looker) - Stub exists but needs full grammar parser
+- **Malloy** - Google's semantic modeling language
+- **Omni** - Modern BI semantic layer
+- **GoodData** - Enterprise analytics platform
+- **AtScale** - Semantic layer for data warehouses
+- **Apache Superset** - Open-source BI semantic layer

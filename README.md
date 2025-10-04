@@ -1,6 +1,6 @@
 # Sidemantic
 
-SQLGlot-based semantic layer with multi-format adapter support.
+A semantic layer with multi-format adapter support.
 
 ## Features
 

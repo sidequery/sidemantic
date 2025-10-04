@@ -29,8 +29,6 @@ This opens an interactive notebook where you can explore the semantic layer with
 Create `semantic_layer.yml`:
 
 ```yaml
-# yaml-language-server: $schema=./sidemantic-schema.json
-
 models:
   - name: orders
     table: orders

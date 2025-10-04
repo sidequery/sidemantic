@@ -104,6 +104,21 @@ class CubeAdapter(BaseAdapter):
             if measure:
                 measures.append(measure)
 
+        # Parse segments
+        from sidemantic.core.segment import Segment
+        segments = []
+        for segment_def in cube_def.get("segments", []):
+            segment_name = segment_def.get("name")
+            segment_sql = segment_def.get("sql")
+            if segment_name and segment_sql:
+                # Replace ${CUBE} with {model} placeholder
+                segment_sql = segment_sql.replace("${CUBE}", "{model}")
+                segments.append(Segment(
+                    name=segment_name,
+                    sql=segment_sql,
+                    description=segment_def.get("description")
+                ))
+
         # Parse joins to create relationships
         relationships = []
         for join_def in cube_def.get("joins", []):
@@ -127,6 +142,7 @@ class CubeAdapter(BaseAdapter):
             relationships=relationships,
             dimensions=dimensions,
             metrics=measures,
+            segments=segments,
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -162,9 +178,10 @@ class CubeAdapter(BaseAdapter):
         return Dimension(
             name=name,
             type=sidemantic_type,
-            sql=dim_def.get("sql"),
+            expr=dim_def.get("sql"),
             granularity=granularity,
             description=dim_def.get("description"),
+            format=dim_def.get("format"),
         )
 
     def _parse_measure(self, measure_def: dict) -> Metric | None:
@@ -191,7 +208,7 @@ class CubeAdapter(BaseAdapter):
             "avg": "avg",
             "min": "min",
             "max": "max",
-            "number": "sum",  # Calculated measures default to sum
+            "number": None,  # Calculated measures - determine type from context
         }
 
         agg_type = type_mapping.get(measure_type, "count")
@@ -204,12 +221,29 @@ class CubeAdapter(BaseAdapter):
                 if sql_filter:
                     filters.append(sql_filter)
 
+        # Check for rolling_window (cumulative metric)
+        rolling_window = measure_def.get("rolling_window")
+        metric_type = None
+        window = None
+        if rolling_window:
+            metric_type = "cumulative"
+            window = rolling_window.get("trailing")
+
+        # For calculated measures (type=number), treat as derived with SQL expression
+        if measure_type == "number" and not rolling_window:
+            sql_expr = measure_def.get("sql", "")
+            if sql_expr:
+                metric_type = "derived"
+
         return Metric(
             name=name,
+            type=metric_type,
             agg=agg_type,
-            sql=measure_def.get("sql"),
+            expr=measure_def.get("sql"),
+            window=window,
             filters=filters if filters else None,
             description=measure_def.get("description"),
+            format=measure_def.get("format"),
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -221,9 +255,13 @@ class CubeAdapter(BaseAdapter):
         """
         output_path = Path(output_path)
 
+        # Resolve inheritance first
+        from sidemantic.core.inheritance import resolve_model_inheritance
+        resolved_models = resolve_model_inheritance(graph.models)
+
         # Convert models to cubes
         cubes = []
-        for model in graph.models.values():
+        for model in resolved_models.values():
             cube = self._export_cube(model, graph)
             cubes.append(cube)
 
@@ -256,6 +294,8 @@ class CubeAdapter(BaseAdapter):
 
         # Export dimensions
         dimensions = []
+        drill_members = []  # Track dimensions with drill-down support
+
         for dim in model.dimensions:
             dim_def = {"name": dim.name}
 
@@ -274,18 +314,28 @@ class CubeAdapter(BaseAdapter):
             if dim.description:
                 dim_def["description"] = dim.description
 
+            # Add metadata fields
+            if dim.format:
+                dim_def["format"] = dim.format
+
+            # Track hierarchies - collect all dimensions for drill_members
+            if dim.parent or any(other.parent == dim.name for other in model.dimensions):
+                drill_members.append(dim.name)
+
             dimensions.append(dim_def)
 
-        # Add primary key dimension
+        # Add primary key dimension if not already in dimensions
         if model.primary_key:
-            dimensions.append(
-                {
-                    "name": model.primary_key,
-                    "type": "number",
-                    "sql": model.primary_key,
-                    "primary_key": True,
-                }
-            )
+            dim_names = [d["name"] for d in dimensions]
+            if model.primary_key not in dim_names:
+                dimensions.append(
+                    {
+                        "name": model.primary_key,
+                        "type": "number",
+                        "sql": model.primary_key,
+                        "primary_key": True,
+                    }
+                )
 
         if dimensions:
             cube["dimensions"] = dimensions
@@ -295,19 +345,45 @@ class CubeAdapter(BaseAdapter):
         for measure in model.metrics:
             measure_def = {"name": measure.name}
 
-            # Map Sidemantic agg to Cube types
-            type_mapping = {
-                "count": "count",
-                "count_distinct": "count_distinct",
-                "sum": "sum",
-                "avg": "avg",
-                "min": "min",
-                "max": "max",
-            }
-            measure_def["type"] = type_mapping.get(measure.agg, "count")
+            # Handle different metric types
+            if measure.type == "ratio":
+                # Ratio metrics become calculated measures
+                measure_def["type"] = "number"
+                if measure.numerator and measure.denominator:
+                    measure_def["sql"] = f"{measure.numerator} / NULLIF({measure.denominator}, 0)"
+            elif measure.type == "derived":
+                # Derived metrics become calculated measures
+                measure_def["type"] = "number"
+                if measure.sql:
+                    measure_def["sql"] = measure.sql
+            elif measure.type == "cumulative":
+                # Cumulative metrics become rolling window measures (Cube has rolling_window)
+                measure_def["type"] = "number"
+                if measure.sql:
+                    measure_def["sql"] = measure.sql
+                if measure.window:
+                    measure_def["rolling_window"] = {"trailing": measure.window}
+            elif measure.type == "time_comparison":
+                # Time comparison - use Cube's time dimension features
+                measure_def["type"] = "number"
+                if measure.base_metric:
+                    # Add comment explaining this is a time comparison
+                    measure_def["description"] = (measure.description or "") + f" (Time comparison of {measure.base_metric})"
+                    measure_def["sql"] = measure.base_metric
+            else:
+                # Regular aggregation measure
+                type_mapping = {
+                    "count": "count",
+                    "count_distinct": "count_distinct",
+                    "sum": "sum",
+                    "avg": "avg",
+                    "min": "min",
+                    "max": "max",
+                }
+                measure_def["type"] = type_mapping.get(measure.agg, "count")
 
-            if measure.sql:
-                measure_def["sql"] = measure.sql
+                if measure.sql:
+                    measure_def["sql"] = measure.sql
 
             if measure.filters:
                 measure_def["filters"] = [{"sql": f} for f in measure.filters]
@@ -315,10 +391,37 @@ class CubeAdapter(BaseAdapter):
             if measure.description:
                 measure_def["description"] = measure.description
 
+            # Add metadata fields
+            if measure.format:
+                measure_def["format"] = measure.format
+
+            # Add drill fields if specified
+            if measure.drill_fields and drill_members:
+                # Only include drill fields that exist in this model
+                valid_drill = [f for f in measure.drill_fields if f in [d.name for d in model.dimensions]]
+                if valid_drill:
+                    measure_def["drill_members"] = valid_drill
+            elif drill_members:
+                # Default to hierarchy dimensions
+                measure_def["drill_members"] = drill_members
+
             measures.append(measure_def)
 
         if measures:
             cube["measures"] = measures
+
+        # Export segments
+        if model.segments:
+            cube["segments"] = []
+            for segment in model.segments:
+                segment_def = {"name": segment.name}
+                if segment.sql:
+                    # Replace {model} placeholder with CUBE reference
+                    segment_sql = segment.sql.replace("{model}", "${CUBE}")
+                    segment_def["sql"] = segment_sql
+                if segment.description:
+                    segment_def["description"] = segment.description
+                cube["segments"].append(segment_def)
 
         # Export joins (from many_to_one relationships)
         joins = []

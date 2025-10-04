@@ -131,6 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span class="menu-text">Home</span></a>
   </li>  
   <li class="nav-item">
+    <a class="nav-link" href="./marimo-interactive.html"> 
+<span class="menu-text">Interactive Tour</span></a>
+  </li>  
+  <li class="nav-item">
     <a class="nav-link" href="./getting-started.html"> 
 <span class="menu-text">Getting Started</span></a>
   </li>  
@@ -144,12 +148,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="dropdown-text">Models</span></a>
   </li>  
         <li>
-    <a class="dropdown-item" href="./measures.html">
- <span class="dropdown-text">Measures</span></a>
+    <a class="dropdown-item" href="./metrics.html">
+ <span class="dropdown-text">Metrics</span></a>
   </li>  
         <li>
-    <a class="dropdown-item" href="./joins.html">
- <span class="dropdown-text">Joins</span></a>
+    <a class="dropdown-item" href="./relationships.html">
+ <span class="dropdown-text">Relationships</span></a>
   </li>  
         <li>
     <a class="dropdown-item" href="./sql-queries.html">
@@ -157,14 +161,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   </li>  
     </ul>
   </li>
-  <li class="nav-item">
-    <a class="nav-link" href="./examples.html"> 
-<span class="menu-text">Examples</span></a>
-  </li>  
-  <li class="nav-item">
-    <a class="nav-link" href="./marimo-interactive.html"> 
-<span class="menu-text">Interactive</span></a>
-  </li>  
   <li class="nav-item dropdown ">
     <a class="nav-link dropdown-toggle" href="#" id="nav-menu-reference" role="link" data-bs-toggle="dropdown" aria-expanded="false">
  <span class="menu-text">Reference</span>
@@ -179,11 +175,19 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="dropdown-text">YAML Format</span></a>
   </li>  
         <li>
+    <a class="dropdown-item" href="./adapters.html">
+ <span class="dropdown-text">Format Adapters</span></a>
+  </li>  
+        <li>
     <a class="dropdown-item" href="./GOTCHAS.html">
  <span class="dropdown-text">Gotchas</span></a>
   </li>  
     </ul>
   </li>
+  <li class="nav-item">
+    <a class="nav-link" href="./examples.html"> 
+<span class="menu-text">Examples</span></a>
+  </li>  
 </ul>
           </div> <!-- /navcollapse -->
             <div class="quarto-navbar-tools">
@@ -201,7 +205,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
    
   <ul>
   <li><a href="#what-is-sidemantic" id="toc-what-is-sidemantic" class="nav-link active" data-scroll-target="#what-is-sidemantic">What is Sidemantic?</a></li>
-  <li><a href="#key-features" id="toc-key-features" class="nav-link" data-scroll-target="#key-features">Key Features</a></li>
+  <li><a href="#key-features" id="toc-key-features" class="nav-link" data-scroll-target="#key-features">Key Features</a>
+  <ul class="collapse">
+  <li><a href="#core-capabilities" id="toc-core-capabilities" class="nav-link" data-scroll-target="#core-capabilities">Core Capabilities</a></li>
+  <li><a href="#rich-metric-types" id="toc-rich-metric-types" class="nav-link" data-scroll-target="#rich-metric-types">Rich Metric Types</a></li>
+  <li><a href="#advanced-features" id="toc-advanced-features" class="nav-link" data-scroll-target="#advanced-features">Advanced Features</a></li>
+  <li><a href="#metadata-governance" id="toc-metadata-governance" class="nav-link" data-scroll-target="#metadata-governance">Metadata &amp; Governance</a></li>
+  </ul></li>
   <li><a href="#quick-example" id="toc-quick-example" class="nav-link" data-scroll-target="#quick-example">Quick Example</a></li>
   <li><a href="#learn-more" id="toc-learn-more" class="nav-link" data-scroll-target="#learn-more">Learn More</a></li>
   </ul>
@@ -237,22 +247,58 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">models</span><span class="kw">:</span></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> orders</span></span>
 <span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">table</span><span class="kw">:</span><span class="at"> orders</span></span>
-<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">measures</span><span class="kw">:</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">metrics</span><span class="kw">:</span></span>
 <span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> revenue</span></span>
 <span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> sum</span></span>
-<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">expr</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Query anywhere with SQL</span></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>layer.sql(<span class="st">"SELECT revenue FROM orders"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 </section>
 <section id="key-features" class="level2">
 <h2 class="anchored" data-anchor-id="key-features">Key Features</h2>
+<section id="core-capabilities" class="level3">
+<h3 class="anchored" data-anchor-id="core-capabilities">Core Capabilities</h3>
 <ul>
 <li><strong>YAML definitions</strong> with JSON Schema for autocomplete</li>
 <li><strong>SQL query interface</strong> - write familiar SQL, get semantic results</li>
 <li><strong>Automatic joins</strong> - define relationships once, query across models</li>
-<li><strong>Complex measures</strong> - ratios, formulas, cumulative metrics, time comparisons</li>
+<li><strong>Multi-hop joins</strong> - automatic 2+ hop join path discovery</li>
+<li><strong>Auto-detected dependencies</strong> - no manual dependency declarations needed!</li>
 <li><strong>Multi-dialect</strong> - SQLGlot powers cross-database SQL generation</li>
 </ul>
+</section>
+<section id="rich-metric-types" class="level3">
+<h3 class="anchored" data-anchor-id="rich-metric-types">Rich Metric Types</h3>
+<ul>
+<li><strong>Aggregations</strong> - sum, avg, count, count_distinct, min, max</li>
+<li><strong>Ratios</strong> - revenue / order_count</li>
+<li><strong>Derived formulas</strong> - (revenue - cost) / revenue</li>
+<li><strong>Cumulative</strong> - running totals, rolling windows</li>
+<li><strong>Time comparisons</strong> - YoY, MoM, WoW with LAG window functions</li>
+<li><strong>Conversion funnels</strong> - signup → purchase rate</li>
+</ul>
+</section>
+<section id="advanced-features" class="level3">
+<h3 class="anchored" data-anchor-id="advanced-features">Advanced Features</h3>
+<ul>
+<li><strong>Segments</strong> - reusable named filters with template placeholders</li>
+<li><strong>Metric-level filters</strong> - auto-applied filters for business logic</li>
+<li><strong>Jinja2 templating</strong> - full conditionals and loops in SQL</li>
+<li><strong>Inheritance</strong> - extend models and metrics (DRY principles)</li>
+<li><strong>Hierarchies</strong> - parent/child dimensions with drill-down API</li>
+<li><strong>Relative dates</strong> - “last 7 days”, “this month”, etc.</li>
+<li><strong>Ungrouped queries</strong> - raw row access without aggregation</li>
+</ul>
+</section>
+<section id="metadata-governance" class="level3">
+<h3 class="anchored" data-anchor-id="metadata-governance">Metadata &amp; Governance</h3>
+<ul>
+<li><strong>Display formatting</strong> - format strings and named formats (USD, percent)</li>
+<li><strong>Drill fields</strong> - define drill-down paths for BI tools</li>
+<li><strong>Non-additivity markers</strong> - prevent incorrect aggregation</li>
+<li><strong>Default dimensions</strong> - default time dimensions and granularity</li>
+</ul>
+</section>
 </section>
 <section id="quick-example" class="level2">
 <h2 class="anchored" data-anchor-id="quick-example">Quick Example</h2>
@@ -260,17 +306,27 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">models</span><span class="kw">:</span></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> orders</span></span>
 <span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">table</span><span class="kw">:</span><span class="at"> orders</span></span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">primary_key</span><span class="kw">:</span><span class="at"> id</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">primary_key</span><span class="kw">:</span><span class="at"> order_id</span></span>
 <span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">dimensions</span><span class="kw">:</span></span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> status</span></span>
-<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">type</span><span class="kw">:</span><span class="at"> categorical</span></span>
-<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> status</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">relationships</span><span class="kw">:</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> customer</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">type</span><span class="kw">:</span><span class="at"> many_to_one</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">foreign_key</span><span class="kw">:</span><span class="at"> customer_id</span></span>
 <span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">measures</span><span class="kw">:</span></span>
-<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> revenue</span></span>
-<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> sum</span></span>
-<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">expr</span><span class="kw">:</span><span class="at"> amount</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">dimensions</span><span class="kw">:</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> status</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">type</span><span class="kw">:</span><span class="at"> categorical</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> status</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">metrics</span><span class="kw">:</span></span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> revenue</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">agg</span><span class="kw">:</span><span class="at"> sum</span></span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> amount</span></span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a><span class="co"># Graph-level metrics (dependencies auto-detected!)</span></span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a><span class="fu">metrics</span><span class="kw">:</span></span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">name</span><span class="kw">:</span><span class="at"> total_revenue</span></span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">sql</span><span class="kw">:</span><span class="at"> orders.revenue</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> sidemantic <span class="im">import</span> SemanticLayer</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>layer <span class="op">=</span> SemanticLayer.from_yaml(<span class="st">"semantic_layer.yml"</span>)</span>

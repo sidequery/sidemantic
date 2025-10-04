@@ -32,9 +32,12 @@ result = layer.query(
     metrics=["orders.revenue", "orders.order_count"],
     dimensions=["orders.status"],
     filters=["orders.status = 'completed'"],
+    segments=["orders.high_value"],  # Named filters
     order_by=["orders.revenue DESC"],
     limit=10,
-    offset=5
+    offset=5,
+    ungrouped=False,  # Set True for raw rows
+    parameters={"start_date": "2024-01-01"}
 )
 
 df = result.fetchdf()  # Get DataFrame
@@ -72,7 +75,10 @@ Generate SQL without executing:
 sql = layer.compile(
     metrics=["orders.revenue"],
     dimensions=["orders.status"],
-    filters=["orders.status = 'completed'"]
+    filters=["orders.status = 'completed'"],
+    segments=["orders.completed"],
+    ungrouped=False,
+    parameters={"min_amount": 100}
 )
 
 print(sql)
@@ -105,7 +111,7 @@ from sidemantic import Metric
 
 total_revenue = Metric(
     name="total_revenue",
-    sql="orders.revenue"
+    expr="orders.revenue"
 )
 
 layer.add_metric(total_revenue)
@@ -128,22 +134,28 @@ layer.to_yaml("output.yml")
 Define a data model:
 
 ```python
-from sidemantic import Model, Dimension, Metric, Relationship
+from sidemantic import Model, Dimension, Metric, Relationship, Segment
 
 model = Model(
     name="orders",
     table="orders",
     primary_key="id",
     description="Customer orders",
+    extends="base_model",  # Inherit from parent model
 
     dimensions=[
-        Dimension(name="status", type="categorical", sql="status"),
-        Dimension(name="order_date", type="time", sql="created_at", granularity="day")
+        Dimension(name="status", type="categorical", expr="status"),
+        Dimension(name="order_date", type="time", expr="created_at", granularity="day")
     ],
 
     metrics=[
-        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="revenue", agg="sum", expr="amount"),
         Metric(name="order_count", agg="count")
+    ],
+
+    segments=[
+        Segment(name="completed", sql="{model}.status = 'completed'"),
+        Segment(name="high_value", sql="{model}.amount >= 500")
     ],
 
     relationships=[
@@ -157,11 +169,26 @@ model = Model(
 - **name**: Unique identifier
 - **table**: Physical table name (or use `sql`)
 - **sql**: SQL query for derived models
-- **primary_key**: Primary key column
+- **primary_key**: Primary key column (default: "id")
+- **extends**: Parent model to inherit from
 - **dimensions**: List of Dimension objects
-- **measures**: List of Measure objects
-- **joins**: List of Join objects
+- **metrics**: List of Metric objects
+- **segments**: List of Segment objects (named filters)
+- **relationships**: List of Relationship objects
 - **description**: Human-readable description
+
+### Hierarchy Methods
+
+```python
+# Get full hierarchy path for a dimension
+path = model.get_hierarchy_path("city")  # ['country', 'state', 'city']
+
+# Get next level down
+child = model.get_drill_down("state")  # 'city'
+
+# Get level up
+parent = model.get_drill_up("city")  # 'state'
+```
 
 ## Dimension
 
@@ -174,14 +201,14 @@ from sidemantic import Dimension
 status = Dimension(
     name="status",
     type="categorical",
-    sql="status"
+    expr="status"
 )
 
 # Time
 order_date = Dimension(
     name="order_date",
     type="time",
-    sql="created_at",
+    expr="created_at",
     granularity="day"
 )
 
@@ -189,14 +216,31 @@ order_date = Dimension(
 is_active = Dimension(
     name="is_active",
     type="boolean",
-    sql="active"
+    expr="active"
 )
 
 # Numeric
 tier = Dimension(
     name="tier",
     type="numeric",
-    sql="customer_tier"
+    expr="customer_tier"
+)
+
+# With hierarchy
+city = Dimension(
+    name="city",
+    type="categorical",
+    expr="city",
+    parent="state"  # For drill-down hierarchies
+)
+
+# With formatting
+revenue_formatted = Dimension(
+    name="revenue",
+    type="numeric",
+    expr="amount",
+    format="$#,##0.00",
+    value_format_name="usd"
 )
 ```
 
@@ -204,8 +248,11 @@ tier = Dimension(
 
 - **name**: Unique identifier
 - **type**: `categorical`, `time`, `boolean`, or `numeric`
-- **sql**: SQL expression (defaults to name)
+- **expr**: SQL expression (defaults to name)
 - **granularity**: For time dimensions: `hour`, `day`, `week`, `month`, `quarter`, `year`
+- **parent**: Parent dimension name for hierarchies
+- **format**: Display format string (e.g., `"$#,##0.00"`, `"0.00%"`)
+- **value_format_name**: Named format (e.g., `"usd"`, `"percent"`, `"decimal_2"`)
 - **description**: Human-readable description
 
 ## Metric
@@ -219,15 +266,15 @@ from sidemantic import Metric
 revenue = Metric(
     name="revenue",
     agg="sum",
-    sql="amount"
+    expr="amount"
 )
 
-# With filter
+# With metric-level filter (auto-applied in WHERE clause)
 completed_revenue = Metric(
     name="completed_revenue",
     agg="sum",
-    sql="amount",
-    filters=["status = 'completed'"]
+    expr="amount",
+    filters=["{model}.status = 'completed'"]
 )
 
 # Ratio
@@ -242,14 +289,14 @@ conversion_rate = Metric(
 profit = Metric(
     name="profit",
     type="derived",
-    sql="revenue - cost"
+    expr="revenue - cost"
 )
 
 # Cumulative
 running_total = Metric(
     name="running_total",
     type="cumulative",
-    sql="revenue",
+    expr="revenue",
     window="7 days"
 )
 
@@ -261,6 +308,39 @@ yoy_growth = Metric(
     comparison_type="yoy",
     calculation="percent_change"
 )
+
+# With Jinja2 template
+conditional_revenue = Metric(
+    name="conditional_revenue",
+    agg="sum",
+    expr="""
+    {% if include_tax %}
+        amount * 1.1
+    {% else %}
+        amount
+    {% endif %}
+    """
+)
+
+# With metadata
+formatted_revenue = Metric(
+    name="formatted_revenue",
+    agg="sum",
+    expr="amount",
+    format="$#,##0.00",
+    value_format_name="usd",
+    drill_fields=["order_id", "customer_id", "order_date"],
+    non_additive_dimension="customer_id",
+    default_time_dimension="order_date",
+    default_grain="day"
+)
+
+# With inheritance
+extended_revenue = Metric(
+    name="extended_revenue",
+    extends="base_revenue",  # Inherit from parent metric
+    filters=["{model}.region = 'US'"]
+)
 ```
 
 ### Properties
@@ -269,40 +349,82 @@ yoy_growth = Metric(
 
 - **name**: Unique identifier
 - **agg**: `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`
-- **sql**: SQL expression (defaults to `*` for count)
-- **filters**: List of WHERE conditions
+- **expr**: SQL expression (defaults to `*` for count)
+- **filters**: List of WHERE conditions (auto-applied when metric is used)
 - **description**: Human-readable description
 
 #### Ratio Metrics
 
 - **type**: `"ratio"`
-- **numerator**: Numerator measure name
-- **denominator**: Denominator measure name
+- **numerator**: Numerator metric name
+- **denominator**: Denominator metric name
 - **offset_window**: Time offset for denominator (e.g., `"1 month"`)
 
 #### Derived Metrics
 
 - **type**: `"derived"`
-- **sql**: Formula expression
+- **expr**: Formula expression (can reference other metrics)
 
-#### Cumulative Measures
+#### Cumulative Metrics
 
 - **type**: `"cumulative"`
-- **sql**: Base measure name
+- **expr**: Base metric name
 - **window**: Rolling window (e.g., `"7 days"`)
 - **grain_to_date**: Period-to-date (`day`, `week`, `month`, `quarter`, `year`)
 
-#### Time Comparison Measures
+#### Time Comparison Metrics
 
 - **type**: `"time_comparison"`
-- **base_metric**: Base measure name
+- **base_metric**: Base metric name
 - **comparison_type**: `yoy`, `mom`, `wow`, `dod`, `qoq`, `prior_period`
 - **time_offset**: Custom offset (e.g., `"3 months"`)
 - **calculation**: `percent_change`, `difference`, or `ratio`
 
+#### Metadata Fields
+
+- **format**: Display format string (e.g., `"$#,##0.00"`, `"0.00%"`)
+- **value_format_name**: Named format (e.g., `"usd"`, `"percent"`)
+- **drill_fields**: List of field names for drill-down
+- **non_additive_dimension**: Dimension this metric cannot be summed across
+- **default_time_dimension**: Default time dimension for this metric
+- **default_grain**: Default time granularity (`hour`, `day`, `week`, `month`, `quarter`, `year`)
+
+#### Inheritance
+
+- **extends**: Parent metric to inherit from
+
+## Segment
+
+Define reusable named filters:
+
+```python
+from sidemantic import Segment
+
+# Simple segment
+completed = Segment(
+    name="completed",
+    sql="{model}.status = 'completed'",
+    description="Orders that have been completed"
+)
+
+# Complex segment
+high_value_customers = Segment(
+    name="high_value",
+    sql="{model}.lifetime_value >= 10000 AND {model}.tier = 'premium'",
+    public=True
+)
+```
+
+### Properties
+
+- **name**: Unique segment name
+- **sql**: SQL WHERE clause expression (use `{model}` placeholder)
+- **description**: Human-readable description
+- **public**: Whether segment is visible in API/UI (default: True)
+
 ## Relationship
 
-Define a join relationship:
+Define join relationships:
 
 ```python
 from sidemantic import Relationship
@@ -327,6 +449,14 @@ invoice_join = Relationship(
     type="one_to_one",
     foreign_key="order_id"
 )
+
+# Custom primary key
+region_join = Relationship(
+    name="region_map",
+    type="many_to_one",
+    foreign_key="region",
+    primary_key="region_code"
+)
 ```
 
 ### Properties
@@ -334,6 +464,7 @@ invoice_join = Relationship(
 - **name**: Name of related model
 - **type**: `many_to_one`, `one_to_many`, or `one_to_one`
 - **foreign_key**: Foreign key column name
+- **primary_key**: Primary key in related model (default: "id")
 
 ## Parameter
 
@@ -370,11 +501,67 @@ region = Parameter(
 - **allowed_values**: List of valid values
 - **description**: Human-readable description
 
+## Relative Date Ranges
+
+Use natural language date expressions in filters:
+
+```python
+# Supported patterns:
+# - "today"
+# - "yesterday"
+# - "last N days" / "last N day"
+# - "next N days" / "next N day"
+# - "this week" / "this month" / "this quarter" / "this year"
+# - "last week" / "last month" / "last quarter" / "last year"
+
+layer.compile(
+    metrics=["orders.revenue"],
+    filters=["orders.order_date >= 'last 7 days'"]
+)
+```
+
+## Jinja2 Templates
+
+Use Jinja2 templates in SQL expressions:
+
+```python
+# In metrics
+metric = Metric(
+    name="revenue",
+    agg="sum",
+    expr="""
+    {% if include_tax %}
+        amount * (1 + tax_rate)
+    {% else %}
+        amount
+    {% endif %}
+    """
+)
+
+# In filters
+layer.compile(
+    metrics=["orders.revenue"],
+    filters=["orders.category = '{{ category }}'"],
+    parameters={"category": "electronics", "include_tax": True}
+)
+
+# With loops
+metric = Metric(
+    name="total",
+    agg="sum",
+    expr="""
+    {% for field in fields %}
+        {{ field }}{% if not loop.last %} + {% endif %}
+    {% endfor %}
+    """
+)
+```
+
 ## Complete Example
 
 ```python
 from sidemantic import (
-    SemanticLayer, Model, Dimension, Metric, Relationship, Parameter
+    SemanticLayer, Model, Dimension, Metric, Relationship, Segment, Parameter
 )
 
 # Create semantic layer
@@ -387,19 +574,33 @@ orders = Model(
     primary_key="id",
 
     dimensions=[
-        Dimension(name="status", type="categorical", sql="status"),
-        Dimension(name="order_date", type="time", sql="created_at", granularity="day")
+        Dimension(name="status", type="categorical", expr="status"),
+        Dimension(name="order_date", type="time", expr="created_at", granularity="day"),
+        Dimension(name="country", type="categorical", expr="country"),
+        Dimension(name="state", type="categorical", expr="state", parent="country"),
+        Dimension(name="city", type="categorical", expr="city", parent="state")
     ],
 
     metrics=[
-        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="revenue", agg="sum", expr="amount", format="$#,##0.00"),
         Metric(name="order_count", agg="count"),
+        Metric(
+            name="completed_revenue",
+            agg="sum",
+            expr="amount",
+            filters=["{model}.status = 'completed'"]
+        ),
         Metric(
             name="conversion_rate",
             type="ratio",
             numerator="completed_orders",
             denominator="total_orders"
         )
+    ],
+
+    segments=[
+        Segment(name="completed", sql="{model}.status = 'completed'"),
+        Segment(name="high_value", sql="{model}.amount >= 500")
     ],
 
     relationships=[
@@ -414,7 +615,7 @@ customers = Model(
     primary_key="id",
 
     dimensions=[
-        Dimension(name="region", type="categorical", sql="region")
+        Dimension(name="region", type="categorical", expr="region")
     ],
 
     metrics=[
@@ -444,9 +645,21 @@ print(df)
 result = layer.query(
     metrics=["orders.revenue", "customers.customer_count"],
     dimensions=["customers.region"],
-    filters=["orders.status = 'completed'"]
+    segments=["orders.completed"],
+    filters=["orders.order_date >= 'last 30 days'"]
 )
 
 df = result.fetchdf()
 print(df)
+
+# Use hierarchy drill-down
+path = orders.get_hierarchy_path("city")  # ['country', 'state', 'city']
+next_level = orders.get_drill_down("state")  # 'city'
+
+# Ungrouped query for raw rows
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_id", "orders.customer_id"],
+    ungrouped=True
+)
 ```

@@ -9,6 +9,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
@@ -118,6 +119,8 @@ class SidemanticAdapter(BaseAdapter):
                 granularity=dim_def.get("granularity"),
                 description=dim_def.get("description"),
                 label=dim_def.get("label"),
+                format=dim_def.get("format"),
+                value_format_name=dim_def.get("value_format_name"),
             )
             dimensions.append(dimension)
 
@@ -131,8 +134,25 @@ class SidemanticAdapter(BaseAdapter):
                 filters=measure_def.get("filters"),
                 description=measure_def.get("description"),
                 label=measure_def.get("label"),
+                format=measure_def.get("format"),
+                value_format_name=measure_def.get("value_format_name"),
+                drill_fields=measure_def.get("drill_fields"),
+                non_additive_dimension=measure_def.get("non_additive_dimension"),
+                default_time_dimension=measure_def.get("default_time_dimension"),
+                default_grain=measure_def.get("default_grain"),
             )
             measures.append(measure)
+
+        # Parse segments
+        segments = []
+        for seg_def in model_def.get("segments", []):
+            segment = Segment(
+                name=seg_def.get("name"),
+                sql=seg_def.get("sql"),
+                description=seg_def.get("description"),
+                public=seg_def.get("public", True),
+            )
+            segments.append(segment)
 
         return Model(
             name=name,
@@ -143,6 +163,7 @@ class SidemanticAdapter(BaseAdapter):
             joins=joins,
             dimensions=dimensions,
             metrics=measures,
+            segments=segments,
         )
 
     def _parse_metric(self, metric_def: dict) -> Metric | None:
@@ -222,6 +243,10 @@ class SidemanticAdapter(BaseAdapter):
                     dim_def["description"] = dim.description
                 if dim.label:
                     dim_def["label"] = dim.label
+                if dim.format:
+                    dim_def["format"] = dim.format
+                if dim.value_format_name:
+                    dim_def["value_format_name"] = dim.value_format_name
                 result["dimensions"].append(dim_def)
 
         # Export metrics (model-level aggregations)
@@ -240,7 +265,33 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["description"] = measure.description
                 if measure.label:
                     measure_def["label"] = measure.label
+                if measure.format:
+                    measure_def["format"] = measure.format
+                if measure.value_format_name:
+                    measure_def["value_format_name"] = measure.value_format_name
+                if measure.drill_fields:
+                    measure_def["drill_fields"] = measure.drill_fields
+                if measure.non_additive_dimension:
+                    measure_def["non_additive_dimension"] = measure.non_additive_dimension
+                if measure.default_time_dimension:
+                    measure_def["default_time_dimension"] = measure.default_time_dimension
+                if measure.default_grain:
+                    measure_def["default_grain"] = measure.default_grain
                 result["metrics"].append(measure_def)
+
+        # Export segments
+        if model.segments:
+            result["segments"] = []
+            for segment in model.segments:
+                seg_def = {
+                    "name": segment.name,
+                    "sql": segment.sql,
+                }
+                if segment.description:
+                    seg_def["description"] = segment.description
+                if not segment.public:  # Only export if non-default (False)
+                    seg_def["public"] = segment.public
+                result["segments"].append(seg_def)
 
         return result
 

@@ -228,90 +228,78 @@ orders.segments.extend([
 layer.to_yaml("semantic_layer.yml")
 ```
 
-## Format-Specific Notes
+## Conversion Quirks
 
 ### Cube
 
-**Strengths:**
-- Simple, JavaScript-friendly syntax
-- Good for basic aggregations and joins
-- Strong SQL generation
+**Import (Cube → Sidemantic):**
+- `cubes` → `models`
+- `dimensions` → `dimensions`
+- `measures` → `metrics`
+- `joins` → `relationships` (inferred from join definitions)
+- `${CUBE}` placeholder → `{model}` placeholder
+- `segments` → `segments` (native support)
+- Calculated measures (type=number) → derived metrics
+- `rolling_window` → cumulative metrics
 
-**Limitations:**
-- No native support for ratio or cumulative metrics
-- Limited time comparison capabilities
-- Relationships must use explicit join definitions
+**Export (Sidemantic → Cube):**
+- Ratio metrics → calculated measures with division SQL
+- Cumulative metrics → measures with `rolling_window`
+- Segments → native segment definitions
+- Hierarchies → `drill_members` arrays
+- Inheritance is resolved before export (fully merged definitions)
 
-**Conversion Notes:**
-- Cube `cubes` → Sidemantic `models`
-- Cube `dimensions` → Sidemantic `dimensions`
-- Cube `measures` → Sidemantic `metrics`
-- Cube `joins` → Sidemantic `relationships` (inferred)
+### MetricFlow
 
-### MetricFlow (dbt)
+**Import (MetricFlow → Sidemantic):**
+- `semantic_models` → `models`
+- `entities` → inferred `relationships`
+- `dimensions` → `dimensions`
+- `measures` → model-level `metrics`
+- `metrics` (graph-level) → graph-level `metrics`
+- Segments/hierarchies from `meta` field → preserved
 
-**Strengths:**
-- Comprehensive metric type support
-- Native time comparisons and cumulative metrics
-- Entity-based relationship model
-- Jinja template support
+**Export (Sidemantic → MetricFlow):**
+- Segments → stored in `meta` (no native support)
+- Hierarchies → stored in dimension `meta`
+- Inheritance info in `meta` then stripped (definitions fully resolved)
+- Relationships → `entities` with foreign keys
 
-**Limitations:**
-- dbt-specific configuration requirements
-- More verbose YAML syntax
-- Requires dbt context for some features
+### LookML
 
-**Conversion Notes:**
-- MetricFlow `semantic_models` → Sidemantic `models`
-- MetricFlow `entities` → Inferred relationships
-- MetricFlow `dimensions` → Sidemantic `dimensions`
-- MetricFlow `measures` → Sidemantic `metrics` (model-level)
-- MetricFlow `metrics` → Sidemantic `metrics` (graph-level)
+**Import (LookML → Sidemantic):**
+- `views` → `models`
+- `dimensions` → `dimensions`
+- `dimension_group` → multiple time dimensions (one per timeframe)
+- `measures` → `metrics`
+- `filters` (view-level) → `segments`
+- `derived_table` → model with SQL
+- `${TABLE}` placeholder → `{model}` placeholder
+- Measure filters parsed from `filters__all`
 
-### LookML (Looker)
-
-**Strengths:**
-- Simple, declarative syntax
-- Strong support for time dimensions (dimension_group)
-- Native segment (filter) support
-- Widely adopted in industry
-
-**Limitations:**
-- Uses Liquid templates instead of Jinja
-- Limited relationship inference (views don't declare joins)
-- No native support for ratio or cumulative metrics
-- Explore definitions needed for full join graph
-
-**Conversion Notes:**
-- LookML `views` → Sidemantic `models`
-- LookML `dimensions` → Sidemantic `dimensions`
-- LookML `dimension_group` → Multiple time dimensions
-- LookML `measures` → Sidemantic `metrics`
-- LookML `filters` (view-level) → Sidemantic `segments`
-- LookML `derived_table` → Sidemantic model with SQL
+**Export (Sidemantic → LookML):**
+- Multiple time dimensions with same base name → single `dimension_group` with multiple timeframes
+- Segments → view-level `filters`
+- Ratio/derived metrics → type=number measures
+- `{model}` placeholder → `${TABLE}` placeholder
 
 ### Hex
 
-**Strengths:**
-- Clean, straightforward YAML syntax
-- Explicit join conditions with SQL interpolation
-- Native support for both SQL and calculation formulas
-- Strong measure filter support
-- Good type system with specific timestamp variants
+**Import (Hex → Sidemantic):**
+- Model `id` and `base_sql_table`/`base_sql_query` → `models`
+- `dimensions` with `expr_sql` or `expr_calc` → `dimensions`
+- `measures` with `func`/`func_sql`/`func_calc` → `metrics`
+- `relations` with `join_sql` → `relationships`
+- Measure `filters` (inline or referenced) → metric filters
+- `unique: true` dimensions → primary key detection
+- `timestamp_tz`/`timestamp_naive`/`date` types → time dimensions
 
-**Limitations:**
-- Each YAML file is a single model (not as compact)
-- No native segment support (use measure filters)
-- Limited cumulative metric support
-- Beta product with evolving format
-
-**Conversion Notes:**
-- Hex models (id, base_sql_table) → Sidemantic `models`
-- Hex `dimensions` (expr_sql, expr_calc) → Sidemantic `dimensions`
-- Hex `measures` (func, func_sql, func_calc) → Sidemantic `metrics`
-- Hex `relations` (join_sql) → Sidemantic `relationships`
-- Hex `filters` on measures → Sidemantic metric filters
-- Hex `${interpolation}` → Kept as-is where possible
+**Export (Sidemantic → Hex):**
+- Each model → separate YAML file
+- Time dimensions → specific type variants (date vs timestamp_tz)
+- Ratio/derived metrics → `func_sql`
+- Segments not directly supported (can use measure filters)
+- `${interpolation}` references preserved where possible
 
 ## Round-Trip Guarantees
 

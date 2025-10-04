@@ -10,6 +10,18 @@ pip install sidemantic
 uv add sidemantic
 ```
 
+## Interactive Demo
+
+Try the interactive demo locally:
+
+```bash
+git clone https://github.com/anthropics/sidemantic
+cd sidemantic
+uv run marimo run examples/demo.py
+```
+
+This opens an interactive notebook where you can explore the semantic layer with real-time queries.
+
 ## Your First Semantic Layer
 
 ### 1. Define Models (YAML)

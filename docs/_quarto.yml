@@ -3,12 +3,9 @@ project:
   resources:
     - assets/**
 
-# Enable marimo extension for interactive cells
+# Enable marimo extension for interactive cells with per-page pyproject
 filters:
   - marimo-team/marimo
-
-# Use the existing uv environment rather than creating a temp env
-external-env: true
 
 website:
   title: "Sidemantic"

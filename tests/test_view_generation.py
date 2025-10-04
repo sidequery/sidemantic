@@ -5,9 +5,9 @@ import duckdb
 
 from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.measure import Measure
-from sidemantic.core.measure import Measure
-from sidemantic.core.join import Join
+from sidemantic.core.metric import Metric
+from sidemantic.core.metric import Metric
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 
@@ -23,8 +23,8 @@ def test_generate_view_creates_valid_sql():
             Dimension(name="id", sql="id", type="categorical"),
             Dimension(name="name", sql="name", type="categorical")
         ],
-        measures=[
-            Measure(name="ltv", agg="sum", expr="lifetime_value")
+        metrics=[
+            Metric(name="ltv", agg="sum", sql="lifetime_value")
         ]
     )
 
@@ -58,15 +58,14 @@ def test_view_can_be_queried():
             Dimension(name="id", sql="id", type="categorical"),
             Dimension(name="status", sql="status", type="categorical")
         ],
-        measures=[
-            Measure(name="amount", agg="sum", expr="amount")
+        metrics=[
+            Metric(name="amount", agg="sum", sql="amount")
         ]
     )
 
-    total_revenue = Measure(
+    total_revenue = Metric(
         name="total_revenue",
-        type="simple",
-        expr="orders.amount"
+        sql="orders.amount"
     )
 
     graph = SemanticGraph()
@@ -103,15 +102,14 @@ def test_join_view_against_other_tables():
             Dimension(name="id", sql="id", type="categorical"),
             Dimension(name="name", sql="name", type="categorical")
         ],
-        measures=[
-            Measure(name="price", agg="avg", expr="price")
+        metrics=[
+            Metric(name="price", agg="avg", sql="price")
         ]
     )
 
-    avg_price = Measure(
+    avg_price = Metric(
         name="avg_price",
-        type="simple",
-        expr="products.price"
+        sql="products.price"
     )
 
     graph = SemanticGraph()

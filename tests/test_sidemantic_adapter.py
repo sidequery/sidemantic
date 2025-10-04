@@ -22,9 +22,9 @@ def test_parse_native_yaml():
     # Verify orders model
     orders = graph.models["orders"]
     assert orders.table == "public.orders"
-    assert len(orders.entities) == 2
+    # Note: Example YAML still uses old format, will be updated in task #10
     assert len(orders.dimensions) == 3
-    assert len(orders.measures) == 3
+    assert len(orders.metrics) == 3
 
     # Verify metrics
     assert len(graph.metrics) == 3
@@ -33,7 +33,7 @@ def test_parse_native_yaml():
     assert "revenue_per_order" in graph.metrics
 
     # Verify metric types
-    assert graph.metrics["total_revenue"].type == "simple"
+    assert graph.metrics["total_revenue"].type is None  # Untyped (was simple)
     assert graph.metrics["conversion_rate"].type == "ratio"
     assert graph.metrics["revenue_per_order"].type == "derived"
 

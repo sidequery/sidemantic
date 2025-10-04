@@ -101,7 +101,7 @@ class SQLGenerator:
             if "." in metric_ref:
                 model_name, measure_name = metric_ref.split(".")
                 model = self.graph.get_model(model_name)
-                measure = model.get_measure(measure_name)
+                measure = model.get_metric(measure_name)
 
                 if measure:
                     # Build aggregation expression
@@ -235,7 +235,7 @@ class SQLGenerator:
                 continue
 
             measure_name = metric_ref.split(".")[1]
-            measure = model.get_measure(measure_name)
+            measure = model.get_metric(measure_name)
 
             if not measure:
                 continue
@@ -310,7 +310,7 @@ class SQLGenerator:
 
         Args:
             model_name: Model name
-            measure: Measure object
+            measure: Metric object
 
         Returns:
             SQLGlot expression for aggregation
@@ -345,12 +345,12 @@ class SQLGenerator:
         Returns:
             SQLGlot expression
         """
-        if metric.type == "simple":
-            # Reference the measure directly
-            if "." in metric.measure:
-                model_name, measure_name = metric.measure.split(".")
+        # Handle untyped metrics with sql (references to measures)
+        if not metric.type and not metric.agg and metric.sql:
+            if "." in metric.sql:
+                model_name, measure_name = metric.sql.split(".")
                 model = self.graph.get_model(model_name)
-                measure = model.get_measure(measure_name)
+                measure = model.get_metric(measure_name)
                 return self._build_measure_aggregation(model_name, measure)
         elif metric.type == "ratio":
             # numerator / NULLIF(denominator, 0)
@@ -360,8 +360,8 @@ class SQLGenerator:
             num_model_obj = self.graph.get_model(num_model)
             denom_model_obj = self.graph.get_model(denom_model)
 
-            num_measure_obj = num_model_obj.get_measure(num_measure)
-            denom_measure_obj = denom_model_obj.get_measure(denom_measure)
+            num_measure_obj = num_model_obj.get_metric(num_measure)
+            denom_measure_obj = denom_model_obj.get_metric(denom_measure)
 
             num_expr = self._build_measure_aggregation(num_model, num_measure_obj)
             denom_expr = self._build_measure_aggregation(denom_model, denom_measure_obj)

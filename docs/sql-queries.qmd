@@ -156,12 +156,12 @@ FROM orders
 
 ✅ Instead, define measures:
 ```yaml
-measures:
+metrics:
   - name: order_count
     agg: count
   - name: revenue
     agg: sum
-    expr: amount
+    sql: amount
 ```
 
 Then:
@@ -250,12 +250,12 @@ This trade-off ensures:
 
 ::: {.callout-tip}
 ## Define Once, Query Anywhere
-Define measures in YAML:
+Define metrics in YAML:
 ```yaml
-measures:
+metrics:
   - name: revenue
     agg: sum
-    expr: amount
+    sql: amount
 ```
 
 Then query with simple SQL:
@@ -270,10 +270,10 @@ Put complex logic in measure definitions, not queries:
 
 ```yaml
 # Define complex measure
-measures:
+metrics:
   - name: high_value_revenue
     agg: sum
-    expr: "CASE WHEN amount > 1000 THEN amount ELSE 0 END"
+    sql: "CASE WHEN amount > 1000 THEN amount ELSE 0 END"
 ```
 
 ```sql

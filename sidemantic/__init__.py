@@ -3,19 +3,21 @@
 __version__ = "0.1.2"
 
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.entity import Entity
-from sidemantic.core.join import Join
-from sidemantic.core.measure import Measure
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
+from sidemantic.core.relationship import Relationship
+
+# Backwards compatibility alias
+Measure = Metric
 
 __all__ = [
     "Dimension",
-    "Entity",
-    "Join",
-    "Measure",
+    "Measure",  # Backwards compatibility
+    "Metric",
     "Model",
     "Parameter",
+    "Relationship",
     "SemanticLayer",
 ]
 

@@ -10,7 +10,7 @@ Models define your data sources and their structure.
 models:
   - name: orders
     table: orders
-    primary_key: id
+    primary_key: order_id
 ```
 
 Or in Python:
@@ -21,7 +21,7 @@ from sidemantic import Model
 orders = Model(
     name="orders",
     table="orders",
-    primary_key="id"
+    primary_key="order_id"
 )
 ```
 
@@ -37,6 +37,9 @@ orders = Model(
 
 - **sql**: SQL query instead of table name (for derived models)
 - **description**: Human-readable description
+- **relationships**: Relationships to other models (see [Relationships](relationships.qmd))
+- **dimensions**: Attributes for grouping and filtering
+- **metrics**: Model-level aggregations
 
 ## Dimensions
 
@@ -82,36 +85,36 @@ models:
 
 Query with: `orders.order_date__month` to automatically roll up to month.
 
-## Measures
+## Metrics (Model-Level)
 
-Measures define aggregations:
+Model-level metrics define aggregations on a single model:
 
 ```yaml
 models:
   - name: orders
-    measures:
+    metrics:
       # Simple aggregations
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
 
       - name: order_count
         agg: count
 
       - name: avg_order_value
         agg: avg
-        expr: amount
+        sql: amount
 
       # With filters
       - name: completed_revenue
         agg: sum
-        expr: amount
+        sql: amount
         filters: ["status = 'completed'"]
 
       # SQL expressions
       - name: total_value
         agg: sum
-        expr: "quantity * price"
+        sql: "quantity * price"
 ```
 
 ### Aggregation Types
@@ -124,31 +127,32 @@ models:
 - **max**: Maximum value
 - **median**: Median value
 
-### Complex Measures
+See [Metrics](metrics.qmd) for graph-level metrics (ratios, derived, cumulative).
 
-Measures can also be complex metrics:
+## Relationships
+
+Define how models join to each other:
 
 ```yaml
-measures:
-  # Ratio
-  - name: conversion_rate
-    type: ratio
-    numerator: completed_orders
-    denominator: total_orders
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
 
-  # Formula
-  - name: profit_margin
-    type: derived
-    expr: "(revenue - cost) / revenue"
-
-  # Cumulative
-  - name: running_total
-    type: cumulative
-    expr: revenue
-    window: "7 days"
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    relationships:
+      - name: orders
+        type: one_to_many
+        foreign_key: customer_id
 ```
 
-See [Measures](measures.qmd) for complete details.
+See [Relationships](relationships.qmd) for details.
 
 ## Derived Models
 
@@ -172,8 +176,13 @@ models:
 models:
   - name: orders
     table: orders
-    primary_key: id
+    primary_key: order_id
     description: "Customer orders"
+
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
 
     dimensions:
       - name: status
@@ -194,10 +203,10 @@ models:
             ELSE 'basic'
           END
 
-    measures:
+    metrics:
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
         description: "Total order revenue"
 
       - name: order_count
@@ -206,11 +215,11 @@ models:
 
       - name: avg_order_value
         agg: avg
-        expr: amount
+        sql: amount
 
       - name: completed_revenue
         agg: sum
-        expr: amount
+        sql: amount
         filters: ["status = 'completed'"]
 
       - name: large_orders
@@ -224,7 +233,7 @@ models:
 ## Naming Conventions
 - Models: plural nouns (`orders`, `customers`)
 - Dimensions: descriptive names (`status`, `order_date`, `customer_region`)
-- Measures: what they measure (`revenue`, `order_count`, `avg_order_value`)
+- Metrics: what they measure (`revenue`, `order_count`, `avg_order_value`)
 :::
 
 ::: {.callout-warning}
@@ -237,8 +246,8 @@ Always set `primary_key` - it's required for:
 
 ::: {.callout-tip}
 ## SQL Expressions
-Use SQL expressions in `sql` and `expr` fields:
+Use SQL expressions in `sql` fields:
 - `sql: "UPPER(status)"` - transform dimension
-- `expr: "quantity * price"` - calculated measure
+- `sql: "quantity * price"` - calculated metric
 - Supports any SQL your database supports
 :::

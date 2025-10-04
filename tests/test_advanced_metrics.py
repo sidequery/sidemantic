@@ -5,8 +5,8 @@ import duckdb
 
 from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.measure import Measure
-from sidemantic.core.measure import Measure
+from sidemantic.core.metric import Metric
+from sidemantic.core.metric import Metric
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 
@@ -26,16 +26,16 @@ def test_month_to_date_metric():
         dimensions=[
             Dimension(name="sale_date", sql="sale_date", type="time")
         ],
-        measures=[
-            Measure(name="amount", agg="sum", expr="amount")
+        metrics=[
+            Metric(name="amount", agg="sum", sql="amount")
         ]
     )
 
     # MTD cumulative - resets each month
-    mtd_revenue = Measure(
+    mtd_revenue = Metric(
         name="mtd_revenue",
         type="cumulative",
-        expr="sales.amount",
+        sql="sales.amount",
         grain_to_date="month"
     )
 
@@ -84,15 +84,15 @@ def test_year_to_date_metric():
         dimensions=[
             Dimension(name="sale_date", sql="sale_date", type="time")
         ],
-        measures=[
-            Measure(name="amount", agg="sum", expr="amount")
+        metrics=[
+            Metric(name="amount", agg="sum", sql="amount")
         ]
     )
 
-    ytd_revenue = Measure(
+    ytd_revenue = Metric(
         name="ytd_revenue",
         type="cumulative",
-        expr="sales.amount",
+        sql="sales.amount",
         grain_to_date="year"
     )
 
@@ -135,16 +135,15 @@ def test_fill_nulls_with_zero():
         dimensions=[
             Dimension(name="status", sql="status", type="categorical")
         ],
-        measures=[
-            Measure(name="amount", agg="sum", expr="amount")
+        metrics=[
+            Metric(name="amount", agg="sum", sql="amount")
         ]
     )
 
     # Metric with fill_nulls_with
-    total_revenue = Measure(
+    total_revenue = Metric(
         name="total_revenue",
-        type="simple",
-        expr="orders.amount",
+        sql="orders.amount",
         fill_nulls_with=0
     )
 
@@ -217,13 +216,13 @@ def test_offset_ratio_metric():
         dimensions=[
             Dimension(name="month", sql="month", type="time")
         ],
-        measures=[
-            Measure(name="revenue", agg="sum", expr="revenue")
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="revenue")
         ]
     )
 
     # Month-over-month growth: current / previous month
-    mom_growth = Measure(
+    mom_growth = Metric(
         name="mom_growth",
         type="ratio",
         numerator="sales.revenue",
@@ -279,13 +278,13 @@ def test_conversion_metric():
             Dimension(name="event_type", sql="event_type", type="categorical"),
             Dimension(name="event_date", sql="event_date", type="time")
         ],
-        measures=[
-            Measure(name="user_count", agg="count_distinct", expr="user_id")
+        metrics=[
+            Metric(name="user_count", agg="count_distinct", sql="user_id")
         ]
     )
 
     # Conversion: users who purchase within 7 days of signup
-    signup_conversion = Measure(
+    signup_conversion = Metric(
         name="signup_conversion",
         type="conversion",
         entity="user_id",

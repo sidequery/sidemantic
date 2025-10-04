@@ -9,10 +9,10 @@ models:
   - name: orders
     table: orders
     primary_key: id
-    measures:
+    metrics:
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
 ```
 
 ```python
@@ -59,9 +59,9 @@ models:
   - name: orders
     table: orders
     primary_key: id
-    joins:
+    relationships:
       - name: customers
-        type: belongs_to
+        type: many_to_one
         foreign_key: customer_id
 
   - name: customers
@@ -90,18 +90,18 @@ Only filter on tables that are joined via metrics or dimensions:
 Adding a dimension from the table ensures it gets joined.
 :::
 
-## Ratio Measures
+## Ratio Metrics
 
 ```yaml
-measures:
+metrics:
   - name: completed_revenue
     agg: sum
-    expr: amount
+    sql: amount
     filters: ["status = 'completed'"]
 
   - name: total_revenue
     agg: sum
-    expr: amount
+    sql: amount
 
   - name: completion_rate
     type: ratio
@@ -113,25 +113,25 @@ measures:
 layer.sql("SELECT completion_rate FROM orders")
 ```
 
-## Derived Measures
+## Derived Metrics
 
 ```yaml
-measures:
+metrics:
   - name: revenue
     agg: sum
-    expr: amount
+    sql: amount
 
   - name: cost
     agg: sum
-    expr: cost
+    sql: cost
 
   - name: profit
     type: derived
-    expr: "revenue - cost"
+    sql: "revenue - cost"
 
   - name: margin
     type: derived
-    expr: "profit / revenue"
+    sql: "profit / revenue"
 ```
 
 ```python
@@ -141,19 +141,19 @@ layer.sql("SELECT revenue, profit, margin FROM orders")
 ## Cumulative Metrics
 
 ```yaml
-measures:
+metrics:
   - name: daily_revenue
     agg: sum
-    expr: amount
+    sql: amount
 
   - name: running_total
     type: cumulative
-    expr: daily_revenue
+    sql: daily_revenue
     window: "7 days"
 
   - name: mtd_revenue
     type: cumulative
-    expr: daily_revenue
+    sql: daily_revenue
     grain_to_date: month
 ```
 
@@ -196,15 +196,15 @@ DON'T add quotes around `{{ param }}` - they're added automatically based on typ
 ```yaml
 models:
   - name: orders
-    joins:
+    relationships:
       - name: customers
-        type: belongs_to
+        type: many_to_one
         foreign_key: customer_id
 
   - name: customers
-    joins:
+    relationships:
       - name: regions
-        type: belongs_to
+        type: many_to_one
         foreign_key: region_id
 
   - name: regions

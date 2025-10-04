@@ -1,0 +1,336 @@
+---
+title: "Relationships"
+---
+
+Define relationships between models for automatic joining.
+
+## Relationship Types
+
+### many_to_one
+
+Many records in THIS model → one record in OTHER model:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id  # Column in orders table
+```
+
+SQL: `LEFT JOIN customers ON orders.customer_id = customers.customer_id`
+
+**Meaning:** Many orders belong to one customer.
+
+### one_to_many
+
+One record in THIS model → many records in OTHER model:
+
+```yaml
+models:
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    relationships:
+      - name: orders
+        type: one_to_many
+        foreign_key: customer_id  # Column in orders table (the OTHER table)
+```
+
+SQL: `LEFT JOIN orders ON customers.customer_id = orders.customer_id`
+
+**Meaning:** One customer has many orders.
+
+### one_to_one
+
+One record in THIS model → one record in OTHER model:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: invoice
+        type: one_to_one
+        foreign_key: order_id  # Column in invoice table
+```
+
+SQL: `LEFT JOIN invoice ON orders.order_id = invoice.order_id`
+
+**Meaning:** One order has one invoice.
+
+## Bidirectional Relationships
+
+Define from both sides for flexibility:
+
+```yaml
+models:
+  - name: orders
+    primary_key: order_id
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
+
+  - name: customers
+    primary_key: customer_id
+    relationships:
+      - name: orders
+        type: one_to_many
+        foreign_key: customer_id
+```
+
+Now you can query from either direction:
+- `SELECT orders.revenue, customers.name FROM orders`
+- `SELECT customers.name, orders.revenue FROM customers`
+
+## Multi-Hop Joins
+
+Define relationships and query across 2+ models automatically:
+
+```yaml
+models:
+  - name: orders
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
+
+  - name: customers
+    relationships:
+      - name: region
+        type: many_to_one
+        foreign_key: region_id
+
+  - name: regions
+    table: regions
+    primary_key: region_id
+```
+
+Query spans 2 hops automatically:
+
+```python
+# orders -> customers -> regions
+layer.sql("""
+    SELECT orders.revenue, regions.country
+    FROM orders
+""")
+```
+
+## Relationship Properties
+
+- **name**: Name of the related model
+- **type**: `many_to_one`, `one_to_many`, or `one_to_one`
+- **foreign_key**: The foreign key column name
+- **primary_key**: (Optional) Primary key in related table (defaults to related model's primary_key)
+
+## Python API
+
+```python
+from sidemantic import Model, Relationship
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="order_id",
+    relationships=[
+        Relationship(name="customer", type="many_to_one", foreign_key="customer_id"),
+        Relationship(name="order_items", type="one_to_many", foreign_key="order_id")
+    ]
+)
+
+customers = Model(
+    name="customers",
+    table="customers",
+    primary_key="customer_id",
+    relationships=[
+        Relationship(name="orders", type="one_to_many", foreign_key="customer_id")
+    ]
+)
+```
+
+## Symmetric Aggregates
+
+When you have fan-out (one-to-many joins), Sidemantic automatically uses symmetric aggregates to prevent double-counting:
+
+```yaml
+models:
+  - name: orders
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+
+    relationships:
+      - name: order_items
+        type: one_to_many
+        foreign_key: order_id
+```
+
+```python
+# Query with fan-out
+layer.sql("""
+    SELECT orders.revenue, order_items.quantity
+    FROM orders
+""")
+```
+
+Automatically generates:
+```sql
+SUM(DISTINCT HASH(orders.order_id)::HUGEINT * (1::HUGEINT << 20) + orders.revenue)
+```
+
+This ensures revenue is counted once per order, not once per item.
+
+## Best Practices
+
+::: {.callout-tip}
+## Understanding Relationship Types
+- **many_to_one**: FK is in THIS table (e.g., orders.customer_id)
+- **one_to_many**: FK is in the OTHER table (e.g., customers ← orders.customer_id)
+- **one_to_one**: FK is in the OTHER table, expects one record
+:::
+
+::: {.callout-warning}
+## Primary Keys Required
+Set `primary_key` on all models involved in relationships:
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id  # Required!
+```
+:::
+
+::: {.callout-tip}
+## Define Both Sides
+For maximum flexibility, define relationships from both models:
+```yaml
+# orders -> customers (many-to-one)
+- name: orders
+  relationships:
+    - name: customer
+      type: many_to_one
+      foreign_key: customer_id
+
+# customers -> orders (one-to-many)
+- name: customers
+  relationships:
+    - name: orders
+      type: one_to_many
+      foreign_key: customer_id
+```
+:::
+
+## Common Patterns
+
+### One-to-Many
+
+```yaml
+# Order has many items
+- name: orders
+  primary_key: order_id
+  relationships:
+    - name: order_items
+      type: one_to_many
+      foreign_key: order_id
+
+# Item belongs to order (inverse: many-to-one)
+- name: order_items
+  primary_key: item_id
+  relationships:
+    - name: order
+      type: many_to_one
+      foreign_key: order_id
+```
+
+### Many-to-One
+
+```yaml
+# Order belongs to customer
+- name: orders
+  primary_key: order_id
+  relationships:
+    - name: customer
+      type: many_to_one
+      foreign_key: customer_id
+
+# Customer has many orders (inverse: one-to-many)
+- name: customers
+  primary_key: customer_id
+  relationships:
+    - name: orders
+      type: one_to_many
+      foreign_key: customer_id
+```
+
+### One-to-One
+
+```yaml
+# Order has one invoice
+- name: orders
+  primary_key: order_id
+  relationships:
+    - name: invoice
+      type: one_to_one
+      foreign_key: order_id
+
+# Invoice belongs to order (inverse: many-to-one, but unique)
+- name: invoice
+  primary_key: invoice_id
+  relationships:
+    - name: order
+      type: many_to_one
+      foreign_key: order_id
+```
+
+## Migration from Joins
+
+If you're upgrading from the old `joins` syntax:
+
+**Old (deprecated):**
+```yaml
+joins:
+  - name: customers
+    type: belongs_to
+    foreign_key: customer_id
+```
+
+**New:**
+```yaml
+relationships:
+  - name: customer
+    type: many_to_one
+    foreign_key: customer_id
+```
+
+**Type mapping:**
+- `belongs_to` → `many_to_one` (FK in THIS table)
+- `has_many` → `one_to_many` (FK in OTHER table)
+- `has_one` → `one_to_one` (FK in OTHER table, unique)
+
+## Troubleshooting
+
+::: {.callout-warning}
+## "No join path found"
+Ensure you've defined relationships between the models:
+```yaml
+models:
+  - name: orders
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
+```
+:::
+
+::: {.callout-warning}
+## Wrong foreign_key
+If joins aren't working, check the foreign_key:
+- `many_to_one`: Column in THIS table
+- `one_to_many`/`one_to_one`: Column in OTHER table
+:::

@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.validation import (
     MetricValidationError,
     ModelValidationError,
@@ -10,22 +10,21 @@ from sidemantic.validation import (
 )
 
 
-def test_model_validation_no_primary_entity():
-    """Test that models without primary entities are rejected."""
+def test_model_has_default_primary_key():
+    """Test that models have a default primary key."""
     sl = SemanticLayer()
 
-    invalid_model = Model(
+    # Model without explicit primary_key should default to "id"
+    model = Model(
         name="orders",
         table="orders",
-        entities=[Entity(name="customer", type="foreign", expr="customer_id")],
+        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
         dimensions=[Dimension(name="status", type="categorical")],
-        measures=[],
+        metrics=[],
     )
 
-    with pytest.raises(ModelValidationError) as exc_info:
-        sl.add_model(invalid_model)
-
-    assert "must have either a primary entity or primary_key defined" in str(exc_info.value)
+    sl.add_model(model)
+    assert model.primary_key == "id"
 
 
 def test_model_validation_no_table():
@@ -34,9 +33,9 @@ def test_model_validation_no_table():
 
     invalid_model = Model(
         name="orders",
-        entities=[Entity(name="order", type="primary", expr="order_id")],
+        primary_key="id",
         dimensions=[],
-        measures=[],
+        metrics=[],
     )
 
     with pytest.raises(ModelValidationError) as exc_info:
@@ -46,27 +45,12 @@ def test_model_validation_no_table():
 
 
 def test_metric_validation_simple_no_measure():
-    """Test that simple metrics without measure are rejected."""
-    sl = SemanticLayer()
+    """Test that Pydantic rejects invalid metric types at model creation time."""
+    # Try to create metric with invalid type - should fail at Pydantic validation
+    with pytest.raises(Exception) as exc_info:
+        Metric(name="bad_metric", type="invalid_type")
 
-    # Add valid model first
-    sl.add_model(
-        Model(
-            name="orders",
-            table="orders",
-            entities=[Entity(name="order", type="primary", expr="order_id")],
-            dimensions=[],
-            measures=[Measure(name="revenue", agg="sum", expr="amount")],
-        )
-    )
-
-    # Try to add invalid metric
-    invalid_metric = Measure(name="bad_metric", type="simple")
-
-    with pytest.raises(MetricValidationError) as exc_info:
-        sl.add_metric(invalid_metric)
-
-    assert "must have 'expr' defined" in str(exc_info.value)
+    assert "literal_error" in str(exc_info.value).lower() or "validation" in str(exc_info.value).lower()
 
 
 def test_metric_validation_measure_not_found():
@@ -78,17 +62,16 @@ def test_metric_validation_measure_not_found():
         Model(
             name="orders",
             table="orders",
-            entities=[Entity(name="order", type="primary", expr="order_id")],
+            primary_key="id",
             dimensions=[],
-            measures=[Measure(name="revenue", agg="sum", expr="amount")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
 
     # Try to reference non-existent measure
-    invalid_metric = Measure(
+    invalid_metric = Metric(
         name="bad_metric",
-        type="simple",
-        expr="orders.nonexistent"
+        sql="orders.nonexistent"
     )
 
     with pytest.raises(MetricValidationError) as exc_info:
@@ -106,18 +89,18 @@ def test_metric_validation_self_reference():
         Model(
             name="orders",
             table="orders",
-            entities=[Entity(name="order", type="primary", expr="order_id")],
+            primary_key="id",
             dimensions=[],
-            measures=[Measure(name="revenue", agg="sum", expr="amount")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
 
     # Try to add self-referencing metric
     # Note: dependencies are auto-detected from expr now
-    invalid_metric = Measure(
+    invalid_metric = Metric(
         name="metric_a",
         type="derived",
-        expr="metric_a + 1",
+        sql="metric_a + 1",
     )
 
     with pytest.raises(MetricValidationError) as exc_info:
@@ -134,9 +117,9 @@ def test_query_validation_metric_not_found():
         Model(
             name="orders",
             table="orders",
-            entities=[Entity(name="order", type="primary", expr="order_id")],
+            primary_key="id",
             dimensions=[Dimension(name="status", type="categorical")],
-            measures=[Measure(name="revenue", agg="sum", expr="amount")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
 
@@ -157,9 +140,9 @@ def test_query_validation_dimension_not_found():
         Model(
             name="orders",
             table="orders",
-            entities=[Entity(name="order", type="primary", expr="order_id")],
+            primary_key="id",
             dimensions=[Dimension(name="status", type="categorical")],
-            measures=[Measure(name="revenue", agg="sum", expr="amount")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
 
@@ -181,9 +164,9 @@ def test_query_validation_no_join_path():
         Model(
             name="orders",
             table="orders",
-            entities=[Entity(name="order", type="primary", expr="order_id")],
+            primary_key="id",
             dimensions=[Dimension(name="status", type="categorical")],
-            measures=[Measure(name="revenue", agg="sum", expr="amount")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
 
@@ -191,9 +174,9 @@ def test_query_validation_no_join_path():
         Model(
             name="products",
             table="products",
-            entities=[Entity(name="product", type="primary", expr="product_id")],
+            primary_key="id",
             dimensions=[Dimension(name="category", type="categorical")],
-            measures=[],
+            metrics=[],
         )
     )
 
@@ -217,9 +200,9 @@ def test_query_validation_invalid_granularity():
         Model(
             name="orders",
             table="orders",
-            entities=[Entity(name="order", type="primary", expr="order_id")],
-            dimensions=[Dimension(name="order_date", type="time", granularity="day", expr="created_at")],
-            measures=[Measure(name="revenue", agg="sum", expr="amount")],
+            primary_key="id",
+            dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="created_at")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
 

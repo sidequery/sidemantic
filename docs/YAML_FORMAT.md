@@ -10,10 +10,14 @@ Complete specification for Sidemantic YAML files.
 models:
   - name: orders
     table: orders
-    primary_key: id
+    primary_key: order_id
     dimensions: [...]
-    measures: [...]
-    joins: [...]
+    metrics: [...]
+    relationships: [...]
+
+metrics:
+  - name: total_revenue
+    sql: orders.revenue
 
 parameters:
   - name: start_date
@@ -32,8 +36,8 @@ models:
     description: string       # Optional
 
     dimensions: [...]         # Optional
-    measures: [...]           # Optional
-    joins: [...]              # Optional
+    metrics: [...]            # Optional (model-level aggregations)
+    relationships: [...]      # Optional
 ```
 
 ## Dimensions
@@ -88,67 +92,30 @@ dimensions:
       END
 ```
 
-## Measures
+## Metrics (Model-Level)
+
+Model-level metrics are **aggregations** defined on a single model. These become the building blocks for graph-level metrics.
 
 ### Simple Aggregations
 
 ```yaml
-measures:
+metrics:
   - name: string              # Required
     agg: sum|count|count_distinct|avg|min|max|median  # Required
-    expr: string              # SQL expression (defaults to * for count)
+    sql: string               # SQL expression (defaults to * for count)
     filters: [string]         # Optional WHERE conditions
     description: string       # Optional
     fill_nulls_with: value    # Optional default for NULL
 ```
 
-### Complex Measures
-
-```yaml
-measures:
-  # Ratio
-  - name: conversion_rate
-    type: ratio
-    numerator: completed_orders
-    denominator: total_orders
-
-  # Derived/Formula
-  - name: profit
-    type: derived
-    expr: "revenue - cost"
-
-  # Cumulative
-  - name: running_total
-    type: cumulative
-    expr: revenue
-    window: "7 days"              # Rolling window
-    # OR
-    grain_to_date: month          # MTD/YTD
-
-  # Time comparison
-  - name: yoy_growth
-    type: time_comparison
-    base_metric: revenue
-    comparison_type: yoy          # yoy, mom, wow, qoq
-    calculation: percent_change   # percent_change, difference, ratio
-
-  # Conversion funnel
-  - name: signup_to_purchase
-    type: conversion
-    entity: user_id
-    base_event: signup
-    conversion_event: purchase
-    conversion_window: "7 days"
-```
-
 ### Examples
 
 ```yaml
-measures:
+metrics:
   # Simple sum
   - name: revenue
     agg: sum
-    expr: amount
+    sql: amount
 
   # Count
   - name: order_count
@@ -157,66 +124,158 @@ measures:
   # Average
   - name: avg_order_value
     agg: avg
-    expr: amount
+    sql: amount
 
   # With filter
   - name: completed_revenue
     agg: sum
-    expr: amount
+    sql: amount
     filters: ["status = 'completed'"]
 
   # SQL expression
   - name: total_value
     agg: sum
-    expr: "quantity * price * (1 - discount)"
+    sql: "quantity * price * (1 - discount)"
 
   # Multiple filters
   - name: us_revenue
     agg: sum
-    expr: amount
+    sql: amount
     filters:
       - "country = 'US'"
       - "amount > 0"
 ```
 
-## Joins
+## Metrics (Graph-Level)
+
+Graph-level metrics are defined at the top level and can reference model-level metrics or other graph-level metrics. Dependencies are **auto-detected** from SQL expressions.
+
+### Metric References (Untyped)
+
+The simplest graph-level metric just references a model-level metric:
 
 ```yaml
-joins:
-  - name: string              # Required - name of related model
-    type: belongs_to|has_many|has_one  # Required
-    foreign_key: string       # Required - FK column name
+metrics:
+  # Reference a model-level metric
+  - name: total_revenue
+    sql: orders.revenue
+    description: "Total revenue from all orders"
 ```
 
-### Join Types
+No `type` needed! Dependencies are automatically detected from the `sql` expression.
 
-- **belongs_to**: Foreign key is in THIS table
-- **has_many**: Foreign key is in OTHER table
-- **has_one**: Foreign key is in OTHER table (expects one record)
+### Ratio Metrics
+
+```yaml
+metrics:
+  - name: conversion_rate
+    type: ratio
+    numerator: orders.completed_revenue
+    denominator: orders.revenue
+```
+
+### Derived Metrics
+
+Derived metrics use formulas and **automatically detect dependencies**:
+
+```yaml
+metrics:
+  # Simple formula - dependencies auto-detected
+  - name: profit
+    type: derived
+    sql: "revenue - cost"
+
+  # References other metrics - no manual dependency list needed!
+  - name: revenue_per_customer
+    type: derived
+    sql: "total_revenue / total_customers"
+```
+
+### Cumulative Metrics
+
+```yaml
+metrics:
+  # Rolling window
+  - name: rolling_7day_revenue
+    type: cumulative
+    sql: orders.revenue
+    window: "7 days"
+
+  # Period-to-date (MTD, YTD, etc.)
+  - name: mtd_revenue
+    type: cumulative
+    sql: orders.revenue
+    grain_to_date: month
+```
+
+### Time Comparison Metrics
+
+```yaml
+metrics:
+  - name: yoy_revenue_growth
+    type: time_comparison
+    base_metric: total_revenue
+    comparison_type: yoy          # yoy, mom, wow, qoq
+    calculation: percent_change   # percent_change, difference, ratio
+```
+
+### Conversion Funnel Metrics
+
+```yaml
+metrics:
+  - name: signup_to_purchase_rate
+    type: conversion
+    entity: user_id
+    base_event: signup
+    conversion_event: purchase
+    conversion_window: "7 days"
+```
+
+## Relationships
+
+Relationships define how models join together. Use explicit relationship types instead of traditional join terminology.
+
+```yaml
+relationships:
+  - name: string              # Required - name of related model
+    type: many_to_one|one_to_many|one_to_one  # Required
+    foreign_key: string       # Required - FK column name
+    primary_key: string       # Optional - PK in related table (defaults to related model's primary_key)
+```
+
+### Relationship Types
+
+- **many_to_one**: Many records in THIS table → one record in OTHER table (e.g., orders → customer)
+- **one_to_many**: One record in THIS table → many records in OTHER table (e.g., customer → orders)
+- **one_to_one**: One record in THIS table → one record in OTHER table (e.g., order → invoice)
 
 ### Examples
 
 ```yaml
 models:
-  # Orders belong to customers
+  # Orders: many orders belong to one customer
   - name: orders
-    joins:
-      - name: customers
-        type: belongs_to
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: customer
+        type: many_to_one
         foreign_key: customer_id  # Column in orders table
 
-  # Customers have many orders
+  # Customers: one customer has many orders
   - name: customers
-    joins:
+    table: customers
+    primary_key: customer_id
+    relationships:
       - name: orders
-        type: has_many
-        foreign_key: customer_id  # Column in orders table
+        type: one_to_many
+        foreign_key: customer_id  # Column in orders table (the OTHER table)
 
   # Order has one invoice
   - name: orders
-    joins:
+    relationships:
       - name: invoice
-        type: has_one
+        type: one_to_one
         foreign_key: order_id     # Column in invoice table
 ```
 
@@ -272,9 +331,14 @@ parameters:
 
 models:
   - name: orders
-    table: orders
-    primary_key: id
+    table: public.orders
+    primary_key: order_id
     description: "Customer orders"
+
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
 
     dimensions:
       - name: status
@@ -286,46 +350,57 @@ models:
         sql: created_at
         granularity: day
 
-    measures:
+    metrics:
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
 
       - name: order_count
         agg: count
 
       - name: completed_revenue
         agg: sum
-        expr: amount
+        sql: amount
         filters: ["status = 'completed'"]
 
-      - name: conversion_rate
-        type: ratio
-        numerator: completed_revenue
-        denominator: revenue
-
-    joins:
-      - name: customers
-        type: belongs_to
-        foreign_key: customer_id
-
   - name: customers
-    table: customers
-    primary_key: id
+    table: public.customers
+    primary_key: customer_id
+
+    relationships:
+      - name: orders
+        type: one_to_many
+        foreign_key: customer_id
 
     dimensions:
       - name: region
         type: categorical
         sql: region
 
-    measures:
+    metrics:
       - name: customer_count
-        agg: count
+        agg: count_distinct
+        sql: customer_id
 
-    joins:
-      - name: orders
-        type: has_many
-        foreign_key: customer_id
+# Graph-level metrics
+metrics:
+  # Simple reference (dependencies auto-detected)
+  - name: total_revenue
+    sql: orders.revenue
+    description: "Total revenue from all orders"
+
+  # Ratio metric
+  - name: conversion_rate
+    type: ratio
+    numerator: orders.completed_revenue
+    denominator: orders.revenue
+    description: "Percentage of revenue from completed orders"
+
+  # Derived metric (dependencies auto-detected from formula)
+  - name: revenue_per_customer
+    type: derived
+    sql: "total_revenue / customers.customer_count"
+    description: "Average revenue per customer"
 
 parameters:
   - name: start_date

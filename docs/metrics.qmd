@@ -1,0 +1,315 @@
+---
+title: "Metrics"
+---
+
+Metrics define how to aggregate and calculate measures. Sidemantic distinguishes between **model-level metrics** (aggregations) and **graph-level metrics** (formulas/references).
+
+## Model-Level Metrics
+
+Model-level metrics are **aggregations** defined on a single model. These become building blocks for graph-level metrics.
+
+### Simple Aggregations
+
+Basic aggregations on a single column:
+
+```yaml
+models:
+  - name: orders
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+
+      - name: order_count
+        agg: count
+
+      - name: avg_price
+        agg: avg
+        sql: price
+
+      - name: max_amount
+        agg: max
+        sql: amount
+```
+
+Available aggregations: `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`
+
+### Filtered Metrics
+
+Apply filters to specific metrics:
+
+```yaml
+metrics:
+  - name: completed_revenue
+    agg: sum
+    sql: amount
+    filters: ["status = 'completed'"]
+
+  - name: us_orders
+    agg: count
+    filters: ["country = 'US'", "amount > 0"]
+```
+
+Filters are ANDed together.
+
+### SQL Expressions
+
+Metrics support full SQL expressions:
+
+```yaml
+metrics:
+  - name: total_value
+    agg: sum
+    sql: "quantity * price * (1 - discount_pct)"
+```
+
+## Graph-Level Metrics
+
+Graph-level metrics are defined at the top level and can reference model-level metrics or other graph-level metrics. **Dependencies are auto-detected!**
+
+### Metric References
+
+The simplest graph-level metric references a model-level metric:
+
+```yaml
+metrics:
+  # Dependencies auto-detected from sql!
+  - name: total_revenue
+    sql: orders.revenue
+    description: "Total revenue from all orders"
+```
+
+No `type` field needed - dependencies are automatically detected from the `sql` expression.
+
+### Ratio Metrics
+
+Divide one metric by another:
+
+```yaml
+metrics:
+  - name: conversion_rate
+    type: ratio
+    numerator: orders.completed_revenue
+    denominator: orders.revenue
+
+  - name: profit_margin
+    type: ratio
+    numerator: orders.profit
+    denominator: orders.revenue
+```
+
+Results in: `numerator / NULLIF(denominator, 0)`
+
+### Derived Metrics
+
+Formula-based calculations with **automatic dependency detection**:
+
+```yaml
+metrics:
+  # Dependencies auto-detected!
+  - name: profit
+    type: derived
+    sql: "revenue - cost"
+
+  - name: margin_pct
+    type: derived
+    sql: "(revenue - cost) / revenue * 100"
+
+  - name: revenue_per_customer
+    type: derived
+    sql: "total_revenue / total_customers"
+```
+
+No need to manually list dependencies - they're extracted from the SQL expression!
+
+### Cumulative Metrics
+
+Running totals and period-to-date:
+
+```yaml
+metrics:
+  # Rolling window
+  - name: last_7_days_revenue
+    type: cumulative
+    sql: orders.revenue
+    window: "7 days"
+
+  # Month-to-date
+  - name: mtd_revenue
+    type: cumulative
+    sql: orders.revenue
+    grain_to_date: month
+
+  # Year-to-date
+  - name: ytd_revenue
+    type: cumulative
+    sql: orders.revenue
+    grain_to_date: year
+```
+
+Requires a time dimension in the query.
+
+### Time Comparison Metrics
+
+Year-over-year, month-over-month changes:
+
+```yaml
+metrics:
+  # Year-over-year growth
+  - name: yoy_revenue_growth
+    type: time_comparison
+    base_metric: total_revenue
+    comparison_type: yoy
+    calculation: percent_change
+
+  # Month-over-month
+  - name: mom_revenue
+    type: time_comparison
+    base_metric: total_revenue
+    comparison_type: mom
+    calculation: difference
+
+  # Custom offset
+  - name: vs_last_quarter
+    type: time_comparison
+    base_metric: total_revenue
+    time_offset: "3 months"
+    calculation: ratio
+```
+
+Calculation types:
+- `percent_change`: `(current - prior) / prior * 100`
+- `difference`: `current - prior`
+- `ratio`: `current / prior`
+
+### Conversion Metrics
+
+Track funnel conversions:
+
+```yaml
+metrics:
+  - name: signup_to_purchase
+    type: conversion
+    entity: user_id
+    base_event: signup
+    conversion_event: purchase
+    conversion_window: "7 days"
+```
+
+Calculates: users who did conversion_event within window after base_event / total users who did base_event
+
+## Metric Properties
+
+### Model-Level Metrics
+
+- **name**: Unique identifier
+- **agg**: Aggregation function (sum, count, avg, etc.)
+- **sql**: SQL expression to aggregate (defaults to `*` for count)
+- **filters**: WHERE conditions for this metric
+- **description**: Human-readable description
+- **label**: Display name (defaults to name)
+
+### Graph-Level Metrics
+
+#### Untyped (Metric References)
+- **name**: Unique identifier
+- **sql**: Reference to model.metric (e.g., "orders.revenue")
+- **description**: Human-readable description
+
+#### Typed Metrics
+- **type**: Metric type (ratio, derived, cumulative, time_comparison, conversion)
+- Type-specific properties (see sections above)
+
+### Null Handling
+
+```yaml
+metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+    fill_nulls_with: 0  # Return 0 instead of NULL
+```
+
+## Python API
+
+```python
+from sidemantic import Metric
+
+# Model-level: Simple aggregation
+revenue = Metric(name="revenue", agg="sum", sql="amount")
+
+# Model-level: Filtered
+completed = Metric(
+    name="completed_revenue",
+    agg="sum",
+    sql="amount",
+    filters=["status = 'completed'"]
+)
+
+# Graph-level: Reference (dependencies auto-detected!)
+total_revenue = Metric(
+    name="total_revenue",
+    sql="orders.revenue"
+)
+
+# Graph-level: Ratio
+margin = Metric(
+    name="margin",
+    type="ratio",
+    numerator="orders.profit",
+    denominator="orders.revenue"
+)
+
+# Graph-level: Derived (dependencies auto-detected!)
+profit = Metric(
+    name="profit",
+    type="derived",
+    sql="revenue - cost"
+)
+
+# Graph-level: Cumulative
+running_total = Metric(
+    name="running_total",
+    type="cumulative",
+    sql="orders.revenue",
+    window="7 days"
+)
+```
+
+## Best Practices
+
+::: {.callout-tip}
+## Start Simple
+Define basic aggregations first, then build complex metrics on top:
+1. Model-level metrics (revenue, count)
+2. Filtered metrics (completed_revenue)
+3. Graph-level references (total_revenue)
+4. Ratios (conversion_rate = completed / total)
+5. Derived (margin = profit / revenue)
+:::
+
+::: {.callout-tip}
+## Auto-Detected Dependencies
+No need to manually declare dependencies! They're automatically extracted from `sql` expressions:
+
+```yaml
+# Old way (manual dependencies - deprecated)
+- name: profit_margin
+  type: derived
+  sql: "profit / revenue"
+  metrics: ["profit", "revenue"]  # Don't need this!
+
+# New way (auto-detected)
+- name: profit_margin
+  type: derived
+  sql: "profit / revenue"  # Dependencies detected automatically!
+```
+:::
+
+::: {.callout-tip}
+## Reusability
+Define metrics once, use everywhere:
+- In SQL queries: `SELECT revenue FROM orders`
+- In Python: `layer.query(metrics=["orders.revenue"])`
+- In other metrics: `sql: "revenue - cost"`
+:::

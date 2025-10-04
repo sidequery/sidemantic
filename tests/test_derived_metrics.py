@@ -7,7 +7,7 @@ revenue_per_order = total_revenue / total_orders
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, SemanticLayer, Model, SemanticLayer
 
 
 @pytest.fixture

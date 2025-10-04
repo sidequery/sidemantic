@@ -37,21 +37,22 @@ def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
     """
     deps = set()
 
-    # Simple metric - depends on its measure
-    if metric_obj.type == "simple" and metric_obj.expr:
-        deps.add(metric_obj.expr)
-
     # Ratio metric - depends on numerator and denominator
-    elif metric_obj.type == "ratio":
+    if metric_obj.type == "ratio":
         if metric_obj.numerator:
             deps.add(metric_obj.numerator)
         if metric_obj.denominator:
             deps.add(metric_obj.denominator)
 
-    # Derived metric - parse expr to find references
-    elif metric_obj.type == "derived" and metric_obj.expr:
+    # Derived metric (or untyped metric with sql expression) - parse sql to find references
+    elif (metric_obj.type == "derived" or (not metric_obj.type and not metric_obj.agg)) and metric_obj.sql:
+        # Special case: if sql is a simple qualified reference (model.metric), treat it as a direct dependency
+        if "." in metric_obj.sql and " " not in metric_obj.sql.strip() and not any(op in metric_obj.sql for op in ["+", "-", "*", "/", "(", ")"]):
+            deps.add(metric_obj.sql)
+            return deps
+
         # Extract column references from expression
-        refs = extract_column_references(metric_obj.expr)
+        refs = extract_column_references(metric_obj.sql)
 
         # Use graph to resolve references if available
         if graph:
@@ -74,7 +75,7 @@ def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
                     if not resolved:
                         for model_name, model in graph.models.items():
                             try:
-                                if model.get_measure(ref):
+                                if model.get_metric(ref):
                                     deps.add(f"{model_name}.{ref}")
                                     resolved = True
                                     break
@@ -90,8 +91,8 @@ def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
 
     # Cumulative metric - depends on its base measure (stored in expr)
     elif metric_obj.type == "cumulative":
-        if metric_obj.expr:
-            deps.add(metric_obj.expr)
+        if metric_obj.sql:
+            deps.add(metric_obj.sql)
         elif metric_obj.base_metric:
             deps.add(metric_obj.base_metric)
 

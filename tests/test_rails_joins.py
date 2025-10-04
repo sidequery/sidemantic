@@ -3,8 +3,7 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Measure, Model, SemanticLayer
-from sidemantic.core.join import Join
+from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 
 
 def test_belongs_to_join():
@@ -24,11 +23,11 @@ def test_belongs_to_join():
         name="orders",
         table="orders",
         primary_key="id",
-        joins=[
-            Join(name="customers", type="belongs_to", foreign_key="customer_id")
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
         ],
         dimensions=[],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
 
     customers = Model(
@@ -36,7 +35,7 @@ def test_belongs_to_join():
         table="customers",
         primary_key="id",
         dimensions=[Dimension(name="name", type="categorical")],
-        measures=[],
+        metrics=[],
     )
 
     sl.add_model(orders)
@@ -73,11 +72,11 @@ def test_has_many_join():
         name="customers",
         table="customers",
         primary_key="id",
-        joins=[
-            Join(name="orders", type="has_many", foreign_key="customer_id")
+        relationships=[
+            Relationship(name="orders", type="one_to_many", foreign_key="customer_id")
         ],
         dimensions=[Dimension(name="name", type="categorical")],
-        measures=[],
+        metrics=[],
     )
 
     orders = Model(
@@ -85,7 +84,7 @@ def test_has_many_join():
         table="orders",
         primary_key="id",
         dimensions=[],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
 
     sl.add_model(customers)
@@ -104,8 +103,8 @@ def test_has_many_join():
     assert len(df) == 2
 
 
-def test_mixed_join_styles():
-    """Test that old entity-based and new Rails-like joins work together."""
+def test_multi_relationship_join():
+    """Test model with multiple relationships."""
     conn = duckdb.connect(":memory:")
     conn.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER, amount DECIMAL(10, 2))")
     conn.execute("CREATE TABLE customers (id INTEGER, name VARCHAR)")
@@ -117,22 +116,17 @@ def test_mixed_join_styles():
     sl = SemanticLayer(connection="duckdb:///:memory:")
     sl.conn = conn
 
-    from sidemantic import Entity
-
-    # Orders uses Rails-like join for customers
+    # Orders has relationships to both customers and products
     orders = Model(
         name="orders",
         table="orders",
         primary_key="id",
-        joins=[
-            Join(name="customers", type="belongs_to", foreign_key="customer_id")
-        ],
-        # But entity-based join for products
-        entities=[
-            Entity(name="product", type="foreign", expr="product_id")
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
+            Relationship(name="products", type="many_to_one", foreign_key="product_id"),
         ],
         dimensions=[],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
 
     customers = Model(
@@ -140,31 +134,29 @@ def test_mixed_join_styles():
         table="customers",
         primary_key="id",
         dimensions=[Dimension(name="name", type="categorical")],
-        measures=[],
+        metrics=[],
     )
 
     products = Model(
         name="products",
         table="products",
-        entities=[
-            Entity(name="product", type="primary", expr="product_id")
-        ],
+        primary_key="product_id",
         dimensions=[Dimension(name="category", type="categorical")],
-        measures=[],
+        metrics=[],
     )
 
     sl.add_model(orders)
     sl.add_model(customers)
     sl.add_model(products)
 
-    # Query should work across both join styles
+    # Query should work across multiple relationships
     result = sl.query(
         metrics=["orders.revenue"],
         dimensions=["customers.name", "products.category"]
     )
 
     df = result.df()
-    print("\nMixed Join Styles Results:")
+    print("\nMulti-Relationship Results:")
     print(df)
 
     assert len(df) == 1

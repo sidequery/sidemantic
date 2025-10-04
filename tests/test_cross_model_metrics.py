@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 
 # Create test data
 conn = duckdb.connect(":memory:")
@@ -45,23 +45,23 @@ sl.conn = conn
 orders = Model(
     name="orders",
     table="orders",
-    entities=[
-        Entity(name="order", type="primary", expr="order_id"),
-        Entity(name="customer", type="foreign", expr="customer_id"),
+    primary_key="order_id",
+    relationships=[
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
     ],
-    measures=[
-        Measure(name="revenue", agg="sum", expr="order_amount"),
-        Measure(name="order_count", agg="count"),
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="order_amount"),
+        Metric(name="order_count", agg="count"),
     ],
 )
 
 customers = Model(
     name="customers",
     table="customers",
-    entities=[Entity(name="customer", type="primary", expr="customer_id")],
+    primary_key="customer_id",
     dimensions=[Dimension(name="region", type="categorical")],
-    measures=[
-        Measure(name="customer_count", agg="count_distinct", expr="customer_id"),
+    metrics=[
+        Metric(name="customer_count", agg="count_distinct", sql="customer_id"),
     ],
 )
 
@@ -74,7 +74,7 @@ print("Test 1: Cross-model ratio metric (revenue per customer)")
 print("=" * 80)
 
 sl.add_metric(
-    Measure(
+    Metric(
         name="revenue_per_customer",
         type="ratio",
         numerator="orders.revenue",
@@ -107,14 +107,14 @@ print("=" * 80)
 print("Test 2: Derived metric with cross-model references")
 print("=" * 80)
 
-sl.add_metric(Measure(name="total_revenue", type="simple", expr="orders.revenue"))
-sl.add_metric(Measure(name="total_customers", type="simple", expr="customers.customer_count"))
+sl.add_metric(Metric(name="total_revenue", sql="orders.revenue"))
+sl.add_metric(Metric(name="total_customers", sql="customers.customer_count"))
 
 sl.add_metric(
-    Measure(
+    Metric(
         name="revenue_per_customer_derived",
         type="derived",
-        expr="total_revenue / total_customers",
+        sql="total_revenue / total_customers",
         metrics=["total_revenue", "total_customers"],
     )
 )

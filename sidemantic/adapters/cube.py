@@ -6,9 +6,9 @@ import yaml
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.entity import Entity
-from sidemantic.core.measure import Measure
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
@@ -84,20 +84,18 @@ class CubeAdapter(BaseAdapter):
         table = cube_def.get("sql_table")
         sql = cube_def.get("sql")
 
-        # Parse dimensions
+        # Parse dimensions and find primary key
         dimensions = []
-        entities = []
+        primary_key = "id"  # default
 
         for dim_def in cube_def.get("dimensions", []):
             dim = self._parse_dimension(dim_def)
             if dim:
                 dimensions.append(dim)
 
-                # Check if this is a primary key (create entity)
+                # Check if this is a primary key
                 if dim_def.get("primary_key"):
-                    entities.append(
-                        Entity(name=dim.name, type="primary", expr=dim_def.get("sql", dim.name))
-                    )
+                    primary_key = dim.name
 
         # Parse measures
         measures = []
@@ -106,14 +104,18 @@ class CubeAdapter(BaseAdapter):
             if measure:
                 measures.append(measure)
 
-        # Parse joins to create foreign key entities
+        # Parse joins to create relationships
+        relationships = []
         for join_def in cube_def.get("joins", []):
             join_name = join_def.get("name")
             if join_name:
-                # Extract entity name from join SQL
-                # This is simplified - real implementation would parse SQL
-                entities.append(
-                    Entity(name=join_name, type="foreign", expr=f"{join_name}_id")
+                # Cube joins are typically many_to_one from the cube to the joined table
+                relationships.append(
+                    Relationship(
+                        name=join_name,
+                        type="many_to_one",
+                        foreign_key=f"{join_name}_id"
+                    )
                 )
 
         return Model(
@@ -121,9 +123,10 @@ class CubeAdapter(BaseAdapter):
             table=table,
             sql=sql,
             description=cube_def.get("description"),
-            entities=entities,
+            primary_key=primary_key,
+            relationships=relationships,
             dimensions=dimensions,
-            measures=measures,
+            metrics=measures,
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -159,16 +162,16 @@ class CubeAdapter(BaseAdapter):
         return Dimension(
             name=name,
             type=sidemantic_type,
-            expr=dim_def.get("sql"),
+            sql=dim_def.get("sql"),
             granularity=granularity,
             description=dim_def.get("description"),
         )
 
-    def _parse_measure(self, measure_def: dict) -> Measure | None:
+    def _parse_measure(self, measure_def: dict) -> Metric | None:
         """Parse Cube measure into Sidemantic measure.
 
         Args:
-            measure_def: Measure definition dictionary
+            measure_def: Metric definition dictionary
 
         Returns:
             Measure instance or None
@@ -201,10 +204,10 @@ class CubeAdapter(BaseAdapter):
                 if sql_filter:
                     filters.append(sql_filter)
 
-        return Measure(
+        return Metric(
             name=name,
             agg=agg_type,
-            expr=measure_def.get("sql"),
+            sql=measure_def.get("sql"),
             filters=filters if filters else None,
             description=measure_def.get("description"),
         )
@@ -265,8 +268,8 @@ class CubeAdapter(BaseAdapter):
             }
             dim_def["type"] = type_mapping.get(dim.type, "string")
 
-            if dim.expr:
-                dim_def["sql"] = dim.expr
+            if dim.sql:
+                dim_def["sql"] = dim.sql
 
             if dim.description:
                 dim_def["description"] = dim.description
@@ -274,12 +277,12 @@ class CubeAdapter(BaseAdapter):
             dimensions.append(dim_def)
 
         # Add primary key dimension
-        if model.primary_entity and model.primary_entity.expr:
+        if model.primary_key:
             dimensions.append(
                 {
-                    "name": model.primary_entity.name,
+                    "name": model.primary_key,
                     "type": "number",
-                    "sql": model.primary_entity.expr,
+                    "sql": model.primary_key,
                     "primary_key": True,
                 }
             )
@@ -289,7 +292,7 @@ class CubeAdapter(BaseAdapter):
 
         # Export measures
         measures = []
-        for measure in model.measures:
+        for measure in model.metrics:
             measure_def = {"name": measure.name}
 
             # Map Sidemantic agg to Cube types
@@ -303,8 +306,8 @@ class CubeAdapter(BaseAdapter):
             }
             measure_def["type"] = type_mapping.get(measure.agg, "count")
 
-            if measure.expr:
-                measure_def["sql"] = measure.expr
+            if measure.sql:
+                measure_def["sql"] = measure.sql
 
             if measure.filters:
                 measure_def["filters"] = [{"sql": f} for f in measure.filters]
@@ -317,16 +320,18 @@ class CubeAdapter(BaseAdapter):
         if measures:
             cube["measures"] = measures
 
-        # Export joins (for foreign key entities)
+        # Export joins (from many_to_one relationships)
         joins = []
-        for entity in model.entities:
-            if entity.type == "foreign":
+        for relationship in model.relationships:
+            if relationship.type == "many_to_one":
                 # Find target model
-                target_model = graph.models.get(entity.name)
+                target_model = graph.models.get(relationship.name)
                 if target_model:
+                    local_key = relationship.sql_expr or relationship.foreign_key
+                    remote_key = relationship.primary_key or target_model.primary_key
                     join_def = {
-                        "name": entity.name,
-                        "sql": f"{model.name}.{entity.expr} = {entity.name}.{target_model.primary_entity.expr if target_model.primary_entity else entity.name + '_id'}",
+                        "name": relationship.name,
+                        "sql": f"{model.name}.{local_key} = {relationship.name}.{remote_key}",
                         "relationship": "many_to_one",
                     }
                     joins.append(join_def)

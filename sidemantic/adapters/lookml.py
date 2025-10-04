@@ -8,9 +8,9 @@ from pathlib import Path
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.entity import Entity
-from sidemantic.core.measure import Measure
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
@@ -75,9 +75,9 @@ class LookMLAdapter(BaseAdapter):
         if derived_table:
             sql = derived_table.get("sql")
 
-        # Parse dimensions
+        # Parse dimensions and find primary key
         dimensions = []
-        entities = []
+        primary_key = "id"  # default
 
         for dim_def in view_def.get("dimensions", []):
             dim = self._parse_dimension(dim_def)
@@ -86,9 +86,7 @@ class LookMLAdapter(BaseAdapter):
 
                 # Check for primary key
                 if dim_def.get("primary_key"):
-                    entities.append(
-                        Entity(name=dim.name, type="primary", expr=dim_def.get("sql", dim.name))
-                    )
+                    primary_key = dim.name
 
         # Parse dimension_group (time dimensions)
         for dim_group_def in view_def.get("dimension_groups", []):
@@ -106,9 +104,9 @@ class LookMLAdapter(BaseAdapter):
             name=name,
             table=table,
             sql=sql,
-            entities=entities,
+            primary_key=primary_key,
             dimensions=dimensions,
-            measures=measures,
+            metrics=measures,
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -139,7 +137,7 @@ class LookMLAdapter(BaseAdapter):
         return Dimension(
             name=name,
             type=sidemantic_type,
-            expr=dim_def.get("sql"),
+            sql=dim_def.get("sql"),
             description=dim_def.get("description"),
         )
 
@@ -184,18 +182,18 @@ class LookMLAdapter(BaseAdapter):
                 Dimension(
                     name=f"{name}_{timeframe}",
                     type="time",
-                    expr=dim_group_def.get("sql"),
+                    sql=dim_group_def.get("sql"),
                     granularity=granularity,
                 )
             )
 
         return dimensions
 
-    def _parse_measure(self, measure_def: dict) -> Measure | None:
+    def _parse_measure(self, measure_def: dict) -> Metric | None:
         """Parse LookML measure.
 
         Args:
-            measure_def: Measure definition
+            measure_def: Metric definition
 
         Returns:
             Measure instance or None
@@ -226,10 +224,10 @@ class LookMLAdapter(BaseAdapter):
                 for field, value in filter_def.items():
                     filters.append(f"{field} = '{value}'")
 
-        return Measure(
+        return Metric(
             name=name,
             agg=agg_type,
-            expr=measure_def.get("sql"),
+            sql=measure_def.get("sql"),
             filters=filters if filters else None,
             description=measure_def.get("description"),
         )

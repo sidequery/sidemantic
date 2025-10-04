@@ -425,6 +425,69 @@ mo.vstack([
 ```
 
 ```python {.marimo}
+# Interactive Query (SQL)
+# Build query from semantic selections, edit SQL, and run
+
+mo.md("### Interactive Query")
+
+# Build metric and dimension options from the semantic graph
+_metric_opts = []
+for _mname, _model in graph.models.items():
+    for _me in _model.measures:
+        _metric_opts.append(f"{_mname}.{_me.name}")
+_metric_opts = sorted(set(_metric_opts))
+
+_dim_opts = []
+for _mname, _model in graph.models.items():
+    for _d in _model.dimensions:
+        if getattr(_d, "type", "") == "time":
+            for _g in ("day", "month", "quarter", "year"):
+                _dim_opts.append(f"{_mname}.{_d.name}__{_g}")
+        _dim_opts.append(f"{_mname}.{_d.name}")
+_dim_opts = sorted(set(_dim_opts))
+
+iq_metrics = mo.ui.multiselect(options=_metric_opts, value=["orders.revenue"], label="Metrics")
+iq_dims = mo.ui.multiselect(options=_dim_opts, value=["orders.order_date__month"], label="Dimensions")
+iq_limit = mo.ui.number(value=50, label="Limit")
+iq_compile = mo.ui.button(label="Compile SQL")
+iq_run = mo.ui.button(label="Run SQL")
+iq_sql = mo.ui.code_editor(value="-- Click Compile SQL to generate from selections", language="sql", min_height=180)
+iq_results = mo.ui.table([])
+
+mo.vstack([
+    mo.hstack([iq_metrics, iq_dims, iq_limit]),
+    mo.hstack([iq_compile, iq_run]),
+    iq_sql,
+    iq_results,
+])
+```
+
+```python {.marimo}
+# Interactive Query actions (separate from UI creation)
+if iq_compile.value:
+    try:
+        sel_metrics = list(iq_metrics.value) or ["orders.revenue"]
+        sel_dims = list(iq_dims.value) or []
+        row_limit = int(iq_limit.value or 50)
+        sql_text = generator.generate(metrics=sel_metrics, dimensions=sel_dims, filters=build_filters(), order_by=sel_dims or None, limit=row_limit)
+        iq_sql.value = sql_text
+    except Exception as e:
+        iq_sql.value = f"-- Error compiling SQL: {e}"
+
+if iq_run.value:
+    try:
+        to_run = (iq_sql.value or "").strip()
+        if to_run:
+            cur = conn.execute(to_run)
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            iq_results.value = rows
+    except Exception as e:
+        iq_results.value = [{"error": str(e)}]
+
+mo.md("")
+
+```python {.marimo}
 # Data Model
 python_src = """
 from sidemantic.core.model import Model
@@ -483,11 +546,7 @@ graph.add_model(region_map_model)
 generator = SQLGenerator(graph, dialect="duckdb")
 """
 
-mo.vstack([
-    mo.md('## Data Model'),
-    mo.md('### Python Definition'),
-    mo.ui.code_editor(value=python_src, language='python', disabled=True, min_height=360),
-])
+mo.md("")
 ```
 
 ```python {.marimo}
@@ -560,7 +619,15 @@ models:
         type: categorical
         expr: region_group
 """
+mo.md("")
+```
+
+```python {.marimo}
+# Data Model (code + ER diagram)
 mo.vstack([
+    mo.md('## Data Model'),
+    mo.md('### Python Definition'),
+    mo.ui.code_editor(value=python_src, language='python', disabled=True, min_height=360),
     mo.md('### YAML Definition'),
     mo.ui.code_editor(value=yaml_src, language='yaml', disabled=True, min_height=420),
 ])

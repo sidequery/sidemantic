@@ -3,7 +3,7 @@
 import pytest
 import duckdb
 
-from sidemantic.core.model import Model, Entity, Dimension, Measure, Join
+from sidemantic.core.model import Model, Dimension, Metric, Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -85,10 +85,9 @@ def test_fanout_join_detection_single_join():
         name="orders",
         table="raw_orders",
         primary_key="id",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
-        dimensions=[Dimension(name="order_date", type="time", sql_expr="order_date")],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
-        joins=[Join(name="order_items", type="has_many", sql_expr="id", foreign_key="order_id")],
+        dimensions=[Dimension(name="order_date", type="time", sql="order_date")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        relationships=[Relationship(name="order_items", type="one_to_many", sql="id", foreign_key="order_id")],
     )
 
     # Order items (many)
@@ -96,10 +95,9 @@ def test_fanout_join_detection_single_join():
         name="order_items",
         table="raw_order_items",
         primary_key="id",
-        entities=[Entity(name="item_id", type="primary", expr="id")],
         dimensions=[],
-        measures=[Measure(name="quantity", agg="sum", expr="quantity")],
-        joins=[Join(name="orders", type="belongs_to", foreign_key="order_id", primary_key="id")],
+        metrics=[Metric(name="quantity", agg="sum", sql="quantity")],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     graph.add_model(orders)
@@ -122,12 +120,11 @@ def test_fanout_join_detection_multiple_joins():
         name="orders",
         table="raw_orders",
         primary_key="id",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
-        dimensions=[Dimension(name="order_date", type="time", sql_expr="order_date")],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
-        joins=[
-            Join(name="order_items", type="has_many", sql_expr="id", foreign_key="order_id"),
-            Join(name="shipments", type="has_many", sql_expr="id", foreign_key="order_id"),
+        dimensions=[Dimension(name="order_date", type="time", sql="order_date")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        relationships=[
+            Relationship(name="order_items", type="one_to_many", sql="id", foreign_key="order_id"),
+            Relationship(name="shipments", type="one_to_many", sql="id", foreign_key="order_id"),
         ],
     )
 
@@ -136,10 +133,9 @@ def test_fanout_join_detection_multiple_joins():
         name="order_items",
         table="raw_order_items",
         primary_key="id",
-        entities=[Entity(name="item_id", type="primary", expr="id")],
         dimensions=[],
-        measures=[Measure(name="quantity", agg="sum", expr="quantity")],
-        joins=[Join(name="orders", type="belongs_to", foreign_key="order_id", primary_key="id")],
+        metrics=[Metric(name="quantity", agg="sum", sql="quantity")],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     # Shipments (many)
@@ -147,10 +143,9 @@ def test_fanout_join_detection_multiple_joins():
         name="shipments",
         table="raw_shipments",
         primary_key="id",
-        entities=[Entity(name="shipment_id", type="primary", expr="id")],
         dimensions=[],
-        measures=[Measure(name="shipment_count", agg="count", expr="*")],
-        joins=[Join(name="orders", type="belongs_to", foreign_key="order_id", primary_key="id")],
+        metrics=[Metric(name="shipment_count", agg="count", sql="*")],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     graph.add_model(orders)
@@ -176,12 +171,11 @@ def test_symmetric_aggregates_in_sql_generation():
         name="orders",
         table="raw_orders",
         primary_key="id",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
-        dimensions=[Dimension(name="order_date", type="time", sql_expr="order_date")],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
-        joins=[
-            Join(name="order_items", type="has_many", sql_expr="id", foreign_key="order_id"),
-            Join(name="shipments", type="has_many", sql_expr="id", foreign_key="order_id"),
+        dimensions=[Dimension(name="order_date", type="time", sql="order_date")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        relationships=[
+            Relationship(name="order_items", type="one_to_many", sql="id", foreign_key="order_id"),
+            Relationship(name="shipments", type="one_to_many", sql="id", foreign_key="order_id"),
         ],
     )
 
@@ -190,10 +184,9 @@ def test_symmetric_aggregates_in_sql_generation():
         name="order_items",
         table="raw_order_items",
         primary_key="id",
-        entities=[Entity(name="item_id", type="primary", expr="id")],
         dimensions=[],
-        measures=[Measure(name="quantity", agg="sum", expr="quantity")],
-        joins=[Join(name="orders", type="belongs_to", foreign_key="order_id", primary_key="id")],
+        metrics=[Metric(name="quantity", agg="sum", sql="quantity")],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     # Shipments
@@ -201,10 +194,9 @@ def test_symmetric_aggregates_in_sql_generation():
         name="shipments",
         table="raw_shipments",
         primary_key="id",
-        entities=[Entity(name="shipment_id", type="primary", expr="id")],
         dimensions=[],
-        measures=[Measure(name="shipment_count", agg="count", expr="*")],
-        joins=[Join(name="orders", type="belongs_to", foreign_key="order_id", primary_key="id")],
+        metrics=[Metric(name="shipment_count", agg="count", sql="*")],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     graph.add_model(orders)
@@ -265,12 +257,11 @@ def test_symmetric_aggregates_with_data():
         name="orders",
         table="raw_orders",
         primary_key="id",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
-        dimensions=[Dimension(name="order_date", type="time", sql_expr="order_date")],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
-        joins=[
-            Join(name="order_items", type="has_many", sql_expr="id", foreign_key="order_id"),
-            Join(name="shipments", type="has_many", sql_expr="id", foreign_key="order_id"),
+        dimensions=[Dimension(name="order_date", type="time", sql="order_date")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        relationships=[
+            Relationship(name="order_items", type="one_to_many", sql="id", foreign_key="order_id"),
+            Relationship(name="shipments", type="one_to_many", sql="id", foreign_key="order_id"),
         ],
     )
 
@@ -278,20 +269,18 @@ def test_symmetric_aggregates_with_data():
         name="order_items",
         table="raw_order_items",
         primary_key="id",
-        entities=[Entity(name="item_id", type="primary", expr="id")],
         dimensions=[],
-        measures=[Measure(name="quantity", agg="sum", expr="quantity")],
-        joins=[Join(name="orders", type="belongs_to", foreign_key="order_id", primary_key="id")],
+        metrics=[Metric(name="quantity", agg="sum", sql="quantity")],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     shipments = Model(
         name="shipments",
         table="raw_shipments",
         primary_key="id",
-        entities=[Entity(name="shipment_id", type="primary", expr="id")],
         dimensions=[],
-        measures=[Measure(name="shipment_count", agg="count", expr="*")],
-        joins=[Join(name="orders", type="belongs_to", foreign_key="order_id", primary_key="id")],
+        metrics=[Metric(name="shipment_count", agg="count", sql="*")],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     graph.add_model(orders)

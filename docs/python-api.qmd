@@ -83,14 +83,14 @@ print(sql)
 Add a model:
 
 ```python
-from sidemantic import Model, Dimension, Measure
+from sidemantic import Model, Dimension, Metric
 
 orders = Model(
     name="orders",
     table="orders",
     primary_key="id",
     dimensions=[...],
-    measures=[...]
+    metrics=[...]
 )
 
 layer.add_model(orders)
@@ -98,15 +98,14 @@ layer.add_model(orders)
 
 #### add_metric()
 
-Add a top-level measure:
+Add a top-level metric:
 
 ```python
-from sidemantic import Measure
+from sidemantic import Metric
 
-total_revenue = Measure(
+total_revenue = Metric(
     name="total_revenue",
-    type="simple",
-    expr="orders.revenue"
+    sql="orders.revenue"
 )
 
 layer.add_metric(total_revenue)
@@ -129,7 +128,7 @@ layer.to_yaml("output.yml")
 Define a data model:
 
 ```python
-from sidemantic import Model, Dimension, Measure, Join
+from sidemantic import Model, Dimension, Metric, Relationship
 
 model = Model(
     name="orders",
@@ -142,13 +141,13 @@ model = Model(
         Dimension(name="order_date", type="time", sql="created_at", granularity="day")
     ],
 
-    measures=[
-        Measure(name="revenue", agg="sum", expr="amount"),
-        Measure(name="order_count", agg="count")
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count")
     ],
 
-    joins=[
-        Join(name="customers", type="belongs_to", foreign_key="customer_id")
+    relationships=[
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
     ]
 )
 ```
@@ -209,30 +208,30 @@ tier = Dimension(
 - **granularity**: For time dimensions: `hour`, `day`, `week`, `month`, `quarter`, `year`
 - **description**: Human-readable description
 
-## Measure
+## Metric
 
-Define a measure:
+Define a metric:
 
 ```python
-from sidemantic import Measure
+from sidemantic import Metric
 
 # Simple aggregation
-revenue = Measure(
+revenue = Metric(
     name="revenue",
     agg="sum",
-    expr="amount"
+    sql="amount"
 )
 
 # With filter
-completed_revenue = Measure(
+completed_revenue = Metric(
     name="completed_revenue",
     agg="sum",
-    expr="amount",
+    sql="amount",
     filters=["status = 'completed'"]
 )
 
 # Ratio
-conversion_rate = Measure(
+conversion_rate = Metric(
     name="conversion_rate",
     type="ratio",
     numerator="completed_orders",
@@ -240,22 +239,22 @@ conversion_rate = Measure(
 )
 
 # Derived
-profit = Measure(
+profit = Metric(
     name="profit",
     type="derived",
-    expr="revenue - cost"
+    sql="revenue - cost"
 )
 
 # Cumulative
-running_total = Measure(
+running_total = Metric(
     name="running_total",
     type="cumulative",
-    expr="revenue",
+    sql="revenue",
     window="7 days"
 )
 
 # Time comparison
-yoy_growth = Measure(
+yoy_growth = Metric(
     name="yoy_growth",
     type="time_comparison",
     base_metric="revenue",
@@ -270,26 +269,26 @@ yoy_growth = Measure(
 
 - **name**: Unique identifier
 - **agg**: `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`
-- **expr**: SQL expression (defaults to `*` for count)
+- **sql**: SQL expression (defaults to `*` for count)
 - **filters**: List of WHERE conditions
 - **description**: Human-readable description
 
-#### Ratio Measures
+#### Ratio Metrics
 
 - **type**: `"ratio"`
 - **numerator**: Numerator measure name
 - **denominator**: Denominator measure name
 - **offset_window**: Time offset for denominator (e.g., `"1 month"`)
 
-#### Derived Measures
+#### Derived Metrics
 
 - **type**: `"derived"`
-- **expr**: Formula expression
+- **sql**: Formula expression
 
 #### Cumulative Measures
 
 - **type**: `"cumulative"`
-- **expr**: Base measure name
+- **sql**: Base measure name
 - **window**: Rolling window (e.g., `"7 days"`)
 - **grain_to_date**: Period-to-date (`day`, `week`, `month`, `quarter`, `year`)
 
@@ -301,31 +300,31 @@ yoy_growth = Measure(
 - **time_offset**: Custom offset (e.g., `"3 months"`)
 - **calculation**: `percent_change`, `difference`, or `ratio`
 
-## Join
+## Relationship
 
 Define a join relationship:
 
 ```python
-from sidemantic import Join
+from sidemantic import Relationship
 
-# belongs_to (foreign key in THIS table)
-customers_join = Join(
+# many_to_one (foreign key in THIS table)
+customers_join = Relationship(
     name="customers",
-    type="belongs_to",
+    type="many_to_one",
     foreign_key="customer_id"
 )
 
-# has_many (foreign key in OTHER table)
-orders_join = Join(
+# one_to_many (foreign key in OTHER table)
+orders_join = Relationship(
     name="orders",
-    type="has_many",
+    type="one_to_many",
     foreign_key="customer_id"
 )
 
-# has_one (foreign key in OTHER table, unique)
-invoice_join = Join(
+# one_to_one (foreign key in OTHER table, unique)
+invoice_join = Relationship(
     name="invoice",
-    type="has_one",
+    type="one_to_one",
     foreign_key="order_id"
 )
 ```
@@ -333,7 +332,7 @@ invoice_join = Join(
 ### Properties
 
 - **name**: Name of related model
-- **type**: `belongs_to`, `has_many`, or `has_one`
+- **type**: `many_to_one`, `one_to_many`, or `one_to_one`
 - **foreign_key**: Foreign key column name
 
 ## Parameter
@@ -375,7 +374,7 @@ region = Parameter(
 
 ```python
 from sidemantic import (
-    SemanticLayer, Model, Dimension, Measure, Join, Parameter
+    SemanticLayer, Model, Dimension, Metric, Relationship, Parameter
 )
 
 # Create semantic layer
@@ -392,10 +391,10 @@ orders = Model(
         Dimension(name="order_date", type="time", sql="created_at", granularity="day")
     ],
 
-    measures=[
-        Measure(name="revenue", agg="sum", expr="amount"),
-        Measure(name="order_count", agg="count"),
-        Measure(
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
+        Metric(
             name="conversion_rate",
             type="ratio",
             numerator="completed_orders",
@@ -403,8 +402,8 @@ orders = Model(
         )
     ],
 
-    joins=[
-        Join(name="customers", type="belongs_to", foreign_key="customer_id")
+    relationships=[
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
     ]
 )
 
@@ -418,12 +417,12 @@ customers = Model(
         Dimension(name="region", type="categorical", sql="region")
     ],
 
-    measures=[
-        Measure(name="customer_count", agg="count")
+    metrics=[
+        Metric(name="customer_count", agg="count")
     ],
 
-    joins=[
-        Join(name="orders", type="has_many", foreign_key="customer_id")
+    relationships=[
+        Relationship(name="orders", type="one_to_many", foreign_key="customer_id")
     ]
 )
 

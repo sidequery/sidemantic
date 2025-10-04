@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sidemantic.core.measure import Measure
+    from sidemantic.core.metric import Metric
     from sidemantic.core.model import Model
     from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -43,23 +43,15 @@ def validate_model(model: "Model") -> list[str]:
     """
     errors = []
 
-    # Check for primary entity or primary_key (Rails-like)
-    if not model.primary_entity and not model.primary_key:
+    # Check for primary_key
+    if not model.primary_key:
         errors.append(
-            f"Model '{model.name}' must have either a primary entity or primary_key defined"
+            f"Model '{model.name}' must have a primary_key defined"
         )
 
     # Check for table or SQL
     if not model.table and not model.sql:
         errors.append(f"Model '{model.name}' must have either 'table' or 'sql' defined")
-
-    # Check that entities have valid types
-    for entity in model.entities:
-        if entity.type not in ["primary", "foreign", "unique"]:
-            errors.append(
-                f"Model '{model.name}': entity '{entity.name}' has invalid type '{entity.type}'. "
-                f"Must be one of: primary, foreign, unique"
-            )
 
     # Check that dimensions have valid types
     for dim in model.dimensions:
@@ -76,7 +68,7 @@ def validate_model(model: "Model") -> list[str]:
             )
 
     # Check that measures have valid aggregation types
-    for measure in model.measures:
+    for measure in model.metrics:
         if measure.agg not in ["sum", "count", "count_distinct", "avg", "min", "max", "median"]:
             errors.append(
                 f"Model '{model.name}': measure '{measure.name}' has invalid aggregation '{measure.agg}'. "
@@ -90,7 +82,7 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
     """Validate a measure definition.
 
     Args:
-        measure: Measure to validate
+        measure: Metric to validate
         graph: Semantic graph containing models
 
     Returns:
@@ -99,36 +91,30 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
     errors = []
 
     # Check measure type
-    if measure.type and measure.type not in ["simple", "ratio", "derived", "cumulative", "time_comparison", "conversion"]:
+    if measure.type and measure.type not in ["ratio", "derived", "cumulative", "time_comparison", "conversion"]:
         errors.append(
-            f"Measure '{measure.name}' has invalid type '{measure.type}'. "
-            f"Must be one of: simple, ratio, derived, cumulative, time_comparison, conversion"
+            f"Metric '{measure.name}' has invalid type '{measure.type}'. "
+            f"Must be one of: ratio, derived, cumulative, time_comparison, conversion"
         )
         return errors  # Can't continue validation with invalid type
 
-    # Validate based on type
-    if measure.type == "simple":
-        if not measure.expr:
-            errors.append(f"Simple measure '{measure.name}' must have 'expr' defined")
-        else:
-            # Validate measure reference
-            if "." in measure.expr:
-                model_name, measure_name = measure.expr.split(".")
-                model = graph.models.get(model_name)
-                if not model:
-                    errors.append(
-                        f"Simple measure '{measure.name}': model '{model_name}' not found"
-                    )
-                elif not model.get_measure(measure_name):
-                    errors.append(
-                        f"Simple measure '{measure.name}': measure '{measure_name}' not found in model '{model_name}'"
-                    )
-            else:
+    # Validate untyped metrics with sql (measure references)
+    if not measure.type and not measure.agg and measure.sql:
+        # This is an untyped metric referencing a measure
+        if "." in measure.sql:
+            model_name, measure_name = measure.sql.split(".")
+            model = graph.models.get(model_name)
+            if not model:
                 errors.append(
-                    f"Simple measure '{measure.name}': expr must be in 'model.measure' format"
+                    f"Metric '{measure.name}': model '{model_name}' not found"
+                )
+            elif not model.get_metric(measure_name):
+                errors.append(
+                    f"Metric '{measure.name}': measure '{measure_name}' not found in model '{model_name}'"
                 )
 
-    elif measure.type == "ratio":
+    # Validate based on type
+    if measure.type == "ratio":
         if not measure.numerator:
             errors.append(f"Ratio measure '{measure.name}' must have 'numerator' defined")
         if not measure.denominator:
@@ -143,13 +129,13 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
                     errors.append(
                         f"Ratio measure '{measure.name}': {ref_type} model '{model_name}' not found"
                     )
-                elif not model.get_measure(measure_name):
+                elif not model.get_metric(measure_name):
                     errors.append(
                         f"Ratio measure '{measure.name}': {ref_type} measure '{measure_name}' not found in model '{model_name}'"
                     )
 
     elif measure.type == "derived":
-        if not measure.expr:
+        if not measure.sql:
             errors.append(f"Derived measure '{measure.name}' must have 'expr' defined")
 
         # Auto-detect dependencies and check for circular references
@@ -166,7 +152,7 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
                 )
 
     elif measure.type == "cumulative":
-        if not measure.expr:
+        if not measure.sql:
             errors.append(f"Cumulative measure '{measure.name}' must have 'expr' defined")
 
     return errors
@@ -178,7 +164,7 @@ def _check_circular_dependencies(
     """Check for circular dependencies in derived measures.
 
     Args:
-        measure: Measure to check
+        measure: Metric to check
         graph: Semantic graph
         visited: Set of visited measure names
         path: Current dependency path
@@ -238,9 +224,9 @@ def validate_query(
             model = graph.models.get(model_name)
             if not model:
                 errors.append(f"Model '{model_name}' not found (referenced in '{metric_ref}')")
-            elif not model.get_measure(measure_name):
+            elif not model.get_metric(measure_name):
                 errors.append(
-                    f"Measure '{measure_name}' not found in model '{model_name}' (referenced in '{metric_ref}')"
+                    f"Metric '{measure_name}' not found in model '{model_name}' (referenced in '{metric_ref}')"
                 )
         else:
             # Metric reference
@@ -282,8 +268,8 @@ def validate_query(
         else:
             try:
                 measure = graph.get_metric(metric_ref)
-                if measure and measure.expr and "." in measure.expr:
-                    model_names.add(measure.expr.split(".")[0])
+                if measure and measure.sql and "." in measure.sql:
+                    model_names.add(measure.sql.split(".")[0])
             except KeyError:
                 pass  # Already reported as error above
 
@@ -298,11 +284,11 @@ def validate_query(
     for i, model_a in enumerate(model_list):
         for model_b in model_list[i + 1 :]:
             try:
-                graph.find_join_path(model_a, model_b)
+                graph.find_relationship_path(model_a, model_b)
             except ValueError:
                 errors.append(
                     f"No join path found between models '{model_a}' and '{model_b}'. "
-                    f"Add entities to enable joining these models."
+                    f"Add relationships to enable joining these models."
                 )
 
     return errors

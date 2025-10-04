@@ -2,14 +2,12 @@ models:
   - name: orders
     table: public.orders
     description: "Order transactions"
+    primary_key: order_id
 
-    entities:
-      - name: order
-        type: primary
-        expr: order_id
+    relationships:
       - name: customer
-        type: foreign
-        expr: customer_id
+        type: many_to_one
+        foreign_key: customer_id
 
     dimensions:
       - name: status
@@ -19,26 +17,26 @@ models:
       - name: order_date
         type: time
         granularity: day
-        expr: created_at
+        sql: created_at
         description: "Order creation date"
 
       - name: is_high_value
         type: boolean
-        expr: "order_amount > 100"
+        sql: "order_amount > 100"
 
-    measures:
+    metrics:
       - name: order_count
         agg: count
         description: "Total number of orders"
 
       - name: revenue
         agg: sum
-        expr: order_amount
+        sql: order_amount
         description: "Total revenue"
 
       - name: completed_revenue
         agg: sum
-        expr: order_amount
+        sql: order_amount
         filters:
           - "status = 'completed'"
         description: "Revenue from completed orders"
@@ -46,11 +44,7 @@ models:
   - name: customers
     table: public.customers
     description: "Customer dimension"
-
-    entities:
-      - name: customer
-        type: primary
-        expr: customer_id
+    primary_key: customer_id
 
     dimensions:
       - name: region
@@ -60,8 +54,7 @@ models:
 
 metrics:
   - name: total_revenue
-    type: simple
-    measure: orders.revenue
+    sql: orders.revenue
     description: "Total revenue from all orders"
 
   - name: conversion_rate
@@ -72,8 +65,5 @@ metrics:
 
   - name: revenue_per_order
     type: derived
-    expr: "total_revenue / order_count"
-    metrics:
-      - total_revenue
-      - order_count
-    description: "Average revenue per order"
+    sql: "total_revenue / order_count"
+    description: "Average revenue per order (auto-detects dependencies)"

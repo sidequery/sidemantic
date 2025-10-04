@@ -1,0 +1,47 @@
+"""Relationship definitions for semantic layer models."""
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class Relationship(BaseModel):
+    """Represents a relationship between models.
+
+    Relationship types:
+    - many_to_one: This model has a foreign key to another
+    - one_to_one: This model is referenced by another with unique constraint
+    - one_to_many: This model is referenced by another
+    """
+
+    name: str = Field(description="Name of the related model")
+    type: Literal["many_to_one", "one_to_one", "one_to_many"] = Field(
+        description="Type of relationship"
+    )
+    foreign_key: str | None = Field(
+        default=None,
+        description="Foreign key column (defaults to {name}_id for many_to_one)"
+    )
+    primary_key: str | None = Field(
+        default=None,
+        description="Primary key column in related model (defaults to id)"
+    )
+
+    @property
+    def sql_expr(self) -> str:
+        """Get SQL expression for the foreign key."""
+        if self.foreign_key:
+            return self.foreign_key
+
+        # Default: {name}_id for many_to_one
+        if self.type == "many_to_one":
+            return f"{self.name}_id"
+        else:
+            return "id"
+
+    @property
+    def related_key(self) -> str:
+        """Get the key in the related model."""
+        if self.primary_key:
+            return self.primary_key
+        return "id"

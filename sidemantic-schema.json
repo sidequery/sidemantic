@@ -28,7 +28,7 @@
                 "title": "Type",
                 "type": "string"
               },
-              "expr": {
+              "sql": {
                 "anyOf": [
                   {
                     "type": "string"
@@ -39,7 +39,7 @@
                 ],
                 "default": null,
                 "description": "SQL expression (defaults to name)",
-                "title": "Expr"
+                "title": "Sql"
               },
               "granularity": {
                 "anyOf": [
@@ -112,91 +112,7 @@
             "title": "Dimension",
             "type": "object"
           },
-          "Entity": {
-            "description": "Entity (join key) definition.\n\nEntities enable automatic join discovery between models.",
-            "properties": {
-              "name": {
-                "description": "Unique entity name",
-                "title": "Name",
-                "type": "string"
-              },
-              "type": {
-                "description": "Entity type (primary, foreign, or unique)",
-                "enum": [
-                  "primary",
-                  "foreign",
-                  "unique"
-                ],
-                "title": "Type",
-                "type": "string"
-              },
-              "expr": {
-                "description": "SQL expression or column name",
-                "title": "Expr",
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
-              "type",
-              "expr"
-            ],
-            "title": "Entity",
-            "type": "object"
-          },
-          "Join": {
-            "description": "Represents a join relationship between models.\n\nRails-like syntax:\n- belongs_to: This model has a foreign key to another (many-to-one)\n- has_one: This model is referenced by another with unique constraint (one-to-one)\n- has_many: This model is referenced by another (one-to-many)",
-            "properties": {
-              "name": {
-                "description": "Name of the related model",
-                "title": "Name",
-                "type": "string"
-              },
-              "type": {
-                "description": "Type of relationship",
-                "enum": [
-                  "belongs_to",
-                  "has_one",
-                  "has_many"
-                ],
-                "title": "Type",
-                "type": "string"
-              },
-              "foreign_key": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Foreign key column (defaults to {name}_id for belongs_to, id for has_*)",
-                "title": "Foreign Key"
-              },
-              "primary_key": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Primary key column in related model (defaults to id)",
-                "title": "Primary Key"
-              }
-            },
-            "required": [
-              "name",
-              "type"
-            ],
-            "title": "Join",
-            "type": "object"
-          },
-          "Measure": {
+          "Metric": {
             "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate",
             "properties": {
               "name": {
@@ -226,7 +142,7 @@
                 "description": "Aggregation function (for simple measures)",
                 "title": "Agg"
               },
-              "expr": {
+              "sql": {
                 "anyOf": [
                   {
                     "type": "string"
@@ -237,13 +153,12 @@
                 ],
                 "default": null,
                 "description": "SQL expression or formula",
-                "title": "Expr"
+                "title": "Sql"
               },
               "type": {
                 "anyOf": [
                   {
                     "enum": [
-                      "simple",
                       "ratio",
                       "derived",
                       "cumulative",
@@ -514,7 +429,59 @@
             "required": [
               "name"
             ],
-            "title": "Measure",
+            "title": "Metric",
+            "type": "object"
+          },
+          "Relationship": {
+            "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another",
+            "properties": {
+              "name": {
+                "description": "Name of the related model",
+                "title": "Name",
+                "type": "string"
+              },
+              "type": {
+                "description": "Type of relationship",
+                "enum": [
+                  "many_to_one",
+                  "one_to_one",
+                  "one_to_many"
+                ],
+                "title": "Type",
+                "type": "string"
+              },
+              "foreign_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key column (defaults to {name}_id for many_to_one)",
+                "title": "Foreign Key"
+              },
+              "primary_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Primary key column in related model (defaults to id)",
+                "title": "Primary Key"
+              }
+            },
+            "required": [
+              "name",
+              "type"
+            ],
+            "title": "Relationship",
             "type": "object"
           }
         },
@@ -564,34 +531,19 @@
             "description": "Human-readable description",
             "title": "Description"
           },
-          "entities": {
-            "description": "Entity (join key) definitions",
+          "relationships": {
+            "description": "Relationships to other models",
             "items": {
-              "$ref": "#/$defs/Entity"
+              "$ref": "#/$defs/Relationship"
             },
-            "title": "Entities",
-            "type": "array"
-          },
-          "joins": {
-            "description": "Join relationships (belongs_to, has_one, has_many)",
-            "items": {
-              "$ref": "#/$defs/Join"
-            },
-            "title": "Joins",
+            "title": "Relationships",
             "type": "array"
           },
           "primary_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Primary key column (defaults to 'id')",
-            "title": "Primary Key"
+            "default": "id",
+            "description": "Primary key column",
+            "title": "Primary Key",
+            "type": "string"
           },
           "dimensions": {
             "description": "Dimension definitions",
@@ -601,12 +553,12 @@
             "title": "Dimensions",
             "type": "array"
           },
-          "measures": {
+          "metrics": {
             "description": "Measure definitions",
             "items": {
-              "$ref": "#/$defs/Measure"
+              "$ref": "#/$defs/Metric"
             },
-            "title": "Measures",
+            "title": "Metrics",
             "type": "array"
           }
         },
@@ -619,7 +571,7 @@
     },
     "metrics": {
       "type": "array",
-      "description": "Top-level measure definitions (optional - can also define in models)",
+      "description": "Top-level metric definitions (optional - can also define in models)",
       "items": {
         "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate",
         "properties": {
@@ -650,7 +602,7 @@
             "description": "Aggregation function (for simple measures)",
             "title": "Agg"
           },
-          "expr": {
+          "sql": {
             "anyOf": [
               {
                 "type": "string"
@@ -661,13 +613,12 @@
             ],
             "default": null,
             "description": "SQL expression or formula",
-            "title": "Expr"
+            "title": "Sql"
           },
           "type": {
             "anyOf": [
               {
                 "enum": [
-                  "simple",
                   "ratio",
                   "derived",
                   "cumulative",
@@ -938,7 +889,7 @@
         "required": [
           "name"
         ],
-        "title": "Measure",
+        "title": "Metric",
         "type": "object"
       }
     },
@@ -1049,7 +1000,7 @@
           "title": "Type",
           "type": "string"
         },
-        "expr": {
+        "sql": {
           "anyOf": [
             {
               "type": "string"
@@ -1060,7 +1011,7 @@
           ],
           "default": null,
           "description": "SQL expression (defaults to name)",
-          "title": "Expr"
+          "title": "Sql"
         },
         "granularity": {
           "anyOf": [
@@ -1133,7 +1084,7 @@
       "title": "Dimension",
       "type": "object"
     },
-    "Measure": {
+    "Metric": {
       "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate",
       "properties": {
         "name": {
@@ -1163,7 +1114,7 @@
           "description": "Aggregation function (for simple measures)",
           "title": "Agg"
         },
-        "expr": {
+        "sql": {
           "anyOf": [
             {
               "type": "string"
@@ -1174,13 +1125,12 @@
           ],
           "default": null,
           "description": "SQL expression or formula",
-          "title": "Expr"
+          "title": "Sql"
         },
         "type": {
           "anyOf": [
             {
               "enum": [
-                "simple",
                 "ratio",
                 "derived",
                 "cumulative",
@@ -1451,11 +1401,11 @@
       "required": [
         "name"
       ],
-      "title": "Measure",
+      "title": "Metric",
       "type": "object"
     },
-    "Join": {
-      "description": "Represents a join relationship between models.\n\nRails-like syntax:\n- belongs_to: This model has a foreign key to another (many-to-one)\n- has_one: This model is referenced by another with unique constraint (one-to-one)\n- has_many: This model is referenced by another (one-to-many)",
+    "Relationship": {
+      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another",
       "properties": {
         "name": {
           "description": "Name of the related model",
@@ -1465,9 +1415,9 @@
         "type": {
           "description": "Type of relationship",
           "enum": [
-            "belongs_to",
-            "has_one",
-            "has_many"
+            "many_to_one",
+            "one_to_one",
+            "one_to_many"
           ],
           "title": "Type",
           "type": "string"
@@ -1482,7 +1432,7 @@
             }
           ],
           "default": null,
-          "description": "Foreign key column (defaults to {name}_id for belongs_to, id for has_*)",
+          "description": "Foreign key column (defaults to {name}_id for many_to_one)",
           "title": "Foreign Key"
         },
         "primary_key": {
@@ -1503,39 +1453,7 @@
         "name",
         "type"
       ],
-      "title": "Join",
-      "type": "object"
-    },
-    "Entity": {
-      "description": "Entity (join key) definition.\n\nEntities enable automatic join discovery between models.",
-      "properties": {
-        "name": {
-          "description": "Unique entity name",
-          "title": "Name",
-          "type": "string"
-        },
-        "type": {
-          "description": "Entity type (primary, foreign, or unique)",
-          "enum": [
-            "primary",
-            "foreign",
-            "unique"
-          ],
-          "title": "Type",
-          "type": "string"
-        },
-        "expr": {
-          "description": "SQL expression or column name",
-          "title": "Expr",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "type",
-        "expr"
-      ],
-      "title": "Entity",
+      "title": "Relationship",
       "type": "object"
     },
     "Parameter": {

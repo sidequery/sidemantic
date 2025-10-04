@@ -3,7 +3,7 @@
 import pytest
 import duckdb
 
-from sidemantic.core.model import Model, Entity, Dimension, Measure
+from sidemantic.core.model import Model, Dimension, Metric
 from sidemantic.core.parameter import Parameter, ParameterSet
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -198,12 +198,13 @@ def test_sql_generator_with_parameters():
     orders = Model(
         name="orders",
         table="raw_orders",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
+        primary_key="id",
+relationships=[],
         dimensions=[
-            Dimension(name="status", type="categorical", sql_expr="status"),
-            Dimension(name="order_date", type="time", sql_expr="order_date"),
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="order_date", type="time", sql="order_date"),
         ],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
     graph.add_model(orders)
 
@@ -234,12 +235,13 @@ def test_sql_generator_with_default_parameter():
     orders = Model(
         name="orders",
         table="raw_orders",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
+        primary_key="id",
+relationships=[],
         dimensions=[
-            Dimension(name="status", type="categorical", sql_expr="status"),
-            Dimension(name="order_date", type="time", sql_expr="order_date"),
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="order_date", type="time", sql="order_date"),
         ],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
     graph.add_model(orders)
 
@@ -270,12 +272,13 @@ def test_sql_generator_with_multiple_parameters():
     orders = Model(
         name="orders",
         table="raw_orders",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
+        primary_key="id",
+relationships=[],
         dimensions=[
-            Dimension(name="status", type="categorical", sql_expr="status"),
-            Dimension(name="order_date", type="time", sql_expr="order_date"),
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="order_date", type="time", sql="order_date"),
         ],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
     graph.add_model(orders)
 
@@ -324,12 +327,13 @@ def test_parameters_with_actual_data():
     orders = Model(
         name="orders",
         table="raw_orders",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
+        primary_key="id",
+relationships=[],
         dimensions=[
-            Dimension(name="status", type="categorical", sql_expr="status"),
-            Dimension(name="order_date", type="time", sql_expr="order_date"),
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="order_date", type="time", sql="order_date"),
         ],
-        measures=[Measure(name="revenue", agg="sum", expr="amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
     graph.add_model(orders)
 

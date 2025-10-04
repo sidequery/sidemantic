@@ -4,7 +4,7 @@ from pathlib import Path
 
 import duckdb
 
-from sidemantic.core.measure import Measure
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -70,11 +70,11 @@ class SemanticLayer:
 
         self.graph.add_model(model)
 
-    def add_metric(self, measure: Measure) -> None:
+    def add_metric(self, measure: Metric) -> None:
         """Add a measure to the semantic layer.
 
         Args:
-            measure: Measure to add
+            measure: Metric to add
 
         Raises:
             MetricValidationError: If measure validation fails
@@ -171,11 +171,11 @@ class SemanticLayer:
         """
         return self.graph.get_model(name)
 
-    def get_metric(self, name: str) -> Measure:
+    def get_metric(self, name: str) -> Metric:
         """Get measure by name.
 
         Args:
-            name: Measure name
+            name: Metric name
 
         Returns:
             Measure instance

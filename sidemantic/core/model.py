@@ -3,9 +3,8 @@
 from pydantic import BaseModel, Field
 
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.entity import Entity
-from sidemantic.core.join import Join
-from sidemantic.core.measure import Measure
+from sidemantic.core.metric import Metric
+from sidemantic.core.relationship import Relationship
 
 
 class Model(BaseModel):
@@ -20,23 +19,20 @@ class Model(BaseModel):
     sql: str | None = Field(None, description="SQL expression for derived tables")
     description: str | None = Field(None, description="Human-readable description")
 
-    # Legacy entity-based joins (still supported)
-    entities: list[Entity] = Field(default_factory=list, description="Entity (join key) definitions")
-
-    # New Rails-like joins (preferred)
-    joins: list[Join] = Field(
+    # Relationships
+    relationships: list[Relationship] = Field(
         default_factory=list,
-        description="Join relationships (belongs_to, has_one, has_many)"
+        description="Relationships to other models"
     )
 
-    # Primary key (required if using joins)
-    primary_key: str | None = Field(
-        default=None,
-        description="Primary key column (defaults to 'id')"
+    # Primary key (required)
+    primary_key: str = Field(
+        default="id",
+        description="Primary key column"
     )
 
     dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
-    measures: list[Measure] = Field(default_factory=list, description="Measure definitions")
+    metrics: list[Metric] = Field(default_factory=list, description="Measure definitions")
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -48,21 +44,6 @@ class Model(BaseModel):
     def __hash__(self) -> int:
         return hash(self.name)
 
-    @property
-    def primary_entity(self) -> Entity | None:
-        """Get the primary entity for this model."""
-        for entity in self.entities:
-            if entity.type == "primary":
-                return entity
-        return None
-
-    def get_entity(self, name: str) -> Entity | None:
-        """Get entity by name."""
-        for entity in self.entities:
-            if entity.name == name:
-                return entity
-        return None
-
     def get_dimension(self, name: str) -> Dimension | None:
         """Get dimension by name."""
         for dimension in self.dimensions:
@@ -70,9 +51,9 @@ class Model(BaseModel):
                 return dimension
         return None
 
-    def get_measure(self, name: str) -> Measure | None:
-        """Get measure by name."""
-        for measure in self.measures:
-            if measure.name == name:
-                return measure
+    def get_metric(self, name: str) -> Metric | None:
+        """Get metric by name."""
+        for metric in self.metrics:
+            if metric.name == name:
+                return metric
         return None

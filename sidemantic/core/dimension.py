@@ -15,7 +15,7 @@ class Dimension(BaseModel):
     type: Literal["categorical", "time", "boolean", "numeric"] = Field(
         ..., description="Dimension type"
     )
-    expr: str | None = Field(None, description="SQL expression (defaults to name)")
+    sql: str | None = Field(None, description="SQL expression (defaults to name)")
     granularity: Literal["hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Base granularity for time dimensions"
     )
@@ -26,12 +26,12 @@ class Dimension(BaseModel):
     label: str | None = Field(None, description="Display label")
 
     def __hash__(self) -> int:
-        return hash((self.name, self.type, self.expr))
+        return hash((self.name, self.type, self.sql))
 
     @property
     def sql_expr(self) -> str:
         """Get SQL expression, defaulting to name if not specified."""
-        return self.expr or self.name
+        return self.sql or self.name
 
     def with_granularity(self, granularity: str) -> str:
         """Get SQL expression with time granularity applied.

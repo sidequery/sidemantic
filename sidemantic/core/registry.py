@@ -30,7 +30,7 @@ def auto_register_model(model):
 def auto_register_measure(model_name: str, measure):
     """Auto-register measure with current layer if available.
 
-    Note: Measures are added to models, so we need the model name.
+    Note: Metrics are added to models, so we need the model name.
     """
     # For now, measures are registered via their model
     # Complex measures (metrics) would need model context

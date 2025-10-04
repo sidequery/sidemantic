@@ -134,7 +134,6 @@ def main():
     # Simple metric
     total_revenue = Measure(
         name="total_revenue",
-        type="simple",
         expr="orders.amount",
         description="Total revenue from all orders"
     )

@@ -34,7 +34,7 @@ Create `semantic_layer.yml`:
 models:
   - name: orders
     table: orders
-    primary_key: id
+    primary_key: order_id
 
     dimensions:
       - name: order_date
@@ -46,10 +46,10 @@ models:
         type: categorical
         sql: status
 
-    measures:
+    metrics:
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
 
       - name: order_count
         agg: count
@@ -76,21 +76,21 @@ print(df)
 
 ### 3. Add Relationships
 
-Define joins between models:
+Define relationships between models:
 
 ```yaml
 models:
   - name: orders
     table: orders
-    primary_key: id
-    joins:
-      - name: customers
-        type: belongs_to
+    primary_key: order_id
+    relationships:
+      - name: customer
+        type: many_to_one
         foreign_key: customer_id
 
   - name: customers
     table: customers
-    primary_key: id
+    primary_key: customer_id
 ```
 
 Query across models:
@@ -103,27 +103,44 @@ result = layer.sql("""
 """)
 ```
 
-### 4. Complex Measures
+### 4. Complex Metrics
 
-Add ratios, formulas, cumulative metrics:
+Add graph-level metrics with automatic dependency detection:
 
 ```yaml
-measures:
+models:
+  - name: orders
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+
+      - name: completed_revenue
+        agg: sum
+        sql: amount
+        filters: ["status = 'completed'"]
+
+# Graph-level metrics (dependencies auto-detected!)
+metrics:
+  # Simple reference
+  - name: total_revenue
+    sql: orders.revenue
+
   # Ratio
   - name: conversion_rate
     type: ratio
-    numerator: completed_orders
-    denominator: total_orders
+    numerator: orders.completed_revenue
+    denominator: orders.revenue
 
-  # Formula
+  # Derived (dependencies auto-detected from formula!)
   - name: profit_margin
     type: derived
-    expr: "(revenue - cost) / revenue"
+    sql: "(revenue - cost) / revenue"
 
   # Cumulative
   - name: running_total
     type: cumulative
-    expr: revenue
+    sql: orders.revenue
     window: "7 days"
 ```
 

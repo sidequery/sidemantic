@@ -4,11 +4,10 @@ import json
 from pathlib import Path
 
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.entity import Entity
-from sidemantic.core.join import Join
-from sidemantic.core.measure import Measure
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
+from sidemantic.core.relationship import Relationship
 
 
 def generate_yaml_schema() -> dict:
@@ -20,9 +19,8 @@ def generate_yaml_schema() -> dict:
     # Get schemas from Pydantic models
     model_schema = Model.model_json_schema()
     dimension_schema = Dimension.model_json_schema()
-    measure_schema = Measure.model_json_schema()
-    join_schema = Join.model_json_schema()
-    entity_schema = Entity.model_json_schema()
+    metric_schema = Metric.model_json_schema()
+    relationship_schema = Relationship.model_json_schema()
     parameter_schema = Parameter.model_json_schema()
 
     # Build complete schema
@@ -39,8 +37,8 @@ def generate_yaml_schema() -> dict:
             },
             "metrics": {
                 "type": "array",
-                "description": "Top-level measure definitions (optional - can also define in models)",
-                "items": measure_schema
+                "description": "Top-level metric definitions (optional - can also define in models)",
+                "items": metric_schema
             },
             "parameters": {
                 "type": "array",
@@ -51,9 +49,8 @@ def generate_yaml_schema() -> dict:
         "required": ["models"],
         "$defs": {
             "Dimension": dimension_schema,
-            "Measure": measure_schema,
-            "Join": join_schema,
-            "Entity": entity_schema,
+            "Metric": metric_schema,
+            "Relationship": relationship_schema,
             "Parameter": parameter_schema
         }
     }

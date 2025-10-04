@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 
 
 def test_create_model():
@@ -10,16 +10,16 @@ def test_create_model():
     model = Model(
         name="orders",
         table="public.orders",
-        entities=[Entity(name="order", type="primary", expr="order_id")],
+        primary_key="order_id",
         dimensions=[Dimension(name="status", type="categorical")],
-        measures=[Measure(name="count", agg="count")],
+        metrics=[Metric(name="count", agg="count")],
     )
 
     assert model.name == "orders"
     assert model.table == "public.orders"
-    assert len(model.entities) == 1
+    assert model.primary_key == "order_id"
     assert len(model.dimensions) == 1
-    assert len(model.measures) == 1
+    assert len(model.metrics) == 1
 
 
 def test_semantic_layer():
@@ -29,9 +29,9 @@ def test_semantic_layer():
     orders = Model(
         name="orders",
         table="public.orders",
-        entities=[Entity(name="order", type="primary", expr="order_id")],
+        primary_key="order_id",
         dimensions=[Dimension(name="status", type="categorical")],
-        measures=[Measure(name="revenue", agg="sum", expr="order_amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
     )
 
     sl.add_model(orders)
@@ -47,32 +47,31 @@ def test_join_path_discovery():
     orders = Model(
         name="orders",
         table="public.orders",
-        entities=[
-            Entity(name="order", type="primary", expr="order_id"),
-            Entity(name="customer", type="foreign", expr="customer_id"),
+        primary_key="order_id",
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
         ],
     )
 
     customers = Model(
         name="customers",
         table="public.customers",
-        entities=[Entity(name="customer", type="primary", expr="customer_id")],
+        primary_key="customer_id",
     )
 
     sl.add_model(orders)
     sl.add_model(customers)
 
     # Test join path finding
-    join_path = sl.graph.find_join_path("orders", "customers")
+    join_path = sl.graph.find_relationship_path("orders", "customers")
     assert len(join_path) == 1
     assert join_path[0].from_model == "orders"
     assert join_path[0].to_model == "customers"
-    assert join_path[0].from_entity == "customer"
 
 
 def test_time_dimension_granularity():
     """Test time dimension with granularity."""
-    dim = Dimension(name="created_at", type="time", granularity="day", expr="created_at")
+    dim = Dimension(name="created_at", type="time", granularity="day", sql="created_at")
 
     # Test granularity SQL generation
     sql = dim.with_granularity("month")
@@ -81,24 +80,24 @@ def test_time_dimension_granularity():
 
 def test_measure_aggregation():
     """Test measure SQL generation."""
-    measure = Measure(name="revenue", agg="sum", expr="order_amount")
+    measure = Metric(name="revenue", agg="sum", sql="order_amount")
 
     sql = measure.to_sql()
     assert sql == "SUM(order_amount)"
 
 
 def test_simple_metric():
-    """Test creating a simple metric."""
-    metric = Measure(name="total_revenue", type="simple", expr="orders.revenue")
+    """Test creating a simple metric (now untyped with sql)."""
+    metric = Metric(name="total_revenue", sql="orders.revenue")
 
     assert metric.name == "total_revenue"
-    assert metric.type == "simple"
-    assert metric.expr == "orders.revenue"
+    assert metric.type is None  # Untyped metric with sql
+    assert metric.sql == "orders.revenue"
 
 
 def test_ratio_metric():
     """Test creating a ratio metric."""
-    metric = Measure(
+    metric = Metric(
         name="conversion_rate",
         type="ratio",
         numerator="orders.completed_revenue",
@@ -118,9 +117,9 @@ def test_sql_compilation():
     orders = Model(
         name="orders",
         table="public.orders",
-        entities=[Entity(name="order", type="primary", expr="order_id")],
+        primary_key="order_id",
         dimensions=[Dimension(name="status", type="categorical")],
-        measures=[Measure(name="revenue", agg="sum", expr="order_amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
     )
 
     sl.add_model(orders)
@@ -141,18 +140,18 @@ def test_multi_model_query():
     orders = Model(
         name="orders",
         table="public.orders",
-        entities=[
-            Entity(name="order", type="primary", expr="order_id"),
-            Entity(name="customer", type="foreign", expr="customer_id"),
+        primary_key="order_id",
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
         ],
         dimensions=[Dimension(name="status", type="categorical")],
-        measures=[Measure(name="revenue", agg="sum", expr="order_amount")],
+        metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
     )
 
     customers = Model(
         name="customers",
         table="public.customers",
-        entities=[Entity(name="customer", type="primary", expr="customer_id")],
+        primary_key="customer_id",
         dimensions=[Dimension(name="region", type="categorical")],
     )
 

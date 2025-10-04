@@ -90,7 +90,7 @@ class QueryRewriter:
                     dimensions.append(f"{self.inferred_table}.{dim.name}")
 
                 # Add all measures as metrics
-                for measure in model.measures:
+                for measure in model.metrics:
                     metrics.append(f"{self.inferred_table}.{measure.name}")
 
                 continue
@@ -118,7 +118,7 @@ class QueryRewriter:
 
             # Check if it's a measure (should be accessed as metric)
             model = self.graph.get_model(model_name)
-            if any(m.name == field_name for m in model.measures):
+            if any(m.name == field_name for m in model.metrics):
                 # Measure referenced directly - treat as implicit metric
                 metrics.append(metric_ref)
                 continue

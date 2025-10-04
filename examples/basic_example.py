@@ -51,7 +51,6 @@ sl.add_model(customers)
 sl.add_metric(
     Measure(
         name="total_revenue",
-        type="simple",
         expr="orders.revenue",
         description="Total revenue from all orders",
     )

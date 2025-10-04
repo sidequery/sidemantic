@@ -12,10 +12,10 @@ Sidemantic is a semantic layer that lets you define metrics once and query them 
 models:
   - name: orders
     table: orders
-    measures:
+    metrics:
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
 ```
 
 ```python
@@ -28,7 +28,8 @@ layer.sql("SELECT revenue FROM orders")
 - **YAML definitions** with JSON Schema for autocomplete
 - **SQL query interface** - write familiar SQL, get semantic results
 - **Automatic joins** - define relationships once, query across models
-- **Complex measures** - ratios, formulas, cumulative metrics, time comparisons
+- **Auto-detected dependencies** - no manual dependency declarations needed!
+- **Complex metrics** - ratios, formulas, cumulative metrics, time comparisons
 - **Multi-dialect** - SQLGlot powers cross-database SQL generation
 
 ## Quick Example
@@ -38,17 +39,27 @@ layer.sql("SELECT revenue FROM orders")
 models:
   - name: orders
     table: orders
-    primary_key: id
+    primary_key: order_id
+
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
 
     dimensions:
       - name: status
         type: categorical
         sql: status
 
-    measures:
+    metrics:
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
+
+# Graph-level metrics (dependencies auto-detected!)
+metrics:
+  - name: total_revenue
+    sql: orders.revenue
 ```
 
 ```python

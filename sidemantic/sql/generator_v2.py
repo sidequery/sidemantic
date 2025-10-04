@@ -122,7 +122,7 @@ class SQLGenerator:
             for model_b in list(model_names)[i+1:]:
                 # Find join path and add intermediate models
                 try:
-                    join_path = self.graph.find_join_path(model_a, model_b)
+                    join_path = self.graph.find_relationship_path(model_a, model_b)
                     for jp in join_path:
                         all_models.add(jp.from_model)
                         all_models.add(jp.to_model)
@@ -201,14 +201,13 @@ class SQLGenerator:
                 try:
                     metric = self.graph.get_metric(metric_ref)
                     if metric:
-                        if metric.type == "simple" and metric.expr:
-                            collect_models_from_metric(metric.expr)
-                        elif metric.type == "ratio":
+                        if metric.type == "ratio":
                             if metric.numerator:
                                 collect_models_from_metric(metric.numerator)
                             if metric.denominator:
                                 collect_models_from_metric(metric.denominator)
-                        elif metric.type == "derived":
+                        elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+                            # Derived or untyped metrics with sql - auto-detect dependencies
                             for ref_metric in metric.get_dependencies(self.graph):
                                 collect_models_from_metric(ref_metric)
                 except KeyError:
@@ -246,11 +245,7 @@ class SQLGenerator:
         # Build SELECT columns
         select_cols = []
 
-        # Add entity columns (for joins)
-        for entity in model.entities:
-            select_cols.append(f"{entity.expr} AS {entity.name}")
-
-        # Add join keys from Rails-like joins
+        # Add join keys
         join_keys_added = set()
 
         # Include this model's primary key
@@ -259,17 +254,17 @@ class SQLGenerator:
             join_keys_added.add(model.primary_key)
 
         # Include foreign keys from belongs_to joins
-        for join in model.joins:
-            if join.type == "belongs_to":
-                fk = join.sql_expr
+        for relationship in model.relationships:
+            if relationship.type == "many_to_one":
+                fk = relationship.sql_expr
                 if fk not in join_keys_added:
                     select_cols.append(f"{fk} AS {fk}")
                     join_keys_added.add(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         for other_model_name, other_model in self.graph.models.items():
-            for other_join in other_model.joins:
-                if other_join.name == model_name and other_join.type in ("has_one", "has_many"):
+            for other_join in other_model.relationships:
+                if other_join.name == model_name and other_join.type in ("one_to_one", "one_to_many"):
                     # Other model expects this model to have a foreign key
                     # For has_many/has_one, foreign_key is the FK column in THIS model
                     fk = other_join.foreign_key or other_join.sql_expr
@@ -324,7 +319,7 @@ class SQLGenerator:
             collect_measures_from_metric(metric_ref)
 
         for measure_name in measures_needed:
-            measure = model.get_measure(measure_name)
+            measure = model.get_metric(measure_name)
             if measure:
                 select_cols.append(f"{measure.sql_expr} AS {measure_name}_raw")
 
@@ -360,7 +355,7 @@ class SQLGenerator:
 
         for other_model in other_models:
             try:
-                join_path = self.graph.find_join_path(base_model_name, other_model)
+                join_path = self.graph.find_relationship_path(base_model_name, other_model)
                 # Check if first hop is one-to-many
                 if join_path and join_path[0].relationship == "one_to_many":
                     one_to_many_count += 1
@@ -421,7 +416,7 @@ class SQLGenerator:
                 # It's a measure reference (model.measure)
                 model_name, measure_name = metric_ref.split(".")
                 model = self.graph.get_model(model_name)
-                measure = model.get_measure(measure_name)
+                measure = model.get_metric(measure_name)
 
                 if measure:
                     # Check if this model needs symmetric aggregates
@@ -473,7 +468,7 @@ class SQLGenerator:
             joined_models = {base_model_name}
 
             for other_model in other_models:
-                join_path = self.graph.find_join_path(base_model_name, other_model)
+                join_path = self.graph.find_relationship_path(base_model_name, other_model)
                 if join_path:
                     # Apply each join in the path
                     for jp in join_path:
@@ -524,7 +519,7 @@ class SQLGenerator:
                     def replace_field(match):
                         field_name = match.group(1)
                         # Check if it's a measure
-                        if model_obj.get_measure(field_name):
+                        if model_obj.get_metric(field_name):
                             return f"{model_name}_cte.{field_name}_raw"
                         else:
                             # It's a dimension or other column
@@ -595,20 +590,7 @@ class SQLGenerator:
         Returns:
             SQL expression string
         """
-        if metric.type == "simple":
-            # Reference the measure directly
-            if "." in metric.expr:
-                model_name, measure_name = metric.expr.split(".")
-                model = self.graph.get_model(model_name)
-                measure = model.get_measure(measure_name)
-
-                agg_func = measure.agg.upper()
-                if agg_func == "COUNT_DISTINCT":
-                    return f"COUNT(DISTINCT {model_name}_cte.{measure_name}_raw)"
-                else:
-                    return f"{agg_func}({model_name}_cte.{measure_name}_raw)"
-
-        elif metric.type == "ratio":
+        if metric.type == "ratio":
             # numerator / NULLIF(denominator, 0)
             num_model, num_measure = metric.numerator.split(".")
             denom_model, denom_measure = metric.denominator.split(".")
@@ -616,8 +598,8 @@ class SQLGenerator:
             num_model_obj = self.graph.get_model(num_model)
             denom_model_obj = self.graph.get_model(denom_model)
 
-            num_measure_obj = num_model_obj.get_measure(num_measure)
-            denom_measure_obj = denom_model_obj.get_measure(denom_measure)
+            num_measure_obj = num_model_obj.get_metric(num_measure)
+            denom_measure_obj = denom_model_obj.get_metric(denom_measure)
 
             # Build numerator
             num_agg = num_measure_obj.agg.upper()
@@ -635,40 +617,40 @@ class SQLGenerator:
 
             return f"({num_expr}) / NULLIF({denom_expr}, 0)"
 
-        elif metric.type == "derived":
-            # Parse formula and replace metric references
-            if not metric.expr:
-                raise ValueError(f"Derived metric {metric.name} missing expr")
+        elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+            # Parse formula and replace metric references (handles both typed "derived" and untyped metrics with sql)
+            if not metric.sql:
+                raise ValueError(f"Derived metric {metric.name} missing sql")
 
-            formula = metric.expr
+            formula = metric.sql
 
             # Auto-detect dependencies from expression using graph for resolution
             dependencies = metric.get_dependencies(self.graph)
 
             # Replace each metric reference with its SQL expression
             for metric_name in dependencies:
-                # Get the metric
-                ref_metric = self.graph.get_metric(metric_name)
-                if not ref_metric:
-                    # Try as measure reference
-                    if "." in metric_name:
-                        model_name, measure_name = metric_name.split(".")
-                        model = self.graph.get_model(model_name)
-                        measure = model.get_measure(measure_name)
+                # Check if it's a measure reference (model.measure) first
+                if "." in metric_name:
+                    model_name, measure_name = metric_name.split(".")
+                    model = self.graph.get_model(model_name)
+                    measure = model.get_metric(measure_name)
 
-                        if measure:
-                            agg_func = measure.agg.upper()
-                            if agg_func == "COUNT_DISTINCT":
-                                metric_sql = f"COUNT(DISTINCT {model_name}_cte.{measure_name}_raw)"
-                            else:
-                                metric_sql = f"{agg_func}({model_name}_cte.{measure_name}_raw)"
+                    if measure:
+                        agg_func = measure.agg.upper()
+                        if agg_func == "COUNT_DISTINCT":
+                            metric_sql = f"COUNT(DISTINCT {model_name}_cte.{measure_name}_raw)"
                         else:
-                            raise ValueError(f"Metric {metric_name} not found")
+                            metric_sql = f"{agg_func}({model_name}_cte.{measure_name}_raw)"
                     else:
-                        raise ValueError(f"Metric {metric_name} not found")
+                        raise ValueError(f"Measure {metric_name} not found")
                 else:
-                    # Recursively build metric SQL
-                    metric_sql = self._build_metric_sql(ref_metric)
+                    # Try as graph-level metric
+                    try:
+                        ref_metric = self.graph.get_metric(metric_name)
+                        # Recursively build metric SQL
+                        metric_sql = self._build_metric_sql(ref_metric)
+                    except KeyError:
+                        raise ValueError(f"Metric {metric_name} not found")
 
                 # Replace metric name in formula
                 # Handle both metric_name and model.measure format
@@ -809,8 +791,8 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 if metric and metric.type == "cumulative":
                     cumulative_metrics.append(m)
                     # Add the base measure/metric to base_metrics
-                    if metric.expr:
-                        base_metrics.append(metric.expr)
+                    if metric.sql:
+                        base_metrics.append(metric.sql)
                 elif metric and metric.type == "time_comparison":
                     time_comparison_metrics.append(m)
                     # Add the base metric to base_metrics
@@ -877,7 +859,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
         # Add cumulative metrics with window functions
         for m in cumulative_metrics:
             metric = self.graph.get_metric(m)
-            if not metric or not metric.expr:
+            if not metric or not metric.sql:
                 continue
 
             # Find the time dimension to order by
@@ -900,19 +882,19 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
 
             # Get base measure/metric to apply window function to
-            base_ref = metric.expr
+            base_ref = metric.sql
             if "." in base_ref:
                 # It's a direct measure reference - extract just the measure name
                 base_alias = base_ref.split(".")[1]
             else:
                 # It's a metric reference - check if it exists and get its underlying measure
                 base_metric = self.graph.get_metric(base_ref)
-                if base_metric and base_metric.expr:
+                if base_metric and base_metric.sql:
                     # Use the underlying measure name
-                    if "." in base_metric.expr:
-                        base_alias = base_metric.expr.split(".")[1]
+                    if "." in base_metric.sql:
+                        base_alias = base_metric.sql.split(".")[1]
                     else:
-                        base_alias = base_metric.expr
+                        base_alias = base_metric.sql
                 else:
                     # Fallback to the metric name itself
                     base_alias = base_ref

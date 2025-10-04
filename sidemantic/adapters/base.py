@@ -46,9 +46,9 @@ class BaseAdapter(ABC):
 
         # Basic validation
         for model_name, model in graph.models.items():
-            # Check for primary entity
-            if not model.primary_entity:
-                errors.append(f"Model {model_name} has no primary entity")
+            # Check for primary key
+            if not model.primary_key:
+                errors.append(f"Model {model_name} has no primary key")
 
             # Check for table or SQL
             if not model.table and not model.sql:

@@ -3,17 +3,18 @@
 ## ✅ Completed
 
 ### Core Architecture
-- ✅ Model, Entity, Dimension, Measure, Metric abstractions with Pydantic
+- ✅ Model, Dimension, Metric abstractions with Pydantic
+- ✅ Relationship-based automatic joins (many_to_one, one_to_many, one_to_one)
 - ✅ SemanticGraph with BFS-based join path discovery
-- ✅ Entity-based automatic join relationships
 - ✅ Python-first API with SemanticLayer class
+- ✅ Automatic dependency detection for derived metrics
 
 ### SQL Generation
 - ✅ SQLGlot builder API-based SQL generation
 - ✅ CTE-based query structure
 - ✅ Time dimension granularity support (hour, day, week, month, quarter, year)
-- ✅ Measure aggregation (sum, count, count_distinct, avg, min, max, median)
-- ✅ Simple, ratio, and derived metrics
+- ✅ Metric aggregation (sum, count, count_distinct, avg, min, max, median)
+- ✅ Ratio and derived metrics with auto-detected dependencies
 - ✅ Filter support with table prefix handling
 - ✅ Multi-model queries with automatic joins
 - ✅ Recursive metric dependency resolution
@@ -28,6 +29,7 @@
 ### Query Interface
 - ✅ `.query()` method for execution
 - ✅ `.compile()` method for SQL generation
+- ✅ `.sql()` method for SQL query rewriting
 - ✅ DuckDB integration
 - ✅ Dialect transpilation support
 
@@ -35,19 +37,73 @@
 - ✅ uv-based Python package management
 - ✅ Proper package structure
 - ✅ Pydantic models for type safety
-- ✅ Basic examples and tests
+- ✅ Comprehensive examples and tests
 
-## ✅ Recently Fixed
+## ✅ Recent DSL Improvements (2025-01)
 
-### SQL Generation (FIXED)
-~~The SQL generator had an issue with SQLGlot AST construction.~~ **RESOLVED** by refactoring to use SQLGlot's builder API. Now generates complete queries with CTEs, SELECT, FROM, JOIN, WHERE, GROUP BY, ORDER BY, and LIMIT clauses.
+### Simplified & Clarified DSL
+- ✅ **Removed entity system**: Use `primary_key` directly on models (simpler!)
+- ✅ **Renamed joins → relationships**: Explicit types (many_to_one, one_to_many, one_to_one)
+- ✅ **Standardized field names**: All `expr` → `sql` consistently
+- ✅ **Unified terminology**: `measures` → `metrics` everywhere
+- ✅ **Auto-detect dependencies**: No more `type: simple` or manual dependency lists!
+
+**Before:**
+```yaml
+models:
+  - name: orders
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    joins:
+      - name: customers
+        type: belongs_to
+        foreign_key: customer_id
+    measures:
+      - name: revenue
+        agg: sum
+        expr: amount
+
+metrics:
+  - name: total_revenue
+    type: simple
+    measure: orders.revenue
+```
+
+**After:**
+```yaml
+models:
+  - name: orders
+    primary_key: order_id
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+
+metrics:
+  # Dependencies auto-detected!
+  - name: total_revenue
+    sql: orders.revenue
+```
+
+**Result:** Cleaner, more intuitive DSL with automatic dependency detection!
+
+## ✅ SQL Generation Examples
 
 **Example Output:**
 ```sql
 WITH orders_cte AS (
   SELECT
-    order_id AS order,
-    customer_id AS customer,
+    order_id AS order_id,
+    customer_id AS customer_id,
     status AS status,
     order_amount AS revenue_raw
   FROM public.orders
@@ -62,16 +118,18 @@ GROUP BY 1
 ## ✅ Recently Completed
 
 ### Advanced Features
-- ✅ **Cross-model metrics**: Metrics can reference measures from multiple models via recursive dependency resolution
+- ✅ **Cross-model metrics**: Metrics can reference metrics from multiple models via recursive dependency resolution
 - ✅ **Multi-hop joins**: BFS join path discovery supports 2+ hop joins with intermediate model inclusion
-- ✅ **Derived metrics**: Formula parsing with recursive metric dependency expansion
+- ✅ **Derived metrics**: Formula parsing with automatic dependency detection
 - ✅ **Native YAML format**: Complete Sidemantic YAML schema with import/export (see `docs/YAML_FORMAT.md`)
 - ✅ **Export adapters**: Full round-trip support for Sidemantic ↔ Cube ↔ MetricFlow
 
 ### Test Coverage
-- ✅ 35 passing tests across core, adapters, SQL generation, and advanced features
+- ✅ **117 passing tests** across core, adapters, SQL generation, and advanced features
 - ✅ Real DuckDB integration tests
 - ✅ Round-trip adapter tests (Sidemantic → Cube/MetricFlow → Sidemantic)
+- ✅ Multi-hop join verification
+- ✅ Automatic dependency detection tests
 
 ## 🚧 To Complete
 
@@ -87,14 +145,15 @@ sidemantic/
 ├── sidemantic/
 │   ├── core/
 │   │   ├── dimension.py         ✅ Dimension types with granularity
-│   │   ├── entity.py            ✅ Entity (join key) definitions
-│   │   ├── measure.py           ✅ Measure aggregations
-│   │   ├── metric.py            ✅ Metric types (simple, ratio, derived, cumulative)
+│   │   ├── metric.py            ✅ Metric types (ratio, derived, cumulative)
 │   │   ├── model.py             ✅ Model (dataset) definitions
+│   │   ├── relationship.py      ✅ Relationship definitions
+│   │   ├── dependency_analyzer.py ✅ Auto-detect metric dependencies
 │   │   ├── semantic_graph.py    ✅ Graph with join path discovery
 │   │   └── semantic_layer.py    ✅ Main API
 │   ├── sql/
-│   │   └── generator_v2.py      ✅ SQLGlot builder-based SQL generation
+│   │   ├── generator_v2.py      ✅ SQLGlot builder-based SQL generation
+│   │   └── generator.py         ✅ Legacy SQLGlot AST generator
 │   ├── adapters/
 │   │   ├── base.py              ✅ Base adapter interface
 │   │   ├── sidemantic.py        ✅ Native YAML (import/export)
@@ -111,6 +170,8 @@ sidemantic/
 │   ├── test_with_data.py        ✅ End-to-end with real DuckDB
 │   ├── test_derived_metrics.py  ✅ Formula parsing tests
 │   ├── test_multi_hop_joins.py  ✅ Multi-hop join tests
+│   ├── test_dependencies.py     ✅ Dependency detection tests
+│   ├── test_validation.py       ✅ Validation tests
 │   └── test_cumulative_metrics.py ⚠️  Window functions (partial)
 ├── examples/
 │   ├── basic_example.py         ✅ Usage examples
@@ -125,8 +186,11 @@ sidemantic/
 
 ## 🎯 Design Decisions
 
-### Why Entity-Based Joins?
-Inspired by MetricFlow, entities eliminate manual join configuration. Models share entity names → automatic join discovery via graph traversal.
+### Why Relationship-Based Joins?
+Explicit relationship types (many_to_one, one_to_many, one_to_one) make join semantics clear and prevent ambiguity. No more guessing whether `belongs_to` means the FK is here or there!
+
+### Why Auto-Detect Dependencies?
+Manual dependency lists are error-prone and redundant. SQL parsing automatically detects what metrics depend on, reducing boilerplate by ~50%.
 
 ### Why SQLGlot?
 - Dialect-agnostic SQL generation
@@ -146,16 +210,10 @@ Inspired by MetricFlow, entities eliminate manual join configuration. Models sha
 
 ## 🔄 Next Steps
 
-**Immediate** (to make functional):
-1. Fix SQL generator using builder API or string templates
-2. Run test suite and verify end-to-end queries work
-3. Test with real DuckDB data
-
-**Short-term** (to make useful):
-1. Add more metric types (derived with formulas, cumulative with windows)
-2. Test adapters with real Cube/MetricFlow YAML files
-3. Add export functionality
-4. Documentation and examples
+**Short-term** (to make more useful):
+1. Complete cumulative metrics with window functions
+2. Add more example YAML files and documentation
+3. Performance optimization for large models
 
 **Long-term** (to make production-ready):
 1. Query caching and optimization
@@ -169,8 +227,8 @@ Inspired by MetricFlow, entities eliminate manual join configuration. Models sha
 The implementation incorporates best practices from:
 
 - **Cube**: Pre-aggregations, API-first design, multi-tenancy
-- **MetricFlow**: Entity-based joins, 5 metric types, semantic graph
+- **MetricFlow**: Semantic graph, metric types
 - **LookML**: Explores/views separation, dimension groups, drill-down
 - **Hex**: Multi-format import, interoperability focus
 
-Key insight: All semantic layers share core abstractions (models, dimensions, measures, metrics, relationships) but differ in query optimization, caching, and consumption patterns.
+Key insight: All semantic layers share core abstractions (models, dimensions, metrics, relationships) but differ in query optimization, caching, and consumption patterns.

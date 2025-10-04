@@ -19,10 +19,10 @@ website:
         menu:
           - text: "Models"
             href: models.qmd
-          - text: "Measures"
-            href: measures.qmd
-          - text: "Joins"
-            href: joins.qmd
+          - text: "Metrics"
+            href: metrics.qmd
+          - text: "Relationships"
+            href: relationships.qmd
           - text: "SQL Queries"
             href: sql-queries.qmd
       - text: "Examples"

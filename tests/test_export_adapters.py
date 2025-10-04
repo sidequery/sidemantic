@@ -124,7 +124,7 @@ def test_cube_round_trip():
         # Verify measures preserved
         orders1 = graph.models["orders"]
         orders2 = graph2.models["orders"]
-        assert len(orders1.measures) == len(orders2.measures)
+        assert len(orders1.metrics) == len(orders2.metrics)
 
     finally:
         cube_path.unlink(missing_ok=True)
@@ -151,8 +151,8 @@ def test_metricflow_round_trip():
         assert set(graph2.models.keys()) == set(graph.models.keys())
         assert set(graph2.metrics.keys()) == set(graph.metrics.keys())
 
-        # Verify metric types preserved
-        assert graph2.metrics["total_revenue"].type == "simple"
+        # Verify metric types preserved (simple -> None since we removed simple type)
+        assert graph2.metrics["total_revenue"].type is None  # Was simple, now untyped
         assert graph2.metrics["conversion_rate"].type == "ratio"
         assert graph2.metrics["revenue_per_order"].type == "derived"
 

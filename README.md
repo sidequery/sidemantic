@@ -4,11 +4,12 @@ SQLGlot-based semantic layer with multi-format adapter support.
 
 ## Features
 
-- **Simple API**: Define measures once, use them everywhere
+- **Simple API**: Define metrics once, use them everywhere
 - **SQL query interface**: Write familiar SQL that gets rewritten to use semantic layer
 - **Automatic joins**: Define relationships, joins happen automatically via graph traversal
 - **Multi-format adapters**: Import/export from Cube, MetricFlow (dbt), and native YAML
-- **Rich measure types**: Aggregations, ratios, formulas, cumulative, time comparisons, conversions
+- **Rich metric types**: Aggregations, ratios, formulas, cumulative, time comparisons, conversions
+- **Auto-detected dependencies**: No manual dependency declarations needed
 - **SQLGlot-powered**: Dialect-agnostic SQL generation with transpilation support
 - **Multi-hop joins**: Automatic 2+ hop join discovery with intermediate models
 - **Type-safe**: Pydantic models with validation
@@ -24,7 +25,12 @@ SQLGlot-based semantic layer with multi-format adapter support.
 models:
   - name: orders
     table: orders
-    primary_key: id
+    primary_key: order_id
+
+    relationships:
+      - name: customer
+        type: many_to_one
+        foreign_key: customer_id
 
     dimensions:
       - name: status
@@ -33,16 +39,21 @@ models:
 
       - name: order_date
         type: time
-        sql: order_date
+        sql: created_at
         granularity: day
 
-    measures:
+    metrics:
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
 
       - name: order_count
         agg: count
+
+# Graph-level metrics (dependencies auto-detected!)
+metrics:
+  - name: total_revenue
+    sql: orders.revenue
 ```
 
 ### Query with SQL
@@ -67,21 +78,24 @@ df = result.fetchdf()
 <summary>Alternative: Python API</summary>
 
 ```python
-from sidemantic import SemanticLayer, Model, Measure, Dimension
+from sidemantic import SemanticLayer, Model, Metric, Dimension, Relationship
 
 layer = SemanticLayer()
 
 orders = Model(
     name="orders",
     table="orders",
-    primary_key="id",
+    primary_key="order_id",
+    relationships=[
+        Relationship(name="customer", type="many_to_one", foreign_key="customer_id")
+    ],
     dimensions=[
         Dimension(name="status", type="categorical", sql="status"),
-        Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        Dimension(name="order_date", type="time", sql="created_at", granularity="day"),
     ],
-    measures=[
-        Measure(name="revenue", agg="sum", expr="amount"),
-        Measure(name="order_count", agg="count"),
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
     ]
 )
 layer.add_model(orders)
@@ -144,52 +158,66 @@ Full round-trip support: Sidemantic ↔ Cube ↔ MetricFlow
 
 ## Advanced Features
 
-### Complex Measures
+### Complex Metrics
 
-Define ratios, formulas, cumulative metrics:
+Define ratios, formulas, cumulative metrics with **automatic dependency detection**:
 
 ```yaml
 models:
   - name: orders
     table: orders
-    primary_key: id
+    primary_key: order_id
 
-    measures:
-      # Simple aggregation
+    metrics:
+      # Model-level aggregations
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
 
-      # Ratio
-      - name: conversion_rate
-        type: ratio
-        numerator: completed_revenue
-        denominator: total_revenue
+      - name: completed_revenue
+        agg: sum
+        sql: amount
+        filters: ["status = 'completed'"]
 
-      # Formula
-      - name: profit_margin
-        type: derived
-        expr: "(revenue - cost) / revenue"
+# Graph-level metrics
+metrics:
+  # Simple reference (dependencies auto-detected)
+  - name: total_revenue
+    sql: orders.revenue
 
-      # Cumulative
-      - name: running_total
-        type: cumulative
-        expr: revenue
-        window: "7 days"
+  # Ratio
+  - name: conversion_rate
+    type: ratio
+    numerator: orders.completed_revenue
+    denominator: orders.revenue
+
+  # Derived (dependencies auto-detected from formula!)
+  - name: profit_margin
+    type: derived
+    sql: "(revenue - cost) / revenue"
+
+  # Cumulative
+  - name: running_total
+    type: cumulative
+    sql: orders.revenue
+    window: "7 days"
 ```
 
 <details>
 <summary>Python alternative</summary>
 
 ```python
-Measure(name="conversion_rate", type="ratio",
-        numerator="completed_revenue", denominator="total_revenue")
+Metric(name="total_revenue", sql="orders.revenue")
 
-Measure(name="profit_margin", type="derived",
-        expr="(revenue - cost) / revenue")
+Metric(name="conversion_rate", type="ratio",
+       numerator="orders.completed_revenue",
+       denominator="orders.revenue")
 
-Measure(name="running_total", type="cumulative",
-        expr="revenue", window="7 days")
+Metric(name="profit_margin", type="derived",
+       sql="(revenue - cost) / revenue")
+
+Metric(name="running_total", type="cumulative",
+       sql="orders.revenue", window="7 days")
 ```
 </details>
 
@@ -201,18 +229,18 @@ Define relationships once, query across models:
 models:
   - name: orders
     table: orders
-    primary_key: id
-    joins:
-      - name: customers
-        type: belongs_to
+    primary_key: order_id
+    relationships:
+      - name: customer
+        type: many_to_one
         foreign_key: customer_id
 
   - name: customers
     table: customers
-    primary_key: id
-    joins:
-      - name: regions
-        type: belongs_to
+    primary_key: customer_id
+    relationships:
+      - name: region
+        type: many_to_one
         foreign_key: region_id
 ```
 
@@ -226,6 +254,14 @@ result = layer.sql("""
 """)
 ```
 
+### Relationship Types
+
+Use explicit, readable relationship types:
+
+- **many_to_one**: Many records in THIS table → one record in OTHER table (e.g., orders → customer)
+- **one_to_many**: One record in THIS table → many records in OTHER table (e.g., customer → orders)
+- **one_to_one**: One record in THIS table → one record in OTHER table (e.g., order → invoice)
+
 ## Test Coverage
 
 - 117 passing tests
@@ -234,6 +270,7 @@ result = layer.sql("""
 - Round-trip adapter tests
 - Multi-hop join verification
 - Formula parsing validation
+- Automatic dependency detection
 
 Run tests:
 ```bash
@@ -247,12 +284,13 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 **Completed:**
 - ✅ SQL query interface with automatic rewriting
 - ✅ Core semantic layer with SQLGlot generation
-- ✅ Entity-based automatic joins
+- ✅ Relationship-based automatic joins (many_to_one, one_to_many, one_to_one)
 - ✅ Multi-hop join discovery
-- ✅ Derived metrics with formula parsing
+- ✅ Derived metrics with automatic dependency detection
 - ✅ Native YAML format with import/export
 - ✅ Cube and MetricFlow adapters (import/export)
 - ✅ DuckDB integration
+- ✅ Unified metrics terminology (no more measures/metrics confusion!)
 
 **In Progress:**
 - ⚠️ Cumulative metrics (basic structure exists, needs subquery pattern)

@@ -2,7 +2,7 @@
 
 import duckdb
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 
 conn = duckdb.connect(":memory:")
 
@@ -58,19 +58,19 @@ sl.conn = conn
 orders = Model(
     name="orders",
     table="orders",
-    entities=[
-        Entity(name="order", type="primary", expr="order_id"),
-        Entity(name="customer", type="foreign", expr="customer_id"),
+    primary_key="order_id",
+    relationships=[
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
     ],
-    measures=[Measure(name="revenue", agg="sum", expr="order_amount")],
+    metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
 )
 
 customers = Model(
     name="customers",
     table="customers",
-    entities=[
-        Entity(name="customer", type="primary", expr="customer_id"),
-        Entity(name="region", type="foreign", expr="region_id"),
+    primary_key="customer_id",
+    relationships=[
+        Relationship(name="regions", type="many_to_one", foreign_key="region_id"),
     ],
     dimensions=[Dimension(name="customer_name", type="categorical")],
 )
@@ -78,7 +78,7 @@ customers = Model(
 regions = Model(
     name="regions",
     table="regions",
-    entities=[Entity(name="region", type="primary", expr="region_id")],
+    primary_key="region_id",
     dimensions=[Dimension(name="region_name", type="categorical")],
 )
 
@@ -115,7 +115,7 @@ print("=" * 80)
 print("Test: Join path discovery")
 print("=" * 80)
 
-join_path = sl.graph.find_join_path("orders", "regions")
+join_path = sl.graph.find_relationship_path("orders", "regions")
 print(f"Join path from orders to regions: {len(join_path)} hops")
 for i, jp in enumerate(join_path):
     print(f"  Hop {i+1}: {jp.from_model} -> {jp.to_model} (via {jp.from_entity})")

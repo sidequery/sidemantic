@@ -7,7 +7,7 @@ Example: orders -> customers -> regions (2 hops)
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, SemanticLayer
 
 
 @pytest.fixture

@@ -6,9 +6,9 @@ import yaml
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.entity import Entity
-from sidemantic.core.measure import Measure
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
@@ -102,12 +102,27 @@ class MetricFlowAdapter(BaseAdapter):
                 ref_model = model_ref.replace("ref('", "").replace("')", "").replace('ref("', "").replace('")', "")
                 table = ref_model
 
-        # Parse entities
-        entities = []
+        # Parse entities to extract primary key and relationships
+        primary_key = "id"  # default
+        relationships = []
+
         for entity_def in model_def.get("entities", []):
-            entity = self._parse_entity(entity_def)
-            if entity:
-                entities.append(entity)
+            entity_type = entity_def.get("type", "primary")
+            entity_name = entity_def.get("name")
+            entity_expr = entity_def.get("expr", entity_name)
+
+            if entity_type == "primary":
+                # Use this as the primary key
+                primary_key = entity_expr
+            elif entity_type == "foreign":
+                # Create a many_to_one relationship
+                relationships.append(
+                    Relationship(
+                        name=entity_name,
+                        type="many_to_one",
+                        foreign_key=entity_expr
+                    )
+                )
 
         # Parse dimensions
         dimensions = []
@@ -127,41 +142,10 @@ class MetricFlowAdapter(BaseAdapter):
             name=name,
             table=table,
             description=model_def.get("description"),
-            entities=entities,
+            primary_key=primary_key,
+            relationships=relationships,
             dimensions=dimensions,
-            measures=measures,
-        )
-
-    def _parse_entity(self, entity_def: dict) -> Entity | None:
-        """Parse MetricFlow entity into Sidemantic entity.
-
-        Args:
-            entity_def: Entity definition dictionary
-
-        Returns:
-            Entity instance or None
-        """
-        name = entity_def.get("name")
-        if not name:
-            return None
-
-        entity_type = entity_def.get("type", "primary")
-
-        # Map MetricFlow entity types to Sidemantic
-        # natural -> unique (close enough for our purposes)
-        type_mapping = {
-            "primary": "primary",
-            "foreign": "foreign",
-            "unique": "unique",
-            "natural": "unique",
-        }
-
-        sidemantic_type = type_mapping.get(entity_type, "primary")
-
-        return Entity(
-            name=name,
-            type=sidemantic_type,
-            expr=entity_def.get("expr", name),
+            metrics=measures,
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -202,11 +186,11 @@ class MetricFlowAdapter(BaseAdapter):
             label=dim_def.get("label"),
         )
 
-    def _parse_measure(self, measure_def: dict) -> Measure | None:
+    def _parse_measure(self, measure_def: dict) -> Metric | None:
         """Parse MetricFlow measure into Sidemantic measure.
 
         Args:
-            measure_def: Measure definition dictionary
+            measure_def: Metric definition dictionary
 
         Returns:
             Measure instance or None
@@ -232,19 +216,19 @@ class MetricFlowAdapter(BaseAdapter):
 
         sidemantic_agg = type_mapping.get(agg_type, "sum")
 
-        return Measure(
+        return Metric(
             name=name,
             agg=sidemantic_agg,
-            expr=measure_def.get("expr"),
+            sql=measure_def.get("expr"),
             description=measure_def.get("description"),
             label=measure_def.get("label"),
         )
 
-    def _parse_metric(self, metric_def: dict) -> Measure | None:
+    def _parse_metric(self, metric_def: dict) -> Metric | None:
         """Parse MetricFlow metric into Sidemantic measure.
 
         Args:
-            metric_def: Measure definition dictionary
+            metric_def: Metric definition dictionary
 
         Returns:
             Measure instance or None
@@ -256,16 +240,18 @@ class MetricFlowAdapter(BaseAdapter):
         metric_type = metric_def.get("type", "simple")
 
         # Map MetricFlow metric types
+        # Note: "simple" maps to None (untyped) since we removed the simple type
         type_mapping = {
-            "simple": "simple",
+            "simple": None,  # Untyped metric with sql expression
             "ratio": "ratio",
             "derived": "derived",
             "cumulative": "cumulative",
             # conversion not yet supported
         }
 
-        sidemantic_type = type_mapping.get(metric_type)
-        if not sidemantic_type:
+        sidemantic_type = type_mapping.get(metric_type, None)
+        # Only skip if the metric type is truly unsupported (not in mapping at all)
+        if metric_type not in type_mapping:
             return None  # Skip unsupported metric types
 
         # Extract type-specific parameters
@@ -311,12 +297,12 @@ class MetricFlowAdapter(BaseAdapter):
         filter_expr = metric_def.get("filter")
         filters = [filter_expr] if filter_expr else None
 
-        return Measure(
+        return Metric(
             name=name,
             type=sidemantic_type,
             description=metric_def.get("description"),
             label=metric_def.get("label"),
-            expr=expr,
+            sql=expr,
             numerator=numerator,
             denominator=denominator,
             window=window,
@@ -368,16 +354,24 @@ class MetricFlowAdapter(BaseAdapter):
         if model.description:
             result["description"] = model.description
 
-        # Export entities
+        # Export entities (convert from relationships and primary_key)
         result["entities"] = []
-        for entity in model.entities:
-            entity_def = {
-                "name": entity.name,
-                "type": entity.type,
-            }
-            if entity.expr:
-                entity_def["expr"] = entity.expr
-            result["entities"].append(entity_def)
+
+        # Add primary entity
+        result["entities"].append({
+            "name": model.name,  # Use model name as entity name
+            "type": "primary",
+            "expr": model.primary_key
+        })
+
+        # Add foreign entities from relationships
+        for rel in model.relationships:
+            if rel.type == "many_to_one":
+                result["entities"].append({
+                    "name": rel.name,
+                    "type": "foreign",
+                    "expr": rel.foreign_key or f"{rel.name}_id"
+                })
 
         # Export dimensions
         if model.dimensions:
@@ -385,8 +379,8 @@ class MetricFlowAdapter(BaseAdapter):
             for dim in model.dimensions:
                 dim_def = {"name": dim.name, "type": dim.type}
 
-                if dim.expr:
-                    dim_def["expr"] = dim.expr
+                if dim.sql:
+                    dim_def["expr"] = dim.sql
 
                 if dim.type == "time" and dim.granularity:
                     dim_def["type_params"] = {"time_granularity": dim.granularity}
@@ -399,9 +393,9 @@ class MetricFlowAdapter(BaseAdapter):
                 result["dimensions"].append(dim_def)
 
         # Export measures
-        if model.measures:
+        if model.metrics:
             result["measures"] = []
-            for measure in model.measures:
+            for measure in model.metrics:
                 measure_def = {"name": measure.name}
 
                 # Map agg types
@@ -416,8 +410,8 @@ class MetricFlowAdapter(BaseAdapter):
                 }
                 measure_def["agg"] = agg_mapping.get(measure.agg, "sum")
 
-                if measure.expr:
-                    measure_def["expr"] = measure.expr
+                if measure.sql:
+                    measure_def["expr"] = measure.sql
 
                 if measure.description:
                     measure_def["description"] = measure.description
@@ -428,18 +422,21 @@ class MetricFlowAdapter(BaseAdapter):
 
         return result
 
-    def _export_metric(self, measure: Measure, graph) -> dict:
+    def _export_metric(self, measure: Metric, graph) -> dict:
         """Export measure to MetricFlow format.
 
         Args:
-            measure: Measure to export
+            measure: Metric to export
 
         Returns:
             Measure definition dictionary
         """
+        # Determine export type - untyped metrics with sql should be exported as "simple"
+        export_type = measure.type or ("simple" if not measure.agg and measure.sql else None)
+
         result = {
             "name": measure.name,
-            "type": measure.type,
+            "type": export_type,
         }
 
         if measure.description:
@@ -450,8 +447,9 @@ class MetricFlowAdapter(BaseAdapter):
         # Type-specific params
         type_params = {}
 
-        if measure.type == "simple" and measure.expr:
-            type_params["measure"] = {"name": measure.expr}
+        # Untyped metrics with sql are treated as simple (measure references)
+        if not measure.type and not measure.agg and measure.sql:
+            type_params["measure"] = {"name": measure.sql}
 
         elif measure.type == "ratio":
             if measure.numerator:
@@ -460,8 +458,8 @@ class MetricFlowAdapter(BaseAdapter):
                 type_params["denominator"] = {"name": measure.denominator}
 
         elif measure.type == "derived":
-            if measure.expr:
-                type_params["expr"] = measure.expr
+            if measure.sql:
+                type_params["expr"] = measure.sql
             # Auto-detect dependencies from expression using graph for resolution
             dependencies = measure.get_dependencies(graph)
             if dependencies:

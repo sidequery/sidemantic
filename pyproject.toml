@@ -3,6 +3,7 @@ name = "sidemantic"
 version = "0.2.0"
 description = "SQLGlot-based semantic layer with multi-format adapter support"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
     "sqlglot>=25.0.0",

@@ -1,0 +1,233 @@
+---
+title: "Advanced Features"
+---
+
+## Segments - Reusable Filters
+
+Define named filters that can be reused across queries:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    segments:
+      - name: completed
+        sql: "{model}.status = 'completed'"
+        description: "Only completed orders"
+
+      - name: high_value
+        sql: "{model}.amount > 100"
+        description: "High value orders"
+```
+
+Use in queries:
+
+```python
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.region"],
+    segments=["orders.completed", "orders.high_value"]
+)
+```
+
+The `{model}` placeholder gets replaced with the actual table alias.
+
+## Metric-Level Filters
+
+Filters that automatically apply whenever a metric is used:
+
+```yaml
+metrics:
+  - name: completed_revenue
+    agg: sum
+    sql: amount
+    filters: ["{model}.status = 'completed'"]
+```
+
+Every query using `completed_revenue` will automatically filter to completed orders.
+
+## Jinja2 Templating
+
+Use full Jinja2 syntax in SQL fields:
+
+```yaml
+metrics:
+  - name: taxed_revenue
+    agg: sum
+    sql: "{% if include_tax %}amount * 1.1{% else %}amount{% endif %}"
+```
+
+```python
+# Use with parameters
+layer.compile(
+    metrics=["orders.taxed_revenue"],
+    parameters={"include_tax": True}
+)
+```
+
+Jinja2 supports:
+- Conditionals: `{% if ... %}...{% endif %}`
+- Loops: `{% for item in items %}...{% endfor %}`
+- Filters: `{{ name | upper }}`
+
+## Inheritance
+
+### Model Inheritance
+
+Extend base models to reduce duplication:
+
+```yaml
+models:
+  - name: base_sales
+    table: sales
+    primary_key: sale_id
+    dimensions:
+      - name: date
+        type: time
+        granularity: day
+      - name: region
+        type: categorical
+
+  - name: filtered_sales
+    extends: base_sales  # Inherits all dimensions!
+    segments:
+      - name: completed
+        sql: "{model}.status = 'completed'"
+```
+
+### Metric Inheritance
+
+Extend base metrics:
+
+```yaml
+metrics:
+  - name: base_revenue
+    agg: sum
+    sql: amount
+
+  - name: completed_revenue
+    extends: base_revenue
+    filters: ["{model}.status = 'completed'"]
+```
+
+Child inherits all parent properties and can override or add to them.
+
+## Hierarchies & Drill-Down
+
+Define hierarchical dimensions:
+
+```python
+from sidemantic import Dimension
+
+# Define hierarchy
+country = Dimension(name="country", type="categorical")
+state = Dimension(name="state", type="categorical", parent="country")
+city = Dimension(name="city", type="categorical", parent="state")
+```
+
+Navigate the hierarchy:
+
+```python
+# Get full path
+model.get_hierarchy_path("city")
+# Returns: ['country', 'state', 'city']
+
+# Drill down
+model.get_drill_down("country")  # Returns: 'state'
+model.get_drill_down("state")    # Returns: 'city'
+
+# Drill up
+model.get_drill_up("city")    # Returns: 'state'
+model.get_drill_up("state")   # Returns: 'country'
+```
+
+## Relative Date Ranges
+
+Use natural language for date filters:
+
+```python
+layer.compile(
+    metrics=["orders.revenue"],
+    filters=["orders_cte.created_at >= 'last 7 days'"]
+)
+# Auto-converts to: created_at >= CURRENT_DATE - 7
+```
+
+Supported expressions:
+- `"today"`, `"yesterday"`, `"tomorrow"`
+- `"last N days"`, `"last N weeks"`, `"last N months"`
+- `"this week"`, `"last week"`, `"next week"`
+- `"this month"`, `"last month"`, `"next month"`
+- `"this quarter"`, `"last quarter"`
+- `"this year"`, `"last year"`
+
+## Ungrouped Queries
+
+Get raw rows without aggregation (for detail views):
+
+```python
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.customer_id", "orders.order_id"],
+    ungrouped=True  # Returns raw rows
+)
+```
+
+Without `ungrouped=True`, you get aggregated results.
+With `ungrouped=True`, you get individual order rows.
+
+## Metadata Fields
+
+### Display Formatting
+
+```yaml
+metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+    format: "$#,##0.00"
+    value_format_name: "usd"
+
+dimensions:
+  - name: discount_rate
+    type: numeric
+    format: "0.0%"
+    value_format_name: "percent"
+```
+
+### Drill Fields
+
+Define drill-down paths for BI tools:
+
+```yaml
+metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+    drill_fields: ["customer.name", "product.name", "order.date"]
+```
+
+### Non-Additivity Markers
+
+Mark metrics that can't be summed across certain dimensions:
+
+```yaml
+metrics:
+  - name: avg_order_value
+    agg: avg
+    sql: amount
+    non_additive_dimension: "date"  # Don't sum averages across time!
+```
+
+### Default Dimensions
+
+Specify default time dimension and granularity:
+
+```yaml
+metrics:
+  - name: daily_revenue
+    agg: sum
+    sql: amount
+    default_time_dimension: "order_date"
+    default_grain: "day"
+```

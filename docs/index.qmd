@@ -25,12 +25,36 @@ layer.sql("SELECT revenue FROM orders")
 
 ## Key Features
 
+### Core Capabilities
 - **YAML definitions** with JSON Schema for autocomplete
 - **SQL query interface** - write familiar SQL, get semantic results
 - **Automatic joins** - define relationships once, query across models
+- **Multi-hop joins** - automatic 2+ hop join path discovery
 - **Auto-detected dependencies** - no manual dependency declarations needed!
-- **Complex metrics** - ratios, formulas, cumulative metrics, time comparisons
 - **Multi-dialect** - SQLGlot powers cross-database SQL generation
+
+### Rich Metric Types
+- **Aggregations** - sum, avg, count, count_distinct, min, max
+- **Ratios** - revenue / order_count
+- **Derived formulas** - (revenue - cost) / revenue
+- **Cumulative** - running totals, rolling windows
+- **Time comparisons** - YoY, MoM, WoW with LAG window functions
+- **Conversion funnels** - signup → purchase rate
+
+### Advanced Features
+- **Segments** - reusable named filters with template placeholders
+- **Metric-level filters** - auto-applied filters for business logic
+- **Jinja2 templating** - full conditionals and loops in SQL
+- **Inheritance** - extend models and metrics (DRY principles)
+- **Hierarchies** - parent/child dimensions with drill-down API
+- **Relative dates** - "last 7 days", "this month", etc.
+- **Ungrouped queries** - raw row access without aggregation
+
+### Metadata & Governance
+- **Display formatting** - format strings and named formats (USD, percent)
+- **Drill fields** - define drill-down paths for BI tools
+- **Non-additivity markers** - prevent incorrect aggregation
+- **Default dimensions** - default time dimensions and granularity
 
 ## Quick Example
 

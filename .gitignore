@@ -1,1 +1,22 @@
 docs/_site
+# Local preview/runtime artifacts
+.quarto-preview.log
+.quarto-preview.pid
+.marimo-server.log
+.marimo-server.pid
+.playwright-mcp/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Virtual envs
+.venv/
+
+# OS/editor cruft
+.DS_Store
+.idea/
+.vscode/
+
+# Local example DBs
+examples/*.db

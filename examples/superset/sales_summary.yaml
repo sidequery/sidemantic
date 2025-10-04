@@ -1,0 +1,86 @@
+table_name: sales_summary
+main_dttm_col: sale_date
+description: Virtual dataset for sales analytics
+schema: null
+sql: |
+  SELECT
+    DATE(order_date) as sale_date,
+    product_category,
+    SUM(amount) as total_sales,
+    COUNT(*) as order_count
+  FROM orders
+  JOIN products ON orders.product_id = products.id
+  GROUP BY 1, 2
+cache_timeout: 3600
+filter_select_enabled: true
+version: 1.0.0
+
+metrics:
+  - metric_name: total_revenue
+    verbose_name: Total Revenue
+    metric_type: sum
+    expression: SUM(total_sales)
+    description: Sum of sales
+    d3format: "$,.2f"
+    extra: null
+    warning_text: null
+
+  - metric_name: total_orders
+    verbose_name: Total Orders
+    metric_type: sum
+    expression: SUM(order_count)
+    description: Total number of orders
+    d3format: ","
+    extra: null
+    warning_text: null
+
+  - metric_name: revenue_per_order
+    verbose_name: Revenue per Order
+    metric_type: null
+    expression: SUM(total_sales) / NULLIF(SUM(order_count), 0)
+    description: Average revenue per order
+    d3format: "$,.2f"
+    extra: null
+    warning_text: null
+
+columns:
+  - column_name: sale_date
+    verbose_name: Sale Date
+    is_dttm: true
+    is_active: true
+    type: DATE
+    groupby: true
+    filterable: true
+    expression: null
+    description: Date of sale
+    python_date_format: null
+
+  - column_name: product_category
+    verbose_name: Category
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: Product category
+
+  - column_name: total_sales
+    verbose_name: Sales Amount
+    is_dttm: false
+    is_active: true
+    type: NUMERIC
+    groupby: false
+    filterable: true
+    expression: null
+    description: Total sales amount
+
+  - column_name: order_count
+    verbose_name: Order Count
+    is_dttm: false
+    is_active: true
+    type: NUMERIC
+    groupby: false
+    filterable: true
+    expression: null
+    description: Number of orders

@@ -1,0 +1,88 @@
+table_name: orders
+main_dttm_col: created_at
+description: Customer orders dataset
+schema: public
+sql: null
+cache_timeout: null
+filter_select_enabled: true
+version: 1.0.0
+
+metrics:
+  - metric_name: count
+    verbose_name: COUNT(*)
+    metric_type: count
+    expression: COUNT(*)
+    description: Total number of orders
+    d3format: null
+    extra: null
+    warning_text: null
+
+  - metric_name: total_revenue
+    verbose_name: Total Revenue
+    metric_type: sum
+    expression: SUM(amount)
+    description: Sum of order amounts
+    d3format: "$,.2f"
+    extra: null
+    warning_text: null
+
+  - metric_name: avg_order_value
+    verbose_name: Average Order Value
+    metric_type: avg
+    expression: AVG(amount)
+    description: Average order amount
+    d3format: "$,.2f"
+    extra: null
+    warning_text: null
+
+columns:
+  - column_name: id
+    verbose_name: Order ID
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: Primary key
+
+  - column_name: customer_id
+    verbose_name: Customer ID
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: Foreign key to customers
+
+  - column_name: created_at
+    verbose_name: Order Date
+    is_dttm: true
+    is_active: true
+    type: TIMESTAMP WITHOUT TIME ZONE
+    groupby: true
+    filterable: true
+    expression: null
+    description: Order creation timestamp
+    python_date_format: null
+
+  - column_name: status
+    verbose_name: Order Status
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: Current order status
+
+  - column_name: amount
+    verbose_name: Order Amount
+    is_dttm: false
+    is_active: true
+    type: NUMERIC
+    groupby: false
+    filterable: true
+    expression: null
+    description: Order total amount

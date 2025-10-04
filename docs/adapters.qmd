@@ -16,6 +16,7 @@ Sidemantic can import semantic models from other popular semantic layer formats,
 | **LookML** (Looker) | ✅ | ✅* | Liquid templating (not Jinja) |
 | **Hex** | ✅ | ✅* | ⚠️ No segments or cross-model derived metrics |
 | **Rill** | ✅ | ✅* | ⚠️ No relationships, segments, or cross-model metrics; single-model only |
+| **Superset** (Apache) | ✅ | ✅* | No relationships in datasets |
 
 \* Export is in alpha
 
@@ -23,25 +24,25 @@ Sidemantic can import semantic models from other popular semantic layer formats,
 
 This table shows which Sidemantic features are preserved when importing/exporting to other formats:
 
-| Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Notes |
-|---------|------------|------|------------|--------|-----|------|-------|
-| **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
-| **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
-| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Rill: single-model only |
-| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
-| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
-| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | Rill: exported as derived metric with formula |
-| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
-| **Cumulative Metrics** | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | Cube: rolling_window; LookML/Hex/Rill: exported as SQL |
-| **Time Comparison** | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | MetricFlow: native; others: exported as calculated measure |
-| **Segments** | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ | MetricFlow/Hex: stored in meta; Rill: not supported |
-| **Metric Filters** | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | MetricFlow: stored in meta; Rill: basic support only |
-| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
-| **Hierarchies** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | Cube/LookML: drill_members; MetricFlow/Hex: meta; Rill: none |
-| **Inheritance** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Resolved before export (fully merged definitions) |
-| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | LookML uses Liquid instead of Jinja |
-| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Label/description preserved; format/drill_fields in meta |
-| **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Superset | Notes |
+|---------|------------|------|------------|--------|-----|------|----------|-------|
+| **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
+| **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
+| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Rill/Superset: single-model only |
+| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
+| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | Rill/Superset: exported as derived metric with formula |
+| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
+| **Cumulative Metrics** | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Cube: rolling_window; others: exported as SQL |
+| **Time Comparison** | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | MetricFlow: native; others: exported as calculated measure |
+| **Segments** | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ | ❌ | MetricFlow/Hex: stored in meta; Rill/Superset: not supported |
+| **Metric Filters** | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ❌ | MetricFlow: stored in meta; Rill: basic support; Superset: none |
+| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| **Hierarchies** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | Cube/LookML: drill_members; MetricFlow/Hex: meta; Rill/Superset: none |
+| **Inheritance** | ✅ | ⚠️ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | LookML: native extends; others: resolved before export |
+| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | LookML uses Liquid instead of Jinja |
+| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | Superset: verbose_name for label; others: label/description preserved |
+| **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
 
 **Legend:**
 
@@ -143,6 +144,23 @@ layer.graph = graph
 result = layer.compile(metrics=["orders.revenue"])
 ```
 
+### From Superset
+
+Read Apache Superset datasets into Sidemantic:
+
+```python
+from sidemantic.adapters.superset import SupersetAdapter
+
+# Import from Superset YAML
+adapter = SupersetAdapter()
+graph = adapter.parse("superset/datasets/")  # Directory of YAML files
+
+# Query with Sidemantic
+from sidemantic import SemanticLayer
+layer = SemanticLayer(graph=graph)
+result = layer.sql("SELECT total_revenue FROM orders")
+```
+
 ## Exporting from Sidemantic (Alpha)
 
 Export support is experimental. Some features may be lost or simplified when exporting to other formats.
@@ -200,6 +218,17 @@ from sidemantic.adapters.rill import RillAdapter
 layer = SemanticLayer.from_yaml("semantic_layer.yml")
 adapter = RillAdapter()
 adapter.export(layer.graph, "rill/metrics/")  # Creates one metrics view per model
+```
+
+### To Superset
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.superset import SupersetAdapter
+
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+adapter = SupersetAdapter()
+adapter.export(layer.graph, "superset/datasets/")  # Creates one dataset per model
 ```
 
 ## Migration Examples
@@ -352,6 +381,34 @@ layer.to_yaml("semantic_layer.yml")
 - Relationships not exported (Rill focuses on single-model views)
 - Segments not exported (use measure filters instead)
 
+### Superset
+
+**Import (Superset → Sidemantic):**
+
+- `table_name` → model `name`
+- `schema` + `table_name` → model `table`
+- `sql` → model `sql` (for virtual datasets)
+- `columns` → `dimensions`
+- `metrics` → model `metrics`
+- `main_dttm_col` → time dimension detection
+- `verbose_name` → `label` field
+- `is_dttm` flag → time dimension type
+- `metric_type` → aggregation mapping (count, sum, avg, etc.)
+
+**Export (Sidemantic → Superset):**
+
+- Each model → separate dataset YAML file
+- Model `name` + `table` → `schema` and `table_name`
+- Model `sql` → virtual dataset with SQL query
+- Dimensions → columns with `is_dttm`, `groupby`, `filterable` flags
+- Time dimensions → `main_dttm_col` reference
+- Metrics → measures with `metric_type` and `expression`
+- Label → `verbose_name` field
+- Ratio/derived metrics → calculated measures with expression
+- Relationships not exported (datasets are single-model)
+- Segments not exported (no native support)
+- Metric filters not exported (no native support)
+
 ## Round-Trip Considerations
 
 These conversions lose some information:
@@ -361,6 +418,7 @@ These conversions lose some information:
 - **Sidemantic → LookML → Sidemantic**: Loses relationship details (views don't declare joins)
 - **Sidemantic → Hex → Sidemantic**: Loses segment support
 - **Sidemantic → Rill → Sidemantic**: Loses relationships, segments, hierarchies
+- **Sidemantic → Superset → Sidemantic**: Loses relationships, segments, metric filters, hierarchies
 - **Any format → Sidemantic**: May lose format-specific metadata
 
 Keep your source of truth in one format and export to others as needed. Don't round-trip unless necessary.

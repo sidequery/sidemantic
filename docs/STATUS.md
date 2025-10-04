@@ -39,42 +39,16 @@
 - ✅ Pydantic models for type safety
 - ✅ Comprehensive examples and tests
 
-## ✅ Recent DSL Improvements (2025-01)
+## DSL Design
 
-### Simplified & Clarified DSL
-- ✅ **Removed entity system**: Use `primary_key` directly on models (simpler!)
-- ✅ **Renamed joins → relationships**: Explicit types (many_to_one, one_to_many, one_to_one)
-- ✅ **Standardized field names**: All `expr` → `sql` consistently
-- ✅ **Unified terminology**: `measures` → `metrics` everywhere
-- ✅ **Auto-detect dependencies**: No more `type: simple` or manual dependency lists!
+### Clean and Intuitive Syntax
+- **Simple primary keys**: Use `primary_key` directly on models
+- **Explicit relationships**: Clear types (many_to_one, one_to_many, one_to_one)
+- **Consistent field names**: `sql` everywhere for expressions
+- **Unified terminology**: `metrics` consistently
+- **Auto-detected dependencies**: No manual dependency lists needed
 
-**Before:**
-```yaml
-models:
-  - name: orders
-    entities:
-      - name: order
-        type: primary
-        expr: order_id
-      - name: customer
-        type: foreign
-        expr: customer_id
-    joins:
-      - name: customers
-        type: belongs_to
-        foreign_key: customer_id
-    measures:
-      - name: revenue
-        agg: sum
-        expr: amount
-
-metrics:
-  - name: total_revenue
-    type: simple
-    measure: orders.revenue
-```
-
-**After:**
+**Example:**
 ```yaml
 models:
   - name: orders
@@ -93,8 +67,6 @@ metrics:
   - name: total_revenue
     sql: orders.revenue
 ```
-
-**Result:** Cleaner, more intuitive DSL with automatic dependency detection!
 
 ## ✅ SQL Generation Examples
 
@@ -115,9 +87,9 @@ FROM orders_cte
 GROUP BY 1
 ```
 
-## ✅ Recently Completed
+## ✅ Features
 
-### Advanced Features
+### Advanced Metrics & Queries
 - ✅ **Cross-model metrics**: Metrics can reference metrics from multiple models via recursive dependency resolution
 - ✅ **Multi-hop joins**: BFS join path discovery supports 2+ hop joins with intermediate model inclusion
 - ✅ **Derived metrics**: Formula parsing with automatic dependency detection
@@ -232,14 +204,9 @@ Manual dependency lists are error-prone and redundant. SQL parsing automatically
 - JSON/YAML serialization support
 - Good IDE autocomplete
 
-## 🔄 Next Steps
+## Roadmap
 
-**Short-term** (to make more useful):
-1. Complete cumulative metrics with window functions
-2. Add more example YAML files and documentation
-3. Performance optimization for large models
-
-**Long-term** (to make production-ready):
+**Planned enhancements**:
 1. Query caching and optimization
 2. REST/GraphQL API layer
 3. Pre-aggregation support (like Cube's rollups)

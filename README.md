@@ -286,7 +286,7 @@ Use explicit, readable relationship types:
 - **one_to_many**: One record in THIS table → many records in OTHER table (e.g., customer → orders)
 - **one_to_one**: One record in THIS table → one record in OTHER table (e.g., order → invoice)
 
-## New Features Showcase
+## Feature Examples
 
 ### Segments - Reusable Filters
 ```yaml

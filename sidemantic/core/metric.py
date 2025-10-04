@@ -20,6 +20,7 @@ class Metric(BaseModel):
     """
 
     name: str = Field(..., description="Unique measure name")
+    extends: str | None = Field(None, description="Parent metric to inherit from")
 
     # Basic aggregation (for simple measures)
     agg: Literal["sum", "count", "count_distinct", "avg", "min", "max", "median"] | None = Field(

@@ -19,6 +19,7 @@ class Model(BaseModel):
     table: str | None = Field(None, description="Physical table name (schema.table)")
     sql: str | None = Field(None, description="SQL expression for derived tables")
     description: str | None = Field(None, description="Human-readable description")
+    extends: str | None = Field(None, description="Parent model to inherit from")
 
     # Relationships
     relationships: list[Relationship] = Field(
@@ -66,3 +67,65 @@ class Model(BaseModel):
             if segment.name == name:
                 return segment
         return None
+
+    def get_hierarchy_path(self, dimension_name: str) -> list[str]:
+        """Get the full hierarchy path from root to given dimension.
+
+        Args:
+            dimension_name: Name of dimension to find path for
+
+        Returns:
+            List of dimension names from root to given dimension
+
+        Examples:
+            >>> model.get_hierarchy_path("city")
+            ['country', 'state', 'city']
+        """
+        dim = self.get_dimension(dimension_name)
+        if not dim:
+            return []
+
+        path = [dimension_name]
+
+        # Walk up the parent chain
+        current = dim
+        while current and current.parent:
+            path.insert(0, current.parent)
+            current = self.get_dimension(current.parent)
+
+        return path
+
+    def get_drill_down(self, dimension_name: str) -> str | None:
+        """Get the next dimension to drill down to from given dimension.
+
+        Args:
+            dimension_name: Current dimension name
+
+        Returns:
+            Name of child dimension, or None if no children
+
+        Examples:
+            >>> model.get_drill_down("country")
+            'state'
+        """
+        # Find dimension that has current dimension as parent
+        for dim in self.dimensions:
+            if dim.parent == dimension_name:
+                return dim.name
+        return None
+
+    def get_drill_up(self, dimension_name: str) -> str | None:
+        """Get the parent dimension to drill up to from given dimension.
+
+        Args:
+            dimension_name: Current dimension name
+
+        Returns:
+            Name of parent dimension, or None if at top level
+
+        Examples:
+            >>> model.get_drill_up("city")
+            'state'
+        """
+        dim = self.get_dimension(dimension_name)
+        return dim.parent if dim else None

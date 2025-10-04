@@ -130,6 +130,7 @@ class SemanticLayer:
         offset: int | None = None,
         dialect: str | None = None,
         ungrouped: bool = False,
+        parameters: dict[str, any] | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -165,7 +166,7 @@ class SemanticLayer:
         generator = SQLGenerator(self.graph, dialect=dialect or self.dialect)
 
         return generator.generate(
-            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, offset=offset, ungrouped=ungrouped
+            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, offset=offset, ungrouped=ungrouped, parameters=parameters
         )
 
     def get_model(self, name: str) -> Model:

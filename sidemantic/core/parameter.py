@@ -130,16 +130,27 @@ class ParameterSet:
     def interpolate(self, sql: str) -> str:
         """Interpolate parameters into SQL string.
 
-        Parameters are referenced as {{ parameter_name }} in SQL.
+        Supports both simple {{ parameter_name }} and full Jinja templates.
 
         Args:
-            sql: SQL with parameter placeholders
+            sql: SQL with parameter placeholders or templates
 
         Returns:
             SQL with parameters interpolated
         """
+        from sidemantic.core.template import is_sql_template, render_sql_template
         import re
 
+        # Check if this is a full Jinja template (has conditionals, loops, etc.)
+        if is_sql_template(sql) and any(marker in sql for marker in ['{%', '{#']):
+            # Use full template rendering
+            # Build context with raw parameter values
+            context = {}
+            for name in self.parameters:
+                context[name] = self.get(name)
+            return render_sql_template(sql, context)
+
+        # Otherwise use simple parameter substitution with SQL formatting
         # Find all {{ parameter_name }} patterns
         pattern = r'\{\{\s*(\w+)\s*\}\}'
 

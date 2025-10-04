@@ -11,30 +11,31 @@ Sidemantic can import and export semantic models from other popular semantic lay
 | **Sidemantic** (native) | ✅ | ✅ | Full support |
 | **Cube** | ✅ | ✅ | Core features |
 | **MetricFlow** (dbt) | ✅ | ✅ | Core features |
+| **LookML** (Looker) | ✅ | ✅ | Core features |
 
 ## Feature Compatibility
 
 This table shows which Sidemantic features are preserved when importing/exporting to other formats:
 
-| Feature | Cube | MetricFlow | Notes |
-|---------|------|------------|-------|
-| **Models** | ✅ | ✅ | Full bidirectional support |
-| **Dimensions** | ✅ | ✅ | Full bidirectional support |
-| **Time Dimensions** | ✅ | ✅ | Granularity preserved |
-| **Simple Metrics** | ✅ | ✅ | sum, count, avg, etc. |
-| **Ratio Metrics** | ✅ | ✅ | Cube: exported as calculated measure |
-| **Derived Metrics** | ✅ | ✅ | Formula-based metrics |
-| **Cumulative Metrics** | ✅ | ✅ | Cube: uses rolling_window |
-| **Time Comparison** | ⚠️ | ✅ | Cube: exported as calculated measure with note |
-| **Relationships** | ✅ | ✅ | many_to_one, one_to_many |
-| **Segments** | ✅ | ⚠️ | Cube: native support; MetricFlow: stored in meta |
-| **Metric Filters** | ✅ | ⚠️ | Cube: full support; MetricFlow: stored in meta |
-| **Parameters** | ❌ | ❌ | Not supported by target formats |
-| **Hierarchies** | ⚠️ | ⚠️ | Cube: uses drill_members; MetricFlow: stored in meta |
-| **Inheritance** | ✅ | ✅ | Resolved before export (fully merged) |
-| **Jinja Templates** | ✅ | ✅ | Preserved in SQL/expr fields |
-| **Metadata Fields** | ⚠️ | ⚠️ | format exported; others in meta |
-| **Ungrouped Queries** | ❌ | ❌ | Sidemantic-specific, not exportable |
+| Feature | Cube | MetricFlow | LookML | Notes |
+|---------|------|------------|--------|-------|
+| **Models** | ✅ | ✅ | ✅ | Full bidirectional support |
+| **Dimensions** | ✅ | ✅ | ✅ | Full bidirectional support |
+| **Time Dimensions** | ✅ | ✅ | ✅ | LookML: uses dimension_group |
+| **Simple Metrics** | ✅ | ✅ | ✅ | sum, count, avg, etc. |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | Cube/LookML: exported as calculated measure |
+| **Derived Metrics** | ✅ | ✅ | ✅ | Formula-based metrics |
+| **Cumulative Metrics** | ✅ | ✅ | ⚠️ | Cube: uses rolling_window; LookML: limited |
+| **Time Comparison** | ⚠️ | ✅ | ⚠️ | Exported as calculated measure with note |
+| **Relationships** | ✅ | ✅ | ⚠️ | LookML: limited inference from views |
+| **Segments** | ✅ | ⚠️ | ✅ | LookML: uses filter; MetricFlow: stored in meta |
+| **Metric Filters** | ✅ | ⚠️ | ✅ | LookML/Cube: full support; MetricFlow: stored in meta |
+| **Parameters** | ❌ | ❌ | ❌ | Not supported by target formats |
+| **Hierarchies** | ⚠️ | ⚠️ | ⚠️ | Stored in meta or drill_members |
+| **Inheritance** | ✅ | ✅ | ✅ | Resolved before export (fully merged) |
+| **Jinja Templates** | ✅ | ✅ | ⚠️ | LookML: uses Liquid instead of Jinja |
+| **Metadata Fields** | ⚠️ | ⚠️ | ⚠️ | format exported; others in meta |
+| **Ungrouped Queries** | ❌ | ❌ | ❌ | Sidemantic-specific, not exportable |
 
 **Legend:**
 - ✅ Full support - feature works bidirectionally
@@ -113,6 +114,39 @@ layer = SemanticLayer.from_yaml("semantic_layer.yml")
 # Export to MetricFlow
 adapter = MetricFlowAdapter()
 adapter.export(layer.graph, "models/metrics/semantic_layer.yml")
+```
+
+### Import from LookML
+
+Convert Looker LookML views to Sidemantic:
+
+```python
+from sidemantic.adapters.lookml import LookMLAdapter
+
+# Import from LookML
+adapter = LookMLAdapter()
+graph = adapter.parse("views/orders.lkml")  # Single file or directory
+
+# Query with Sidemantic
+from sidemantic import SemanticLayer
+layer = SemanticLayer(graph=graph)
+result = layer.sql("SELECT revenue FROM orders")
+```
+
+### Export to LookML
+
+Convert Sidemantic models to LookML format:
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.lookml import LookMLAdapter
+
+# Load Sidemantic model
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+
+# Export to LookML
+adapter = LookMLAdapter()
+adapter.export(layer.graph, "views/output.lkml")
 ```
 
 ## Migration Examples
@@ -200,6 +234,28 @@ layer.to_yaml("semantic_layer.yml")
 - MetricFlow `measures` → Sidemantic `metrics` (model-level)
 - MetricFlow `metrics` → Sidemantic `metrics` (graph-level)
 
+### LookML (Looker)
+
+**Strengths:**
+- Simple, declarative syntax
+- Strong support for time dimensions (dimension_group)
+- Native segment (filter) support
+- Widely adopted in industry
+
+**Limitations:**
+- Uses Liquid templates instead of Jinja
+- Limited relationship inference (views don't declare joins)
+- No native support for ratio or cumulative metrics
+- Explore definitions needed for full join graph
+
+**Conversion Notes:**
+- LookML `views` → Sidemantic `models`
+- LookML `dimensions` → Sidemantic `dimensions`
+- LookML `dimension_group` → Multiple time dimensions
+- LookML `measures` → Sidemantic `metrics`
+- LookML `filters` (view-level) → Sidemantic `segments`
+- LookML `derived_table` → Sidemantic model with SQL
+
 ## Round-Trip Guarantees
 
 ### Lossless Round-Trips
@@ -262,7 +318,6 @@ If you encounter issues with format conversion:
 Want to add support for another format? See our [adapter development guide](https://github.com/anthropics/sidemantic/blob/main/CONTRIBUTING.md) or file a feature request.
 
 Popular formats we'd like to support:
-- **LookML** (Looker) - Stub exists but needs full grammar parser
 - **Malloy** - Google's semantic modeling language
 - **Omni** - Modern BI semantic layer
 - **GoodData** - Enterprise analytics platform

@@ -12,30 +12,31 @@ Sidemantic can import and export semantic models from other popular semantic lay
 | **Cube** | ✅ | ✅ | Core features |
 | **MetricFlow** (dbt) | ✅ | ✅ | Core features |
 | **LookML** (Looker) | ✅ | ✅ | Core features |
+| **Hex** | ✅ | ✅ | Core features |
 
 ## Feature Compatibility
 
 This table shows which Sidemantic features are preserved when importing/exporting to other formats:
 
-| Feature | Cube | MetricFlow | LookML | Notes |
-|---------|------|------------|--------|-------|
-| **Models** | ✅ | ✅ | ✅ | Full bidirectional support |
-| **Dimensions** | ✅ | ✅ | ✅ | Full bidirectional support |
-| **Time Dimensions** | ✅ | ✅ | ✅ | LookML: uses dimension_group |
-| **Simple Metrics** | ✅ | ✅ | ✅ | sum, count, avg, etc. |
-| **Ratio Metrics** | ✅ | ✅ | ✅ | Cube/LookML: exported as calculated measure |
-| **Derived Metrics** | ✅ | ✅ | ✅ | Formula-based metrics |
-| **Cumulative Metrics** | ✅ | ✅ | ⚠️ | Cube: uses rolling_window; LookML: limited |
-| **Time Comparison** | ⚠️ | ✅ | ⚠️ | Exported as calculated measure with note |
-| **Relationships** | ✅ | ✅ | ⚠️ | LookML: limited inference from views |
-| **Segments** | ✅ | ⚠️ | ✅ | LookML: uses filter; MetricFlow: stored in meta |
-| **Metric Filters** | ✅ | ⚠️ | ✅ | LookML/Cube: full support; MetricFlow: stored in meta |
-| **Parameters** | ❌ | ❌ | ❌ | Not supported by target formats |
-| **Hierarchies** | ⚠️ | ⚠️ | ⚠️ | Stored in meta or drill_members |
-| **Inheritance** | ✅ | ✅ | ✅ | Resolved before export (fully merged) |
-| **Jinja Templates** | ✅ | ✅ | ⚠️ | LookML: uses Liquid instead of Jinja |
-| **Metadata Fields** | ⚠️ | ⚠️ | ⚠️ | format exported; others in meta |
-| **Ungrouped Queries** | ❌ | ❌ | ❌ | Sidemantic-specific, not exportable |
+| Feature | Cube | MetricFlow | LookML | Hex | Notes |
+|---------|------|------------|--------|-----|-------|
+| **Models** | ✅ | ✅ | ✅ | ✅ | Full bidirectional support |
+| **Dimensions** | ✅ | ✅ | ✅ | ✅ | Full bidirectional support |
+| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | LookML: dimension_group; Hex: type variants |
+| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | sum, count, avg, etc. |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | Hex: func_calc support |
+| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | Hex: func_sql and func_calc |
+| **Cumulative Metrics** | ✅ | ✅ | ⚠️ | ⚠️ | Cube: rolling_window; others: limited |
+| **Time Comparison** | ⚠️ | ✅ | ⚠️ | ⚠️ | Exported as calculated measure |
+| **Relationships** | ✅ | ✅ | ⚠️ | ✅ | Hex: explicit join_sql |
+| **Segments** | ✅ | ⚠️ | ✅ | ⚠️ | Hex: via measure filters |
+| **Metric Filters** | ✅ | ⚠️ | ✅ | ✅ | Hex: native filter support |
+| **Parameters** | ❌ | ❌ | ❌ | ❌ | Not supported by target formats |
+| **Hierarchies** | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Stored in meta or drill_members |
+| **Inheritance** | ✅ | ✅ | ✅ | ✅ | Resolved before export (fully merged) |
+| **Jinja Templates** | ✅ | ✅ | ⚠️ | ✅ | LookML: uses Liquid |
+| **Metadata Fields** | ⚠️ | ⚠️ | ⚠️ | ⚠️ | format exported; others in meta |
+| **Ungrouped Queries** | ❌ | ❌ | ❌ | ❌ | Sidemantic-specific, not exportable |
 
 **Legend:**
 - ✅ Full support - feature works bidirectionally
@@ -149,6 +150,39 @@ adapter = LookMLAdapter()
 adapter.export(layer.graph, "views/output.lkml")
 ```
 
+### Import from Hex
+
+Convert Hex semantic models to Sidemantic:
+
+```python
+from sidemantic.adapters.hex import HexAdapter
+
+# Import from Hex YAML
+adapter = HexAdapter()
+graph = adapter.parse("hex/models/")  # Directory of YAML files
+
+# Query with Sidemantic
+from sidemantic import SemanticLayer
+layer = SemanticLayer(graph=graph)
+result = layer.sql("SELECT revenue FROM orders")
+```
+
+### Export to Hex
+
+Convert Sidemantic models to Hex format:
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.hex import HexAdapter
+
+# Load Sidemantic model
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+
+# Export to Hex (creates one file per model)
+adapter = HexAdapter()
+adapter.export(layer.graph, "hex/models/")
+```
+
 ## Migration Examples
 
 ### Cube → Sidemantic → MetricFlow
@@ -255,6 +289,29 @@ layer.to_yaml("semantic_layer.yml")
 - LookML `measures` → Sidemantic `metrics`
 - LookML `filters` (view-level) → Sidemantic `segments`
 - LookML `derived_table` → Sidemantic model with SQL
+
+### Hex
+
+**Strengths:**
+- Clean, straightforward YAML syntax
+- Explicit join conditions with SQL interpolation
+- Native support for both SQL and calculation formulas
+- Strong measure filter support
+- Good type system with specific timestamp variants
+
+**Limitations:**
+- Each YAML file is a single model (not as compact)
+- No native segment support (use measure filters)
+- Limited cumulative metric support
+- Beta product with evolving format
+
+**Conversion Notes:**
+- Hex models (id, base_sql_table) → Sidemantic `models`
+- Hex `dimensions` (expr_sql, expr_calc) → Sidemantic `dimensions`
+- Hex `measures` (func, func_sql, func_calc) → Sidemantic `metrics`
+- Hex `relations` (join_sql) → Sidemantic `relationships`
+- Hex `filters` on measures → Sidemantic metric filters
+- Hex `${interpolation}` → Kept as-is where possible
 
 ## Round-Trip Guarantees
 

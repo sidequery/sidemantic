@@ -1,0 +1,68 @@
+id: orders
+base_sql_table: public.orders
+description: Customer orders and transactions
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: customer_id
+    type: number
+
+  - id: amount
+    type: number
+    description: Order amount in dollars
+
+  - id: status
+    type: string
+    description: Order status (pending, completed, cancelled)
+
+  - id: created_at
+    type: timestamp_tz
+    description: When the order was created
+
+  - id: is_completed
+    type: boolean
+    expr_sql: status = 'completed'
+
+  - id: is_high_value
+    type: boolean
+    expr_sql: amount >= 500
+
+measures:
+  - id: order_count
+    func: count
+    description: Total number of orders
+
+  - id: revenue
+    func: sum
+    of: amount
+    description: Total revenue from orders
+
+  - id: avg_order_value
+    func: avg
+    of: amount
+    description: Average order value
+
+  - id: completed_revenue
+    func: sum
+    of: amount
+    filters:
+      - is_completed
+    description: Revenue from completed orders only
+
+  - id: high_value_orders
+    func: count
+    filters:
+      - is_high_value
+    description: Count of orders >= $500
+
+  - id: conversion_rate
+    func_sql: SUM(IF(status = 'completed', amount, 0)) / NULLIF(SUM(amount), 0)
+    description: Percentage of revenue that is completed
+
+relations:
+  - id: customers
+    type: many_to_one
+    join_sql: customer_id = ${customers}.id

@@ -1,0 +1,55 @@
+id: users
+base_sql_table: public.users
+description: User accounts and subscriptions
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: email
+    type: string
+    description: User email address
+
+  - id: seat_type
+    type: string
+    description: Type of seat (VIEW_ONLY, STANDARD, ADMIN)
+
+  - id: annual_seat_price
+    type: number
+    expr_sql: IF(seat_type = 'VIEW_ONLY', 20, 60)
+    description: Annual price for this seat type
+
+  - id: org_id
+    type: number
+    description: Organization ID for this user
+
+  - id: created_at
+    type: timestamp_tz
+    description: When the user account was created
+
+measures:
+  - id: total_users
+    func: count
+    description: Total number of users
+
+  - id: total_revenue
+    func: sum
+    of: annual_seat_price
+    description: Total annual revenue from all users
+
+  - id: avg_seat_price
+    func: avg
+    of: annual_seat_price
+    description: Average seat price
+
+  - id: view_only_users
+    func: count
+    filters:
+      - expr_sql: seat_type = 'VIEW_ONLY'
+    description: Count of view-only users
+
+relations:
+  - id: organizations
+    type: many_to_one
+    join_sql: org_id = ${organizations}.id

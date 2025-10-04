@@ -1,0 +1,46 @@
+id: organizations
+base_sql_table: public.organizations
+description: Customer organizations
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: name
+    type: string
+    description: Organization name
+
+  - id: tier
+    type: string
+    description: Organization tier (FREE, STARTER, PROFESSIONAL, ENTERPRISE)
+
+  - id: region
+    type: string
+    description: Geographic region
+
+  - id: created_at
+    type: date
+    description: When the organization was created
+
+measures:
+  - id: total_organizations
+    func: count
+    description: Total number of organizations
+
+  - id: arr
+    name: Annual recurring revenue
+    func: sum
+    of: users.annual_seat_price
+    description: Total ARR across all users in organizations
+
+  - id: enterprise_orgs
+    func: count
+    filters:
+      - expr_sql: tier = 'ENTERPRISE'
+    description: Count of enterprise organizations
+
+relations:
+  - id: users
+    type: one_to_many
+    join_sql: id = ${users}.org_id

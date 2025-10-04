@@ -122,6 +122,7 @@ GROUP BY 1
 - ✅ **Multi-hop joins**: BFS join path discovery supports 2+ hop joins with intermediate model inclusion
 - ✅ **Derived metrics**: Formula parsing with automatic dependency detection
 - ✅ **Cumulative metrics**: Running totals and rolling windows with window functions (tested with real data)
+- ✅ **Conversion funnel metrics**: Self-join pattern for event-based conversion tracking (tested with real data)
 - ✅ **Native YAML format**: Complete Sidemantic YAML schema with import/export (see `docs/YAML_FORMAT.md`)
 - ✅ **Export adapters**: Full round-trip support for Sidemantic ↔ Cube ↔ MetricFlow
 
@@ -136,9 +137,8 @@ GROUP BY 1
 
 1. **Query optimization**: Add query plan optimization and pushdown strategies
 2. **Pre-aggregations**: Implement caching layer similar to Cube's rollups
-3. **LookML adapter**: Requires full grammar parser for complete import support
-4. **Time comparison metrics**: Year-over-year, month-over-month calculations
-5. **Conversion funnel metrics**: Multi-step conversion tracking
+3. **Time comparison metrics**: Complete YoY/MoM/WoW calculations (structure exists, needs LAG/LEAD window functions)
+4. **LookML adapter**: Requires full grammar parser for complete import support
 
 ## 📁 File Structure
 

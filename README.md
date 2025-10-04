@@ -288,6 +288,7 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 - ✅ Multi-hop join discovery
 - ✅ Derived metrics with automatic dependency detection
 - ✅ Cumulative metrics (running totals, rolling windows)
+- ✅ Conversion funnel metrics (self-join pattern for event-based conversions)
 - ✅ Native YAML format with import/export
 - ✅ Cube and MetricFlow adapters (import/export)
 - ✅ DuckDB integration
@@ -296,8 +297,7 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 **Future:**
 - Query optimization
 - Pre-aggregations/caching
-- Time comparison metrics (YoY, MoM)
-- Conversion funnel metrics
+- Time comparison metrics (YoY, MoM) - structure exists, needs lag/offset calculations
 - LookML adapter (requires grammar parser)
 
 ## Examples

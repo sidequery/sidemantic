@@ -523,10 +523,43 @@ class SQLGenerator:
                         query = query.join(right_table, on=join_cond, join_type="left")
                         joined_models.add(jp.to_model)
 
+        # Collect metric-level filters
+        metric_filters = []
+        for metric_ref in metrics:
+            if "." in metric_ref:
+                # model.measure format
+                model_name, measure_name = metric_ref.split(".")
+                model = self.graph.get_model(model_name)
+                if model:
+                    measure = model.get_metric(measure_name)
+                    if measure and measure.filters:
+                        # Add metric-level filters with proper table alias
+                        for f in measure.filters:
+                            # Replace {model} placeholder with actual CTE alias
+                            aliased_filter = f.replace("{model}", f"{model_name}_cte")
+                            metric_filters.append(aliased_filter)
+            else:
+                # Just metric name
+                metric = self.graph.get_metric(metric_ref)
+                if metric and metric.filters:
+                    # Need to determine which model this metric references
+                    deps = metric.get_dependencies(self.graph)
+                    for dep in deps:
+                        if "." in dep:
+                            dep_model_name = dep.split(".")[0]
+                            # Add filters with proper alias
+                            for f in metric.filters:
+                                aliased_filter = f.replace("{model}", f"{dep_model_name}_cte")
+                                metric_filters.append(aliased_filter)
+                            break  # Only use first dependency's model for now
+
+        # Combine query-level and metric-level filters
+        all_filters = (filters or []) + metric_filters
+
         # Add WHERE clause
-        if filters:
+        if all_filters:
             # Parse filters to add table aliases and handle measure vs dimension columns
-            for filter_expr in filters:
+            for filter_expr in all_filters:
                 parsed_filter = filter_expr
                 for model_name in [base_model_name] + other_models:
                     # Replace model.field references

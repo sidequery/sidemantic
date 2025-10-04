@@ -2,43 +2,49 @@
 title: "Format Adapters"
 ---
 
-Sidemantic can import and export semantic models from other popular semantic layer formats, letting you migrate between tools or use Sidemantic alongside existing definitions.
+Sidemantic can import semantic models from other popular semantic layer formats, letting you use your existing metric definitions with Sidemantic's query engine and features.
+
+**Export support is in alpha** - other formats don't support all of Sidemantic's features, so some capabilities may be lost when exporting.
 
 ## Supported Formats
 
-| Format | Import | Export | Status |
-|--------|--------|--------|--------|
-| **Sidemantic** (native) | ✅ | ✅ | Full support |
-| **Cube** | ✅ | ✅ | Core features |
-| **MetricFlow** (dbt) | ✅ | ✅ | Core features |
-| **LookML** (Looker) | ✅ | ✅ | Core features |
-| **Hex** | ✅ | ✅ | Core features |
+| Format | Import | Export | Notes |
+|--------|:------:|:------:|-------|
+| **Sidemantic** (native) | ✅ | ✅ | Full feature support |
+| **Cube** | ✅ | ✅* | No native segments |
+| **MetricFlow** (dbt) | ✅ | ✅* | No native segments or hierarchies |
+| **LookML** (Looker) | ✅ | ✅* | Liquid templating (not Jinja) |
+| **Hex** | ✅ | ✅* | ⚠️ No segments or cross-model derived metrics |
+| **Rill** | ✅ | ✅* | ⚠️ No relationships, segments, or cross-model metrics; single-model only |
+
+\* Export is in alpha
 
 ## Feature Compatibility
 
 This table shows which Sidemantic features are preserved when importing/exporting to other formats:
 
-| Feature | Cube | MetricFlow | LookML | Hex | Notes |
-|---------|------|------------|--------|-----|-------|
-| **Models** | ✅ | ✅ | ✅ | ✅ | Full bidirectional support |
-| **Dimensions** | ✅ | ✅ | ✅ | ✅ | Full bidirectional support |
-| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | LookML: dimension_group; Hex: type variants |
-| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | sum, count, avg, etc. |
-| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | Hex: func_calc support |
-| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | Hex: func_sql and func_calc |
-| **Cumulative Metrics** | ✅ | ✅ | ⚠️ | ⚠️ | Cube: rolling_window; others: limited |
-| **Time Comparison** | ⚠️ | ✅ | ⚠️ | ⚠️ | Exported as calculated measure |
-| **Relationships** | ✅ | ✅ | ⚠️ | ✅ | Hex: explicit join_sql |
-| **Segments** | ✅ | ⚠️ | ✅ | ⚠️ | Hex: via measure filters |
-| **Metric Filters** | ✅ | ⚠️ | ✅ | ✅ | Hex: native filter support |
-| **Parameters** | ❌ | ❌ | ❌ | ❌ | Not supported by target formats |
-| **Hierarchies** | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Stored in meta or drill_members |
-| **Inheritance** | ✅ | ✅ | ✅ | ✅ | Resolved before export (fully merged) |
-| **Jinja Templates** | ✅ | ✅ | ⚠️ | ✅ | LookML: uses Liquid |
-| **Metadata Fields** | ⚠️ | ⚠️ | ⚠️ | ⚠️ | format exported; others in meta |
-| **Ungrouped Queries** | ❌ | ❌ | ❌ | ❌ | Sidemantic-specific, not exportable |
+| Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Notes |
+|---------|------------|------|------------|--------|-----|------|-------|
+| **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
+| **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
+| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | Rill: single-model only |
+| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
+| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | Rill: exported as derived metric with formula |
+| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
+| **Cumulative Metrics** | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | Cube: rolling_window; LookML/Hex/Rill: exported as SQL |
+| **Time Comparison** | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | MetricFlow: native; others: exported as calculated measure |
+| **Segments** | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ | MetricFlow/Hex: stored in meta; Rill: not supported |
+| **Metric Filters** | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | MetricFlow: stored in meta; Rill: basic support only |
+| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| **Hierarchies** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | Cube/LookML: drill_members; MetricFlow/Hex: meta; Rill: none |
+| **Inheritance** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Resolved before export (fully merged definitions) |
+| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | LookML uses Liquid instead of Jinja |
+| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Label/description preserved; format/drill_fields in meta |
+| **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
 
 **Legend:**
+
 - ✅ Full support - feature works bidirectionally
 - ⚠️ Partial support - feature works with limitations
 - ❌ Not supported - feature lost on export
@@ -50,11 +56,11 @@ This table shows which Sidemantic features are preserved when importing/exportin
 - **Segments & Hierarchies in MetricFlow**: Since MetricFlow doesn't have native support for these features, they're stored in the `meta` field. They're preserved on round-trip but won't be used by MetricFlow's query engine.
 - **Metadata Fields**: Most metadata fields (format, drill_fields, etc.) are stored in `meta` fields for compatibility, but `format` is exported natively where supported.
 
-## Using Adapters
+## Importing into Sidemantic
 
-### Import from Cube
+### From Cube
 
-Convert Cube.js semantic models to Sidemantic:
+Read Cube.js semantic models into Sidemantic:
 
 ```python
 from sidemantic.adapters.cube import CubeAdapter
@@ -69,9 +75,9 @@ layer = SemanticLayer(graph=graph)
 result = layer.sql("SELECT revenue FROM orders")
 ```
 
-### Import from MetricFlow
+### From MetricFlow
 
-Convert dbt MetricFlow models to Sidemantic:
+Read dbt MetricFlow models into Sidemantic:
 
 ```python
 from sidemantic.adapters.metricflow import MetricFlowAdapter
@@ -85,41 +91,9 @@ layer = SemanticLayer(graph=graph)
 result = layer.sql("SELECT revenue FROM orders")
 ```
 
-### Export to Cube
+### From LookML
 
-Convert Sidemantic models to Cube format:
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter
-
-# Load Sidemantic model
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-
-# Export to Cube
-adapter = CubeAdapter()
-adapter.export(layer.graph, "cube/schema/output.yml")
-```
-
-### Export to MetricFlow
-
-Convert Sidemantic models to dbt MetricFlow:
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-
-# Load Sidemantic model
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-
-# Export to MetricFlow
-adapter = MetricFlowAdapter()
-adapter.export(layer.graph, "models/metrics/semantic_layer.yml")
-```
-
-### Import from LookML
-
-Convert Looker LookML views to Sidemantic:
+Read Looker LookML views into Sidemantic:
 
 ```python
 from sidemantic.adapters.lookml import LookMLAdapter
@@ -134,25 +108,9 @@ layer = SemanticLayer(graph=graph)
 result = layer.sql("SELECT revenue FROM orders")
 ```
 
-### Export to LookML
+### From Hex
 
-Convert Sidemantic models to LookML format:
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.lookml import LookMLAdapter
-
-# Load Sidemantic model
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-
-# Export to LookML
-adapter = LookMLAdapter()
-adapter.export(layer.graph, "views/output.lkml")
-```
-
-### Import from Hex
-
-Convert Hex semantic models to Sidemantic:
+Read Hex semantic models into Sidemantic:
 
 ```python
 from sidemantic.adapters.hex import HexAdapter
@@ -167,20 +125,81 @@ layer = SemanticLayer(graph=graph)
 result = layer.sql("SELECT revenue FROM orders")
 ```
 
-### Export to Hex
+### From Rill
 
-Convert Sidemantic models to Hex format:
+Read Rill metrics views into Sidemantic:
+
+```python
+from sidemantic.adapters.rill import RillAdapter
+
+# Import from Rill YAML
+adapter = RillAdapter()
+graph = adapter.parse("rill/metrics/")  # Directory of YAML files
+
+# Query with Sidemantic
+from sidemantic import SemanticLayer
+layer = SemanticLayer()
+layer.graph = graph
+result = layer.compile(metrics=["orders.revenue"])
+```
+
+## Exporting from Sidemantic (Alpha)
+
+Export support is experimental. Some features may be lost or simplified when exporting to other formats.
+
+### To Cube
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.cube import CubeAdapter
+
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+adapter = CubeAdapter()
+adapter.export(layer.graph, "cube/schema/output.yml")
+```
+
+### To MetricFlow
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.metricflow import MetricFlowAdapter
+
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+adapter = MetricFlowAdapter()
+adapter.export(layer.graph, "models/metrics/semantic_layer.yml")
+```
+
+### To LookML
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.lookml import LookMLAdapter
+
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+adapter = LookMLAdapter()
+adapter.export(layer.graph, "views/output.lkml")
+```
+
+### To Hex
 
 ```python
 from sidemantic import SemanticLayer
 from sidemantic.adapters.hex import HexAdapter
 
-# Load Sidemantic model
 layer = SemanticLayer.from_yaml("semantic_layer.yml")
-
-# Export to Hex (creates one file per model)
 adapter = HexAdapter()
-adapter.export(layer.graph, "hex/models/")
+adapter.export(layer.graph, "hex/models/")  # Creates one file per model
+```
+
+### To Rill
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.rill import RillAdapter
+
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+adapter = RillAdapter()
+adapter.export(layer.graph, "rill/metrics/")  # Creates one metrics view per model
 ```
 
 ## Migration Examples
@@ -228,7 +247,7 @@ orders.segments.extend([
 layer.to_yaml("semantic_layer.yml")
 ```
 
-## Conversion Quirks
+## Conversion Notes
 
 ### Cube
 
@@ -274,6 +293,7 @@ layer.to_yaml("semantic_layer.yml")
 **Import (LookML → Sidemantic):**
 
 - `views` → `models`
+- `explores` → `relationships` (parsed from join definitions)
 - `dimensions` → `dimensions`
 - `dimension_group` → multiple time dimensions (one per timeframe)
 - `measures` → `metrics`
@@ -281,6 +301,7 @@ layer.to_yaml("semantic_layer.yml")
 - `derived_table` → model with SQL
 - `${TABLE}` placeholder → `{model}` placeholder
 - Measure filters parsed from `filters__all`
+- Foreign keys extracted from `sql_on` in explore joins
 
 **Export (Sidemantic → LookML):**
 
@@ -309,6 +330,28 @@ layer.to_yaml("semantic_layer.yml")
 - Segments not directly supported (can use measure filters)
 - `${interpolation}` references preserved where possible
 
+### Rill
+
+**Import (Rill → Sidemantic):**
+
+- `metrics_view` (type) → `models`
+- `dimensions` with `column`/`expression` → `dimensions`
+- `measures` with `expression` → `metrics`
+- `timeseries` column → time dimension
+- `smallest_time_grain` → time dimension granularity
+- Derived measures (`type: derived`) → derived metrics
+- Simple aggregation expressions parsed with sqlglot
+
+**Export (Sidemantic → Rill):**
+
+- Each model → separate metrics view YAML file
+- `table` reference → `model` or `table` field (based on naming)
+- Time dimensions → `timeseries` and `smallest_time_grain`
+- Aggregation functions reconstructed from `agg` + `sql` fields
+- Derived metrics → `type: derived` measures
+- Relationships not exported (Rill focuses on single-model views)
+- Segments not exported (use measure filters instead)
+
 ## Round-Trip Considerations
 
 These conversions lose some information:
@@ -317,6 +360,7 @@ These conversions lose some information:
 - **Sidemantic → MetricFlow → Sidemantic**: Loses segments, ungrouped query support, hierarchies
 - **Sidemantic → LookML → Sidemantic**: Loses relationship details (views don't declare joins)
 - **Sidemantic → Hex → Sidemantic**: Loses segment support
+- **Sidemantic → Rill → Sidemantic**: Loses relationships, segments, hierarchies
 - **Any format → Sidemantic**: May lose format-specific metadata
 
 Keep your source of truth in one format and export to others as needed. Don't round-trip unless necessary.

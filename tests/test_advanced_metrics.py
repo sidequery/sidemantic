@@ -317,3 +317,198 @@ def test_conversion_metric():
     # User 3: signup on 01-10, no purchase - NOT CONVERTED
     # Conversion rate: 1/3 = 0.333...
     assert abs(results[0][0] - 0.333) < 0.01
+
+
+def test_yoy_percent_change():
+    """Test year-over-year percent change metric with monthly granularity.
+
+    Note: YoY with monthly data requires LAG(12) which means you need at least 12 months
+    of historical data. This test includes full year data to demonstrate proper YoY calculation.
+    """
+    # Create 12 months of 2023 data + 3 months of 2024 data
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT '2023-01-01'::DATE AS sale_date, 100 AS revenue
+            UNION ALL SELECT '2023-02-01'::DATE, 100
+            UNION ALL SELECT '2023-03-01'::DATE, 100
+            UNION ALL SELECT '2023-04-01'::DATE, 100
+            UNION ALL SELECT '2023-05-01'::DATE, 100
+            UNION ALL SELECT '2023-06-01'::DATE, 100
+            UNION ALL SELECT '2023-07-01'::DATE, 100
+            UNION ALL SELECT '2023-08-01'::DATE, 100
+            UNION ALL SELECT '2023-09-01'::DATE, 100
+            UNION ALL SELECT '2023-10-01'::DATE, 100
+            UNION ALL SELECT '2023-11-01'::DATE, 100
+            UNION ALL SELECT '2023-12-01'::DATE, 100
+            UNION ALL SELECT '2024-01-01'::DATE, 150
+            UNION ALL SELECT '2024-02-01'::DATE, 200
+            UNION ALL SELECT '2024-03-01'::DATE, 180
+        """,
+        primary_key="sale_date",
+        dimensions=[
+            Dimension(name="sale_date", sql="sale_date", type="time")
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="revenue")
+        ]
+    )
+
+    # YoY percent change metric
+    revenue_yoy = Metric(
+        name="revenue_yoy",
+        type="time_comparison",
+        base_metric="sales.revenue",
+        comparison_type="yoy",
+        calculation="percent_change",
+        description="Year-over-year revenue growth"
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(revenue_yoy)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(
+        metrics=["revenue_yoy"],
+        dimensions=["sales.sale_date__month"]  # Use explicit month granularity
+    )
+
+    print("\nYoY Percent Change SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    results = conn.execute(sql).fetchall()
+
+    print("YoY Results:", results)
+
+    # Find 2024 results (dates are datetime objects after month truncation)
+    import datetime
+    results_2024 = [r for r in results if r[0].year == 2024]
+    assert len(results_2024) == 3
+
+    # Check YoY percent changes
+    # 2024-01: (150-100)/100 * 100 = 50%
+    # 2024-02: (200-100)/100 * 100 = 100%
+    # 2024-03: (180-100)/100 * 100 = 80%
+    assert abs(results_2024[0][2] - 50.0) < 0.1   # 2024-01 YoY
+    assert abs(results_2024[1][2] - 100.0) < 0.1  # 2024-02 YoY
+    assert abs(results_2024[2][2] - 80.0) < 0.1   # 2024-03 YoY
+
+
+def test_mom_difference():
+    """Test month-over-month difference metric."""
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT '2024-01'::VARCHAR AS month, 100 AS revenue
+            UNION ALL SELECT '2024-02', 150
+            UNION ALL SELECT '2024-03', 120
+            UNION ALL SELECT '2024-04', 180
+        """,
+        primary_key="month",
+        dimensions=[
+            Dimension(name="month", sql="month", type="time")
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="revenue")
+        ]
+    )
+
+    # MoM difference metric
+    revenue_mom = Metric(
+        name="revenue_mom_change",
+        type="time_comparison",
+        base_metric="sales.revenue",
+        comparison_type="mom",
+        calculation="difference",
+        description="Month-over-month revenue change"
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(revenue_mom)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(
+        metrics=["revenue_mom_change"],
+        dimensions=["sales.month"]
+    )
+
+    print("\nMoM Difference SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    results = conn.execute(sql).fetchall()
+
+    print("MoM Results:", results)
+
+    # Results should be:
+    # 2024-01: NULL (no prior month)
+    # 2024-02: 150 - 100 = 50
+    # 2024-03: 120 - 150 = -30
+    # 2024-04: 180 - 120 = 60
+
+    assert results[0][2] is None  # Jan (no prior)
+    assert results[1][2] == 50    # Feb
+    assert results[2][2] == -30   # Mar
+    assert results[3][2] == 60    # Apr
+
+
+def test_wow_ratio():
+    """Test week-over-week ratio metric with weekly granularity."""
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT '2024-01-01'::DATE AS sale_date, 100 AS revenue
+            UNION ALL SELECT '2024-01-08'::DATE, 150
+            UNION ALL SELECT '2024-01-15'::DATE, 120
+            UNION ALL SELECT '2024-01-22'::DATE, 180
+        """,
+        primary_key="sale_date",
+        dimensions=[
+            Dimension(name="sale_date", sql="sale_date", type="time")
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="revenue")
+        ]
+    )
+
+    # WoW ratio metric
+    revenue_wow = Metric(
+        name="revenue_wow_ratio",
+        type="time_comparison",
+        base_metric="sales.revenue",
+        comparison_type="wow",
+        calculation="ratio",
+        description="Week-over-week revenue ratio"
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(revenue_wow)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(
+        metrics=["revenue_wow_ratio"],
+        dimensions=["sales.sale_date__week"]
+    )
+
+    print("\nWoW Ratio SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    results = conn.execute(sql).fetchall()
+
+    print("WoW Results:", results)
+
+    # Results should be (with week granularity, LAG offset = 1):
+    # Week 1 (2024-01-01): NULL (no prior week)
+    # Week 2 (2024-01-08): 150/100 = 1.5
+    # Week 3 (2024-01-15): 120/150 = 0.8
+    # Week 4 (2024-01-22): 180/120 = 1.5
+
+    assert results[0][2] is None           # Week 1 (no prior)
+    assert abs(results[1][2] - 1.5) < 0.01  # Week 2
+    assert abs(results[2][2] - 0.8) < 0.01  # Week 3
+    assert abs(results[3][2] - 1.5) < 0.01  # Week 4

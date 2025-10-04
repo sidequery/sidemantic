@@ -562,6 +562,55 @@ class SQLGenerator:
 
         return query.sql(dialect=self.dialect, pretty=True)
 
+    def _calculate_lag_offset(self, comparison_type: str | None, time_granularity: str | None) -> int:
+        """Calculate LAG offset based on comparison type and time dimension granularity.
+
+        Args:
+            comparison_type: Type of comparison (yoy, mom, wow, dod, qoq)
+            time_granularity: Time dimension granularity (day, week, month, quarter, year)
+                             None means use the default offset for the comparison type
+
+        Returns:
+            Number of rows to offset for LAG function
+        """
+        if not comparison_type:
+            return 1
+
+        # When no explicit granularity is specified, use a sensible default
+        # This assumes the data is at a matching granularity (e.g., monthly data for YoY = 12 rows)
+        if not time_granularity:
+            default_offsets = {
+                "dod": 1,
+                "wow": 1,
+                "mom": 1,
+                "qoq": 1,
+                "yoy": 12,  # Assume monthly data for YoY
+                "prior_period": 1,
+            }
+            return default_offsets.get(comparison_type, 1)
+
+        # For simple comparison types, the offset depends on the granularity
+        # e.g., YoY with monthly data = 12 months back, YoY with daily data = 365 days back
+        offset_map = {
+            # Day-over-day is always 1 period back
+            "dod": {"day": 1, "week": 1, "month": 1, "quarter": 1, "year": 1},
+            # Week-over-week
+            "wow": {"day": 7, "week": 1, "month": 1, "quarter": 1, "year": 1},
+            # Month-over-month
+            "mom": {"day": 30, "week": 4, "month": 1, "quarter": 1, "year": 1},
+            # Quarter-over-quarter
+            "qoq": {"day": 90, "week": 13, "month": 3, "quarter": 1, "year": 1},
+            # Year-over-year
+            "yoy": {"day": 365, "week": 52, "month": 12, "quarter": 4, "year": 1},
+            # Prior period (default to 1)
+            "prior_period": {"day": 1, "week": 1, "month": 1, "quarter": 1, "year": 1},
+        }
+
+        if comparison_type in offset_map:
+            return offset_map[comparison_type].get(time_granularity, 1)
+
+        return 1
+
     def _wrap_with_fill_nulls(self, sql_expr: str, metric) -> str:
         """Wrap SQL expression with COALESCE if fill_nulls_with is specified.
 
@@ -934,8 +983,12 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
 
             select_exprs.append(window_expr)
 
-        # Handle offset ratio metrics - need two-step CTEs because you can't divide by window function directly
-        if offset_ratio_metrics:
+        # Add time comparison metrics with LAG window functions
+        # Note: We'll handle these with a CTE approach similar to offset_ratio_metrics
+        # to avoid nested window functions
+
+        # Handle offset ratio metrics OR time comparison metrics - need two-step CTEs
+        if offset_ratio_metrics or time_comparison_metrics:
             # Need an intermediate CTE with LAG values
             lag_selects = []
 
@@ -958,6 +1011,45 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                     alias = m
                 lag_selects.append(f"base.{alias}")
                 lag_cte_columns.append(alias)
+
+            # Add LAG expressions for each time comparison metric
+            for m in time_comparison_metrics:
+                metric = self.graph.get_metric(m)
+                if not metric or not metric.base_metric:
+                    continue
+
+                # Find time dimension
+                time_dim = None
+                time_dim_gran = None
+                for dim_ref, gran in parsed_dims:
+                    dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
+                    model_name = dim_ref.split(".")[0] if "." in dim_ref else None
+                    if model_name:
+                        model = self.graph.get_model(model_name)
+                        if model:
+                            dim = model.get_dimension(dim_name)
+                            if dim and dim.type == "time":
+                                time_dim = f"base.{dim_name}"
+                                if gran:
+                                    time_dim = f"base.{dim_name}__{gran}"
+                                    time_dim_gran = gran
+                                break
+
+                if not time_dim:
+                    raise ValueError(f"Time comparison metric {m} requires a time dimension")
+
+                # Get base metric alias
+                base_ref = metric.base_metric
+                if "." in base_ref:
+                    base_alias = base_ref.split(".")[1]
+                else:
+                    base_alias = base_ref
+
+                # Calculate LAG offset
+                lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
+
+                # Add LAG for base metric
+                lag_selects.append(f"LAG(base.{base_alias}, {lag_offset}) OVER (ORDER BY {time_dim}) AS {m}_prev_value")
 
             # Add LAG expressions for each offset ratio metric
             for m in offset_ratio_metrics:
@@ -999,6 +1091,32 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             # Re-add dimensions and base metrics from lag_cte
             for col in lag_cte_columns:
                 final_selects.append(col)
+
+            # Add time comparison metrics
+            for m in time_comparison_metrics:
+                metric = self.graph.get_metric(m)
+                if not metric:
+                    continue
+
+                # Get base metric alias
+                base_ref = metric.base_metric
+                if "." in base_ref:
+                    base_alias = base_ref.split(".")[1]
+                else:
+                    base_alias = base_ref
+
+                # Build calculation based on calculation type
+                calc_type = metric.calculation or "percent_change"
+                if calc_type == "difference":
+                    expr = f"({base_alias} - {m}_prev_value) AS {m}"
+                elif calc_type == "percent_change":
+                    expr = f"(({base_alias} - {m}_prev_value) / NULLIF({m}_prev_value, 0) * 100) AS {m}"
+                elif calc_type == "ratio":
+                    expr = f"({base_alias} / NULLIF({m}_prev_value, 0)) AS {m}"
+                else:
+                    raise ValueError(f"Unknown calculation type: {calc_type}")
+
+                final_selects.append(expr)
 
             # Add offset ratio metrics
             for m in offset_ratio_metrics:

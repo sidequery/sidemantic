@@ -287,17 +287,17 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 - ✅ Relationship-based automatic joins (many_to_one, one_to_many, one_to_one)
 - ✅ Multi-hop join discovery
 - ✅ Derived metrics with automatic dependency detection
+- ✅ Cumulative metrics (running totals, rolling windows)
 - ✅ Native YAML format with import/export
 - ✅ Cube and MetricFlow adapters (import/export)
 - ✅ DuckDB integration
 - ✅ Unified metrics terminology (no more measures/metrics confusion!)
 
-**In Progress:**
-- ⚠️ Cumulative metrics (basic structure exists, needs subquery pattern)
-
 **Future:**
 - Query optimization
 - Pre-aggregations/caching
+- Time comparison metrics (YoY, MoM)
+- Conversion funnel metrics
 - LookML adapter (requires grammar parser)
 
 ## Examples

@@ -121,6 +121,7 @@ GROUP BY 1
 - ✅ **Cross-model metrics**: Metrics can reference metrics from multiple models via recursive dependency resolution
 - ✅ **Multi-hop joins**: BFS join path discovery supports 2+ hop joins with intermediate model inclusion
 - ✅ **Derived metrics**: Formula parsing with automatic dependency detection
+- ✅ **Cumulative metrics**: Running totals and rolling windows with window functions (tested with real data)
 - ✅ **Native YAML format**: Complete Sidemantic YAML schema with import/export (see `docs/YAML_FORMAT.md`)
 - ✅ **Export adapters**: Full round-trip support for Sidemantic ↔ Cube ↔ MetricFlow
 
@@ -131,12 +132,13 @@ GROUP BY 1
 - ✅ Multi-hop join verification
 - ✅ Automatic dependency detection tests
 
-## 🚧 To Complete
+## 🚧 Future Work
 
-1. **Cumulative metrics**: Complete subquery pattern for window functions (basic structure exists, needs proper aggregation-then-window pattern)
-2. **Query optimization**: Add query plan optimization and pushdown strategies
-3. **Pre-aggregations**: Implement caching layer similar to Cube's rollups
-4. **LookML adapter**: Requires full grammar parser for complete import support
+1. **Query optimization**: Add query plan optimization and pushdown strategies
+2. **Pre-aggregations**: Implement caching layer similar to Cube's rollups
+3. **LookML adapter**: Requires full grammar parser for complete import support
+4. **Time comparison metrics**: Year-over-year, month-over-month calculations
+5. **Conversion funnel metrics**: Multi-step conversion tracking
 
 ## 📁 File Structure
 

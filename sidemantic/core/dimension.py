@@ -29,6 +29,9 @@ class Dimension(BaseModel):
     format: str | None = Field(None, description="Display format string (e.g., '$#,##0.00', '0.00%')")
     value_format_name: str | None = Field(None, description="Named format (e.g., 'usd', 'percent', 'decimal_2')")
 
+    # Hierarchy
+    parent: str | None = Field(None, description="Parent dimension for hierarchies (e.g., 'state' parent is 'country')")
+
     def __hash__(self) -> int:
         return hash((self.name, self.type, self.sql))
 

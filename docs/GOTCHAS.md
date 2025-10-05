@@ -234,9 +234,13 @@ sql = layer.compile(
 ```
 
 **Optimization strategies**:
+
 1. **Query subsets separately**: Break into multiple queries and combine results
+
 2. **Use pre-aggregations**: Enable `use_preaggregations=True` with materialized rollups
+
 3. **Denormalize data**: Consider flattening your schema for frequently-joined tables
+
 4. **Filter early**: Add restrictive filters to reduce row counts before joins
 
 ## Debugging

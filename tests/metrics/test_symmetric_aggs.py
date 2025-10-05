@@ -6,6 +6,7 @@ from sidemantic.core.model import Dimension, Metric, Model, Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.generator_v2 import SQLGenerator
+from tests.utils import fetch_rows
 
 
 def test_build_symmetric_aggregate_sum():
@@ -294,7 +295,8 @@ def test_symmetric_aggregates_with_data():
     )
 
     # Execute query
-    result = conn.execute(sql).fetchdf()
+    result = conn.execute(sql)
+    rows = fetch_rows(result)
 
     # Without symmetric aggregates:
     # Order 1: revenue would be 100*2*2 = 400 (wrong!)
@@ -304,8 +306,8 @@ def test_symmetric_aggregates_with_data():
     # Order 1: revenue = 100 (correct)
     # Order 2: revenue = 200 (correct)
 
-    assert len(result) == 2
-    revenues = sorted([row[1] for row in result])
+    assert len(rows) == 2
+    revenues = sorted(row[1] for row in rows)
     assert revenues == [100, 200]  # Correct totals, not inflated
 
     conn.close()

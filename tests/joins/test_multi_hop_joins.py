@@ -8,6 +8,7 @@ import duckdb
 import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from tests.utils import fetch_dicts
 
 
 @pytest.fixture
@@ -187,11 +188,11 @@ def test_query_execution(three_table_chain):
 
     # Execute multi-hop query
     result = layer.query(metrics=["orders.revenue"], dimensions=["regions.region_name"])
-    df = result.fetchdf()
+    records = fetch_dicts(result)
 
     # Should have 2 regions with correct revenue
-    assert len(df) == 2
-    revenues = {row["region_name"]: row["revenue"] for _, row in df.iterrows()}
+    assert len(records) == 2
+    revenues = {row["region_name"]: row["revenue"] for row in records}
     # North America: orders 1,3,4 (Alice:150+100, Charlie:300) = 550
     # Europe: order 2 (Bob:200) = 200
     assert revenues["North America"] == 550.0

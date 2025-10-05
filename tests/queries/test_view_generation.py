@@ -7,6 +7,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
+from tests.utils import fetch_rows
 
 
 def test_generate_view_creates_valid_sql():
@@ -71,10 +72,11 @@ def test_view_can_be_queried():
     conn.execute(view_sql)
 
     # Query the view
-    result = conn.execute("SELECT * FROM revenue_by_status").fetchdf()
+    result = conn.execute("SELECT * FROM revenue_by_status")
+    rows = fetch_rows(result)
 
-    assert len(result) == 1
-    assert result[0][1] == 300  # total revenue
+    assert len(rows) == 1
+    assert rows[0][1] == 300  # total revenue
 
 
 def test_join_view_against_other_tables():
@@ -123,10 +125,11 @@ def test_join_view_against_other_tables():
         FROM sales s
         JOIN product_metrics pm ON s.product_name = pm.name
         ORDER BY revenue DESC
-    """).fetchdf()
+    """)
+    rows = fetch_rows(result)
 
-    assert len(result) == 2
+    assert len(rows) == 2
     # Both have same revenue (100 * 10 = 1000, 50 * 20 = 1000)
     # Just verify the join worked correctly
-    assert result[0][2] in (10, 20)  # avg_price exists
-    assert result[1][2] in (10, 20)  # avg_price exists
+    assert rows[0][2] in (10, 20)  # avg_price exists
+    assert rows[1][2] in (10, 20)  # avg_price exists

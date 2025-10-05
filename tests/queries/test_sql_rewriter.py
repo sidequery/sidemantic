@@ -8,6 +8,15 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.sql.query_rewriter import QueryRewriter
+from tests.utils import fetch_columns, fetch_dicts
+
+
+def _rows(result):
+    return fetch_dicts(result)
+
+
+def _columns(result):
+    return fetch_columns(result)
 
 
 @pytest.fixture
@@ -87,10 +96,10 @@ def test_simple_metric_query(semantic_layer):
     sql = "SELECT orders.revenue FROM orders"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["revenue"][0] == 450.00
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 450.00
 
 
 def test_metric_with_dimension(semantic_layer):
@@ -98,11 +107,11 @@ def test_metric_with_dimension(semantic_layer):
     sql = "SELECT orders.revenue, orders.status FROM orders"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 2
-    completed = df[df["status"] == "completed"]
-    assert completed["revenue"].values[0] == 250.00
+    assert len(rows) == 2
+    completed = [row for row in rows if row["status"] == "completed"]
+    assert completed[0]["revenue"] == 250.00
 
 
 def test_metric_with_filter(semantic_layer):
@@ -110,10 +119,10 @@ def test_metric_with_filter(semantic_layer):
     sql = "SELECT orders.revenue FROM orders WHERE orders.status = 'completed'"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["revenue"][0] == 250.00
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00
 
 
 def test_multiple_filters(semantic_layer):
@@ -126,10 +135,10 @@ def test_multiple_filters(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["revenue"][0] == 250.00
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00
 
 
 def test_order_by(semantic_layer):
@@ -137,10 +146,10 @@ def test_order_by(semantic_layer):
     sql = "SELECT orders.revenue, orders.status FROM orders ORDER BY orders.status DESC"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 2
-    assert df["status"].tolist() == ["pending", "completed"]
+    assert len(rows) == 2
+    assert [row["status"] for row in rows] == ["pending", "completed"]
 
 
 def test_limit(semantic_layer):
@@ -148,9 +157,9 @@ def test_limit(semantic_layer):
     sql = "SELECT orders.revenue, orders.status FROM orders LIMIT 1"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
+    assert len(rows) == 1
 
 
 def test_join_query(semantic_layer):
@@ -158,10 +167,10 @@ def test_join_query(semantic_layer):
     sql = "SELECT orders.revenue, customers.region FROM orders"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 2
-    assert set(df["region"].tolist()) == {"US", "EU"}
+    assert len(rows) == 2
+    assert {row["region"] for row in rows} == {"US", "EU"}
 
 
 def test_join_with_filter(semantic_layer):
@@ -173,11 +182,11 @@ def test_join_with_filter(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["revenue"][0] == 250.00
-    assert df["region"][0] == "US"
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00
+    assert rows[0]["region"] == "US"
 
 
 def test_invalid_field(semantic_layer):
@@ -194,8 +203,8 @@ def test_missing_table_prefix(semantic_layer):
 
     # Should work now with table inference
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
-    assert len(df) == 1  # Should aggregate all rows
+    rows = _rows(result)
+    assert len(rows) == 1  # Should aggregate all rows
 
 
 def test_unsupported_aggregation(semantic_layer):
@@ -249,10 +258,10 @@ def test_dimension_only_query(semantic_layer):
     sql = "SELECT orders.status FROM orders"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 2
-    assert set(df["status"].tolist()) == {"completed", "pending"}
+    assert len(rows) == 2
+    assert {row["status"] for row in rows} == {"completed", "pending"}
 
 
 def test_rewriter_invalid_sql():
@@ -308,11 +317,11 @@ def test_rewriter_or_filters(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
     # Should return all rows
-    assert len(df) == 1
-    assert df["revenue"][0] == 450.00
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 450.00
 
 
 def test_rewriter_in_filter(semantic_layer):
@@ -324,10 +333,10 @@ def test_rewriter_in_filter(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["revenue"][0] == 450.00
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 450.00
 
 
 def test_rewriter_having_clause(semantic_layer):
@@ -339,11 +348,11 @@ def test_rewriter_having_clause(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
     # HAVING filters on aggregated revenue
     # Both groups (completed=250, pending=200) exceed 150
-    assert len(df) == 2
+    assert len(rows) == 2
 
 
 def test_rewriter_distinct(semantic_layer):
@@ -351,10 +360,10 @@ def test_rewriter_distinct(semantic_layer):
     sql = "SELECT DISTINCT orders.status FROM orders"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 2
-    assert set(df["status"].tolist()) == {"completed", "pending"}
+    assert len(rows) == 2
+    assert {row["status"] for row in rows} == {"completed", "pending"}
 
 
 def test_select_star_expansion(semantic_layer):
@@ -362,13 +371,14 @@ def test_select_star_expansion(semantic_layer):
     sql = "SELECT * FROM orders"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    columns = _columns(result)
+    _rows(result)
 
     # Should have all dimensions and metrics
-    assert "status" in df.columns
-    assert "order_date" in df.columns
-    assert "revenue" in df.columns
-    assert "count" in df.columns
+    assert "status" in columns
+    assert "order_date" in columns
+    assert "revenue" in columns
+    assert "count" in columns
 
 
 def test_select_star_without_from():
@@ -396,14 +406,15 @@ def test_column_alias(semantic_layer):
     sql = "SELECT orders.revenue AS total_revenue, orders.status AS order_status FROM orders"
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    columns = _columns(result)
+    rows = _rows(result)
 
     # Aliases should be preserved in column names
-    assert len(df) == 2
-    assert "total_revenue" in df.columns
-    assert "order_status" in df.columns
-    assert "revenue" not in df.columns
-    assert "status" not in df.columns
+    assert len(rows) == 2
+    assert "total_revenue" in columns
+    assert "order_status" in columns
+    assert "revenue" not in columns
+    assert "status" not in columns
 
 
 def test_graph_level_metrics(semantic_layer):
@@ -438,10 +449,10 @@ def test_nested_and_or_filters(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["revenue"][0] == 450.00
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 450.00
 
 
 def test_complex_nested_filters(semantic_layer):
@@ -454,10 +465,10 @@ def test_complex_nested_filters(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
     # Should include completed orders from 1/1+ AND pending orders from 1/3+
-    assert len(df) == 1
+    assert len(rows) == 1
 
 
 def test_query_without_metrics_or_dimensions():
@@ -498,11 +509,11 @@ def test_cte_with_semantic_query(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["revenue"][0] == 250.00  # completed orders: 100 + 150
-    assert df["status"][0] == "completed"
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00  # completed orders: 100 + 150
+    assert rows[0]["status"] == "completed"
 
 
 def test_cte_with_filter_in_outer_query(semantic_layer):
@@ -518,11 +529,11 @@ def test_cte_with_filter_in_outer_query(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["status"][0] == "completed"
-    assert df["revenue"][0] == 250.00
+    assert len(rows) == 1
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["revenue"] == 250.00
 
 
 def test_cte_with_aggregation_in_outer_query(semantic_layer):
@@ -539,13 +550,13 @@ def test_cte_with_aggregation_in_outer_query(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) in (1, 2)  # Could be 1 or 2 depending on grouping
+    assert len(rows) in (1, 2)  # Could be 1 or 2 depending on grouping
     # Semantic layer already aggregated revenue by status
-    if len(df) == 1:
+    if len(rows) == 1:
         # If only one status (completed)
-        assert df["total_revenue"][0] in (250.00, 200.00)
+        assert rows[0]["total_revenue"] in (250.00, 200.00)
 
 
 def test_subquery_with_semantic_query(semantic_layer):
@@ -558,10 +569,10 @@ def test_subquery_with_semantic_query(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) in (1, 2)  # completed ($250) and/or pending ($200)
-    assert all(df["revenue"] > 100)
+    assert len(rows) in (1, 2)  # completed ($250) and/or pending ($200)
+    assert all(row["revenue"] > 100 for row in rows)
 
 
 def test_subquery_with_join_to_regular_table(semantic_layer):
@@ -589,10 +600,11 @@ def test_subquery_with_join_to_regular_table(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
+    columns = _columns(result)
 
-    assert len(df) == 2
-    assert "continent" in df.columns
+    assert len(rows) == 2
+    assert "continent" in columns
 
 
 def test_multiple_ctes_with_semantic_queries(semantic_layer):
@@ -609,11 +621,12 @@ def test_multiple_ctes_with_semantic_queries(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
+    columns = _columns(result)
 
-    assert len(df) == 2  # Two status groups
-    assert "revenue" in df.columns
-    assert "status" in df.columns
+    assert len(rows) == 2  # Two status groups
+    assert "revenue" in columns
+    assert "status" in columns
 
 
 def test_cte_with_limit_in_inner_query(semantic_layer):
@@ -628,10 +641,10 @@ def test_cte_with_limit_in_inner_query(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["revenue"][0] == 250.00  # Top revenue group (completed)
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00  # Top revenue group (completed)
 
 
 def test_nested_subquery(semantic_layer):
@@ -646,10 +659,10 @@ def test_nested_subquery(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) in (1, 2)  # completed ($250) and/or pending ($200)
-    assert all(df["revenue"] > 100)
+    assert len(rows) in (1, 2)  # completed ($250) and/or pending ($200)
+    assert all(row["revenue"] > 100 for row in rows)
 
 
 def test_cte_referencing_another_cte(semantic_layer):
@@ -666,10 +679,10 @@ def test_cte_referencing_another_cte(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["status"][0] == "completed"
+    assert len(rows) == 1
+    assert rows[0]["status"] == "completed"
 
 
 def test_cte_with_cross_model_query(semantic_layer):
@@ -685,10 +698,10 @@ def test_cte_with_cross_model_query(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["region"][0] == "US"
+    assert len(rows) == 1
+    assert rows[0]["region"] == "US"
 
 
 def test_subquery_with_alias(semantic_layer):
@@ -703,10 +716,11 @@ def test_subquery_with_alias(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    columns = _columns(result)
+    _rows(result)
 
-    assert "total_revenue" in df.columns
-    assert "order_status" in df.columns
+    assert "total_revenue" in columns
+    assert "order_status" in columns
 
 
 def test_cte_mixed_semantic_and_regular(semantic_layer):
@@ -735,11 +749,12 @@ def test_cte_mixed_semantic_and_regular(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
+    columns = _columns(result)
 
-    assert len(df) == 2  # Two status groups joined with labels
-    assert "label" in df.columns
-    assert "revenue" in df.columns
+    assert len(rows) == 2  # Two status groups joined with labels
+    assert "label" in columns
+    assert "revenue" in columns
 
 
 def test_from_metrics_table(semantic_layer):
@@ -750,11 +765,12 @@ def test_from_metrics_table(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
+    columns = _columns(result)
 
-    assert len(df) == 2  # Grouped by region
-    assert "revenue" in df.columns
-    assert "region" in df.columns
+    assert len(rows) == 2  # Grouped by region
+    assert "revenue" in columns
+    assert "region" in columns
 
 
 def test_from_metrics_multiple_models(semantic_layer):
@@ -768,13 +784,14 @@ def test_from_metrics_multiple_models(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
+    columns = _columns(result)
 
     # Should get data grouped by status and region
-    assert len(df) >= 1
-    assert "revenue" in df.columns
-    assert "status" in df.columns
-    assert "region" in df.columns
+    assert len(rows) >= 1
+    assert "revenue" in columns
+    assert "status" in columns
+    assert "region" in columns
 
 
 def test_from_metrics_requires_qualified_names(semantic_layer):
@@ -807,11 +824,11 @@ def test_from_metrics_with_filters(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["status"][0] == "completed"
-    assert df["revenue"][0] == 250.00
+    assert len(rows) == 1
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["revenue"] == 250.00
 
 
 def test_from_metrics_in_cte(semantic_layer):
@@ -825,10 +842,10 @@ def test_from_metrics_in_cte(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
-    assert len(df) == 1
-    assert df["region"][0] == "US"
+    assert len(rows) == 1
+    assert rows[0]["region"] == "US"
 
 
 def test_from_metrics_allows_graph_level_metrics(semantic_layer):
@@ -850,9 +867,10 @@ def test_from_metrics_allows_graph_level_metrics(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    columns = _columns(result)
+    _rows(result)
 
-    assert "total_revenue" in df.columns
+    assert "total_revenue" in columns
 
 
 def test_filter_on_joined_table_without_dimension(semantic_layer):
@@ -865,11 +883,11 @@ def test_filter_on_joined_table_without_dimension(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    rows = _rows(result)
 
     # Should get only orders from US customers
-    assert len(df) == 1
-    assert df["revenue"][0] == 250.00  # Sum of orders from customer 1 (US)
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00  # Sum of orders from customer 1 (US)
 
 
 def test_filter_on_multiple_joined_tables(semantic_layer):
@@ -928,11 +946,12 @@ def test_multiple_aliases(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    columns = _columns(result)
+    _rows(result)
 
-    assert "total_sales" in df.columns
-    assert "order_count" in df.columns
-    assert "current_status" in df.columns
+    assert "total_sales" in columns
+    assert "order_count" in columns
+    assert "current_status" in columns
 
 
 def test_alias_with_join(semantic_layer):
@@ -945,12 +964,13 @@ def test_alias_with_join(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    columns = _columns(result)
+    _rows(result)
 
-    assert "sales" in df.columns
-    assert "market" in df.columns
-    assert "revenue" not in df.columns
-    assert "region" not in df.columns
+    assert "sales" in columns
+    assert "market" in columns
+    assert "revenue" not in columns
+    assert "region" not in columns
 
 
 def test_alias_mixed_with_no_alias(semantic_layer):
@@ -963,7 +983,8 @@ def test_alias_mixed_with_no_alias(semantic_layer):
     """
 
     result = semantic_layer.sql(sql)
-    df = result.fetchdf()
+    columns = _columns(result)
+    _rows(result)
 
-    assert "total_revenue" in df.columns
-    assert "status" in df.columns
+    assert "total_revenue" in columns
+    assert "status" in columns

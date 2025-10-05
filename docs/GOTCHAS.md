@@ -1,19 +1,19 @@
 # Common Gotchas and Solutions
 
-This document covers common pitfalls and their solutions when working with Sidemantic.
+> **Note:** This document needs work. It's a rough collection of issues we've encountered. If you find something confusing or want better explanations, please open an issue.
 
 ## Parameters and Filters
 
-### ❌ DON'T: Add quotes around parameter placeholders
+### Don't add quotes around parameter placeholders
 
 ```python
-# WRONG - creates double quotes
+# Wrong - creates double quotes
 filters = [f"orders.order_date >= '{{{{ start_date }}}}'"]
-# Result: orders.order_date >= ''2024-01-01'' (BREAKS!)
+# Result: orders.order_date >= ''2024-01-01'' (invalid SQL)
 
-# CORRECT
+# Correct
 filters = ["orders.order_date >= {{ start_date }}"]
-# Result: orders.order_date >= '2024-01-01' ✓
+# Result: orders.order_date >= '2024-01-01'
 ```
 
 **Why**: Parameters are automatically formatted with quotes based on their type. Adding extra quotes creates `''value''` which SQLGlot can't parse.
@@ -24,10 +24,10 @@ filters = ["orders.order_date >= {{ start_date }}"]
 - `number`: No quotes → `100`
 - `unquoted`: No quotes → `table_name`
 
-### ❌ DON'T: Reference tables that aren't joined
+### Don't reference tables that aren't joined
 
 ```python
-# WRONG - customers table not in query
+# Wrong - customers table not in query
 sql = generator.generate(
     metrics=["orders.revenue"],  # Only orders
     dimensions=[],               # Only orders
@@ -73,7 +73,7 @@ sql2 = generator.generate(
 
 ## Filter Parsing
 
-### ❌ DON'T: Expect filters to work with any SQL
+### Don't expect filters to work with any SQL
 
 Filters are parsed and transformed:
 
@@ -111,7 +111,7 @@ Measure(
 
 ## Symmetric Aggregates
 
-### ❌ DON'T: Expect symmetric aggregates on every query
+### Don't expect symmetric aggregates on every query
 
 ```python
 # Single one-to-many join - NO symmetric aggregates
@@ -138,19 +138,19 @@ print(sql)
 
 ## Join Relationships
 
-### ❌ DON'T: Mix up has_many foreign_key vs belongs_to foreign_key
+### Don't mix up has_many foreign_key vs belongs_to foreign_key
 
 ```python
-# WRONG
+# Wrong
 orders = Model(
     name="orders",
     joins=[
         # has_many: foreign_key is on the OTHER table
-        Join(name="order_items", type="has_many", foreign_key="id")  # WRONG!
+        Join(name="order_items", type="has_many", foreign_key="id")  # Wrong!
     ]
 )
 
-# CORRECT
+# Correct
 orders = Model(
     name="orders",
     joins=[
@@ -175,10 +175,10 @@ order_items = Model(
 
 ## SQL Generation
 
-### ❌ DON'T: Forget to set primary_key
+### Don't forget to set primary_key
 
 ```python
-# WRONG - no primary key
+# Wrong - no primary key
 orders = Model(
     name="orders",
     # primary_key missing!
@@ -191,7 +191,7 @@ orders = Model(
 **Why**: Symmetric aggregates require primary_key to hash for deduplication.
 
 ```python
-# CORRECT
+# Correct
 orders = Model(
     name="orders",
     primary_key="id",  # or whatever your PK is
@@ -200,10 +200,10 @@ orders = Model(
 
 ## ORDER BY
 
-### ❌ DON'T: Use full references in order_by
+### Don't use full references in order_by
 
 ```python
-# WRONG
+# Wrong
 sql = generator.generate(
     metrics=["orders.revenue"],
     dimensions=["orders.order_date"],
@@ -213,7 +213,7 @@ sql = generator.generate(
 ```
 
 ```python
-# CORRECT
+# Correct
 sql = generator.generate(
     metrics=["orders.revenue"],
     dimensions=["orders.order_date"],

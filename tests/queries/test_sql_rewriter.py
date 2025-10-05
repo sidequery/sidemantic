@@ -22,7 +22,7 @@ def _columns(result):
 @pytest.fixture
 def semantic_layer():
     """Create semantic layer with test data."""
-    layer = SemanticLayer()
+    layer = SemanticLayer(auto_register=False)
 
     # Create orders model
     orders = Model(
@@ -227,10 +227,8 @@ def test_explicit_join_not_supported(semantic_layer):
         semantic_layer.sql(sql)
 
 
-def test_rewriter_directly():
+def test_rewriter_directly(layer):
     """Test QueryRewriter class directly."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders",
@@ -264,9 +262,8 @@ def test_dimension_only_query(semantic_layer):
     assert {row["status"] for row in rows} == {"completed", "pending"}
 
 
-def test_rewriter_invalid_sql():
+def test_rewriter_invalid_sql(layer):
     """Test error handling for invalid SQL."""
-    layer = SemanticLayer()
     orders = Model(
         name="orders",
         table="orders",
@@ -282,9 +279,8 @@ def test_rewriter_invalid_sql():
         rewriter.rewrite("SELECT FROM WHERE")
 
 
-def test_rewriter_non_select_query():
+def test_rewriter_non_select_query(layer):
     """Test error for non-SELECT queries."""
-    layer = SemanticLayer()
     orders = Model(
         name="orders",
         table="orders",
@@ -381,11 +377,10 @@ def test_select_star_expansion(semantic_layer):
     assert "count" in columns
 
 
-def test_select_star_without_from():
+def test_select_star_without_from(layer):
     """Test error when SELECT * has no FROM clause."""
     from sidemantic.sql.query_rewriter import QueryRewriter
 
-    layer = SemanticLayer()
     orders = Model(
         name="orders",
         table="orders",
@@ -471,11 +466,10 @@ def test_complex_nested_filters(semantic_layer):
     assert len(rows) == 1
 
 
-def test_query_without_metrics_or_dimensions():
+def test_query_without_metrics_or_dimensions(layer):
     """Test error when query has neither metrics nor dimensions."""
     from sidemantic.sql.query_rewriter import QueryRewriter
 
-    layer = SemanticLayer()
     orders = Model(
         name="orders",
         table="orders",

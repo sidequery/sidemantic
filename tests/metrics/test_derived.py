@@ -7,7 +7,7 @@ revenue_per_order = total_revenue / total_orders
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 from tests.utils import fetch_columns, fetch_dicts
 
 
@@ -36,9 +36,8 @@ def orders_db():
     return conn
 
 
-def test_simple_derived_metric(orders_db):
+def test_simple_derived_metric(layer, orders_db):
     """Test basic derived metric formula."""
-    layer = SemanticLayer()
     layer.conn = orders_db
 
     orders = Model(
@@ -73,9 +72,8 @@ def test_simple_derived_metric(orders_db):
     assert records[0]["revenue_per_order"] == 187.5
 
 
-def test_derived_metric_by_dimension(orders_db):
+def test_derived_metric_by_dimension(layer, orders_db):
     """Test derived metric grouped by dimension."""
-    layer = SemanticLayer()
     layer.conn = orders_db
 
     orders = Model(
@@ -118,9 +116,8 @@ def test_derived_metric_by_dimension(orders_db):
     assert monthly_avg["2024-02"] == 225.0
 
 
-def test_nested_derived_metrics(orders_db):
+def test_nested_derived_metrics(layer, orders_db):
     """Test derived metrics referencing other derived metrics."""
-    layer = SemanticLayer()
     layer.conn = orders_db
 
     orders = Model(
@@ -161,9 +158,8 @@ def test_nested_derived_metrics(orders_db):
     assert records[0]["double_avg"] == 375.0
 
 
-def test_all_metrics_together(orders_db):
+def test_all_metrics_together(layer, orders_db):
     """Test querying base + derived metrics together."""
-    layer = SemanticLayer()
     layer.conn = orders_db
 
     orders = Model(

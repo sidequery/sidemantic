@@ -29,12 +29,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import duckdb
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.metric import Metric
 from sidemantic.sql.rewriter import SemanticSQLRewriter
 
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 

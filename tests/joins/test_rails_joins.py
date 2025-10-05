@@ -3,10 +3,10 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship
 
 
-def test_belongs_to_join():
+def test_belongs_to_join(layer):
     """Test belongs_to relationship (many-to-one)."""
     # Setup database
     conn = duckdb.connect(":memory:")
@@ -15,8 +15,7 @@ def test_belongs_to_join():
     conn.execute("INSERT INTO orders VALUES (1, 101, 100.00), (2, 101, 150.00), (3, 102, 200.00)")
     conn.execute("INSERT INTO customers VALUES (101, 'Alice'), (102, 'Bob')")
 
-    sl = SemanticLayer(connection="duckdb:///:memory:")
-    sl.conn = conn
+    layer.conn = conn
 
     # Define models with Rails-like joins
     orders = Model(
@@ -36,11 +35,11 @@ def test_belongs_to_join():
         metrics=[],
     )
 
-    sl.add_model(orders)
-    sl.add_model(customers)
+    layer.add_model(orders)
+    layer.add_model(customers)
 
     # Query across the join
-    result = sl.query(metrics=["orders.revenue"], dimensions=["customers.name"])
+    result = layer.query(metrics=["orders.revenue"], dimensions=["customers.name"])
 
     df = result.df()
     print("\nBelongs To Join Results:")
@@ -51,7 +50,7 @@ def test_belongs_to_join():
     assert "revenue" in df.columns
 
 
-def test_has_many_join():
+def test_has_many_join(layer):
     """Test has_many relationship (one-to-many)."""
     conn = duckdb.connect(":memory:")
     conn.execute("CREATE TABLE customers (id INTEGER, name VARCHAR)")
@@ -59,8 +58,7 @@ def test_has_many_join():
     conn.execute("INSERT INTO customers VALUES (101, 'Alice'), (102, 'Bob')")
     conn.execute("INSERT INTO orders VALUES (1, 101, 100.00), (2, 101, 150.00), (3, 102, 200.00)")
 
-    sl = SemanticLayer(connection="duckdb:///:memory:")
-    sl.conn = conn
+    layer.conn = conn
 
     # Define has_many from customers perspective
     customers = Model(
@@ -80,11 +78,11 @@ def test_has_many_join():
         metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
 
-    sl.add_model(customers)
-    sl.add_model(orders)
+    layer.add_model(customers)
+    layer.add_model(orders)
 
     # Query should work in either direction
-    result = sl.query(metrics=["orders.revenue"], dimensions=["customers.name"])
+    result = layer.query(metrics=["orders.revenue"], dimensions=["customers.name"])
 
     df = result.df()
     print("\nHas Many Join Results:")
@@ -93,7 +91,7 @@ def test_has_many_join():
     assert len(df) == 2
 
 
-def test_multi_relationship_join():
+def test_multi_relationship_join(layer):
     """Test model with multiple relationships."""
     conn = duckdb.connect(":memory:")
     conn.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER, amount DECIMAL(10, 2))")
@@ -103,8 +101,7 @@ def test_multi_relationship_join():
     conn.execute("INSERT INTO customers VALUES (101, 'Alice')")
     conn.execute("INSERT INTO products VALUES (1, 'Electronics')")
 
-    sl = SemanticLayer(connection="duckdb:///:memory:")
-    sl.conn = conn
+    layer.conn = conn
 
     # Orders has relationships to both customers and products
     orders = Model(
@@ -135,12 +132,12 @@ def test_multi_relationship_join():
         metrics=[],
     )
 
-    sl.add_model(orders)
-    sl.add_model(customers)
-    sl.add_model(products)
+    layer.add_model(orders)
+    layer.add_model(customers)
+    layer.add_model(products)
 
     # Query should work across multiple relationships
-    result = sl.query(metrics=["orders.revenue"], dimensions=["customers.name", "products.category"])
+    result = layer.query(metrics=["orders.revenue"], dimensions=["customers.name", "products.category"])
 
     df = result.df()
     print("\nMulti-Relationship Results:")

@@ -7,7 +7,7 @@ Example: orders -> customers -> regions (2 hops)
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship
 from tests.utils import fetch_dicts
 
 
@@ -27,10 +27,9 @@ def three_table_chain():
     return conn
 
 
-def test_two_hop_join(three_table_chain):
+def test_two_hop_join(layer, three_table_chain):
     """Test 2-hop join path discovery."""
     # Create semantic layer with 3-table chain
-    layer = SemanticLayer()
     layer.conn = three_table_chain
 
     orders = Model(
@@ -76,9 +75,8 @@ def test_two_hop_join(three_table_chain):
     assert sql.count("LEFT JOIN") == 2
 
 
-def test_join_path_discovery(three_table_chain):
+def test_join_path_discovery(layer, three_table_chain):
     """Test join path algorithm finds multi-hop paths."""
-    layer = SemanticLayer()
     layer.conn = three_table_chain
 
     orders = Model(
@@ -116,9 +114,8 @@ def test_join_path_discovery(three_table_chain):
     assert path[1].to_model == "regions"
 
 
-def test_intermediate_model_included():
+def test_intermediate_model_included(layer):
     """Test that intermediate models are included in CTEs."""
-    layer = SemanticLayer()
 
     orders = Model(
         name="orders",
@@ -155,9 +152,8 @@ def test_intermediate_model_included():
     assert "regions_cte" in sql
 
 
-def test_query_execution(three_table_chain):
+def test_query_execution(layer, three_table_chain):
     """Test multi-hop query executes and returns correct results."""
-    layer = SemanticLayer()
     layer.conn = three_table_chain
 
     orders = Model(

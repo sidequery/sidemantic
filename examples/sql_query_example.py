@@ -4,11 +4,10 @@ This shows how users can write familiar SQL queries that get automatically
 rewritten to use the semantic layer's metrics and dimensions.
 """
 
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.metric import Metric
-
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_layer import SemanticLayer
 
 

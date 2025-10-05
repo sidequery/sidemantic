@@ -11,12 +11,11 @@ to multiple "many" side tables, creating a fan-out effect.
 """
 
 import duckdb
-# Entity removed - use primary_key parameter
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.metric import Metric
 
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 
@@ -76,7 +75,6 @@ orders = Model(
     name="orders",
     table="orders",
     primary_key="id",
-    entities=[Entity(name="order_id", type="primary", sql="id")],
     dimensions=[Dimension(name="order_date", type="time", sql="order_date")],
     metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     relationships=[
@@ -90,7 +88,6 @@ order_items = Model(
     name="order_items",
     table="order_items",
     primary_key="id",
-    entities=[Entity(name="item_id", type="primary", sql="id")],
     dimensions=[],
     metrics=[Metric(name="total_quantity", agg="sum", sql="quantity")],
     relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
@@ -101,7 +98,6 @@ shipments = Model(
     name="shipments",
     table="shipments",
     primary_key="id",
-    entities=[Entity(name="shipment_id", type="primary", sql="id")],
     dimensions=[],
     metrics=[Metric(name="shipment_count", agg="count", sql="*")],
     relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],

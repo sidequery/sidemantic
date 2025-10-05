@@ -19,13 +19,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-# Entity removed - use primary_key parameter
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.metric import Metric
 
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 
@@ -156,10 +155,6 @@ def setup_semantic_layer():
         name="orders",
         table="orders",
         primary_key="id",
-        entities=[
-            Entity(name="order_id", type="primary", sql="id"),
-            Entity(name="customer_id", type="foreign", sql="customer_id"),
-        ],
         dimensions=[
             Dimension(name="order_date", type="time", sql="order_date"),
             Dimension(name="status", type="categorical", sql="status"),
@@ -180,7 +175,6 @@ def setup_semantic_layer():
         name="customers",
         table="customers",
         primary_key="id",
-        entities=[Entity(name="customer_id", type="primary", sql="id")],
         dimensions=[
             Dimension(name="name", type="categorical", sql="name"),
             Dimension(name="region", type="categorical", sql="region"),
@@ -194,7 +188,6 @@ def setup_semantic_layer():
         name="order_items",
         table="order_items",
         primary_key="id",
-        entities=[Entity(name="item_id", type="primary", sql="id")],
         dimensions=[Dimension(name="product_id", type="numeric", sql="product_id")],
         metrics=[
             Metric(name="total_quantity", agg="sum", sql="quantity"),

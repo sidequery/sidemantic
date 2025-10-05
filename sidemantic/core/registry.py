@@ -24,7 +24,10 @@ def auto_register_model(model):
     """Auto-register model with current layer if available."""
     layer = get_current_layer()
     if layer is not None:
-        layer.add_model(model)
+        # Check if model already exists before adding
+        # This prevents double-registration when user explicitly calls add_model()
+        if model.name not in layer.graph.models:
+            layer.add_model(model)
 
 
 def auto_register_metric(metric):

@@ -1801,6 +1801,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 # AVG = SUM(sum_raw) / SUM(count_raw)
                 # Need to find the correct count measure from pre-agg
                 from sidemantic.core.preagg_matcher import PreAggregationMatcher
+
                 matcher = PreAggregationMatcher(model)
                 count_measure = matcher._find_count_measure_for_avg(metric, preagg.measures or [])
 
@@ -1836,12 +1837,9 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                     time_col_name = f"{preagg.time_dimension}_{preagg.granularity}"
                     # Replace time dimension name with time column name
                     import re
+
                     # Match time dimension as a whole word (not part of another word)
-                    rewritten_f = re.sub(
-                        r'\b' + re.escape(preagg.time_dimension) + r'\b',
-                        time_col_name,
-                        rewritten_f
-                    )
+                    rewritten_f = re.sub(r"\b" + re.escape(preagg.time_dimension) + r"\b", time_col_name, rewritten_f)
 
                 rewritten_filters.append(rewritten_f)
 

@@ -162,7 +162,7 @@ def test_filter_on_unmaterialized_dimension():
         metrics=["orders.revenue"],
         dimensions=["orders.region"],
         filters=["orders.status = 'completed'"],
-        use_preaggregations=True
+        use_preaggregations=True,
     )
 
     # Should NOT use pre-agg (status column not available)
@@ -174,7 +174,7 @@ def test_filter_on_unmaterialized_dimension():
         metrics=["orders.revenue"],
         dimensions=["orders.region"],
         filters=["orders.status = 'completed'"],
-        use_preaggregations=True
+        use_preaggregations=True,
     )
     records = fetch_dicts(result)
     # Only completed orders: US=100, EU=200
@@ -241,9 +241,7 @@ def test_filter_on_unmaterialized_time_grain():
 
     # Filter references created_at - matcher recognizes this as the time dimension
     sql = layer.compile(
-        metrics=["orders.revenue"],
-        filters=["orders.created_at >= '2024-01-01'"],
-        use_preaggregations=True
+        metrics=["orders.revenue"], filters=["orders.created_at >= '2024-01-01'"], use_preaggregations=True
     )
 
     # With fix: Should recognize created_at as available (it's the time_dimension)
@@ -251,9 +249,7 @@ def test_filter_on_unmaterialized_time_grain():
     if "used_preagg=true" in sql:
         # Filter will be rewritten to use created_at_day in pre-agg
         result = layer.query(
-            metrics=["orders.revenue"],
-            filters=["orders.created_at >= '2024-01-01'"],
-            use_preaggregations=True
+            metrics=["orders.revenue"], filters=["orders.created_at >= '2024-01-01'"], use_preaggregations=True
         )
         records = fetch_dicts(result)
         # All orders are after 2024-01-01
@@ -330,11 +326,7 @@ def test_week_to_month_granularity_wrong_results():
     layer.add_model(sales)
 
     # Query monthly revenue
-    sql = layer.compile(
-        metrics=["sales.revenue"],
-        dimensions=["sales.sale_date__month"],
-        use_preaggregations=True
-    )
+    sql = layer.compile(metrics=["sales.revenue"], dimensions=["sales.sale_date__month"], use_preaggregations=True)
 
     # Fix: Should NOT route to weekly pre-agg for monthly query
     assert "used_preagg=true" not in sql, "Should not route weekly pre-agg to monthly query"

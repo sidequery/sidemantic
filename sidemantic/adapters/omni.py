@@ -336,7 +336,11 @@ class OmniAdapter(BaseAdapter):
         """
         # Common suffixes to remove
         suffixes = [
-            "_yoy", "_mom", "_wow", "_dod", "_qoq",
+            "_yoy",
+            "_mom",
+            "_wow",
+            "_dod",
+            "_qoq",
             "_same_time_two_years_previously",
             "_same_time_one_year_previously",
             "_same_time_last_month",
@@ -348,7 +352,7 @@ class OmniAdapter(BaseAdapter):
         name = comparison_name
         for suffix in suffixes:
             if name.endswith(suffix):
-                return name[:-len(suffix)]
+                return name[: -len(suffix)]
 
         # If no known suffix, return as-is and let user fix it
         return comparison_name

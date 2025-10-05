@@ -1,12 +1,10 @@
 """Test relative date integration with queries."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 
 
-def test_relative_date_in_filter():
+def test_relative_date_in_filter(layer):
     """Test using relative date expression in filter."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -37,10 +35,8 @@ def test_relative_date_in_filter():
     assert "'last 7 days'" not in sql  # Original string should be replaced
 
 
-def test_multiple_relative_date_filters():
+def test_multiple_relative_date_filters(layer):
     """Test multiple relative date filters."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -65,10 +61,8 @@ def test_multiple_relative_date_filters():
     assert "CURRENT_DATE" in sql
 
 
-def test_this_month_filter():
+def test_this_month_filter(layer):
     """Test this month relative date."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -91,10 +85,8 @@ def test_this_month_filter():
     assert "INTERVAL" in sql_upper and "MONTH" in sql_upper
 
 
-def test_non_relative_date_unchanged():
+def test_non_relative_date_unchanged(layer):
     """Test that non-relative date expressions are unchanged."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -116,10 +108,8 @@ def test_non_relative_date_unchanged():
     assert "'2024-01-01'" in sql or "2024-01-01" in sql
 
 
-def test_mixed_filters():
+def test_mixed_filters(layer):
     """Test mix of relative and absolute date filters."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",

@@ -85,7 +85,7 @@ def semantic_layer(test_db):
         ],
     )
 
-    layer = SemanticLayer()
+    layer = SemanticLayer(auto_register=False)
     layer.conn = test_db  # Use the existing test database connection
     layer.add_model(orders)
     layer.add_model(customers)

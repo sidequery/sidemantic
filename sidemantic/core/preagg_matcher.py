@@ -163,7 +163,7 @@ class PreAggregationMatcher:
             # Remove model prefix if present (e.g., "orders.status" -> "status")
             # Simple regex to extract column names before operators
             # This handles: column = value, column >= value, etc.
-            matches = re.findall(r'(\w+\.)?(\w+)\s*[=<>!]', filter_expr)
+            matches = re.findall(r"(\w+\.)?(\w+)\s*[=<>!]", filter_expr)
             for match in matches:
                 # match[0] is model prefix (optional), match[1] is column name
                 columns.add(match[1])

@@ -7,7 +7,6 @@ Parameters will be removed in a future version.
 """
 
 import warnings
-
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field

@@ -6,8 +6,8 @@ These should have been included in the original commit but weren't.
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.sql.table_calc_processor import TableCalculationProcessor
 from sidemantic.core.table_calculation import TableCalculation
+from sidemantic.sql.table_calc_processor import TableCalculationProcessor
 
 
 def test_count_without_sql_generates_valid_cte():
@@ -210,7 +210,6 @@ def test_end_to_end_duckdb_coverage():
     Fix: Implemented real tests with data verification.
     """
     # This is tested in test_with_data.py - just verify that file has real tests
-    import importlib.util
     import os
 
     test_file = os.path.join(os.path.dirname(__file__), "test_with_data.py")

@@ -1,13 +1,12 @@
 """Tests for critical production bug fixes."""
 
 import duckdb
-import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from tests.utils import df_rows
 
 
-def test_query_level_metric_filters_use_having():
+def test_query_level_metric_filters_use_having(layer):
     """Test that query-level filters on metrics use HAVING clause, not WHERE.
 
     Bug: Query filters like orders.revenue > 100 were applied in WHERE clause
@@ -27,7 +26,6 @@ def test_query_level_metric_filters_use_having():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
 
     # Filter on aggregated metric should use HAVING
@@ -40,7 +38,7 @@ def test_query_level_metric_filters_use_having():
     assert "revenue_raw > 100" not in sql
 
 
-def test_dimension_filters_use_where():
+def test_dimension_filters_use_where(layer):
     """Test that filters on dimensions still use WHERE clause."""
     layer = SemanticLayer()
 
@@ -71,7 +69,7 @@ def test_dimension_filters_use_where():
     assert "HAVING" not in sql
 
 
-def test_mixed_filters_separate_where_and_having():
+def test_mixed_filters_separate_where_and_having(layer):
     """Test that mixed metric and dimension filters use both WHERE and HAVING."""
     layer = SemanticLayer()
 
@@ -103,7 +101,7 @@ def test_mixed_filters_separate_where_and_having():
     assert "revenue > 100" in sql
 
 
-def test_duplicate_column_names_get_prefixed():
+def test_duplicate_column_names_get_prefixed(layer):
     """Test that duplicate field names across models get prefixed.
 
     Bug: When multiple models have same dimension/metric name (e.g., id),
@@ -158,14 +156,14 @@ def test_duplicate_column_names_get_prefixed():
         final_select = sql[final_select_start:]
         # Get lines with aliases in the final SELECT
         lines = final_select.split("\n")
-        select_lines = [l for l in lines if " AS " in l and not l.strip().startswith("--")]
-        aliases = [l.split(" AS ")[-1].strip().rstrip(",") for l in select_lines]
+        select_lines = [line for line in lines if " AS " in line and not line.strip().startswith("--")]
+        aliases = [line.split(" AS ")[-1].strip().rstrip(",") for line in select_lines]
 
         # Check for duplicates in final SELECT
         assert len(aliases) == len(set(aliases)), f"Duplicate column aliases in final SELECT: {aliases}"
 
 
-def test_no_prefix_when_no_collision():
+def test_no_prefix_when_no_collision(layer):
     """Test that fields don't get prefixed when there's no collision."""
     layer = SemanticLayer()
 
@@ -227,7 +225,7 @@ def test_duckdb_memory_variations():
     assert layer2.conn is not None
 
 
-def test_query_method_accepts_parameters():
+def test_query_method_accepts_parameters(layer):
     """Test that .query() method accepts parameters argument.
 
     Bug: Documentation showed parameters argument but method didn't accept it.
@@ -267,7 +265,7 @@ def test_query_method_accepts_parameters():
     assert result is not None
 
 
-def test_metric_level_filters_still_use_where():
+def test_metric_level_filters_still_use_where(layer):
     """Test that Metric.filters (row-level filters) still use WHERE clause.
 
     Metric.filters are row-level filters that should filter before aggregation.
@@ -296,7 +294,7 @@ def test_metric_level_filters_still_use_where():
     assert "status = 'completed'" in sql
 
 
-def test_end_to_end_with_real_data():
+def test_end_to_end_with_real_data(layer):
     """Integration test with real DuckDB data to verify query correctness."""
     conn = duckdb.connect(":memory:")
 

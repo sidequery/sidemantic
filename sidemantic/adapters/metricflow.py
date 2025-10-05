@@ -199,10 +199,14 @@ class MetricFlowAdapter(BaseAdapter):
         value_format_name = meta.get("value_format_name")
         parent = meta.get("parent")
 
+        # Convert expr to string if it's not None (can be various types)
+        expr = dim_def.get("expr")
+        sql_expr = str(expr) if expr is not None else None
+
         return Dimension(
             name=name,
             type=sidemantic_type,
-            sql=dim_def.get("expr"),
+            sql=sql_expr,
             granularity=granularity,
             description=dim_def.get("description"),
             label=dim_def.get("label"),
@@ -256,10 +260,14 @@ class MetricFlowAdapter(BaseAdapter):
         if non_additive and isinstance(non_additive, dict):
             non_additive_dimension = non_additive.get("name")
 
+        # Convert expr to string if it's not None (can be int, like 1 for count)
+        expr = measure_def.get("expr")
+        sql_expr = str(expr) if expr is not None else None
+
         return Metric(
             name=name,
             agg=sidemantic_agg,
-            sql=measure_def.get("expr"),
+            sql=sql_expr,
             description=measure_def.get("description"),
             label=measure_def.get("label"),
             filters=filters,

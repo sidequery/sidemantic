@@ -618,6 +618,307 @@ def test_metricflow_metric_dependencies():
     assert avg_order_value.denominator is not None
 
 
+def test_metricflow_coalesce_2023_orders():
+    """Test MetricFlow adapter with Coalesce 2023 orders example."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("examples/metricflow/coalesce_2023_orders.yml"))
+
+    # Check semantic model
+    assert "orders" in graph.models
+    orders = graph.get_model("orders")
+    assert orders.primary_key == "order_id"
+    assert orders.table == "fct_orders"
+
+    # Check entities/relationships
+    assert len(orders.relationships) == 2
+    location_rel = next((r for r in orders.relationships if r.name == "location"), None)
+    assert location_rel is not None
+    assert location_rel.type == "many_to_one"
+    assert location_rel.foreign_key == "location_id"
+
+    customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
+    assert customer_rel is not None
+    assert customer_rel.foreign_key == "customer_id"
+
+    # Check dimensions
+    ordered_at = orders.get_dimension("ordered_at")
+    assert ordered_at is not None
+    assert ordered_at.type == "time"
+    assert ordered_at.granularity == "day"
+
+    is_food_order = orders.get_dimension("is_food_order")
+    assert is_food_order is not None
+    assert is_food_order.type == "categorical"
+
+    # Check measures with various aggregations
+    order_total = orders.get_metric("order_total")
+    assert order_total is not None
+    assert order_total.agg == "sum"
+
+    order_count = orders.get_metric("order_count")
+    assert order_count is not None
+    assert order_count.agg == "sum"
+    assert order_count.sql == "1"
+
+    customers_with_orders = orders.get_metric("customers_with_orders")
+    assert customers_with_orders is not None
+    assert customers_with_orders.agg == "count_distinct"
+    assert customers_with_orders.sql == "customer_id"
+
+    # Check percentile measure - NOT YET SUPPORTED, skip for now
+    # order_value_p99 = orders.get_metric("order_value_p99")
+    # assert order_value_p99 is not None
+    # assert order_value_p99.agg == "percentile"
+
+
+def test_metricflow_coalesce_2023_customers():
+    """Test MetricFlow adapter with Coalesce 2023 customers example."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("examples/metricflow/coalesce_2023_customers.yml"))
+
+    # Check semantic model
+    assert "customers" in graph.models
+    customers = graph.get_model("customers")
+    # Primary key uses the expr from the entity definition
+    assert customers.primary_key == "customer_id"
+    assert customers.table == "dim_customers"
+
+    # Check time dimensions
+    first_ordered = customers.get_dimension("first_ordered_at")
+    assert first_ordered is not None
+    assert first_ordered.type == "time"
+    assert first_ordered.granularity == "day"
+
+    last_ordered = customers.get_dimension("last_ordered_at")
+    assert last_ordered is not None
+    assert last_ordered.type == "time"
+
+    # Check categorical dimensions
+    customer_type = customers.get_dimension("customer_type")
+    assert customer_type is not None
+    assert customer_type.type == "categorical"
+
+    # Check measures
+    lifetime_spend = customers.get_metric("lifetime_spend")
+    assert lifetime_spend is not None
+    assert lifetime_spend.agg == "sum"
+
+    customer_count = customers.get_metric("customers")
+    assert customer_count is not None
+    assert customer_count.agg == "count_distinct"
+
+    # Check graph-level metrics
+    assert "customers" in graph.metrics
+    customers_metric = graph.get_metric("customers")
+    assert customers_metric.type is None  # Simple metric
+    assert customers_metric.sql == "customers"
+
+    assert "customers_with_orders" in graph.metrics
+
+
+def test_metricflow_coalesce_2023_order_items():
+    """Test MetricFlow adapter with Coalesce 2023 order items example."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("examples/metricflow/coalesce_2023_order_items.yml"))
+
+    # Check semantic model
+    assert "order_item" in graph.models
+    order_items = graph.get_model("order_item")
+    assert order_items.primary_key == "order_item_id"
+
+    # Check foreign entities
+    assert len(order_items.relationships) == 2
+    order_rel = next((r for r in order_items.relationships if r.name == "order_id"), None)
+    assert order_rel is not None
+    assert order_rel.foreign_key == "order_id"
+
+    product_rel = next((r for r in order_items.relationships if r.name == "product"), None)
+    assert product_rel is not None
+    assert product_rel.foreign_key == "product_id"
+
+    # Check dimensions
+    ordered_at = order_items.get_dimension("ordered_at")
+    assert ordered_at is not None
+    assert ordered_at.type == "time"
+
+    is_food = order_items.get_dimension("is_food_item")
+    assert is_food is not None
+
+    is_drink = order_items.get_dimension("is_drink_item")
+    assert is_drink is not None
+
+    # Check conditional revenue measures
+    revenue = order_items.get_metric("revenue")
+    assert revenue is not None
+    assert revenue.agg == "sum"
+    assert revenue.sql == "product_price"
+
+    food_revenue = order_items.get_metric("food_revenue")
+    assert food_revenue is not None
+    assert food_revenue.agg == "sum"
+    assert "case when is_food_item" in food_revenue.sql.lower()
+
+    drink_revenue = order_items.get_metric("drink_revenue")
+    assert drink_revenue is not None
+    assert "case when is_drink_item" in drink_revenue.sql.lower()
+
+
+def test_metricflow_conversion_metrics():
+    """Test MetricFlow adapter with conversion metrics."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("examples/metricflow/conversion_metrics.yml"))
+
+    # Check semantic model
+    assert "user_events" in graph.models
+    events = graph.get_model("user_events")
+    assert events.primary_key == "user_id"
+
+    # Check measures for conversion
+    visits = events.get_metric("visits")
+    assert visits is not None
+    assert visits.agg == "sum"
+
+    buys = events.get_metric("buys")
+    assert buys is not None
+
+    # Check conversion metrics - NOTE: conversion type not yet supported in adapter
+    # Conversion metrics are skipped during parsing (return None) for unsupported types
+    # Verify they're not in the graph
+    assert "visit_to_buy_conversion_rate" not in graph.metrics
+    assert "visit_to_buy_conversions_1_week" not in graph.metrics
+    assert "view_to_purchase_same_product" not in graph.metrics
+
+    # Test that parsing doesn't fail even with unsupported conversion type
+    assert graph is not None
+    assert len(graph.models) > 0
+
+
+def test_metricflow_cumulative_grain_to_date():
+    """Test MetricFlow adapter with cumulative metrics and grain_to_date."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("examples/metricflow/cumulative_metrics_grain_to_date.yml"))
+
+    # Check semantic model
+    assert "revenue_transactions" in graph.models
+    transactions = graph.get_model("revenue_transactions")
+    assert transactions.primary_key == "transaction_id"
+
+    # Check measures
+    revenue = transactions.get_metric("revenue")
+    assert revenue is not None
+    assert revenue.agg == "sum"
+
+    order_total = transactions.get_metric("order_total")
+    assert order_total is not None
+
+    # Check cumulative metrics with window
+    assert "cumulative_revenue_all_time" in graph.metrics
+    all_time = graph.get_metric("cumulative_revenue_all_time")
+    assert all_time.type == "cumulative"
+    assert all_time.window is None  # No window = all time
+
+    assert "cumulative_revenue_7_days" in graph.metrics
+    seven_days = graph.get_metric("cumulative_revenue_7_days")
+    assert seven_days.type == "cumulative"
+    assert seven_days.window == "7 days"
+
+    # Check grain_to_date cumulative metrics
+    assert "cumulative_order_total_mtd" in graph.metrics
+    mtd = graph.get_metric("cumulative_order_total_mtd")
+    assert mtd.type == "cumulative"
+    assert mtd.grain_to_date == "month"
+
+    assert "cumulative_revenue_ytd" in graph.metrics
+    ytd = graph.get_metric("cumulative_revenue_ytd")
+    assert ytd.type == "cumulative"
+    assert ytd.grain_to_date == "year"
+
+    assert "cumulative_revenue_wtd" in graph.metrics
+    wtd = graph.get_metric("cumulative_revenue_wtd")
+    assert wtd.grain_to_date == "week"
+
+
+def test_metricflow_jaffle_sl_testing():
+    """Test MetricFlow adapter with jaffle-sl-testing order items example."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("examples/metricflow/jaffle_sl_testing_order_items.yml"))
+
+    # Check semantic model
+    assert "order_items" in graph.models
+    order_items = graph.get_model("order_items")
+    assert order_items.primary_key == "order_item_id"
+
+    # Check relationships
+    assert len(order_items.relationships) == 2
+
+    # Check dimensions
+    ordered_at = order_items.get_dimension("ordered_at")
+    assert ordered_at is not None
+    assert ordered_at.type == "time"
+    assert ordered_at.granularity == "day"
+
+    # Check measures including median aggregation
+    revenue = order_items.get_metric("revenue")
+    assert revenue is not None
+    assert revenue.agg == "sum"
+    assert revenue.sql == "subtotal"
+
+    median_revenue = order_items.get_metric("median_revenue")
+    assert median_revenue is not None
+    assert median_revenue.agg == "median"
+    assert median_revenue.sql == "subtotal"
+
+    # Check conditional measures
+    food_revenue = order_items.get_metric("food_revenue")
+    assert food_revenue is not None
+    assert "case when" in food_revenue.sql.lower()
+
+    # Check graph-level metric
+    assert "revenue" in graph.metrics
+    revenue_metric = graph.get_metric("revenue")
+    assert revenue_metric.type is None  # Simple metric
+    assert revenue_metric.sql == "revenue"
+
+
+def test_metricflow_saved_queries():
+    """Test MetricFlow adapter with saved queries example."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("examples/metricflow/saved_queries_example.yml"))
+
+    # Check semantic model
+    assert "sales_data" in graph.models
+    sales = graph.get_model("sales_data")
+    assert sales.primary_key == "sale_id"
+
+    # Check dimensions
+    sale_date = sales.get_dimension("sale_date")
+    assert sale_date is not None
+    assert sale_date.type == "time"
+
+    region = sales.get_dimension("region")
+    assert region is not None
+    assert region.type == "categorical"
+
+    # Check measures
+    sales_amount = sales.get_metric("sales_amount")
+    assert sales_amount is not None
+    assert sales_amount.agg == "sum"
+
+    sales_count = sales.get_metric("sales_count")
+    assert sales_count is not None
+    assert sales_count.agg == "count"
+
+    # Check graph-level metrics
+    assert "total_sales" in graph.metrics
+    total_sales = graph.get_metric("total_sales")
+    assert total_sales.type is None  # Simple metric
+    assert total_sales.sql == "sales_amount"
+
+    assert "sales_transactions" in graph.metrics
+    transactions = graph.get_metric("sales_transactions")
+    assert transactions.sql == "sales_count"
+
+
 def test_lookml_adapter_basic():
     """Test LookML adapter with basic orders example."""
     adapter = LookMLAdapter()
@@ -1019,6 +1320,864 @@ def test_lookml_adapter_export():
         import os
         if os.path.exists(output_path):
             os.remove(output_path)
+
+
+def test_lookml_thelook_orders():
+    """Test LookML adapter with real thelook orders example from looker-open-source."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("examples/lookml/thelook_orders.view.lkml"))
+
+    # Check model was imported
+    assert "orders" in graph.models
+    orders = graph.get_model("orders")
+
+    # Check primary key
+    assert orders.primary_key == "id"
+
+    # Check dimensions
+    id_dim = orders.get_dimension("id")
+    assert id_dim is not None
+    assert id_dim.type == "numeric"
+
+    status_dim = orders.get_dimension("status")
+    assert status_dim is not None
+    assert status_dim.type == "categorical"
+
+    traffic_source_dim = orders.get_dimension("traffic_source")
+    assert traffic_source_dim is not None
+
+    user_id_dim = orders.get_dimension("user_id")
+    assert user_id_dim is not None
+    assert user_id_dim.type == "numeric"
+
+    # Check complex dimensions with SQL
+    total_amount_dim = orders.get_dimension("total_amount_of_order_usd")
+    assert total_amount_dim is not None
+    assert total_amount_dim.type == "numeric"
+    assert "SELECT SUM" in total_amount_dim.sql
+
+    order_profit_dim = orders.get_dimension("order_profit")
+    assert order_profit_dim is not None
+    # Should reference other dimensions
+    assert "total_amount_of_order_usd" in order_profit_dim.sql or "total_cost_of_order" in order_profit_dim.sql
+
+    # Check yesno dimension
+    is_first_purchase_dim = orders.get_dimension("is_first_purchase")
+    assert is_first_purchase_dim is not None
+    assert is_first_purchase_dim.type == "categorical"  # yesno maps to categorical
+
+    # Check time dimension group
+    created_date = orders.get_dimension("created_date")
+    assert created_date is not None
+    assert created_date.type == "time"
+    assert created_date.granularity == "day"
+
+    created_week = orders.get_dimension("created_week")
+    assert created_week is not None
+    assert created_week.granularity == "week"
+
+    created_month = orders.get_dimension("created_month")
+    assert created_month is not None
+    assert created_month.granularity == "month"
+
+    # Check measures
+    count_measure = orders.get_metric("count")
+    assert count_measure is not None
+    assert count_measure.agg == "count"
+
+    revenue_measure = orders.get_metric("total_revenue")
+    assert revenue_measure is not None
+    assert revenue_measure.agg == "sum"
+
+
+def test_lookml_thelook_users():
+    """Test LookML adapter with real thelook users example."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("examples/lookml/thelook_users.view.lkml"))
+
+    assert "users" in graph.models
+    users = graph.get_model("users")
+
+    # Check primary key
+    assert users.primary_key == "id"
+
+    # Check various dimension types
+    age_dim = users.get_dimension("age")
+    assert age_dim is not None
+    assert age_dim.type == "numeric"
+
+    city_dim = users.get_dimension("city")
+    assert city_dim is not None
+    assert city_dim.type == "categorical"
+
+    email_dim = users.get_dimension("email")
+    assert email_dim is not None
+
+    # Check geographic dimensions
+    lat_dim = users.get_dimension("lat")
+    assert lat_dim is not None
+    assert lat_dim.type == "numeric"
+
+    lng_dim = users.get_dimension("lng")
+    assert lng_dim is not None
+    assert lng_dim.type == "numeric"
+
+    # Check zipcode dimension (special type)
+    zipcode_dim = users.get_dimension("zipcode")
+    assert zipcode_dim is not None
+
+    # Check time dimension group
+    created_date = users.get_dimension("created_date")
+    assert created_date is not None
+    assert created_date.type == "time"
+
+    # Check measure
+    count_measure = users.get_metric("count")
+    assert count_measure is not None
+    assert count_measure.agg == "count"
+
+
+def test_lookml_thelook_products():
+    """Test LookML adapter with real thelook products example."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("examples/lookml/thelook_products.view.lkml"))
+
+    assert "products" in graph.models
+    products = graph.get_model("products")
+
+    # Check dimensions
+    brand_dim = products.get_dimension("brand")
+    assert brand_dim is not None
+
+    category_dim = products.get_dimension("category")
+    assert category_dim is not None
+
+    department_dim = products.get_dimension("department")
+    assert department_dim is not None
+
+    retail_price_dim = products.get_dimension("retail_price")
+    assert retail_price_dim is not None
+    assert retail_price_dim.type == "numeric"
+
+    sku_dim = products.get_dimension("sku")
+    assert sku_dim is not None
+
+    # Check measure
+    count_measure = products.get_metric("count")
+    assert count_measure is not None
+    assert count_measure.agg == "count"
+
+
+def test_lookml_thelook_order_items():
+    """Test LookML adapter with real thelook order_items example."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("examples/lookml/thelook_order_items.view.lkml"))
+
+    assert "order_items" in graph.models
+    order_items = graph.get_model("order_items")
+
+    # Check primary key
+    assert order_items.primary_key == "id"
+
+    # Check foreign key dimensions
+    inventory_item_id_dim = order_items.get_dimension("inventory_item_id")
+    assert inventory_item_id_dim is not None
+    assert inventory_item_id_dim.type == "numeric"
+
+    order_id_dim = order_items.get_dimension("order_id")
+    assert order_id_dim is not None
+    assert order_id_dim.type == "numeric"
+
+    # Check time dimensions with multiple granularities
+    created_date = order_items.get_dimension("created_date")
+    assert created_date is not None
+    assert created_date.type == "time"
+
+    created_week = order_items.get_dimension("created_week")
+    assert created_week is not None
+
+    # Check returned time dimension group
+    returned_date = order_items.get_dimension("returned_date")
+    assert returned_date is not None
+    assert returned_date.type == "time"
+
+    # Check numeric dimension
+    sale_price_dim = order_items.get_dimension("sale_price")
+    assert sale_price_dim is not None
+    assert sale_price_dim.type == "numeric"
+
+    # Check measures
+    count_measure = order_items.get_metric("count")
+    assert count_measure is not None
+    assert count_measure.agg == "count"
+
+    total_sale_price = order_items.get_metric("total_sale_price")
+    assert total_sale_price is not None
+    assert total_sale_price.agg == "sum"
+
+    avg_sale_price = order_items.get_metric("average_sale_price")
+    assert avg_sale_price is not None
+    assert avg_sale_price.agg == "avg"
+
+
+def test_lookml_thelook_inventory_items():
+    """Test LookML adapter with real thelook inventory_items example."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("examples/lookml/thelook_inventory_items.view.lkml"))
+
+    assert "inventory_items" in graph.models
+    inventory = graph.get_model("inventory_items")
+
+    # Check dimensions
+    cost_dim = inventory.get_dimension("cost")
+    assert cost_dim is not None
+    assert cost_dim.type == "numeric"
+
+    product_id_dim = inventory.get_dimension("product_id")
+    assert product_id_dim is not None
+    assert product_id_dim.type == "numeric"
+
+    # Check time dimensions with convert_tz: no
+    created_date = inventory.get_dimension("created_date")
+    assert created_date is not None
+    assert created_date.type == "time"
+
+    sold_date = inventory.get_dimension("sold_date")
+    assert sold_date is not None
+    assert sold_date.type == "time"
+
+    # Check measure
+    count_measure = inventory.get_metric("count")
+    assert count_measure is not None
+
+
+def test_lookml_bq_thelook_events():
+    """Test LookML adapter with BigQuery thelook events example (compact syntax)."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("examples/lookml/bq_thelook_events.view.lkml"))
+
+    assert "events" in graph.models
+    events = graph.get_model("events")
+
+    # Check sql_table_name was parsed
+    assert events.table == "thelook_web_analytics.events"
+
+    # Check primary key with compact syntax
+    assert events.primary_key == "id"
+
+    # Check compact dimension definitions (no sql: ${TABLE}.field)
+    browser_dim = events.get_dimension("browser")
+    assert browser_dim is not None
+
+    city_dim = events.get_dimension("city")
+    assert city_dim is not None
+
+    event_type_dim = events.get_dimension("event_type")
+    assert event_type_dim is not None
+
+    # Check numeric dimensions
+    latitude_dim = events.get_dimension("latitude")
+    assert latitude_dim is not None
+    assert latitude_dim.type == "numeric"
+
+    sequence_num_dim = events.get_dimension("sequence_number")
+    assert sequence_num_dim is not None
+    assert sequence_num_dim.type == "numeric"
+
+    # Check dimension with complex SQL (REGEXP_EXTRACT)
+    user_id_dim = events.get_dimension("user_id")
+    assert user_id_dim is not None
+    assert user_id_dim.type == "numeric"
+    assert "REGEXP_EXTRACT" in user_id_dim.sql or "CAST" in user_id_dim.sql
+
+    # Check time dimension (defaults to "date" when no timeframes specified)
+    created_date = events.get_dimension("created_date")
+    assert created_date is not None
+    assert created_date.type == "time"
+    assert created_date.granularity == "day"
+
+    # Check basic measure
+    count_measure = events.get_metric("count")
+    assert count_measure is not None
+    assert count_measure.agg == "count"
+
+    # Check derived/custom measures with SQL only (no type:)
+    min_time = events.get_metric("minimum_time")
+    assert min_time is not None
+    # These are "derived" because they have custom SQL but no agg type
+    assert min_time.type == "derived"
+
+    max_time = events.get_metric("max_time")
+    assert max_time is not None
+    assert max_time.type == "derived"
+
+    # Check measures with array aggregations
+    ip_addresses = events.get_metric("ip_addresses")
+    assert ip_addresses is not None
+    assert "ARRAY_TO_STRING" in ip_addresses.sql or "ARRAY_AGG" in ip_addresses.sql
+
+    event_types = events.get_metric("event_types")
+    assert event_types is not None
+
+    # Check min aggregation type
+    first_user_id = events.get_metric("first_user_id")
+    assert first_user_id is not None
+    assert first_user_id.agg == "min"
+
+
+def test_lookml_bq_thelook_inventory_compact():
+    """Test LookML adapter with compact syntax (no ${TABLE} references)."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("examples/lookml/bq_thelook_inventory.view.lkml"))
+
+    assert "inventory_items" in graph.models
+    inventory = graph.get_model("inventory_items")
+
+    # Check table name
+    assert inventory.table == "thelook_web_analytics.inventory_items"
+
+    # Check compact dimensions
+    product_brand_dim = inventory.get_dimension("product_brand")
+    assert product_brand_dim is not None
+
+    product_category_dim = inventory.get_dimension("product_category")
+    assert product_category_dim is not None
+
+    product_name_dim = inventory.get_dimension("product_name")
+    assert product_name_dim is not None
+
+    # Check numeric dimensions
+    cost_dim = inventory.get_dimension("cost")
+    assert cost_dim is not None
+    assert cost_dim.type == "numeric"
+
+    retail_price_dim = inventory.get_dimension("product_retail_price")
+    assert retail_price_dim is not None
+    assert retail_price_dim.type == "numeric"
+
+    # Check measure
+    count_measure = inventory.get_metric("count")
+    assert count_measure is not None
+
+
+def test_lookml_bq_thelook_distribution_centers():
+    """Test LookML adapter with geographic dimensions."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("examples/lookml/bq_thelook_distribution_centers.view.lkml"))
+
+    assert "distribution_centers" in graph.models
+    dc = graph.get_model("distribution_centers")
+
+    # Check table
+    assert dc.table == "thelook_web_analytics.distribution_centers"
+
+    # Check geographic dimensions
+    latitude_dim = dc.get_dimension("latitude")
+    assert latitude_dim is not None
+    assert latitude_dim.type == "numeric"
+
+    longitude_dim = dc.get_dimension("longitude")
+    assert longitude_dim is not None
+    assert longitude_dim.type == "numeric"
+
+    name_dim = dc.get_dimension("name")
+    assert name_dim is not None
+
+    # Check measure
+    count_measure = dc.get_metric("count")
+    assert count_measure is not None
+
+
+def test_cube_saas_analytics():
+    """Test Cube adapter with SaaS analytics example."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/saas_analytics.yml"))
+
+    # Check all models were imported
+    assert "users" in graph.models
+    assert "subscriptions" in graph.models
+    assert "events" in graph.models
+
+    # Check users model
+    users = graph.get_model("users")
+    assert users.table == "public.users"
+    assert len(users.dimensions) >= 5
+    assert len(users.metrics) >= 2
+    assert len(users.segments) == 2
+
+    # Check user dimensions
+    email_dim = users.get_dimension("email")
+    assert email_dim is not None
+    assert email_dim.type == "categorical"
+
+    city_dim = users.get_dimension("city")
+    assert city_dim is not None
+
+    signup_date_dim = users.get_dimension("signup_date")
+    assert signup_date_dim is not None
+    assert signup_date_dim.type == "time"
+
+    # Check user measures
+    count_measure = users.get_metric("count")
+    assert count_measure is not None
+    assert count_measure.agg == "count"
+
+    # Check user segments
+    sf_segment = next((s for s in users.segments if s.name == "sf_users"), None)
+    assert sf_segment is not None
+    assert "San Francisco" in sf_segment.sql or "CA" in sf_segment.sql
+
+    # Check subscriptions model
+    subscriptions = graph.get_model("subscriptions")
+    assert subscriptions.table == "public.subscriptions"
+    assert len(subscriptions.relationships) == 1
+
+    # Check subscription relationship
+    user_rel = next((r for r in subscriptions.relationships if r.name == "users"), None)
+    assert user_rel is not None
+    assert user_rel.type == "many_to_one"
+
+    # Check subscription dimensions
+    plan_dim = subscriptions.get_dimension("plan")
+    assert plan_dim is not None
+
+    status_dim = subscriptions.get_dimension("status")
+    assert status_dim is not None
+
+    # Check subscription measures
+    active_subs = subscriptions.get_metric("active_subscriptions")
+    assert active_subs is not None
+    assert active_subs.filters is not None
+
+    # Check subscription pre-aggregations
+    assert len(subscriptions.pre_aggregations) == 1
+    preagg = subscriptions.pre_aggregations[0]
+    assert preagg.name == "subscriptions_by_plan"
+    assert preagg.granularity == "day"
+    assert preagg.partition_granularity == "month"
+
+    # Check events model
+    events = graph.get_model("events")
+    assert events.table == "public.events"
+    assert len(events.segments) == 2
+
+    # Check event measures
+    unique_users = events.get_metric("unique_users")
+    assert unique_users is not None
+    assert unique_users.agg == "count_distinct"
+
+
+def test_cube_retail_analytics():
+    """Test Cube adapter with retail analytics example."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/retail_analytics.yml"))
+
+    # Check all models were imported
+    assert "products" in graph.models
+    assert "line_items" in graph.models
+    assert "orders" in graph.models
+    assert "customers" in graph.models
+
+    # Check products model
+    products = graph.get_model("products")
+    assert products.table == "public.products"
+
+    # Check product dimensions
+    category_dim = products.get_dimension("category")
+    assert category_dim is not None
+
+    price_dim = products.get_dimension("price")
+    assert price_dim is not None
+    assert price_dim.type == "numeric"
+
+    # Check product measures
+    avg_price = products.get_metric("avg_price")
+    assert avg_price is not None
+    assert avg_price.agg == "avg"
+
+    min_price = products.get_metric("min_price")
+    assert min_price is not None
+    assert min_price.agg == "min"
+
+    # Check product segments
+    electronics_segment = next((s for s in products.segments if s.name == "electronics"), None)
+    assert electronics_segment is not None
+
+    # Check line_items model
+    line_items = graph.get_model("line_items")
+    assert line_items.table == "public.line_items"
+    assert len(line_items.relationships) == 2
+
+    # Check line_items joins
+    product_rel = next((r for r in line_items.relationships if r.name == "products"), None)
+    assert product_rel is not None
+    assert product_rel.type == "many_to_one"
+
+    orders_rel = next((r for r in line_items.relationships if r.name == "orders"), None)
+    assert orders_rel is not None
+    assert orders_rel.type == "many_to_one"
+
+    # Check line_items pre-aggregations
+    assert len(line_items.pre_aggregations) == 1
+    preagg = line_items.pre_aggregations[0]
+    assert preagg.refresh_key is not None
+    assert preagg.refresh_key.every == "1 day"
+
+    # Check orders model
+    orders = graph.get_model("orders")
+    assert len(orders.relationships) == 2
+
+    # Check orders pre-aggregations with indexes
+    assert len(orders.pre_aggregations) == 1
+    orders_preagg = orders.pre_aggregations[0]
+    assert orders_preagg.refresh_key is not None
+    assert orders_preagg.refresh_key.incremental is True
+    assert orders_preagg.refresh_key.update_window == "7 day"
+    assert len(orders_preagg.indexes) == 1
+    assert orders_preagg.indexes[0].name == "status_idx"
+
+
+def test_cube_web_analytics():
+    """Test Cube adapter with web analytics example."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/web_analytics.yml"))
+
+    # Check all models were imported
+    assert "page_views" in graph.models
+    assert "sessions" in graph.models
+    assert "conversions" in graph.models
+
+    # Check page_views model
+    page_views = graph.get_model("page_views")
+    assert page_views.table == "analytics.page_views"
+
+    # Check page_views dimensions
+    url_dim = page_views.get_dimension("url")
+    assert url_dim is not None
+
+    duration_dim = page_views.get_dimension("duration")
+    assert duration_dim is not None
+    assert duration_dim.type == "numeric"
+
+    # Check page_views measures
+    unique_sessions = page_views.get_metric("unique_sessions")
+    assert unique_sessions is not None
+    assert unique_sessions.agg == "count_distinct"
+
+    avg_duration = page_views.get_metric("avg_duration")
+    assert avg_duration is not None
+    assert avg_duration.agg == "avg"
+
+    # Check page_views segments
+    assert len(page_views.segments) >= 3
+    homepage_segment = next((s for s in page_views.segments if s.name == "homepage"), None)
+    assert homepage_segment is not None
+
+    # Check page_views pre-aggregation with incremental refresh
+    assert len(page_views.pre_aggregations) == 1
+    preagg = page_views.pre_aggregations[0]
+    assert preagg.granularity == "hour"
+    assert preagg.partition_granularity == "day"
+    assert preagg.refresh_key.incremental is True
+
+    # Check sessions model
+    sessions = graph.get_model("sessions")
+    assert sessions.table == "analytics.sessions"
+    assert len(sessions.relationships) == 2
+
+    # Check session dimensions
+    device_dim = sessions.get_dimension("device_type")
+    assert device_dim is not None
+
+    utm_source_dim = sessions.get_dimension("utm_source")
+    assert utm_source_dim is not None
+
+    # Check session segments
+    assert len(sessions.segments) >= 4
+    mobile_segment = next((s for s in sessions.segments if s.name == "mobile"), None)
+    assert mobile_segment is not None
+
+    # Check conversions model
+    conversions = graph.get_model("conversions")
+    assert conversions.table == "analytics.conversions"
+
+    # Check conversion measures
+    purchases = conversions.get_metric("purchases")
+    assert purchases is not None
+    assert purchases.filters is not None
+
+    # Check conversion pre-aggregation with indexes
+    assert len(conversions.pre_aggregations) == 1
+    conv_preagg = conversions.pre_aggregations[0]
+    assert len(conv_preagg.indexes) == 1
+
+
+def test_cube_financial_analytics():
+    """Test Cube adapter with financial analytics example."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/financial_analytics.yml"))
+
+    # Check all models were imported
+    assert "transactions" in graph.models
+    assert "accounts" in graph.models
+    assert "categories" in graph.models
+    assert "customers" in graph.models
+
+    # Check transactions model
+    transactions = graph.get_model("transactions")
+    assert transactions.table == "finance.transactions"
+    assert len(transactions.relationships) == 2
+
+    # Check transaction dimensions
+    transaction_type_dim = transactions.get_dimension("transaction_type")
+    assert transaction_type_dim is not None
+
+    is_recurring_dim = transactions.get_dimension("is_recurring")
+    assert is_recurring_dim is not None
+    assert is_recurring_dim.type == "categorical"  # boolean maps to categorical
+
+    # Check transaction measures with filters
+    credit_amount = transactions.get_metric("credit_amount")
+    assert credit_amount is not None
+    assert credit_amount.filters is not None
+    assert credit_amount.agg == "sum"
+
+    debit_amount = transactions.get_metric("debit_amount")
+    assert debit_amount is not None
+    assert debit_amount.filters is not None
+
+    # Check transaction segments
+    assert len(transactions.segments) >= 4
+    large_tx_segment = next((s for s in transactions.segments if s.name == "large_transactions"), None)
+    assert large_tx_segment is not None
+
+    # Check transaction pre-aggregation
+    assert len(transactions.pre_aggregations) == 1
+    preagg = transactions.pre_aggregations[0]
+    assert preagg.refresh_key.incremental is True
+    assert preagg.refresh_key.update_window == "3 day"
+
+    # Check accounts model
+    accounts = graph.get_model("accounts")
+    assert accounts.table == "finance.accounts"
+    assert len(accounts.relationships) == 2
+
+    # Check account measures
+    active_accounts = accounts.get_metric("active_accounts")
+    assert active_accounts is not None
+    assert active_accounts.filters is not None
+
+
+def test_cube_logistics_shipping():
+    """Test Cube adapter with logistics/shipping example."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/logistics_shipping.yml"))
+
+    # Check all models were imported
+    assert "shipments" in graph.models
+    assert "warehouses" in graph.models
+    assert "carriers" in graph.models
+    assert "orders" in graph.models
+
+    # Check shipments model
+    shipments = graph.get_model("shipments")
+    assert shipments.table == "logistics.shipments"
+    assert len(shipments.relationships) == 3
+
+    # Check shipment dimensions
+    status_dim = shipments.get_dimension("status")
+    assert status_dim is not None
+
+    weight_dim = shipments.get_dimension("weight")
+    assert weight_dim is not None
+    assert weight_dim.type == "numeric"
+
+    # Check shipment measures
+    total_weight = shipments.get_metric("total_weight")
+    assert total_weight is not None
+    assert total_weight.agg == "sum"
+
+    delayed = shipments.get_metric("delayed")
+    assert delayed is not None
+    assert delayed.filters is not None
+
+    # Check shipment segments
+    assert len(shipments.segments) >= 5
+    heavy_segment = next((s for s in shipments.segments if s.name == "heavy_shipments"), None)
+    assert heavy_segment is not None
+
+    # Check shipment pre-aggregation with indexes
+    assert len(shipments.pre_aggregations) == 1
+    preagg = shipments.pre_aggregations[0]
+    assert len(preagg.indexes) == 1
+    assert preagg.indexes[0].name == "status_carrier_idx"
+    assert len(preagg.indexes[0].columns) == 2
+
+    # Check warehouses model
+    warehouses = graph.get_model("warehouses")
+    assert warehouses.table == "logistics.warehouses"
+
+    # Check warehouse dimensions
+    capacity_dim = warehouses.get_dimension("capacity")
+    assert capacity_dim is not None
+    assert capacity_dim.type == "numeric"
+
+    # Check carriers model
+    carriers = graph.get_model("carriers")
+    assert carriers.table == "logistics.carriers"
+
+    # Check carrier segments
+    assert len(carriers.segments) >= 3
+
+
+def test_cube_iot_sensors():
+    """Test Cube adapter with IoT/sensor data example."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/iot_sensors.yml"))
+
+    # Check all models were imported
+    assert "sensor_readings" in graph.models
+    assert "devices" in graph.models
+    assert "locations" in graph.models
+    assert "alerts" in graph.models
+
+    # Check sensor_readings model
+    sensor_readings = graph.get_model("sensor_readings")
+    assert sensor_readings.table == "iot.sensor_readings"
+    assert len(sensor_readings.relationships) == 2
+
+    # Check sensor dimensions
+    sensor_type_dim = sensor_readings.get_dimension("sensor_type")
+    assert sensor_type_dim is not None
+
+    value_dim = sensor_readings.get_dimension("value")
+    assert value_dim is not None
+    assert value_dim.type == "numeric"
+
+    # Check sensor measures
+    avg_value = sensor_readings.get_metric("avg_value")
+    assert avg_value is not None
+    assert avg_value.agg == "avg"
+
+    avg_temp = sensor_readings.get_metric("avg_temperature")
+    assert avg_temp is not None
+    assert avg_temp.filters is not None
+
+    # Check sensor segments
+    assert len(sensor_readings.segments) >= 5
+
+    # Check sensor pre-aggregations
+    assert len(sensor_readings.pre_aggregations) == 1
+
+    hourly_preagg = next((p for p in sensor_readings.pre_aggregations if p.name == "readings_hourly"), None)
+    assert hourly_preagg is not None
+    assert hourly_preagg.granularity == "hour"
+    assert hourly_preagg.refresh_key.every == "1 hour"
+    assert len(hourly_preagg.indexes) == 1
+
+    # Check devices model
+    devices = graph.get_model("devices")
+    assert devices.table == "iot.devices"
+
+    # Check device measures
+    maintenance_needed = devices.get_metric("maintenance_needed")
+    assert maintenance_needed is not None
+    assert maintenance_needed.filters is not None
+
+    # Check alerts model
+    alerts = graph.get_model("alerts")
+    assert alerts.table == "iot.alerts"
+
+    # Check alert measures
+    critical_alerts = alerts.get_metric("critical_alerts")
+    assert critical_alerts is not None
+    assert critical_alerts.filters is not None
+
+
+def test_cube_healthcare_patients():
+    """Test Cube adapter with healthcare analytics example."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/healthcare_patients.yml"))
+
+    # Check all models were imported
+    assert "patients" in graph.models
+    assert "appointments" in graph.models
+    assert "treatments" in graph.models
+    assert "physicians" in graph.models
+    assert "departments" in graph.models
+
+    # Check patients model
+    patients = graph.get_model("patients")
+    assert patients.table == "healthcare.patients"
+    assert len(patients.relationships) == 2
+
+    # Check patient dimensions
+    age_dim = patients.get_dimension("age")
+    assert age_dim is not None
+    assert age_dim.type == "numeric"
+
+    blood_type_dim = patients.get_dimension("blood_type")
+    assert blood_type_dim is not None
+
+    # Check patient measures
+    avg_age = patients.get_metric("avg_age")
+    assert avg_age is not None
+    assert avg_age.agg == "avg"
+
+    pediatric = patients.get_metric("pediatric_patients")
+    assert pediatric is not None
+    assert pediatric.filters is not None
+
+    # Check patient segments
+    assert len(patients.segments) >= 4
+
+    # Check appointments model
+    appointments = graph.get_model("appointments")
+    assert appointments.table == "healthcare.appointments"
+    assert len(appointments.relationships) == 3
+
+    # Check appointment dimensions
+    appointment_type_dim = appointments.get_dimension("appointment_type")
+    assert appointment_type_dim is not None
+
+    duration_dim = appointments.get_dimension("duration_minutes")
+    assert duration_dim is not None
+    assert duration_dim.type == "numeric"
+
+    # Check appointment measures
+    completed = appointments.get_metric("completed_appointments")
+    assert completed is not None
+    assert completed.filters is not None
+
+    no_show = appointments.get_metric("no_show_appointments")
+    assert no_show is not None
+    assert no_show.filters is not None
+
+    # Check appointment segments
+    assert len(appointments.segments) >= 5
+
+    # Check appointment pre-aggregation
+    assert len(appointments.pre_aggregations) == 1
+    preagg = appointments.pre_aggregations[0]
+    assert preagg.name == "appointments_daily"
+    assert len(preagg.measures) >= 3
+
+    # Check treatments model
+    treatments = graph.get_model("treatments")
+    assert treatments.table == "healthcare.treatments"
+
+    # Check treatment measures
+    total_cost = treatments.get_metric("total_cost")
+    assert total_cost is not None
+    assert total_cost.agg == "sum"
+
+    # Check physicians model
+    physicians = graph.get_model("physicians")
+    assert physicians.table == "healthcare.physicians"
+
+    # Check departments model
+    departments = graph.get_model("departments")
+    assert departments.table == "healthcare.departments"
 
 
 if __name__ == "__main__":

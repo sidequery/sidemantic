@@ -1,0 +1,252 @@
+# Source: Cube.js Official Style Guide
+# URL: https://cube.dev/docs/guides/style-guide
+# Description: Retail/E-commerce analytics with products, line items, and orders
+
+cubes:
+  - name: products
+    sql_table: public.products
+    public: true
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: category
+        sql: category
+        type: string
+
+      - name: brand
+        sql: brand
+        type: string
+
+      - name: price
+        sql: price
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: avg_price
+        sql: price
+        type: avg
+
+      - name: min_price
+        sql: price
+        type: min
+
+      - name: max_price
+        sql: price
+        type: max
+
+    segments:
+      - name: electronics
+        sql: "{CUBE}.category = 'Electronics'"
+
+      - name: premium
+        sql: "{CUBE}.price > 1000"
+
+  - name: line_items
+    sql_table: public.line_items
+    public: false
+
+    joins:
+      - name: products
+        sql: "{CUBE}.product_id = {products.id}"
+        relationship: many_to_one
+
+      - name: orders
+        sql: "{CUBE}.order_id = {orders.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: product_id
+        sql: product_id
+        type: number
+
+      - name: order_id
+        sql: order_id
+        type: number
+
+      - name: quantity
+        sql: quantity
+        type: number
+
+      - name: created_date
+        sql: created_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_amount
+        sql: price
+        type: sum
+
+      - name: total_quantity
+        sql: quantity
+        type: sum
+
+      - name: avg_item_price
+        sql: price
+        type: avg
+
+    pre_aggregations:
+      - name: line_items_rollup
+        measures:
+          - CUBE.count
+          - CUBE.total_amount
+          - CUBE.total_quantity
+        dimensions:
+          - CUBE.product_id
+        time_dimension: CUBE.created_date
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 day
+
+  - name: orders
+    sql_table: public.orders
+
+    joins:
+      - name: customers
+        sql: "{CUBE}.customer_id = {customers.id}"
+        relationship: many_to_one
+
+      - name: line_items
+        sql: "{CUBE}.id = {line_items.order_id}"
+        relationship: one_to_many
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: number
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+      - name: completed_at
+        sql: completed_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: completed_count
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'completed'"
+
+      - name: cancelled_count
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'cancelled'"
+
+      - name: total_revenue
+        sql: "{line_items.total_amount}"
+        type: sum
+
+    segments:
+      - name: completed
+        sql: "{CUBE}.status = 'completed'"
+
+      - name: pending
+        sql: "{CUBE}.status = 'pending'"
+
+      - name: cancelled
+        sql: "{CUBE}.status = 'cancelled'"
+
+    pre_aggregations:
+      - name: orders_by_status
+        measures:
+          - CUBE.count
+        dimensions:
+          - CUBE.status
+        time_dimension: CUBE.created_at
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 day
+          incremental: true
+          update_window: 7 day
+        indexes:
+          - name: status_idx
+            columns:
+              - CUBE.status
+
+  - name: customers
+    sql_table: public.customers
+
+    joins:
+      - name: orders
+        sql: "{CUBE}.id = {orders.customer_id}"
+        relationship: one_to_many
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: email
+        sql: email
+        type: string
+
+      - name: location
+        sql: location
+        type: string
+
+      - name: signup_date
+        sql: created_at
+        type: time
+
+      - name: lifetime_value
+        sql: "{orders.total_revenue}"
+        type: number
+        sub_query: true
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_lifetime_value
+        sql: "{lifetime_value}"
+        type: sum
+
+      - name: avg_lifetime_value
+        sql: "{lifetime_value}"
+        type: avg
+
+    segments:
+      - name: high_value
+        sql: "{CUBE.lifetime_value} > 10000"
+
+      - name: sf_customers
+        sql: "{CUBE}.location = 'San Francisco'"

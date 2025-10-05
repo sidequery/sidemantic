@@ -1,0 +1,365 @@
+# Source: Cube.js Documentation - IoT/Time-Series Pattern
+# URL: https://cube.dev/docs/reference/data-model/pre-aggregations
+# Description: IoT sensor data with devices, readings, and alerts
+
+cubes:
+  - name: sensor_readings
+    sql_table: iot.sensor_readings
+
+    joins:
+      - name: devices
+        sql: "{CUBE}.device_id = {devices.id}"
+        relationship: many_to_one
+
+      - name: locations
+        sql: "{CUBE}.location_id = {locations.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: device_id
+        sql: device_id
+        type: number
+
+      - name: location_id
+        sql: location_id
+        type: number
+
+      - name: sensor_type
+        sql: sensor_type
+        type: string
+
+      - name: value
+        sql: value
+        type: number
+
+      - name: unit
+        sql: unit
+        type: string
+
+      - name: timestamp
+        sql: timestamp
+        type: time
+
+      - name: quality_score
+        sql: quality_score
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: avg_value
+        sql: value
+        type: avg
+
+      - name: min_value
+        sql: value
+        type: min
+
+      - name: max_value
+        sql: value
+        type: max
+
+      - name: sum_value
+        sql: value
+        type: sum
+
+      - name: temperature_readings
+        type: count
+        filters:
+          - sql: "{CUBE}.sensor_type = 'temperature'"
+
+      - name: humidity_readings
+        type: count
+        filters:
+          - sql: "{CUBE}.sensor_type = 'humidity'"
+
+      - name: avg_temperature
+        sql: value
+        type: avg
+        filters:
+          - sql: "{CUBE}.sensor_type = 'temperature'"
+
+      - name: high_quality_readings
+        type: count
+        filters:
+          - sql: "{CUBE}.quality_score >= 90"
+
+    segments:
+      - name: temperature
+        sql: "{CUBE}.sensor_type = 'temperature'"
+
+      - name: humidity
+        sql: "{CUBE}.sensor_type = 'humidity'"
+
+      - name: pressure
+        sql: "{CUBE}.sensor_type = 'pressure'"
+
+      - name: high_quality
+        sql: "{CUBE}.quality_score >= 90"
+
+      - name: low_quality
+        sql: "{CUBE}.quality_score < 70"
+
+    pre_aggregations:
+      - name: readings_hourly
+        measures:
+          - CUBE.count
+          - CUBE.avg_value
+          - CUBE.min_value
+          - CUBE.max_value
+        dimensions:
+          - CUBE.device_id
+          - CUBE.sensor_type
+          - CUBE.location_id
+        time_dimension: CUBE.timestamp
+        granularity: hour
+        partition_granularity: month
+        refresh_key:
+          every: 1 hour
+        indexes:
+          - name: device_sensor_idx
+            columns:
+              - CUBE.device_id
+              - CUBE.sensor_type
+
+  - name: devices
+    sql_table: iot.devices
+
+    joins:
+      - name: sensor_readings
+        sql: "{CUBE}.id = {sensor_readings.device_id}"
+        relationship: one_to_many
+
+      - name: locations
+        sql: "{CUBE}.location_id = {locations.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: device_name
+        sql: device_name
+        type: string
+
+      - name: device_type
+        sql: device_type
+        type: string
+
+      - name: manufacturer
+        sql: manufacturer
+        type: string
+
+      - name: model
+        sql: model
+        type: string
+
+      - name: firmware_version
+        sql: firmware_version
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: location_id
+        sql: location_id
+        type: number
+
+      - name: installed_at
+        sql: installed_at
+        type: time
+
+      - name: last_maintenance
+        sql: last_maintenance
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: active_devices
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'active'"
+
+      - name: offline_devices
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'offline'"
+
+      - name: maintenance_needed
+        type: count
+        filters:
+          - sql: "{CUBE}.last_maintenance < NOW() - INTERVAL '30 days'"
+
+    segments:
+      - name: active
+        sql: "{CUBE}.status = 'active'"
+
+      - name: offline
+        sql: "{CUBE}.status = 'offline'"
+
+      - name: maintenance_due
+        sql: "{CUBE}.last_maintenance < NOW() - INTERVAL '30 days'"
+
+  - name: locations
+    sql_table: iot.locations
+
+    joins:
+      - name: devices
+        sql: "{CUBE}.id = {devices.location_id}"
+        relationship: one_to_many
+
+      - name: sensor_readings
+        sql: "{CUBE}.id = {sensor_readings.location_id}"
+        relationship: one_to_many
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: location_name
+        sql: location_name
+        type: string
+
+      - name: facility_type
+        sql: facility_type
+        type: string
+
+      - name: city
+        sql: city
+        type: string
+
+      - name: state
+        sql: state
+        type: string
+
+      - name: country
+        sql: country
+        type: string
+
+      - name: timezone
+        sql: timezone
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+    segments:
+      - name: warehouses
+        sql: "{CUBE}.facility_type = 'warehouse'"
+
+      - name: manufacturing
+        sql: "{CUBE}.facility_type = 'manufacturing'"
+
+  - name: alerts
+    sql_table: iot.alerts
+
+    joins:
+      - name: devices
+        sql: "{CUBE}.device_id = {devices.id}"
+        relationship: many_to_one
+
+      - name: sensor_readings
+        sql: "{CUBE}.reading_id = {sensor_readings.id}"
+        relationship: one_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: device_id
+        sql: device_id
+        type: number
+
+      - name: reading_id
+        sql: reading_id
+        type: number
+
+      - name: alert_type
+        sql: alert_type
+        type: string
+
+      - name: severity
+        sql: severity
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: message
+        sql: message
+        type: string
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+      - name: resolved_at
+        sql: resolved_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: critical_alerts
+        type: count
+        filters:
+          - sql: "{CUBE}.severity = 'critical'"
+
+      - name: warning_alerts
+        type: count
+        filters:
+          - sql: "{CUBE}.severity = 'warning'"
+
+      - name: open_alerts
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'open'"
+
+      - name: resolved_alerts
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'resolved'"
+
+    segments:
+      - name: critical
+        sql: "{CUBE}.severity = 'critical'"
+
+      - name: open
+        sql: "{CUBE}.status = 'open'"
+
+      - name: temperature_alerts
+        sql: "{CUBE}.alert_type = 'temperature'"
+
+    pre_aggregations:
+      - name: alerts_daily
+        measures:
+          - CUBE.count
+          - CUBE.critical_alerts
+          - CUBE.open_alerts
+        dimensions:
+          - CUBE.alert_type
+          - CUBE.severity
+          - CUBE.device_id
+        time_dimension: CUBE.created_at
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 hour

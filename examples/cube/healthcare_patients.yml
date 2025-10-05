@@ -1,0 +1,383 @@
+# Source: Cube.js Documentation - Healthcare Analytics Pattern
+# URL: https://cube.dev/docs/reference/data-model/segments
+# Description: Healthcare analytics with patients, appointments, and treatments
+
+cubes:
+  - name: patients
+    sql_table: healthcare.patients
+
+    joins:
+      - name: appointments
+        sql: "{CUBE}.id = {appointments.patient_id}"
+        relationship: one_to_many
+
+      - name: treatments
+        sql: "{CUBE}.id = {treatments.patient_id}"
+        relationship: one_to_many
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: patient_number
+        sql: patient_number
+        type: string
+
+      - name: age
+        sql: age
+        type: number
+
+      - name: gender
+        sql: gender
+        type: string
+
+      - name: blood_type
+        sql: blood_type
+        type: string
+
+      - name: insurance_provider
+        sql: insurance_provider
+        type: string
+
+      - name: primary_physician_id
+        sql: primary_physician_id
+        type: number
+
+      - name: registration_date
+        sql: registration_date
+        type: time
+
+      - name: last_visit
+        sql: last_visit
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: avg_age
+        sql: age
+        type: avg
+
+      - name: pediatric_patients
+        type: count
+        filters:
+          - sql: "{CUBE}.age < 18"
+
+      - name: adult_patients
+        type: count
+        filters:
+          - sql: "{CUBE}.age >= 18 AND {CUBE}.age < 65"
+
+      - name: senior_patients
+        type: count
+        filters:
+          - sql: "{CUBE}.age >= 65"
+
+    segments:
+      - name: pediatric
+        sql: "{CUBE}.age < 18"
+
+      - name: adults
+        sql: "{CUBE}.age >= 18 AND {CUBE}.age < 65"
+
+      - name: seniors
+        sql: "{CUBE}.age >= 65"
+
+      - name: insured
+        sql: "{CUBE}.insurance_provider IS NOT NULL"
+
+  - name: appointments
+    sql_table: healthcare.appointments
+
+    joins:
+      - name: patients
+        sql: "{CUBE}.patient_id = {patients.id}"
+        relationship: many_to_one
+
+      - name: physicians
+        sql: "{CUBE}.physician_id = {physicians.id}"
+        relationship: many_to_one
+
+      - name: departments
+        sql: "{CUBE}.department_id = {departments.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: patient_id
+        sql: patient_id
+        type: number
+
+      - name: physician_id
+        sql: physician_id
+        type: number
+
+      - name: department_id
+        sql: department_id
+        type: number
+
+      - name: appointment_type
+        sql: appointment_type
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: scheduled_time
+        sql: scheduled_time
+        type: time
+
+      - name: check_in_time
+        sql: check_in_time
+        type: time
+
+      - name: check_out_time
+        sql: check_out_time
+        type: time
+
+      - name: duration_minutes
+        sql: duration_minutes
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: completed_appointments
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'completed'"
+
+      - name: cancelled_appointments
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'cancelled'"
+
+      - name: no_show_appointments
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'no_show'"
+
+      - name: avg_duration
+        sql: duration_minutes
+        type: avg
+
+      - name: total_duration
+        sql: duration_minutes
+        type: sum
+
+    segments:
+      - name: completed
+        sql: "{CUBE}.status = 'completed'"
+
+      - name: cancelled
+        sql: "{CUBE}.status = 'cancelled'"
+
+      - name: no_show
+        sql: "{CUBE}.status = 'no_show'"
+
+      - name: routine_checkup
+        sql: "{CUBE}.appointment_type = 'routine'"
+
+      - name: emergency
+        sql: "{CUBE}.appointment_type = 'emergency'"
+
+    pre_aggregations:
+      - name: appointments_daily
+        measures:
+          - CUBE.count
+          - CUBE.completed_appointments
+          - CUBE.cancelled_appointments
+        dimensions:
+          - CUBE.appointment_type
+          - CUBE.status
+          - CUBE.department_id
+        time_dimension: CUBE.scheduled_time
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 day
+
+  - name: treatments
+    sql_table: healthcare.treatments
+
+    joins:
+      - name: patients
+        sql: "{CUBE}.patient_id = {patients.id}"
+        relationship: many_to_one
+
+      - name: physicians
+        sql: "{CUBE}.physician_id = {physicians.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: patient_id
+        sql: patient_id
+        type: number
+
+      - name: physician_id
+        sql: physician_id
+        type: number
+
+      - name: treatment_type
+        sql: treatment_type
+        type: string
+
+      - name: diagnosis
+        sql: diagnosis
+        type: string
+
+      - name: medication
+        sql: medication
+        type: string
+
+      - name: dosage
+        sql: dosage
+        type: string
+
+      - name: treatment_date
+        sql: treatment_date
+        type: time
+
+      - name: follow_up_required
+        sql: follow_up_required
+        type: boolean
+
+      - name: cost
+        sql: cost
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_cost
+        sql: cost
+        type: sum
+
+      - name: avg_cost
+        sql: cost
+        type: avg
+
+      - name: treatments_requiring_followup
+        type: count
+        filters:
+          - sql: "{CUBE}.follow_up_required = true"
+
+    segments:
+      - name: follow_up_required
+        sql: "{CUBE}.follow_up_required = true"
+
+      - name: high_cost
+        sql: "{CUBE}.cost > 1000"
+
+  - name: physicians
+    sql_table: healthcare.physicians
+
+    joins:
+      - name: appointments
+        sql: "{CUBE}.id = {appointments.physician_id}"
+        relationship: one_to_many
+
+      - name: departments
+        sql: "{CUBE}.department_id = {departments.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: specialization
+        sql: specialization
+        type: string
+
+      - name: department_id
+        sql: department_id
+        type: number
+
+      - name: license_number
+        sql: license_number
+        type: string
+
+      - name: years_experience
+        sql: years_experience
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: avg_experience
+        sql: years_experience
+        type: avg
+
+    segments:
+      - name: cardiologists
+        sql: "{CUBE}.specialization = 'Cardiology'"
+
+      - name: experienced
+        sql: "{CUBE}.years_experience > 10"
+
+  - name: departments
+    sql_table: healthcare.departments
+
+    joins:
+      - name: appointments
+        sql: "{CUBE}.id = {appointments.department_id}"
+        relationship: one_to_many
+
+      - name: physicians
+        sql: "{CUBE}.id = {physicians.department_id}"
+        relationship: one_to_many
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: department_name
+        sql: department_name
+        type: string
+
+      - name: floor
+        sql: floor
+        type: number
+
+      - name: capacity
+        sql: capacity
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_capacity
+        sql: capacity
+        type: sum
+
+    segments:
+      - name: emergency_dept
+        sql: "{CUBE}.department_name = 'Emergency'"
+
+      - name: surgery
+        sql: "{CUBE}.department_name = 'Surgery'"

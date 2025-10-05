@@ -1,0 +1,204 @@
+# Source: Cube.js Official Documentation - SaaS Analytics Pattern
+# URL: https://cube.dev/docs/product/data-modeling/syntax
+# Description: SaaS analytics with subscriptions, users, and events
+
+cubes:
+  - name: users
+    sql_table: public.users
+    description: |
+      All users in the system.
+      Note that this dataset contains PII data.
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: email
+        sql: email
+        type: string
+
+      - name: city
+        sql: city
+        type: string
+
+      - name: state
+        sql: state
+        type: string
+
+      - name: signup_date
+        sql: created_at
+        type: time
+
+      - name: lifetime_value
+        sql: "{subscriptions.total_revenue}"
+        type: number
+        sub_query: true
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_lifetime_value
+        sql: "{lifetime_value}"
+        type: sum
+
+    segments:
+      - name: sf_users
+        sql: "{CUBE}.city = 'San Francisco' OR {CUBE}.state = 'CA'"
+        description: "Users from San Francisco or California"
+
+      - name: ny_users
+        sql: "{CUBE}.city = 'New York City' OR {CUBE}.state = 'NY'"
+        description: "Users from New York"
+
+    pre_aggregations:
+      - name: users_by_location
+        dimensions:
+          - city
+          - state
+        measures:
+          - count
+
+  - name: subscriptions
+    sql_table: public.subscriptions
+
+    joins:
+      - name: users
+        sql: "{CUBE}.user_id = {users.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: user_id
+        sql: user_id
+        type: number
+
+      - name: plan
+        sql: plan
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: start_date
+        sql: start_date
+        type: time
+
+      - name: end_date
+        sql: end_date
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_revenue
+        sql: mrr
+        type: sum
+
+      - name: active_subscriptions
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'active'"
+
+      - name: avg_revenue
+        sql: mrr
+        type: avg
+
+    segments:
+      - name: active
+        sql: "{CUBE}.status = 'active'"
+
+      - name: churned
+        sql: "{CUBE}.status = 'churned'"
+
+      - name: enterprise
+        sql: "{CUBE}.plan = 'enterprise'"
+
+    pre_aggregations:
+      - name: subscriptions_by_plan
+        measures:
+          - CUBE.count
+          - CUBE.total_revenue
+        dimensions:
+          - CUBE.plan
+          - CUBE.status
+        time_dimension: CUBE.start_date
+        granularity: day
+        partition_granularity: month
+
+  - name: events
+    sql_table: public.events
+
+    joins:
+      - name: users
+        sql: "{CUBE}.user_id = {users.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: user_id
+        sql: user_id
+        type: number
+
+      - name: event_name
+        sql: event_name
+        type: string
+
+      - name: event_category
+        sql: event_category
+        type: string
+
+      - name: timestamp
+        sql: timestamp
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: unique_users
+        sql: user_id
+        type: count_distinct
+
+      - name: signup_events
+        type: count
+        filters:
+          - sql: "{CUBE}.event_name = 'signup'"
+
+      - name: conversion_events
+        type: count
+        filters:
+          - sql: "{CUBE}.event_name = 'purchase'"
+
+    segments:
+      - name: product_events
+        sql: "{CUBE}.event_category = 'product'"
+
+      - name: marketing_events
+        sql: "{CUBE}.event_category = 'marketing'"
+
+    pre_aggregations:
+      - name: events_by_type
+        measures:
+          - CUBE.count
+          - CUBE.unique_users
+        dimensions:
+          - CUBE.event_name
+          - CUBE.event_category
+        time_dimension: CUBE.timestamp
+        granularity: hour
+        partition_granularity: day
+        refresh_key:
+          every: 1 hour

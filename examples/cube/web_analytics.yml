@@ -1,0 +1,269 @@
+# Source: Cube.js Documentation - Web Analytics Pattern
+# URL: https://cube.dev/docs/reference/data-model/pre-aggregations
+# Description: Web analytics with sessions, page views, and conversions
+
+cubes:
+  - name: page_views
+    sql_table: analytics.page_views
+
+    joins:
+      - name: sessions
+        sql: "{CUBE}.session_id = {sessions.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: session_id
+        sql: session_id
+        type: number
+
+      - name: url
+        sql: url
+        type: string
+
+      - name: page_title
+        sql: page_title
+        type: string
+
+      - name: referrer
+        sql: referrer
+        type: string
+
+      - name: timestamp
+        sql: timestamp
+        type: time
+
+      - name: duration
+        sql: duration
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: unique_sessions
+        sql: session_id
+        type: count_distinct
+
+      - name: total_duration
+        sql: duration
+        type: sum
+
+      - name: avg_duration
+        sql: duration
+        type: avg
+
+      - name: bounce_rate
+        type: count
+        filters:
+          - sql: "{CUBE}.duration < 10"
+
+    segments:
+      - name: homepage
+        sql: "{CUBE}.url = '/'"
+
+      - name: product_pages
+        sql: "{CUBE}.url LIKE '/products/%'"
+
+      - name: organic_traffic
+        sql: "{CUBE}.referrer LIKE '%google.com%' OR {CUBE}.referrer LIKE '%bing.com%'"
+
+    pre_aggregations:
+      - name: page_views_hourly
+        measures:
+          - CUBE.count
+          - CUBE.unique_sessions
+          - CUBE.total_duration
+        dimensions:
+          - CUBE.url
+        time_dimension: CUBE.timestamp
+        granularity: hour
+        partition_granularity: day
+        refresh_key:
+          every: 1 hour
+          incremental: true
+          update_window: 1 day
+
+  - name: sessions
+    sql_table: analytics.sessions
+
+    joins:
+      - name: page_views
+        sql: "{CUBE}.id = {page_views.session_id}"
+        relationship: one_to_many
+
+      - name: conversions
+        sql: "{CUBE}.id = {conversions.session_id}"
+        relationship: one_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: user_id
+        sql: user_id
+        type: number
+
+      - name: device_type
+        sql: device_type
+        type: string
+
+      - name: browser
+        sql: browser
+        type: string
+
+      - name: os
+        sql: os
+        type: string
+
+      - name: country
+        sql: country
+        type: string
+
+      - name: utm_source
+        sql: utm_source
+        type: string
+
+      - name: utm_medium
+        sql: utm_medium
+        type: string
+
+      - name: utm_campaign
+        sql: utm_campaign
+        type: string
+
+      - name: start_time
+        sql: start_time
+        type: time
+
+      - name: end_time
+        sql: end_time
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: unique_users
+        sql: user_id
+        type: count_distinct
+
+      - name: mobile_sessions
+        type: count
+        filters:
+          - sql: "{CUBE}.device_type = 'mobile'"
+
+      - name: desktop_sessions
+        type: count
+        filters:
+          - sql: "{CUBE}.device_type = 'desktop'"
+
+    segments:
+      - name: mobile
+        sql: "{CUBE}.device_type = 'mobile'"
+
+      - name: desktop
+        sql: "{CUBE}.device_type = 'desktop'"
+
+      - name: paid_traffic
+        sql: "{CUBE}.utm_medium IN ('cpc', 'paid', 'ppc')"
+
+      - name: organic_traffic
+        sql: "{CUBE}.utm_medium = 'organic'"
+
+    pre_aggregations:
+      - name: sessions_by_source
+        measures:
+          - CUBE.count
+          - CUBE.unique_users
+        dimensions:
+          - CUBE.utm_source
+          - CUBE.utm_medium
+          - CUBE.device_type
+        time_dimension: CUBE.start_time
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 day
+
+  - name: conversions
+    sql_table: analytics.conversions
+
+    joins:
+      - name: sessions
+        sql: "{CUBE}.session_id = {sessions.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: session_id
+        sql: session_id
+        type: number
+
+      - name: conversion_type
+        sql: conversion_type
+        type: string
+
+      - name: revenue
+        sql: revenue
+        type: number
+
+      - name: timestamp
+        sql: timestamp
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_revenue
+        sql: revenue
+        type: sum
+
+      - name: avg_revenue
+        sql: revenue
+        type: avg
+
+      - name: purchases
+        type: count
+        filters:
+          - sql: "{CUBE}.conversion_type = 'purchase'"
+
+      - name: signups
+        type: count
+        filters:
+          - sql: "{CUBE}.conversion_type = 'signup'"
+
+    segments:
+      - name: purchases
+        sql: "{CUBE}.conversion_type = 'purchase'"
+
+      - name: high_value
+        sql: "{CUBE}.revenue > 100"
+
+    pre_aggregations:
+      - name: conversions_daily
+        measures:
+          - CUBE.count
+          - CUBE.total_revenue
+        dimensions:
+          - CUBE.conversion_type
+        time_dimension: CUBE.timestamp
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 day
+        indexes:
+          - name: conversion_type_idx
+            columns:
+              - CUBE.conversion_type

@@ -1,0 +1,62 @@
+# Source: https://docs.getdbt.com/docs/build/saved-queries
+# dbt official documentation examples for saved queries
+# Demonstrates saved queries with exports and caching configuration
+
+semantic_models:
+  - name: sales_data
+    description: Sales transaction data
+    model: ref('sales_data')
+    entities:
+      - name: sale
+        type: primary
+        expr: sale_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    dimensions:
+      - name: sale_date
+        type: time
+        type_params:
+          time_granularity: day
+      - name: region
+        type: categorical
+    measures:
+      - name: sales_amount
+        description: Total sales amount
+        agg: sum
+        expr: amount
+      - name: sales_count
+        description: Count of sales transactions
+        agg: count
+
+metrics:
+  - name: total_sales
+    description: "Total sales revenue"
+    type: simple
+    label: Total Sales
+    type_params:
+      measure: sales_amount
+
+  - name: sales_transactions
+    description: "Number of sales transactions"
+    type: simple
+    label: Sales Transactions
+    type_params:
+      measure: sales_count
+
+# Note: Saved queries are typically defined separately but shown here for reference
+# saved_queries:
+#   - name: monthly_sales_by_region
+#     description: Monthly sales aggregated by region
+#     query_params:
+#       metrics:
+#         - total_sales
+#         - sales_transactions
+#       group_by:
+#         - TimeDimension('sale_date', 'month')
+#         - Dimension('region')
+#     exports:
+#       - name: monthly_sales_export
+#         config:
+#           export_as: table
+#           schema: analytics

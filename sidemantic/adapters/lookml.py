@@ -272,6 +272,8 @@ class LookMLAdapter(BaseAdapter):
         if not name:
             return None
 
+        # Check if type is explicitly set
+        has_explicit_type = "type" in measure_def
         measure_type = measure_def.get("type", "count")
 
         # Map LookML measure types
@@ -307,6 +309,10 @@ class LookMLAdapter(BaseAdapter):
         metric_type = None
         if measure_type == "number":
             metric_type = "derived"
+        # If there's SQL but no explicit type, treat as derived measure
+        elif sql and not has_explicit_type:
+            metric_type = "derived"
+            agg_type = None  # No aggregation type for derived measures
 
         return Metric(
             name=name,

@@ -1,0 +1,267 @@
+# Source: Cube.js Documentation - Financial Analytics Pattern
+# URL: https://cube.dev/docs/reference/data-model/measures
+# Description: Financial analytics with transactions, accounts, and balances
+
+cubes:
+  - name: transactions
+    sql_table: finance.transactions
+
+    joins:
+      - name: accounts
+        sql: "{CUBE}.account_id = {accounts.id}"
+        relationship: many_to_one
+
+      - name: categories
+        sql: "{CUBE}.category_id = {categories.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: account_id
+        sql: account_id
+        type: number
+
+      - name: category_id
+        sql: category_id
+        type: number
+
+      - name: transaction_type
+        sql: transaction_type
+        type: string
+
+      - name: description
+        sql: description
+        type: string
+
+      - name: amount
+        sql: amount
+        type: number
+
+      - name: transaction_date
+        sql: transaction_date
+        type: time
+
+      - name: posted_date
+        sql: posted_date
+        type: time
+
+      - name: is_recurring
+        sql: is_recurring
+        type: boolean
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_amount
+        sql: amount
+        type: sum
+
+      - name: avg_amount
+        sql: amount
+        type: avg
+
+      - name: min_amount
+        sql: amount
+        type: min
+
+      - name: max_amount
+        sql: amount
+        type: max
+
+      - name: credit_amount
+        sql: amount
+        type: sum
+        filters:
+          - sql: "{CUBE}.transaction_type = 'credit'"
+
+      - name: debit_amount
+        sql: amount
+        type: sum
+        filters:
+          - sql: "{CUBE}.transaction_type = 'debit'"
+
+      - name: recurring_amount
+        sql: amount
+        type: sum
+        filters:
+          - sql: "{CUBE}.is_recurring = true"
+
+    segments:
+      - name: credits
+        sql: "{CUBE}.transaction_type = 'credit'"
+
+      - name: debits
+        sql: "{CUBE}.transaction_type = 'debit'"
+
+      - name: large_transactions
+        sql: "{CUBE}.amount > 1000"
+
+      - name: recurring
+        sql: "{CUBE}.is_recurring = true"
+
+    pre_aggregations:
+      - name: transactions_daily
+        measures:
+          - CUBE.count
+          - CUBE.total_amount
+          - CUBE.credit_amount
+          - CUBE.debit_amount
+        dimensions:
+          - CUBE.transaction_type
+          - CUBE.account_id
+        time_dimension: CUBE.transaction_date
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 day
+          incremental: true
+          update_window: 3 day
+
+  - name: accounts
+    sql_table: finance.accounts
+
+    joins:
+      - name: transactions
+        sql: "{CUBE}.id = {transactions.account_id}"
+        relationship: one_to_many
+
+      - name: customers
+        sql: "{CUBE}.customer_id = {customers.id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: number
+
+      - name: account_number
+        sql: account_number
+        type: string
+
+      - name: account_type
+        sql: account_type
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: balance
+        sql: balance
+        type: number
+
+      - name: opened_date
+        sql: opened_date
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_balance
+        sql: balance
+        type: sum
+
+      - name: avg_balance
+        sql: balance
+        type: avg
+
+      - name: active_accounts
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'active'"
+
+    segments:
+      - name: active
+        sql: "{CUBE}.status = 'active'"
+
+      - name: checking
+        sql: "{CUBE}.account_type = 'checking'"
+
+      - name: savings
+        sql: "{CUBE}.account_type = 'savings'"
+
+  - name: categories
+    sql_table: finance.categories
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: parent_category
+        sql: parent_category
+        type: string
+
+      - name: category_group
+        sql: category_group
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+  - name: customers
+    sql_table: finance.customers
+
+    joins:
+      - name: accounts
+        sql: "{CUBE}.id = {accounts.customer_id}"
+        relationship: one_to_many
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: email
+        sql: email
+        type: string
+
+      - name: customer_since
+        sql: customer_since
+        type: time
+
+      - name: risk_score
+        sql: risk_score
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: avg_risk_score
+        sql: risk_score
+        type: avg
+
+      - name: high_risk_customers
+        type: count
+        filters:
+          - sql: "{CUBE}.risk_score > 70"
+
+    segments:
+      - name: high_risk
+        sql: "{CUBE}.risk_score > 70"
+
+      - name: low_risk
+        sql: "{CUBE}.risk_score < 30"

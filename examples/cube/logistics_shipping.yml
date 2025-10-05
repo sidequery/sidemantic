@@ -1,0 +1,289 @@
+# Source: Cube.js Documentation - Logistics Pattern
+# URL: https://cube.dev/docs/reference/data-model/joins
+# Description: Logistics and shipping analytics with shipments, warehouses, and carriers
+
+cubes:
+  - name: shipments
+    sql_table: logistics.shipments
+
+    joins:
+      - name: warehouses
+        sql: "{CUBE}.warehouse_id = {warehouses.id}"
+        relationship: many_to_one
+
+      - name: carriers
+        sql: "{CUBE}.carrier_id = {carriers.id}"
+        relationship: many_to_one
+
+      - name: orders
+        sql: "{CUBE}.order_id = {orders.id}"
+        relationship: one_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: order_id
+        sql: order_id
+        type: number
+
+      - name: warehouse_id
+        sql: warehouse_id
+        type: number
+
+      - name: carrier_id
+        sql: carrier_id
+        type: number
+
+      - name: tracking_number
+        sql: tracking_number
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: weight
+        sql: weight
+        type: number
+
+      - name: shipping_cost
+        sql: shipping_cost
+        type: number
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+      - name: shipped_at
+        sql: shipped_at
+        type: time
+
+      - name: delivered_at
+        sql: delivered_at
+        type: time
+
+      - name: estimated_delivery
+        sql: estimated_delivery
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_weight
+        sql: weight
+        type: sum
+
+      - name: avg_weight
+        sql: weight
+        type: avg
+
+      - name: total_shipping_cost
+        sql: shipping_cost
+        type: sum
+
+      - name: avg_shipping_cost
+        sql: shipping_cost
+        type: avg
+
+      - name: in_transit
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'in_transit'"
+
+      - name: delivered
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'delivered'"
+
+      - name: delayed
+        type: count
+        filters:
+          - sql: "{CUBE}.delivered_at > {CUBE}.estimated_delivery"
+
+    segments:
+      - name: in_transit
+        sql: "{CUBE}.status = 'in_transit'"
+
+      - name: delivered
+        sql: "{CUBE}.status = 'delivered'"
+
+      - name: pending
+        sql: "{CUBE}.status = 'pending'"
+
+      - name: delayed
+        sql: "{CUBE}.delivered_at > {CUBE}.estimated_delivery"
+
+      - name: heavy_shipments
+        sql: "{CUBE}.weight > 50"
+
+    pre_aggregations:
+      - name: shipments_by_status
+        measures:
+          - CUBE.count
+          - CUBE.total_weight
+          - CUBE.total_shipping_cost
+        dimensions:
+          - CUBE.status
+          - CUBE.warehouse_id
+          - CUBE.carrier_id
+        time_dimension: CUBE.created_at
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 hour
+        indexes:
+          - name: status_carrier_idx
+            columns:
+              - CUBE.status
+              - CUBE.carrier_id
+
+  - name: warehouses
+    sql_table: logistics.warehouses
+
+    joins:
+      - name: shipments
+        sql: "{CUBE}.id = {shipments.warehouse_id}"
+        relationship: one_to_many
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: location
+        sql: location
+        type: string
+
+      - name: city
+        sql: city
+        type: string
+
+      - name: state
+        sql: state
+        type: string
+
+      - name: country
+        sql: country
+        type: string
+
+      - name: capacity
+        sql: capacity
+        type: number
+
+      - name: current_inventory
+        sql: current_inventory
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_capacity
+        sql: capacity
+        type: sum
+
+      - name: avg_capacity
+        sql: capacity
+        type: avg
+
+      - name: total_inventory
+        sql: current_inventory
+        type: sum
+
+    segments:
+      - name: us_warehouses
+        sql: "{CUBE}.country = 'US'"
+
+      - name: high_capacity
+        sql: "{CUBE}.capacity > 10000"
+
+  - name: carriers
+    sql_table: logistics.carriers
+
+    joins:
+      - name: shipments
+        sql: "{CUBE}.id = {shipments.carrier_id}"
+        relationship: one_to_many
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: service_type
+        sql: service_type
+        type: string
+
+      - name: rating
+        sql: rating
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: avg_rating
+        sql: rating
+        type: avg
+
+    segments:
+      - name: express
+        sql: "{CUBE}.service_type = 'express'"
+
+      - name: standard
+        sql: "{CUBE}.service_type = 'standard'"
+
+      - name: high_rated
+        sql: "{CUBE}.rating >= 4.5"
+
+  - name: orders
+    sql_table: logistics.orders
+
+    joins:
+      - name: shipments
+        sql: "{CUBE}.id = {shipments.order_id}"
+        relationship: one_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: number
+
+      - name: order_total
+        sql: order_total
+        type: number
+
+      - name: order_date
+        sql: order_date
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_revenue
+        sql: order_total
+        type: sum
+
+      - name: avg_order_value
+        sql: order_total
+        type: avg

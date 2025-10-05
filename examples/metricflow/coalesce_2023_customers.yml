@@ -1,0 +1,55 @@
+# Source: https://github.com/dbt-labs/Semantic-Layer-Coalesce-2023
+# dbt Labs official Coalesce 2023 Semantic Layer course example
+# Customer dimension semantic model with time dimensions and customer metrics
+
+semantic_models:
+  - name: customers
+    defaults:
+      agg_time_dimension: first_ordered_at
+    description: |
+      Customer grain mart.
+    model: ref('dim_customers')
+    entities:
+      - name: customer
+        expr: customer_id
+        type: primary
+    dimensions:
+      - name: customer_name
+        type: categorical
+      - name: customer_type
+        type: categorical
+      - name: first_ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: last_ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: count_lifetime_orders
+        description: Total count of orders per customer.
+        agg: sum
+      - name: lifetime_spend_pretax
+        description: Customer lifetime spend before taxes.
+        agg: sum
+      - name: lifetime_spend
+        agg: sum
+        description: Gross customer lifetime spend inclusive of taxes.
+      - name: customers
+        expr: customer_id
+        agg: count_distinct
+
+metrics:
+  - name: "customers"
+    description: "Count of customers"
+    type: simple
+    label: "customers"
+    type_params:
+      measure: customers
+  - name: "customers_with_orders"
+    label: "customers_with_orders"
+    description: "Unique count of customers placing orders"
+    type: simple
+    type_params:
+      measure: customers

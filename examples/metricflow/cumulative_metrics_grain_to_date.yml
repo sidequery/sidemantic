@@ -1,0 +1,85 @@
+# Source: https://docs.getdbt.com/docs/build/cumulative
+# dbt official documentation examples for cumulative metrics
+# Demonstrates cumulative metrics with window and grain_to_date configurations
+
+semantic_models:
+  - name: revenue_transactions
+    description: Revenue transaction tracking
+    model: ref('revenue_transactions')
+    entities:
+      - name: transaction
+        type: primary
+        expr: transaction_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    dimensions:
+      - name: transaction_date
+        type: time
+        type_params:
+          time_granularity: day
+      - name: product_category
+        type: categorical
+    measures:
+      - name: revenue
+        description: Transaction revenue
+        agg: sum
+        expr: amount
+      - name: order_total
+        description: Order total amount
+        agg: sum
+        expr: total_amount
+
+metrics:
+  # Cumulative metric with all-time window (no window specified)
+  - name: cumulative_revenue_all_time
+    description: "Cumulative revenue from the beginning of time"
+    type: cumulative
+    label: Cumulative Revenue (All Time)
+    type_params:
+      measure: revenue
+
+  # Cumulative metric with specific window
+  - name: cumulative_revenue_7_days
+    description: "Cumulative revenue over the last 7 days"
+    type: cumulative
+    label: Cumulative Revenue (7 Days)
+    type_params:
+      measure: revenue
+      window: 7 days
+
+  # Cumulative metric with month window
+  - name: cumulative_revenue_monthly
+    description: "Cumulative revenue over the last month"
+    type: cumulative
+    label: Cumulative Revenue (Monthly)
+    type_params:
+      measure: revenue
+      window: 1 month
+
+  # Grain to date - Month to Date (MTD)
+  - name: cumulative_order_total_mtd
+    description: "The month to date value of all orders"
+    type: cumulative
+    label: Cumulative Order Total (MTD)
+    type_params:
+      measure: order_total
+      grain_to_date: month
+
+  # Grain to date - Year to Date (YTD)
+  - name: cumulative_revenue_ytd
+    description: "The year to date revenue"
+    type: cumulative
+    label: Revenue YTD
+    type_params:
+      measure: revenue
+      grain_to_date: year
+
+  # Grain to date - Week to Date
+  - name: cumulative_revenue_wtd
+    description: "The week to date revenue"
+    type: cumulative
+    label: Revenue WTD
+    type_params:
+      measure: revenue
+      grain_to_date: week

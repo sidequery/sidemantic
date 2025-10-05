@@ -1,0 +1,87 @@
+# Source: https://docs.getdbt.com/docs/build/conversion
+# dbt official documentation examples for conversion metrics
+# Demonstrates conversion metrics with base_measure, conversion_measure, window, and constant_properties
+
+semantic_models:
+  - name: user_events
+    description: User event tracking table
+    model: ref('user_events')
+    entities:
+      - name: user
+        type: primary
+        expr: user_id
+      - name: product
+        type: foreign
+        expr: product_id
+    dimensions:
+      - name: event_time
+        type: time
+        type_params:
+          time_granularity: day
+      - name: event_type
+        type: categorical
+    measures:
+      - name: visits
+        description: Count of website visits
+        expr: case when event_type = 'visit' then 1 else 0 end
+        agg: sum
+      - name: buys
+        description: Count of purchases
+        expr: case when event_type = 'buy' then 1 else 0 end
+        agg: sum
+      - name: view_item_detail
+        description: Count of item detail page views
+        expr: case when event_type = 'view_item' then 1 else 0 end
+        agg: sum
+
+metrics:
+  # Basic conversion metric with window
+  - name: visit_to_buy_conversion_rate
+    description: "Conversion rate from visits to purchases within 7 days"
+    type: conversion
+    label: Visit to Buy Conversion Rate
+    type_params:
+      conversion_type_params:
+        entity: user
+        calculation: conversion_rate
+        base_measure:
+          name: visits
+          fill_nulls_with: 0
+        conversion_measure:
+          name: buys
+          fill_nulls_with: 0
+        window: 7 days
+
+  # Conversion metric with 1 week window showing conversions count
+  - name: visit_to_buy_conversions_1_week
+    description: "Visit to Buy Conversions within 1 week"
+    type: conversion
+    label: Visit to Buy Conversions (1 week)
+    type_params:
+      conversion_type_params:
+        calculation: conversions
+        base_measure:
+          name: visits
+        conversion_measure:
+          name: buys
+          fill_nulls_with: 0
+        entity: user
+        window: 1 week
+
+  # Conversion with constant properties - same product viewed and purchased
+  - name: view_to_purchase_same_product
+    description: "Conversion rate for users who viewed an item and purchased the same item"
+    type: conversion
+    label: View Item > Purchase Same Item
+    type_params:
+      conversion_type_params:
+        calculation: conversion_rate
+        base_measure:
+          name: view_item_detail
+        conversion_measure:
+          name: buys
+        entity: user
+        window: 1 week
+        constant_properties:
+          - base_property: product
+            conversion_property: product

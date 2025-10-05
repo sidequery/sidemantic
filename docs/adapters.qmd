@@ -4,26 +4,22 @@ title: "Adapters"
 
 Sidemantic can import semantic models from other popular semantic layer formats, letting you use your existing metric definitions with Sidemantic's query engine and features.
 
-**Export support is in alpha** - other formats don't support all of Sidemantic's features, so some capabilities may be lost when exporting.
-
 ## Supported Formats
 
-| Format | Import | Export | Notes |
-|--------|:------:|:------:|-------|
-| **Sidemantic** (native) | ✅ | ✅ | Full feature support |
-| **Cube** | ✅ | ✅* | No native segments |
-| **MetricFlow** (dbt) | ✅ | ✅* | No native segments or hierarchies |
-| **LookML** (Looker) | ✅ | ✅* | Liquid templating (not Jinja) |
-| **Hex** | ✅ | ✅* | ⚠️ No segments or cross-model derived metrics |
-| **Rill** | ✅ | ✅* | ⚠️ No relationships, segments, or cross-model metrics; single-model only |
-| **Superset** (Apache) | ✅ | ✅* | No relationships in datasets |
-| **Omni** | ✅ | ✅* | Relationships in separate model file |
-
-\* Export is in alpha
+| Format | Import | Notes |
+|--------|:------:|-------|
+| **Sidemantic** (native) | ✅ | Full feature support |
+| **Cube** | ✅ | No native segments |
+| **MetricFlow** (dbt) | ✅ | No native segments or hierarchies |
+| **LookML** (Looker) | ✅ | Liquid templating (not Jinja) |
+| **Hex** | ✅ | No segments or cross-model derived metrics |
+| **Rill** | ✅ | No relationships, segments, or cross-model metrics; single-model only |
+| **Superset** (Apache) | ✅ | No relationships in datasets |
+| **Omni** | ✅ | Relationships in separate model file |
 
 ## Feature Compatibility
 
-This table shows which Sidemantic features are preserved when importing/exporting to other formats:
+This table shows which Sidemantic features are supported when importing from other formats:
 
 | Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Superset | Omni | Notes |
 |---------|------------|------|------------|--------|-----|------|----------|------|-------|
@@ -32,31 +28,24 @@ This table shows which Sidemantic features are preserved when importing/exportin
 | **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset: single-model only; Omni: in model file |
 | **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
 | **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
-| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | Rill/Superset: exported as derived metric with formula |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset don't have native ratio metric type |
 | **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
-| **Cumulative Metrics** | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Cube: rolling_window; others: exported as SQL |
-| **Time Comparison** | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | MetricFlow: native; others: exported as calculated measure |
-| **Segments** | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ | ❌ | ⚠️ | MetricFlow/Hex/Omni: stored in meta; Rill/Superset: not supported |
-| **Metric Filters** | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ❌ | ✅ | MetricFlow: stored in meta; Rill: basic support; Superset: none; Omni: native |
+| **Cumulative Metrics** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Cube has rolling_window; MetricFlow has cumulative; others lack native support |
+| **Time Comparison** | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Only MetricFlow has native time comparison metrics |
+| **Segments** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only Cube and LookML have native segment support |
+| **Metric Filters** | ✅ | ✅ | ❌ | ✅ | ✅ | ⚠️ | ❌ | ✅ | Rill has basic support; Superset lacks filters |
 | **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
-| **Hierarchies** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | ⚠️ | Cube/LookML/Omni: drill_fields; MetricFlow/Hex: meta; Rill/Superset: none |
-| **Inheritance** | ✅ | ⚠️ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | LookML: native extends; others: resolved before export |
-| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | LookML uses Liquid instead of Jinja |
-| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | Superset/Omni: label support; others: label/description preserved |
+| **Hierarchies** | ✅ | ⚠️ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | Cube/LookML/Omni: via drill_fields |
+| **Inheritance** | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only LookML has native extends support |
+| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | LookML uses Liquid templating |
+| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | Label and description support varies by format |
 | **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
 
 **Legend:**
 
-- ✅ Full support - feature works bidirectionally
+- ✅ Full support - feature fully supported on import
 - ⚠️ Partial support - feature works with limitations
-- ❌ Not supported - feature lost on export
-- 🚧 Experimental - may have bugs or limitations
-
-**Important Notes:**
-
-- **Inheritance**: When exporting models or metrics with `extends`, the adapter automatically resolves the inheritance chain and exports the fully merged result. The parent model/metric and the `extends` field are not included in the export - only the complete, merged definition.
-- **Segments & Hierarchies in MetricFlow**: Since MetricFlow doesn't have native support for these features, they're stored in the `meta` field. They're preserved on round-trip but won't be used by MetricFlow's query engine.
-- **Metadata Fields**: Most metadata fields (format, drill_fields, etc.) are stored in `meta` fields for compatibility, but `format` is exported natively where supported.
+- ❌ Not supported - feature not available in source format
 
 ## Importing into Sidemantic
 
@@ -179,137 +168,11 @@ layer = SemanticLayer(graph=graph)
 result = layer.sql("SELECT total_revenue FROM orders")
 ```
 
-## Exporting from Sidemantic (Alpha)
+## Import Mapping
 
-Export support is experimental. Some features may be lost or simplified when exporting to other formats.
-
-### To Cube
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter
-
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-adapter = CubeAdapter()
-adapter.export(layer.graph, "cube/schema/output.yml")
-```
-
-### To MetricFlow
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-adapter = MetricFlowAdapter()
-adapter.export(layer.graph, "models/metrics/semantic_layer.yml")
-```
-
-### To LookML
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.lookml import LookMLAdapter
-
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-adapter = LookMLAdapter()
-adapter.export(layer.graph, "views/output.lkml")
-```
-
-### To Hex
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.hex import HexAdapter
-
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-adapter = HexAdapter()
-adapter.export(layer.graph, "hex/models/")  # Creates one file per model
-```
-
-### To Rill
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.rill import RillAdapter
-
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-adapter = RillAdapter()
-adapter.export(layer.graph, "rill/metrics/")  # Creates one metrics view per model
-```
-
-### To Superset
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.superset import SupersetAdapter
-
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-adapter = SupersetAdapter()
-adapter.export(layer.graph, "superset/datasets/")  # Creates one dataset per model
-```
-
-### To Omni
-
-```python
-from sidemantic import SemanticLayer
-from sidemantic.adapters.omni import OmniAdapter
-
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
-adapter = OmniAdapter()
-adapter.export(layer.graph, "omni/")  # Creates views/ directory and model.yaml
-```
-
-## Migration Examples
-
-### Cube → Sidemantic → MetricFlow
-
-Migrate from Cube to MetricFlow via Sidemantic:
-
-```python
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-
-# Import from Cube
-cube_adapter = CubeAdapter()
-graph = cube_adapter.parse("cube/schema/")
-
-# Export to MetricFlow
-mf_adapter = MetricFlowAdapter()
-mf_adapter.export(graph, "models/metrics/converted.yml")
-```
-
-### MetricFlow → Sidemantic (with enhancements)
-
-Import MetricFlow and add Sidemantic-specific features:
-
-```python
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic import SemanticLayer, Segment
-
-# Import from MetricFlow
-adapter = MetricFlowAdapter()
-graph = adapter.parse("models/metrics/")
-
-# Add Sidemantic features
-layer = SemanticLayer(graph=graph)
-
-# Add segments (not in MetricFlow)
-orders = layer.graph.get_model("orders")
-orders.segments.extend([
-    Segment(name="completed", sql="{model}.status = 'completed'"),
-    Segment(name="high_value", sql="{model}.amount >= 500")
-])
-
-# Save enhanced model
-layer.to_yaml("semantic_layer.yml")
-```
-
-## Conversion Notes
+These sections describe how each format's concepts map to Sidemantic when importing.
 
 ### Cube
-
-**Import (Cube → Sidemantic):**
 
 - `cubes` → `models`
 - `dimensions` → `dimensions`
@@ -320,17 +183,7 @@ layer.to_yaml("semantic_layer.yml")
 - Calculated measures (type=number) → derived metrics
 - `rolling_window` → cumulative metrics
 
-**Export (Sidemantic → Cube):**
-
-- Ratio metrics → calculated measures with division SQL
-- Cumulative metrics → measures with `rolling_window`
-- Segments → native segment definitions
-- Hierarchies → `drill_members` arrays
-- Inheritance is resolved before export (fully merged definitions)
-
 ### MetricFlow
-
-**Import (MetricFlow → Sidemantic):**
 
 - `semantic_models` → `models`
 - `entities` → inferred `relationships`
@@ -339,16 +192,7 @@ layer.to_yaml("semantic_layer.yml")
 - `metrics` (graph-level) → graph-level `metrics`
 - Segments/hierarchies from `meta` field → preserved
 
-**Export (Sidemantic → MetricFlow):**
-
-- Segments → stored in `meta` (no native support)
-- Hierarchies → stored in dimension `meta`
-- Inheritance info in `meta` then stripped (definitions fully resolved)
-- Relationships → `entities` with foreign keys
-
 ### LookML
-
-**Import (LookML → Sidemantic):**
 
 - `views` → `models`
 - `explores` → `relationships` (parsed from join definitions)
@@ -361,16 +205,7 @@ layer.to_yaml("semantic_layer.yml")
 - Measure filters parsed from `filters__all`
 - Foreign keys extracted from `sql_on` in explore joins
 
-**Export (Sidemantic → LookML):**
-
-- Multiple time dimensions with same base name → single `dimension_group` with multiple timeframes
-- Segments → view-level `filters`
-- Ratio/derived metrics → type=number measures
-- `{model}` placeholder → `${TABLE}` placeholder
-
 ### Hex
-
-**Import (Hex → Sidemantic):**
 
 - Model `id` and `base_sql_table`/`base_sql_query` → `models`
 - `dimensions` with `expr_sql` or `expr_calc` → `dimensions`
@@ -380,17 +215,7 @@ layer.to_yaml("semantic_layer.yml")
 - `unique: true` dimensions → primary key detection
 - `timestamp_tz`/`timestamp_naive`/`date` types → time dimensions
 
-**Export (Sidemantic → Hex):**
-
-- Each model → separate YAML file
-- Time dimensions → specific type variants (date vs timestamp_tz)
-- Ratio/derived metrics → `func_sql`
-- Segments not directly supported (can use measure filters)
-- `${interpolation}` references preserved where possible
-
 ### Rill
-
-**Import (Rill → Sidemantic):**
 
 - `metrics_view` (type) → `models`
 - `dimensions` with `column`/`expression` → `dimensions`
@@ -400,19 +225,7 @@ layer.to_yaml("semantic_layer.yml")
 - Derived measures (`type: derived`) → derived metrics
 - Simple aggregation expressions parsed with sqlglot
 
-**Export (Sidemantic → Rill):**
-
-- Each model → separate metrics view YAML file
-- `table` reference → `model` or `table` field (based on naming)
-- Time dimensions → `timeseries` and `smallest_time_grain`
-- Aggregation functions reconstructed from `agg` + `sql` fields
-- Derived metrics → `type: derived` measures
-- Relationships not exported (Rill focuses on single-model views)
-- Segments not exported (use measure filters instead)
-
 ### Superset
-
-**Import (Superset → Sidemantic):**
 
 - `table_name` → model `name`
 - `schema` + `table_name` → model `table`
@@ -424,23 +237,7 @@ layer.to_yaml("semantic_layer.yml")
 - `is_dttm` flag → time dimension type
 - `metric_type` → aggregation mapping (count, sum, avg, etc.)
 
-**Export (Sidemantic → Superset):**
-
-- Each model → separate dataset YAML file
-- Model `name` + `table` → `schema` and `table_name`
-- Model `sql` → virtual dataset with SQL query
-- Dimensions → columns with `is_dttm`, `groupby`, `filterable` flags
-- Time dimensions → `main_dttm_col` reference
-- Metrics → measures with `metric_type` and `expression`
-- Label → `verbose_name` field
-- Ratio/derived metrics → calculated measures with expression
-- Relationships not exported (datasets are single-model)
-- Segments not exported (no native support)
-- Metric filters not exported (no native support)
-
 ### Omni
-
-**Import (Omni → Sidemantic):**
 
 - `name` (view) → model `name`
 - `schema` + `table_name` → model `table`
@@ -454,39 +251,9 @@ layer.to_yaml("semantic_layer.yml")
 - Measure `filters` → metric filters
 - `relationships` (from model.yaml) → model relationships
 
-**Export (Sidemantic → Omni):**
+## Validating Imports
 
-- Each model → separate view YAML file in views/ directory
-- Model `name` + `table` → `schema` and `table_name`
-- Model `sql` → view-level `sql` field
-- Model `description` → view `label`
-- Dimensions → dimension fields with `type` and `sql`
-- Time dimensions → `timeframes` array based on granularity
-- Metrics → measures with `aggregate_type`
-- Metric aggregations → `aggregate_type` (sum, count, average, etc.)
-- Metric filters → measure `filters` (field: {is: value} format)
-- `{model}` placeholder → `${TABLE}` placeholder
-- Relationships → exported to separate model.yaml file with `join_from_view`, `join_to_view`, `on_sql`
-- Segments not directly supported (stored in meta if needed)
-
-## Round-Trip Considerations
-
-These conversions lose some information:
-
-- **Sidemantic → Cube → Sidemantic**: Loses segments, cumulative metrics, time comparisons
-- **Sidemantic → MetricFlow → Sidemantic**: Loses segments, ungrouped query support, hierarchies
-- **Sidemantic → LookML → Sidemantic**: Loses relationship details (views don't declare joins)
-- **Sidemantic → Hex → Sidemantic**: Loses segment support
-- **Sidemantic → Rill → Sidemantic**: Loses relationships, segments, hierarchies
-- **Sidemantic → Superset → Sidemantic**: Loses relationships, segments, metric filters, hierarchies
-- **Sidemantic → Omni → Sidemantic**: Loses segments, some field reference complexity
-- **Any format → Sidemantic**: May lose format-specific metadata
-
-Keep your source of truth in one format and export to others as needed. Don't round-trip unless necessary.
-
-## Validating Conversions
-
-Always validate after import/export:
+Always validate after importing:
 
 ```python
 # Import
@@ -500,15 +267,10 @@ for name, model in graph.models.items():
 # Verify metrics
 print(f"Loaded {len(graph.metrics)} graph-level metrics")
 
-# Test query
+# Test query generation
 layer = SemanticLayer(graph=graph)
 sql = layer.compile(metrics=["orders.revenue"])
 print("Generated SQL:", sql)
-
-# Export and compare
-adapter.export(graph, "output.yml")
-graph2 = adapter.parse("output.yml")
-assert len(graph.models) == len(graph2.models)
 ```
 
 ## Getting Help

@@ -10,7 +10,6 @@ from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey, RefreshR
 from sidemantic.core.preagg_recommender import PreAggRecommendation, PreAggregationRecommender, QueryPattern
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
-
 # Backwards compatibility alias
 Measure = Metric
 

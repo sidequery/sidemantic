@@ -1,6 +1,7 @@
 """Test that time_comparison metrics defined in model.metrics are auto-registered at graph level."""
 
 import duckdb
+import math
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -59,10 +60,10 @@ def test_model_level_time_comparison_metric():
     # 2024-03: 120 - 150 = -30
     # 2024-04: 180 - 120 = 60
 
-    assert results[0][2] is None  # Jan (no prior)
-    assert results[1][2] == 50  # Feb
-    assert results[2][2] == -30  # Mar
-    assert results[3][2] == 60  # Apr
+    assert math.isnan(results.loc[0, "revenue_mom_change"])  # Jan (no prior)
+    assert results.loc[1, "revenue_mom_change"] == 50  # Feb
+    assert results.loc[2, "revenue_mom_change"] == -30  # Mar
+    assert results.loc[3, "revenue_mom_change"] == 60  # Apr
 
 
 def test_model_level_conversion_metric():
@@ -119,4 +120,4 @@ def test_model_level_conversion_metric():
     # User 2: signup on 01-05, purchase on 01-20 (15 days) - NOT CONVERTED (>7 days)
     # User 3: signup on 01-10, no purchase - NOT CONVERTED
     # Conversion rate: 1/3 = 0.333...
-    assert abs(results[0][0] - 0.333) < 0.01
+    assert abs(results.loc[0, "signup_conversion"] - 0.333) < 0.01

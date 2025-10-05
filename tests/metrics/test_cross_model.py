@@ -97,7 +97,7 @@ result = sl.query(
 )
 
 print("Results:")
-for row in result.fetchdf():
+for row in result.fetchdf().itertuples(index=False, name=None):
     print(f"  {row}")
 print()
 
@@ -133,7 +133,7 @@ result = sl.query(
 )
 
 print("Results (region, revenue, customers, revenue_per_customer):")
-for row in result.fetchdf():
+for row in result.fetchdf().itertuples(index=False, name=None):
     print(f"  {row}")
 print()
 

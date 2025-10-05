@@ -96,7 +96,7 @@ def test_simple_aggregation(test_db, semantic_layer):
     results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.status"]).fetchdf()
 
     # Convert to dict for easier assertions
-    results_dict = {row[0]: row[1] for row in results}
+    results_dict = results.set_index("status")["revenue"].to_dict()
 
     assert results_dict["completed"] == 650.00  # 150 + 200 + 300
     assert results_dict["pending"] == 75.00
@@ -111,7 +111,8 @@ def test_time_granularity(test_db, semantic_layer):
     assert len(results) == 2
 
     # Convert to dict (date -> revenue)
-    results_dict = {str(row[0])[:7]: row[1] for row in results}  # Extract YYYY-MM
+    results_month = results.assign(month=results["created_at__month"].astype(str).str[:7])
+    results_dict = results_month.set_index("month")["revenue"].to_dict()
 
     assert results_dict["2024-01"] == 350.00  # 150 + 200
     assert results_dict["2024-02"] == 425.00  # 75 + 300 + 50
@@ -122,7 +123,7 @@ def test_cross_model_join(test_db, semantic_layer):
     results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["customers.region"]).fetchdf()
 
     # Convert to dict
-    results_dict = {row[0]: row[1] for row in results}
+    results_dict = results.set_index("region")["revenue"].to_dict()
 
     # US: orders from customers 101 (150 + 75) and 103 (300) = 525
     # EU: orders from customer 102 (200 + 50) = 250
@@ -138,9 +139,10 @@ def test_filters_with_join(test_db, semantic_layer):
 
     # Should only have premium tier
     assert len(results) == 1
-    assert results[0][0] == "premium"
+    row = results.iloc[0]
+    assert row["tier"] == "premium"
     # Premium customers: 101 (150 + 75) + 103 (300) = 525
-    assert results[0][1] == 525.00
+    assert row["revenue"] == 525.00
 
 
 def test_multiple_metrics(test_db, semantic_layer):
@@ -150,7 +152,11 @@ def test_multiple_metrics(test_db, semantic_layer):
     ).fetchdf()
 
     # Convert to dict: status -> (revenue, count, avg)
-    results_dict = {row[0]: (row[1], row[2], row[3]) for row in results}
+    results_dict = (
+        results.set_index("status")[["revenue", "order_count", "avg_order_value"]]
+        .apply(tuple, axis=1)
+        .to_dict()
+    )
 
     # Completed: 650 total, 3 orders, avg 216.67
     assert results_dict["completed"][0] == 650.00

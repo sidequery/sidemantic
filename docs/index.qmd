@@ -32,11 +32,13 @@ layer.query(
 
 **Write SQL, get semantic results.** Query your metrics with familiar SQL syntax while Sidemantic handles the complexity behind the scenes.
 
-**Smart automation.** Automatic joins across models, dependency detection, and multi-hop relationship discovery mean less configuration, more productivity.
+**Accurate by design.** Prevents common errors like join fan-out, incorrect aggregations, and double-counting through relationship-aware query generation.
+
+**Smart automation.** Automatic joins across models, dependency detection, and multi-hop relationship discovery.
 
 **Rich metric types.** From simple aggregations to ratios, time comparisons, conversion funnels, and cumulative calculations.
 
-**Flexible and powerful.** Jinja2 templating, reusable segments, hierarchies, and inheritance let you build sophisticated analytics without the complexity.
+**Flexible and powerful.** Jinja2 templating, reusable segments, hierarchies, and inheritance.
 
 ## Quick Example
 

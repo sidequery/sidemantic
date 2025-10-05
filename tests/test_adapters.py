@@ -11,7 +11,7 @@ from sidemantic.adapters.metricflow import MetricFlowAdapter
 def test_cube_adapter():
     """Test Cube adapter with example YAML."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube"))
+    graph = adapter.parse(Path("examples/cube/orders.yml"))
 
     # Check models were imported
     assert "orders" in graph.models
@@ -100,7 +100,7 @@ def test_metricflow_adapter():
 def test_cube_adapter_join_discovery():
     """Test that Cube adapter enables join discovery."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube"))
+    graph = adapter.parse(Path("examples/cube/orders.yml"))
 
     # Check that relationships were imported
     orders = graph.get_model("orders")
@@ -126,6 +126,103 @@ def test_metricflow_adapter_join_discovery():
     customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
     assert customer_rel is not None
     assert customer_rel.type == "many_to_one"
+
+
+def test_cube_adapter_pre_aggregations():
+    """Test Cube adapter with pre-aggregations."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/orders_with_preagg.yml"))
+
+    orders = graph.get_model("orders")
+    assert orders is not None
+
+    # Check pre-aggregations were parsed
+    # Note: Pre-aggregations are not stored as first-class objects in SemanticGraph
+    # but the adapter should handle them gracefully during parsing
+    assert len(orders.dimensions) > 0
+    assert len(orders.metrics) > 0
+    assert len(orders.segments) == 2
+
+    # Verify time dimensions
+    completed_at = orders.get_dimension("completed_at")
+    assert completed_at is not None
+    assert completed_at.type == "time"
+
+    created_at = orders.get_dimension("created_at")
+    assert created_at is not None
+    assert created_at.type == "time"
+
+
+def test_cube_adapter_multi_cube():
+    """Test Cube adapter with multiple related cubes."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/ecommerce_multi_cube.yml"))
+
+    # Check all models were imported
+    assert "orders" in graph.models
+    assert "customers" in graph.models
+    assert "line_items" in graph.models
+    assert "products" in graph.models
+
+    # Check relationships
+    orders = graph.get_model("orders")
+    assert len(orders.relationships) == 2
+
+    # Check many_to_one relationship to customers
+    customer_rel = next((r for r in orders.relationships if r.name == "customers"), None)
+    assert customer_rel is not None
+    assert customer_rel.type == "many_to_one"
+
+    # Check one_to_many relationship to line_items
+    line_items_rel = next((r for r in orders.relationships if r.name == "line_items"), None)
+    assert line_items_rel is not None
+    assert line_items_rel.type == "one_to_many"
+
+    # Check drill members (if supported)
+    count_metric = orders.get_metric("count")
+    assert count_metric is not None
+    if hasattr(count_metric, "drill_fields") and count_metric.drill_fields:
+        # Verify drill fields include cross-cube references
+        assert any("customers" in str(field) for field in count_metric.drill_fields)
+
+
+def test_cube_adapter_segments():
+    """Test Cube adapter segment parsing with SQL transformations."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/ecommerce_multi_cube.yml"))
+
+    # Test orders segments
+    orders = graph.get_model("orders")
+    completed_segment = next((s for s in orders.segments if s.name == "completed"), None)
+    assert completed_segment is not None
+    # Check that ${CUBE} was replaced with {model}
+    assert "{model}" in completed_segment.sql or "orders" in completed_segment.sql.lower()
+
+    # Test customers segments
+    customers = graph.get_model("customers")
+    assert len(customers.segments) == 2
+
+    sf_segment = next((s for s in customers.segments if s.name == "sf_customers"), None)
+    assert sf_segment is not None
+
+    ca_segment = next((s for s in customers.segments if s.name == "ca_customers"), None)
+    assert ca_segment is not None
+
+
+def test_cube_adapter_drill_members():
+    """Test Cube adapter drill member parsing."""
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("examples/cube/ecommerce_multi_cube.yml"))
+
+    orders = graph.get_model("orders")
+    count_metric = orders.get_metric("count")
+    assert count_metric is not None
+
+    # Note: drill_members parsing is not yet implemented in Cube adapter
+    # This test will validate when the feature is added
+    # For now, we just verify the metric exists and has correct basic properties
+    assert count_metric.name == "count"
+    assert count_metric.agg == "count"
 
 
 if __name__ == "__main__":

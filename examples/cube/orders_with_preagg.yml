@@ -1,0 +1,58 @@
+cubes:
+  - name: orders
+    sql_table: orders
+    description: Orders with pre-aggregations for performance
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+      - name: completed_at
+        sql: completed_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: revenue
+        sql: amount
+        type: sum
+
+    segments:
+      - name: completed
+        sql: "${CUBE}.status = 'completed'"
+
+      - name: shipped
+        sql: "${CUBE}.status = 'shipped'"
+
+    pre_aggregations:
+      - name: orders_by_completed_at
+        measures:
+          - count
+          - revenue
+        dimensions:
+          - status
+        time_dimension: completed_at
+        granularity: month
+        refresh_key:
+          sql: SELECT MAX(updated_at) FROM orders
+        indexes:
+          - columns:
+              - status
+
+      - name: daily_rollup
+        measures:
+          - count
+        time_dimension: created_at
+        granularity: day

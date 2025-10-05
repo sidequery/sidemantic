@@ -128,8 +128,9 @@ class CubeAdapter(BaseAdapter):
         for join_def in cube_def.get("joins", []):
             join_name = join_def.get("name")
             if join_name:
-                # Cube joins are typically many_to_one from the cube to the joined table
-                relationships.append(Relationship(name=join_name, type="many_to_one", foreign_key=f"{join_name}_id"))
+                # Get relationship type from join definition, default to many_to_one
+                rel_type = join_def.get("relationship", "many_to_one")
+                relationships.append(Relationship(name=join_name, type=rel_type, foreign_key=f"{join_name}_id"))
 
         # Parse pre-aggregations
         pre_aggregations = []

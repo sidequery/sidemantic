@@ -1,0 +1,134 @@
+cubes:
+  - name: orders
+    sql_table: orders
+    description: Customer orders
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+      - name: customer_id
+        sql: customer_id
+        type: number
+
+    measures:
+      - name: count
+        type: count
+        drill_members:
+          - id
+          - status
+          - customers.name
+          - customers.city
+
+      - name: revenue
+        sql: amount
+        type: sum
+
+    segments:
+      - name: completed
+        sql: "${CUBE}.status = 'completed'"
+
+    joins:
+      - name: customers
+        sql: "${CUBE}.customer_id = ${customers.id}"
+        relationship: many_to_one
+
+      - name: line_items
+        sql: "${CUBE}.id = ${line_items.order_id}"
+        relationship: one_to_many
+
+  - name: customers
+    sql_table: customers
+    description: Customer information
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: city
+        sql: city
+        type: string
+
+      - name: state
+        sql: state
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+    segments:
+      - name: sf_customers
+        sql: "${CUBE}.city = 'San Francisco'"
+
+      - name: ca_customers
+        sql: "${CUBE}.state = 'CA'"
+
+  - name: line_items
+    sql_table: line_items
+    description: Order line items
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: order_id
+        sql: order_id
+        type: number
+
+      - name: product_id
+        sql: product_id
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_amount
+        sql: amount
+        type: sum
+
+    joins:
+      - name: products
+        sql: "${CUBE}.product_id = ${products.id}"
+        relationship: many_to_one
+
+  - name: products
+    sql_table: products
+    description: Product catalog
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: category
+        sql: category
+        type: string
+
+    measures:
+      - name: count
+        type: count

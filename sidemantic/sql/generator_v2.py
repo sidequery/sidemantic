@@ -726,7 +726,7 @@ class SQLGenerator:
                         query = query.join(right_table, on=join_cond, join_type=join_type)
                         joined_models.add(jp.to_model)
 
-        # Collect metric-level filters
+        # Collect metric-level filters (these are row-level filters, go in WHERE)
         metric_filters = []
         for metric_ref in metrics:
             if "." in metric_ref:

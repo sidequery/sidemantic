@@ -273,12 +273,15 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
             model_names.add(dim_ref.split(".")[0])
 
     # Check that all model pairs can be joined
-    model_list = list(model_names)
+    # Only check models that exist in the graph (errors for missing models already reported above)
+    valid_model_names = [m for m in model_names if m in graph.models]
+    model_list = list(valid_model_names)
     for i, model_a in enumerate(model_list):
         for model_b in model_list[i + 1 :]:
             try:
                 graph.find_relationship_path(model_a, model_b)
-            except ValueError:
+            except (ValueError, KeyError):
+                # Catch both ValueError (no path) and KeyError (model doesn't exist)
                 errors.append(
                     f"No join path found between models '{model_a}' and '{model_b}'. "
                     f"Add relationships to enable joining these models."

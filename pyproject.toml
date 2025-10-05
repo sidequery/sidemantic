@@ -33,10 +33,10 @@ exclude = [
   "/tests",
   "/examples",
   "*.pkg",
-  "*.md",
   "test_*.py",
   "uv.lock",
 ]
+# README.md is included via readme field in [project]
 
 [tool.hatch.build.targets.wheel]
 packages = ["sidemantic"]

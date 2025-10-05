@@ -38,7 +38,14 @@ class SemanticLayer:
 
         # Initialize DuckDB connection
         if connection.startswith("duckdb://"):
-            db_path = connection.replace("duckdb:///", "") or ":memory:"
+            # Remove protocol prefix while preserving leading slash in file paths
+            # duckdb:///:memory: -> :memory:
+            # duckdb:///tmp/app.db -> /tmp/app.db
+            # duckdb:/// -> :memory:
+            db_path = connection[len("duckdb://") :]
+            # Handle :memory: special case (may have leading slash from URI)
+            if db_path in ("/:memory:", ":memory:", "", "/"):
+                db_path = ":memory:"
             self.conn = duckdb.connect(db_path)
         else:
             raise NotImplementedError(f"Connection type {connection} not yet supported")
@@ -109,6 +116,7 @@ class SemanticLayer:
         order_by: list[str] | None = None,
         limit: int | None = None,
         ungrouped: bool = False,
+        parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
     ):
         """Execute a query against the semantic layer.
@@ -121,6 +129,7 @@ class SemanticLayer:
             order_by: List of fields to order by
             limit: Maximum number of rows to return
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
+            parameters: Template parameters for Jinja2 rendering
             use_preaggregations: Override pre-aggregation routing setting for this query
 
         Returns:
@@ -134,6 +143,7 @@ class SemanticLayer:
             order_by=order_by,
             limit=limit,
             ungrouped=ungrouped,
+            parameters=parameters,
             use_preaggregations=use_preaggregations,
         )
 

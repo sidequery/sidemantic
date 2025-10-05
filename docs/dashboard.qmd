@@ -1,0 +1,775 @@
+---
+title: "Interactive Demo"
+format:
+  dashboard:
+    nav-buttons:
+      - icon: github
+        href: https://github.com/sidequery/sidemantic
+filters:
+  - marimo-team/marimo
+pyproject: |
+  requires-python = ">=3.11"
+  dependencies = [
+      "marimo>=0.16.5",
+      "sidemantic==0.2.6",
+      "duckdb>=1.0",
+      "sqlglot>=25",
+      "pydantic>=2",
+      "altair>=5",
+      "numpy",
+  ]
+---
+
+```{=html}
+<style>
+marimo-island:empty {
+  display: none;
+}
+</style>
+```
+
+```python {.marimo name="deps"}
+import micropip
+try:
+    import sidemantic  # type: ignore
+except ModuleNotFoundError:
+    await micropip.install(["sidemantic==0.2.6"], deps=False)
+    import sidemantic  # type: ignore
+```
+
+```python {.marimo}
+import marimo as mo
+import duckdb
+import altair as alt
+import numpy as np
+```
+
+```python {.marimo}
+# Create sample data in DuckDB
+conn = duckdb.connect(":memory:")
+
+N = 20000
+sql_create_orders = f"""
+CREATE OR REPLACE TABLE orders AS
+SELECT
+  range AS id,
+  1 + CAST(random()*500 AS INTEGER) AS customer_id,
+  CASE
+    WHEN random() < 0.50 THEN 'completed'
+    WHEN random() < 0.70 THEN 'shipped'
+    WHEN random() < 0.85 THEN 'pending'
+    WHEN random() < 0.95 THEN 'cancelled'
+    ELSE 'returned'
+  END AS status,
+  (DATE '2024-01-01' + CAST(random()*365 AS INTEGER)) AS order_date,
+  ROUND((random()*600)+10,2) AS amount,
+  CASE WHEN random() < 0.50 THEN 'US' WHEN random() < 0.80 THEN 'EU' ELSE 'APAC' END AS region,
+  CASE
+    WHEN random() < 0.22 THEN 'electronics'
+    WHEN random() < 0.40 THEN 'apparel'
+    WHEN random() < 0.60 THEN 'home'
+    WHEN random() < 0.75 THEN 'toys'
+    WHEN random() < 0.88 THEN 'beauty'
+    ELSE 'outdoors'
+  END AS category
+FROM range(1, {N});
+"""
+_ = conn.execute(sql_create_orders)
+
+_ = conn.execute("""
+ALTER TABLE orders ADD COLUMN order_month DATE;
+UPDATE orders SET order_month = DATE_TRUNC('month', order_date);
+ALTER TABLE orders ADD COLUMN cost DOUBLE;
+ALTER TABLE orders ADD COLUMN profit DOUBLE;
+UPDATE orders SET cost = ROUND(amount * (0.55 + random()*0.30), 2);
+UPDATE orders SET profit = ROUND(amount - cost, 2);
+""")
+
+_ = conn.execute("""
+CREATE OR REPLACE TABLE customers AS
+SELECT
+  range AS id,
+  CASE WHEN random() < 0.30 THEN 'premium' ELSE 'standard' END AS tier,
+  CASE WHEN random() < 0.50 THEN 'US' WHEN random() < 0.80 THEN 'EU' ELSE 'APAC' END AS region
+FROM range(1, 501);
+""")
+
+_ = conn.execute("""
+CREATE OR REPLACE TABLE region_map(region VARCHAR, region_group VARCHAR);
+INSERT INTO region_map VALUES ('US','Americas'), ('EU','Europe'), ('APAC','Asia Pacific');
+""")
+
+# Return None to avoid displaying
+None
+```
+
+```python {.marimo}
+# Build semantic model
+from importlib import import_module
+Model = import_module("sidemantic.core.model").Model
+Dimension = import_module("sidemantic.core.dimension").Dimension
+Metric = import_module("sidemantic.core.metric").Metric
+Relationship = import_module("sidemantic.core.relationship").Relationship
+Segment = import_module("sidemantic.core.segment").Segment
+SemanticGraph = import_module("sidemantic.core.semantic_graph").SemanticGraph
+SQLGenerator = import_module("sidemantic.sql.generator_v2").SQLGenerator
+
+graph = SemanticGraph()
+
+orders_model = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    dimensions=[
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        Dimension(name="region", type="categorical", sql="region"),
+        Dimension(name="category", type="categorical", sql="category"),
+    ],
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
+        Metric(name="avg_order_value", agg="avg", sql="amount"),
+        Metric(name="cost", agg="sum", sql="cost"),
+        Metric(name="profit", agg="sum", sql="profit"),
+        Metric(name="returns", agg="count", filters=["{model}.status = 'returned'"]),
+        Metric(name="return_rate", type="ratio", numerator="orders.returns", denominator="orders.order_count"),
+        Metric(name="revenue_mom_pct", type="time_comparison", base_metric="orders.revenue", comparison_type="mom", calculation="percent_change"),
+    ],
+    segments=[
+        Segment(name="completed", sql="{model}.status = 'completed'"),
+        Segment(name="high_value", sql="{model}.amount >= 300"),
+    ],
+    relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+)
+
+customers_model = Model(
+    name="customers",
+    table="customers",
+    primary_key="id",
+    dimensions=[
+        Dimension(name="tier", type="categorical", sql="tier"),
+        Dimension(name="region", type="categorical", expr="region"),
+    ],
+    relationships=[Relationship(name="region_map", type="many_to_one", foreign_key="region", primary_key="region")],
+)
+
+region_map_model = Model(
+    name="region_map",
+    table="region_map",
+    primary_key="region",
+    dimensions=[Dimension(name="region_group", type="categorical", sql="region_group")],
+)
+
+graph.add_model(orders_model)
+graph.add_model(customers_model)
+graph.add_model(region_map_model)
+
+generator = SQLGenerator(graph, dialect="duckdb")
+```
+
+# Dashboard {orientation="columns"}
+
+## Column {width="35%"}
+
+```python {.marimo}
+# Controls (multiselects)
+status_opts = [r[0] for r in conn.execute("SELECT DISTINCT status FROM orders ORDER BY 1").fetchall()]
+region_opts = [r[0] for r in conn.execute("SELECT DISTINCT region FROM orders ORDER BY 1").fetchall()]
+category_opts = [r[0] for r in conn.execute("SELECT DISTINCT category FROM orders ORDER BY 1").fetchall()]
+tier_opts = [r[0] for r in conn.execute("SELECT DISTINCT tier FROM customers ORDER BY 1").fetchall()]
+
+status_select = mo.ui.multiselect(options=status_opts, value=[], label="Status")
+region_select = mo.ui.multiselect(options=region_opts, value=[], label="Region")
+category_select = mo.ui.multiselect(options=category_opts, value=[], label="Category")
+tier_select = mo.ui.multiselect(options=tier_opts, value=[], label="Tier")
+month_options = [r[0] for r in conn.execute("SELECT DISTINCT strftime(order_month, '%Y-%m') AS ym FROM orders ORDER BY ym").fetchall()]
+month_select = mo.ui.dropdown(options=month_options, value=month_options[-1], label="Period Month")
+```
+
+```python {.marimo}
+# Helpers: build Sidemantic filters and run compiled SQL in DuckDB
+def build_filters():
+    f = []
+    if status_select.value:
+        vals = ",".join(["'" + v.replace("'", "''") + "'" for v in status_select.value])
+        f.append(f"orders.status IN ({vals})")
+    if region_select.value:
+        vals = ",".join(["'" + v.replace("'", "''") + "'" for v in region_select.value])
+        f.append(f"orders.region IN ({vals})")
+    if category_select.value:
+        vals = ",".join(["'" + v.replace("'", "''") + "'" for v in category_select.value])
+        f.append(f"orders.category IN ({vals})")
+    if tier_select.value:
+        vals = ",".join(["'" + v.replace("'", "''") + "'" for v in tier_select.value])
+        f.append(f"customers.tier IN ({vals})")
+    return f
+
+# Token that captures UI state so downstream cells re-execute when filters change
+FILTERS_STATE = (
+    tuple(status_select.value),
+    tuple(region_select.value),
+    tuple(category_select.value),
+    tuple(tier_select.value),
+    month_select.value,
+)
+
+def run_query(metrics, dims, order_by=None, limit=None, extra_filters=None, _state: object | None = None):
+    # _state is unused inside; it exists to make marimo track dependencies on UI
+    filters = build_filters()
+    if extra_filters:
+        filters = filters + list(extra_filters)
+    dims_sql = list(dims)
+    injected = False
+    # Force-join customers when tier filter is active to satisfy generator's model discovery
+    if tier_select.value and not any(d.startswith("customers.") for d in dims_sql):
+        dims_sql.append("customers.tier")
+        injected = True
+
+    sql = generator.generate(metrics=metrics, dimensions=dims_sql, filters=filters, order_by=order_by, limit=limit)
+    cur = conn.execute(sql)
+    rows = cur.fetchall()
+    cols = [d[0] for d in cur.description]
+    data = [dict(zip(cols, r)) for r in rows]
+    # Drop injected column if the caller didn't request it explicitly
+    if injected and data and "tier" in data[0] and not any(d.endswith("tier") or d.endswith(".tier") for d in dims):
+        for rec in data:
+            rec.pop("tier", None)
+    return data, sql
+```
+
+```python {.marimo}
+#| fill: false
+
+mo.vstack([
+    mo.md("**Sidemantic runs directly in your browser**, executing SQL queries against DuckDB."),
+    mo.md("Use the filters below to explore the data. Sidemantic automatically compiles metrics and dimensions to SQL, applies filters across models, and executes queries in DuckDB."),
+    mo.md("""
+### Features
+
+- Defines semantic models (orders, customers, region_map) with dimensions and metrics (including ratio metric `return_rate`).
+- Uses reusable segments (named filters) and metric-level filters that auto-apply in WHERE clauses.
+- Declares relationships (`many_to_one`, `one_to_many`) with automatic join-path discovery for multi-hop queries (e.g., region_group × tier).
+- Compiles metrics + dimensions + filters to SQL (DuckDB dialect) via the Sidemantic SQL generator.
+- Applies global filters (status, region, category, tier) that propagate across models; period-to-date metrics are computed by filtering time.
+"""),
+], justify="start")
+```
+
+## Column {width="65%"}
+
+```python {.marimo}
+#| fill: false
+
+import datetime
+
+# Key Metrics
+kpi_rows, _ = run_query(
+    metrics=["orders.revenue", "orders.order_count", "orders.avg_order_value"],
+    dims=[], _state=FILTERS_STATE,
+)
+
+revenue = float(kpi_rows[0].get("revenue", 0.0)) if kpi_rows else 0.0
+orders_count  = int(kpi_rows[0].get("order_count", 0)) if kpi_rows else 0
+aov     = float(kpi_rows[0].get("avg_order_value", 0.0)) if kpi_rows else 0.0
+
+# Period-to-date metrics
+sel_month = month_select.value  # 'YYYY-MM'
+_y, _m = map(int, sel_month.split('-'))
+_month_start = datetime.date(_y, _m, 1).isoformat()
+_q_start_month = ((_m - 1)//3)*3 + 1
+_q_start = datetime.date(_y, _q_start_month, 1).isoformat()
+_y_start = datetime.date(_y, 1, 1).isoformat()
+
+mtd_rows, _ = run_query(
+    metrics=["orders.revenue"], dims=[],
+    extra_filters=[f"DATE_TRUNC('month', orders.order_date) = DATE '{_month_start}'"], _state=FILTERS_STATE
+)
+mtd = float(mtd_rows[0].get("revenue", 0.0)) if mtd_rows else 0.0
+
+qtd_rows, _ = run_query(
+    metrics=["orders.revenue"], dims=[],
+    extra_filters=[f"DATE_TRUNC('quarter', orders.order_date) = DATE '{_q_start}'"], _state=FILTERS_STATE
+)
+qtd = float(qtd_rows[0].get("revenue", 0.0)) if qtd_rows else 0.0
+
+ytd_rows, _ = run_query(
+    metrics=["orders.revenue"], dims=[],
+    extra_filters=[f"DATE_TRUNC('year', orders.order_date) = DATE '{_y_start}'"], _state=FILTERS_STATE
+)
+ytd = float(ytd_rows[0].get("revenue", 0.0)) if ytd_rows else 0.0
+
+# All chart data and definitions
+month_status_data, _ = run_query(
+    metrics=["orders.revenue"],
+    dims=["orders.order_date__month", "orders.status"],
+    order_by=["orders.order_date__month"],
+    _state=FILTERS_STATE
+)
+
+chart_month_status = (
+    alt.Chart(alt.Data(values=month_status_data))
+    .mark_bar()
+    .encode(
+        x=alt.X("order_date__month:T", title="Month"),
+        y=alt.Y("revenue:Q", title="Revenue"),
+        color=alt.Color("status:N", title="Status"),
+        tooltip=[
+            alt.Tooltip("order_date__month:T", title="Month"),
+            "status:N",
+            alt.Tooltip("revenue:Q", title="Revenue", format=",.0f")
+        ]
+    )
+    .properties(height=250)
+)
+
+month_cat_data, _ = run_query(
+    metrics=["orders.revenue"],
+    dims=["orders.order_date__month", "orders.category"],
+    order_by=["orders.order_date__month"],
+    _state=FILTERS_STATE
+)
+
+chart_month_cat = (
+    alt.Chart(alt.Data(values=month_cat_data))
+    .mark_bar()
+    .encode(
+        x=alt.X("order_date__month:T", title="Month"),
+        y=alt.Y("revenue:Q", title="Revenue"),
+        color=alt.Color("category:N", title="Category"),
+        tooltip=[
+            alt.Tooltip("order_date__month:T", title="Month"),
+            "category:N",
+            alt.Tooltip("revenue:Q", title="Revenue", format=",.0f")
+        ]
+    )
+    .properties(height=250)
+)
+
+top_cat_data, _ = run_query(
+    metrics=["orders.revenue"],
+    dims=["orders.category"],
+    order_by=["revenue DESC"],
+    limit=10,
+    _state=FILTERS_STATE
+)
+
+chart_top_cat = (
+    alt.Chart(alt.Data(values=top_cat_data))
+    .mark_bar()
+    .encode(
+        x=alt.X("revenue:Q", title="Revenue"),
+        y=alt.Y("category:N", sort='-x', title="Category"),
+        tooltip=[
+            "category:N",
+            alt.Tooltip("revenue:Q", title="Revenue", format=",.0f")
+        ]
+    )
+    .properties(height=250)
+)
+
+region_rev_data, _ = run_query(
+    metrics=["orders.revenue"],
+    dims=["orders.region"],
+    order_by=["revenue DESC"],
+    _state=FILTERS_STATE
+)
+
+chart_region = (
+    alt.Chart(alt.Data(values=region_rev_data))
+    .mark_bar()
+    .encode(
+        x=alt.X("region:N", sort='-y', title="Region"),
+        y=alt.Y("revenue:Q", title="Revenue"),
+        color=alt.Color("region:N"),
+        tooltip=[
+            "region:N",
+            alt.Tooltip("revenue:Q", title="Revenue", format=",.0f")
+        ]
+    )
+    .properties(height=250)
+)
+
+aov_region_data, _ = run_query(
+    metrics=["orders.avg_order_value"],
+    dims=["orders.region", "orders.order_date__month"],
+    order_by=["orders.order_date__month"],
+    _state=FILTERS_STATE
+)
+
+chart_aov_region = (
+    alt.Chart(alt.Data(values=aov_region_data))
+    .mark_line()
+    .encode(
+        x=alt.X("order_date__month:T", title="Month"),
+        y=alt.Y("avg_order_value:Q", title="Avg Order Value"),
+        color=alt.Color("region:N"),
+        tooltip=[
+            "order_date__month:T",
+            "region:N",
+            alt.Tooltip("avg_order_value:Q", title="AOV", format=",.2f")
+        ]
+    )
+    .properties(height=250)
+)
+
+heatmap_data, _ = run_query(
+    metrics=["orders.revenue"],
+    dims=["orders.order_date__month", "orders.category"],
+    order_by=["orders.order_date__month"],
+    _state=FILTERS_STATE
+)
+
+chart_heatmap = (
+    alt.Chart(alt.Data(values=heatmap_data))
+    .mark_rect()
+    .encode(
+        x=alt.X("order_date__month:T", title="Month"),
+        y=alt.Y("category:N", title="Category"),
+        color=alt.Color("revenue:Q", title="Revenue"),
+        tooltip=[
+            "order_date__month:T",
+            "category:N",
+            alt.Tooltip("revenue:Q", title="Revenue", format=",.0f")
+        ]
+    )
+    .properties(height=250)
+)
+
+mom_pct_data, _ = run_query(
+    metrics=["orders.revenue", "revenue_mom_pct"],
+    dims=["orders.order_date__month"],
+    order_by=["orders.order_date__month"],
+    _state=FILTERS_STATE
+)
+
+chart_mom_pct = (
+    alt.Chart(alt.Data(values=mom_pct_data))
+    .mark_line(point=True)
+    .encode(
+        x=alt.X("order_date__month:T", title="Month"),
+        y=alt.Y("revenue_mom_pct:Q", title="MoM % Change"),
+        color=alt.condition(
+            alt.datum.revenue_mom_pct > 0,
+            alt.value("green"),
+            alt.value("red")
+        ),
+        tooltip=[
+            "order_date__month:T",
+            alt.Tooltip("revenue:Q", title="Revenue", format=",.0f"),
+            alt.Tooltip("revenue_mom_pct:Q", title="MoM % Change", format=".1f")
+        ],
+    )
+).transform_filter(
+    alt.datum.revenue_mom_pct != None
+).properties(height=250)
+
+join_data, _ = run_query(
+    metrics=["orders.revenue"],
+    dims=["region_map.region_group", "customers.tier"],
+    order_by=["revenue DESC"],
+    _state=FILTERS_STATE
+)
+
+chart_join = (
+    alt.Chart(alt.Data(values=join_data))
+    .mark_bar()
+    .encode(
+        x=alt.X("region_group:N", title="Region Group"),
+        y=alt.Y("revenue:Q", title="Revenue"),
+        color=alt.Color("tier:N"),
+        tooltip=[
+            "region_group:N",
+            "tier:N",
+            alt.Tooltip("revenue:Q", title="Revenue", format=",.0f")
+        ]
+    )
+    .properties(height=250)
+)
+
+top_cust_data, _ = run_query(
+    metrics=["orders.revenue"],
+    dims=["orders.customer_id"],
+    order_by=["revenue DESC"],
+    limit=20,
+    _state=FILTERS_STATE
+)
+
+detail_data, _ = run_query(
+    metrics=["orders.revenue", "orders.order_count"],
+    dims=["orders.order_date__day", "orders.status", "orders.region", "orders.category"],
+    order_by=["orders.order_date__day"],
+    _state=FILTERS_STATE,
+)
+
+mo.vstack([
+    # Filters row
+    mo.vstack([
+        mo.md("### Filters"),
+        mo.hstack([status_select, region_select, category_select]),
+        mo.hstack([tier_select, month_select]),
+    ]),
+    # Metrics row
+    mo.hstack([
+        mo.vstack([
+            mo.md('### Key Metrics'),
+            mo.md(f"""
+**Revenue:** ${revenue:,.2f}
+
+**Orders:** {orders_count}
+
+**AOV:** ${aov:,.2f}
+"""),
+        ]),
+        mo.vstack([
+            mo.md(f'### Period-to-date ({sel_month})'),
+            mo.md(f"""
+**MTD Revenue:** ${mtd:,.2f}
+
+**QTD Revenue:** ${qtd:,.2f}
+
+**YTD Revenue:** ${ytd:,.2f}
+"""),
+        ]),
+    ]),
+    # Charts
+    mo.md('### Revenue by Month (Stacked by Status)'),
+    mo.ui.altair_chart(chart_month_status),
+    mo.md('### Revenue by Month (Stacked by Category)'),
+    mo.ui.altair_chart(chart_month_cat),
+    mo.md('### Top Categories by Revenue'),
+    mo.ui.altair_chart(chart_top_cat),
+    mo.md('### Revenue by Region'),
+    mo.ui.altair_chart(chart_region),
+    mo.md('### Avg Order Value by Region Over Time'),
+    mo.ui.altair_chart(chart_aov_region),
+    mo.md('### Revenue Heatmap (Month × Category)'),
+    mo.ui.altair_chart(chart_heatmap),
+    mo.md('### Revenue Month-over-Month % Change'),
+    mo.ui.altair_chart(chart_mom_pct),
+    mo.md('### Revenue by Region Group × Tier'),
+    mo.ui.altair_chart(chart_join),
+    mo.md('### Top Customers by Revenue'),
+    mo.ui.table(top_cust_data),
+    mo.md('### Detailed Rows'),
+    mo.ui.table(detail_data),
+], justify="start")
+```
+
+# Model Definition {orientation="columns"}
+
+## Column {.tabset}
+
+::: {.card title="YAML"}
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+      - name: order_date
+        type: time
+        sql: order_date
+        granularity: day
+      - name: region
+        type: categorical
+        sql: region
+      - name: category
+        type: categorical
+        sql: category
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+      - name: avg_order_value
+        agg: avg
+        sql: amount
+      - name: cost
+        agg: sum
+        sql: cost
+      - name: profit
+        agg: sum
+        sql: profit
+      - name: returns
+        agg: count
+        filters:
+          - "{model}.status = 'returned'"
+      - name: return_rate
+        type: ratio
+        numerator: orders.returns
+        denominator: orders.order_count
+      - name: revenue_mom_pct
+        type: time_comparison
+        base_metric: orders.revenue
+        comparison_type: mom
+        calculation: percent_change
+    segments:
+      - name: completed
+        sql: "{model}.status = 'completed'"
+      - name: high_value
+        sql: "{model}.amount >= 300"
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: tier
+        type: categorical
+        sql: tier
+      - name: region
+        type: categorical
+        expr: region
+    relationships:
+      - name: region_map
+        type: many_to_one
+        foreign_key: region
+        primary_key: region
+
+  - name: region_map
+    table: region_map
+    primary_key: region
+    dimensions:
+      - name: region_group
+        type: categorical
+        sql: region_group
+```
+
+:::
+
+::: {.card title="Python"}
+
+```python
+from sidemantic.core.model import Model
+from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
+from sidemantic.core.relationship import Relationship
+from sidemantic.core.segment import Segment
+from sidemantic.core.semantic_graph import SemanticGraph
+
+graph = SemanticGraph()
+
+orders_model = Model(
+    name="orders",
+    table="orders",
+    primary_key="id",
+    dimensions=[
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        Dimension(name="region", type="categorical", sql="region"),
+        Dimension(name="category", type="categorical", sql="category"),
+    ],
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
+        Metric(name="avg_order_value", agg="avg", sql="amount"),
+        Metric(name="cost", agg="sum", sql="cost"),
+        Metric(name="profit", agg="sum", sql="profit"),
+        Metric(name="returns", agg="count", filters=["{model}.status = 'returned'"]),
+        Metric(name="return_rate", type="ratio", numerator="orders.returns", denominator="orders.order_count"),
+        Metric(name="revenue_mom_pct", type="time_comparison", base_metric="orders.revenue", comparison_type="mom", calculation="percent_change"),
+    ],
+    segments=[
+        Segment(name="completed", sql="{model}.status = 'completed'"),
+        Segment(name="high_value", sql="{model}.amount >= 300"),
+    ],
+    relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+)
+
+customers_model = Model(
+    name="customers",
+    table="customers",
+    primary_key="id",
+    dimensions=[
+        Dimension(name="tier", type="categorical", sql="tier"),
+        Dimension(name="region", type="categorical", expr="region"),
+    ],
+    relationships=[Relationship(name="region_map", type="many_to_one", foreign_key="region", primary_key="region")],
+)
+
+region_map_model = Model(
+    name="region_map",
+    table="region_map",
+    primary_key="region",
+    dimensions=[Dimension(name="region_group", type="categorical", sql="region_group")],
+)
+
+graph.add_model(orders_model)
+graph.add_model(customers_model)
+graph.add_model(region_map_model)
+```
+
+:::
+
+## Column
+
+### Entity Relationship Diagram
+
+```python {.marimo}
+# Mermaid ER diagram from Sidemantic graph
+def _build_er_mermaid(g):
+    lines = ["erDiagram"]
+
+    # Entities with a handful of fields
+    for m_name, m in g.models.items():
+        # Base entity with primary key + dimensions only
+        base_attrs = []
+        pk = m.primary_key or "id"
+        base_attrs.append(f"  string {pk} PK")
+        for d in m.dimensions[:6]:
+            if getattr(d, "type", "") == "time":
+                dtype = "date"
+            elif getattr(d, "type", "") in ("number", "numeric"):
+                dtype = "number"
+            else:
+                dtype = "string"
+            base_attrs.append(f"  {dtype} {d.name}")
+        lines.append(f"{m_name} {{")
+        lines.extend(base_attrs)
+        lines.append("}")
+
+        # Separate <model>_metrics entity listing all metrics
+        metrics_list = m.metrics[:8]
+        if metrics_list:
+            metric_attrs = [f"  metric {me.name}" for me in metrics_list]
+            metrics_entity = f"{m_name}_metrics"
+            lines.append(f"{metrics_entity} {{")
+            lines.extend(metric_attrs)
+            lines.append("}")
+            # One-to-one conceptual link from model to its metrics definition
+            lines.append(f"{m_name} ||--|| {metrics_entity} : metrics")
+
+    # Relationships
+    for m_name, m in g.models.items():
+        for rel in m.relationships:
+            src = m_name
+            dst = rel.name
+            if rel.type == "many_to_one":
+                card = "}o--||"  # many-to-one (child to parent)
+            elif rel.type == "one_to_many":
+                card = "||--o{"  # one-to-many (parent to child)
+            elif rel.type == "one_to_one":
+                card = "||--||"  # one-to-one
+            else:
+                card = "||--||"
+            # Build a compact, single-token label to avoid Mermaid parsing issues
+            l_fk = rel.sql_expr.replace(".", "_")
+            r_pk = (rel.related_key or "id").replace(".", "_")
+            label = f"{src}_{l_fk}_to_{dst}_{r_pk}"
+            lines.append(f"{src} {card} {dst} : {label}")
+
+    return "\n".join(lines)
+
+er_diagram = _build_er_mermaid(graph)
+
+mo.mermaid(er_diagram)
+```

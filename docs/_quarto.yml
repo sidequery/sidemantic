@@ -16,7 +16,7 @@ website:
       - text: "Home"
         href: index.qmd
       - text: "Interactive Demo"
-        href: marimo-interactive.qmd
+        href: dashboard.qmd
       - text: "Getting Started"
         href: getting-started.qmd
       - text: "Adapters"

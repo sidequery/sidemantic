@@ -302,9 +302,12 @@ ptd_metrics = mo.md(f"""
 
 left_col = mo.vstack([mo.md('### Key Metrics'), left_metrics])
 right_col = mo.vstack([mo.md(f'### Period-to-date ({sel_month})'), ptd_metrics])
+```
 
+## Demo
+
+```python {.marimo}
 mo.vstack([
-    mo.md('## Demo'),
     mo.hstack([left_col, right_col]),
     mo.md('<div style="height:8px"></div>'),
 ])

@@ -1789,8 +1789,17 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 select_exprs.append(f"SUM({raw_col}) as {metric_name}")
             elif metric.agg == "avg":
                 # AVG = SUM(sum_raw) / SUM(count_raw)
+                # Need to find the correct count measure from pre-agg
+                from sidemantic.core.preagg_matcher import PreAggregationMatcher
+                matcher = PreAggregationMatcher(model)
+                count_measure = matcher._find_count_measure_for_avg(metric, preagg.measures or [])
+
+                if not count_measure:
+                    # Fallback to hard-coded count_raw (old behavior)
+                    count_measure = "count"
+
                 sum_col = f"{metric_name}_raw"
-                count_col = "count_raw"
+                count_col = f"{count_measure}_raw"
                 select_exprs.append(f"SUM({sum_col}) / NULLIF(SUM({count_col}), 0) as {metric_name}")
             elif metric.agg in ["min", "max"]:
                 select_exprs.append(f"{metric.agg.upper()}({raw_col}) as {metric_name}")

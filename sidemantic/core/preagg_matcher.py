@@ -160,11 +160,11 @@ class PreAggregationMatcher:
             return True
 
         if agg_type == "avg":
-            # AVG is derivable if we have the sum measure
+            # AVG is derivable if we have the sum measure AND a compatible count
             # We can compute AVG by re-aggregating: SUM(sum_raw) / SUM(count_raw)
-            # But we need to ensure the pre-agg has both sum and count
-            has_count = "count" in preagg_measures or any(m.startswith("count") for m in preagg_measures)
-            return has_count
+            # Need to find the specific count measure available
+            count_measure = self._find_count_measure_for_avg(query_metric, preagg_measures)
+            return count_measure is not None
 
         if agg_type == "count_distinct":
             # COUNT DISTINCT is NOT derivable from pre-aggregated data
@@ -173,6 +173,49 @@ class PreAggregationMatcher:
 
         # Default: allow if present
         return True
+
+    def _find_count_measure_for_avg(self, avg_metric: Metric, preagg_measures: list[str]) -> str | None:
+        """Find the appropriate count measure for an AVG metric.
+
+        Args:
+            avg_metric: The AVG metric
+            preagg_measures: Available measures in pre-aggregation
+
+        Returns:
+            Name of the count measure, or None if not found
+        """
+        # Look for count measures in priority order:
+        # 1. Exact match: if avg is "avg_amount", look for "count_amount"
+        # 2. Exact match: if avg is "revenue_avg", look for "revenue_count"
+        # 3. Generic "count" measure
+        # 4. Any count measure (order_count, user_count, etc.)
+
+        # Try exact match with _count suffix (e.g., avg_amount -> count_amount)
+        if avg_metric.name.startswith("avg_"):
+            base_name = avg_metric.name[4:]  # Remove "avg_" prefix
+            count_candidate = f"count_{base_name}"
+            if count_candidate in preagg_measures:
+                return count_candidate
+
+        # Try exact match with count_ prefix (e.g., revenue_avg -> revenue_count)
+        if "_avg" in avg_metric.name:
+            base_name = avg_metric.name.replace("_avg", "_count")
+            if base_name in preagg_measures:
+                return base_name
+
+        # Try generic "count"
+        if "count" in preagg_measures:
+            return "count"
+
+        # Accept any count measure as a fallback
+        # This is safe for AVG re-aggregation as long as:
+        # 1. The count matches the avg's population (unfiltered for unfiltered avg)
+        # 2. We're re-aggregating at compatible grain
+        for measure in preagg_measures:
+            if measure.startswith("count") or "count" in measure:
+                return measure
+
+        return None
 
     def _is_granularity_compatible(
         self,

@@ -1,6 +1,6 @@
 ---
 title: "Sidemantic"
-subtitle: "Define metrics once, query them anywhere with SQL"
+subtitle: "Define metrics once, query them anywhere with SQL or Python"
 ---
 
 Sidemantic is a semantic layer that turns messy data modeling into clean SQL. Define your business metrics once in YAML, then query them with familiar SQL or Python.

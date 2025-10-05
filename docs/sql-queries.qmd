@@ -15,11 +15,11 @@ The SQL interface lets you query pre-defined metrics and dimensions using famili
 - Using parameters for dynamic filters (`WHERE date >= {{ start_date }}`)
 
 **Not for:**
-- Ad-hoc analytics with `SUM()`, `COUNT()`, or other aggregation functions
-- Complex SQL operations like subqueries, CTEs, or window functions
+- Ad-hoc analytics with `SUM()`, `COUNT()`, or other aggregation functions (use pre-defined metrics)
+- Complex SQL operations like window functions
 - One-off queries that don't fit your metric definitions
 
-**If you need ad-hoc SQL:** Use `layer.compile()` to generate base SQL, then modify and execute it yourself.
+**If you need ad-hoc SQL:** Use `layer.compile()` to generate base SQL, then modify and execute it yourself. You can also use CTEs or subqueries to query semantic layer results and then apply additional transformations.
 
 ## SQL Support Overview
 
@@ -36,8 +36,8 @@ The SQL interface lets you query pre-defined metrics and dimensions using famili
 | **[GROUP BY](#no-group-by)** | ❌ No | Grouping is automatic |
 | **[Aggregate Functions](#no-aggregate-functions)** | ❌ No | Use pre-defined metrics |
 | **[HAVING](#no-having)** | ❌ No | Use WHERE on metrics instead |
-| **[Subqueries](#no-subqueries)** | ❌ No | Not supported |
-| **[CTEs / WITH](#no-cteswith)** | ❌ No | Not supported |
+| **[Subqueries](#subqueries)** | ✅ Yes | Query semantic layer in subqueries |
+| **[CTEs / WITH](#ctes-common-table-expressions)** | ✅ Yes | Use CTEs with semantic queries |
 | **[Window Functions](#no-window-functions)** | ❌ No | Use cumulative metrics |
 | **[DISTINCT](#no-distinct)** | ❌ No | Dimensions are auto-distinct |
 | **[UNION / INTERSECT](#no-unionintersectexcept)** | ❌ No | Set operations not supported |
@@ -73,6 +73,21 @@ Table prefixes optional (inferred from FROM):
 SELECT orders.revenue FROM orders
 SELECT revenue FROM orders
 ```
+
+::: {.callout-note}
+## FROM Clause References Model Names
+
+The FROM clause uses **semantic model names**, not underlying table names:
+
+```python
+Model(name="orders", table="raw_orders_staging", ...)
+```
+
+```sql
+SELECT revenue FROM orders  -- ✅ Use model name
+SELECT revenue FROM raw_orders_staging  -- ❌ Not the table name
+```
+:::
 
 ### WHERE
 
@@ -209,22 +224,72 @@ Then:
 SELECT order_count, revenue FROM orders
 ```
 
-### No Subqueries
+### Subqueries
 
-❌ Can't write:
+✅ You can use semantic layer queries in subqueries:
 ```sql
 SELECT * FROM (
-    SELECT revenue FROM orders
-) AS subquery
+    SELECT revenue, status FROM orders
+) AS orders_agg
+WHERE revenue > 1000
 ```
 
-### No CTEs/WITH
+This queries the semantic layer (which handles aggregation), then applies additional filtering in the outer query.
 
-❌ Can't write:
 ```sql
-WITH temp AS (SELECT * FROM orders)
-SELECT * FROM temp
+-- Join semantic query results with regular tables
+SELECT
+    orders_agg.revenue,
+    orders_agg.region,
+    r.continent
+FROM (
+    SELECT orders.revenue, customers.region
+    FROM orders
+) AS orders_agg
+JOIN regions r ON orders_agg.region = r.region
 ```
+
+### CTEs (Common Table Expressions)
+
+✅ You can use CTEs with semantic layer queries:
+```sql
+WITH orders_by_region AS (
+    SELECT revenue, status, customers.region
+    FROM orders
+)
+SELECT * FROM orders_by_region
+WHERE revenue > 500
+ORDER BY revenue DESC
+```
+
+Mix semantic and regular CTEs:
+```sql
+WITH
+    -- Semantic layer query
+    orders_agg AS (
+        SELECT revenue, status FROM orders
+    ),
+    -- Regular SQL
+    status_labels AS (
+        SELECT 'completed' as code, 'Complete' as label
+        UNION ALL SELECT 'pending', 'Pending'
+    )
+SELECT
+    o.revenue,
+    s.label
+FROM orders_agg o
+JOIN status_labels s ON o.status = s.code
+```
+
+::: {.callout-tip}
+## When to Use CTEs/Subqueries
+
+Use CTEs and subqueries when you need to:
+- Apply additional filtering/transformations after semantic layer aggregation
+- Join semantic layer results with regular tables
+- Build complex queries in readable steps
+- Reuse semantic query results multiple times
+:::
 
 ### No HAVING
 

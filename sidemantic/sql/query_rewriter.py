@@ -27,8 +27,13 @@ class QueryRewriter:
     def rewrite(self, sql: str) -> str:
         """Rewrite user SQL to use semantic layer.
 
+        Supports:
+        - Direct semantic layer queries: SELECT revenue FROM orders
+        - CTEs with semantic queries: WITH agg AS (SELECT revenue FROM orders) SELECT * FROM agg
+        - Subqueries: SELECT * FROM (SELECT revenue FROM orders) WHERE revenue > 100
+
         Args:
-            sql: User SQL query like "SELECT revenue, status FROM orders WHERE status = 'completed'"
+            sql: User SQL query
 
         Returns:
             Rewritten SQL using semantic layer
@@ -45,6 +50,85 @@ class QueryRewriter:
         if not isinstance(parsed, exp.Select):
             raise ValueError("Only SELECT queries are supported")
 
+        # Check if this is a CTE-based query or has subqueries
+        has_ctes = parsed.args.get("with") is not None
+        has_subquery_in_from = self._has_subquery_in_from(parsed)
+
+        if has_ctes or has_subquery_in_from:
+            # Handle CTEs and subqueries
+            return self._rewrite_with_ctes_or_subqueries(parsed)
+
+        # Otherwise, treat as simple semantic layer query
+        return self._rewrite_simple_query(parsed)
+
+    def _has_subquery_in_from(self, select: exp.Select) -> bool:
+        """Check if FROM clause contains a subquery."""
+        from_clause = select.args.get("from")
+        if not from_clause:
+            return False
+
+        return isinstance(from_clause.this, exp.Subquery)
+
+    def _rewrite_with_ctes_or_subqueries(self, parsed: exp.Select) -> str:
+        """Rewrite query that contains CTEs or subqueries.
+
+        Strategy:
+        1. Rewrite each CTE that references semantic models
+        2. Rewrite subqueries in FROM clause
+        3. Return the modified SQL
+        """
+        # Handle CTEs
+        if parsed.args.get("with"):
+            with_clause = parsed.args["with"]
+            for cte in with_clause.expressions:
+                # Each CTE has a name (alias) and a query (this)
+                cte_query = cte.this
+                if isinstance(cte_query, exp.Select):
+                    # Check if this CTE references a semantic model
+                    if self._references_semantic_model(cte_query):
+                        # Rewrite the CTE query
+                        rewritten_cte_sql = self._rewrite_simple_query(cte_query)
+                        # Parse the rewritten SQL and replace the CTE query
+                        rewritten_cte = sqlglot.parse_one(rewritten_cte_sql, dialect=self.dialect)
+                        cte.set("this", rewritten_cte)
+
+        # Handle subquery in FROM
+        from_clause = parsed.args.get("from")
+        if from_clause and isinstance(from_clause.this, exp.Subquery):
+            subquery = from_clause.this
+            subquery_select = subquery.this
+            if isinstance(subquery_select, exp.Select) and self._references_semantic_model(subquery_select):
+                # Rewrite the subquery
+                rewritten_subquery_sql = self._rewrite_simple_query(subquery_select)
+                rewritten_subquery = sqlglot.parse_one(rewritten_subquery_sql, dialect=self.dialect)
+                subquery.set("this", rewritten_subquery)
+
+        # Return the modified SQL
+        return parsed.sql(dialect=self.dialect)
+
+    def _references_semantic_model(self, select: exp.Select) -> bool:
+        """Check if a SELECT statement references any semantic models."""
+        from_clause = select.args.get("from")
+        if not from_clause:
+            return False
+
+        table_expr = from_clause.this
+        if isinstance(table_expr, exp.Table):
+            table_name = table_expr.name
+            # Check if this is a known model
+            return table_name in self.graph.models
+
+        return False
+
+    def _rewrite_simple_query(self, parsed: exp.Select) -> str:
+        """Rewrite a simple semantic layer query (no CTEs/subqueries).
+
+        Args:
+            parsed: Parsed SELECT statement
+
+        Returns:
+            Rewritten SQL using semantic layer
+        """
         # Check for explicit JOINs - these are not supported
         if parsed.args.get("joins"):
             raise ValueError(

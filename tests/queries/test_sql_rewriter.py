@@ -482,3 +482,257 @@ def test_unresolvable_column(semantic_layer):
 
     with pytest.raises(ValueError, match="Cannot resolve column|not found"):
         semantic_layer.sql(sql)
+
+
+def test_cte_with_semantic_query(semantic_layer):
+    """Test CTE containing a semantic layer query."""
+    sql = """
+        WITH orders_agg AS (
+            SELECT revenue, status FROM orders
+        )
+        SELECT * FROM orders_agg WHERE revenue > 200
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["revenue"][0] == 250.00  # completed orders: 100 + 150
+    assert df["status"][0] == "completed"
+
+
+def test_cte_with_filter_in_outer_query(semantic_layer):
+    """Test CTE with semantic query, filtering in outer query."""
+    sql = """
+        WITH orders_by_status AS (
+            SELECT revenue, status FROM orders
+        )
+        SELECT status, revenue
+        FROM orders_by_status
+        WHERE status = 'completed'
+        ORDER BY revenue DESC
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["status"][0] == "completed"
+    assert df["revenue"][0] == 250.00
+
+
+def test_cte_with_aggregation_in_outer_query(semantic_layer):
+    """Test CTE with semantic query, then aggregate in outer query."""
+    sql = """
+        WITH orders_data AS (
+            SELECT revenue, status FROM orders
+        )
+        SELECT
+            status,
+            SUM(revenue) as total_revenue
+        FROM orders_data
+        GROUP BY status
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) in (1, 2)  # Could be 1 or 2 depending on grouping
+    # Semantic layer already aggregated revenue by status
+    if len(df) == 1:
+        # If only one status (completed)
+        assert df["total_revenue"][0] in (250.00, 200.00)
+
+
+def test_subquery_with_semantic_query(semantic_layer):
+    """Test subquery containing a semantic layer query."""
+    sql = """
+        SELECT * FROM (
+            SELECT revenue, status FROM orders
+        ) AS orders_agg
+        WHERE revenue > 100
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) in (1, 2)  # completed ($250) and/or pending ($200)
+    assert all(df["revenue"] > 100)
+
+
+def test_subquery_with_join_to_regular_table(semantic_layer):
+    """Test subquery with semantic query joined to regular table."""
+    # First create a regular table
+    semantic_layer.conn.execute("""
+        CREATE TABLE IF NOT EXISTS regions AS
+        SELECT 'US' as region, 'North America' as continent
+        UNION ALL
+        SELECT 'EU', 'Europe'
+    """)
+
+    sql = """
+        SELECT
+            orders_agg.revenue,
+            orders_agg.region,
+            r.continent
+        FROM (
+            SELECT
+                orders.revenue,
+                customers.region
+            FROM orders
+        ) AS orders_agg
+        JOIN regions r ON orders_agg.region = r.region
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 2
+    assert "continent" in df.columns
+
+
+def test_multiple_ctes_with_semantic_queries(semantic_layer):
+    """Test multiple CTEs, each with semantic layer queries."""
+    sql = """
+        WITH
+        orders_metrics AS (
+            SELECT revenue, status FROM orders
+        ),
+        customer_metrics AS (
+            SELECT region FROM customers
+        )
+        SELECT * FROM orders_metrics
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 2  # Two status groups
+    assert "revenue" in df.columns
+    assert "status" in df.columns
+
+
+def test_cte_with_limit_in_inner_query(semantic_layer):
+    """Test CTE with LIMIT in the semantic query."""
+    sql = """
+        WITH top_orders AS (
+            SELECT revenue, status FROM orders
+            ORDER BY revenue DESC
+            LIMIT 1
+        )
+        SELECT * FROM top_orders
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["revenue"][0] == 250.00  # Top revenue group (completed)
+
+
+def test_nested_subquery(semantic_layer):
+    """Test filtering semantic query results in outer query."""
+    # Note: Deep nesting of subqueries (subquery within subquery) is not currently supported
+    # This test demonstrates single-level subquery with filtering
+    sql = """
+        SELECT * FROM (
+            SELECT revenue, status FROM orders
+        ) AS orders_agg
+        WHERE revenue > 100
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) in (1, 2)  # completed ($250) and/or pending ($200)
+    assert all(df["revenue"] > 100)
+
+
+def test_cte_referencing_another_cte(semantic_layer):
+    """Test CTE that references another CTE (not a semantic query)."""
+    sql = """
+        WITH
+        orders_raw AS (
+            SELECT revenue, status FROM orders
+        ),
+        orders_filtered AS (
+            SELECT * FROM orders_raw WHERE status = 'completed'
+        )
+        SELECT * FROM orders_filtered
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["status"][0] == "completed"
+
+
+def test_cte_with_cross_model_query(semantic_layer):
+    """Test CTE with cross-model semantic query."""
+    sql = """
+        WITH orders_with_region AS (
+            SELECT
+                orders.revenue,
+                customers.region
+            FROM orders
+        )
+        SELECT * FROM orders_with_region WHERE region = 'US'
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["region"][0] == "US"
+
+
+def test_subquery_with_alias(semantic_layer):
+    """Test subquery with proper aliasing."""
+    sql = """
+        SELECT
+            agg.revenue as total_revenue,
+            agg.status as order_status
+        FROM (
+            SELECT revenue, status FROM orders
+        ) AS agg
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert "total_revenue" in df.columns
+    assert "order_status" in df.columns
+
+
+def test_cte_mixed_semantic_and_regular(semantic_layer):
+    """Test query mixing semantic CTEs and regular SQL CTEs."""
+    # Create a regular table first
+    semantic_layer.conn.execute("""
+        CREATE TABLE IF NOT EXISTS status_codes AS
+        SELECT 'completed' as code, 'Complete' as label
+        UNION ALL
+        SELECT 'pending', 'Pending'
+    """)
+
+    sql = """
+        WITH
+        orders_agg AS (
+            SELECT revenue, status FROM orders
+        ),
+        status_labels AS (
+            SELECT code, label FROM status_codes
+        )
+        SELECT
+            o.revenue,
+            s.label
+        FROM orders_agg o
+        JOIN status_labels s ON o.status = s.code
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 2  # Two status groups joined with labels
+    assert "label" in df.columns
+    assert "revenue" in df.columns

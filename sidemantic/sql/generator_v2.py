@@ -3,6 +3,7 @@
 import sqlglot
 from sqlglot import exp, select
 
+from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 
@@ -58,6 +59,7 @@ class SQLGenerator:
         offset: int | None = None,
         parameters: dict[str, any] | None = None,
         ungrouped: bool = False,
+        use_preaggregations: bool = False,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -71,6 +73,7 @@ class SQLGenerator:
             offset: Number of rows to skip
             parameters: User-provided parameter values for interpolation
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
+            use_preaggregations: Enable automatic pre-aggregation routing (default: False)
 
         Returns:
             SQL query string
@@ -152,6 +155,20 @@ class SQLGenerator:
         # Find all models needed for the query
         model_names = self._find_required_models(metrics, dimensions)
 
+        # Try to use pre-aggregation if enabled (single model queries only)
+        if use_preaggregations and len(model_names) == 1 and not ungrouped:
+            preagg_sql = self._try_use_preaggregation(
+                model_name=model_names[0],
+                metrics=metrics,
+                parsed_dims=parsed_dims,
+                filters=filters,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+            )
+            if preagg_sql:
+                return preagg_sql
+
         if not model_names:
             raise ValueError("No models found for query")
 
@@ -172,19 +189,25 @@ class SQLGenerator:
                     # No join path found
                     pass
 
-        # Build CTEs for all models (including intermediate ones)
+        # Classify filters for pushdown optimization
+        pushdown_filters, main_query_filters = self._classify_filters_for_pushdown(
+            filters or [], all_models
+        )
+
+        # Build CTEs for all models with pushed-down filters
         cte_sqls = []
         for model_name in all_models:
-            cte_sql = self._build_model_cte(model_name, parsed_dims, metrics)
+            model_filters = pushdown_filters.get(model_name, [])
+            cte_sql = self._build_model_cte(model_name, parsed_dims, metrics, model_filters if model_filters else None)
             cte_sqls.append(cte_sql)
 
-        # Build main SELECT using builder API
+        # Build main SELECT using builder API (only with filters that couldn't be pushed down)
         query = self._build_main_select(
             base_model_name=base_model_name,
             other_models=model_names[1:] if len(model_names) > 1 else [],
             parsed_dims=parsed_dims,
             metrics=metrics,
-            filters=filters,
+            filters=main_query_filters,
             order_by=order_by,
             limit=limit,
             offset=offset,
@@ -304,15 +327,62 @@ class SQLGenerator:
 
         return models
 
+    def _classify_filters_for_pushdown(
+        self, filters: list[str], all_models: set[str]
+    ) -> tuple[dict[str, list[str]], list[str]]:
+        """Classify filters into those that can be pushed down vs those that must stay in main query.
+
+        Args:
+            filters: List of filter expressions
+            all_models: Set of all model names in the query
+
+        Returns:
+            Tuple of (pushdown_filters_by_model, main_query_filters)
+            - pushdown_filters_by_model: Dict mapping model name to list of filters for that model
+            - main_query_filters: Filters that reference multiple models (can't push down)
+        """
+        pushdown_filters = {model: [] for model in all_models}
+        main_query_filters = []
+
+        for filter_expr in filters:
+            # Parse filter expression with SQLGlot
+            try:
+                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+            except:
+                # If parsing fails, keep in main query to be safe
+                main_query_filters.append(filter_expr)
+                continue
+
+            # Find all table references in the filter
+            referenced_models = set()
+            for table in parsed.find_all(exp.Column):
+                table_name = table.table
+                if table_name:
+                    # Remove _cte suffix if present
+                    clean_name = table_name.replace("_cte", "")
+                    if clean_name in all_models:
+                        referenced_models.add(clean_name)
+
+            # If filter references exactly one model, push it down
+            if len(referenced_models) == 1:
+                model = list(referenced_models)[0]
+                pushdown_filters[model].append(filter_expr)
+            else:
+                # Filter references multiple models or no models - keep in main query
+                main_query_filters.append(filter_expr)
+
+        return pushdown_filters, main_query_filters
+
     def _build_model_cte(
-        self, model_name: str, dimensions: list[tuple[str, str | None]], metrics: list[str]
+        self, model_name: str, dimensions: list[tuple[str, str | None]], metrics: list[str], filters: list[str] | None = None
     ) -> str:
-        """Build CTE SQL for a model.
+        """Build CTE SQL for a model with optional filter pushdown.
 
         Args:
             model_name: Name of the model
             dimensions: Parsed dimension references
             metrics: Metric references
+            filters: Filters to push down into this CTE (optional)
 
         Returns:
             CTE SQL string
@@ -406,9 +476,31 @@ class SQLGenerator:
         else:
             from_clause = model.table
 
+        # Build WHERE clause for pushed-down filters
+        where_clause = ""
+        if filters:
+            # Process filters - replace model_cte references with direct column names using SQLGlot
+            processed_filters = []
+            for f in filters:
+                try:
+                    parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                    # Remove table qualifiers (model_name_cte. or model_name.)
+                    for col in parsed.find_all(exp.Column):
+                        if col.table:
+                            clean_table = col.table.replace("_cte", "")
+                            if clean_table == model_name:
+                                col.set("table", None)
+                    processed_filter = parsed.sql(dialect=self.dialect)
+                    processed_filters.append(processed_filter)
+                except:
+                    # If parsing fails, use original filter
+                    processed_filters.append(f)
+
+            where_clause = f"\n  WHERE {' AND '.join(processed_filters)}"
+
         # Build CTE
         select_str = ",\n    ".join(select_cols)
-        cte_sql = f"{model_name}_cte AS (\n  SELECT\n    {select_str}\n  FROM {from_clause}\n)"
+        cte_sql = f"{model_name}_cte AS (\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}\n)"
 
         return cte_sql
 
@@ -1273,3 +1365,216 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             outer_query += f"\nOFFSET {offset}"
 
         return outer_query
+
+    def _try_use_preaggregation(
+        self,
+        model_name: str,
+        metrics: list[str],
+        parsed_dims: list[tuple[str, str | None]],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> str | None:
+        """Try to generate query using a pre-aggregation.
+
+        Args:
+            model_name: Name of the model to query
+            metrics: List of metric references
+            parsed_dims: Parsed dimension references with granularities
+            filters: List of filter expressions
+            order_by: List of fields to order by
+            limit: Maximum number of rows
+            offset: Number of rows to skip
+
+        Returns:
+            SQL query string if pre-aggregation found, None otherwise
+        """
+        model = self.graph.get_model(model_name)
+        if not model or not model.pre_aggregations:
+            return None
+
+        # Extract dimension names (without model prefix) and find time granularity
+        dim_names = []
+        time_granularity = None
+
+        for dim_ref, gran in parsed_dims:
+            # Remove model prefix if present
+            if "." in dim_ref:
+                dim_name = dim_ref.split(".", 1)[1]
+            else:
+                dim_name = dim_ref
+
+            dim_names.append(dim_name)
+
+            # Track time granularity for matching
+            if gran:
+                time_granularity = gran
+
+        # Extract metric names (without model prefix)
+        metric_names = []
+        for m in metrics:
+            if "." in m:
+                metric_name = m.split(".", 1)[1]
+            else:
+                metric_name = m
+            metric_names.append(metric_name)
+
+        # Try to find matching pre-aggregation
+        matcher = PreAggregationMatcher(model)
+        preagg = matcher.find_matching_preagg(
+            metrics=metric_names,
+            dimensions=dim_names,
+            time_granularity=time_granularity,
+        )
+
+        if not preagg:
+            return None
+
+        # Generate SQL against pre-aggregation table
+        return self._generate_from_preaggregation(
+            model=model,
+            preagg=preagg,
+            metrics=metrics,
+            parsed_dims=parsed_dims,
+            filters=filters,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+        )
+
+    def _generate_from_preaggregation(
+        self,
+        model,
+        preagg,
+        metrics: list[str],
+        parsed_dims: list[tuple[str, str | None]],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> str:
+        """Generate SQL query from a pre-aggregation.
+
+        Args:
+            model: The model containing the pre-aggregation
+            preagg: The pre-aggregation to use
+            metrics: List of metric references
+            parsed_dims: Parsed dimension references with granularities
+            filters: List of filter expressions
+            order_by: List of fields to order by
+            limit: Maximum number of rows
+            offset: Number of rows to skip
+
+        Returns:
+            SQL query string
+        """
+        preagg_table = preagg.get_table_name(model.name)
+
+        # Build SELECT clause
+        select_exprs = []
+
+        # Add dimensions
+        for dim_ref, gran in parsed_dims:
+            # Get dimension name without model prefix
+            if "." in dim_ref:
+                dim_name = dim_ref.split(".", 1)[1]
+            else:
+                dim_name = dim_ref
+
+            # Check if this is the time dimension and needs granularity conversion
+            if gran and preagg.time_dimension == dim_name:
+                # Need to convert from pre-agg granularity to query granularity
+                preagg_col = f"{dim_name}_{preagg.granularity}"
+
+                if gran == preagg.granularity:
+                    # Exact match - use as is
+                    select_exprs.append(f"{preagg_col} as {dim_name}")
+                else:
+                    # Roll up to coarser granularity
+                    select_exprs.append(f"DATE_TRUNC('{gran}', {preagg_col}) as {dim_name}")
+            else:
+                # Regular dimension - use as is
+                select_exprs.append(f"{dim_name}")
+
+        # Add metrics
+        for metric_ref in metrics:
+            # Get metric name without model prefix
+            if "." in metric_ref:
+                metric_name = metric_ref.split(".", 1)[1]
+            else:
+                metric_name = metric_ref
+
+            metric = model.get_metric(metric_name)
+            if not metric:
+                continue
+
+            # Get the raw column name from pre-agg
+            raw_col = f"{metric_name}_raw"
+
+            # Determine aggregation based on metric type
+            if metric.agg == "sum":
+                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
+            elif metric.agg == "count":
+                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
+            elif metric.agg == "avg":
+                # AVG = SUM(sum_raw) / SUM(count_raw)
+                sum_col = f"{metric_name}_raw"
+                count_col = "count_raw"
+                select_exprs.append(f"SUM({sum_col}) / NULLIF(SUM({count_col}), 0) as {metric_name}")
+            elif metric.agg in ["min", "max"]:
+                select_exprs.append(f"{metric.agg.upper()}({raw_col}) as {metric_name}")
+            else:
+                # Default to SUM
+                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
+
+        # Build FROM clause
+        from_clause = preagg_table
+
+        # Build WHERE clause if filters exist
+        where_clause = ""
+        if filters:
+            # Need to rewrite filters to use pre-agg column names
+            rewritten_filters = []
+            for f in filters:
+                # Replace model_cte. with nothing (pre-agg table doesn't use CTEs)
+                # Also replace model. with nothing
+                rewritten_f = f.replace(f"{model.name}_cte.", "").replace(f"{model.name}.", "")
+                rewritten_filters.append(rewritten_f)
+
+            where_clause = f"\nWHERE {' AND '.join(rewritten_filters)}"
+
+        # Build GROUP BY clause
+        group_by_exprs = []
+        for i in range(1, len(parsed_dims) + 1):
+            group_by_exprs.append(str(i))
+
+        group_by_clause = ""
+        if group_by_exprs:
+            group_by_clause = f"\nGROUP BY {', '.join(group_by_exprs)}"
+
+        # Build ORDER BY clause
+        order_by_clause = ""
+        if order_by:
+            order_clauses = []
+            for field in order_by:
+                if "." in field:
+                    field_name = field.split(".", 1)[1]
+                else:
+                    field_name = field
+                order_clauses.append(field_name)
+            order_by_clause = f"\nORDER BY {', '.join(order_clauses)}"
+
+        # Build LIMIT/OFFSET clause
+        limit_clause = ""
+        if limit:
+            limit_clause = f"\nLIMIT {limit}"
+        if offset:
+            limit_clause += f"\nOFFSET {offset}"
+
+        # Combine into final query
+        query = f"""SELECT
+  {',\n  '.join(select_exprs)}
+FROM {from_clause}{where_clause}{group_by_clause}{order_by_clause}{limit_clause}"""
+
+        return query

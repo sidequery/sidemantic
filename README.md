@@ -21,6 +21,8 @@ A semantic layer with multi-format adapter support.
 - **Conversion funnels**: signup → purchase rate
 
 ### Advanced Features
+- **Pre-aggregations**: Automatic query routing to materialized rollups for 100-10,000x speedups
+- **Predicate pushdown**: Filters automatically pushed into CTEs for 5-10x speedup (always enabled)
 - **Segments**: Reusable named filters with template placeholders
 - **Metric-level filters**: Auto-applied filters for consistent business logic
 - **Jinja2 templating**: Full conditional logic and loops in SQL
@@ -412,11 +414,13 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 - ✅ Native YAML format with import/export
 - ✅ Cube and MetricFlow adapters (import/export)
 - ✅ DuckDB integration
+- ✅ Pre-aggregations with automatic query routing (disabled by default)
+- ✅ Predicate pushdown with SQLGlot parsing (always enabled)
 
 **Future:**
-- Query optimization
-- Pre-aggregations/caching
+- Additional query optimizations (partition pruning, index hints)
 - LookML adapter (requires grammar parser)
+- Pre-aggregation materialization automation
 
 ## Examples
 

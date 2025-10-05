@@ -8,6 +8,7 @@ from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -133,6 +134,13 @@ class CubeAdapter(BaseAdapter):
                     )
                 )
 
+        # Parse pre-aggregations
+        pre_aggregations = []
+        for preagg_def in cube_def.get("pre_aggregations", []):
+            preagg = self._parse_preaggregation(preagg_def, name)
+            if preagg:
+                pre_aggregations.append(preagg)
+
         return Model(
             name=name,
             table=table,
@@ -143,6 +151,7 @@ class CubeAdapter(BaseAdapter):
             dimensions=dimensions,
             metrics=measures,
             segments=segments,
+            pre_aggregations=pre_aggregations,
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -244,6 +253,102 @@ class CubeAdapter(BaseAdapter):
             filters=filters if filters else None,
             description=measure_def.get("description"),
             format=measure_def.get("format"),
+        )
+
+    def _parse_preaggregation(self, preagg_def: dict, cube_name: str) -> PreAggregation | None:
+        """Parse Cube pre-aggregation into Sidemantic pre-aggregation.
+
+        Args:
+            preagg_def: Pre-aggregation definition dictionary
+            cube_name: Name of the parent cube
+
+        Returns:
+            PreAggregation instance or None
+        """
+        name = preagg_def.get("name")
+        if not name:
+            return None
+
+        preagg_type = preagg_def.get("type", "rollup")
+
+        # Extract measures - strip CUBE prefix if present
+        measures = []
+        for measure_ref in preagg_def.get("measures", []):
+            if isinstance(measure_ref, str):
+                # Remove CUBE. or {cube_name}. prefix
+                measure_name = measure_ref.replace("CUBE.", "").replace(f"{cube_name}.", "")
+                measures.append(measure_name)
+
+        # Extract dimensions - strip CUBE prefix if present
+        dimensions = []
+        for dim_ref in preagg_def.get("dimensions", []):
+            if isinstance(dim_ref, str):
+                # Remove CUBE. or {cube_name}. prefix
+                dim_name = dim_ref.replace("CUBE.", "").replace(f"{cube_name}.", "")
+                dimensions.append(dim_name)
+
+        # Parse time dimension
+        time_dimension = preagg_def.get("time_dimension")
+        if time_dimension:
+            # Remove CUBE. prefix if present
+            time_dimension = time_dimension.replace("CUBE.", "").replace(f"{cube_name}.", "")
+
+        # Parse granularity
+        granularity = preagg_def.get("granularity")
+
+        # Parse partition granularity
+        partition_granularity = preagg_def.get("partition_granularity")
+
+        # Parse refresh key
+        refresh_key_def = preagg_def.get("refresh_key")
+        refresh_key = None
+        if refresh_key_def:
+            refresh_key = RefreshKey(
+                every=refresh_key_def.get("every"),
+                sql=refresh_key_def.get("sql"),
+                incremental=refresh_key_def.get("incremental", False),
+                update_window=refresh_key_def.get("update_window"),
+            )
+
+        # Parse scheduled refresh
+        scheduled_refresh = preagg_def.get("scheduled_refresh", True)
+
+        # Parse indexes
+        indexes = []
+        for index_def in preagg_def.get("indexes", []):
+            if isinstance(index_def, dict):
+                index_name = index_def.get("name", f"idx_{len(indexes)}")
+                index_columns = index_def.get("columns", [])
+
+                # Strip CUBE prefix from column names
+                cleaned_columns = [
+                    col.replace("CUBE.", "").replace(f"{cube_name}.", "")
+                    for col in index_columns
+                ]
+
+                indexes.append(Index(
+                    name=index_name,
+                    columns=cleaned_columns,
+                    type=index_def.get("type", "regular"),
+                ))
+
+        # Parse build range
+        build_range_start = preagg_def.get("build_range_start", {}).get("sql")
+        build_range_end = preagg_def.get("build_range_end", {}).get("sql")
+
+        return PreAggregation(
+            name=name,
+            type=preagg_type,
+            measures=measures if measures else None,
+            dimensions=dimensions if dimensions else None,
+            time_dimension=time_dimension,
+            granularity=granularity,
+            partition_granularity=partition_granularity,
+            refresh_key=refresh_key,
+            scheduled_refresh=scheduled_refresh,
+            indexes=indexes if indexes else None,
+            build_range_start=build_range_start,
+            build_range_end=build_range_end,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:

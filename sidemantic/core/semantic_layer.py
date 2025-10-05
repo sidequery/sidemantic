@@ -16,17 +16,19 @@ class SemanticLayer:
     Provides a high-level API for defining models and querying data.
     """
 
-    def __init__(self, connection: str = "duckdb:///:memory:", dialect: str = "duckdb", auto_register: bool = False):
+    def __init__(self, connection: str = "duckdb:///:memory:", dialect: str = "duckdb", auto_register: bool = False, use_preaggregations: bool = False):
         """Initialize semantic layer.
 
         Args:
             connection: Database connection string (default: in-memory DuckDB)
             dialect: SQL dialect for query generation (default: duckdb)
             auto_register: Set as current layer for auto-registration (default: True)
+            use_preaggregations: Enable automatic pre-aggregation routing (default: False)
         """
         self.graph = SemanticGraph()
         self.dialect = dialect
         self.connection_string = connection
+        self.use_preaggregations = use_preaggregations
 
         # Initialize DuckDB connection
         if connection.startswith("duckdb://"):
@@ -98,6 +100,7 @@ class SemanticLayer:
         order_by: list[str] | None = None,
         limit: int | None = None,
         ungrouped: bool = False,
+        use_preaggregations: bool | None = None,
     ):
         """Execute a query against the semantic layer.
 
@@ -109,12 +112,13 @@ class SemanticLayer:
             order_by: List of fields to order by
             limit: Maximum number of rows to return
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
+            use_preaggregations: Override pre-aggregation routing setting for this query
 
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
         """
         sql = self.compile(
-            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, ungrouped=ungrouped
+            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, ungrouped=ungrouped, use_preaggregations=use_preaggregations
         )
 
         return self.conn.execute(sql)
@@ -131,6 +135,7 @@ class SemanticLayer:
         dialect: str | None = None,
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
+        use_preaggregations: bool | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -144,6 +149,7 @@ class SemanticLayer:
             offset: Number of rows to skip
             dialect: SQL dialect override (defaults to layer's dialect)
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
+            use_preaggregations: Override pre-aggregation routing setting for this query
 
         Returns:
             SQL query string
@@ -163,10 +169,13 @@ class SemanticLayer:
                 "Query validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
             )
 
+        # Determine if pre-aggregations should be used
+        use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+
         generator = SQLGenerator(self.graph, dialect=dialect or self.dialect)
 
         return generator.generate(
-            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, offset=offset, ungrouped=ungrouped, parameters=parameters
+            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, offset=offset, ungrouped=ungrouped, parameters=parameters, use_preaggregations=use_preaggs
         )
 
     def get_model(self, name: str) -> Model:

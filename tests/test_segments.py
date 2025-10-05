@@ -33,8 +33,8 @@ def test_segment_basic():
     # Test segment resolution
     sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], segments=["orders.completed_orders"])
 
-    # Should contain the segment filter
-    assert "orders_cte.status = 'completed'" in sql
+    # Should contain the segment filter (pushed down into CTE)
+    assert "status = 'completed'" in sql
     assert "WHERE" in sql
 
 
@@ -63,9 +63,9 @@ def test_multiple_segments():
 
     sql = layer.compile(metrics=["orders.revenue"], segments=["orders.completed", "orders.high_value"])
 
-    # Should contain both segment filters
-    assert "orders_cte.status = 'completed'" in sql
-    assert "orders_cte.amount > 100" in sql
+    # Should contain both segment filters (pushed down into CTE)
+    assert "status = 'completed'" in sql
+    assert "amount > 100" in sql
     assert "WHERE" in sql
 
 
@@ -97,7 +97,7 @@ def test_segment_with_filters():
         filters=["orders_cte.region = 'US'"]
     )
 
-    # Should contain both segment and regular filter
-    assert "orders_cte.status = 'completed'" in sql
-    assert "orders_cte.region = 'US'" in sql
+    # Should contain both segment and regular filter (both pushed down into CTE)
+    assert "status = 'completed'" in sql
+    assert "region = 'US'" in sql
     assert "WHERE" in sql

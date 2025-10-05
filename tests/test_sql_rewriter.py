@@ -229,7 +229,8 @@ def test_rewriter_directly():
     # Should contain semantic layer SQL structure
     assert "WITH orders_cte AS" in rewritten
     assert "SUM(orders_cte.revenue_raw) AS revenue" in rewritten
-    assert "orders_cte.status = 'completed'" in rewritten
+    # Filter gets pushed down into CTE
+    assert "status = 'completed'" in rewritten
 
 
 def test_dimension_only_query(semantic_layer):

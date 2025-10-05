@@ -1,0 +1,709 @@
+---
+title: "Pre-Aggregations"
+---
+
+Pre-aggregations are materialized rollup tables that store pre-computed aggregations for significant query performance improvements. The query engine can automatically route queries to matching pre-aggregations instead of scanning base tables.
+
+::: {.callout-important}
+## Routing Disabled by Default
+Pre-aggregation routing is **disabled by default** and must be explicitly enabled. See [Enabling Routing](#enabling-routing) for details.
+:::
+
+## Why Use Pre-Aggregations?
+
+### Performance Benefits
+
+Pre-aggregations provide dramatic performance improvements by reducing the amount of data scanned:
+
+**Example:** E-commerce orders table with 100M rows
+
+```yaml
+# Without pre-aggregation: scan 100M rows
+SELECT status, SUM(amount)
+FROM orders
+GROUP BY status
+
+# With daily pre-aggregation: scan ~36K rows (10 statuses × 365 days × 10 years)
+SELECT status, SUM(revenue_raw)
+FROM orders_preagg_daily
+GROUP BY status
+```
+
+**Performance gain:** ~2,777x fewer rows scanned
+
+### When to Use Pre-Aggregations
+
+Use pre-aggregations when:
+- Base tables are large (millions+ rows)
+- Queries aggregate data frequently
+- Query patterns are predictable (same dimensions/metrics)
+- Real-time data freshness isn't critical (can refresh periodically)
+
+**Common use cases:**
+- Dashboard queries that run frequently
+- Time-series analytics (daily/monthly trends)
+- High-cardinality dimension reductions
+- Cross-model aggregations
+
+## Defining Pre-Aggregations
+
+Pre-aggregations are defined in the model's YAML configuration:
+
+### Basic Example
+
+```yaml
+models:
+  - name: orders
+    table: public.orders
+    primary_key: order_id
+
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+      - name: region
+        type: categorical
+        sql: region
+      - name: created_at
+        type: time
+        sql: created_at
+        granularity: day
+
+    metrics:
+      - name: count
+        agg: count
+      - name: revenue
+        agg: sum
+        sql: amount
+
+    pre_aggregations:
+      - name: daily_summary
+        measures: [count, revenue]
+        dimensions: [status, region]
+        time_dimension: created_at
+        granularity: day
+```
+
+This creates a pre-aggregation that:
+- Groups by `status` and `region` dimensions
+- Pre-computes `count` and `revenue` metrics
+- Aggregates to daily granularity on `created_at`
+
+### Configuration Options
+
+#### Required Fields
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `name` | Unique pre-aggregation identifier | `daily_summary` |
+| `measures` | List of metrics to pre-compute | `[count, revenue]` |
+| `dimensions` | List of dimensions to group by | `[status, region]` |
+
+#### Optional Fields
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `time_dimension` | Time-based dimension for temporal grouping | `null` |
+| `granularity` | Time aggregation level (`hour`, `day`, `week`, `month`, `quarter`, `year`) | `null` |
+| `partition_granularity` | Partition size for incremental refresh | `null` |
+| `refresh_key` | Refresh strategy configuration | `null` |
+| `scheduled_refresh` | Enable scheduled refresh | `true` |
+| `indexes` | Index definitions for performance | `[]` |
+
+### Advanced Configuration
+
+#### Partitioning
+
+Split large pre-aggregations into partitions for faster incremental refresh:
+
+```yaml
+pre_aggregations:
+  - name: monthly_partitioned
+    measures: [count, revenue]
+    dimensions: [status, region]
+    time_dimension: created_at
+    granularity: day
+    partition_granularity: month  # Partition by month
+    refresh:
+      every: "1 hour"
+      incremental: true
+      update_window: "7 day"  # Only refresh last 7 days
+```
+
+**Benefits:**
+- Only refresh changed partitions
+- Faster incremental updates
+- Reduced rebuild time
+
+#### Refresh Strategies
+
+Configure how pre-aggregations refresh:
+
+##### Time-Based Refresh
+
+```yaml
+refresh:
+  every: "1 hour"  # or "30 minutes", "1 day", etc.
+```
+
+##### SQL-Triggered Refresh
+
+Refresh when source data changes:
+
+```yaml
+refresh:
+  sql: "SELECT MAX(updated_at) FROM orders"
+```
+
+##### Incremental Refresh
+
+Only update changed data:
+
+```yaml
+refresh:
+  every: "1 hour"
+  incremental: true
+  update_window: "7 day"  # Refresh last 7 days of partitions
+```
+
+#### Indexes
+
+Add indexes for query performance:
+
+```yaml
+pre_aggregations:
+  - name: daily_summary
+    measures: [count, revenue]
+    dimensions: [status, region, customer_id]
+    time_dimension: created_at
+    granularity: day
+    indexes:
+      - name: status_idx
+        columns: [status]
+      - name: composite_idx
+        columns: [status, region, customer_id]
+```
+
+**Index ordering:** Put high-selectivity columns first.
+
+## Enabling Routing
+
+::: {.callout-warning}
+Pre-aggregation routing is **disabled by default**. Queries will use base tables unless routing is explicitly enabled.
+:::
+
+### Global Enable
+
+Enable for all queries in the semantic layer:
+
+```python
+from sidemantic import SemanticLayer
+
+# Enable pre-aggregation routing globally
+sl = SemanticLayer(use_preaggregations=True)
+```
+
+### Per-Query Override
+
+Override the global setting for specific queries:
+
+```python
+# Disabled globally, enable for one query
+sl = SemanticLayer(use_preaggregations=False)
+
+sql = sl.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    use_preaggregations=True  # Enable for this query only
+)
+```
+
+```python
+# Enabled globally, disable for one query
+sl = SemanticLayer(use_preaggregations=True)
+
+sql = sl.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.customer_id"],
+    use_preaggregations=False  # Disable for this query
+)
+```
+
+### Why Disabled by Default?
+
+1. **Pre-aggregation tables must exist** - Routing fails if materialized tables aren't created in your database
+2. **Safer default** - Prevents query errors when pre-aggs aren't materialized
+3. **Explicit opt-in** - Users control when optimization is active
+
+## Query Matching
+
+The query engine automatically finds the best matching pre-aggregation based on:
+
+### Matching Rules
+
+1. **Dimension Subset**: Query dimensions must be a subset of pre-aggregation dimensions
+2. **Measure Compatibility**: All query metrics must be derivable from pre-aggregated measures
+3. **Granularity Compatibility**: Query time granularity must be coarser or equal to pre-aggregation granularity
+4. **Best Match Selection**: Chooses the smallest/most specific matching pre-aggregation
+
+### Matching Examples
+
+Given this pre-aggregation:
+
+```yaml
+pre_aggregations:
+  - name: daily_rollup
+    measures: [count, revenue]
+    dimensions: [status, region, customer_id]
+    time_dimension: created_at
+    granularity: day
+```
+
+#### Queries That Match ✓
+
+```python
+# Subset of dimensions (just status)
+sl.query(metrics=["orders.revenue"], dimensions=["orders.status"])
+# → Uses daily_rollup
+
+# All dimensions present
+sl.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status", "orders.region", "orders.customer_id"]
+)
+# → Uses daily_rollup
+
+# Coarser granularity (month > day) - rolls up
+sl.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.created_at__month"]
+)
+# → Uses daily_rollup, converts day → month
+
+# With filters - applied on top
+sl.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    filters=["orders.region = 'US'"]
+)
+# → Uses daily_rollup with WHERE region = 'US'
+```
+
+#### Queries That Don't Match ✗
+
+```python
+# Dimension not in pre-agg
+sl.query(metrics=["orders.revenue"], dimensions=["orders.product_id"])
+# → Falls back to base table
+
+# Finer granularity (hour < day) - can't drill down
+sl.query(metrics=["orders.revenue"], dimensions=["orders.created_at__hour"])
+# → Falls back to base table
+
+# Metric not in pre-agg
+sl.query(metrics=["orders.profit"], dimensions=["orders.status"])
+# → Falls back to base table
+```
+
+### Measure Derivability
+
+Different aggregation types have different derivability rules:
+
+| Query Metric | Pre-Agg Requires | Derivable? | Notes |
+|-------------|------------------|------------|-------|
+| `SUM` | `SUM` | ✓ Yes | Direct re-aggregation |
+| `COUNT` | `COUNT` | ✓ Yes | Sum counts from partitions |
+| `AVG` | `SUM` + `COUNT` | ✓ Yes | `SUM(sum_raw) / SUM(count_raw)` |
+| `MIN`/`MAX` | `MIN`/`MAX` | ⚠️ Limited | Only at same granularity |
+| `COUNT_DISTINCT` | `COUNT_DISTINCT` | ✗ No | Can't re-aggregate distinct counts |
+
+## Generated Pre-Aggregation Tables
+
+When materialized, pre-aggregations are stored as physical tables:
+
+### Table Naming
+
+Format: `{model_name}_preagg_{preagg_name}`
+
+Example:
+```
+orders_preagg_daily_rollup
+```
+
+### Table Structure
+
+For this pre-aggregation:
+
+```yaml
+pre_aggregations:
+  - name: daily_rollup
+    measures: [count, revenue]
+    dimensions: [status]
+    time_dimension: created_at
+    granularity: day
+```
+
+Generated table schema:
+
+```sql
+CREATE TABLE orders_preagg_daily_rollup AS
+SELECT
+  DATE(created_at) as created_at_day,
+  status,
+  COUNT(*) as count_raw,
+  SUM(amount) as revenue_raw
+FROM orders
+GROUP BY 1, 2
+```
+
+**Column naming convention:**
+- Time dimensions: `{dimension_name}_{granularity}` (e.g., `created_at_day`)
+- Regular dimensions: Same name as source
+- Measures: `{metric_name}_raw` (e.g., `revenue_raw`)
+
+### Generated Queries
+
+When routing to pre-aggregation:
+
+```python
+# User query
+sl.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    use_preaggregations=True
+)
+
+# Generated SQL
+SELECT
+  status,
+  SUM(revenue_raw) as revenue
+FROM orders_preagg_daily_rollup
+GROUP BY 1
+```
+
+## Best Practices
+
+### 1. Start with High-Impact Rollups
+
+Define pre-aggregations for your most frequent query patterns:
+
+```yaml
+# Dashboard query: revenue by region, daily
+pre_aggregations:
+  - name: dashboard_main
+    measures: [count, revenue, avg_order_value]
+    dimensions: [region, status]
+    time_dimension: created_at
+    granularity: day
+```
+
+### 2. Layer Pre-Aggregations by Granularity
+
+Create multiple levels for different use cases:
+
+```yaml
+pre_aggregations:
+  # High-level summary (fast, small)
+  - name: monthly_summary
+    measures: [count, revenue]
+    dimensions: [region]
+    time_dimension: created_at
+    granularity: month
+
+  # Mid-level detail
+  - name: daily_by_region
+    measures: [count, revenue]
+    dimensions: [region, status]
+    time_dimension: created_at
+    granularity: day
+
+  # Full detail (large, comprehensive)
+  - name: daily_full
+    measures: [count, revenue, avg_order_value]
+    dimensions: [region, status, customer_segment, product_category]
+    time_dimension: created_at
+    granularity: day
+    partition_granularity: month
+    refresh:
+      every: "1 hour"
+      incremental: true
+```
+
+### 3. Balance Size vs. Coverage
+
+More dimensions = larger rollup but matches more queries
+
+**Strategy:**
+- Include dimensions used in 80% of queries
+- Avoid very high-cardinality dimensions (like customer_id) unless necessary
+- Use partitioning for large pre-aggregations
+
+### 4. Use Incremental Refresh for Large Tables
+
+```yaml
+pre_aggregations:
+  - name: large_rollup
+    measures: [count, revenue]
+    dimensions: [status, region, product_id]
+    time_dimension: created_at
+    granularity: day
+    partition_granularity: month  # Partition by month
+    refresh:
+      every: "1 hour"
+      incremental: true
+      update_window: "30 day"  # Only refresh last 30 days
+```
+
+### 5. Add Indexes for Filtered Queries
+
+If queries frequently filter by specific dimensions, add indexes:
+
+```yaml
+pre_aggregations:
+  - name: daily_rollup
+    measures: [revenue]
+    dimensions: [status, region, customer_id]
+    time_dimension: created_at
+    granularity: day
+    indexes:
+      - name: region_idx
+        columns: [region]  # Fast filtering by region
+      - name: composite_idx
+        columns: [region, status]  # Fast filtering by both
+```
+
+## Limitations
+
+### Single-Model Queries Only
+
+Pre-aggregations only work for queries against a single model:
+
+```python
+# ✓ Works - single model
+sl.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"]
+)
+
+# ✗ Doesn't work - joins multiple models
+sl.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status", "customers.segment"]
+)
+# Falls back to base tables
+```
+
+### No Support for Window Functions
+
+Queries using cumulative or time-comparison metrics don't use pre-aggregations:
+
+```python
+# ✗ Window functions bypass pre-aggregations
+sl.query(
+    metrics=["orders.cumulative_revenue"],  # Uses window functions
+    dimensions=["orders.created_at__day"]
+)
+```
+
+### COUNT_DISTINCT Not Derivable
+
+Pre-aggregated COUNT_DISTINCT values can't be re-aggregated:
+
+```yaml
+# This won't work well
+pre_aggregations:
+  - name: rollup
+    measures: [unique_customers]  # COUNT_DISTINCT
+    dimensions: [region]
+```
+
+**Alternative:** Use HyperLogLog approximations or store exact values.
+
+## Materialization
+
+::: {.callout-note}
+Sidemantic defines pre-aggregations but **does not automatically materialize** them. You must create the physical tables in your database.
+:::
+
+### Manual Materialization
+
+Generate the table creation SQL:
+
+```python
+from sidemantic import SemanticLayer
+
+sl = SemanticLayer()
+# ... add models with pre_aggregations ...
+
+# Get pre-aggregation
+model = sl.get_model("orders")
+preagg = model.get_pre_aggregation("daily_rollup")
+table_name = preagg.get_table_name("orders")
+# Returns: "orders_preagg_daily_rollup"
+
+# Generate materialization SQL
+sql = f"""
+CREATE TABLE {table_name} AS
+SELECT
+  DATE({preagg.time_dimension}) as {preagg.time_dimension}_{preagg.granularity},
+  {', '.join(preagg.dimensions)},
+  COUNT(*) as count_raw,
+  SUM(amount) as revenue_raw
+FROM orders
+GROUP BY 1, {', '.join([str(i+2) for i in range(len(preagg.dimensions))])}
+"""
+
+# Execute in your database
+db.execute(sql)
+```
+
+### Scheduled Refresh
+
+Use your database's scheduling tools:
+
+**DuckDB:**
+```sql
+-- Manual refresh
+CREATE OR REPLACE TABLE orders_preagg_daily_rollup AS
+SELECT ... FROM orders GROUP BY ...
+```
+
+**Snowflake:**
+```sql
+CREATE DYNAMIC TABLE orders_preagg_daily_rollup
+TARGET_LAG = '1 hour'
+AS
+SELECT ... FROM orders GROUP BY ...
+```
+
+**Postgres (with cron):**
+```sql
+-- Create materialized view
+CREATE MATERIALIZED VIEW orders_preagg_daily_rollup AS
+SELECT ... FROM orders GROUP BY ...;
+
+-- Schedule refresh
+SELECT cron.schedule('refresh-orders-rollup', '0 * * * *',
+  $$REFRESH MATERIALIZED VIEW orders_preagg_daily_rollup$$
+);
+```
+
+## Cube Format Import
+
+Sidemantic can import pre-aggregations from Cube.js files:
+
+```yaml
+# Cube format
+cubes:
+  - name: Orders
+    sql_table: orders
+
+    dimensions:
+      - name: status
+        sql: status
+        type: string
+      - name: createdAt
+        sql: created_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+      - name: revenue
+        sql: amount
+        type: sum
+
+    pre_aggregations:
+      - name: dailyRollup
+        type: rollup
+        measures:
+          - CUBE.count
+          - CUBE.revenue
+        dimensions:
+          - CUBE.status
+        time_dimension: CUBE.createdAt
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 hour
+          incremental: true
+          update_window: 7 day
+```
+
+Import with CubeAdapter:
+
+```python
+from sidemantic.adapters.cube import CubeAdapter
+
+adapter = CubeAdapter()
+graph = adapter.parse("path/to/cube/files")
+
+# Pre-aggregations are automatically imported
+model = graph.get_model("Orders")
+print(model.pre_aggregations)
+```
+
+## Query Optimizations
+
+In addition to pre-aggregations, Sidemantic includes several automatic query optimizations:
+
+### Predicate Pushdown
+
+Filters are automatically pushed down into CTEs for better performance:
+
+```python
+# Query with filter
+sl.query(
+    metrics=['orders.revenue'],
+    dimensions=['orders.status'],
+    filters=['orders.region = 'US'']
+)
+```
+
+**Generated SQL:**
+```sql
+WITH orders_cte AS (
+  SELECT ...
+  FROM orders
+  WHERE region = 'US'  -- Filter pushed into CTE!
+)
+SELECT
+  status,
+  SUM(revenue_raw) as revenue
+FROM orders_cte
+GROUP BY 1
+```
+
+**Benefits:**
+- Reduces intermediate result size
+- Enables partition pruning at source
+- Faster joins with smaller CTEs
+- 5-10x speedup on filtered queries
+
+**How it works:**
+- Sidemantic parses filters with SQLGlot
+- Filters referencing one model get pushed into that model's CTE
+- Filters referencing multiple models stay in main query
+- Metric-level filters stay in main query (applied after aggregation)
+
+### Symmetric Aggregates
+
+Prevents double-counting when multiple one-to-many joins create fan-out. See [query optimization docs](#) for details.
+
+## Summary
+
+**Key Takeaways:**
+
+1. **Pre-aggregations provide 100-10,000x speedups** for large datasets
+2. **Disabled by default** - must enable with `use_preaggregations=True`
+3. **Automatic routing** - queries transparently use matching rollups
+4. **Define in YAML** - declarative configuration alongside models
+5. **You manage materialization** - Sidemantic routes, you build tables
+6. **Best for predictable patterns** - dashboard queries, time-series analytics
+7. **Predicate pushdown** - filters automatically pushed into CTEs (always enabled)
+
+**Next steps:**
+- Define pre-aggregations for your busiest queries
+- Enable routing: `SemanticLayer(use_preaggregations=True)`
+- Materialize tables in your database
+- Monitor performance improvements

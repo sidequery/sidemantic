@@ -112,8 +112,9 @@ def test_metric_filters_combined_with_query_filters():
     )
 
     # Should contain both metric filter and query filter
-    assert "orders_cte.status = 'completed'" in sql
-    assert "orders_cte.region = 'US'" in sql
+    # Note: query filter gets pushed down into CTE, metric filter stays in main query
+    assert "orders_cte.status = 'completed'" in sql  # Metric-level filter in main query
+    assert "region = 'US'" in sql  # Query filter pushed down into CTE
 
 
 def test_mixed_filtered_and_unfiltered_metrics():

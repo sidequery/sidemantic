@@ -108,6 +108,13 @@ GROUP BY 1
 - ✅ **Native YAML format**: Complete Sidemantic YAML schema with import/export (see `docs/YAML_FORMAT.md`)
 - ✅ **Export adapters**: Full round-trip support for Sidemantic ↔ Cube ↔ MetricFlow
 
+### Query Optimization
+- ✅ **Pre-aggregations**: Automatic query routing to materialized rollups with intelligent matching (disabled by default)
+- ✅ **Predicate pushdown**: Filters automatically pushed into CTEs using SQLGlot parsing (always enabled, 5-10x speedup)
+- ✅ **Symmetric aggregates**: Fan-out prevention for multiple one-to-many joins
+- ✅ **CTE-based queries**: Optimized query structure with selective column projection
+- ✅ **Automatic join discovery**: BFS graph traversal finds optimal join paths
+
 ### Metadata & Governance
 - ✅ **Display formatting**: `format` and `value_format_name` on metrics and dimensions
 - ✅ **Drill fields**: Define drill-down paths for BI tool integration
@@ -116,7 +123,7 @@ GROUP BY 1
 - ✅ **Comprehensive metadata**: Labels, descriptions on all objects
 
 ### Test Coverage
-- ✅ **202 passing tests** across all features with comprehensive coverage
+- ✅ **284 passing tests** across all features with comprehensive coverage
 - ✅ Real DuckDB integration tests
 - ✅ Round-trip adapter tests (Sidemantic → Cube/MetricFlow → Sidemantic)
 - ✅ Multi-hop join verification
@@ -127,11 +134,13 @@ GROUP BY 1
 - ✅ Relative date parsing tests
 - ✅ Ungrouped query tests
 - ✅ Segment and metric-level filter tests
+- ✅ Pre-aggregation matching and routing tests (17 tests)
+- ✅ Predicate pushdown tests using SQLGlot verification (6 tests)
 
 ## 🚧 Future Work
 
-1. **Query optimization**: Add query plan optimization and pushdown strategies
-2. **Pre-aggregations**: Implement caching layer similar to Cube's rollups
+1. **Additional query optimizations**: Partition pruning, index hints, join order optimization
+2. **Pre-aggregation automation**: Automatic materialization and refresh scheduling
 3. **LookML adapter**: Requires full grammar parser for complete import support
 
 ## 📁 File Structure

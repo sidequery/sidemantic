@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
+from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 
@@ -36,6 +37,10 @@ class Model(BaseModel):
     dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
     metrics: list[Metric] = Field(default_factory=list, description="Measure definitions")
     segments: list[Segment] = Field(default_factory=list, description="Segment (named filter) definitions")
+    pre_aggregations: list[PreAggregation] = Field(
+        default_factory=list,
+        description="Pre-aggregation definitions for query optimization"
+    )
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -66,6 +71,13 @@ class Model(BaseModel):
         for segment in self.segments:
             if segment.name == name:
                 return segment
+        return None
+
+    def get_pre_aggregation(self, name: str) -> PreAggregation | None:
+        """Get pre-aggregation by name."""
+        for preagg in self.pre_aggregations:
+            if preagg.name == name:
+                return preagg
         return None
 
     def get_hierarchy_path(self, dimension_name: str) -> list[str]:

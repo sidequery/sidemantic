@@ -90,17 +90,20 @@ class SQLGenerator:
 
         # Interpolate parameters into filters if provided
         from sidemantic.core.parameter import ParameterSet
+
         param_set = ParameterSet(self.graph.parameters, parameters)
         filters = [param_set.interpolate(f) for f in filters]
 
         # Process relative date expressions in filters
         from sidemantic.core.relative_date import RelativeDateRange
+
         processed_filters = []
         for f in filters:
             # Check if filter contains a relative date expression
             # Pattern: column_name operator 'relative_date_expr'
             # e.g., "created_at >= 'last 7 days'"
             import re
+
             match = re.match(r"^(.+?)\s*(>=|<=|>|<|=)\s*['\"](.+?)['\"]$", f)
             if match:
                 column, operator, value = match.groups()
@@ -147,7 +150,9 @@ class SQLGenerator:
         needs_window_functions = any(metric_needs_window(m) for m in metrics)
 
         if needs_window_functions:
-            return self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset)
+            return self._generate_with_window_functions(
+                metrics, dimensions, filters, order_by, limit, offset
+            )
 
         # Parse dimension references and extract granularities
         parsed_dims = self._parse_dimension_refs(dimensions)
@@ -178,7 +183,7 @@ class SQLGenerator:
         # Find all intermediate models needed for joins
         all_models = set(model_names)
         for i, model_a in enumerate(list(model_names)):
-            for model_b in list(model_names)[i+1:]:
+            for model_b in list(model_names)[i + 1 :]:
                 # Find join path and add intermediate models
                 try:
                     join_path = self.graph.find_relationship_path(model_a, model_b)
@@ -198,7 +203,9 @@ class SQLGenerator:
         cte_sqls = []
         for model_name in all_models:
             model_filters = pushdown_filters.get(model_name, [])
-            cte_sql = self._build_model_cte(model_name, parsed_dims, metrics, model_filters if model_filters else None)
+            cte_sql = self._build_model_cte(
+                model_name, parsed_dims, metrics, model_filters if model_filters else None
+            )
             cte_sqls.append(cte_sql)
 
         # Build main SELECT using builder API (only with filters that couldn't be pushed down)
@@ -306,7 +313,9 @@ class SQLGenerator:
                                 collect_models_from_metric(metric.numerator)
                             if metric.denominator:
                                 collect_models_from_metric(metric.denominator)
-                        elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+                        elif metric.type == "derived" or (
+                            not metric.type and not metric.agg and metric.sql
+                        ):
                             # Derived or untyped metrics with sql - auto-detect dependencies
                             for ref_metric in metric.get_dependencies(self.graph):
                                 collect_models_from_metric(ref_metric)
@@ -374,7 +383,11 @@ class SQLGenerator:
         return pushdown_filters, main_query_filters
 
     def _build_model_cte(
-        self, model_name: str, dimensions: list[tuple[str, str | None]], metrics: list[str], filters: list[str] | None = None
+        self,
+        model_name: str,
+        dimensions: list[tuple[str, str | None]],
+        metrics: list[str],
+        filters: list[str] | None = None,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -411,7 +424,10 @@ class SQLGenerator:
         # Check if other models have has_many/has_one pointing to this model
         for other_model_name, other_model in self.graph.models.items():
             for other_join in other_model.relationships:
-                if other_join.name == model_name and other_join.type in ("one_to_one", "one_to_many"):
+                if other_join.name == model_name and other_join.type in (
+                    "one_to_one",
+                    "one_to_many",
+                ):
                     # Other model expects this model to have a foreign key
                     # For has_many/has_one, foreign_key is the FK column in THIS model
                     fk = other_join.foreign_key or other_join.sql_expr
@@ -593,7 +609,9 @@ class SQLGenerator:
                 if measure:
                     if ungrouped:
                         # For ungrouped queries, select raw column without aggregation
-                        select_exprs.append(f"{model_name}_cte.{measure_name}_raw AS {measure_name}")
+                        select_exprs.append(
+                            f"{model_name}_cte.{measure_name}_raw AS {measure_name}"
+                        )
                     else:
                         # Check if this model needs symmetric aggregates
                         if symmetric_agg_needed.get(model_name, False):
@@ -772,7 +790,9 @@ class SQLGenerator:
 
         return query.sql(dialect=self.dialect, pretty=True)
 
-    def _calculate_lag_offset(self, comparison_type: str | None, time_granularity: str | None) -> int:
+    def _calculate_lag_offset(
+        self, comparison_type: str | None, time_granularity: str | None
+    ) -> int:
         """Calculate LAG offset based on comparison type and time dimension granularity.
 
         Args:
@@ -965,8 +985,13 @@ class SQLGenerator:
         # conversion_events: filter for conversion_event
         # Join on entity where conversion is within window
 
-        window_parts = metric.conversion_window.split() if metric.conversion_window else ["7", "days"]
-        window_num, window_unit = window_parts[0], window_parts[1] if len(window_parts) > 1 else "days"
+        window_parts = (
+            metric.conversion_window.split() if metric.conversion_window else ["7", "days"]
+        )
+        window_num, window_unit = (
+            window_parts[0],
+            window_parts[1] if len(window_parts) > 1 else "days",
+        )
 
         # Find dimension that represents event type
         event_type_dim = None
@@ -1074,7 +1099,9 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
 
         # Handle conversion metrics separately - they need a completely different pattern
         if conversion_metrics:
-            return self._generate_conversion_query(conversion_metrics[0], dimensions, filters, order_by, limit)
+            return self._generate_conversion_query(
+                conversion_metrics[0], dimensions, filters, order_by, limit
+            )
 
         # Build inner query with base aggregations
         # Dedupe base_metrics to avoid duplicate column names
@@ -1259,7 +1286,9 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
 
                 # Add LAG for base metric
-                lag_selects.append(f"LAG(base.{base_alias}, {lag_offset}) OVER (ORDER BY {time_dim}) AS {m}_prev_value")
+                lag_selects.append(
+                    f"LAG(base.{base_alias}, {lag_offset}) OVER (ORDER BY {time_dim}) AS {m}_prev_value"
+                )
 
             # Add LAG expressions for each offset ratio metric
             for m in offset_ratio_metrics:
@@ -1286,10 +1315,16 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                     raise ValueError(f"Offset ratio metric {m} requires a time dimension")
 
                 # Get denominator alias
-                denom_alias = metric.denominator.split(".")[1] if "." in metric.denominator else metric.denominator
+                denom_alias = (
+                    metric.denominator.split(".")[1]
+                    if "." in metric.denominator
+                    else metric.denominator
+                )
 
                 # Add LAG for denominator - reference base.denom_alias since it's from inner query
-                lag_selects.append(f"LAG(base.{denom_alias}) OVER (ORDER BY {time_dim}) AS {m}_prev_denom")
+                lag_selects.append(
+                    f"LAG(base.{denom_alias}) OVER (ORDER BY {time_dim}) AS {m}_prev_denom"
+                )
 
             # Build intermediate CTE - inner_query already has all the columns we need
             # We need to add "base." prefix since we're wrapping inner_query in a FROM (inner_query) AS base
@@ -1334,7 +1369,9 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 if not metric:
                     continue
 
-                num_alias = metric.numerator.split(".")[1] if "." in metric.numerator else metric.numerator
+                num_alias = (
+                    metric.numerator.split(".")[1] if "." in metric.numerator else metric.numerator
+                )
 
                 # Calculate ratio using the lagged value
                 offset_expr = f"{num_alias} / NULLIF({m}_prev_denom, 0) AS {m}"
@@ -1344,7 +1381,9 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             outer_query = f"{lag_cte_sql}\nSELECT\n  {',\n  '.join(final_selects)}\nFROM lag_cte"
         else:
             # Build outer query without LAG CTE
-            outer_query = f"SELECT\n  {',\n  '.join(select_exprs)}\nFROM (\n{inner_query}\n) AS base"
+            outer_query = (
+                f"SELECT\n  {',\n  '.join(select_exprs)}\nFROM (\n{inner_query}\n) AS base"
+            )
 
         # Add ORDER BY if specified
         if order_by:
@@ -1521,7 +1560,9 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 # AVG = SUM(sum_raw) / SUM(count_raw)
                 sum_col = f"{metric_name}_raw"
                 count_col = "count_raw"
-                select_exprs.append(f"SUM({sum_col}) / NULLIF(SUM({count_col}), 0) as {metric_name}")
+                select_exprs.append(
+                    f"SUM({sum_col}) / NULLIF(SUM({count_col}), 0) as {metric_name}"
+                )
             elif metric.agg in ["min", "max"]:
                 select_exprs.append(f"{metric.agg.upper()}({raw_col}) as {metric_name}")
             else:
@@ -1574,7 +1615,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
 
         # Combine into final query
         query = f"""SELECT
-  {',\n  '.join(select_exprs)}
+  {",\n  ".join(select_exprs)}
 FROM {from_clause}{where_clause}{group_by_clause}{order_by_clause}{limit_clause}"""
 
         return query

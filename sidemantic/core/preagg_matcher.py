@@ -1,11 +1,8 @@
 """Pre-aggregation query matching logic."""
 
-from typing import Literal
-
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import PreAggregation
-
 
 # Time granularity hierarchy (coarser to finer)
 GRANULARITY_HIERARCHY = {
@@ -127,16 +124,12 @@ class PreAggregationMatcher:
         # Query granularity must be >= pre-agg granularity
         # (can roll up from day→month, but not month→day)
         if query_granularity and preagg.granularity:
-            if not self._is_granularity_compatible(
-                query_granularity, preagg.granularity
-            ):
+            if not self._is_granularity_compatible(query_granularity, preagg.granularity):
                 return False
 
         return True
 
-    def _is_measure_derivable(
-        self, query_metric: Metric, preagg: PreAggregation
-    ) -> bool:
+    def _is_measure_derivable(self, query_metric: Metric, preagg: PreAggregation) -> bool:
         """Check if a metric can be derived from pre-aggregation measures.
 
         Args:

@@ -30,29 +30,25 @@ def generate_yaml_schema() -> dict:
         "description": "Schema for Sidemantic semantic layer YAML configuration",
         "type": "object",
         "properties": {
-            "models": {
-                "type": "array",
-                "description": "Model definitions",
-                "items": model_schema
-            },
+            "models": {"type": "array", "description": "Model definitions", "items": model_schema},
             "metrics": {
                 "type": "array",
                 "description": "Top-level metric definitions (optional - can also define in models)",
-                "items": metric_schema
+                "items": metric_schema,
             },
             "parameters": {
                 "type": "array",
                 "description": "Parameter definitions for dynamic queries",
-                "items": parameter_schema
-            }
+                "items": parameter_schema,
+            },
         },
         "required": ["models"],
         "$defs": {
             "Dimension": dimension_schema,
             "Metric": metric_schema,
             "Relationship": relationship_schema,
-            "Parameter": parameter_schema
-        }
+            "Parameter": parameter_schema,
+        },
     }
 
     return schema
@@ -75,7 +71,7 @@ def export_schema(output_path: str | Path = "sidemantic-schema.json"):
         json.dump(schema, f, indent=2)
 
     print(f"✓ JSON Schema exported to: {output_path}")
-    print(f"\nAdd this to the top of your YAML files:")
+    print("\nAdd this to the top of your YAML files:")
     print(f"# yaml-language-server: $schema=./{output_path.name}")
 
 

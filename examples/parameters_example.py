@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Example demonstrating parameters (dynamic user input)."""
 
-from sidemantic.core.dimension import Dimension
 from sidemantic.core.entity import Entity
 from sidemantic.core.measure import Measure
+
+from sidemantic.core.dimension import Dimension
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -18,21 +19,18 @@ status_param = Parameter(
     type="string",
     default_value="completed",
     allowed_values=["pending", "completed", "cancelled"],
-    description="Filter orders by status"
+    description="Filter orders by status",
 )
 
 start_date_param = Parameter(
     name="start_date",
     type="date",
     default_value="2024-01-01",
-    description="Start date for analysis"
+    description="Start date for analysis",
 )
 
 min_amount_param = Parameter(
-    name="min_amount",
-    type="number",
-    default_value=0,
-    description="Minimum order amount"
+    name="min_amount", type="number", default_value=0, description="Minimum order amount"
 )
 
 graph.add_parameter(status_param)

@@ -45,9 +45,15 @@ def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
             deps.add(metric_obj.denominator)
 
     # Derived metric (or untyped metric with sql expression) - parse sql to find references
-    elif (metric_obj.type == "derived" or (not metric_obj.type and not metric_obj.agg)) and metric_obj.sql:
+    elif (
+        metric_obj.type == "derived" or (not metric_obj.type and not metric_obj.agg)
+    ) and metric_obj.sql:
         # Special case: if sql is a simple qualified reference (model.metric), treat it as a direct dependency
-        if "." in metric_obj.sql and " " not in metric_obj.sql.strip() and not any(op in metric_obj.sql for op in ["+", "-", "*", "/", "(", ")"]):
+        if (
+            "." in metric_obj.sql
+            and " " not in metric_obj.sql.strip()
+            and not any(op in metric_obj.sql for op in ["+", "-", "*", "/", "(", ")"])
+        ):
             deps.add(metric_obj.sql)
             return deps
 

@@ -15,7 +15,7 @@ def test_get_hierarchy_path():
         ],
         metrics=[
             Metric(name="population", agg="sum", sql="pop"),
-        ]
+        ],
     )
 
     # Get path from root to city
@@ -43,7 +43,7 @@ def test_get_drill_down():
         ],
         metrics=[
             Metric(name="population", agg="sum", sql="pop"),
-        ]
+        ],
     )
 
     # Drill from country -> state
@@ -68,7 +68,7 @@ def test_get_drill_up():
         ],
         metrics=[
             Metric(name="population", agg="sum", sql="pop"),
-        ]
+        ],
     )
 
     # Drill from city -> state
@@ -93,7 +93,7 @@ def test_time_hierarchy_drill():
         ],
         metrics=[
             Metric(name="event_count", agg="count"),
-        ]
+        ],
     )
 
     # Full path
@@ -123,7 +123,7 @@ def test_multiple_children():
         ],
         metrics=[
             Metric(name="count", agg="count"),
-        ]
+        ],
     )
 
     # Drill down returns one of the children (first found)

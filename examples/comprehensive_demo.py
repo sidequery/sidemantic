@@ -25,23 +25,25 @@ Run with: uv run examples/comprehensive_demo.py
 # Add parent directory to path so we can import sidemantic
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import duckdb
-from sidemantic.core.model import Model
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.measure import Measure
 from sidemantic.core.join import Join
+from sidemantic.core.measure import Measure
+from sidemantic.sql.rewriter import SemanticSQLRewriter
+
+from sidemantic.core.dimension import Dimension
+from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
-from sidemantic.sql.rewriter import SemanticSQLRewriter
 
 
 def print_section(title: str):
     """Print a section header."""
     print(f"\n{'=' * 80}")
     print(f"  {title}")
-    print('=' * 80)
+    print("=" * 80)
 
 
 def print_sql(sql: str):
@@ -83,7 +85,7 @@ def main():
             Dimension(name="name", sql="name", type="categorical"),
             Dimension(name="region", sql="region", type="categorical"),
             Dimension(name="email", sql="email", type="categorical"),
-        ]
+        ],
     )
 
     # Create orders model with Rails-like joins
@@ -117,9 +119,9 @@ def main():
                 name="customers",
                 type="belongs_to",
                 foreign_key="customer_id",
-                primary_key="customer_id"
+                primary_key="customer_id",
             )
-        ]
+        ],
     )
 
     print("Created customers model with 3 records")
@@ -133,9 +135,7 @@ def main():
 
     # Simple metric
     total_revenue = Measure(
-        name="total_revenue",
-        expr="orders.amount",
-        description="Total revenue from all orders"
+        name="total_revenue", expr="orders.amount", description="Total revenue from all orders"
     )
     print("Simple metric: total_revenue")
 
@@ -145,7 +145,7 @@ def main():
         type="ratio",
         numerator="orders.amount",
         denominator="orders.order_count",
-        description="Average order value"
+        description="Average order value",
     )
     print("Ratio metric: avg_order_value")
 
@@ -154,7 +154,7 @@ def main():
         name="revenue_per_customer",
         type="derived",
         expr="total_revenue / order_count",
-        description="Revenue divided by number of orders"
+        description="Revenue divided by number of orders",
     )
     print("Derived metric: revenue_per_customer")
 
@@ -164,7 +164,7 @@ def main():
         type="cumulative",
         expr="orders.amount",
         window="all",
-        description="Running total of revenue"
+        description="Running total of revenue",
     )
     print("Cumulative metric: running_total")
 
@@ -177,7 +177,9 @@ def main():
     graph.add_metric(revenue_per_customer)
     graph.add_metric(running_total)
 
-    print(f"\nSemantic graph built with {len(graph.models)} models and {len(graph.metrics)} metrics")
+    print(
+        f"\nSemantic graph built with {len(graph.models)} models and {len(graph.metrics)} metrics"
+    )
 
     # =========================================================================
     # 3. Traditional API: Generate SQL directly
@@ -188,8 +190,7 @@ def main():
 
     # Query metrics by dimension
     sql = generator.generate(
-        metrics=["total_revenue", "avg_order_value"],
-        dimensions=["orders.status"]
+        metrics=["total_revenue", "avg_order_value"], dimensions=["orders.status"]
     )
 
     print_sql(sql)
@@ -277,7 +278,7 @@ def main():
     view_sql = generator.generate_view(
         view_name="revenue_summary",
         metrics=["total_revenue", "avg_order_value"],
-        dimensions=["orders.status"]
+        dimensions=["orders.status"],
     )
 
     print_sql(view_sql)
@@ -316,10 +317,7 @@ def main():
     # =========================================================================
     print_section("7. Cumulative Metrics (Running Totals)")
 
-    sql = generator.generate(
-        metrics=["running_total"],
-        dimensions=["orders.order_date"]
-    )
+    sql = generator.generate(metrics=["running_total"], dimensions=["orders.order_date"])
 
     print_sql(sql)
 

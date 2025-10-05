@@ -18,7 +18,9 @@ def test_model_has_default_primary_key():
     model = Model(
         name="orders",
         table="orders",
-        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
+        ],
         dimensions=[Dimension(name="status", type="categorical")],
         metrics=[],
     )
@@ -50,7 +52,10 @@ def test_metric_validation_simple_no_measure():
     with pytest.raises(Exception) as exc_info:
         Metric(name="bad_metric", type="invalid_type")
 
-    assert "literal_error" in str(exc_info.value).lower() or "validation" in str(exc_info.value).lower()
+    assert (
+        "literal_error" in str(exc_info.value).lower()
+        or "validation" in str(exc_info.value).lower()
+    )
 
 
 def test_metric_validation_measure_not_found():
@@ -69,10 +74,7 @@ def test_metric_validation_measure_not_found():
     )
 
     # Try to reference non-existent measure
-    invalid_metric = Metric(
-        name="bad_metric",
-        sql="orders.nonexistent"
-    )
+    invalid_metric = Metric(name="bad_metric", sql="orders.nonexistent")
 
     with pytest.raises(MetricValidationError) as exc_info:
         sl.add_metric(invalid_metric)
@@ -124,10 +126,7 @@ def test_query_validation_metric_not_found():
     )
 
     with pytest.raises(QueryValidationError) as exc_info:
-        sl.compile(
-            metrics=["nonexistent_metric"],
-            dimensions=["orders.status"]
-        )
+        sl.compile(metrics=["nonexistent_metric"], dimensions=["orders.status"])
 
     assert "Metric 'nonexistent_metric' not found" in str(exc_info.value)
 
@@ -147,10 +146,7 @@ def test_query_validation_dimension_not_found():
     )
 
     with pytest.raises(QueryValidationError) as exc_info:
-        sl.compile(
-            metrics=["orders.revenue"],
-            dimensions=["orders.nonexistent"]
-        )
+        sl.compile(metrics=["orders.revenue"], dimensions=["orders.nonexistent"])
 
     assert "Dimension 'nonexistent' not found" in str(exc_info.value)
 
@@ -181,10 +177,7 @@ def test_query_validation_no_join_path():
     )
 
     with pytest.raises(QueryValidationError) as exc_info:
-        sl.compile(
-            metrics=["orders.revenue"],
-            dimensions=["products.category"]
-        )
+        sl.compile(metrics=["orders.revenue"], dimensions=["products.category"])
 
     # Order of models in error message may vary
     assert "No join path found between models" in str(exc_info.value)
@@ -201,15 +194,16 @@ def test_query_validation_invalid_granularity():
             name="orders",
             table="orders",
             primary_key="id",
-            dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="created_at")],
+            dimensions=[
+                Dimension(name="order_date", type="time", granularity="day", sql="created_at")
+            ],
             metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
 
     with pytest.raises(QueryValidationError) as exc_info:
         sl.compile(
-            metrics=["orders.revenue"],
-            dimensions=["orders.order_date__invalid_granularity"]
+            metrics=["orders.revenue"], dimensions=["orders.order_date__invalid_granularity"]
         )
 
     assert "Invalid time granularity 'invalid_granularity'" in str(exc_info.value)

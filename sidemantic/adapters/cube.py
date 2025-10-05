@@ -107,6 +107,7 @@ class CubeAdapter(BaseAdapter):
 
         # Parse segments
         from sidemantic.core.segment import Segment
+
         segments = []
         for segment_def in cube_def.get("segments", []):
             segment_name = segment_def.get("name")
@@ -114,11 +115,13 @@ class CubeAdapter(BaseAdapter):
             if segment_name and segment_sql:
                 # Replace ${CUBE} with {model} placeholder
                 segment_sql = segment_sql.replace("${CUBE}", "{model}")
-                segments.append(Segment(
-                    name=segment_name,
-                    sql=segment_sql,
-                    description=segment_def.get("description")
-                ))
+                segments.append(
+                    Segment(
+                        name=segment_name,
+                        sql=segment_sql,
+                        description=segment_def.get("description"),
+                    )
+                )
 
         # Parse joins to create relationships
         relationships = []
@@ -127,11 +130,7 @@ class CubeAdapter(BaseAdapter):
             if join_name:
                 # Cube joins are typically many_to_one from the cube to the joined table
                 relationships.append(
-                    Relationship(
-                        name=join_name,
-                        type="many_to_one",
-                        foreign_key=f"{join_name}_id"
-                    )
+                    Relationship(name=join_name, type="many_to_one", foreign_key=f"{join_name}_id")
                 )
 
         # Parse pre-aggregations
@@ -322,15 +321,16 @@ class CubeAdapter(BaseAdapter):
 
                 # Strip CUBE prefix from column names
                 cleaned_columns = [
-                    col.replace("CUBE.", "").replace(f"{cube_name}.", "")
-                    for col in index_columns
+                    col.replace("CUBE.", "").replace(f"{cube_name}.", "") for col in index_columns
                 ]
 
-                indexes.append(Index(
-                    name=index_name,
-                    columns=cleaned_columns,
-                    type=index_def.get("type", "regular"),
-                ))
+                indexes.append(
+                    Index(
+                        name=index_name,
+                        columns=cleaned_columns,
+                        type=index_def.get("type", "regular"),
+                    )
+                )
 
         # Parse build range
         build_range_start = preagg_def.get("build_range_start", {}).get("sql")
@@ -362,6 +362,7 @@ class CubeAdapter(BaseAdapter):
 
         # Resolve inheritance first
         from sidemantic.core.inheritance import resolve_model_inheritance
+
         resolved_models = resolve_model_inheritance(graph.models)
 
         # Convert models to cubes
@@ -473,7 +474,9 @@ class CubeAdapter(BaseAdapter):
                 measure_def["type"] = "number"
                 if measure.base_metric:
                     # Add comment explaining this is a time comparison
-                    measure_def["description"] = (measure.description or "") + f" (Time comparison of {measure.base_metric})"
+                    measure_def["description"] = (
+                        measure.description or ""
+                    ) + f" (Time comparison of {measure.base_metric})"
                     measure_def["sql"] = measure.base_metric
             else:
                 # Regular aggregation measure
@@ -503,7 +506,9 @@ class CubeAdapter(BaseAdapter):
             # Add drill fields if specified
             if measure.drill_fields and drill_members:
                 # Only include drill fields that exist in this model
-                valid_drill = [f for f in measure.drill_fields if f in [d.name for d in model.dimensions]]
+                valid_drill = [
+                    f for f in measure.drill_fields if f in [d.name for d in model.dimensions]
+                ]
                 if valid_drill:
                     measure_def["drill_members"] = valid_drill
             elif drill_members:

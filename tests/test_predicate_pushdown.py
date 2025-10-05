@@ -69,9 +69,7 @@ def test_multi_model_filter_not_pushed():
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
         ],
-        relationships=[
-            {"name": "customer", "type": "many_to_one", "foreign_key": "customer_id"}
-        ],
+        relationships=[{"name": "customer", "type": "many_to_one", "foreign_key": "customer_id"}],
     )
 
     customers = Model(
@@ -134,9 +132,7 @@ def test_filters_pushed_to_correct_ctes():
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
         ],
-        relationships=[
-            {"name": "customer", "type": "many_to_one", "foreign_key": "customer_id"}
-        ],
+        relationships=[{"name": "customer", "type": "many_to_one", "foreign_key": "customer_id"}],
     )
 
     customers = Model(

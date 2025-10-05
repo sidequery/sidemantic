@@ -14,10 +14,11 @@ This example demonstrates:
 """
 
 import duckdb
-from sidemantic.core.dimension import Dimension
 from sidemantic.core.entity import Entity
 from sidemantic.core.join import Join
 from sidemantic.core.measure import Measure
+
+from sidemantic.core.dimension import Dimension
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -89,13 +90,10 @@ def main():
         type="string",
         default_value="completed",
         allowed_values=["completed", "pending", "cancelled"],
-        description="Filter orders by status"
+        description="Filter orders by status",
     )
     min_amount_param = Parameter(
-        name="min_amount",
-        type="number",
-        default_value=0,
-        description="Minimum order amount filter"
+        name="min_amount", type="number", default_value=0, description="Minimum order amount filter"
     )
 
     graph.add_parameter(status_param)
@@ -169,7 +167,7 @@ def main():
         type="cumulative",
         expr="orders.revenue",
         grain_to_date="month",
-        description="Month-to-date cumulative revenue"
+        description="Month-to-date cumulative revenue",
     )
 
     # Year-to-date revenue
@@ -178,7 +176,7 @@ def main():
         type="cumulative",
         expr="orders.revenue",
         grain_to_date="year",
-        description="Year-to-date cumulative revenue"
+        description="Year-to-date cumulative revenue",
     )
 
     # Month-over-month growth (offset ratio)
@@ -188,7 +186,7 @@ def main():
         numerator="orders.revenue",
         denominator="orders.revenue",
         offset_window="1 month",
-        description="Month-over-month revenue growth rate"
+        description="Month-over-month revenue growth rate",
     )
 
     graph.add_metric(mtd_revenue)
@@ -203,7 +201,7 @@ def main():
         name="revenue_pct_of_total",
         type="percent_of_total",
         field="revenue",
-        description="Revenue as % of total"
+        description="Revenue as % of total",
     )
 
     # Running total
@@ -212,7 +210,7 @@ def main():
         type="running_total",
         field="revenue",
         order_by=["order_date"],
-        description="Cumulative revenue over time"
+        description="Cumulative revenue over time",
     )
 
     graph.add_table_calculation(pct_of_total)
@@ -308,10 +306,12 @@ def main():
         print(f"  {row}")
 
     # Apply table calculations
-    calc_processor = TableCalculationProcessor([
-        graph.get_table_calculation("revenue_pct_of_total"),
-        graph.get_table_calculation("revenue_running_total")
-    ])
+    calc_processor = TableCalculationProcessor(
+        [
+            graph.get_table_calculation("revenue_pct_of_total"),
+            graph.get_table_calculation("revenue_running_total"),
+        ]
+    )
 
     # Apply all calculations
     results_with_calcs, updated_columns = calc_processor.process(base_results, column_names)

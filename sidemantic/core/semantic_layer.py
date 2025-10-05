@@ -16,7 +16,13 @@ class SemanticLayer:
     Provides a high-level API for defining models and querying data.
     """
 
-    def __init__(self, connection: str = "duckdb:///:memory:", dialect: str = "duckdb", auto_register: bool = False, use_preaggregations: bool = False):
+    def __init__(
+        self,
+        connection: str = "duckdb:///:memory:",
+        dialect: str = "duckdb",
+        auto_register: bool = False,
+        use_preaggregations: bool = False,
+    ):
         """Initialize semantic layer.
 
         Args:
@@ -40,17 +46,20 @@ class SemanticLayer:
         # Set as current layer for auto-registration
         if auto_register:
             from .registry import set_current_layer
+
             set_current_layer(self)
 
     def __enter__(self):
         """Context manager entry - set as current layer."""
         from .registry import set_current_layer
+
         set_current_layer(self)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - clear current layer."""
         from .registry import set_current_layer
+
         set_current_layer(None)
 
     def add_model(self, model: Model) -> None:
@@ -86,7 +95,8 @@ class SemanticLayer:
         errors = validate_metric(measure, self.graph)
         if errors:
             raise MetricValidationError(
-                f"Measure '{measure.name}' validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+                f"Measure '{measure.name}' validation failed:\n"
+                + "\n".join(f"  - {e}" for e in errors)
             )
 
         self.graph.add_metric(measure)
@@ -118,7 +128,14 @@ class SemanticLayer:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
         """
         sql = self.compile(
-            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, ungrouped=ungrouped, use_preaggregations=use_preaggregations
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            segments=segments,
+            order_by=order_by,
+            limit=limit,
+            ungrouped=ungrouped,
+            use_preaggregations=use_preaggregations,
         )
 
         return self.conn.execute(sql)
@@ -170,12 +187,23 @@ class SemanticLayer:
             )
 
         # Determine if pre-aggregations should be used
-        use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+        use_preaggs = (
+            use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+        )
 
         generator = SQLGenerator(self.graph, dialect=dialect or self.dialect)
 
         return generator.generate(
-            metrics=metrics, dimensions=dimensions, filters=filters, segments=segments, order_by=order_by, limit=limit, offset=offset, ungrouped=ungrouped, parameters=parameters, use_preaggregations=use_preaggs
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            segments=segments,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            ungrouped=ungrouped,
+            parameters=parameters,
+            use_preaggregations=use_preaggs,
         )
 
     def get_model(self, name: str) -> Model:

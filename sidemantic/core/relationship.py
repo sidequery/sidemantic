@@ -20,12 +20,10 @@ class Relationship(BaseModel):
         description="Type of relationship"
     )
     foreign_key: str | None = Field(
-        default=None,
-        description="Foreign key column (defaults to {name}_id for many_to_one)"
+        default=None, description="Foreign key column (defaults to {name}_id for many_to_one)"
     )
     primary_key: str | None = Field(
-        default=None,
-        description="Primary key column in related model (defaults to id)"
+        default=None, description="Primary key column in related model (defaults to id)"
     )
 
     @property

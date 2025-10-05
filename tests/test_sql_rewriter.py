@@ -1,12 +1,11 @@
 """Tests for SQL query rewriter."""
 
-import duckdb
 import pytest
 
 from sidemantic.core.dimension import Dimension
-from sidemantic.core.relationship import Relationship
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.sql.query_rewriter import QueryRewriter
 
@@ -29,7 +28,9 @@ def semantic_layer():
             Metric(name="revenue", agg="sum", sql="amount"),
             Metric(name="count", agg="count"),
         ],
-        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
+        ],
     )
 
     # Create customers model

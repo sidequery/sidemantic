@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import sqlglot
-from sqlglot import expressions as exp
 import yaml
+from sqlglot import expressions as exp
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -76,17 +76,14 @@ class RillAdapter:
         smallest_time_grain = data.get("smallest_time_grain")
 
         for dim_def in data.get("dimensions", []):
-            dimension = self._parse_dimension(
-                dim_def, timeseries_column, smallest_time_grain
-            )
+            dimension = self._parse_dimension(dim_def, timeseries_column, smallest_time_grain)
             if dimension:
                 dimensions.append(dimension)
 
         # If timeseries is specified but not found in dimensions, create it
         if timeseries_column:
             has_timeseries = any(
-                d.sql == timeseries_column or d.name == timeseries_column
-                for d in dimensions
+                d.sql == timeseries_column or d.name == timeseries_column for d in dimensions
             )
             if not has_timeseries:
                 time_dim = Dimension(
@@ -140,9 +137,8 @@ class RillAdapter:
             return None
 
         # Determine if this is the timeseries dimension
-        is_timeseries = (
-            timeseries_column
-            and (sql == timeseries_column or name == timeseries_column)
+        is_timeseries = timeseries_column and (
+            sql == timeseries_column or name == timeseries_column
         )
 
         return Dimension(
@@ -262,14 +258,13 @@ class RillAdapter:
 
         # Resolve inheritance before export
         from sidemantic.core.inheritance import resolve_model_inheritance
+
         resolved_models = resolve_model_inheritance(graph.models)
 
         for model in resolved_models.values():
             self._export_model(model, output_dir, graph)
 
-    def _export_model(
-        self, model: Model, output_dir: Path, graph: SemanticGraph
-    ) -> None:
+    def _export_model(self, model: Model, output_dir: Path, graph: SemanticGraph) -> None:
         """Export a single Model to a Rill metrics view YAML file.
 
         Args:
@@ -325,9 +320,7 @@ class RillAdapter:
                 if not timeseries_column:
                     timeseries_column = dim.sql
                     if dim.granularity:
-                        smallest_time_grain = self._map_granularity_to_rill(
-                            dim.granularity
-                        )
+                        smallest_time_grain = self._map_granularity_to_rill(dim.granularity)
 
             dimensions.append(dim_def)
 

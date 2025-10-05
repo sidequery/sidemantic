@@ -61,7 +61,12 @@ class QueryRewriter:
 
         # Generate semantic layer SQL
         return self.generator.generate(
-            metrics=metrics, dimensions=dimensions, filters=filters, order_by=order_by, limit=limit, offset=offset
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
         )
 
     def _extract_metrics_and_dimensions(self, select: exp.Select) -> tuple[list[str], list[str]]:
@@ -288,7 +293,9 @@ class QueryRewriter:
                 if self.inferred_table:
                     return f"{self.inferred_table}.{name}"
                 else:
-                    raise ValueError(f"Column '{name}' must have table prefix (e.g., orders.{name})")
+                    raise ValueError(
+                        f"Column '{name}' must have table prefix (e.g., orders.{name})"
+                    )
 
         # Handle aggregate functions - must be pre-defined as measures
         if isinstance(column, exp.Func):
@@ -296,11 +303,11 @@ class QueryRewriter:
             func_name = column.key.upper()
 
             # Extract the expression being aggregated
-            if column.args.get('this'):
-                arg = column.args['this']
-                arg_sql = arg.sql(dialect=self.dialect) if not isinstance(arg, exp.Star) else '*'
+            if column.args.get("this"):
+                arg = column.args["this"]
+                arg_sql = arg.sql(dialect=self.dialect) if not isinstance(arg, exp.Star) else "*"
             else:
-                arg_sql = '*'
+                arg_sql = "*"
 
             # Provide helpful error with YAML example (use wording expected by docs/tests)
             raise ValueError(

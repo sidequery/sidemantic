@@ -2,7 +2,7 @@
 
 import duckdb
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer, Model, SemanticLayer
+from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer
 
 conn = duckdb.connect(":memory:")
 
@@ -30,9 +30,7 @@ orders = Model(
     name="orders",
     table="orders",
     entities=[Entity(name="order", type="primary", expr="order_id")],
-    dimensions=[
-        Dimension(name="order_date", type="time", granularity="day", expr="order_date")
-    ],
+    dimensions=[Dimension(name="order_date", type="time", granularity="day", expr="order_date")],
     measures=[
         Measure(name="revenue", agg="sum", expr="order_amount"),
         Measure(name="order_count", agg="count"),

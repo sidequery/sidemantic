@@ -17,17 +17,13 @@ def test_ungrouped_basic():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     # Ungrouped query should return raw rows
-    sql = layer.compile(
-        metrics=["orders.revenue"],
-        dimensions=["orders.status"],
-        ungrouped=True
-    )
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], ungrouped=True)
 
     print("Ungrouped SQL:")
     print(sql)
@@ -57,15 +53,13 @@ def test_ungrouped_multiple_dimensions():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     sql = layer.compile(
-        metrics=["orders.revenue"],
-        dimensions=["orders.status", "orders.region"],
-        ungrouped=True
+        metrics=["orders.revenue"], dimensions=["orders.status", "orders.region"], ungrouped=True
     )
 
     # Should NOT have GROUP BY
@@ -89,7 +83,7 @@ def test_ungrouped_with_filters():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
@@ -98,7 +92,7 @@ def test_ungrouped_with_filters():
         metrics=["orders.revenue"],
         dimensions=["orders.status"],
         filters=["orders_cte.region = 'US'"],
-        ungrouped=True
+        ungrouped=True,
     )
 
     # Should have WHERE clause
@@ -121,7 +115,7 @@ def test_ungrouped_with_order_and_limit():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
@@ -131,7 +125,7 @@ def test_ungrouped_with_order_and_limit():
         dimensions=["orders.status"],
         order_by=["revenue DESC"],
         limit=100,
-        ungrouped=True
+        ungrouped=True,
     )
 
     # Should have ORDER BY and LIMIT
@@ -155,23 +149,19 @@ def test_grouped_vs_ungrouped():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     # Grouped query (default)
     grouped_sql = layer.compile(
-        metrics=["orders.revenue"],
-        dimensions=["orders.status"],
-        ungrouped=False
+        metrics=["orders.revenue"], dimensions=["orders.status"], ungrouped=False
     )
 
     # Ungrouped query
     ungrouped_sql = layer.compile(
-        metrics=["orders.revenue"],
-        dimensions=["orders.status"],
-        ungrouped=True
+        metrics=["orders.revenue"], dimensions=["orders.status"], ungrouped=True
     )
 
     # Grouped should have GROUP BY and aggregation
@@ -197,15 +187,13 @@ def test_ungrouped_multiple_metrics():
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
             Metric(name="quantity", agg="sum", sql="qty"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     sql = layer.compile(
-        metrics=["orders.revenue", "orders.quantity"],
-        dimensions=["orders.status"],
-        ungrouped=True
+        metrics=["orders.revenue", "orders.quantity"], dimensions=["orders.status"], ungrouped=True
     )
 
     # Should select both metrics as raw columns

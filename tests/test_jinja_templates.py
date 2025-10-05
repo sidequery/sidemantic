@@ -1,7 +1,7 @@
 """Test Jinja template rendering in SQL fields."""
 
-from sidemantic.core.template import SQLTemplateRenderer, render_sql_template, is_sql_template
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import SemanticLayer
+from sidemantic.core.template import SQLTemplateRenderer, is_sql_template, render_sql_template
 
 
 def test_basic_template_rendering():
@@ -17,16 +17,12 @@ def test_conditional_template():
     renderer = SQLTemplateRenderer()
 
     # With condition true
-    result = renderer.render(
-        "{% if active %}status = 'active'{% endif %}",
-        {"active": True}
-    )
+    result = renderer.render("{% if active %}status = 'active'{% endif %}", {"active": True})
     assert result == "status = 'active'"
 
     # With condition false
     result = renderer.render(
-        "{% if active %}status = 'active'{% else %}1=1{% endif %}",
-        {"active": False}
+        "{% if active %}status = 'active'{% else %}1=1{% endif %}", {"active": False}
     )
     assert result == "1=1"
 
@@ -37,7 +33,7 @@ def test_template_with_loop():
 
     result = renderer.render(
         "id IN ({% for id in ids %}{{ id }}{% if not loop.last %}, {% endif %}{% endfor %})",
-        {"ids": [1, 2, 3]}
+        {"ids": [1, 2, 3]},
     )
     assert result == "id IN (1, 2, 3)"
 
@@ -65,10 +61,7 @@ def test_template_with_filters():
     """Test template with Jinja filters."""
     renderer = SQLTemplateRenderer()
 
-    result = renderer.render(
-        "SELECT {{ col | upper }}",
-        {"col": "name"}
-    )
+    result = renderer.render("SELECT {{ col | upper }}", {"col": "name"})
     assert result == "SELECT NAME"
 
 
@@ -90,10 +83,7 @@ def test_template_with_multiple_variables():
     """Test template with multiple variables."""
     renderer = SQLTemplateRenderer()
 
-    result = renderer.render(
-        "{{ col1 }} + {{ col2 }}",
-        {"col1": "revenue", "col2": "costs"}
-    )
+    result = renderer.render("{{ col1 }} + {{ col2 }}", {"col1": "revenue", "col2": "costs"})
     assert result == "revenue + costs"
 
 
@@ -121,13 +111,9 @@ def test_complex_template_example():
     END
     """.strip()
 
-    result = renderer.render(template, {
-        "status_map": {
-            "completed": 1,
-            "pending": 0.5,
-            "cancelled": 0
-        }
-    })
+    result = renderer.render(
+        template, {"status_map": {"completed": 1, "pending": 0.5, "cancelled": 0}}
+    )
 
     assert "WHEN status = 'completed' THEN 1" in result
     assert "WHEN status = 'pending' THEN 0.5" in result

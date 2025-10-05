@@ -178,12 +178,16 @@ class SemanticGraph:
                     # This model has foreign key pointing to related model
                     # Example: orders many_to_one customers (orders.customer_id -> customers.id)
                     local_key = relationship.sql_expr  # customer_id (in orders)
-                    remote_key = relationship.primary_key or self.models[related_model].primary_key  # Use related model's primary key
+                    remote_key = (
+                        relationship.primary_key or self.models[related_model].primary_key
+                    )  # Use related model's primary key
                 else:
                     # one_to_one or one_to_many: related model has foreign key pointing here
                     # Example: customers one_to_many orders (customers.id <- orders.customer_id)
                     local_key = model.primary_key  # Use model's primary key
-                    remote_key = relationship.foreign_key or relationship.sql_expr  # customer_id (in orders)
+                    remote_key = (
+                        relationship.foreign_key or relationship.sql_expr
+                    )  # customer_id (in orders)
 
                 # Add bidirectional edge
                 if model_name not in self._adjacency:
@@ -257,7 +261,11 @@ class SemanticGraph:
                     # Check if another model points here with one_to_many/one_to_one
                     for other_model in self.models.values():
                         for j in other_model.relationships:
-                            if j.name == model_obj.name and j.type in ("one_to_one", "one_to_many") and j.sql_expr == key:
+                            if (
+                                j.name == model_obj.name
+                                and j.type in ("one_to_one", "one_to_many")
+                                and j.sql_expr == key
+                            ):
                                 return True
                     return False
 
@@ -346,11 +354,15 @@ class SemanticGraph:
                 elif current_relationship and current_relationship.type == "many_to_one":
                     relationship = "many_to_one"
                 elif next_relationship and next_relationship.type == "one_to_many":
-                    relationship = "many_to_one"  # next has many current, so current is many to next
+                    relationship = (
+                        "many_to_one"  # next has many current, so current is many to next
+                    )
                 elif next_relationship and next_relationship.type == "one_to_one":
                     relationship = "one_to_one"
                 elif next_relationship and next_relationship.type == "many_to_one":
-                    relationship = "one_to_many"  # next belongs to current, so current is one to next
+                    relationship = (
+                        "one_to_many"  # next belongs to current, so current is one to next
+                    )
                 else:
                     relationship = "many_to_one"  # default
 

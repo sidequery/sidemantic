@@ -1,9 +1,9 @@
 """Tests for parameter functionality."""
 
-import pytest
 import duckdb
+import pytest
 
-from sidemantic.core.model import Model, Dimension, Metric
+from sidemantic.core.model import Dimension, Metric, Model
 from sidemantic.core.parameter import Parameter, ParameterSet
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -199,7 +199,7 @@ def test_sql_generator_with_parameters():
         name="orders",
         table="raw_orders",
         primary_key="id",
-relationships=[],
+        relationships=[],
         dimensions=[
             Dimension(name="status", type="categorical", sql="status"),
             Dimension(name="order_date", type="time", sql="order_date"),
@@ -236,7 +236,7 @@ def test_sql_generator_with_default_parameter():
         name="orders",
         table="raw_orders",
         primary_key="id",
-relationships=[],
+        relationships=[],
         dimensions=[
             Dimension(name="status", type="categorical", sql="status"),
             Dimension(name="order_date", type="time", sql="order_date"),
@@ -273,7 +273,7 @@ def test_sql_generator_with_multiple_parameters():
         name="orders",
         table="raw_orders",
         primary_key="id",
-relationships=[],
+        relationships=[],
         dimensions=[
             Dimension(name="status", type="categorical", sql="status"),
             Dimension(name="order_date", type="time", sql="order_date"),
@@ -328,7 +328,7 @@ def test_parameters_with_actual_data():
         name="orders",
         table="raw_orders",
         primary_key="id",
-relationships=[],
+        relationships=[],
         dimensions=[
             Dimension(name="status", type="categorical", sql="status"),
             Dimension(name="order_date", type="time", sql="order_date"),

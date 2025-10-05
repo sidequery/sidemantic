@@ -99,7 +99,12 @@ class MetricFlowAdapter(BaseAdapter):
         if not table:
             # Try to extract from ref()
             if "ref(" in model_ref:
-                ref_model = model_ref.replace("ref('", "").replace("')", "").replace('ref("', "").replace('")', "")
+                ref_model = (
+                    model_ref.replace("ref('", "")
+                    .replace("')", "")
+                    .replace('ref("', "")
+                    .replace('")', "")
+                )
                 table = ref_model
 
         # Parse entities to extract primary key and relationships
@@ -117,11 +122,7 @@ class MetricFlowAdapter(BaseAdapter):
             elif entity_type == "foreign":
                 # Create a many_to_one relationship
                 relationships.append(
-                    Relationship(
-                        name=entity_name,
-                        type="many_to_one",
-                        foreign_key=entity_expr
-                    )
+                    Relationship(name=entity_name, type="many_to_one", foreign_key=entity_expr)
                 )
 
         # Parse dimensions
@@ -140,17 +141,20 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Parse segments from meta
         from sidemantic.core.segment import Segment
+
         segments = []
         meta = model_def.get("meta", {})
         for segment_def in meta.get("segments", []):
             segment_name = segment_def.get("name")
             segment_sql = segment_def.get("sql")
             if segment_name and segment_sql:
-                segments.append(Segment(
-                    name=segment_name,
-                    sql=segment_sql,
-                    description=segment_def.get("description")
-                ))
+                segments.append(
+                    Segment(
+                        name=segment_name,
+                        sql=segment_sql,
+                        description=segment_def.get("description"),
+                    )
+                )
 
         # Parse inheritance
         extends = meta.get("extends")
@@ -380,7 +384,11 @@ class MetricFlowAdapter(BaseAdapter):
         output_path = Path(output_path)
 
         # Resolve inheritance first
-        from sidemantic.core.inheritance import resolve_model_inheritance, resolve_metric_inheritance
+        from sidemantic.core.inheritance import (
+            resolve_metric_inheritance,
+            resolve_model_inheritance,
+        )
+
         resolved_models = resolve_model_inheritance(graph.models)
         resolved_metrics = resolve_metric_inheritance(graph.metrics) if graph.metrics else {}
 
@@ -394,7 +402,9 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Export metrics if present
         if resolved_metrics:
-            data["metrics"] = [self._export_metric(metric, graph) for metric in resolved_metrics.values()]
+            data["metrics"] = [
+                self._export_metric(metric, graph) for metric in resolved_metrics.values()
+            ]
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -424,20 +434,24 @@ class MetricFlowAdapter(BaseAdapter):
         result["entities"] = []
 
         # Add primary entity
-        result["entities"].append({
-            "name": model.name,  # Use model name as entity name
-            "type": "primary",
-            "expr": model.primary_key
-        })
+        result["entities"].append(
+            {
+                "name": model.name,  # Use model name as entity name
+                "type": "primary",
+                "expr": model.primary_key,
+            }
+        )
 
         # Add foreign entities from relationships
         for rel in model.relationships:
             if rel.type == "many_to_one":
-                result["entities"].append({
-                    "name": rel.name,
-                    "type": "foreign",
-                    "expr": rel.foreign_key or f"{rel.name}_id"
-                })
+                result["entities"].append(
+                    {
+                        "name": rel.name,
+                        "type": "foreign",
+                        "expr": rel.foreign_key or f"{rel.name}_id",
+                    }
+                )
 
         # Export dimensions
         if model.dimensions:

@@ -4,7 +4,8 @@ Parameters allow users to pass values at query time that affect SQL generation,
 similar to LookML parameters or dbt vars.
 """
 
-from typing import Literal, Any
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -17,8 +18,7 @@ class Parameter(BaseModel):
 
     name: str = Field(..., description="Unique parameter name")
     type: Literal["string", "number", "date", "unquoted", "yesno"] = Field(
-        ...,
-        description="Parameter data type"
+        ..., description="Parameter data type"
     )
     description: str | None = Field(None, description="Human-readable description")
     label: str | None = Field(None, description="Display label for UI")
@@ -28,14 +28,12 @@ class Parameter(BaseModel):
 
     # For string/number types with limited options
     allowed_values: list[Any] | None = Field(
-        None,
-        description="List of allowed values (for dropdown/select)"
+        None, description="List of allowed values (for dropdown/select)"
     )
 
     # For date parameters
     default_to_today: bool = Field(
-        False,
-        description="Default to current date (for date parameters)"
+        False, description="Default to current date (for date parameters)"
     )
 
     def __hash__(self) -> int:
@@ -110,6 +108,7 @@ class ParameterSet:
         # Use default
         if param.default_to_today and param.type == "date":
             from datetime import date
+
             return date.today().isoformat()
 
         return param.default_value
@@ -138,11 +137,12 @@ class ParameterSet:
         Returns:
             SQL with parameters interpolated
         """
-        from sidemantic.core.template import is_sql_template, render_sql_template
         import re
 
+        from sidemantic.core.template import is_sql_template, render_sql_template
+
         # Check if this is a full Jinja template (has conditionals, loops, etc.)
-        if is_sql_template(sql) and any(marker in sql for marker in ['{%', '{#']):
+        if is_sql_template(sql) and any(marker in sql for marker in ["{%", "{#"]):
             # Use full template rendering
             # Build context with raw parameter values
             context = {}
@@ -152,7 +152,7 @@ class ParameterSet:
 
         # Otherwise use simple parameter substitution with SQL formatting
         # Find all {{ parameter_name }} patterns
-        pattern = r'\{\{\s*(\w+)\s*\}\}'
+        pattern = r"\{\{\s*(\w+)\s*\}\}"
 
         def replace(match):
             param_name = match.group(1)

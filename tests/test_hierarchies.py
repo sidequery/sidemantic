@@ -24,31 +24,24 @@ def test_hierarchy_in_model():
         primary_key="location_id",
         dimensions=[
             Dimension(name="country", type="categorical", description="Country"),
-            Dimension(name="state", type="categorical", parent="country", description="State/Province"),
+            Dimension(
+                name="state", type="categorical", parent="country", description="State/Province"
+            ),
             Dimension(name="city", type="categorical", parent="state", description="City"),
         ],
         metrics=[
             Metric(name="population", agg="sum", sql="pop"),
-        ]
+        ],
     )
 
     layer.add_model(locations)
 
     # Should be able to query at any level
-    sql_country = layer.compile(
-        metrics=["locations.population"],
-        dimensions=["locations.country"]
-    )
+    sql_country = layer.compile(metrics=["locations.population"], dimensions=["locations.country"])
 
-    sql_state = layer.compile(
-        metrics=["locations.population"],
-        dimensions=["locations.state"]
-    )
+    sql_state = layer.compile(metrics=["locations.population"], dimensions=["locations.state"])
 
-    sql_city = layer.compile(
-        metrics=["locations.population"],
-        dimensions=["locations.city"]
-    )
+    sql_city = layer.compile(metrics=["locations.population"], dimensions=["locations.city"])
 
     assert "country" in sql_country
     assert "state" in sql_state
@@ -68,7 +61,7 @@ def test_hierarchy_drill_path():
         ],
         metrics=[
             Metric(name="sales", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     # Find the full hierarchy path
@@ -86,6 +79,7 @@ def test_hierarchy_adapter_roundtrip():
     """Test hierarchies survive adapter export/import."""
     import tempfile
     from pathlib import Path
+
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -99,7 +93,7 @@ def test_hierarchy_adapter_roundtrip():
         ],
         metrics=[
             Metric(name="population", agg="sum", sql="pop"),
-        ]
+        ],
     )
 
     graph = SemanticGraph()
@@ -107,7 +101,7 @@ def test_hierarchy_adapter_roundtrip():
 
     adapter = SidemanticAdapter()
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)
 
     try:
@@ -143,7 +137,7 @@ def test_time_hierarchy():
         ],
         metrics=[
             Metric(name="event_count", agg="count"),
-        ]
+        ],
     )
 
     # Year -> Month -> Week -> Day hierarchy

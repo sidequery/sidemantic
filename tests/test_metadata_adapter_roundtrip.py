@@ -23,7 +23,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
                 description="Order status",
                 label="Status",
                 format=None,
-                value_format_name=None
+                value_format_name=None,
             ),
             Dimension(
                 name="discount_rate",
@@ -31,7 +31,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
                 description="Discount percentage",
                 label="Discount %",
                 format="0.0%",
-                value_format_name="percent"
+                value_format_name="percent",
             ),
         ],
         metrics=[
@@ -45,7 +45,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
                 value_format_name="usd",
                 drill_fields=["status", "customer_id"],
                 default_time_dimension="created_at",
-                default_grain="day"
+                default_grain="day",
             ),
             Metric(
                 name="avg_order_value",
@@ -53,16 +53,16 @@ def test_metadata_roundtrip_sidemantic_adapter():
                 sql="amount",
                 description="Average order value",
                 format="$#,##0.00",
-                non_additive_dimension="created_at"
+                non_additive_dimension="created_at",
             ),
         ],
         segments=[
             Segment(
                 name="completed",
                 sql="{model}.status = 'completed'",
-                description="Completed orders only"
+                description="Completed orders only",
             ),
-        ]
+        ],
     )
 
     # Create a graph with the model
@@ -72,7 +72,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
     adapter = SidemanticAdapter()
 
     # Export to YAML
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)
 
     try:
@@ -147,7 +147,7 @@ def test_partial_metadata_roundtrip():
                 agg="avg",
                 sql="price",
                 # Only format set, no other metadata
-                format="$0.00"
+                format="$0.00",
             ),
         ],
         dimensions=[
@@ -155,9 +155,9 @@ def test_partial_metadata_roundtrip():
                 name="category",
                 type="categorical",
                 # Only label set
-                label="Product Category"
+                label="Product Category",
             ),
-        ]
+        ],
     )
 
     graph = SemanticGraph()
@@ -165,7 +165,7 @@ def test_partial_metadata_roundtrip():
 
     adapter = SidemanticAdapter()
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)
 
     try:
@@ -196,7 +196,7 @@ def test_empty_metadata_roundtrip():
         ],
         dimensions=[
             Dimension(name="status", type="categorical"),
-        ]
+        ],
     )
 
     graph = SemanticGraph()
@@ -204,7 +204,7 @@ def test_empty_metadata_roundtrip():
 
     adapter = SidemanticAdapter()
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)
 
     try:

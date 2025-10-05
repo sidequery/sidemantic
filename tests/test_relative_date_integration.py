@@ -17,7 +17,7 @@ def test_relative_date_in_filter():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
@@ -26,7 +26,7 @@ def test_relative_date_in_filter():
     sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["orders.status"],
-        filters=["orders_cte.created_at >= 'last 7 days'"]
+        filters=["orders_cte.created_at >= 'last 7 days'"],
     )
 
     print("SQL with relative date filter:")
@@ -50,17 +50,14 @@ def test_multiple_relative_date_filters():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     sql = layer.compile(
         metrics=["orders.revenue"],
-        filters=[
-            "orders_cte.created_at >= 'last 30 days'",
-            "orders_cte.created_at <= 'today'"
-        ]
+        filters=["orders_cte.created_at >= 'last 30 days'", "orders_cte.created_at <= 'today'"],
     )
 
     # Should convert both
@@ -81,19 +78,21 @@ def test_this_month_filter():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     sql = layer.compile(
-        metrics=["orders.revenue"],
-        filters=["orders_cte.created_at = 'this month'"]
+        metrics=["orders.revenue"], filters=["orders_cte.created_at = 'this month'"]
     )
 
     # Should expand to range (case insensitive since SQLGlot may uppercase)
     sql_upper = sql.upper()
-    assert "DATE_TRUNC('MONTH', CURRENT_DATE)" in sql_upper or "DATE_TRUNC('month', CURRENT_DATE)" in sql
+    assert (
+        "DATE_TRUNC('MONTH', CURRENT_DATE)" in sql_upper
+        or "DATE_TRUNC('month', CURRENT_DATE)" in sql
+    )
     assert "INTERVAL" in sql_upper and "MONTH" in sql_upper
 
 
@@ -110,15 +109,14 @@ def test_non_relative_date_unchanged():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     # Regular date literal
     sql = layer.compile(
-        metrics=["orders.revenue"],
-        filters=["orders_cte.created_at >= '2024-01-01'"]
+        metrics=["orders.revenue"], filters=["orders_cte.created_at >= '2024-01-01'"]
     )
 
     # Should remain unchanged
@@ -139,17 +137,14 @@ def test_mixed_filters():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     sql = layer.compile(
         metrics=["orders.revenue"],
-        filters=[
-            "orders_cte.created_at >= 'last 7 days'",
-            "orders_cte.status = 'completed'"
-        ]
+        filters=["orders_cte.created_at >= 'last 7 days'", "orders_cte.status = 'completed'"],
     )
 
     # Relative date should be converted

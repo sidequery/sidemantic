@@ -1,7 +1,5 @@
 """Test table calculations (post-query runtime calculations)."""
 
-import pytest
-
 from sidemantic.core.table_calculation import TableCalculation
 from sidemantic.sql.table_calc_processor import TableCalculationProcessor
 
@@ -9,9 +7,7 @@ from sidemantic.sql.table_calc_processor import TableCalculationProcessor
 def test_formula_calculation():
     """Test formula-based table calculation."""
     calc = TableCalculation(
-        name="profit_margin",
-        type="formula",
-        expression="(${revenue} - ${cost}) / ${revenue} * 100"
+        name="profit_margin", type="formula", expression="(${revenue} - ${cost}) / ${revenue} * 100"
     )
 
     processor = TableCalculationProcessor([calc])
@@ -31,11 +27,7 @@ def test_formula_calculation():
 
 def test_percent_of_total():
     """Test percent of total calculation."""
-    calc = TableCalculation(
-        name="pct_of_total",
-        type="percent_of_total",
-        field="revenue"
-    )
+    calc = TableCalculation(name="pct_of_total", type="percent_of_total", field="revenue")
 
     processor = TableCalculationProcessor([calc])
     results = [
@@ -55,11 +47,7 @@ def test_percent_of_total():
 
 def test_percent_of_previous():
     """Test percent change from previous row."""
-    calc = TableCalculation(
-        name="pct_change",
-        type="percent_of_previous",
-        field="value"
-    )
+    calc = TableCalculation(name="pct_change", type="percent_of_previous", field="value")
 
     processor = TableCalculationProcessor([calc])
     results = [
@@ -78,11 +66,7 @@ def test_percent_of_previous():
 
 def test_running_total():
     """Test running total calculation."""
-    calc = TableCalculation(
-        name="running_sum",
-        type="running_total",
-        field="amount"
-    )
+    calc = TableCalculation(name="running_sum", type="running_total", field="amount")
 
     processor = TableCalculationProcessor([calc])
     results = [
@@ -101,11 +85,7 @@ def test_running_total():
 
 def test_rank():
     """Test ranking calculation."""
-    calc = TableCalculation(
-        name="revenue_rank",
-        type="rank",
-        field="revenue"
-    )
+    calc = TableCalculation(name="revenue_rank", type="rank", field="revenue")
 
     processor = TableCalculationProcessor([calc])
     results = [
@@ -128,10 +108,7 @@ def test_rank():
 
 def test_row_number():
     """Test row number calculation."""
-    calc = TableCalculation(
-        name="row_num",
-        type="row_number"
-    )
+    calc = TableCalculation(name="row_num", type="row_number")
 
     processor = TableCalculationProcessor([calc])
     results = [
@@ -150,12 +127,7 @@ def test_row_number():
 
 def test_moving_average():
     """Test moving average calculation."""
-    calc = TableCalculation(
-        name="ma_3",
-        type="moving_average",
-        field="value",
-        window_size=3
-    )
+    calc = TableCalculation(name="ma_3", type="moving_average", field="value", window_size=3)
 
     processor = TableCalculationProcessor([calc])
     results = [
@@ -177,16 +149,8 @@ def test_moving_average():
 def test_multiple_calculations():
     """Test applying multiple table calculations."""
     calcs = [
-        TableCalculation(
-            name="pct_total",
-            type="percent_of_total",
-            field="revenue"
-        ),
-        TableCalculation(
-            name="running_sum",
-            type="running_total",
-            field="revenue"
-        ),
+        TableCalculation(name="pct_total", type="percent_of_total", field="revenue"),
+        TableCalculation(name="running_sum", type="running_total", field="revenue"),
     ]
 
     processor = TableCalculationProcessor(calcs)

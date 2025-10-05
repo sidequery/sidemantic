@@ -1,8 +1,8 @@
 """Inheritance utilities for models and metrics."""
 
-from sidemantic.core.model import Model
-from sidemantic.core.metric import Metric
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
+from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 
@@ -25,42 +25,42 @@ def merge_model(child: Model, parent: Model) -> Model:
         >>> merged = merge_model(child, parent)
     """
     # Start with parent's data
-    merged_data = parent.model_dump(exclude={'name'})
+    merged_data = parent.model_dump(exclude={"name"})
 
     # Override with child's data (excluding None values and extends)
-    child_data = child.model_dump(exclude_none=True, exclude={'extends'})
+    child_data = child.model_dump(exclude_none=True, exclude={"extends"})
 
     # Merge lists (dimensions, metrics, relationships, segments)
     # Child's items are added to parent's items
-    for field in ['dimensions', 'metrics', 'relationships', 'segments']:
+    for field in ["dimensions", "metrics", "relationships", "segments"]:
         parent_items = merged_data.get(field, [])
         child_items = child_data.get(field, [])
 
         # Combine, with child items overriding parent items with same name
-        parent_by_name = {item['name']: item for item in parent_items}
-        child_by_name = {item['name']: item for item in child_items}
+        parent_by_name = {item["name"]: item for item in parent_items}
+        child_by_name = {item["name"]: item for item in child_items}
 
         # Merge
         parent_by_name.update(child_by_name)
         merged_data[field] = list(parent_by_name.values())
 
     # Override scalar fields with child values
-    for field in ['table', 'sql', 'description', 'primary_key']:
+    for field in ["table", "sql", "description", "primary_key"]:
         if field in child_data:
             merged_data[field] = child_data[field]
 
     # Keep child's name
-    merged_data['name'] = child.name
+    merged_data["name"] = child.name
 
     # Reconstruct model objects from dicts
-    if merged_data.get('dimensions'):
-        merged_data['dimensions'] = [Dimension(**d) for d in merged_data['dimensions']]
-    if merged_data.get('metrics'):
-        merged_data['metrics'] = [Metric(**m) for m in merged_data['metrics']]
-    if merged_data.get('relationships'):
-        merged_data['relationships'] = [Relationship(**r) for r in merged_data['relationships']]
-    if merged_data.get('segments'):
-        merged_data['segments'] = [Segment(**s) for s in merged_data['segments']]
+    if merged_data.get("dimensions"):
+        merged_data["dimensions"] = [Dimension(**d) for d in merged_data["dimensions"]]
+    if merged_data.get("metrics"):
+        merged_data["metrics"] = [Metric(**m) for m in merged_data["metrics"]]
+    if merged_data.get("relationships"):
+        merged_data["relationships"] = [Relationship(**r) for r in merged_data["relationships"]]
+    if merged_data.get("segments"):
+        merged_data["segments"] = [Segment(**s) for s in merged_data["segments"]]
 
     return Model(**merged_data)
 
@@ -83,13 +83,13 @@ def merge_metric(child: Metric, parent: Metric) -> Metric:
         >>> merged = merge_metric(child, parent)
     """
     # Start with parent's data
-    merged_data = parent.model_dump(exclude={'name'})
+    merged_data = parent.model_dump(exclude={"name"})
 
     # Override with child's data (excluding None values and extends)
-    child_data = child.model_dump(exclude_none=True, exclude={'extends'})
+    child_data = child.model_dump(exclude_none=True, exclude={"extends"})
 
     # Handle list fields - merge arrays
-    for field in ['filters', 'drill_fields']:
+    for field in ["filters", "drill_fields"]:
         parent_items = merged_data.get(field) or []
         child_items = child_data.get(field)
 
@@ -101,11 +101,11 @@ def merge_metric(child: Metric, parent: Metric) -> Metric:
 
     # Override all other fields with child values
     for field, value in child_data.items():
-        if field not in ['filters', 'drill_fields', 'extends', 'name']:
+        if field not in ["filters", "drill_fields", "extends", "name"]:
             merged_data[field] = value
 
     # Keep child's name
-    merged_data['name'] = child.name
+    merged_data["name"] = child.name
 
     return Metric(**merged_data)
 

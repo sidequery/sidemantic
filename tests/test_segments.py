@@ -22,7 +22,9 @@ def test_segment_basic():
         ],
         segments=[
             Segment(
-                name="completed_orders", sql="{model}.status = 'completed'", description="Only completed orders"
+                name="completed_orders",
+                sql="{model}.status = 'completed'",
+                description="Only completed orders",
             ),
             Segment(name="high_value", sql="{model}.amount > 100", description="High value orders"),
         ],
@@ -31,7 +33,11 @@ def test_segment_basic():
     layer.add_model(orders)
 
     # Test segment resolution
-    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], segments=["orders.completed_orders"])
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        segments=["orders.completed_orders"],
+    )
 
     # Should contain the segment filter (pushed down into CTE)
     assert "status = 'completed'" in sql
@@ -61,7 +67,9 @@ def test_multiple_segments():
 
     layer.add_model(orders)
 
-    sql = layer.compile(metrics=["orders.revenue"], segments=["orders.completed", "orders.high_value"])
+    sql = layer.compile(
+        metrics=["orders.revenue"], segments=["orders.completed", "orders.high_value"]
+    )
 
     # Should contain both segment filters (pushed down into CTE)
     assert "status = 'completed'" in sql
@@ -94,7 +102,7 @@ def test_segment_with_filters():
     sql = layer.compile(
         metrics=["orders.revenue"],
         segments=["orders.completed"],
-        filters=["orders_cte.region = 'US'"]
+        filters=["orders_cte.region = 'US'"],
     )
 
     # Should contain both segment and regular filter (both pushed down into CTE)

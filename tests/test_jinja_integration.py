@@ -1,6 +1,6 @@
 """Test Jinja template integration with parameter system."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer, Parameter
+from sidemantic import Dimension, Metric, Model, Parameter, SemanticLayer
 
 
 def test_simple_parameter_substitution():
@@ -17,7 +17,7 @@ def test_simple_parameter_substitution():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
@@ -27,7 +27,7 @@ def test_simple_parameter_substitution():
         metrics=["orders.revenue"],
         dimensions=["orders.status"],
         filters=["orders_cte.amount >= {{ min_amount }}"],
-        parameters={"min_amount": 500}
+        parameters={"min_amount": 500},
     )
 
     # Should have substituted the value
@@ -49,7 +49,7 @@ def test_jinja_conditional_with_parameters():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     layer.add_model(orders)
@@ -59,9 +59,7 @@ def test_jinja_conditional_with_parameters():
 
     # With include_pending = False
     sql = layer.compile(
-        metrics=["orders.revenue"],
-        filters=[template_filter],
-        parameters={"include_pending": False}
+        metrics=["orders.revenue"], filters=[template_filter], parameters={"include_pending": False}
     )
 
     assert "status = 'completed'" in sql
@@ -69,22 +67,21 @@ def test_jinja_conditional_with_parameters():
 
     # With include_pending = True
     sql = layer.compile(
-        metrics=["orders.revenue"],
-        filters=[template_filter],
-        parameters={"include_pending": True}
+        metrics=["orders.revenue"], filters=[template_filter], parameters={"include_pending": True}
     )
 
-    assert "status IN ('completed', 'pending')" in sql or "IN('completed', 'pending')" in sql.replace(" ", "")
+    assert (
+        "status IN ('completed', 'pending')" in sql
+        or "IN('completed', 'pending')" in sql.replace(" ", "")
+    )
 
 
 def test_jinja_loop_with_parameters():
     """Test Jinja loop template with parameters."""
-    from sidemantic.core.parameter import ParameterSet, Parameter
+    from sidemantic.core.parameter import Parameter, ParameterSet
 
     # Create parameter set
-    params = {
-        "status_list": Parameter(name="status_list", type="unquoted")
-    }
+    params = {"status_list": Parameter(name="status_list", type="unquoted")}
     param_set = ParameterSet(params, {"status_list": ["completed", "shipped", "delivered"]})
 
     # Template with loop
@@ -101,11 +98,11 @@ def test_jinja_loop_with_parameters():
 
 def test_mixed_simple_and_complex_templates():
     """Test mix of simple and complex templates."""
-    from sidemantic.core.parameter import ParameterSet, Parameter
+    from sidemantic.core.parameter import Parameter, ParameterSet
 
     params = {
         "min_val": Parameter(name="min_val", type="number"),
-        "use_filter": Parameter(name="use_filter", type="yesno")
+        "use_filter": Parameter(name="use_filter", type="yesno"),
     }
 
     param_set = ParameterSet(params, {"min_val": 100, "use_filter": True})
@@ -122,11 +119,11 @@ def test_mixed_simple_and_complex_templates():
 
 def test_template_with_date_parameter():
     """Test template with date parameter."""
-    from sidemantic.core.parameter import ParameterSet, Parameter
+    from sidemantic.core.parameter import Parameter, ParameterSet
 
     params = {
         "start_date": Parameter(name="start_date", type="date"),
-        "use_date_filter": Parameter(name="use_date_filter", type="yesno")
+        "use_date_filter": Parameter(name="use_date_filter", type="yesno"),
     }
 
     param_set = ParameterSet(params, {"start_date": "2024-01-01", "use_date_filter": True})

@@ -23,8 +23,10 @@ __all__ = [
     "SemanticLayer",
 ]
 
+
 def __getattr__(name):  # Lazy import to avoid importing duckdb on package import
     if name == "SemanticLayer":
         from sidemantic.core.semantic_layer import SemanticLayer  # type: ignore
+
         return SemanticLayer
     raise AttributeError(name)

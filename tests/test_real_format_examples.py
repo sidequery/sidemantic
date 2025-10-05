@@ -11,7 +11,6 @@ from sidemantic.adapters.lookml import LookMLAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.omni import OmniAdapter
 from sidemantic.adapters.rill import RillAdapter
-from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.adapters.superset import SupersetAdapter
 
 
@@ -262,18 +261,12 @@ def test_query_imported_cube_example():
     assert "SUM" in sql.upper()
 
     # Test with dimension
-    sql = layer.compile(
-        metrics=["orders.revenue", "orders.count"],
-        dimensions=["orders.status"]
-    )
+    sql = layer.compile(metrics=["orders.revenue", "orders.count"], dimensions=["orders.status"])
     assert "GROUP BY" in sql.upper()
     assert "status" in sql.lower()
 
     # Test with segment
-    sql = layer.compile(
-        metrics=["orders.revenue"],
-        segments=["orders.completed"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], segments=["orders.completed"])
     assert "WHERE" in sql.upper()
     assert "status" in sql.lower()
 
@@ -300,8 +293,7 @@ def test_query_imported_metricflow_example():
 
     # Test with dimension
     sql = layer.compile(
-        metrics=["orders.revenue", "orders.order_count"],
-        dimensions=["orders.status"]
+        metrics=["orders.revenue", "orders.order_count"], dimensions=["orders.status"]
     )
     assert "GROUP BY" in sql.upper()
     assert "status" in sql.lower()
@@ -309,10 +301,7 @@ def test_query_imported_metricflow_example():
     # Test cross-model query (only if join path exists)
     # Note: MetricFlow entities may not map 1:1 to model names
     try:
-        sql = layer.compile(
-            metrics=["orders.revenue"],
-            dimensions=["customers.region"]
-        )
+        sql = layer.compile(metrics=["orders.revenue"], dimensions=["customers.region"])
         assert "JOIN" in sql.upper()
         assert "customers" in sql.lower()
     except Exception:
@@ -343,10 +332,7 @@ def test_query_with_time_dimension_cube():
     layer.graph = graph
 
     # Query with time dimension
-    sql = layer.compile(
-        metrics=["orders.revenue"],
-        dimensions=["orders.created_at"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.created_at"])
     assert "created_at" in sql.lower()
     assert "GROUP BY" in sql.upper()
 
@@ -362,10 +348,7 @@ def test_query_with_filter_metricflow():
     layer.graph = graph
 
     # Query with filter
-    sql = layer.compile(
-        metrics=["orders.revenue"],
-        filters=["orders.status = 'completed'"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], filters=["orders.status = 'completed'"])
     assert "WHERE" in sql.upper()
     assert "status" in sql.lower()
     assert "completed" in sql.lower()
@@ -432,8 +415,12 @@ def test_roundtrip_real_metricflow_example():
         for model_name in graph1.models:
             model1 = graph1.models[model_name]
             model2 = graph2.models[model_name]
-            assert len(model1.dimensions) == len(model2.dimensions), f"Dimension count mismatch for {model_name}"
-            assert len(model1.metrics) == len(model2.metrics), f"Metric count mismatch for {model_name}"
+            assert len(model1.dimensions) == len(model2.dimensions), (
+                f"Dimension count mismatch for {model_name}"
+            )
+            assert len(model1.metrics) == len(model2.metrics), (
+                f"Metric count mismatch for {model_name}"
+            )
 
         # Verify graph-level metrics count preserved
         # Note: Simple metrics may not round-trip, so we just check that ratio metrics are there
@@ -686,18 +673,12 @@ def test_query_imported_lookml_example():
     assert "SUM" in sql.upper()
 
     # Test with dimension
-    sql = layer.compile(
-        metrics=["orders.revenue", "orders.count"],
-        dimensions=["orders.status"]
-    )
+    sql = layer.compile(metrics=["orders.revenue", "orders.count"], dimensions=["orders.status"])
     assert "GROUP BY" in sql.upper()
     assert "status" in sql.lower()
 
     # Test with segment
-    sql = layer.compile(
-        metrics=["orders.revenue"],
-        segments=["orders.completed"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], segments=["orders.completed"])
     assert "WHERE" in sql.upper()
     assert "status" in sql.lower()
 
@@ -732,10 +713,7 @@ def test_query_with_time_dimension_lookml():
     layer.graph = graph
 
     # Query with time dimension
-    sql = layer.compile(
-        metrics=["orders.revenue"],
-        dimensions=["orders.created_date"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.created_date"])
     assert "created_at" in sql.lower()
     assert "GROUP BY" in sql.upper()
 
@@ -1032,17 +1010,13 @@ def test_query_imported_hex_example():
 
     # Test with dimension
     sql = layer.compile(
-        metrics=["orders.revenue", "orders.order_count"],
-        dimensions=["orders.status"]
+        metrics=["orders.revenue", "orders.order_count"], dimensions=["orders.status"]
     )
     assert "GROUP BY" in sql.upper()
     assert "status" in sql.lower()
 
     # Test with filter
-    sql = layer.compile(
-        metrics=["orders.revenue"],
-        filters=["orders.status = 'completed'"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], filters=["orders.status = 'completed'"])
     assert "WHERE" in sql.upper()
     assert "completed" in sql.lower()
 
@@ -1310,10 +1284,7 @@ def test_query_imported_rill_example():
     assert "COUNT" in sql.upper()
 
     # Query with dimension
-    sql = layer.compile(
-        metrics=["orders.total_revenue"],
-        dimensions=["orders.status"]
-    )
+    sql = layer.compile(metrics=["orders.total_revenue"], dimensions=["orders.status"])
     assert "GROUP BY" in sql.upper()
 
 

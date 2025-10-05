@@ -22,18 +22,15 @@ def test_metric_level_filter_basic():
                 agg="sum",
                 sql="amount",
                 filters=["{model}.status = 'completed'"],
-                description="Revenue from completed orders only"
+                description="Revenue from completed orders only",
             ),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     # Query the filtered metric
-    sql = layer.compile(
-        metrics=["orders.completed_revenue"],
-        dimensions=["orders.region"]
-    )
+    sql = layer.compile(metrics=["orders.completed_revenue"], dimensions=["orders.region"])
 
     print("SQL with metric-level filter:")
     print(sql)
@@ -61,20 +58,15 @@ def test_metric_level_multiple_filters():
                 name="high_value_completed_revenue",
                 agg="sum",
                 sql="amount",
-                filters=[
-                    "{model}.status = 'completed'",
-                    "{model}.amount > 100"
-                ],
-                description="Revenue from high-value completed orders"
+                filters=["{model}.status = 'completed'", "{model}.amount > 100"],
+                description="Revenue from high-value completed orders",
             ),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
-    sql = layer.compile(
-        metrics=["orders.high_value_completed_revenue"]
-    )
+    sql = layer.compile(metrics=["orders.high_value_completed_revenue"])
 
     # Should contain both filters
     assert "orders_cte.status = 'completed'" in sql
@@ -98,18 +90,15 @@ def test_metric_filters_combined_with_query_filters():
                 name="completed_revenue",
                 agg="sum",
                 sql="amount",
-                filters=["{model}.status = 'completed'"]
+                filters=["{model}.status = 'completed'"],
             ),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     # Add query-level filter on top of metric-level filter
-    sql = layer.compile(
-        metrics=["orders.completed_revenue"],
-        filters=["orders_cte.region = 'US'"]
-    )
+    sql = layer.compile(metrics=["orders.completed_revenue"], filters=["orders_cte.region = 'US'"])
 
     # Should contain both metric filter and query filter
     # Note: query filter gets pushed down into CTE, metric filter stays in main query
@@ -134,16 +123,14 @@ def test_mixed_filtered_and_unfiltered_metrics():
                 name="completed_revenue",
                 agg="sum",
                 sql="amount",
-                filters=["{model}.status = 'completed'"]
+                filters=["{model}.status = 'completed'"],
             ),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
-    sql = layer.compile(
-        metrics=["orders.total_revenue", "orders.completed_revenue"]
-    )
+    sql = layer.compile(metrics=["orders.total_revenue", "orders.completed_revenue"])
 
     # Should have the completed filter for completed_revenue
     # but total_revenue shouldn't be affected
@@ -170,21 +157,19 @@ def test_metric_filter_with_time_dimension():
                 name="recent_completed_revenue",
                 agg="sum",
                 sql="amount",
-                filters=[
-                    "{model}.status = 'completed'",
-                    "{model}.created_at >= CURRENT_DATE - 30"
-                ]
+                filters=["{model}.status = 'completed'", "{model}.created_at >= CURRENT_DATE - 30"],
             ),
-        ]
+        ],
     )
 
     layer.add_model(orders)
 
     sql = layer.compile(
-        metrics=["orders.recent_completed_revenue"],
-        dimensions=["orders.created_at__month"]
+        metrics=["orders.recent_completed_revenue"], dimensions=["orders.created_at__month"]
     )
 
     # Should contain both filters
     assert "orders_cte.status = 'completed'" in sql
-    assert "CURRENT_DATE - 30" in sql or "CURRENT_DATE-30" in sql  # SQLGlot might format differently
+    assert (
+        "CURRENT_DATE - 30" in sql or "CURRENT_DATE-30" in sql
+    )  # SQLGlot might format differently

@@ -24,22 +24,19 @@ class Model(BaseModel):
 
     # Relationships
     relationships: list[Relationship] = Field(
-        default_factory=list,
-        description="Relationships to other models"
+        default_factory=list, description="Relationships to other models"
     )
 
     # Primary key (required)
-    primary_key: str = Field(
-        default="id",
-        description="Primary key column"
-    )
+    primary_key: str = Field(default="id", description="Primary key column")
 
     dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
     metrics: list[Metric] = Field(default_factory=list, description="Measure definitions")
-    segments: list[Segment] = Field(default_factory=list, description="Segment (named filter) definitions")
+    segments: list[Segment] = Field(
+        default_factory=list, description="Segment (named filter) definitions"
+    )
     pre_aggregations: list[PreAggregation] = Field(
-        default_factory=list,
-        description="Pre-aggregation definitions for query optimization"
+        default_factory=list, description="Pre-aggregation definitions for query optimization"
     )
 
     def __init__(self, **data):
@@ -47,6 +44,7 @@ class Model(BaseModel):
 
         # Auto-register with current layer if in context
         from .registry import auto_register_model
+
         auto_register_model(self)
 
     def __hash__(self) -> int:

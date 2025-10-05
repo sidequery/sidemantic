@@ -42,10 +42,7 @@ def test_belongs_to_join():
     sl.add_model(customers)
 
     # Query across the join
-    result = sl.query(
-        metrics=["orders.revenue"],
-        dimensions=["customers.name"]
-    )
+    result = sl.query(metrics=["orders.revenue"], dimensions=["customers.name"])
 
     df = result.df()
     print("\nBelongs To Join Results:")
@@ -72,9 +69,7 @@ def test_has_many_join():
         name="customers",
         table="customers",
         primary_key="id",
-        relationships=[
-            Relationship(name="orders", type="one_to_many", foreign_key="customer_id")
-        ],
+        relationships=[Relationship(name="orders", type="one_to_many", foreign_key="customer_id")],
         dimensions=[Dimension(name="name", type="categorical")],
         metrics=[],
     )
@@ -91,10 +86,7 @@ def test_has_many_join():
     sl.add_model(orders)
 
     # Query should work in either direction
-    result = sl.query(
-        metrics=["orders.revenue"],
-        dimensions=["customers.name"]
-    )
+    result = sl.query(metrics=["orders.revenue"], dimensions=["customers.name"])
 
     df = result.df()
     print("\nHas Many Join Results:")
@@ -106,7 +98,9 @@ def test_has_many_join():
 def test_multi_relationship_join():
     """Test model with multiple relationships."""
     conn = duckdb.connect(":memory:")
-    conn.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER, amount DECIMAL(10, 2))")
+    conn.execute(
+        "CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER, amount DECIMAL(10, 2))"
+    )
     conn.execute("CREATE TABLE customers (id INTEGER, name VARCHAR)")
     conn.execute("CREATE TABLE products (product_id INTEGER, category VARCHAR)")
     conn.execute("INSERT INTO orders VALUES (1, 101, 1, 100.00)")
@@ -151,8 +145,7 @@ def test_multi_relationship_join():
 
     # Query should work across multiple relationships
     result = sl.query(
-        metrics=["orders.revenue"],
-        dimensions=["customers.name", "products.category"]
+        metrics=["orders.revenue"], dimensions=["customers.name", "products.category"]
     )
 
     df = result.df()

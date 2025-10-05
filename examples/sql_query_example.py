@@ -4,11 +4,10 @@ This shows how users can write familiar SQL queries that get automatically
 rewritten to use the semantic layer's metrics and dimensions.
 """
 
-import duckdb
-
-from sidemantic.core.dimension import Dimension
 from sidemantic.core.join import Join
 from sidemantic.core.measure import Measure
+
+from sidemantic.core.dimension import Dimension
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_layer import SemanticLayer
 
@@ -194,7 +193,9 @@ def main():
     # Example 10: LIMIT
     print("10. Top 2 regions by revenue (with LIMIT):")
     print("-" * 40)
-    sql10 = "SELECT orders.revenue, customers.region FROM orders ORDER BY orders.revenue DESC LIMIT 2"
+    sql10 = (
+        "SELECT orders.revenue, customers.region FROM orders ORDER BY orders.revenue DESC LIMIT 2"
+    )
     print(f"SQL: {sql10}")
     result10 = layer.sql(sql10)
     print(result10.fetchdf())

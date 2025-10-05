@@ -7,7 +7,7 @@ Examples: running_total_revenue, 7_day_rolling_average
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, SemanticLayer
 
 
 @pytest.fixture
@@ -45,12 +45,8 @@ def test_running_total(timeseries_db):
         name="orders",
         table="orders",
         primary_key="order_id",
-        dimensions=[
-            Dimension(name="order_date", type="time", granularity="day", sql="order_date")
-        ],
-        metrics=[
-            Metric(name="daily_revenue", agg="sum", sql="order_amount")
-        ],
+        dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
+        metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
     )
     sl.add_model(orders)
 
@@ -66,7 +62,7 @@ def test_running_total(timeseries_db):
     result = sl.query(
         metrics=["orders.daily_revenue", "running_total_revenue"],
         dimensions=["orders.order_date"],
-        order_by=["orders.order_date"]
+        order_by=["orders.order_date"],
     )
 
     df = result.df()
@@ -92,12 +88,8 @@ def test_rolling_window(timeseries_db):
         name="orders",
         table="orders",
         primary_key="order_id",
-        dimensions=[
-            Dimension(name="order_date", type="time", granularity="day", sql="order_date")
-        ],
-        metrics=[
-            Metric(name="daily_revenue", agg="sum", sql="order_amount")
-        ],
+        dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
+        metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
     )
     sl.add_model(orders)
 
@@ -106,7 +98,7 @@ def test_rolling_window(timeseries_db):
         name="rolling_3day_revenue",
         type="cumulative",
         sql="orders.daily_revenue",
-        window="2 days"  # Current + 2 preceding = 3 days total
+        window="2 days",  # Current + 2 preceding = 3 days total
     )
     sl.add_metric(rolling_metric)
 
@@ -114,7 +106,7 @@ def test_rolling_window(timeseries_db):
     result = sl.query(
         metrics=["orders.daily_revenue", "rolling_3day_revenue"],
         dimensions=["orders.order_date"],
-        order_by=["orders.order_date"]
+        order_by=["orders.order_date"],
     )
 
     df = result.df()
@@ -145,25 +137,14 @@ def test_cumulative_with_regular_metric(timeseries_db):
         name="orders",
         table="orders",
         primary_key="order_id",
-        dimensions=[
-            Dimension(name="order_date", type="time", granularity="day", sql="order_date")
-        ],
-        metrics=[
-            Metric(name="daily_revenue", agg="sum", sql="order_amount")
-        ],
+        dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
+        metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
     )
     sl.add_model(orders)
 
     # Define both regular and cumulative metrics
-    total_revenue = Metric(
-        name="total_revenue",
-        sql="orders.daily_revenue"
-    )
-    running_total = Metric(
-        name="running_total",
-        type="cumulative",
-        sql="orders.daily_revenue"
-    )
+    total_revenue = Metric(name="total_revenue", sql="orders.daily_revenue")
+    running_total = Metric(name="running_total", type="cumulative", sql="orders.daily_revenue")
 
     sl.add_metric(total_revenue)
     sl.add_metric(running_total)
@@ -172,7 +153,7 @@ def test_cumulative_with_regular_metric(timeseries_db):
     result = sl.query(
         metrics=["total_revenue", "running_total"],
         dimensions=["orders.order_date"],
-        order_by=["orders.order_date"]
+        order_by=["orders.order_date"],
     )
 
     df = result.df()

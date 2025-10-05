@@ -3,8 +3,9 @@
 No more separate Metric class - everything is just Measure!
 """
 
-from sidemantic.core.dimension import Dimension
 from sidemantic.core.measure import Measure
+
+from sidemantic.core.dimension import Dimension
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_layer import SemanticLayer
 
@@ -25,25 +26,10 @@ orders = Model(
         Measure(name="revenue", agg="sum", expr="amount"),
         Measure(name="order_count", agg="count"),
         Measure(name="avg_order_value", agg="avg", expr="amount"),
-
         # Complex measures - use type
-        Measure(
-            name="margin_pct",
-            type="ratio",
-            numerator="revenue",
-            denominator="cost"
-        ),
-        Measure(
-            name="profit",
-            type="derived",
-            expr="revenue - cost"
-        ),
-        Measure(
-            name="running_total",
-            type="cumulative",
-            expr="revenue",
-            window="7 days"
-        ),
+        Measure(name="margin_pct", type="ratio", numerator="revenue", denominator="cost"),
+        Measure(name="profit", type="derived", expr="revenue - cost"),
+        Measure(name="running_total", type="cumulative", expr="revenue", window="7 days"),
     ],
 )
 
@@ -74,10 +60,7 @@ print(result.fetchdf())
 print()
 
 print("By dimension:")
-result = layer.query(
-    metrics=["orders.revenue"],
-    dimensions=["orders.status"]
-)
+result = layer.query(metrics=["orders.revenue"], dimensions=["orders.status"])
 print(result.fetchdf())
 print()
 

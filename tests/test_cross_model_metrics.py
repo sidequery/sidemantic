@@ -1,7 +1,6 @@
 """Test cross-model metrics."""
 
 import duckdb
-import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 

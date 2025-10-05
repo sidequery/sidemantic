@@ -34,8 +34,7 @@ class TimeComparison(BaseModel):
 
     # Calculation type
     calculation: Literal["difference", "percent_change", "ratio"] = Field(
-        "percent_change",
-        description="How to calculate the comparison"
+        "percent_change", description="How to calculate the comparison"
     )
 
     @property
@@ -110,7 +109,9 @@ def generate_time_comparison_sql(
     if comparison.calculation == "difference":
         return f"({current_metric_sql} - {offset_metric_sql})"
     elif comparison.calculation == "percent_change":
-        return f"(({current_metric_sql} - {offset_metric_sql}) / NULLIF({offset_metric_sql}, 0) * 100)"
+        return (
+            f"(({current_metric_sql} - {offset_metric_sql}) / NULLIF({offset_metric_sql}, 0) * 100)"
+        )
     elif comparison.calculation == "ratio":
         return f"({current_metric_sql} / NULLIF({offset_metric_sql}, 0))"
 

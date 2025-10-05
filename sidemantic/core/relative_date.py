@@ -1,7 +1,6 @@
 """Relative date range helper for parsing common date expressions."""
 
 import re
-from datetime import datetime
 
 
 class RelativeDateRange:
@@ -18,35 +17,30 @@ class RelativeDateRange:
 
     PATTERNS = {
         # Today/yesterday/tomorrow
-        r'^today$': lambda: "CURRENT_DATE",
-        r'^yesterday$': lambda: "CURRENT_DATE - 1",
-        r'^tomorrow$': lambda: "CURRENT_DATE + 1",
-
+        r"^today$": lambda: "CURRENT_DATE",
+        r"^yesterday$": lambda: "CURRENT_DATE - 1",
+        r"^tomorrow$": lambda: "CURRENT_DATE + 1",
         # Last N days/weeks/months/years
-        r'^last (\d+) day(?:s)?$': lambda n: f"CURRENT_DATE - {n}",
-        r'^last (\d+) week(?:s)?$': lambda n: f"CURRENT_DATE - {int(n) * 7}",
-        r'^last (\d+) month(?:s)?$': lambda n: f"DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '{n} months'",
-        r'^last (\d+) year(?:s)?$': lambda n: f"DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '{n} years'",
-
+        r"^last (\d+) day(?:s)?$": lambda n: f"CURRENT_DATE - {n}",
+        r"^last (\d+) week(?:s)?$": lambda n: f"CURRENT_DATE - {int(n) * 7}",
+        r"^last (\d+) month(?:s)?$": lambda n: f"DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '{n} months'",
+        r"^last (\d+) year(?:s)?$": lambda n: f"DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '{n} years'",
         # This/last/next week
-        r'^this week$': lambda: "DATE_TRUNC('week', CURRENT_DATE)",
-        r'^last week$': lambda: "DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '1 week'",
-        r'^next week$': lambda: "DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '1 week'",
-
+        r"^this week$": lambda: "DATE_TRUNC('week', CURRENT_DATE)",
+        r"^last week$": lambda: "DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '1 week'",
+        r"^next week$": lambda: "DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '1 week'",
         # This/last/next month
-        r'^this month$': lambda: "DATE_TRUNC('month', CURRENT_DATE)",
-        r'^last month$': lambda: "DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'",
-        r'^next month$': lambda: "DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'",
-
+        r"^this month$": lambda: "DATE_TRUNC('month', CURRENT_DATE)",
+        r"^last month$": lambda: "DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'",
+        r"^next month$": lambda: "DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'",
         # This/last/next quarter
-        r'^this quarter$': lambda: "DATE_TRUNC('quarter', CURRENT_DATE)",
-        r'^last quarter$': lambda: "DATE_TRUNC('quarter', CURRENT_DATE) - INTERVAL '3 months'",
-        r'^next quarter$': lambda: "DATE_TRUNC('quarter', CURRENT_DATE) + INTERVAL '3 months'",
-
+        r"^this quarter$": lambda: "DATE_TRUNC('quarter', CURRENT_DATE)",
+        r"^last quarter$": lambda: "DATE_TRUNC('quarter', CURRENT_DATE) - INTERVAL '3 months'",
+        r"^next quarter$": lambda: "DATE_TRUNC('quarter', CURRENT_DATE) + INTERVAL '3 months'",
         # This/last/next year
-        r'^this year$': lambda: "DATE_TRUNC('year', CURRENT_DATE)",
-        r'^last year$': lambda: "DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'",
-        r'^next year$': lambda: "DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'",
+        r"^this year$": lambda: "DATE_TRUNC('year', CURRENT_DATE)",
+        r"^last year$": lambda: "DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'",
+        r"^next year$": lambda: "DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'",
     }
 
     @classmethod
@@ -104,7 +98,9 @@ class RelativeDateRange:
                 return f"{column} >= {sql_expr}"
 
         # For "this/last month/quarter/year" - use range
-        if any(word in expr for word in ["month", "quarter", "year"]) and expr.startswith(("this ", "last ", "next ")):
+        if any(word in expr for word in ["month", "quarter", "year"]) and expr.startswith(
+            ("this ", "last ", "next ")
+        ):
             start_sql = cls.parse(expr)
             if start_sql:
                 # Determine the interval to add for end date

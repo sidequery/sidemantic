@@ -141,6 +141,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Parse segments
         from sidemantic.core.segment import Segment
+
         segments = []
         for segment_def in view_def.get("filters", []):
             # LookML filters at view level can be used as segments
@@ -149,11 +150,13 @@ class LookMLAdapter(BaseAdapter):
             if segment_name and segment_sql:
                 # Replace ${TABLE} with {model} placeholder
                 segment_sql = segment_sql.replace("${TABLE}", "{model}")
-                segments.append(Segment(
-                    name=segment_name,
-                    sql=segment_sql,
-                    description=segment_def.get("description")
-                ))
+                segments.append(
+                    Segment(
+                        name=segment_name,
+                        sql=segment_sql,
+                        description=segment_def.get("description"),
+                    )
+                )
 
         return Model(
             name=name,
@@ -292,7 +295,7 @@ class LookMLAdapter(BaseAdapter):
                 for filter_dict in filter_list:
                     if isinstance(filter_dict, dict):
                         for field, value in filter_dict.items():
-                            filters.append(f"{field}: \"{value}\"")
+                            filters.append(f'{field}: "{value}"')
 
         # Replace ${TABLE} and ${measure_ref} placeholders in SQL
         sql = measure_def.get("sql")
@@ -376,8 +379,9 @@ class LookMLAdapter(BaseAdapter):
         if sql_on:
             # Simple extraction - look for ${base_model_name.column_name}
             import re
+
             # Match ${model.column} patterns
-            matches = re.findall(r'\$\{(\w+)\.(\w+)\}', sql_on)
+            matches = re.findall(r"\$\{(\w+)\.(\w+)\}", sql_on)
             for model, column in matches:
                 if model == base_model_name:
                     foreign_key = column
@@ -400,6 +404,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Resolve inheritance first
         from sidemantic.core.inheritance import resolve_model_inheritance
+
         resolved_models = resolve_model_inheritance(graph.models)
 
         # Convert models to views
@@ -477,6 +482,7 @@ class LookMLAdapter(BaseAdapter):
         if time_dims:
             # Group by base name and collect all timeframes
             from collections import defaultdict
+
             base_name_groups = defaultdict(list)
 
             for dim in time_dims:
@@ -538,7 +544,9 @@ class LookMLAdapter(BaseAdapter):
             elif metric.type == "ratio":
                 measure_def["type"] = "number"
                 if metric.numerator and metric.denominator:
-                    measure_def["sql"] = f"1.0 * ${{{metric.numerator}}} / NULLIF(${{{metric.denominator}}}, 0)"
+                    measure_def["sql"] = (
+                        f"1.0 * ${{{metric.numerator}}} / NULLIF(${{{metric.denominator}}}, 0)"
+                    )
             else:
                 # Regular aggregation measure
                 type_mapping = {

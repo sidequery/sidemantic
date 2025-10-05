@@ -1,6 +1,6 @@
 """Template rendering for SQL fields."""
 
-from jinja2 import Environment, Template, TemplateSyntaxError
+from jinja2 import Environment, TemplateSyntaxError
 
 
 class SQLTemplateRenderer:
@@ -13,12 +13,12 @@ class SQLTemplateRenderer:
         """Initialize template environment with SQL-friendly settings."""
         self.env = Environment(
             # Use different delimiters to avoid conflicts with SQL
-            variable_start_string='{{',
-            variable_end_string='}}',
-            block_start_string='{%',
-            block_end_string='%}',
-            comment_start_string='{#',
-            comment_end_string='#}',
+            variable_start_string="{{",
+            variable_end_string="}}",
+            block_start_string="{%",
+            block_end_string="%}",
+            comment_start_string="{#",
+            comment_end_string="#}",
             # Don't auto-escape since we're generating SQL
             autoescape=False,
         )
@@ -58,7 +58,7 @@ class SQLTemplateRenderer:
         Returns:
             True if string contains Jinja syntax
         """
-        return any(marker in sql for marker in ['{{', '{%', '{#'])
+        return any(marker in sql for marker in ["{{", "{%", "{#"])
 
     def render_if_template(self, sql: str, context: dict) -> str:
         """Render SQL only if it contains template syntax.

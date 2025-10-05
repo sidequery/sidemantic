@@ -134,7 +134,12 @@ class SupersetAdapter(BaseAdapter):
                 granularity = "day"
             else:
                 granularity = "hour"
-        elif "INT" in sql_type or "NUMERIC" in sql_type or "FLOAT" in sql_type or "DOUBLE" in sql_type:
+        elif (
+            "INT" in sql_type
+            or "NUMERIC" in sql_type
+            or "FLOAT" in sql_type
+            or "DOUBLE" in sql_type
+        ):
             dim_type = "numeric"
         elif "BOOL" in sql_type:
             dim_type = "boolean"
@@ -210,6 +215,7 @@ class SupersetAdapter(BaseAdapter):
 
         # Resolve inheritance first
         from sidemantic.core.inheritance import resolve_model_inheritance
+
         resolved_models = resolve_model_inheritance(graph.models)
 
         # If output is a directory, create one file per model

@@ -118,7 +118,7 @@ print("=" * 80)
 join_path = sl.graph.find_relationship_path("orders", "regions")
 print(f"Join path from orders to regions: {len(join_path)} hops")
 for i, jp in enumerate(join_path):
-    print(f"  Hop {i+1}: {jp.from_model} -> {jp.to_model} (via {jp.from_entity})")
+    print(f"  Hop {i + 1}: {jp.from_model} -> {jp.to_model} (via {jp.from_entity})")
 print()
 
 print("✅ Multi-hop joins working!")

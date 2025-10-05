@@ -3,7 +3,6 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sidemantic.core.metric import Metric
     from sidemantic.core.model import Model
     from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -45,9 +44,7 @@ def validate_model(model: "Model") -> list[str]:
 
     # Check for primary_key
     if not model.primary_key:
-        errors.append(
-            f"Model '{model.name}' must have a primary_key defined"
-        )
+        errors.append(f"Model '{model.name}' must have a primary_key defined")
 
     # Check for table or SQL
     if not model.table and not model.sql:
@@ -91,7 +88,13 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
     errors = []
 
     # Check measure type
-    if measure.type and measure.type not in ["ratio", "derived", "cumulative", "time_comparison", "conversion"]:
+    if measure.type and measure.type not in [
+        "ratio",
+        "derived",
+        "cumulative",
+        "time_comparison",
+        "conversion",
+    ]:
         errors.append(
             f"Metric '{measure.name}' has invalid type '{measure.type}'. "
             f"Must be one of: ratio, derived, cumulative, time_comparison, conversion"
@@ -105,9 +108,7 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
             model_name, measure_name = measure.sql.split(".")
             model = graph.models.get(model_name)
             if not model:
-                errors.append(
-                    f"Metric '{measure.name}': model '{model_name}' not found"
-                )
+                errors.append(f"Metric '{measure.name}': model '{model_name}' not found")
             elif not model.get_metric(measure_name):
                 errors.append(
                     f"Metric '{measure.name}': measure '{measure_name}' not found in model '{model_name}'"
@@ -121,7 +122,10 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
             errors.append(f"Ratio measure '{measure.name}' must have 'denominator' defined")
 
         # Validate references
-        for ref_type, ref in [("numerator", measure.numerator), ("denominator", measure.denominator)]:
+        for ref_type, ref in [
+            ("numerator", measure.numerator),
+            ("denominator", measure.denominator),
+        ]:
             if ref and "." in ref:
                 model_name, measure_name = ref.split(".")
                 model = graph.models.get(model_name)
@@ -191,7 +195,9 @@ def _check_circular_dependencies(
         try:
             dep_measure = graph.get_metric(dep_name)
             if dep_measure:
-                cycle = _check_circular_dependencies(dep_measure, graph, visited.copy(), path.copy())
+                cycle = _check_circular_dependencies(
+                    dep_measure, graph, visited.copy(), path.copy()
+                )
                 if cycle:
                     return cycle
         except KeyError:
@@ -201,9 +207,7 @@ def _check_circular_dependencies(
     return None
 
 
-def validate_query(
-    metrics: list[str], dimensions: list[str], graph: "SemanticGraph"
-) -> list[str]:
+def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGraph") -> list[str]:
     """Validate a query before execution.
 
     Args:

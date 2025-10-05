@@ -5,6 +5,7 @@ similar to LookML table calculations or Excel formulas.
 """
 
 from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -26,38 +27,34 @@ class TableCalculation(BaseModel):
         "rank",
         "row_number",
         "percentile",
-        "moving_average"
+        "moving_average",
     ] = Field(..., description="Type of table calculation")
     description: str | None = Field(None, description="Human-readable description")
 
     # Formula-based calculation
     expression: str | None = Field(
         None,
-        description="Formula expression referencing result columns (e.g., '${revenue} / ${cost}')"
+        description="Formula expression referencing result columns (e.g., '${revenue} / ${cost}')",
     )
 
     # Field reference for calculations
     field: str | None = Field(
-        None,
-        description="Field to calculate on (for percent_of_total, running_total, etc.)"
+        None, description="Field to calculate on (for percent_of_total, running_total, etc.)"
     )
 
     # Partition by for window calculations
     partition_by: list[str] | None = Field(
-        None,
-        description="Fields to partition by for window calculations"
+        None, description="Fields to partition by for window calculations"
     )
 
     # Order by for window calculations
     order_by: list[str] | None = Field(
-        None,
-        description="Fields to order by for ranked/sequential calculations"
+        None, description="Fields to order by for ranked/sequential calculations"
     )
 
     # Moving average window
     window_size: int | None = Field(
-        None,
-        description="Window size for moving average (e.g., 7 for 7-day moving average)"
+        None, description="Window size for moving average (e.g., 7 for 7-day moving average)"
     )
 
     def __hash__(self) -> int:

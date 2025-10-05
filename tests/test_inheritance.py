@@ -1,7 +1,7 @@
 """Test inheritance for models and metrics."""
 
-from sidemantic import Dimension, Metric, Model, Segment, Relationship
-from sidemantic.core.inheritance import merge_model, merge_metric, resolve_model_inheritance, resolve_metric_inheritance
+from sidemantic import Dimension, Metric, Model, Segment
+from sidemantic.core.inheritance import merge_metric, merge_model, resolve_model_inheritance
 
 
 def test_model_inheritance_basic():
@@ -16,7 +16,7 @@ def test_model_inheritance_basic():
         ],
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
-        ]
+        ],
     )
 
     child = Model(
@@ -27,7 +27,7 @@ def test_model_inheritance_basic():
         ],
         segments=[
             Segment(name="completed", sql="{model}.status = 'completed'"),
-        ]
+        ],
     )
 
     merged = merge_model(child, parent)
@@ -72,12 +72,7 @@ def test_model_inheritance_override():
 
 def test_metric_inheritance_basic():
     """Test basic metric inheritance."""
-    parent = Metric(
-        name="base_revenue",
-        agg="sum",
-        sql="amount",
-        description="Base revenue metric"
-    )
+    parent = Metric(name="base_revenue", agg="sum", sql="amount", description="Base revenue metric")
 
     child = Metric(
         name="filtered_revenue",
@@ -98,12 +93,7 @@ def test_metric_inheritance_basic():
 
 def test_metric_inheritance_adds_filters():
     """Test that child can add to parent's filters."""
-    parent = Metric(
-        name="base_revenue",
-        agg="sum",
-        sql="amount",
-        filters=["{model}.amount > 0"]
-    )
+    parent = Metric(name="base_revenue", agg="sum", sql="amount", filters=["{model}.amount > 0"])
 
     child = Metric(
         name="completed_revenue",

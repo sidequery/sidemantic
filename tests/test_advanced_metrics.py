@@ -1,12 +1,10 @@
 """Test advanced metric features: grain-to-date, fill_nulls_with, offsets, conversion."""
 
-import pytest
 import duckdb
 
-from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
-from sidemantic.core.metric import Metric
+from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 
@@ -23,20 +21,13 @@ def test_month_to_date_metric():
             UNION ALL SELECT '2024-02-05'::DATE, 75
         """,
         primary_key="sale_date",
-        dimensions=[
-            Dimension(name="sale_date", sql="sale_date", type="time")
-        ],
-        metrics=[
-            Metric(name="amount", agg="sum", sql="amount")
-        ]
+        dimensions=[Dimension(name="sale_date", sql="sale_date", type="time")],
+        metrics=[Metric(name="amount", agg="sum", sql="amount")],
     )
 
     # MTD cumulative - resets each month
     mtd_revenue = Metric(
-        name="mtd_revenue",
-        type="cumulative",
-        sql="sales.amount",
-        grain_to_date="month"
+        name="mtd_revenue", type="cumulative", sql="sales.amount", grain_to_date="month"
     )
 
     graph = SemanticGraph()
@@ -44,10 +35,7 @@ def test_month_to_date_metric():
     graph.add_metric(mtd_revenue)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(
-        metrics=["mtd_revenue"],
-        dimensions=["sales.sale_date"]
-    )
+    sql = generator.generate(metrics=["mtd_revenue"], dimensions=["sales.sale_date"])
 
     print("\nMTD SQL:")
     print(sql)
@@ -67,7 +55,7 @@ def test_month_to_date_metric():
     assert results[0][2] == 100  # Jan 5 MTD
     assert results[1][2] == 250  # Jan 10 MTD
     assert results[2][2] == 450  # Jan 15 MTD
-    assert results[3][2] == 50   # Feb 1 MTD (reset!)
+    assert results[3][2] == 50  # Feb 1 MTD (reset!)
     assert results[4][2] == 125  # Feb 5 MTD
 
 
@@ -81,19 +69,12 @@ def test_year_to_date_metric():
             UNION ALL SELECT '2025-01-05'::DATE, 50
         """,
         primary_key="sale_date",
-        dimensions=[
-            Dimension(name="sale_date", sql="sale_date", type="time")
-        ],
-        metrics=[
-            Metric(name="amount", agg="sum", sql="amount")
-        ]
+        dimensions=[Dimension(name="sale_date", sql="sale_date", type="time")],
+        metrics=[Metric(name="amount", agg="sum", sql="amount")],
     )
 
     ytd_revenue = Metric(
-        name="ytd_revenue",
-        type="cumulative",
-        sql="sales.amount",
-        grain_to_date="year"
+        name="ytd_revenue", type="cumulative", sql="sales.amount", grain_to_date="year"
     )
 
     graph = SemanticGraph()
@@ -101,10 +82,7 @@ def test_year_to_date_metric():
     graph.add_metric(ytd_revenue)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(
-        metrics=["ytd_revenue"],
-        dimensions=["sales.sale_date"]
-    )
+    sql = generator.generate(metrics=["ytd_revenue"], dimensions=["sales.sale_date"])
 
     conn = duckdb.connect(":memory:")
     results = conn.execute(sql).fetchall()
@@ -114,13 +92,14 @@ def test_year_to_date_metric():
     # YTD should reset at start of 2025
     # Results are (date, amount, ytd_revenue) - find by date
     import datetime
+
     jan_2024 = [r for r in results if r[0] == datetime.date(2024, 1, 15)][0]
     jun_2024 = [r for r in results if r[0] == datetime.date(2024, 6, 10)][0]
     jan_2025 = [r for r in results if r[0] == datetime.date(2025, 1, 5)][0]
 
     assert jan_2024[2] == 100  # 2024-01-15 YTD
     assert jun_2024[2] == 300  # 2024-06-10 YTD (100 + 200)
-    assert jan_2025[2] == 50   # 2025-01-05 YTD (RESET to new year!)
+    assert jan_2025[2] == 50  # 2025-01-05 YTD (RESET to new year!)
 
 
 def test_fill_nulls_with_zero():
@@ -132,30 +111,19 @@ def test_fill_nulls_with_zero():
             UNION ALL SELECT 'pending', NULL
         """,
         primary_key="status",
-        dimensions=[
-            Dimension(name="status", sql="status", type="categorical")
-        ],
-        metrics=[
-            Metric(name="amount", agg="sum", sql="amount")
-        ]
+        dimensions=[Dimension(name="status", sql="status", type="categorical")],
+        metrics=[Metric(name="amount", agg="sum", sql="amount")],
     )
 
     # Metric with fill_nulls_with
-    total_revenue = Metric(
-        name="total_revenue",
-        sql="orders.amount",
-        fill_nulls_with=0
-    )
+    total_revenue = Metric(name="total_revenue", sql="orders.amount", fill_nulls_with=0)
 
     graph = SemanticGraph()
     graph.add_model(orders)
     graph.add_metric(total_revenue)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(
-        metrics=["total_revenue"],
-        dimensions=["orders.status"]
-    )
+    sql = generator.generate(metrics=["total_revenue"], dimensions=["orders.status"])
 
     print("\nfill_nulls SQL:")
     print(sql)
@@ -164,8 +132,8 @@ def test_fill_nulls_with_zero():
     results = conn.execute(sql).fetchall()
 
     # Should have 0 instead of NULL for pending
-    completed = [r for r in results if r[0] == 'completed'][0]
-    pending = [r for r in results if r[0] == 'pending'][0]
+    completed = [r for r in results if r[0] == "completed"][0]
+    pending = [r for r in results if r[0] == "pending"][0]
 
     assert completed[1] == 100
     assert pending[1] == 0  # Filled with 0 instead of NULL!
@@ -182,23 +150,21 @@ def test_fill_nulls_with_string():
         primary_key="name",
         dimensions=[
             Dimension(name="name", sql="name", type="categorical"),
-            Dimension(name="grade", sql="grade", type="categorical")
-        ]
+            Dimension(name="grade", sql="grade", type="categorical"),
+        ],
     )
 
     graph = SemanticGraph()
     graph.add_model(products)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(
-        dimensions=["products.name", "products.grade"]
-    )
+    sql = generator.generate(dimensions=["products.name", "products.grade"])
 
     conn = duckdb.connect(":memory:")
     results = conn.execute(sql).fetchall()
 
     # Without fill_nulls, grade is NULL
-    gadget = [r for r in results if r[0] == 'Gadget'][0]
+    gadget = [r for r in results if r[0] == "Gadget"][0]
     assert gadget[1] is None
 
 
@@ -213,12 +179,8 @@ def test_offset_ratio_metric():
             UNION ALL SELECT '2024-04', 180
         """,
         primary_key="month",
-        dimensions=[
-            Dimension(name="month", sql="month", type="time")
-        ],
-        metrics=[
-            Metric(name="revenue", agg="sum", sql="revenue")
-        ]
+        dimensions=[Dimension(name="month", sql="month", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
     )
 
     # Month-over-month growth: current / previous month
@@ -228,7 +190,7 @@ def test_offset_ratio_metric():
         numerator="sales.revenue",
         denominator="sales.revenue",
         offset_window="1 month",
-        description="Month-over-month growth rate"
+        description="Month-over-month growth rate",
     )
 
     graph = SemanticGraph()
@@ -236,10 +198,7 @@ def test_offset_ratio_metric():
     graph.add_metric(mom_growth)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(
-        metrics=["mom_growth"],
-        dimensions=["sales.month"]
-    )
+    sql = generator.generate(metrics=["mom_growth"], dimensions=["sales.month"])
 
     print("\nOffset Ratio SQL:")
     print(sql)
@@ -276,11 +235,9 @@ def test_conversion_metric():
         dimensions=[
             Dimension(name="user_id", sql="user_id", type="categorical"),
             Dimension(name="event_type", sql="event_type", type="categorical"),
-            Dimension(name="event_date", sql="event_date", type="time")
+            Dimension(name="event_date", sql="event_date", type="time"),
         ],
-        metrics=[
-            Metric(name="user_count", agg="count_distinct", sql="user_id")
-        ]
+        metrics=[Metric(name="user_count", agg="count_distinct", sql="user_id")],
     )
 
     # Conversion: users who purchase within 7 days of signup
@@ -291,7 +248,7 @@ def test_conversion_metric():
         base_event="signup",
         conversion_event="purchase",
         conversion_window="7 days",
-        description="Users who purchase within 7 days of signup"
+        description="Users who purchase within 7 days of signup",
     )
 
     graph = SemanticGraph()
@@ -299,10 +256,7 @@ def test_conversion_metric():
     graph.add_metric(signup_conversion)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(
-        metrics=["signup_conversion"],
-        dimensions=[]
-    )
+    sql = generator.generate(metrics=["signup_conversion"], dimensions=[])
 
     print("\nConversion SQL:")
     print(sql)
@@ -346,12 +300,8 @@ def test_yoy_percent_change():
             UNION ALL SELECT '2024-03-01'::DATE, 180
         """,
         primary_key="sale_date",
-        dimensions=[
-            Dimension(name="sale_date", sql="sale_date", type="time")
-        ],
-        metrics=[
-            Metric(name="revenue", agg="sum", sql="revenue")
-        ]
+        dimensions=[Dimension(name="sale_date", sql="sale_date", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
     )
 
     # YoY percent change metric
@@ -361,7 +311,7 @@ def test_yoy_percent_change():
         base_metric="sales.revenue",
         comparison_type="yoy",
         calculation="percent_change",
-        description="Year-over-year revenue growth"
+        description="Year-over-year revenue growth",
     )
 
     graph = SemanticGraph()
@@ -371,7 +321,7 @@ def test_yoy_percent_change():
     generator = SQLGenerator(graph)
     sql = generator.generate(
         metrics=["revenue_yoy"],
-        dimensions=["sales.sale_date__month"]  # Use explicit month granularity
+        dimensions=["sales.sale_date__month"],  # Use explicit month granularity
     )
 
     print("\nYoY Percent Change SQL:")
@@ -383,7 +333,6 @@ def test_yoy_percent_change():
     print("YoY Results:", results)
 
     # Find 2024 results (dates are datetime objects after month truncation)
-    import datetime
     results_2024 = [r for r in results if r[0].year == 2024]
     assert len(results_2024) == 3
 
@@ -391,9 +340,9 @@ def test_yoy_percent_change():
     # 2024-01: (150-100)/100 * 100 = 50%
     # 2024-02: (200-100)/100 * 100 = 100%
     # 2024-03: (180-100)/100 * 100 = 80%
-    assert abs(results_2024[0][2] - 50.0) < 0.1   # 2024-01 YoY
+    assert abs(results_2024[0][2] - 50.0) < 0.1  # 2024-01 YoY
     assert abs(results_2024[1][2] - 100.0) < 0.1  # 2024-02 YoY
-    assert abs(results_2024[2][2] - 80.0) < 0.1   # 2024-03 YoY
+    assert abs(results_2024[2][2] - 80.0) < 0.1  # 2024-03 YoY
 
 
 def test_mom_difference():
@@ -407,12 +356,8 @@ def test_mom_difference():
             UNION ALL SELECT '2024-04', 180
         """,
         primary_key="month",
-        dimensions=[
-            Dimension(name="month", sql="month", type="time")
-        ],
-        metrics=[
-            Metric(name="revenue", agg="sum", sql="revenue")
-        ]
+        dimensions=[Dimension(name="month", sql="month", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
     )
 
     # MoM difference metric
@@ -422,7 +367,7 @@ def test_mom_difference():
         base_metric="sales.revenue",
         comparison_type="mom",
         calculation="difference",
-        description="Month-over-month revenue change"
+        description="Month-over-month revenue change",
     )
 
     graph = SemanticGraph()
@@ -430,10 +375,7 @@ def test_mom_difference():
     graph.add_metric(revenue_mom)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(
-        metrics=["revenue_mom_change"],
-        dimensions=["sales.month"]
-    )
+    sql = generator.generate(metrics=["revenue_mom_change"], dimensions=["sales.month"])
 
     print("\nMoM Difference SQL:")
     print(sql)
@@ -450,9 +392,9 @@ def test_mom_difference():
     # 2024-04: 180 - 120 = 60
 
     assert results[0][2] is None  # Jan (no prior)
-    assert results[1][2] == 50    # Feb
-    assert results[2][2] == -30   # Mar
-    assert results[3][2] == 60    # Apr
+    assert results[1][2] == 50  # Feb
+    assert results[2][2] == -30  # Mar
+    assert results[3][2] == 60  # Apr
 
 
 def test_wow_ratio():
@@ -466,12 +408,8 @@ def test_wow_ratio():
             UNION ALL SELECT '2024-01-22'::DATE, 180
         """,
         primary_key="sale_date",
-        dimensions=[
-            Dimension(name="sale_date", sql="sale_date", type="time")
-        ],
-        metrics=[
-            Metric(name="revenue", agg="sum", sql="revenue")
-        ]
+        dimensions=[Dimension(name="sale_date", sql="sale_date", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
     )
 
     # WoW ratio metric
@@ -481,7 +419,7 @@ def test_wow_ratio():
         base_metric="sales.revenue",
         comparison_type="wow",
         calculation="ratio",
-        description="Week-over-week revenue ratio"
+        description="Week-over-week revenue ratio",
     )
 
     graph = SemanticGraph()
@@ -489,10 +427,7 @@ def test_wow_ratio():
     graph.add_metric(revenue_wow)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(
-        metrics=["revenue_wow_ratio"],
-        dimensions=["sales.sale_date__week"]
-    )
+    sql = generator.generate(metrics=["revenue_wow_ratio"], dimensions=["sales.sale_date__week"])
 
     print("\nWoW Ratio SQL:")
     print(sql)
@@ -508,7 +443,7 @@ def test_wow_ratio():
     # Week 3 (2024-01-15): 120/150 = 0.8
     # Week 4 (2024-01-22): 180/120 = 1.5
 
-    assert results[0][2] is None           # Week 1 (no prior)
+    assert results[0][2] is None  # Week 1 (no prior)
     assert abs(results[1][2] - 1.5) < 0.01  # Week 2
     assert abs(results[2][2] - 0.8) < 0.01  # Week 3
     assert abs(results[3][2] - 1.5) < 0.01  # Week 4

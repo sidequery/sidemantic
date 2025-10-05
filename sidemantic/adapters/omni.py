@@ -175,7 +175,8 @@ class OmniAdapter(BaseAdapter):
             sql = sql.replace("${TABLE}", "{model}")
             # Simplify ${view.field} to just field for now
             import re
-            sql = re.sub(r'\$\{[^.]+\.([^}]+)\}', r'\1', sql)
+
+            sql = re.sub(r"\$\{[^.]+\.([^}]+)\}", r"\1", sql)
 
         # Handle timeframes for time dimensions
         timeframes = dim_def.get("timeframes", [])
@@ -231,8 +232,9 @@ class OmniAdapter(BaseAdapter):
         sql = measure_def.get("sql")
         if sql:
             import re
+
             # Replace ${view.field} with just field
-            sql = re.sub(r'\$\{[^.]+\.([^}]+)\}', r'\1', sql)
+            sql = re.sub(r"\$\{[^.]+\.([^}]+)\}", r"\1", sql)
 
         # Parse filters
         filters = []
@@ -300,8 +302,9 @@ class OmniAdapter(BaseAdapter):
             foreign_key = None
             if on_sql:
                 import re
+
                 # Try to extract ${from_view.column} = ${to_view.column}
-                matches = re.findall(r'\$\{([^.]+)\.([^}]+)\}', on_sql)
+                matches = re.findall(r"\$\{([^.]+)\.([^}]+)\}", on_sql)
                 for view, column in matches:
                     if view == from_view:
                         foreign_key = column
@@ -328,6 +331,7 @@ class OmniAdapter(BaseAdapter):
 
         # Resolve inheritance first
         from sidemantic.core.inheritance import resolve_model_inheritance
+
         resolved_models = resolve_model_inheritance(graph.models)
 
         # Create views directory

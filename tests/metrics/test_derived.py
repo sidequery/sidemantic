@@ -8,6 +8,7 @@ import duckdb
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
+from tests.utils import fetch_columns, fetch_dicts
 
 
 @pytest.fixture
@@ -63,13 +64,13 @@ def test_simple_derived_metric(orders_db):
     layer.add_metric(revenue_per_order)
 
     result = layer.query(metrics=["revenue_per_order"])
-    df = result.fetchdf()
+    records = fetch_dicts(result)
 
     # Total revenue: 100+200+150+300 = 750
     # Total orders: 4
     # revenue_per_order = 750/4 = 187.5
-    assert len(df) == 1
-    assert df["revenue_per_order"][0] == 187.5
+    assert len(records) == 1
+    assert records[0]["revenue_per_order"] == 187.5
 
 
 def test_derived_metric_by_dimension(orders_db):
@@ -101,12 +102,18 @@ def test_derived_metric_by_dimension(orders_db):
     result = layer.query(
         metrics=["revenue_per_order"], dimensions=["orders.created_at__month"]
     )
-    df = result.fetchdf()
+    records = fetch_dicts(result)
 
     # January: (100+200)/2 = 150
     # February: (150+300)/2 = 225
-    assert len(df) == 2
-    monthly_avg = {str(row["created_at__month"])[:7]: row["revenue_per_order"] for _, row in df.iterrows()}
+    assert len(records) == 2
+
+    def month_key(value):
+        if hasattr(value, "strftime"):
+            return value.strftime("%Y-%m")
+        return str(value)[:7]
+
+    monthly_avg = {month_key(row["created_at__month"]): row["revenue_per_order"] for row in records}
     assert monthly_avg["2024-01"] == 150.0
     assert monthly_avg["2024-02"] == 225.0
 
@@ -146,12 +153,12 @@ def test_nested_derived_metrics(orders_db):
     layer.add_metric(double_avg)
 
     result = layer.query(metrics=["double_avg"])
-    df = result.fetchdf()
+    records = fetch_dicts(result)
 
     # revenue_per_order = 750/4 = 187.5
     # double_avg = 187.5 * 2 = 375
-    assert len(df) == 1
-    assert df["double_avg"][0] == 375.0
+    assert len(records) == 1
+    assert records[0]["double_avg"] == 375.0
 
 
 def test_all_metrics_together(orders_db):
@@ -182,16 +189,18 @@ def test_all_metrics_together(orders_db):
     result = layer.query(
         metrics=["orders.revenue", "orders.order_count", "revenue_per_order"]
     )
-    df = result.fetchdf()
+    columns = fetch_columns(result)
+    records = fetch_dicts(result)
 
     # All metrics in same result set
-    assert len(df) == 1
-    assert "revenue" in df.columns
-    assert "order_count" in df.columns
-    assert "revenue_per_order" in df.columns
-    assert df["revenue"][0] == 750.0
-    assert df["order_count"][0] == 4
-    assert df["revenue_per_order"][0] == 187.5
+    assert len(records) == 1
+    assert "revenue" in columns
+    assert "order_count" in columns
+    assert "revenue_per_order" in columns
+    row = records[0]
+    assert row["revenue"] == 750.0
+    assert row["order_count"] == 4
+    assert row["revenue_per_order"] == 187.5
 
 
 if __name__ == "__main__":

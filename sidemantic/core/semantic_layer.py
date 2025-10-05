@@ -1,5 +1,7 @@
 """Semantic layer main API."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 import duckdb
@@ -8,8 +10,6 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
-
-
 class SemanticLayer:
     """Main semantic layer interface.
 
@@ -80,6 +80,22 @@ class SemanticLayer:
         """
         from sidemantic.validation import ModelValidationError, validate_model
 
+        # Skip registration if an identical model instance is already present.
+        #
+        # This can happen when models are created while a semantic layer context
+        # is active. The model auto-registers itself with the current layer and
+        # later user code (or tests) may explicitly call ``add_model`` with the
+        # same instance. Treating that call as a no-op keeps ``add_model``
+        # idempotent without weakening the duplicate detection performed by the
+        # underlying graph (which will still raise when a different definition
+        # with the same name is added).
+        existing = self.graph.models.get(model.name)
+        if existing is not None:
+            if existing is model:
+                return
+            if existing.model_dump() == model.model_dump():
+                return
+
         errors = validate_model(model)
         if errors:
             raise ModelValidationError(
@@ -98,6 +114,13 @@ class SemanticLayer:
             MetricValidationError: If measure validation fails
         """
         from sidemantic.validation import MetricValidationError, validate_metric
+
+        existing = self.graph.metrics.get(measure.name)
+        if existing is not None:
+            if existing is measure:
+                return
+            if existing.model_dump() == measure.model_dump():
+                return
 
         errors = validate_metric(measure, self.graph)
         if errors:

@@ -7,6 +7,7 @@ from sidemantic.core.model import Dimension, Metric, Model
 from sidemantic.core.parameter import Parameter, ParameterSet
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
+from tests.utils import fetch_rows
 
 
 def test_parameter_string_type():
@@ -347,11 +348,12 @@ def test_parameters_with_actual_data():
     )
 
     # Execute query
-    result = conn.execute(sql).fetchdf()
+    result = conn.execute(sql)
+    rows = fetch_rows(result)
 
     # Should only get completed orders (2 rows: 200 and 300)
-    assert len(result) == 2
-    assert sum(row[1] for row in result) == 500  # Total revenue
+    assert len(rows) == 2
+    assert sum(row[1] for row in rows) == 500  # Total revenue
 
     conn.close()
 

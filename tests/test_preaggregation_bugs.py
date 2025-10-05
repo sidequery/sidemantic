@@ -4,6 +4,7 @@ import duckdb
 import pytest
 
 from sidemantic import Dimension, Metric, Model, PreAggregation, SemanticLayer
+from tests.utils import fetch_dicts
 
 
 def test_avg_metric_with_filtered_count_fails():
@@ -84,13 +85,13 @@ def test_avg_metric_with_filtered_count_fails():
 
         # Executing this should work now (no column error)
         result = layer.query(metrics=["orders.avg_amount"], use_preaggregations=True)
-        df = result.fetchdf()
-        assert len(df) == 1
+        records = fetch_dicts(result)
+        assert len(records) == 1
         # Note: This is using ALL amount (350) divided by completed count (2) = 175
         # which is wrong semantically, but that's a data modeling issue
         # (the pre-agg should have completed_amount_raw, not just total_amount_raw)
         # The fix here is that it doesn't crash with "count_raw doesn't exist"
-        assert df["avg_amount"][0] == 175.0  # (100+200+50) / 2
+        assert records[0]["avg_amount"] == 175.0  # (100+200+50) / 2
     else:
         # Didn't route to pre-agg (maybe matcher prevented it)
         pytest.fail(f"Query should have routed to pre-aggregation. SQL:\n{sql}")
@@ -175,9 +176,9 @@ def test_filter_on_unmaterialized_dimension():
         filters=["orders.status = 'completed'"],
         use_preaggregations=True
     )
-    df = result.fetchdf()
+    records = fetch_dicts(result)
     # Only completed orders: US=100, EU=200
-    assert len(df) == 2
+    assert len(records) == 2
 
 
 def test_filter_on_unmaterialized_time_grain():
@@ -254,10 +255,10 @@ def test_filter_on_unmaterialized_time_grain():
             filters=["orders.created_at >= '2024-01-01'"],
             use_preaggregations=True
         )
-        df = result.fetchdf()
+        records = fetch_dicts(result)
         # All orders are after 2024-01-01
-        assert len(df) == 1
-        assert df["revenue"][0] == 450.0
+        assert len(records) == 1
+        assert records[0]["revenue"] == 450.0
 
 
 def test_week_to_month_granularity_wrong_results():
@@ -345,9 +346,14 @@ def test_week_to_month_granularity_wrong_results():
         dimensions=["sales.sale_date__month"],
         use_preaggregations=True
     )
-    df = result.fetchdf()
+    records = fetch_dicts(result)
 
-    monthly_revenue = {str(row["sale_date__month"])[:7]: row["revenue"] for _, row in df.iterrows()}
+    def month_key(value):
+        if hasattr(value, "strftime"):
+            return value.strftime("%Y-%m")
+        return str(value)[:7]
+
+    monthly_revenue = {month_key(row["sale_date__month"]): row["revenue"] for row in records}
 
     # With fix: Correct monthly breakdown
     # Jan (29-31): $300, Feb (1-4): $400
@@ -424,8 +430,8 @@ def test_avg_metric_needs_correct_count():
 
         # Execute and verify correct results
         result = layer.query(metrics=["orders.avg_amount"], use_preaggregations=True)
-        df = result.fetchdf()
-        assert len(df) == 1
-        assert df["avg_amount"][0] == 150.0  # (300 / 2)
+        records = fetch_dicts(result)
+        assert len(records) == 1
+        assert records[0]["avg_amount"] == 150.0  # (300 / 2)
     else:
         pytest.fail("Should route to pre-aggregation")

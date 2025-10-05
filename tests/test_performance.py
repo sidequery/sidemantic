@@ -13,6 +13,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_layer import SemanticLayer
+from tests.utils import fetch_rows
 
 
 @pytest.fixture
@@ -233,7 +234,7 @@ def test_end_to_end_execution_performance(performance_layer):
 
     for _ in range(iterations):
         result = performance_layer.sql(sql)
-        result.fetchdf()
+        fetch_rows(result)
 
     elapsed = time.perf_counter() - start
     avg_ms = (elapsed / iterations) * 1000

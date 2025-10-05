@@ -1,12 +1,14 @@
 """Test that time_comparison metrics defined in model.metrics are auto-registered at graph level."""
 
 import duckdb
+import math
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
+from tests.utils import fetch_dicts
 
 
 def test_model_level_time_comparison_metric():
@@ -49,9 +51,10 @@ def test_model_level_time_comparison_metric():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchdf()
+    result = conn.execute(sql)
+    records = fetch_dicts(result)
 
-    print("MoM Results:", results)
+    print("MoM Results:", records)
 
     # Results should be:
     # 2024-01: NULL (no prior month)
@@ -59,10 +62,10 @@ def test_model_level_time_comparison_metric():
     # 2024-03: 120 - 150 = -30
     # 2024-04: 180 - 120 = 60
 
-    assert results[0][2] is None  # Jan (no prior)
-    assert results[1][2] == 50  # Feb
-    assert results[2][2] == -30  # Mar
-    assert results[3][2] == 60  # Apr
+    assert math.isnan(records[0]["revenue_mom_change"])  # Jan (no prior)
+    assert records[1]["revenue_mom_change"] == 50  # Feb
+    assert records[2]["revenue_mom_change"] == -30  # Mar
+    assert records[3]["revenue_mom_change"] == 60  # Apr
 
 
 def test_model_level_conversion_metric():
@@ -111,12 +114,13 @@ def test_model_level_conversion_metric():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchdf()
+    result = conn.execute(sql)
+    records = fetch_dicts(result)
 
-    print("Results:", results)
+    print("Results:", records)
 
     # User 1: signup on 01-01, purchase on 01-03 (2 days) - CONVERTED
     # User 2: signup on 01-05, purchase on 01-20 (15 days) - NOT CONVERTED (>7 days)
     # User 3: signup on 01-10, no purchase - NOT CONVERTED
     # Conversion rate: 1/3 = 0.333...
-    assert abs(results[0][0] - 0.333) < 0.01
+    assert abs(records[0]["signup_conversion"] - 0.333) < 0.01

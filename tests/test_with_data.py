@@ -7,6 +7,7 @@ import duckdb
 import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from tests.utils import fetch_dicts
 
 
 @pytest.fixture
@@ -93,10 +94,9 @@ def semantic_layer(test_db):
 
 def test_simple_aggregation(test_db, semantic_layer):
     """Test simple aggregation by status."""
-    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.status"]).fetchdf()
-
-    # Convert to dict for easier assertions
-    results_dict = {row[0]: row[1] for row in results}
+    result = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.status"])
+    records = fetch_dicts(result)
+    results_dict = {row["status"]: row["revenue"] for row in records}
 
     assert results_dict["completed"] == 650.00  # 150 + 200 + 300
     assert results_dict["pending"] == 75.00
@@ -105,13 +105,18 @@ def test_simple_aggregation(test_db, semantic_layer):
 
 def test_time_granularity(test_db, semantic_layer):
     """Test aggregation with time dimension granularity."""
-    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.created_at__month"]).fetchdf()
+    result = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.created_at__month"])
+    records = fetch_dicts(result)
 
-    # Should have 2 months: Jan 2024 and Feb 2024
-    assert len(results) == 2
+    assert len(records) == 2
 
-    # Convert to dict (date -> revenue)
-    results_dict = {str(row[0])[:7]: row[1] for row in results}  # Extract YYYY-MM
+    def month_key(value):
+        if hasattr(value, "strftime"):
+            return value.strftime("%Y-%m")
+        text = str(value)
+        return text[:7]
+
+    results_dict = {month_key(row["created_at__month"]): row["revenue"] for row in records}
 
     assert results_dict["2024-01"] == 350.00  # 150 + 200
     assert results_dict["2024-02"] == 425.00  # 75 + 300 + 50
@@ -119,10 +124,9 @@ def test_time_granularity(test_db, semantic_layer):
 
 def test_cross_model_join(test_db, semantic_layer):
     """Test query across models with automatic join."""
-    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["customers.region"]).fetchdf()
-
-    # Convert to dict
-    results_dict = {row[0]: row[1] for row in results}
+    result = semantic_layer.query(metrics=["orders.revenue"], dimensions=["customers.region"])
+    records = fetch_dicts(result)
+    results_dict = {row["region"]: row["revenue"] for row in records}
 
     # US: orders from customers 101 (150 + 75) and 103 (300) = 525
     # EU: orders from customer 102 (200 + 50) = 250
@@ -132,25 +136,26 @@ def test_cross_model_join(test_db, semantic_layer):
 
 def test_filters_with_join(test_db, semantic_layer):
     """Test filters on joined models."""
-    results = semantic_layer.query(
+    result = semantic_layer.query(
         metrics=["orders.revenue"], dimensions=["customers.tier"], filters=["customers.tier = 'premium'"]
-    ).fetchdf()
+    )
+    records = fetch_dicts(result)
 
-    # Should only have premium tier
-    assert len(results) == 1
-    assert results[0][0] == "premium"
-    # Premium customers: 101 (150 + 75) + 103 (300) = 525
-    assert results[0][1] == 525.00
+    assert len(records) == 1
+    row = records[0]
+    assert row["tier"] == "premium"
+    assert row["revenue"] == 525.00
 
 
 def test_multiple_metrics(test_db, semantic_layer):
     """Test querying multiple metrics together."""
-    results = semantic_layer.query(
+    result = semantic_layer.query(
         metrics=["orders.revenue", "orders.order_count", "orders.avg_order_value"], dimensions=["orders.status"]
-    ).fetchdf()
-
-    # Convert to dict: status -> (revenue, count, avg)
-    results_dict = {row[0]: (row[1], row[2], row[3]) for row in results}
+    )
+    records = fetch_dicts(result)
+    results_dict = {
+        row["status"]: (row["revenue"], row["order_count"], row["avg_order_value"]) for row in records
+    }
 
     # Completed: 650 total, 3 orders, avg 216.67
     assert results_dict["completed"][0] == 650.00

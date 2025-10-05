@@ -3,6 +3,7 @@
 import duckdb
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from tests.utils import fetch_rows
 
 # Create test data
 conn = duckdb.connect(":memory:")
@@ -97,7 +98,7 @@ result = sl.query(
 )
 
 print("Results:")
-for row in result.fetchdf():
+for row in fetch_rows(result):
     print(f"  {row}")
 print()
 
@@ -133,7 +134,7 @@ result = sl.query(
 )
 
 print("Results (region, revenue, customers, revenue_per_customer):")
-for row in result.fetchdf():
+for row in fetch_rows(result):
     print(f"  {row}")
 print()
 

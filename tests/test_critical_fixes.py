@@ -4,6 +4,7 @@ import duckdb
 import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from tests.utils import df_rows
 
 
 def test_query_level_metric_filters_use_having():
@@ -41,6 +42,8 @@ def test_query_level_metric_filters_use_having():
 
 def test_dimension_filters_use_where():
     """Test that filters on dimensions still use WHERE clause."""
+    layer = SemanticLayer()
+
     orders = Model(
         name="orders",
         table="orders_table",
@@ -54,7 +57,6 @@ def test_dimension_filters_use_where():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
 
     # Filter on dimension should use WHERE
@@ -71,6 +73,8 @@ def test_dimension_filters_use_where():
 
 def test_mixed_filters_separate_where_and_having():
     """Test that mixed metric and dimension filters use both WHERE and HAVING."""
+    layer = SemanticLayer()
+
     orders = Model(
         name="orders",
         table="orders_table",
@@ -84,7 +88,6 @@ def test_mixed_filters_separate_where_and_having():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
 
     sql = layer.compile(
@@ -108,6 +111,8 @@ def test_duplicate_column_names_get_prefixed():
 
     Fix: Detect collisions and prefix with model name (orders_id, customers_id).
     """
+    layer = SemanticLayer()
+
     orders = Model(
         name="orders",
         table="orders_table",
@@ -132,7 +137,6 @@ def test_duplicate_column_names_get_prefixed():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
     layer.add_model(customers)
 
@@ -163,6 +167,8 @@ def test_duplicate_column_names_get_prefixed():
 
 def test_no_prefix_when_no_collision():
     """Test that fields don't get prefixed when there's no collision."""
+    layer = SemanticLayer()
+
     orders = Model(
         name="orders",
         table="orders_table",
@@ -185,7 +191,6 @@ def test_no_prefix_when_no_collision():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
     layer.add_model(customers)
 
@@ -228,6 +233,8 @@ def test_query_method_accepts_parameters():
     Bug: Documentation showed parameters argument but method didn't accept it.
     Fix: Add parameters argument and forward to compile().
     """
+    layer = SemanticLayer()
+
     orders = Model(
         name="orders",
         table="orders_table",
@@ -250,7 +257,6 @@ def test_query_method_accepts_parameters():
     """)
     conn.execute("INSERT INTO orders_table VALUES (1, 'US', 100)")
 
-    layer = SemanticLayer()
     layer.conn = conn
     layer.add_model(orders)
 
@@ -267,6 +273,8 @@ def test_metric_level_filters_still_use_where():
     Metric.filters are row-level filters that should filter before aggregation.
     They're different from query-level filters on aggregated metrics.
     """
+    layer = SemanticLayer()
+
     orders = Model(
         name="orders",
         table="orders_table",
@@ -279,7 +287,6 @@ def test_metric_level_filters_still_use_where():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
 
     sql = layer.compile(metrics=["orders.completed_revenue"], dimensions=["orders.region"])
@@ -313,6 +320,8 @@ def test_end_to_end_with_real_data():
         (5, 103, 'US', 'cancelled', 25)
     """)
 
+    layer = SemanticLayer()
+
     orders = Model(
         name="orders",
         table="orders",
@@ -325,7 +334,6 @@ def test_end_to_end_with_real_data():
         ],
     )
 
-    layer = SemanticLayer()
     layer.conn = conn
     layer.add_model(orders)
 
@@ -334,12 +342,13 @@ def test_end_to_end_with_real_data():
         metrics=["orders.revenue"],
         dimensions=["orders.region"],
         filters=["orders.revenue >= 200"],  # Should use HAVING
-    ).fetchdf()
+    )
+    rows = df_rows(result)
 
     # Should only return regions with total revenue >= 200
     # US: 50+150+25 = 225, EU: 300+75 = 375
     # Both should be included
-    assert len(result) == 2
-    revenues = {row[0]: row[1] for row in result}
+    assert len(rows) == 2
+    revenues = {row[0]: row[1] for row in rows}
     assert revenues["US"] == 225.0
     assert revenues["EU"] == 375.0

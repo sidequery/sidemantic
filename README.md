@@ -7,9 +7,24 @@ A semantic layer with multi-format adapter support.
 - **Simple API**: Define metrics once, use them everywhere
 - **SQL query interface**: Write familiar SQL that gets rewritten to use semantic layer
 - **Automatic joins**: Define relationships, joins happen automatically via graph traversal
-- **Multi-format adapters**: Import/export from Cube, MetricFlow (dbt), and native YAML
+- **Multi-format adapters**: Import from 8 semantic layer formats
 - **SQLGlot-powered**: Dialect-agnostic SQL generation with transpilation support
 - **Type-safe**: Pydantic models with validation
+
+## Supported Formats
+
+Sidemantic can import semantic models from:
+
+- **Sidemantic** (native) - Full feature support
+- **Cube** - Import with segment support
+- **MetricFlow** (dbt) - Import with metric types
+- **LookML** (Looker) - Import with Liquid templating
+- **Hex** - Import data models
+- **Rill** - Import metrics views
+- **Superset** (Apache) - Import datasets
+- **Omni** - Import views and models
+
+See the [Adapter Compatibility](#adapter-compatibility) section for feature support details.
 
 ### Metric Types
 
@@ -144,7 +159,6 @@ Add to your YAML files:
 
 ## Adapters
 
-### Import
 ```python
 from sidemantic.adapters import CubeAdapter, MetricFlowAdapter, SidemanticAdapter
 
@@ -160,20 +174,6 @@ graph = mf_adapter.parse("semantic_models.yml")
 native_adapter = SidemanticAdapter()
 graph = native_adapter.parse("semantic_layer.yml")
 ```
-
-### Export
-```python
-# Export to Cube
-cube_adapter.export(sl.graph, "output_cube.yml")
-
-# Export to MetricFlow
-mf_adapter.export(sl.graph, "output_metricflow.yml")
-
-# Export to native
-sl.to_yaml("output_sidemantic.yml")
-```
-
-Full round-trip support: Sidemantic ↔ Cube ↔ MetricFlow
 
 ## Advanced Features
 
@@ -363,6 +363,51 @@ sql = layer.compile(
 )
 ```
 
+## Adapter Compatibility
+
+### Supported Formats
+
+| Format | Import | Notes |
+|--------|:------:|-------|
+| **Sidemantic** (native) | ✅ | Full feature support |
+| **Cube** | ✅ | No native segments |
+| **MetricFlow** (dbt) | ✅ | No native segments or hierarchies |
+| **LookML** (Looker) | ✅ | Liquid templating (not Jinja) |
+| **Hex** | ✅ | No segments or cross-model derived metrics |
+| **Rill** | ✅ | No relationships, segments, or cross-model metrics; single-model only |
+| **Superset** (Apache) | ✅ | No relationships in datasets |
+| **Omni** | ✅ | Relationships in separate model file |
+
+### Feature Compatibility
+
+This table shows which Sidemantic features are supported when importing from other formats:
+
+| Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Superset | Omni | Notes |
+|---------|------------|------|------------|--------|-----|------|----------|------|-------|
+| **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
+| **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
+| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset: single-model only; Omni: in model file |
+| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
+| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset don't have native ratio metric type |
+| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
+| **Cumulative Metrics** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Cube has rolling_window; MetricFlow has cumulative; others lack native support |
+| **Time Comparison** | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Only MetricFlow has native time comparison metrics |
+| **Segments** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only Cube and LookML have native segment support |
+| **Metric Filters** | ✅ | ✅ | ❌ | ✅ | ✅ | ⚠️ | ❌ | ✅ | Rill has basic support; Superset lacks filters |
+| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| **Hierarchies** | ✅ | ⚠️ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | Cube/LookML/Omni: via drill_fields |
+| **Inheritance** | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only LookML has native extends support |
+| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | LookML uses Liquid templating |
+| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | Label and description support varies by format |
+| **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+
+**Legend:**
+
+- ✅ Full support - feature fully supported on import
+- ⚠️ Partial support - feature works with limitations
+- ❌ Not supported - feature not available in source format
+
 ## Testing
 
 Run tests:
@@ -391,15 +436,14 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 - ✅ Relative date parsing
 - ✅ Ungrouped queries (raw row access)
 - ✅ Metadata fields (format, drill_fields, non-additivity, defaults)
-- ✅ Native YAML format with import/export
-- ✅ Cube and MetricFlow adapters (import/export)
+- ✅ Native YAML format
+- ✅ Adapters for 8 semantic layer formats (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni)
 - ✅ DuckDB integration
 - ✅ Pre-aggregations with automatic query routing (disabled by default)
 - ✅ Predicate pushdown with SQLGlot parsing (always enabled)
 
 **Future:**
 - Additional query optimizations (partition pruning, index hints)
-- LookML adapter (requires grammar parser)
 - Pre-aggregation materialization automation
 
 ## Examples
@@ -407,7 +451,6 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 See `examples/` directory:
 - `sql_query_example.py` - SQL query interface demonstration
 - `basic_example.py` - Core usage patterns
-- `export_example.py` - Multi-format export demonstration
 - `sidemantic/orders.yml` - Native YAML example
 - `cube/orders.yml` - Cube format example
 - `metricflow/semantic_models.yml` - MetricFlow format example

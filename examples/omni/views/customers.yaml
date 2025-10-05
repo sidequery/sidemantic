@@ -1,0 +1,56 @@
+name: customers
+label: Customers
+schema: public
+table_name: customers
+description: Customer master data
+
+dimensions:
+  id:
+    type: string
+    sql: ${TABLE}.id
+    primary_key: true
+    label: Customer ID
+
+  name:
+    type: string
+    sql: ${TABLE}.name
+    label: Customer Name
+
+  email:
+    type: string
+    sql: ${TABLE}.email
+    label: Email Address
+
+  created_at:
+    type: timestamp
+    sql: ${TABLE}.created_at
+    timeframes: [date, month, year]
+    label: Registration Date
+
+  country:
+    type: string
+    sql: ${TABLE}.country
+    label: Country
+
+  lifetime_value:
+    type: number
+    sql: ${TABLE}.lifetime_value
+    label: Lifetime Value
+
+measures:
+  count:
+    aggregate_type: count
+    label: Customer Count
+    description: Total number of customers
+
+  total_ltv:
+    aggregate_type: sum
+    sql: ${customers.lifetime_value}
+    label: Total LTV
+    description: Sum of customer lifetime values
+
+  avg_ltv:
+    aggregate_type: average
+    sql: ${customers.lifetime_value}
+    label: Average LTV
+    description: Average customer lifetime value

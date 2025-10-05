@@ -1,0 +1,64 @@
+name: orders
+label: Customer Orders
+schema: public
+table_name: orders
+description: Customer order transactions
+
+dimensions:
+  id:
+    type: string
+    sql: ${TABLE}.id
+    primary_key: true
+    label: Order ID
+
+  customer_id:
+    type: string
+    sql: ${TABLE}.customer_id
+    label: Customer ID
+
+  created_at:
+    type: timestamp
+    sql: ${TABLE}.created_at
+    timeframes: [date, week, month, year]
+    label: Order Date
+
+  status:
+    type: string
+    sql: ${TABLE}.status
+    label: Order Status
+    suggestion_list:
+      - value: completed
+      - value: pending
+      - value: cancelled
+
+  amount:
+    type: number
+    sql: ${TABLE}.amount
+    label: Order Amount
+
+measures:
+  count:
+    aggregate_type: count
+    label: Order Count
+    description: Total number of orders
+
+  total_revenue:
+    aggregate_type: sum
+    sql: ${orders.amount}
+    label: Total Revenue
+    description: Sum of all order amounts
+
+  avg_order_value:
+    aggregate_type: average
+    sql: ${orders.amount}
+    label: Average Order Value
+    description: Average order amount
+
+  completed_revenue:
+    aggregate_type: sum
+    sql: ${orders.amount}
+    label: Completed Revenue
+    description: Revenue from completed orders only
+    filters:
+      status:
+        is: completed

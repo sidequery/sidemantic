@@ -1,0 +1,10 @@
+name: ecommerce
+type: model
+
+relationships:
+  - join_from_view: orders
+    join_to_view: customers
+    join_type: always_left
+    on_sql: ${orders.customer_id} = ${customers.id}
+    relationship_type: many_to_one
+    reversible: true

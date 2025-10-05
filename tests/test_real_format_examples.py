@@ -9,6 +9,7 @@ from sidemantic.adapters.cube import CubeAdapter
 from sidemantic.adapters.hex import HexAdapter
 from sidemantic.adapters.lookml import LookMLAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sidemantic.adapters.omni import OmniAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.adapters.superset import SupersetAdapter
@@ -1514,6 +1515,197 @@ def test_superset_to_rill_conversion():
 
     # Import from Superset
     graph = superset_adapter.parse("examples/superset/orders.yaml")
+
+    # Export to Rill
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        rill_adapter.export(graph, output_path)
+
+        # Verify file created
+        assert (output_path / "orders.yaml").exists()
+
+
+def test_import_real_omni_example():
+    """Test importing real Omni view files."""
+    adapter = OmniAdapter()
+    graph = adapter.parse("examples/omni/")
+
+    # Verify models loaded
+    assert "orders" in graph.models
+    assert "customers" in graph.models
+
+    # Verify orders view
+    orders = graph.models["orders"]
+    assert orders.table == "public.orders"
+    assert orders.description == "Customer order transactions"
+
+    # Verify dimensions
+    dim_names = [d.name for d in orders.dimensions]
+    assert "id" in dim_names
+    assert "customer_id" in dim_names
+    assert "created_at" in dim_names
+    assert "status" in dim_names
+    assert "amount" in dim_names
+
+    # Verify time dimension
+    created_at = next(d for d in orders.dimensions if d.name == "created_at")
+    assert created_at.type == "time"
+    assert created_at.label == "Order Date"
+
+    # Verify measures
+    metric_names = [m.name for m in orders.metrics]
+    assert "count" in metric_names
+    assert "total_revenue" in metric_names
+    assert "avg_order_value" in metric_names
+    assert "completed_revenue" in metric_names
+
+    # Verify measure with filter
+    completed_revenue = next(m for m in orders.metrics if m.name == "completed_revenue")
+    assert completed_revenue.filters is not None
+    assert len(completed_revenue.filters) > 0
+
+    # Verify relationships
+    rel_names = [r.name for r in orders.relationships]
+    assert "customers" in rel_names
+    customers_rel = next(r for r in orders.relationships if r.name == "customers")
+    assert customers_rel.type == "many_to_one"
+
+
+def test_import_omni_with_timeframes():
+    """Test that Omni timeframes are properly imported."""
+    adapter = OmniAdapter()
+    graph = adapter.parse("examples/omni/views/orders.yaml")
+
+    orders = graph.models["orders"]
+
+    # Verify time dimension has granularity from timeframes
+    created_at = next(d for d in orders.dimensions if d.name == "created_at")
+    assert created_at.type == "time"
+    assert created_at.granularity is not None
+
+
+def test_omni_to_sidemantic_to_omni_roundtrip():
+    """Test roundtrip: Omni → Sidemantic → Omni."""
+    adapter = OmniAdapter()
+
+    # Import original
+    graph1 = adapter.parse("examples/omni/")
+
+    # Export
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        adapter.export(graph1, output_path)
+
+        # Import exported version
+        graph2 = adapter.parse(output_path)
+
+        # Verify models match
+        assert set(graph1.models.keys()) == set(graph2.models.keys())
+
+        # Verify dimensions preserved
+        orders1 = graph1.models["orders"]
+        orders2 = graph2.models["orders"]
+        assert len(orders1.dimensions) == len(orders2.dimensions)
+
+        # Verify metrics preserved
+        assert len(orders1.metrics) == len(orders2.metrics)
+
+
+def test_omni_to_cube_conversion():
+    """Test converting Omni view to Cube format."""
+    omni_adapter = OmniAdapter()
+    cube_adapter = CubeAdapter()
+
+    # Import from Omni
+    graph = omni_adapter.parse("examples/omni/")
+
+    # Export to Cube
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir) / "orders.yml"
+        cube_adapter.export(graph, output_path)
+
+        # Verify Cube file was created
+        assert output_path.exists()
+
+
+def test_cube_to_omni_conversion():
+    """Test converting Cube schema to Omni view."""
+    cube_adapter = CubeAdapter()
+    omni_adapter = OmniAdapter()
+
+    # Import from Cube
+    graph = cube_adapter.parse("examples/cube/orders.yml")
+
+    # Export to Omni
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        omni_adapter.export(graph, output_path)
+
+        # Import Omni version
+        omni_graph = omni_adapter.parse(output_path)
+
+        # Verify model exists
+        assert "orders" in omni_graph.models
+
+
+def test_omni_to_metricflow_conversion():
+    """Test converting Omni view to MetricFlow."""
+    omni_adapter = OmniAdapter()
+    mf_adapter = MetricFlowAdapter()
+
+    # Import from Omni
+    graph = omni_adapter.parse("examples/omni/")
+
+    # Export to MetricFlow
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir) / "orders.yml"
+        mf_adapter.export(graph, output_path)
+
+        # Verify file created
+        assert output_path.exists()
+
+
+def test_omni_to_lookml_conversion():
+    """Test converting Omni view to LookML."""
+    omni_adapter = OmniAdapter()
+    lookml_adapter = LookMLAdapter()
+
+    # Import from Omni
+    graph = omni_adapter.parse("examples/omni/")
+
+    # Export to LookML
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir) / "orders.lkml"
+        lookml_adapter.export(graph, output_path)
+
+        # Verify file created
+        assert output_path.exists()
+
+
+def test_omni_to_superset_conversion():
+    """Test converting Omni view to Superset."""
+    omni_adapter = OmniAdapter()
+    superset_adapter = SupersetAdapter()
+
+    # Import from Omni
+    graph = omni_adapter.parse("examples/omni/")
+
+    # Export to Superset
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        superset_adapter.export(graph, output_path)
+
+        # Verify file created
+        assert (output_path / "orders.yaml").exists()
+
+
+def test_omni_to_rill_conversion():
+    """Test converting Omni view to Rill."""
+    omni_adapter = OmniAdapter()
+    rill_adapter = RillAdapter()
+
+    # Import from Omni
+    graph = omni_adapter.parse("examples/omni/")
 
     # Export to Rill
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -6,6 +6,8 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
+from sidemantic.core.preagg_recommender import PreAggregationRecommender, PreAggRecommendation, QueryPattern
+from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey, RefreshResult
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 
@@ -18,6 +20,12 @@ __all__ = [
     "Metric",
     "Model",
     "Parameter",
+    "PreAggregation",
+    "PreAggregationRecommender",
+    "PreAggRecommendation",
+    "QueryPattern",
+    "RefreshKey",
+    "RefreshResult",
     "Relationship",
     "Segment",
     "SemanticLayer",

@@ -104,6 +104,8 @@ class QueryRewriter:
                 subquery.set("this", rewritten_subquery)
 
         # Return the modified SQL
+        # Note: Individual CTEs/subqueries are already instrumented by _rewrite_simple_query -> generator
+        # The outer query wrapper doesn't need separate instrumentation
         return parsed.sql(dialect=self.dialect)
 
     def _references_semantic_model(self, select: exp.Select) -> bool:

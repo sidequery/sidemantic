@@ -1,9 +1,12 @@
 """Tests for pre-aggregation functionality."""
 
+from datetime import datetime
+
+import duckdb
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
+from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey, RefreshResult
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
 
 
@@ -552,6 +555,280 @@ def test_index_configuration():
     assert index.name == "status_idx"
     assert index.columns == ["status", "created_at"]
     assert index.type == "regular"
+
+
+def test_refresh_full():
+    """Test full refresh mode."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE orders AS
+        SELECT
+            DATE '2024-01-01' + INTERVAL (i) DAY as order_date,
+            100 + i as revenue
+        FROM generate_series(0, 9) as t(i)
+    """)
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        time_dimension="order_date",
+        granularity="day"
+    )
+
+    result = preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="full"
+    )
+
+    assert result.mode == "full"
+    assert result.rows_inserted == 10
+    assert conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0] == 10
+
+
+def test_refresh_incremental_stateless():
+    """Test incremental refresh with stateless watermark derivation."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE orders AS
+        SELECT
+            DATE '2024-01-01' + INTERVAL (i) DAY as order_date,
+            100 + i as revenue
+        FROM generate_series(0, 9) as t(i)
+    """)
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        time_dimension="order_date",
+        granularity="day",
+        refresh_key=RefreshKey(incremental=True)
+    )
+
+    # First refresh
+    result1 = preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date"
+    )
+
+    count1 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
+    assert count1 == 10
+
+    # Add more data
+    conn.execute("""
+        INSERT INTO orders
+        SELECT
+            DATE '2024-01-11' + INTERVAL (i) DAY as order_date,
+            110 + i as revenue
+        FROM generate_series(0, 4) as t(i)
+    """)
+
+    # Second refresh - derives watermark from table
+    result2 = preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date"
+    )
+
+    count2 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
+    assert count2 == 15
+    assert result2.new_watermark > result1.new_watermark
+
+
+def test_refresh_incremental_with_lookback():
+    """Test incremental refresh with lookback window for late-arriving data."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE orders AS
+        SELECT
+            DATE '2024-01-01' + INTERVAL (i) DAY as order_date,
+            100 + i as revenue
+        FROM generate_series(0, 9) as t(i)
+    """)
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        time_dimension="order_date",
+        granularity="day"
+    )
+
+    # First refresh
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date"
+    )
+
+    # Update old data (simulating late-arriving data)
+    conn.execute("""
+        UPDATE orders
+        SET revenue = revenue + 1000
+        WHERE order_date = DATE '2024-01-05'
+    """)
+
+    # Refresh with 5-day lookback (use >= to include the lookback boundary)
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date >= {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date",
+        lookback="5 days"
+    )
+
+    # With append mode, we'll have duplicates
+    total_revenue = conn.execute("""
+        SELECT SUM(total_revenue)
+        FROM orders_preagg_daily
+        WHERE order_date = DATE '2024-01-05'
+    """).fetchone()[0]
+
+    assert total_revenue == 1208  # 104 + 1104 from lookback
+
+
+def test_refresh_merge_idempotent():
+    """Test merge/upsert refresh mode for idempotent updates."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE orders AS
+        SELECT
+            DATE '2024-01-01' + INTERVAL (i) DAY as order_date,
+            100 + i as revenue
+        FROM generate_series(0, 9) as t(i)
+    """)
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        time_dimension="order_date",
+        granularity="day"
+    )
+
+    # First refresh
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="merge",
+        watermark_column="order_date"
+    )
+
+    count1 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
+    revenue1 = conn.execute("""
+        SELECT total_revenue
+        FROM orders_preagg_daily
+        WHERE order_date = DATE '2024-01-05'
+    """).fetchone()[0]
+
+    # Update old data
+    conn.execute("""
+        UPDATE orders
+        SET revenue = revenue + 1000
+        WHERE order_date = DATE '2024-01-05'
+    """)
+
+    # Merge refresh with lookback - should update (no duplicates, use >= for lookback boundary)
+    preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date >= {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="merge",
+        watermark_column="order_date",
+        lookback="5 days"
+    )
+
+    count2 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
+    revenue2 = conn.execute("""
+        SELECT total_revenue
+        FROM orders_preagg_daily
+        WHERE order_date = DATE '2024-01-05'
+    """).fetchone()[0]
+
+    assert count1 == count2 == 10  # No duplicates
+    assert revenue1 == 104
+    assert revenue2 == 1104  # Updated value
+
+
+def test_refresh_external_watermark():
+    """Test stateless refresh with external watermark management."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE orders AS
+        SELECT
+            DATE '2024-01-01' + INTERVAL (i) DAY as order_date,
+            100 + i as revenue
+        FROM generate_series(0, 14) as t(i)
+    """)
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        time_dimension="order_date",
+        granularity="day"
+    )
+
+    # Simulating orchestrator storing watermark
+    watermark_store = {}
+
+    # First refresh
+    result1 = preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date"
+    )
+
+    watermark_store["daily_orders"] = result1.new_watermark
+    count1 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
+    assert count1 == 15
+
+    # Table gets dropped (simulating failure)
+    conn.execute("DROP TABLE orders_preagg_daily")
+
+    # Refresh with external watermark (stateless)
+    result2 = preagg.refresh(
+        connection=conn,
+        source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
+        table_name="orders_preagg_daily",
+        mode="incremental",
+        watermark_column="order_date",
+        from_watermark=f"'{watermark_store['daily_orders']}'"
+    )
+
+    count2 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
+    assert count2 == 0  # No new data after the watermark
+
+
+def test_refresh_result_dataclass():
+    """Test RefreshResult dataclass."""
+    result = RefreshResult(
+        mode="incremental",
+        rows_inserted=100,
+        rows_updated=0,
+        new_watermark="2024-01-15",
+        duration_seconds=1.23,
+        timestamp=datetime.now()
+    )
+
+    assert result.mode == "incremental"
+    assert result.rows_inserted == 100
+    assert result.new_watermark == "2024-01-15"
+    assert result.duration_seconds == 1.23
 
 
 if __name__ == "__main__":

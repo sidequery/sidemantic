@@ -170,7 +170,14 @@ class SQLGenerator:
                 offset=offset,
             )
             if preagg_sql:
-                return preagg_sql
+                # Add instrumentation comment
+                instrumentation = self._generate_instrumentation_comment(
+                    models=[model_names[0]],
+                    metrics=metrics,
+                    dimensions=dimensions,
+                    used_preagg=True
+                )
+                return preagg_sql + "\n" + instrumentation
 
         if not model_names:
             raise ValueError("No models found for query")
@@ -240,6 +247,15 @@ class SQLGenerator:
             full_sql = cte_str + "\n" + query
         else:
             full_sql = query
+
+        # Add instrumentation comment for query analysis
+        instrumentation = self._generate_instrumentation_comment(
+            models=list(all_models),
+            metrics=metrics,
+            dimensions=dimensions,
+            used_preagg=False
+        )
+        full_sql = full_sql + "\n" + instrumentation
 
         return full_sql
 
@@ -1639,3 +1655,46 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
 FROM {from_clause}{where_clause}{group_by_clause}{order_by_clause}{limit_clause}"""
 
         return query
+
+    def _generate_instrumentation_comment(
+        self,
+        models: list[str],
+        metrics: list[str],
+        dimensions: list[str],
+        used_preagg: bool = False
+    ) -> str:
+        """Generate instrumentation comment for query analysis.
+
+        Args:
+            models: List of model names used in query
+            metrics: List of metric references
+            dimensions: List of dimension references
+            used_preagg: Whether this query used a pre-aggregation
+
+        Returns:
+            SQL comment string with metadata
+        """
+        # Extract granularities from dimensions
+        granularities = set()
+        clean_dims = []
+        for dim in dimensions:
+            if "__" in dim:
+                parts = dim.rsplit("__", 1)
+                clean_dims.append(parts[0])
+                granularities.add(parts[1])
+            else:
+                clean_dims.append(dim)
+
+        # Build metadata
+        parts = []
+        parts.append(f"models={','.join(sorted(models))}")
+        parts.append(f"metrics={','.join(sorted(metrics))}")
+        parts.append(f"dimensions={','.join(sorted(clean_dims))}")
+
+        if granularities:
+            parts.append(f"granularities={','.join(sorted(granularities))}")
+
+        if used_preagg:
+            parts.append("used_preagg=true")
+
+        return f"-- sidemantic: {' '.join(parts)}"

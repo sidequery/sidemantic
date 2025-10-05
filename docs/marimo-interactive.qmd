@@ -492,7 +492,7 @@ mo.vstack([
 mo.md("---")
 ```
 
-## Data Model
+## Semantic Model Definition
 
 ### Python Definition
 
@@ -692,7 +692,7 @@ def _build_er_mermaid(g):
 
 er_diagram = _build_er_mermaid(graph)
 mo.vstack([
-    mo.md('### Data Model (ER Diagram)'),
+    mo.md('### Semantic Model Definition (ER Diagram)'),
     mo.mermaid(er_diagram),
 ])
 ```

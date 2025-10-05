@@ -387,21 +387,18 @@ SELECT high_value_revenue FROM orders
 ```
 :::
 
-::: {.callout-warning}
-## Filter on Joined Tables
-Only filter on tables that are actually joined:
+::: {.callout-tip}
+## Filtering on Joined Tables
 
-❌ This fails (customers not joined):
+Joins happen automatically when you filter on related models:
+
 ```sql
+-- This works! Automatically joins to customers
 SELECT orders.revenue
 WHERE customers.region = 'US'
 ```
 
-✅ Include a dimension to force join:
-```sql
-SELECT orders.revenue, customers.region
-WHERE customers.region = 'US'
-```
+You don't need to select a dimension from the filtered table - the filter alone triggers the join.
 :::
 
 ## Programmatic Alternative

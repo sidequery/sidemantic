@@ -156,7 +156,7 @@ class SQLGenerator:
         parsed_dims = self._parse_dimension_refs(dimensions)
 
         # Find all models needed for the query
-        model_names = self._find_required_models(metrics, dimensions)
+        model_names = self._find_required_models(metrics, dimensions, filters)
 
         # Try to use pre-aggregation if enabled (single model queries only)
         if use_preaggregations and len(model_names) == 1 and not ungrouped:
@@ -195,6 +195,23 @@ class SQLGenerator:
         # Classify filters for pushdown optimization
         pushdown_filters, main_query_filters = self._classify_filters_for_pushdown(filters or [], all_models)
 
+        # Determine which models have filters (for join type decision)
+        models_with_filters = set()
+        for model_name, model_filters in pushdown_filters.items():
+            if model_filters:
+                models_with_filters.add(model_name)
+        # Also check main query filters
+        for filter_expr in main_query_filters:
+            try:
+                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                for column in parsed.find_all(exp.Column):
+                    if column.table:
+                        # Remove _cte suffix if present
+                        model_name = column.table.replace("_cte", "")
+                        models_with_filters.add(model_name)
+            except Exception:
+                pass
+
         # Build CTEs for all models with pushed-down filters
         cte_sqls = []
         for model_name in all_models:
@@ -209,6 +226,7 @@ class SQLGenerator:
             parsed_dims=parsed_dims,
             metrics=metrics,
             filters=main_query_filters,
+            models_with_filters=models_with_filters,
             order_by=order_by,
             limit=limit,
             offset=offset,
@@ -277,8 +295,15 @@ class SQLGenerator:
 
         return filters
 
-    def _find_required_models(self, metrics: list[str], dimensions: list[str]) -> list[str]:
+    def _find_required_models(
+        self, metrics: list[str], dimensions: list[str], filters: list[str] | None = None
+    ) -> list[str]:
         """Find all models required for the query.
+
+        Args:
+            metrics: List of metric references
+            dimensions: List of dimension references
+            filters: Optional list of filter expressions
 
         Returns:
             List of model names in the order they are encountered (preserves order)
@@ -325,6 +350,22 @@ class SQLGenerator:
         # Then collect from metrics
         for metric in metrics:
             collect_models_from_metric(metric)
+
+        # Finally, collect from filters (to support filtering on joined tables without selecting dimensions)
+        if filters:
+            for filter_expr in filters:
+                # Parse filter to find model references
+                try:
+                    parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                    # Find all column references in the filter
+                    for column in parsed.find_all(exp.Column):
+                        if column.table:
+                            # Remove _cte suffix if present (shouldn't be, but be defensive)
+                            model_name = column.table.replace("_cte", "")
+                            add_model(model_name)
+                except Exception:
+                    # If parsing fails, skip this filter for model extraction
+                    pass
 
         return models
 
@@ -555,6 +596,7 @@ class SQLGenerator:
         parsed_dims: list[tuple[str, str | None]],
         metrics: list[str],
         filters: list[str] | None,
+        models_with_filters: set[str],
         order_by: list[str] | None,
         limit: int | None,
         offset: int | None = None,
@@ -568,6 +610,7 @@ class SQLGenerator:
             parsed_dims: Parsed dimensions with granularities
             metrics: Metric references
             filters: Filter expressions
+            models_with_filters: Set of models that have filters (for INNER JOIN)
             order_by: Order by fields
             limit: Row limit
             offset: Row offset
@@ -663,7 +706,10 @@ class SQLGenerator:
                         left_table = jp.from_model + "_cte"
                         right_table = jp.to_model + "_cte"
                         join_cond = f"{left_table}.{jp.from_entity} = {right_table}.{jp.to_entity}"
-                        query = query.join(right_table, on=join_cond, join_type="left")
+
+                        # Use INNER JOIN if this model has filters applied, otherwise LEFT JOIN
+                        join_type = "inner" if jp.to_model in models_with_filters else "left"
+                        query = query.join(right_table, on=join_cond, join_type=join_type)
                         joined_models.add(jp.to_model)
 
         # Collect metric-level filters

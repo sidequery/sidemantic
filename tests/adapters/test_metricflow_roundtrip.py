@@ -36,10 +36,10 @@ def test_import_real_metricflow_example():
     assert "revenue" in measure_names
     assert "avg_order_value" in measure_names
 
-    # Verify relationships were created from entities
+    # Verify relationships were created from entities (resolved to model names)
     rel_names = [r.name for r in orders.relationships]
-    assert "customer" in rel_names
-    customer_rel = next(r for r in orders.relationships if r.name == "customer")
+    assert "customers" in rel_names
+    customer_rel = next(r for r in orders.relationships if r.name == "customers")
     assert customer_rel.type == "many_to_one"
     assert customer_rel.foreign_key == "customer_id"
 

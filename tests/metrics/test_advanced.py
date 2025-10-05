@@ -39,7 +39,7 @@ def test_month_to_date_metric():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("Results:", results)
 
@@ -81,7 +81,7 @@ def test_year_to_date_metric():
     sql = generator.generate(metrics=["ytd_revenue"], dimensions=["sales.sale_date"])
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("YTD Results:", results)
 
@@ -125,7 +125,7 @@ def test_fill_nulls_with_zero():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     # Should have 0 instead of NULL for pending
     completed = [r for r in results if r[0] == "completed"][0]
@@ -157,7 +157,7 @@ def test_fill_nulls_with_string():
     sql = generator.generate(dimensions=["products.name", "products.grade"])
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     # Without fill_nulls, grade is NULL
     gadget = [r for r in results if r[0] == "Gadget"][0]
@@ -200,7 +200,7 @@ def test_offset_ratio_metric():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("Results:", results)
 
@@ -258,7 +258,7 @@ def test_conversion_metric():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("Results:", results)
 
@@ -324,7 +324,7 @@ def test_yoy_percent_change():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("YoY Results:", results)
 
@@ -377,7 +377,7 @@ def test_mom_difference():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("MoM Results:", results)
 
@@ -429,7 +429,7 @@ def test_wow_ratio():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("WoW Results:", results)
 

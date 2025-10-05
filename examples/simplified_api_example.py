@@ -1,18 +1,14 @@
-"""Example showing the simplified Measure API after consolidation.
-
-No more separate Metric class - everything is just Measure!
-"""
-
-from sidemantic.core.measure import Measure
+"""Example showing the Metric API."""
 
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_layer import SemanticLayer
 
 # Create semantic layer
 layer = SemanticLayer()
 
-# Define model with measures
+# Define model with metrics
 orders = Model(
     name="orders",
     table="orders",
@@ -21,15 +17,15 @@ orders = Model(
         Dimension(name="status", type="categorical", sql="status"),
         Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
     ],
-    measures=[
+    metrics=[
         # Simple aggregations - just use agg
-        Measure(name="revenue", agg="sum", expr="amount"),
-        Measure(name="order_count", agg="count"),
-        Measure(name="avg_order_value", agg="avg", expr="amount"),
-        # Complex measures - use type
-        Measure(name="margin_pct", type="ratio", numerator="revenue", denominator="cost"),
-        Measure(name="profit", type="derived", expr="revenue - cost"),
-        Measure(name="running_total", type="cumulative", expr="revenue", window="7 days"),
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
+        Metric(name="avg_order_value", agg="avg", sql="amount"),
+        # Complex metrics - use type
+        Metric(name="margin_pct", type="ratio", numerator="revenue", denominator="cost"),
+        Metric(name="profit", type="derived", sql="revenue - cost"),
+        Metric(name="running_total", type="cumulative", sql="revenue", window="7 days"),
     ],
 )
 
@@ -67,6 +63,3 @@ print()
 print("SQL query interface (auto-rewrites):")
 result = layer.sql("SELECT revenue, status FROM orders")
 print(result.fetchdf())
-print()
-
-print("One class (Measure) for everything - simple and powerful!")

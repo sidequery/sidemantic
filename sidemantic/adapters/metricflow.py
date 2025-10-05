@@ -45,6 +45,13 @@ class MetricFlowAdapter(BaseAdapter):
             # Parse single file
             self._parse_file(source_path, graph)
 
+        # Resolve entity names to actual model names
+        # MetricFlow uses singular entity names (e.g., "customer") while models may be plural (e.g., "customers")
+        self._resolve_relationship_names(graph)
+
+        # Rebuild adjacency graph after resolving relationship names
+        graph._build_adjacency()
+
         return graph
 
     def _parse_file(self, file_path: Path, graph: SemanticGraph) -> None:
@@ -623,3 +630,64 @@ class MetricFlowAdapter(BaseAdapter):
             # Note: inheritance is resolved before export, so extends field is not exported
 
         return result
+
+    def _resolve_relationship_names(self, graph: SemanticGraph) -> None:
+        """Resolve MetricFlow entity names to actual model names.
+
+        MetricFlow uses singular entity names (e.g., "customer") while models are often plural (e.g., "customers").
+        This method attempts to match entity names to actual models in the graph.
+
+        Args:
+            graph: Semantic graph with models
+        """
+        # Get all model names
+        model_names = set(graph.models.keys())
+
+        # For each model, check its relationships
+        for model in graph.models.values():
+            for rel in model.relationships:
+                # If the relationship name doesn't match any model, try to resolve it
+                if rel.name not in model_names:
+                    resolved_name = self._resolve_entity_to_model(rel.name, model_names)
+                    if resolved_name:
+                        # Update the relationship name to the actual model name
+                        rel.name = resolved_name
+
+    def _resolve_entity_to_model(self, entity_name: str, model_names: set[str]) -> str | None:
+        """Attempt to resolve an entity name to an actual model name.
+
+        Uses inflect library for proper pluralization/singularization.
+
+        Args:
+            entity_name: Entity name from MetricFlow
+            model_names: Set of available model names
+
+        Returns:
+            Resolved model name or None if no match found
+        """
+        import inflect
+
+        p = inflect.engine()
+
+        # Try exact match (case-sensitive)
+        if entity_name in model_names:
+            return entity_name
+
+        # Try pluralization
+        plural = p.plural(entity_name)
+        if plural in model_names:
+            return plural
+
+        # Try singularization
+        singular = p.singular_noun(entity_name)
+        if singular and singular in model_names:
+            return singular
+
+        # Try case-insensitive match
+        entity_lower = entity_name.lower()
+        for model_name in model_names:
+            if model_name.lower() == entity_lower:
+                return model_name
+
+        # No match found
+        return None

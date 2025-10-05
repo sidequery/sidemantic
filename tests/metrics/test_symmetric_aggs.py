@@ -294,7 +294,7 @@ def test_symmetric_aggregates_with_data():
     )
 
     # Execute query
-    result = conn.execute(sql).fetchall()
+    result = conn.execute(sql).fetchdf()
 
     # Without symmetric aggregates:
     # Order 1: revenue would be 100*2*2 = 400 (wrong!)

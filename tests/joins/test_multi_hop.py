@@ -106,7 +106,7 @@ result = sl.query(
 )
 
 print("Results (region_name, revenue):")
-for row in result.fetchall():
+for row in result.fetchdf():
     print(f"  {row}")
 print()
 

@@ -214,6 +214,37 @@ class OmniAdapter(BaseAdapter):
         Returns:
             Metric instance or None
         """
+        # Check for time comparison pattern first (date_offset_from_query + cancel_query_filter)
+        filter_defs = measure_def.get("filters", {})
+        if filter_defs:
+            for field, conditions in filter_defs.items():
+                if isinstance(conditions, dict):
+                    has_offset = "date_offset_from_query" in conditions
+                    has_cancel = conditions.get("cancel_query_filter") is True
+
+                    if has_offset and has_cancel:
+                        # This is a time comparison measure
+                        offset_str = conditions["date_offset_from_query"]
+
+                        # Parse offset to determine comparison type
+                        # e.g., "2 years" -> yoy, "1 month" -> mom, "1 week" -> wow
+                        comparison_type = self._parse_time_offset_to_comparison(offset_str)
+
+                        # Extract base measure name - typically the measure name minus suffix
+                        # e.g., "count_signups_same_time_two_years_previously" -> "count_signups"
+                        base_metric = self._extract_base_metric_name(name)
+
+                        return Metric(
+                            name=name,
+                            type="time_comparison",
+                            base_metric=base_metric,
+                            comparison_type=comparison_type,
+                            time_offset=offset_str,
+                            calculation="difference",  # Omni defaults to difference
+                            label=measure_def.get("label"),
+                            description=measure_def.get("description"),
+                        )
+
         # Map Omni aggregate types
         agg_type_str = measure_def.get("aggregate_type", "")
         type_mapping = {
@@ -236,12 +267,15 @@ class OmniAdapter(BaseAdapter):
             # Replace ${view.field} with just field
             sql = re.sub(r"\$\{[^.]+\.([^}]+)\}", r"\1", sql)
 
-        # Parse filters
+        # Parse regular filters
         filters = []
-        filter_defs = measure_def.get("filters", {})
         if filter_defs:
             for field, conditions in filter_defs.items():
                 if isinstance(conditions, dict):
+                    # Skip time comparison filters
+                    if "date_offset_from_query" in conditions and conditions.get("cancel_query_filter") is True:
+                        continue
+
                     for operator, value in conditions.items():
                         if operator == "is":
                             filters.append(f"{field} = '{value}'")
@@ -264,6 +298,60 @@ class OmniAdapter(BaseAdapter):
             label=measure_def.get("label"),
             description=measure_def.get("description"),
         )
+
+    def _parse_time_offset_to_comparison(self, offset: str) -> str:
+        """Parse Omni time offset string to comparison_type.
+
+        Args:
+            offset: Offset string like "2 years", "1 month", "1 week"
+
+        Returns:
+            Comparison type: yoy, mom, wow, dod, qoq, or prior_period
+        """
+        offset_lower = offset.lower().strip()
+
+        # Check for common patterns
+        if "year" in offset_lower:
+            return "yoy"
+        elif "month" in offset_lower:
+            return "mom"
+        elif "week" in offset_lower:
+            return "wow"
+        elif "day" in offset_lower:
+            return "dod"
+        elif "quarter" in offset_lower:
+            return "qoq"
+        else:
+            # Default to prior_period for custom offsets
+            return "prior_period"
+
+    def _extract_base_metric_name(self, comparison_name: str) -> str:
+        """Extract base metric name from time comparison metric name.
+
+        Args:
+            comparison_name: Name like "revenue_yoy" or "count_signups_same_time_two_years_previously"
+
+        Returns:
+            Base metric name (best guess)
+        """
+        # Common suffixes to remove
+        suffixes = [
+            "_yoy", "_mom", "_wow", "_dod", "_qoq",
+            "_same_time_two_years_previously",
+            "_same_time_one_year_previously",
+            "_same_time_last_month",
+            "_same_time_last_week",
+            "_previous_period",
+            "_prior_period",
+        ]
+
+        name = comparison_name
+        for suffix in suffixes:
+            if name.endswith(suffix):
+                return name[:-len(suffix)]
+
+        # If no known suffix, return as-is and let user fix it
+        return comparison_name
 
     def _parse_relationships(self, model_file: Path, graph: SemanticGraph) -> None:
         """Parse relationships from Omni model file.
@@ -431,6 +519,36 @@ class OmniAdapter(BaseAdapter):
         for metric in model.metrics:
             measure_def: dict[str, Any] = {}
 
+            # Handle time_comparison metrics specially
+            if metric.type == "time_comparison":
+                # Get the base metric to determine aggregate type
+                # For now, use count as default (would need graph context to resolve properly)
+                measure_def["aggregate_type"] = "count"
+
+                # Convert time_comparison to Omni's filter-based format
+                time_offset = metric.time_offset or self._comparison_type_to_offset(metric.comparison_type)
+
+                # Find the time dimension to apply the offset to
+                # Typically this would be the model's default time dimension
+                # For now, use a generic name - user may need to adjust
+                time_field = metric.default_time_dimension or "created_at"
+
+                measure_def["filters"] = {
+                    time_field: {
+                        "date_offset_from_query": time_offset,
+                        "cancel_query_filter": True,
+                    }
+                }
+
+                if metric.label:
+                    measure_def["label"] = metric.label
+
+                if metric.description:
+                    measure_def["description"] = metric.description
+
+                measures[metric.name] = measure_def
+                continue
+
             # Map aggregation type
             if metric.agg:
                 type_mapping = {
@@ -482,6 +600,27 @@ class OmniAdapter(BaseAdapter):
             view["measures"] = measures
 
         return view
+
+    def _comparison_type_to_offset(self, comparison_type: str | None) -> str:
+        """Convert comparison_type to Omni time offset string.
+
+        Args:
+            comparison_type: Comparison type (yoy, mom, wow, etc.)
+
+        Returns:
+            Offset string like "1 year", "1 month", etc.
+        """
+        if not comparison_type:
+            return "1 year"
+
+        mapping = {
+            "yoy": "1 year",
+            "mom": "1 month",
+            "wow": "1 week",
+            "dod": "1 day",
+            "qoq": "1 quarter",
+        }
+        return mapping.get(comparison_type, "1 year")
 
     def _export_relationships(self, models: dict[str, Model], output_dir: Path) -> None:
         """Export relationships to model.yaml file.

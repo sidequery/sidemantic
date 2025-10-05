@@ -1,8 +1,12 @@
 """Parameter definitions for dynamic query input.
 
-Parameters allow users to pass values at query time that affect SQL generation,
-similar to LookML parameters or dbt vars.
+DEPRECATED: Parameters are deprecated in favor of using Jinja templates directly.
+Use Jinja variables and filters for dynamic SQL generation instead.
+
+Parameters will be removed in a future version.
 """
+
+import warnings
 
 from typing import Any, Literal
 
@@ -11,6 +15,8 @@ from pydantic import BaseModel, Field
 
 class Parameter(BaseModel):
     """Parameter definition for user input.
+
+    DEPRECATED: Use Jinja templates instead of Parameters.
 
     Parameters can be referenced in filters, SQL expressions, and metric definitions
     to create dynamic, user-configurable queries.
@@ -30,6 +36,14 @@ class Parameter(BaseModel):
     # For date parameters
     default_to_today: bool = Field(False, description="Default to current date (for date parameters)")
 
+    def __init__(self, **data):
+        warnings.warn(
+            "Parameters are deprecated. Use Jinja templates directly for dynamic SQL generation.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(**data)
+
     def __hash__(self) -> int:
         return hash(self.name)
 
@@ -41,6 +55,9 @@ class Parameter(BaseModel):
 
         Returns:
             Formatted value safe for SQL
+
+        Raises:
+            ValueError: If value is invalid for parameter type
         """
         if value is None:
             value = self.default_value
@@ -53,11 +70,28 @@ class Parameter(BaseModel):
             # Format as quoted date string (SQLGlot will handle casting)
             return f"'{value}'"
         elif self.type == "number":
-            # Numbers don't need quoting
-            return str(value)
+            # Validate that value is actually numeric to prevent SQL injection
+            if isinstance(value, (int, float)):
+                return str(value)
+            elif isinstance(value, str):
+                # Try to parse as float to ensure it's valid
+                try:
+                    parsed = float(value)
+                    # Check for NaN and infinity
+                    if not (-float("inf") < parsed < float("inf")):
+                        raise ValueError(f"Invalid numeric value: {value}")
+                    return str(parsed)
+                except (ValueError, TypeError) as e:
+                    raise ValueError(f"Invalid numeric parameter value: {value}") from e
+            else:
+                raise ValueError(f"Numeric parameter must be int, float, or numeric string, got {type(value).__name__}")
         elif self.type == "unquoted":
             # Unquoted (for table names, column names, etc.)
-            return str(value)
+            # This is inherently dangerous - validate it's a safe identifier
+            str_value = str(value)
+            if not str_value.replace("_", "").replace(".", "").isalnum():
+                raise ValueError(f"Unquoted parameter must be alphanumeric with underscores/dots only: {value}")
+            return str_value
         elif self.type == "yesno":
             # Boolean
             return "TRUE" if value else "FALSE"

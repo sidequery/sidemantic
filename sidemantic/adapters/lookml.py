@@ -276,6 +276,39 @@ class LookMLAdapter(BaseAdapter):
         has_explicit_type = "type" in measure_def
         measure_type = measure_def.get("type", "count")
 
+        # Handle period_over_period type (time comparisons)
+        if measure_type == "period_over_period":
+            based_on = measure_def.get("based_on")
+            period = measure_def.get("period", "year")
+            kind = measure_def.get("kind", "relative_change")
+
+            # Map period to comparison_type
+            period_mapping = {
+                "year": "yoy",
+                "month": "mom",
+                "week": "wow",
+                "day": "dod",
+                "quarter": "qoq",
+            }
+            comparison_type = period_mapping.get(period, "yoy")
+
+            # Map kind to calculation
+            kind_mapping = {
+                "difference": "difference",
+                "relative_change": "percent_change",
+                "ratio": "ratio",
+            }
+            calculation = kind_mapping.get(kind, "percent_change")
+
+            return Metric(
+                name=name,
+                type="time_comparison",
+                base_metric=based_on,
+                comparison_type=comparison_type,
+                calculation=calculation,
+                description=measure_def.get("description"),
+            )
+
         # Map LookML measure types
         type_mapping = {
             "count": "count",
@@ -542,7 +575,44 @@ class LookMLAdapter(BaseAdapter):
             measure_def = {"name": metric.name}
 
             # Handle different metric types
-            if metric.type == "derived":
+            if metric.type == "time_comparison":
+                # Export as period_over_period measure
+                measure_def["type"] = "period_over_period"
+
+                # Add based_on (base metric)
+                if metric.base_metric:
+                    # Remove model prefix if present (e.g., "sales.revenue" -> "revenue")
+                    based_on = metric.base_metric
+                    if "." in based_on:
+                        based_on = based_on.split(".")[-1]
+                    measure_def["based_on"] = based_on
+
+                # Map comparison_type to period
+                if metric.comparison_type:
+                    period_mapping = {
+                        "yoy": "year",
+                        "mom": "month",
+                        "wow": "week",
+                        "dod": "day",
+                        "qoq": "quarter",
+                    }
+                    period = period_mapping.get(metric.comparison_type, "year")
+                    measure_def["period"] = period
+
+                # Map calculation to kind
+                if metric.calculation:
+                    kind_mapping = {
+                        "difference": "difference",
+                        "percent_change": "relative_change",
+                        "ratio": "ratio",
+                    }
+                    kind = kind_mapping.get(metric.calculation, "relative_change")
+                    measure_def["kind"] = kind
+
+                if metric.description:
+                    measure_def["description"] = metric.description
+
+            elif metric.type == "derived":
                 measure_def["type"] = "number"
                 if metric.sql:
                     sql = metric.sql.replace("{model}", "${TABLE}")
@@ -567,8 +637,8 @@ class LookMLAdapter(BaseAdapter):
                     sql = metric.sql.replace("{model}", "${TABLE}")
                     measure_def["sql"] = sql
 
-            # Add filters
-            if metric.filters:
+            # Add filters (skip for time_comparison as they don't use filters)
+            if metric.filters and metric.type != "time_comparison":
                 filters_all = []
                 for filter_str in metric.filters:
                     # Parse "field: value" format
@@ -579,7 +649,7 @@ class LookMLAdapter(BaseAdapter):
                         filters_all.append([{field: value}])
                 measure_def["filters__all"] = filters_all
 
-            if metric.description:
+            if metric.description and metric.type != "time_comparison":
                 measure_def["description"] = metric.description
 
             measures.append(measure_def)

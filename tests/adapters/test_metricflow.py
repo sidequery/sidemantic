@@ -23,8 +23,8 @@ def test_metricflow_adapter():
 
     # Check relationships
     assert len(orders.relationships) > 0
-    # Should have a many_to_one relationship to customer
-    customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
+    # Should have a many_to_one relationship to customers (resolved from entity name "customer")
+    customer_rel = next((r for r in orders.relationships if r.name == "customers"), None)
     assert customer_rel is not None
     assert customer_rel.type == "many_to_one"
 
@@ -57,22 +57,36 @@ def test_metricflow_adapter():
 
 
 def test_metricflow_adapter_join_discovery():
-    """Test that MetricFlow adapter enables join discovery."""
+    """Test that MetricFlow adapter resolves entity names to model names."""
     adapter = MetricFlowAdapter()
     graph = adapter.parse(Path("examples/metricflow/semantic_models.yml"))
 
     # MetricFlow uses entity names for relationships
     # The orders model has a relationship to "customer" (entity name)
-    # which corresponds to the customers model
-    # For now, the adapter uses entity names, not model names
-    # TODO: Update adapter to resolve entity names to model names
+    # which should be resolved to the actual model name "customers"
 
     # Check that orders has a relationship defined
     orders = graph.get_model("orders")
     assert len(orders.relationships) > 0
-    customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
-    assert customer_rel is not None
+
+    # After resolution, the relationship should point to "customers" (not "customer")
+    customer_rel = next((r for r in orders.relationships if r.name == "customers"), None)
+    assert customer_rel is not None, "Relationship should be resolved from 'customer' to 'customers'"
     assert customer_rel.type == "many_to_one"
+
+    # Verify that queries can now build join paths
+    from sidemantic.sql.generator_v2 import SQLGenerator
+
+    generator = SQLGenerator(graph)
+
+    # This query should work now that relationships are resolved
+    sql = generator.generate(
+        metrics=["orders.revenue"],
+        dimensions=["customers.region"],  # Cross-model dimension
+    )
+
+    # Should contain a join to customers
+    assert "customers" in sql.lower()
 
 
 def test_metricflow_advanced_metrics():
@@ -90,6 +104,7 @@ def test_metricflow_advanced_metrics():
     assert orders.primary_key == "order_id"
 
     # Check entities converted to relationships
+    # Note: "customer" and "product" entities cannot be resolved since there are no matching models
     assert len(orders.relationships) == 2
     customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
     assert customer_rel is not None
@@ -233,12 +248,12 @@ def test_metricflow_multi_model():
     assert orders.primary_key == "order_id"
     assert len(orders.relationships) == 2
 
-    # Verify relationships
-    customer_rel = next((r for r in orders.relationships if r.name == "customer"), None)
+    # Verify relationships (resolved from entity names "customer" and "product")
+    customer_rel = next((r for r in orders.relationships if r.name == "customers"), None)
     assert customer_rel is not None
     assert customer_rel.type == "many_to_one"
 
-    product_rel = next((r for r in orders.relationships if r.name == "product"), None)
+    product_rel = next((r for r in orders.relationships if r.name == "products"), None)
     assert product_rel is not None
     assert product_rel.type == "many_to_one"
 
@@ -259,8 +274,8 @@ def test_metricflow_multi_model():
     assert line_items.primary_key == "line_item_id"
     assert len(line_items.relationships) == 2
 
-    # Check line_items relationships
-    order_rel = next((r for r in line_items.relationships if r.name == "order"), None)
+    # Check line_items relationships (should be resolved from entity names)
+    order_rel = next((r for r in line_items.relationships if r.name == "orders"), None)
     assert order_rel is not None
     assert order_rel.type == "many_to_one"
 

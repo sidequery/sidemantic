@@ -71,7 +71,7 @@ def test_view_can_be_queried():
     conn.execute(view_sql)
 
     # Query the view
-    result = conn.execute("SELECT * FROM revenue_by_status").fetchall()
+    result = conn.execute("SELECT * FROM revenue_by_status").fetchdf()
 
     assert len(result) == 1
     assert result[0][1] == 300  # total revenue
@@ -123,7 +123,7 @@ def test_join_view_against_other_tables():
         FROM sales s
         JOIN product_metrics pm ON s.product_name = pm.name
         ORDER BY revenue DESC
-    """).fetchall()
+    """).fetchdf()
 
     assert len(result) == 2
     # Both have same revenue (100 * 10 = 1000, 50 * 20 = 1000)

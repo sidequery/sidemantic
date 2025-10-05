@@ -774,3 +774,165 @@ def test_lookml_bq_thelook_distribution_centers():
     # Check measure
     count_measure = dc.get_metric("count")
     assert count_measure is not None
+
+
+def test_lookml_period_over_period_import():
+    """Test importing LookML period_over_period measures as time_comparison metrics."""
+    import tempfile
+    from pathlib import Path
+
+    import lkml
+
+    # Create a test LookML file with period_over_period measures
+    lookml_content = {
+        "views": [
+            {
+                "name": "sales",
+                "sql_table_name": "public.sales",
+                "dimensions": [
+                    {"name": "id", "type": "number", "sql": "${TABLE}.id", "primary_key": "yes"},
+                    {"name": "amount", "type": "number", "sql": "${TABLE}.amount"},
+                ],
+                "dimension_groups": [
+                    {
+                        "name": "created",
+                        "type": "time",
+                        "timeframes": ["date", "week", "month", "year"],
+                        "sql": "${TABLE}.created_at",
+                    }
+                ],
+                "measures": [
+                    {"name": "total_revenue", "type": "sum", "sql": "${amount}"},
+                    {
+                        "name": "revenue_yoy",
+                        "type": "period_over_period",
+                        "based_on": "total_revenue",
+                        "period": "year",
+                        "kind": "relative_change",
+                    },
+                    {
+                        "name": "revenue_mom_diff",
+                        "type": "period_over_period",
+                        "based_on": "total_revenue",
+                        "period": "month",
+                        "kind": "difference",
+                    },
+                ],
+            }
+        ]
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        lkml_file = tmpdir_path / "sales.lkml"
+
+        with open(lkml_file, "w") as f:
+            f.write(lkml.dump(lookml_content))
+
+        # Import
+        adapter = LookMLAdapter()
+        graph = adapter.parse(lkml_file)
+
+        # Verify sales model
+        assert "sales" in graph.models
+        sales = graph.get_model("sales")
+
+        # Verify period_over_period measures were imported as time_comparison
+        revenue_yoy = sales.get_metric("revenue_yoy")
+        assert revenue_yoy is not None
+        assert revenue_yoy.type == "time_comparison"
+        assert revenue_yoy.base_metric == "total_revenue"
+        assert revenue_yoy.comparison_type == "yoy"
+        assert revenue_yoy.calculation == "percent_change"
+
+        revenue_mom_diff = sales.get_metric("revenue_mom_diff")
+        assert revenue_mom_diff is not None
+        assert revenue_mom_diff.type == "time_comparison"
+        assert revenue_mom_diff.base_metric == "total_revenue"
+        assert revenue_mom_diff.comparison_type == "mom"
+        assert revenue_mom_diff.calculation == "difference"
+
+
+def test_lookml_period_over_period_export():
+    """Test exporting time_comparison metrics as LookML period_over_period measures."""
+    import tempfile
+    from pathlib import Path
+
+    import lkml
+
+    from sidemantic.core.dimension import Dimension
+    from sidemantic.core.metric import Metric
+    from sidemantic.core.model import Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    # Create a model with time_comparison metrics
+    sales = Model(
+        name="sales",
+        table="public.sales",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", sql="id", type="numeric"),
+            Dimension(name="revenue", sql="revenue", type="numeric"),
+            Dimension(name="created_date", sql="created_at", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="total_revenue", agg="sum", sql="revenue"),
+            Metric(
+                name="revenue_yoy_pct",
+                type="time_comparison",
+                base_metric="total_revenue",
+                comparison_type="yoy",
+                calculation="percent_change",
+                description="Year over year revenue change",
+            ),
+            Metric(
+                name="revenue_wow_diff",
+                type="time_comparison",
+                base_metric="total_revenue",
+                comparison_type="wow",
+                calculation="difference",
+            ),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+
+    # Export
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        output_file = tmpdir_path / "sales.lkml"
+
+        adapter = LookMLAdapter()
+        adapter.export(graph, output_file)
+
+        # Read back and verify
+        with open(output_file) as f:
+            content = f.read()
+
+        parsed = lkml.load(content)
+
+        # Find sales view
+        views = parsed.get("views", [])
+        sales_view = next(v for v in views if v.get("name") == "sales")
+
+        # Find measures
+        measures = sales_view.get("measures", [])
+        measure_dict = {m["name"]: m for m in measures}
+
+        # Verify revenue_yoy_pct was exported as period_over_period
+        assert "revenue_yoy_pct" in measure_dict
+        revenue_yoy = measure_dict["revenue_yoy_pct"]
+        assert revenue_yoy["type"] == "period_over_period"
+        assert revenue_yoy["based_on"] == "total_revenue"
+        assert revenue_yoy["period"] == "year"
+        assert revenue_yoy["kind"] == "relative_change"
+        assert revenue_yoy["description"] == "Year over year revenue change"
+
+        # Verify revenue_wow_diff
+        assert "revenue_wow_diff" in measure_dict
+        revenue_wow = measure_dict["revenue_wow_diff"]
+        assert revenue_wow["type"] == "period_over_period"
+        assert revenue_wow["based_on"] == "total_revenue"
+        assert revenue_wow["period"] == "week"
+        assert revenue_wow["kind"] == "difference"

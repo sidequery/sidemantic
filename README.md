@@ -11,6 +11,10 @@ A semantic layer with multi-format adapter support.
 - **SQLGlot-powered**: Dialect-agnostic SQL generation with transpilation support
 - **Type-safe**: Pydantic models with validation
 
+## Database Support
+
+Currently **DuckDB only**. The library uses DuckDB for query execution and data processing. SQL generation supports multiple dialects (Snowflake, BigQuery, Postgres, etc.) via SQLGlot transpilation, but actual query execution requires DuckDB.
+
 ## Supported Formats
 
 Sidemantic can import semantic models from:
@@ -448,9 +452,9 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 - ✅ Pre-aggregations with automatic query routing (disabled by default)
 - ✅ Predicate pushdown with SQLGlot parsing (always enabled)
 
-**Cloud Features:**
-- Pre-aggregation materialization and refresh scheduling will be part of the Sidequery cloud platform
-- Additional database connectors will be added based on Sidequery platform requirements
+**Cloud Features (Coming Soon):**
+- Pre-aggregation materialization and refresh scheduling
+- Additional database connectors beyond DuckDB
 
 ## Examples
 

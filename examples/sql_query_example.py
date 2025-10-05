@@ -4,8 +4,8 @@ This shows how users can write familiar SQL queries that get automatically
 rewritten to use the semantic layer's metrics and dimensions.
 """
 
-from sidemantic.core.join import Join
-from sidemantic.core.measure import Measure
+from sidemantic.core.relationship import Relationship
+from sidemantic.core.metric import Metric
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.model import Model
@@ -66,12 +66,12 @@ def main():
             Dimension(name="status", type="categorical", sql="status"),
             Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
         ],
-        measures=[
-            Measure(name="revenue", agg="sum", expr="amount"),
-            Measure(name="order_count", agg="count"),
-            Measure(name="avg_order_value", agg="avg", expr="amount"),
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+            Metric(name="order_count", agg="count"),
+            Metric(name="avg_order_value", agg="avg", sql="amount"),
         ],
-        joins=[Join(name="customers", type="belongs_to", foreign_key="customer_id")],
+        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
     )
 
     # Define customers model
@@ -84,8 +84,8 @@ def main():
             Dimension(name="region", type="categorical", sql="region"),
             Dimension(name="tier", type="categorical", sql="tier"),
         ],
-        measures=[Measure(name="customer_count", agg="count")],
-        joins=[Join(name="orders", type="has_many", foreign_key="customer_id")],
+        metrics=[Metric(name="customer_count", agg="count")],
+        relationships=[Relationship(name="orders", type="one_to_many", foreign_key="customer_id")],
     )
 
     layer.add_model(orders)

@@ -334,7 +334,7 @@ def test_end_to_end_with_real_data():
         metrics=["orders.revenue"],
         dimensions=["orders.region"],
         filters=["orders.revenue >= 200"],  # Should use HAVING
-    ).fetchall()
+    ).fetchdf()
 
     # Should only return regions with total revenue >= 200
     # US: 50+150+25 = 225, EU: 300+75 = 375

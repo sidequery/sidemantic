@@ -14,13 +14,12 @@ This example demonstrates:
 """
 
 import duckdb
-from sidemantic.core.entity import Entity
-from sidemantic.core.join import Join
-from sidemantic.core.measure import Measure
 
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.table_calculation import TableCalculation
 from sidemantic.sql.generator_v2 import SQLGenerator
@@ -100,23 +99,22 @@ def main():
     graph.add_parameter(min_amount_param)
     print(f"Added parameters: {list(graph.parameters.keys())}")
 
-    # Define orders model with joins (for symmetric aggregates)
+    # Define orders model with relationships (for symmetric aggregates)
     orders = Model(
         name="orders",
         table="orders",
         primary_key="id",
-        entities=[Entity(name="order_id", type="primary", expr="id")],
         dimensions=[
             Dimension(name="order_date", type="time", sql="order_date"),
             Dimension(name="status", type="categorical", sql="status"),
         ],
-        measures=[
-            Measure(name="revenue", agg="sum", expr="amount"),
-            Measure(name="order_count", agg="count", expr="*"),
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+            Metric(name="order_count", agg="count"),
         ],
-        joins=[
-            Join(name="order_items", type="has_many", foreign_key="order_id"),
-            Join(name="shipments", type="has_many", foreign_key="order_id"),
+        relationships=[
+            Relationship(name="order_items", type="one_to_many", foreign_key="order_id"),
+            Relationship(name="shipments", type="one_to_many", foreign_key="order_id"),
         ],
     )
 
@@ -125,15 +123,14 @@ def main():
         name="order_items",
         table="order_items",
         primary_key="id",
-        entities=[Entity(name="item_id", type="primary", expr="id")],
         dimensions=[
             Dimension(name="product_name", type="categorical", sql="product_name"),
         ],
-        measures=[
-            Measure(name="total_quantity", agg="sum", expr="quantity"),
+        metrics=[
+            Metric(name="total_quantity", agg="sum", sql="quantity"),
         ],
-        joins=[
-            Join(name="orders", type="belongs_to", foreign_key="order_id"),
+        relationships=[
+            Relationship(name="orders", type="many_to_one", foreign_key="order_id"),
         ],
     )
 
@@ -142,15 +139,14 @@ def main():
         name="shipments",
         table="shipments",
         primary_key="id",
-        entities=[Entity(name="shipment_id", type="primary", expr="id")],
         dimensions=[
             Dimension(name="shipment_date", type="time", sql="shipment_date"),
         ],
-        measures=[
-            Measure(name="shipment_count", agg="count", expr="*"),
+        metrics=[
+            Metric(name="shipment_count", agg="count"),
         ],
-        joins=[
-            Join(name="orders", type="belongs_to", foreign_key="order_id"),
+        relationships=[
+            Relationship(name="orders", type="many_to_one", foreign_key="order_id"),
         ],
     )
 
@@ -162,25 +158,25 @@ def main():
     # Define advanced metrics
 
     # Month-to-date revenue (grain-to-date)
-    mtd_revenue = Measure(
+    mtd_revenue = Metric(
         name="mtd_revenue",
         type="cumulative",
-        expr="orders.revenue",
+        sql="orders.revenue",
         grain_to_date="month",
         description="Month-to-date cumulative revenue",
     )
 
     # Year-to-date revenue
-    ytd_revenue = Measure(
+    ytd_revenue = Metric(
         name="ytd_revenue",
         type="cumulative",
-        expr="orders.revenue",
+        sql="orders.revenue",
         grain_to_date="year",
         description="Year-to-date cumulative revenue",
     )
 
     # Month-over-month growth (offset ratio)
-    mom_growth = Measure(
+    mom_growth = Metric(
         name="mom_growth",
         type="ratio",
         numerator="orders.revenue",

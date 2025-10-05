@@ -11,9 +11,9 @@ to multiple "many" side tables, creating a fan-out effect.
 """
 
 import duckdb
-from sidemantic.core.entity import Entity
-from sidemantic.core.join import Join
-from sidemantic.core.measure import Measure
+# Entity removed - use primary_key parameter
+from sidemantic.core.relationship import Relationship
+from sidemantic.core.metric import Metric
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.model import Model
@@ -76,12 +76,12 @@ orders = Model(
     name="orders",
     table="orders",
     primary_key="id",
-    entities=[Entity(name="order_id", type="primary", expr="id")],
+    entities=[Entity(name="order_id", type="primary", sql="id")],
     dimensions=[Dimension(name="order_date", type="time", sql="order_date")],
-    measures=[Measure(name="revenue", agg="sum", expr="amount")],
-    joins=[
-        Join(name="order_items", type="has_many", foreign_key="order_id"),
-        Join(name="shipments", type="has_many", foreign_key="order_id"),
+    metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    relationships=[
+        Relationship(name="order_items", type="one_to_many", foreign_key="order_id"),
+        Relationship(name="shipments", type="one_to_many", foreign_key="order_id"),
     ],
 )
 
@@ -90,10 +90,10 @@ order_items = Model(
     name="order_items",
     table="order_items",
     primary_key="id",
-    entities=[Entity(name="item_id", type="primary", expr="id")],
+    entities=[Entity(name="item_id", type="primary", sql="id")],
     dimensions=[],
-    measures=[Measure(name="total_quantity", agg="sum", expr="quantity")],
-    joins=[Join(name="orders", type="belongs_to", foreign_key="order_id")],
+    metrics=[Metric(name="total_quantity", agg="sum", sql="quantity")],
+    relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
 )
 
 # Shipments model
@@ -101,10 +101,10 @@ shipments = Model(
     name="shipments",
     table="shipments",
     primary_key="id",
-    entities=[Entity(name="shipment_id", type="primary", expr="id")],
+    entities=[Entity(name="shipment_id", type="primary", sql="id")],
     dimensions=[],
-    measures=[Measure(name="shipment_count", agg="count", expr="*")],
-    joins=[Join(name="orders", type="belongs_to", foreign_key="order_id")],
+    metrics=[Metric(name="shipment_count", agg="count", sql="*")],
+    relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
 )
 
 graph.add_model(orders)

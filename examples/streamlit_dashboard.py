@@ -19,9 +19,9 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from sidemantic.core.entity import Entity
-from sidemantic.core.join import Join
-from sidemantic.core.measure import Measure
+# Entity removed - use primary_key parameter
+from sidemantic.core.relationship import Relationship
+from sidemantic.core.metric import Metric
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.model import Model
@@ -157,21 +157,21 @@ def setup_semantic_layer():
         table="orders",
         primary_key="id",
         entities=[
-            Entity(name="order_id", type="primary", expr="id"),
-            Entity(name="customer_id", type="foreign", expr="customer_id"),
+            Entity(name="order_id", type="primary", sql="id"),
+            Entity(name="customer_id", type="foreign", sql="customer_id"),
         ],
         dimensions=[
             Dimension(name="order_date", type="time", sql="order_date"),
             Dimension(name="status", type="categorical", sql="status"),
         ],
-        measures=[
-            Measure(name="revenue", agg="sum", expr="amount"),
-            Measure(name="order_count", agg="count", expr="*"),
-            Measure(name="avg_order_value", agg="avg", expr="amount"),
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+            Metric(name="order_count", agg="count", sql="*"),
+            Metric(name="avg_order_value", agg="avg", sql="amount"),
         ],
-        joins=[
-            Join(name="customers", type="belongs_to", foreign_key="customer_id"),
-            Join(name="order_items", type="has_many", foreign_key="order_id"),
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
+            Relationship(name="order_items", type="one_to_many", foreign_key="order_id"),
         ],
     )
 
@@ -180,13 +180,13 @@ def setup_semantic_layer():
         name="customers",
         table="customers",
         primary_key="id",
-        entities=[Entity(name="customer_id", type="primary", expr="id")],
+        entities=[Entity(name="customer_id", type="primary", sql="id")],
         dimensions=[
             Dimension(name="name", type="categorical", sql="name"),
             Dimension(name="region", type="categorical", sql="region"),
             Dimension(name="tier", type="categorical", sql="tier"),
         ],
-        measures=[Measure(name="customer_count", agg="count", expr="*")],
+        metrics=[Metric(name="customer_count", agg="count", sql="*")],
     )
 
     # Order items model
@@ -194,13 +194,13 @@ def setup_semantic_layer():
         name="order_items",
         table="order_items",
         primary_key="id",
-        entities=[Entity(name="item_id", type="primary", expr="id")],
+        entities=[Entity(name="item_id", type="primary", sql="id")],
         dimensions=[Dimension(name="product_id", type="numeric", sql="product_id")],
-        measures=[
-            Measure(name="total_quantity", agg="sum", expr="quantity"),
-            Measure(name="item_count", agg="count", expr="*"),
+        metrics=[
+            Metric(name="total_quantity", agg="sum", sql="quantity"),
+            Metric(name="item_count", agg="count", sql="*"),
         ],
-        joins=[Join(name="orders", type="belongs_to", foreign_key="order_id")],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
     )
 
     graph.add_model(orders)
@@ -208,7 +208,7 @@ def setup_semantic_layer():
     graph.add_model(order_items)
 
     # Add metrics
-    graph.add_metric(Measure(name="total_revenue", expr="orders.revenue", description="Total revenue from all orders"))
+    graph.add_metric(Metric(name="total_revenue", sql="orders.revenue", description="Total revenue from all orders"))
 
     return graph
 

@@ -347,10 +347,101 @@ def test_parameters_with_actual_data():
     )
 
     # Execute query
-    result = conn.execute(sql).fetchall()
+    result = conn.execute(sql).fetchdf()
 
     # Should only get completed orders (2 rows: 200 and 300)
     assert len(result) == 2
     assert sum(row[1] for row in result) == 500  # Total revenue
 
     conn.close()
+
+
+def test_numeric_parameter_sql_injection_protection():
+    """Test that numeric parameters reject SQL injection attempts."""
+    param = Parameter(name="amount", type="number", default_value=0)
+
+    # Valid numeric values should work
+    assert param.format_value(100) == "100"
+    assert param.format_value(0) == "0"
+    assert param.format_value(-50.5) == "-50.5"
+    assert param.format_value("42") == "42.0"
+
+    # SQL injection attempts should be rejected
+    with pytest.raises(ValueError, match="Invalid numeric parameter value"):
+        param.format_value("0); DROP TABLE users; --")
+
+    with pytest.raises(ValueError, match="Invalid numeric parameter value"):
+        param.format_value("1 OR 1=1")
+
+    with pytest.raises(ValueError, match="Invalid numeric parameter value"):
+        param.format_value("'; DELETE FROM orders; --")
+
+    with pytest.raises(ValueError):
+        param.format_value("not_a_number")
+
+    # Non-string, non-numeric types should be rejected
+    with pytest.raises(ValueError, match="Numeric parameter must be"):
+        param.format_value([1, 2, 3])
+
+    with pytest.raises(ValueError, match="Numeric parameter must be"):
+        param.format_value({"value": 100})
+
+
+def test_unquoted_parameter_sql_injection_protection():
+    """Test that unquoted parameters reject dangerous values."""
+    param = Parameter(name="table_name", type="unquoted", default_value="orders")
+
+    # Valid identifiers should work
+    assert param.format_value("customers") == "customers"
+    assert param.format_value("user_orders") == "user_orders"
+    assert param.format_value("schema.table") == "schema.table"
+    assert param.format_value("table123") == "table123"
+
+    # SQL injection attempts should be rejected
+    with pytest.raises(ValueError, match="must be alphanumeric"):
+        param.format_value("orders; DROP TABLE users; --")
+
+    with pytest.raises(ValueError, match="must be alphanumeric"):
+        param.format_value("orders' OR '1'='1")
+
+    with pytest.raises(ValueError, match="must be alphanumeric"):
+        param.format_value("table (SELECT * FROM passwords)")
+
+
+def test_string_parameter_escaping():
+    """Test that string parameters properly escape quotes."""
+    param = Parameter(name="description", type="string", default_value="")
+
+    # Normal strings
+    assert param.format_value("test") == "'test'"
+
+    # Strings with single quotes should be escaped
+    assert param.format_value("O'Reilly") == "'O''Reilly'"
+    assert param.format_value("it's") == "'it''s'"
+
+    # SQL injection attempts should be escaped (not rejected, but rendered harmless)
+    result = param.format_value("'; DROP TABLE users; --")
+    assert result == "'''; DROP TABLE users; --'"
+    # The single quote at the start is escaped, so it becomes a literal string value
+
+
+def test_parameter_interpolation_with_sql_injection():
+    """Test that parameter interpolation prevents SQL injection in actual queries."""
+    params = {
+        "amount": Parameter(name="amount", type="number", default_value=0),
+        "table": Parameter(name="table", type="unquoted", default_value="orders"),
+    }
+
+    param_set = ParameterSet(params)
+
+    # Attempt SQL injection via numeric parameter should raise error
+    with pytest.raises(ValueError, match="Invalid numeric parameter value"):
+        param_set.format("amount")  # Will try to use default
+        # Now try with malicious value
+        param_set_bad = ParameterSet(params, {"amount": "0); DROP TABLE users; --"})
+        param_set_bad.format("amount")
+
+    # Attempt SQL injection via unquoted parameter should raise error
+    with pytest.raises(ValueError, match="must be alphanumeric"):
+        param_set_bad = ParameterSet(params, {"table": "orders; DROP TABLE users; --"})
+        param_set_bad.format("table")

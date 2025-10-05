@@ -29,8 +29,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import duckdb
-from sidemantic.core.join import Join
-from sidemantic.core.measure import Measure
+from sidemantic.core.relationship import Relationship
+from sidemantic.core.metric import Metric
 from sidemantic.sql.rewriter import SemanticSQLRewriter
 
 from sidemantic.core.dimension import Dimension
@@ -109,15 +109,15 @@ def main():
             Dimension(name="order_date", sql="order_date", type="time"),
             Dimension(name="status", sql="status", type="categorical"),
         ],
-        measures=[
-            Measure(name="amount", agg="sum", expr="amount"),
-            Measure(name="order_count", agg="count", expr="order_id"),
+        metrics=[
+            Metric(name="amount", agg="sum", sql="amount"),
+            Metric(name="order_count", agg="count", sql="order_id"),
         ],
-        joins=[
+        relationships=[
             # Rails-like belongs_to relationship
-            Join(
+            Relationship(
                 name="customers",
-                type="belongs_to",
+                type="many_to_one",
                 foreign_key="customer_id",
                 primary_key="customer_id",
             )
@@ -134,11 +134,11 @@ def main():
     print_section("2. Defining Metrics (Dependencies Auto-Detected!)")
 
     # Simple metric
-    total_revenue = Measure(name="total_revenue", expr="orders.amount", description="Total revenue from all orders")
+    total_revenue = Metric(name="total_revenue", sql="orders.amount", description="Total revenue from all orders")
     print("Simple metric: total_revenue")
 
     # Ratio metric
-    avg_order_value = Measure(
+    avg_order_value = Metric(
         name="avg_order_value",
         type="ratio",
         numerator="orders.amount",
@@ -148,19 +148,19 @@ def main():
     print("Ratio metric: avg_order_value")
 
     # Derived metric
-    revenue_per_customer = Measure(
+    revenue_per_customer = Metric(
         name="revenue_per_customer",
         type="derived",
-        expr="total_revenue / order_count",
+        sql="total_revenue / order_count",
         description="Revenue divided by number of orders",
     )
     print("Derived metric: revenue_per_customer")
 
     # Cumulative metric
-    running_total = Measure(
+    running_total = Metric(
         name="running_total",
         type="cumulative",
-        expr="orders.amount",
+        sql="orders.amount",
         window="all",
         description="Running total of revenue",
     )

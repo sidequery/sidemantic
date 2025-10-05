@@ -64,5 +64,143 @@ def test_import_omni_with_timeframes():
     assert created_at.granularity is not None
 
 
+def test_omni_time_comparison_import():
+    """Test importing Omni time comparison measures (date_offset_from_query)."""
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    # Create a test Omni view with time comparison measure
+    view_def = {
+        "name": "sales",
+        "schema": "public",
+        "table_name": "sales",
+        "dimensions": {
+            "revenue": {"type": "number", "sql": "${TABLE}.revenue"},
+            "created_at": {"type": "timestamp", "sql": "${TABLE}.created_at", "timeframes": ["date"]},
+        },
+        "measures": {
+            "total_revenue": {"aggregate_type": "sum", "sql": "${sales.revenue}"},
+            "revenue_yoy": {
+                "aggregate_type": "sum",
+                "sql": "${sales.revenue}",
+                "filters": {"created_at": {"date_offset_from_query": "1 year", "cancel_query_filter": True}},
+            },
+            "revenue_mom": {
+                "aggregate_type": "sum",
+                "sql": "${sales.revenue}",
+                "filters": {"created_at": {"date_offset_from_query": "1 month", "cancel_query_filter": True}},
+            },
+        },
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        views_dir = tmpdir_path / "views"
+        views_dir.mkdir()
+
+        view_file = views_dir / "sales.yaml"
+        with open(view_file, "w") as f:
+            yaml.dump(view_def, f)
+
+        # Import
+        adapter = OmniAdapter()
+        graph = adapter.parse(tmpdir_path)
+
+        # Verify sales model
+        assert "sales" in graph.models
+        sales = graph.models["sales"]
+
+        # Verify time comparison metrics were imported
+        metric_names = [m.name for m in sales.metrics]
+        assert "revenue_yoy" in metric_names
+        assert "revenue_mom" in metric_names
+
+        # Check revenue_yoy properties
+        revenue_yoy = next(m for m in sales.metrics if m.name == "revenue_yoy")
+        assert revenue_yoy.type == "time_comparison"
+        assert revenue_yoy.comparison_type == "yoy"
+        assert revenue_yoy.time_offset == "1 year"
+        assert revenue_yoy.calculation == "difference"
+
+        # Check revenue_mom properties
+        revenue_mom = next(m for m in sales.metrics if m.name == "revenue_mom")
+        assert revenue_mom.type == "time_comparison"
+        assert revenue_mom.comparison_type == "mom"
+        assert revenue_mom.time_offset == "1 month"
+
+
+def test_omni_time_comparison_export():
+    """Test exporting time_comparison metrics to Omni format."""
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    from sidemantic.core.dimension import Dimension
+    from sidemantic.core.metric import Metric
+    from sidemantic.core.model import Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    # Create a model with time_comparison metric
+    sales = Model(
+        name="sales",
+        table="public.sales",
+        dimensions=[
+            Dimension(name="revenue", sql="revenue", type="numeric"),
+            Dimension(name="created_at", sql="created_at", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="total_revenue", agg="sum", sql="revenue"),
+            Metric(
+                name="revenue_yoy",
+                type="time_comparison",
+                base_metric="sales.total_revenue",
+                comparison_type="yoy",
+                calculation="percent_change",
+            ),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+
+    # Export
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        adapter = OmniAdapter()
+        adapter.export(graph, tmpdir_path)
+
+        # Read exported file
+        view_file = tmpdir_path / "views" / "sales.yaml"
+        assert view_file.exists()
+
+        with open(view_file) as f:
+            exported = yaml.safe_load(f)
+
+        # Verify time comparison measure was exported
+        assert "measures" in exported
+        assert "revenue_yoy" in exported["measures"]
+
+        revenue_yoy = exported["measures"]["revenue_yoy"]
+
+        # Should have filters with date_offset_from_query
+        assert "filters" in revenue_yoy
+        filters = revenue_yoy["filters"]
+
+        # Should have at least one time field with offset
+        has_offset = False
+        for field, conditions in filters.items():
+            if isinstance(conditions, dict):
+                if "date_offset_from_query" in conditions:
+                    assert conditions["date_offset_from_query"] == "1 year"
+                    assert conditions.get("cancel_query_filter") is True
+                    has_offset = True
+
+        assert has_offset, "Expected date_offset_from_query filter in exported measure"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

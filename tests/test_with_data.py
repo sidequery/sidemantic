@@ -93,7 +93,7 @@ def semantic_layer(test_db):
 
 def test_simple_aggregation(test_db, semantic_layer):
     """Test simple aggregation by status."""
-    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.status"]).fetchall()
+    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.status"]).fetchdf()
 
     # Convert to dict for easier assertions
     results_dict = {row[0]: row[1] for row in results}
@@ -105,7 +105,7 @@ def test_simple_aggregation(test_db, semantic_layer):
 
 def test_time_granularity(test_db, semantic_layer):
     """Test aggregation with time dimension granularity."""
-    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.created_at__month"]).fetchall()
+    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.created_at__month"]).fetchdf()
 
     # Should have 2 months: Jan 2024 and Feb 2024
     assert len(results) == 2
@@ -119,7 +119,7 @@ def test_time_granularity(test_db, semantic_layer):
 
 def test_cross_model_join(test_db, semantic_layer):
     """Test query across models with automatic join."""
-    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["customers.region"]).fetchall()
+    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["customers.region"]).fetchdf()
 
     # Convert to dict
     results_dict = {row[0]: row[1] for row in results}
@@ -134,7 +134,7 @@ def test_filters_with_join(test_db, semantic_layer):
     """Test filters on joined models."""
     results = semantic_layer.query(
         metrics=["orders.revenue"], dimensions=["customers.tier"], filters=["customers.tier = 'premium'"]
-    ).fetchall()
+    ).fetchdf()
 
     # Should only have premium tier
     assert len(results) == 1
@@ -147,7 +147,7 @@ def test_multiple_metrics(test_db, semantic_layer):
     """Test querying multiple metrics together."""
     results = semantic_layer.query(
         metrics=["orders.revenue", "orders.order_count", "orders.avg_order_value"], dimensions=["orders.status"]
-    ).fetchall()
+    ).fetchdf()
 
     # Convert to dict: status -> (revenue, count, avg)
     results_dict = {row[0]: (row[1], row[2], row[3]) for row in results}

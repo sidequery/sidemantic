@@ -1,6 +1,6 @@
 """Basic example of using Sidemantic."""
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 
 # Create semantic layer
 sl = SemanticLayer()
@@ -9,22 +9,22 @@ sl = SemanticLayer()
 orders = Model(
     name="orders",
     table="public.orders",
-    entities=[
-        Entity(name="order", type="primary", expr="order_id"),
-        Entity(name="customer", type="foreign", expr="customer_id"),
+    primary_key="order_id",
+    relationships=[
+        Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
     ],
     dimensions=[
-        Dimension(name="status", type="categorical"),
-        Dimension(name="order_date", type="time", granularity="day", expr="created_at"),
-        Dimension(name="is_high_value", type="boolean", expr="order_amount > 100"),
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", granularity="day", sql="created_at"),
+        Dimension(name="is_high_value", type="categorical", sql="order_amount > 100"),
     ],
-    measures=[
-        Measure(name="order_count", agg="count"),
-        Measure(name="revenue", agg="sum", expr="order_amount"),
-        Measure(
+    metrics=[
+        Metric(name="order_count", agg="count"),
+        Metric(name="revenue", agg="sum", sql="order_amount"),
+        Metric(
             name="completed_revenue",
             agg="sum",
-            expr="order_amount",
+            sql="order_amount",
             filters=["status = 'completed'"],
         ),
     ],
@@ -34,12 +34,10 @@ orders = Model(
 customers = Model(
     name="customers",
     table="public.customers",
-    entities=[
-        Entity(name="customer", type="primary", expr="customer_id"),
-    ],
+    primary_key="customer_id",
     dimensions=[
-        Dimension(name="region", type="categorical"),
-        Dimension(name="tier", type="categorical"),
+        Dimension(name="region", type="categorical", sql="region"),
+        Dimension(name="tier", type="categorical", sql="tier"),
     ],
 )
 
@@ -49,15 +47,15 @@ sl.add_model(customers)
 
 # Define metrics
 sl.add_metric(
-    Measure(
+    Metric(
         name="total_revenue",
-        expr="orders.revenue",
+        sql="orders.revenue",
         description="Total revenue from all orders",
     )
 )
 
 sl.add_metric(
-    Measure(
+    Metric(
         name="conversion_rate",
         type="ratio",
         numerator="orders.completed_revenue",

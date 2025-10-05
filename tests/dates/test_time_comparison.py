@@ -49,7 +49,7 @@ def test_model_level_time_comparison_metric():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("MoM Results:", results)
 
@@ -111,7 +111,7 @@ def test_model_level_conversion_metric():
     print(sql)
 
     conn = duckdb.connect(":memory:")
-    results = conn.execute(sql).fetchall()
+    results = conn.execute(sql).fetchdf()
 
     print("Results:", results)
 

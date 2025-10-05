@@ -20,7 +20,7 @@ class SemanticLayer:
         self,
         connection: str = "duckdb:///:memory:",
         dialect: str = "duckdb",
-        auto_register: bool = False,
+        auto_register: bool = True,
         use_preaggregations: bool = False,
     ):
         """Initialize semantic layer.

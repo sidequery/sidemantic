@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Example demonstrating parameters (dynamic user input)."""
 
-from sidemantic.core.entity import Entity
-from sidemantic.core.measure import Measure
+# Entity removed - use primary_key parameter
+from sidemantic.core.metric import Metric
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.model import Model
@@ -40,14 +40,14 @@ orders = Model(
     name="orders",
     table="orders",
     primary_key="id",
-    entities=[Entity(name="order_id", type="primary", expr="id")],
+    entities=[Entity(name="order_id", type="primary", sql="id")],
     dimensions=[
         Dimension(name="order_date", type="time", sql="order_date"),
         Dimension(name="status", type="categorical", sql="status"),
     ],
-    measures=[
-        Measure(name="revenue", agg="sum", expr="amount"),
-        Measure(name="order_count", agg="count", expr="*"),
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count", sql="*"),
     ],
 )
 

@@ -139,17 +139,17 @@ orders_model = Model(
     table="orders",
     primary_key="id",
     dimensions=[
-        Dimension(name="status", type="categorical", expr="status"),
-        Dimension(name="order_date", type="time", expr="order_date", granularity="day"),
-        Dimension(name="region", type="categorical", expr="region"),
-        Dimension(name="category", type="categorical", expr="category"),
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        Dimension(name="region", type="categorical", sql="region"),
+        Dimension(name="category", type="categorical", sql="category"),
     ],
     metrics=[
-        Metric(name="revenue", agg="sum", expr="amount"),
+        Metric(name="revenue", agg="sum", sql="amount"),
         Metric(name="order_count", agg="count"),
-        Metric(name="avg_order_value", agg="avg", expr="amount"),
-        Metric(name="cost", agg="sum", expr="cost"),
-        Metric(name="profit", agg="sum", expr="profit"),
+        Metric(name="avg_order_value", agg="avg", sql="amount"),
+        Metric(name="cost", agg="sum", sql="cost"),
+        Metric(name="profit", agg="sum", sql="profit"),
         # Metric with filter (auto-applied in WHERE clause)
         Metric(name="returns", agg="count", filters=["{model}.status = 'returned'"]),
         # Ratio metric
@@ -167,7 +167,7 @@ customers_model = Model(
     table="customers",
     primary_key="id",
     dimensions=[
-        Dimension(name="tier", type="categorical", expr="tier"),
+        Dimension(name="tier", type="categorical", sql="tier"),
         Dimension(name="region", type="categorical", expr="region"),
     ],
     relationships=[Relationship(name="region_map", type="many_to_one", foreign_key="region", primary_key="region")],
@@ -177,7 +177,7 @@ region_map_model = Model(
     name="region_map",
     table="region_map",
     primary_key="region",
-    dimensions=[Dimension(name="region_group", type="categorical", expr="region_group")],
+    dimensions=[Dimension(name="region_group", type="categorical", sql="region_group")],
 )
 
 graph.add_model(orders_model)
@@ -537,7 +537,7 @@ customers_model = Model(
     table="customers",
     primary_key="id",
     dimensions=[
-        Dimension(name="tier", type="categorical", expr="tier"),
+        Dimension(name="tier", type="categorical", sql="tier"),
         Dimension(name="region", type="categorical", expr="region"),
     ],
     relationships=[Relationship(name="region_map", type="many_to_one", foreign_key="region", primary_key="region")],
@@ -547,7 +547,7 @@ region_map_model = Model(
     name="region_map",
     table="region_map",
     primary_key="region",
-    dimensions=[Dimension(name="region_group", type="categorical", expr="region_group")],
+    dimensions=[Dimension(name="region_group", type="categorical", sql="region_group")],
 )
 
 graph.add_model(orders_model)

@@ -27,9 +27,7 @@ def extract_command(header: str) -> list[str]:
     if not header.startswith("#"):
         header = "\n# ".join(["# /// script", *header.splitlines(), "///"])
     pyproject = PyProjectReader.from_script(header)
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".txt"
-    ) as temp_file:
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as temp_file:
         flags = construct_uv_flags(pyproject, temp_file, [], [])
 
     return ["run"] + flags

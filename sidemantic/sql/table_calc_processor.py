@@ -3,11 +3,27 @@
 Table calculations are applied to query results after they're fetched from the database.
 """
 
+import ast
+import operator
+
 from sidemantic.core.table_calculation import TableCalculation
 
 
 class TableCalculationProcessor:
     """Processes table calculations on query results."""
+
+    # Safe operators for expression evaluation
+    _SAFE_OPERATORS = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.FloorDiv: operator.floordiv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.UAdd: operator.pos,
+        ast.USub: operator.neg,
+    }
 
     def __init__(self, calculations: list[TableCalculation]):
         """Initialize processor with table calculations.
@@ -16,6 +32,59 @@ class TableCalculationProcessor:
             calculations: List of table calculations to apply
         """
         self.calculations = calculations
+
+    def _safe_eval(self, expr: str) -> float | None:
+        """Safely evaluate a mathematical expression.
+
+        Only allows basic arithmetic operations, no function calls or attribute access.
+
+        Args:
+            expr: Expression string containing only numbers and operators
+
+        Returns:
+            Result of evaluation or None if expression is invalid
+
+        Raises:
+            ValueError: If expression contains disallowed operations
+        """
+        try:
+            node = ast.parse(expr, mode="eval").body
+            return self._eval_node(node)
+        except Exception as e:
+            raise ValueError(f"Invalid expression: {expr}") from e
+
+    def _eval_node(self, node):
+        """Recursively evaluate an AST node.
+
+        Args:
+            node: AST node to evaluate
+
+        Returns:
+            Evaluated result
+
+        Raises:
+            ValueError: If node type is not allowed
+        """
+        if isinstance(node, ast.Constant):
+            # Python 3.8+ uses ast.Constant for literals
+            return node.value
+        elif isinstance(node, ast.BinOp):
+            # Binary operation (e.g., a + b)
+            op_type = type(node.op)
+            if op_type not in self._SAFE_OPERATORS:
+                raise ValueError(f"Unsupported operator: {op_type.__name__}")
+            left = self._eval_node(node.left)
+            right = self._eval_node(node.right)
+            return self._SAFE_OPERATORS[op_type](left, right)
+        elif isinstance(node, ast.UnaryOp):
+            # Unary operation (e.g., -a)
+            op_type = type(node.op)
+            if op_type not in self._SAFE_OPERATORS:
+                raise ValueError(f"Unsupported operator: {op_type.__name__}")
+            operand = self._eval_node(node.operand)
+            return self._SAFE_OPERATORS[op_type](operand)
+        else:
+            raise ValueError(f"Unsupported node type: {type(node).__name__}")
 
     def process(self, results: list[tuple], column_names: list[str]) -> tuple[list[tuple], list[str]]:
         """Apply table calculations to query results.
@@ -90,9 +159,9 @@ class TableCalculationProcessor:
             for field_name, value in row.items():
                 expr = expr.replace(f"${{{field_name}}}", str(value if value is not None else 0))
 
-            # Evaluate the expression
+            # Evaluate the expression using safe evaluator
             try:
-                result = eval(expr)
+                result = self._safe_eval(expr)
                 row[calc.name] = result
             except Exception:
                 row[calc.name] = None

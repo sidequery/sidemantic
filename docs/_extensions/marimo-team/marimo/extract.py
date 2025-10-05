@@ -5,7 +5,8 @@ import json
 import os
 import re
 import sys
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 # Native to python
 from xml.etree.ElementTree import Element
@@ -17,7 +18,11 @@ try:
     from marimo._ast.app import App
     from marimo._convert.markdown.markdown import (
         MARIMO_MD,
+    )
+    from marimo._convert.markdown.markdown import (
         MarimoMdParser as MarimoParser,
+    )
+    from marimo._convert.markdown.markdown import (
         SafeWrap as SafeWrapGeneric,
     )
 
@@ -70,7 +75,7 @@ def extract_and_strip_quarto_config(block: str) -> tuple[dict[str, Any], str]:
 
 def get_mime_render(
     global_options: dict[str, Any],
-    stub: Optional[MarimoIslandStub],
+    stub: MarimoIslandStub | None,
     config: dict[str, bool],
     mime_sensitive: bool,
 ) -> dict[str, Any]:
@@ -91,9 +96,7 @@ def get_mime_render(
         if config["output"] and mime_sensitive:
             if mimetype.startswith("image"):
                 return {"type": "figure", "value": f"{output.data}", **render_options}
-            if mimetype.startswith("text/plain") or mimetype.startswith(
-                "text/markdown"
-            ):
+            if mimetype.startswith("text/plain") or mimetype.startswith("text/markdown"):
                 return {"type": "para", "value": f"{output.data}", **render_options}
             if mimetype == "application/vnd.marimo+error":
                 if config["error"]:
@@ -131,9 +134,7 @@ def get_mime_render(
 def app_config_from_root(root: Element) -> dict[str, Any]:
     # Extract meta data from root attributes.
     config_keys = {"title": "app_title", "marimo-layout": "layout_file"}
-    config = {
-        config_keys[key]: value for key, value in root.items() if key in config_keys
-    }
+    config = {config_keys[key]: value for key, value in root.items() if key in config_keys}
     # Try to pass on other attributes as is
     config.update({k: v for k, v in root.items() if k not in config_keys})
     # Remove values particular to markdown saves.
@@ -149,7 +150,7 @@ def build_export_with_mime_context(
         app = MarimoIslandGenerator()
 
         has_attrs: bool = False
-        stubs: list[tuple[dict[str, bool], Optional[MarimoIslandStub]]] = []
+        stubs: list[tuple[dict[str, bool], MarimoIslandStub | None]] = []
         for child in root:
             # only process code cells
             if child.tag == MARIMO_MD:
@@ -189,17 +190,12 @@ def build_export_with_mime_context(
         _ = asyncio.run(app.build())
         dev_server = os.environ.get("QUARTO_MARIMO_DEBUG_ENDPOINT", False)
         version_override = os.environ.get("QUARTO_MARIMO_VERSION", marimo.__version__)
-        header = app.render_head(
-            _development_url=dev_server, version_override=version_override
-        )
+        header = app.render_head(_development_url=dev_server, version_override=version_override)
 
         return SafeWrap(
             {
                 "header": header,
-                "outputs": [
-                    get_mime_render(global_options, stub, config, mime_sensitive)
-                    for config, stub in stubs
-                ],
+                "outputs": [get_mime_render(global_options, stub, config, mime_sensitive) for config, stub in stubs],
                 "count": len(stubs),
             }  # type: ignore[arg-type]
         )
@@ -213,9 +209,7 @@ class MarimoPandocParser(MarimoParser):
     # TODO: Could upstream generic for keys- but this is fine.
     output_formats = {  # type: ignore[assignment, misc]
         "marimo-pandoc-export": build_export_with_mime_context(mime_sensitive=False),  # type: ignore[dict-item]
-        "marimo-pandoc-export-with-mime": build_export_with_mime_context(
-            mime_sensitive=True
-        ),  # type: ignore[dict-item]
+        "marimo-pandoc-export-with-mime": build_export_with_mime_context(mime_sensitive=True),  # type: ignore[dict-item]
     }
 
 

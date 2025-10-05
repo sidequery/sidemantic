@@ -6,6 +6,8 @@ This test verifies end-to-end functionality with actual database queries.
 import duckdb
 import pytest
 
+from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+
 
 @pytest.fixture
 def test_db():
@@ -50,39 +52,115 @@ def test_db():
     return conn
 
 
-def test_simple_aggregation(test_db):
+@pytest.fixture
+def semantic_layer(test_db):
+    """Create semantic layer with orders and customers models."""
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="order_id", type="numeric"),
+            Dimension(name="status", type="categorical"),
+            Dimension(name="created_at", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="order_amount"),
+            Metric(name="order_count", agg="count"),
+            Metric(name="avg_order_value", agg="avg", sql="order_amount"),
+        ],
+        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+    )
+
+    customers = Model(
+        name="customers",
+        table="customers",
+        primary_key="customer_id",
+        dimensions=[
+            Dimension(name="customer_id", type="numeric"),
+            Dimension(name="customer_name", type="categorical"),
+            Dimension(name="region", type="categorical"),
+            Dimension(name="tier", type="categorical"),
+        ],
+    )
+
+    layer = SemanticLayer()
+    layer.conn = test_db  # Use the existing test database connection
+    layer.add_model(orders)
+    layer.add_model(customers)
+    return layer
+
+
+def test_simple_aggregation(test_db, semantic_layer):
     """Test simple aggregation by status."""
-    # TODO: Implement test for simple aggregation
-    # Expected: Group revenue by order status
-    pass
+    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.status"]).fetchall()
+
+    # Convert to dict for easier assertions
+    results_dict = {row[0]: row[1] for row in results}
+
+    assert results_dict["completed"] == 650.00  # 150 + 200 + 300
+    assert results_dict["pending"] == 75.00
+    assert results_dict["cancelled"] == 50.00
 
 
-def test_time_granularity(test_db):
+def test_time_granularity(test_db, semantic_layer):
     """Test aggregation with time dimension granularity."""
-    # TODO: Implement test for monthly aggregation
-    # Expected: Revenue by month with DATE_TRUNC
-    pass
+    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["orders.created_at__month"]).fetchall()
+
+    # Should have 2 months: Jan 2024 and Feb 2024
+    assert len(results) == 2
+
+    # Convert to dict (date -> revenue)
+    results_dict = {str(row[0])[:7]: row[1] for row in results}  # Extract YYYY-MM
+
+    assert results_dict["2024-01"] == 350.00  # 150 + 200
+    assert results_dict["2024-02"] == 425.00  # 75 + 300 + 50
 
 
-def test_cross_model_join(test_db):
+def test_cross_model_join(test_db, semantic_layer):
     """Test query across models with automatic join."""
-    # TODO: Implement test for orders + customers join
-    # Expected: Revenue by customer region
-    pass
+    results = semantic_layer.query(metrics=["orders.revenue"], dimensions=["customers.region"]).fetchall()
+
+    # Convert to dict
+    results_dict = {row[0]: row[1] for row in results}
+
+    # US: orders from customers 101 (150 + 75) and 103 (300) = 525
+    # EU: orders from customer 102 (200 + 50) = 250
+    assert results_dict["US"] == 525.00
+    assert results_dict["EU"] == 250.00
 
 
-def test_filters_with_join(test_db):
+def test_filters_with_join(test_db, semantic_layer):
     """Test filters on joined models."""
-    # TODO: Implement test with filter on customers.tier
-    # Expected: Only premium customers
-    pass
+    results = semantic_layer.query(
+        metrics=["orders.revenue"], dimensions=["customers.tier"], filters=["customers.tier = 'premium'"]
+    ).fetchall()
+
+    # Should only have premium tier
+    assert len(results) == 1
+    assert results[0][0] == "premium"
+    # Premium customers: 101 (150 + 75) + 103 (300) = 525
+    assert results[0][1] == 525.00
 
 
-def test_multiple_metrics(test_db):
+def test_multiple_metrics(test_db, semantic_layer):
     """Test querying multiple metrics together."""
-    # TODO: Implement test with revenue + order_count + avg
-    # Expected: All three metrics in same query
-    pass
+    results = semantic_layer.query(
+        metrics=["orders.revenue", "orders.order_count", "orders.avg_order_value"], dimensions=["orders.status"]
+    ).fetchall()
+
+    # Convert to dict: status -> (revenue, count, avg)
+    results_dict = {row[0]: (row[1], row[2], row[3]) for row in results}
+
+    # Completed: 650 total, 3 orders, avg 216.67
+    assert results_dict["completed"][0] == 650.00
+    assert results_dict["completed"][1] == 3
+    assert abs(results_dict["completed"][2] - 216.67) < 0.01
+
+    # Pending: 75 total, 1 order, avg 75
+    assert results_dict["pending"][0] == 75.00
+    assert results_dict["pending"][1] == 1
+    assert results_dict["pending"][2] == 75.00
 
 
 if __name__ == "__main__":

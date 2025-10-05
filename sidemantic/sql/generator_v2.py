@@ -527,7 +527,11 @@ class SQLGenerator:
         for measure_name in measures_needed:
             measure = model.get_metric(measure_name)
             if measure:
-                select_cols.append(f"{measure.sql_expr} AS {measure_name}_raw")
+                # For COUNT(*), use 1 instead of * to avoid invalid "* AS alias" syntax
+                if measure.agg == "count" and not measure.sql:
+                    select_cols.append(f"1 AS {measure_name}_raw")
+                else:
+                    select_cols.append(f"{measure.sql_expr} AS {measure_name}_raw")
 
         # Build FROM clause
         if model.sql:
@@ -950,8 +954,12 @@ class SQLGenerator:
             # Auto-detect dependencies from expression using graph for resolution
             dependencies = metric.get_dependencies(self.graph)
 
+            # Sort dependencies by length descending to avoid partial matches
+            # (e.g., replace "gross_revenue" before "revenue")
+            sorted_deps = sorted(dependencies, key=len, reverse=True)
+
             # Replace each metric reference with its SQL expression
-            for metric_name in dependencies:
+            for metric_name in sorted_deps:
                 # Check if it's a measure reference (model.measure) first
                 if "." in metric_name:
                     model_name, measure_name = metric_name.split(".")
@@ -975,9 +983,21 @@ class SQLGenerator:
                     except KeyError:
                         raise ValueError(f"Metric {metric_name} not found")
 
-                # Replace metric name in formula
-                # Handle both metric_name and model.measure format
-                formula = formula.replace(metric_name, f"({metric_sql})")
+                # Replace metric name in formula using word boundaries to avoid partial matches
+                # Use regex to only replace whole word matches
+                import re
+
+                # Escape special regex characters in metric_name except dots
+                pattern = re.escape(metric_name)
+                # Use word boundaries, but handle dots specially for model.measure format
+                if "." in metric_name:
+                    # For model.measure, we want exact matches
+                    pattern = r"\b" + pattern.replace(r"\.", r"\.") + r"\b"
+                else:
+                    # For simple names, use word boundaries
+                    pattern = r"\b" + pattern + r"\b"
+
+                formula = re.sub(pattern, f"({metric_sql})", formula)
 
             return formula
 
@@ -1013,16 +1033,28 @@ class SQLGenerator:
         if not metric or not metric.entity or not metric.base_event or not metric.conversion_event:
             raise ValueError(f"Conversion metric {metric_name} missing required fields")
 
-        # Get the model (assume single model for conversion)
-        # Find the model that has this metric
+        # Find the model that owns this metric or has the entity dimension
         model = None
-        for model_name, m in self.graph.models.items():
-            # Just use the first model for now
-            model = m
-            break
+
+        # First, try to find which model has this conversion metric defined
+        for m_name, m in self.graph.models.items():
+            if m.get_metric(metric_name):
+                model = m
+                break
+
+        # If not found in any model, try to find a model with matching entity dimension
+        if not model:
+            for m_name, m in self.graph.models.items():
+                # Check if this model has a dimension matching the entity
+                for dim in m.dimensions:
+                    if dim.name == metric.entity:
+                        model = m
+                        break
+                if model:
+                    break
 
         if not model:
-            raise ValueError("No model found for conversion metric")
+            raise ValueError(f"No model found for conversion metric {metric_name}")
 
         # Build SQL with self-join pattern
         # base_events: filter for base_event
@@ -1048,19 +1080,25 @@ class SQLGenerator:
         if not event_type_dim or not timestamp_dim:
             raise ValueError("Conversion metrics require event_type and timestamp dimensions")
 
+        # Build FROM clause - handle both SQL and table-backed models
+        if model.sql:
+            from_clause = f"({model.sql}) AS t"
+        else:
+            from_clause = model.table
+
         sql = f"""
 WITH base_events AS (
   SELECT
     {metric.entity} AS entity,
     {timestamp_dim} AS event_time
-  FROM ({model.sql}) AS t
+  FROM {from_clause}
   WHERE {event_type_dim} = '{metric.base_event}'
 ),
 conversion_events AS (
   SELECT
     {metric.entity} AS entity,
     {timestamp_dim} AS event_time
-  FROM ({model.sql}) AS t
+  FROM {from_clause}
   WHERE {event_type_dim} = '{metric.conversion_event}'
 ),
 conversions AS (

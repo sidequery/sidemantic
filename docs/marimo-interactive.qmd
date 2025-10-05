@@ -1,7 +1,6 @@
 ---
-title: "Interactive Tour"
+title: "Sidemantic Interactive Demo"
 page-layout: article
-description: "Interactive Sidemantic demo: define models and joins, compile metrics to SQL, run in DuckDB, filter across models, and view an ER diagram generated from the semantic graph."
 filters:
   - marimo-team/marimo
 pyproject: |
@@ -16,15 +15,6 @@ pyproject: |
       "numpy",
   ]
 ---
-
-Use Sidemantic's semantic layer directly in the browser. This demo:
-
-- Defines semantic models (orders, customers, region_map) with dimensions and metrics (including ratio metric `return_rate`).
-- Uses reusable segments (named filters) and metric-level filters that auto-apply in WHERE clauses.
-- Declares relationships (`many_to_one`, `one_to_many`) with automatic join-path discovery for multi-hop queries (e.g., region_group × tier).
-- Compiles metrics + dimensions + filters to SQL (DuckDB dialect) via the Sidemantic SQL generator.
-- Applies global filters (status, region, category, tier) that propagate across models; period-to-date metrics are computed by filtering time.
-- Shows an ER diagram generated from the semantic graph to explain relationships.
 
 ```python {.marimo name="deps"}
 import micropip
@@ -43,7 +33,6 @@ import marimo as mo
 import altair as alt
 import duckdb
 
-mo.md("# Sidemantic Interactive Demo")
 conn = duckdb.connect(":memory:")
 
 N = 20000
@@ -72,9 +61,9 @@ SELECT
   END AS category
 FROM range(1, {N});
 """
-conn.execute(sql_create_orders)
+_ = conn.execute(sql_create_orders)
 
-conn.execute("""
+_ = conn.execute("""
 ALTER TABLE orders ADD COLUMN order_month DATE;
 UPDATE orders SET order_month = DATE_TRUNC('month', order_date);
 ALTER TABLE orders ADD COLUMN cost DOUBLE;
@@ -83,7 +72,7 @@ UPDATE orders SET cost = ROUND(amount * (0.55 + random()*0.30), 2);
 UPDATE orders SET profit = ROUND(amount - cost, 2);
 """)
 
-conn.execute("""
+_ = conn.execute("""
 CREATE OR REPLACE TABLE customers AS
 SELECT
   range AS id,
@@ -92,10 +81,24 @@ SELECT
 FROM range(1, 501);
 """)
 
-conn.execute("""
+_ = conn.execute("""
 CREATE OR REPLACE TABLE region_map(region VARCHAR, region_group VARCHAR);
 INSERT INTO region_map VALUES ('US','Americas'), ('EU','Europe'), ('APAC','Asia Pacific');
 """)
+
+mo.vstack([
+    mo.md("Use the filters below to explore the data. Sidemantic automatically compiles metrics and dimensions to SQL, applies filters across models, and executes queries in DuckDB."),
+    mo.accordion({
+        "Features": mo.md("""
+- Defines semantic models (orders, customers, region_map) with dimensions and metrics (including ratio metric `return_rate`).
+- Uses reusable segments (named filters) and metric-level filters that auto-apply in WHERE clauses.
+- Declares relationships (`many_to_one`, `one_to_many`) with automatic join-path discovery for multi-hop queries (e.g., region_group × tier).
+- Compiles metrics + dimensions + filters to SQL (DuckDB dialect) via the Sidemantic SQL generator.
+- Applies global filters (status, region, category, tier) that propagate across models; period-to-date metrics are computed by filtering time.
+- Shows an ER diagram generated from the semantic graph to explain relationships.
+        """)
+    }),
+])
 ```
 
 ```python {.marimo}
@@ -281,13 +284,17 @@ ytd = float(ytd_rows[0].get("revenue", 0.0)) if ytd_rows else 0.0
 
 left_metrics = mo.md(f"""
 **Revenue:** ${revenue:,.2f}
+
 **Orders:** {orders}
+
 **AOV:** ${aov:,.2f}
 """)
 
 ptd_metrics = mo.md(f"""
 **MTD Revenue:** ${mtd:,.2f}
+
 **QTD Revenue:** ${qtd:,.2f}
+
 **YTD Revenue:** ${ytd:,.2f}
 """)
 
@@ -298,6 +305,10 @@ mo.vstack([
     mo.hstack([left_col, right_col]),
     mo.md('<div style="height:8px"></div>'),
 ])
+```
+
+```python {.marimo}
+mo.md("---")
 ```
 
 ```python {.marimo}
@@ -313,11 +324,19 @@ chart_month = (
         tooltip=["order_date__month:T", "status:N", alt.Tooltip("revenue:Q", title="Revenue")],
     )
 )
-mo.vstack([
-    mo.md('### Revenue by Month'),
-    mo.ui.altair_chart(chart_month),
-    mo.md('<div style="height:16px"></div>'),
-])
+
+# Revenue over time stacked by category
+data_cat_month, _ = run_query(metrics=["orders.revenue"], dims=["orders.order_date__month", "orders.category"], order_by=["orders.order_date__month"], _state=FILTERS_STATE)
+chart_cat_month = (
+    alt.Chart(alt.Data(values=data_cat_month))
+    .mark_bar()
+    .encode(
+        x=alt.X("order_date__month:T", title="Month"),
+        y=alt.Y("revenue:Q", title="Revenue"),
+        color=alt.Color("category:N", title="Category"),
+        tooltip=["order_date__month:T", "category:N", alt.Tooltip("revenue:Q", title="Revenue")],
+    )
+)
 
 # Revenue by category (top 10)
 top_cat_df, _ = run_query(metrics=["orders.revenue"], dims=["orders.category"], order_by=["revenue DESC"], limit=10, _state=FILTERS_STATE)
@@ -330,11 +349,6 @@ chart_cat = (
         tooltip=["category:N", alt.Tooltip("revenue:Q", title="Revenue")],
     )
 )
-mo.vstack([
-    mo.md('### Top Categories by Revenue'),
-    mo.ui.altair_chart(chart_cat),
-    mo.md('<div style="height:16px"></div>'),
-])
 
 # Avg order value by region over time
 chart_aov_region = (
@@ -347,11 +361,6 @@ chart_aov_region = (
         tooltip=["order_date__month:T", "region:N", alt.Tooltip("avg_order_value:Q", title="AOV")],
     )
 )
-mo.vstack([
-    mo.md('### Avg Order Value by Region Over Time'),
-    mo.ui.altair_chart(chart_aov_region),
-    mo.md('<div style="height:16px"></div>'),
-])
 
 # Revenue by region
 chart_region = (
@@ -364,11 +373,6 @@ chart_region = (
         tooltip=["region:N", alt.Tooltip("revenue:Q", title="Revenue")],
     )
 )
-mo.vstack([
-    mo.md('### Revenue by Region'),
-    mo.ui.altair_chart(chart_region),
-    mo.md('<div style="height:16px"></div>'),
-])
 
 # Revenue heatmap (month x category)
 chart_heat = (
@@ -380,11 +384,30 @@ chart_heat = (
         color=alt.Color("revenue:Q", title="Revenue"),
     )
 )
+
+# Combine all charts into a single output
 mo.vstack([
+    mo.hstack([
+        mo.vstack([mo.md('### Revenue by Month (Stacked by Status)'), mo.ui.altair_chart(chart_month)]),
+        mo.vstack([mo.md('### Revenue by Month (Stacked by Category)'), mo.ui.altair_chart(chart_cat_month)]),
+    ]),
+    mo.md('<div style="height:16px"></div>'),
+    mo.hstack([
+        mo.vstack([mo.md('### Top Categories by Revenue'), mo.ui.altair_chart(chart_cat)]),
+        mo.vstack([mo.md('### Revenue by Region'), mo.ui.altair_chart(chart_region)]),
+    ]),
+    mo.md('<div style="height:16px"></div>'),
+    mo.md('### Avg Order Value by Region Over Time'),
+    mo.ui.altair_chart(chart_aov_region),
+    mo.md('<div style="height:16px"></div>'),
     mo.md('### Revenue Heatmap (Month × Category)'),
     mo.ui.altair_chart(chart_heat),
     mo.md('<div style="height:16px"></div>'),
 ])
+```
+
+```python {.marimo}
+mo.md("---")
 ```
 
 ```python {.marimo}
@@ -429,68 +452,6 @@ mo.vstack([
     mo.ui.table(detail_df),
     mo.md('<div style="height:16px"></div>'),
 ])
-```
-
-```python {.marimo}
-# Interactive Query (SQL)
-# Build query from semantic selections, edit SQL, and run
-
-mo.md("### Interactive Query")
-
-# Build metric and dimension options from the semantic graph
-_metric_opts = []
-for _mname, _model in graph.models.items():
-    for _me in _model.metrics:
-        _metric_opts.append(f"{_mname}.{_me.name}")
-_metric_opts = sorted(set(_metric_opts))
-
-_dim_opts = []
-for _mname, _model in graph.models.items():
-    for _d in _model.dimensions:
-        if getattr(_d, "type", "") == "time":
-            for _g in ("day", "month", "quarter", "year"):
-                _dim_opts.append(f"{_mname}.{_d.name}__{_g}")
-        _dim_opts.append(f"{_mname}.{_d.name}")
-_dim_opts = sorted(set(_dim_opts))
-
-iq_metrics = mo.ui.multiselect(options=_metric_opts, value=["orders.revenue"], label="Metrics")
-iq_dims = mo.ui.multiselect(options=_dim_opts, value=["orders.order_date__month"], label="Dimensions")
-iq_limit = mo.ui.number(value=50, label="Limit")
-iq_compile = mo.ui.button(label="Compile SQL")
-iq_run = mo.ui.button(label="Run SQL")
-iq_sql = mo.ui.code_editor(value="-- Click Compile SQL to generate from selections", language="sql", min_height=180)
-iq_results = mo.ui.table([])
-
-mo.vstack([
-    mo.hstack([iq_metrics, iq_dims, iq_limit]),
-    mo.hstack([iq_compile, iq_run]),
-    iq_sql,
-    iq_results,
-])
-```
-
-```python {.marimo}
-# Interactive Query actions (separate from UI creation)
-if iq_compile.value:
-    try:
-        sel_metrics = list(iq_metrics.value) or ["orders.revenue"]
-        sel_dims = list(iq_dims.value) or []
-        row_limit = int(iq_limit.value or 50)
-        sql_text = generator.generate(metrics=sel_metrics, dimensions=sel_dims, filters=build_filters(), order_by=sel_dims or None, limit=row_limit)
-        iq_sql.value = sql_text
-    except Exception as e:
-        iq_sql.value = f"-- Error compiling SQL: {e}"
-
-if iq_run.value:
-    try:
-        to_run = (iq_sql.value or "").strip()
-        if to_run:
-            cur = conn.execute(to_run)
-            cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-            iq_results.value = rows
-    except Exception as e:
-        iq_results.value = [{"error": str(e)}]
 ```
 
 ```python {.marimo}
@@ -636,13 +597,17 @@ models:
 ```
 
 ```python {.marimo}
+mo.md("---")
+```
+
+```python {.marimo}
 # Data Model (code + ER diagram)
 mo.vstack([
     mo.md('## Data Model'),
-    mo.md('### Python Definition'),
-    mo.ui.code_editor(value=python_src, language='python', disabled=True, min_height=360),
-    mo.md('### YAML Definition'),
-    mo.ui.code_editor(value=yaml_src, language='yaml', disabled=True, min_height=420),
+    mo.accordion({
+        "Python Definition": mo.ui.code_editor(value=python_src, language='python', disabled=True, min_height=360),
+        "YAML Definition": mo.ui.code_editor(value=yaml_src, language='yaml', disabled=True, min_height=420),
+    }),
 ])
 ```
 

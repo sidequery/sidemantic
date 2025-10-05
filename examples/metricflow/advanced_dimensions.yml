@@ -1,0 +1,356 @@
+semantic_models:
+  - name: transactions
+    model: ref('fact_transactions')
+    description: "Transaction fact table with advanced dimension and measure examples"
+
+    config:
+      meta:
+        hex:
+          table: public.transactions
+
+    defaults:
+      agg_time_dimension: transaction_date
+
+    entities:
+      - name: transaction
+        type: primary
+        expr: transaction_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+
+    dimensions:
+      # Time dimensions with different granularities
+      - name: transaction_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: created_at
+        description: "Transaction date"
+        label: "Transaction Date"
+
+      - name: transaction_week
+        type: time
+        type_params:
+          time_granularity: week
+        expr: created_at
+        description: "Transaction week"
+        label: "Transaction Week"
+
+      - name: transaction_month
+        type: time
+        type_params:
+          time_granularity: month
+        expr: created_at
+        description: "Transaction month"
+        label: "Transaction Month"
+
+      - name: transaction_quarter
+        type: time
+        type_params:
+          time_granularity: quarter
+        expr: created_at
+        description: "Transaction quarter"
+        label: "Transaction Quarter"
+
+      - name: transaction_year
+        type: time
+        type_params:
+          time_granularity: year
+        expr: created_at
+        description: "Transaction year"
+        label: "Transaction Year"
+
+      # Categorical dimensions
+      - name: transaction_type
+        type: categorical
+        expr: type
+        description: "Type of transaction (sale, refund, exchange)"
+        label: "Transaction Type"
+
+      - name: payment_method
+        type: categorical
+        expr: payment_method
+        description: "Payment method (credit, debit, cash)"
+        label: "Payment Method"
+
+      - name: channel
+        type: categorical
+        expr: channel
+        description: "Sales channel (online, in-store, mobile)"
+        label: "Channel"
+
+      - name: is_online
+        type: categorical
+        expr: channel = 'online'
+        description: "Whether transaction was online"
+        label: "Is Online"
+
+      - name: is_refund
+        type: categorical
+        expr: type = 'refund'
+        description: "Whether transaction is a refund"
+        label: "Is Refund"
+
+      # Dimensions with expressions
+      - name: transaction_location
+        type: categorical
+        expr: CONCAT(city, ', ', state)
+        description: "Transaction location"
+        label: "Location"
+
+      - name: hour_of_day
+        type: categorical
+        expr: EXTRACT(HOUR FROM created_at)
+        description: "Hour of day when transaction occurred"
+        label: "Hour of Day"
+
+      - name: day_of_week
+        type: categorical
+        expr: EXTRACT(DOW FROM created_at)
+        description: "Day of week (0=Sunday, 6=Saturday)"
+        label: "Day of Week"
+
+    measures:
+      # Count measures
+      - name: transaction_count
+        agg: count
+        description: "Total number of transactions"
+        label: "Transaction Count"
+
+      # Sum measures
+      - name: transaction_total
+        agg: sum
+        expr: amount
+        description: "Total transaction amount"
+        label: "Transaction Total"
+
+      - name: refund_amount
+        agg: sum
+        expr: CASE WHEN type = 'refund' THEN amount ELSE 0 END
+        description: "Total refund amount"
+        label: "Refund Amount"
+
+      - name: discount_amount
+        agg: sum
+        expr: discount
+        description: "Total discount amount"
+        label: "Discount Amount"
+
+      - name: tax_amount
+        agg: sum
+        expr: tax
+        description: "Total tax amount"
+        label: "Tax Amount"
+
+      # Average measures
+      - name: avg_transaction_value
+        agg: average
+        expr: amount
+        description: "Average transaction value"
+        label: "Avg Transaction Value"
+
+      # Min/Max measures
+      - name: min_transaction_value
+        agg: min
+        expr: amount
+        description: "Minimum transaction value"
+        label: "Min Transaction Value"
+
+      - name: max_transaction_value
+        agg: max
+        expr: amount
+        description: "Maximum transaction value"
+        label: "Max Transaction Value"
+
+      # Count distinct measures
+      - name: distinct_customers
+        agg: count_distinct
+        expr: customer_id
+        description: "Count of distinct customers"
+        label: "Distinct Customers"
+
+      - name: distinct_stores
+        agg: count_distinct
+        expr: store_id
+        description: "Count of distinct stores"
+        label: "Distinct Stores"
+
+      # Median measure
+      - name: median_transaction_value
+        agg: median
+        expr: amount
+        description: "Median transaction value"
+        label: "Median Transaction Value"
+
+      # Boolean sum measure
+      - name: online_transaction_count
+        agg: sum_boolean
+        expr: channel = 'online'
+        description: "Count of online transactions"
+        label: "Online Transaction Count"
+
+  - name: inventory
+    model: ref('fact_inventory')
+    description: "Inventory snapshot table with non-additive dimensions"
+
+    config:
+      meta:
+        hex:
+          table: public.inventory
+
+    defaults:
+      agg_time_dimension: snapshot_date
+
+    entities:
+      - name: product
+        type: primary
+        expr: product_id
+
+    dimensions:
+      - name: snapshot_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: date
+        description: "Inventory snapshot date"
+        label: "Snapshot Date"
+
+      - name: warehouse
+        type: categorical
+        expr: warehouse_id
+        description: "Warehouse identifier"
+        label: "Warehouse"
+
+    measures:
+      # Measure with non-additive dimension (for snapshot data)
+      - name: inventory_quantity
+        agg: sum
+        expr: quantity
+        description: "Current inventory quantity"
+        label: "Inventory Quantity"
+        non_additive_dimension:
+          name: snapshot_date
+          window_choice: max
+
+      - name: inventory_value
+        agg: sum
+        expr: quantity * unit_cost
+        description: "Current inventory value"
+        label: "Inventory Value"
+        non_additive_dimension:
+          name: snapshot_date
+          window_choice: max
+
+metrics:
+  # Simple metrics
+  - name: total_transactions
+    type: simple
+    description: "Total number of transactions"
+    label: "Total Transactions"
+    type_params:
+      measure:
+        name: transaction_count
+
+  - name: total_transaction_revenue
+    type: simple
+    description: "Total revenue from transactions"
+    label: "Total Revenue"
+    type_params:
+      measure:
+        name: transaction_total
+
+  # Ratio metrics
+  - name: average_transaction_value
+    type: ratio
+    description: "Average transaction value"
+    label: "Average Transaction Value"
+    type_params:
+      numerator: transaction_total
+      denominator: transaction_count
+
+  - name: refund_rate
+    type: ratio
+    description: "Refund rate (refund amount / total amount)"
+    label: "Refund Rate"
+    type_params:
+      numerator: refund_amount
+      denominator: transaction_total
+
+  - name: discount_rate
+    type: ratio
+    description: "Discount rate (discount / revenue)"
+    label: "Discount Rate"
+    type_params:
+      numerator: discount_amount
+      denominator: transaction_total
+
+  # Derived metrics
+  - name: net_transaction_revenue
+    type: derived
+    description: "Net revenue (total - refunds - discounts)"
+    label: "Net Revenue"
+    type_params:
+      expr: total - refunds - discounts
+      metrics:
+        - name: total_transaction_revenue
+          alias: total
+        - name: total_transaction_refunds
+          alias: refunds
+        - name: total_transaction_discounts
+          alias: discounts
+
+  # Supporting metrics
+  - name: total_transaction_refunds
+    type: simple
+    description: "Total refund amount"
+    label: "Total Refunds"
+    type_params:
+      measure:
+        name: refund_amount
+
+  - name: total_transaction_discounts
+    type: simple
+    description: "Total discount amount"
+    label: "Total Discounts"
+    type_params:
+      measure:
+        name: discount_amount
+
+  # Metric with filter
+  - name: online_revenue
+    type: simple
+    description: "Revenue from online transactions only"
+    label: "Online Revenue"
+    type_params:
+      measure:
+        name: transaction_total
+    filter: |
+      {{ Dimension('transaction__is_online') }} = True
+
+  # Cumulative metrics
+  - name: cumulative_revenue
+    type: cumulative
+    description: "Cumulative revenue over time"
+    label: "Cumulative Revenue"
+    type_params:
+      measure: transaction_total
+
+  - name: weekly_revenue
+    type: cumulative
+    description: "Revenue over rolling 7-day window"
+    label: "Weekly Revenue (7d)"
+    type_params:
+      measure: transaction_total
+      window: 7d
+
+  - name: monthly_revenue
+    type: cumulative
+    description: "Revenue month-to-date"
+    label: "Monthly Revenue (MTD)"
+    type_params:
+      measure: transaction_total
+      grain_to_date: month

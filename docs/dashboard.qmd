@@ -178,11 +178,13 @@ status_opts = [r[0] for r in conn.execute("SELECT DISTINCT status FROM orders OR
 region_opts = [r[0] for r in conn.execute("SELECT DISTINCT region FROM orders ORDER BY 1").fetchall()]
 category_opts = [r[0] for r in conn.execute("SELECT DISTINCT category FROM orders ORDER BY 1").fetchall()]
 tier_opts = [r[0] for r in conn.execute("SELECT DISTINCT tier FROM customers ORDER BY 1").fetchall()]
+segment_opts = ["completed", "high_value"]
 
 status_select = mo.ui.multiselect(options=status_opts, value=[], label="Status")
 region_select = mo.ui.multiselect(options=region_opts, value=[], label="Region")
 category_select = mo.ui.multiselect(options=category_opts, value=[], label="Category")
 tier_select = mo.ui.multiselect(options=tier_opts, value=[], label="Tier")
+segment_select = mo.ui.multiselect(options=segment_opts, value=[], label="Segments")
 month_options = [r[0] for r in conn.execute("SELECT DISTINCT strftime(order_month, '%Y-%m') AS ym FROM orders ORDER BY ym").fetchall()]
 month_select = mo.ui.dropdown(options=month_options, value=month_options[-1], label="Period Month")
 ```
@@ -205,18 +207,27 @@ def build_filters():
         f.append(f"customers.tier IN ({vals})")
     return f
 
+def build_segments():
+    segs = []
+    if segment_select.value:
+        for seg in segment_select.value:
+            segs.append(f"orders.{seg}")
+    return segs
+
 # Token that captures UI state so downstream cells re-execute when filters change
 FILTERS_STATE = (
     tuple(status_select.value),
     tuple(region_select.value),
     tuple(category_select.value),
     tuple(tier_select.value),
+    tuple(segment_select.value),
     month_select.value,
 )
 
 def run_query(metrics, dims, order_by=None, limit=None, extra_filters=None, _state: object | None = None):
     # _state is unused inside; it exists to make marimo track dependencies on UI
     filters = build_filters()
+    segments = build_segments()
     if extra_filters:
         filters = filters + list(extra_filters)
     dims_sql = list(dims)
@@ -226,7 +237,7 @@ def run_query(metrics, dims, order_by=None, limit=None, extra_filters=None, _sta
         dims_sql.append("customers.tier")
         injected = True
 
-    sql = generator.generate(metrics=metrics, dimensions=dims_sql, filters=filters, order_by=order_by, limit=limit)
+    sql = generator.generate(metrics=metrics, dimensions=dims_sql, filters=filters, segments=segments, order_by=order_by, limit=limit)
     cur = conn.execute(sql)
     rows = cur.fetchall()
     cols = [d[0] for d in cur.description]
@@ -507,7 +518,7 @@ mo.vstack([
     mo.vstack([
         mo.md("### Filters"),
         mo.hstack([status_select, region_select, category_select]),
-        mo.hstack([tier_select, month_select]),
+        mo.hstack([tier_select, segment_select, month_select]),
     ]),
     # Metrics row
     mo.hstack([

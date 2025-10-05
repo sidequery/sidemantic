@@ -1,0 +1,225 @@
+semantic_models:
+  - name: orders
+    model: ref('orders')
+    description: "Order fact table with comprehensive metric examples"
+
+    config:
+      meta:
+        hex:
+          table: public.orders
+
+    defaults:
+      agg_time_dimension: order_date
+
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: product
+        type: foreign
+        expr: product_id
+
+    dimensions:
+      - name: order_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: created_at
+        description: "Date when order was created"
+
+      - name: status
+        type: categorical
+        expr: status
+        description: "Order status"
+
+      - name: is_food_order
+        type: categorical
+        expr: category = 'food'
+        description: "Whether order is a food order"
+
+    measures:
+      - name: order_count
+        agg: count
+        description: "Total number of orders"
+        create_metric: true
+
+      - name: order_total
+        agg: sum
+        expr: amount
+        description: "Total order amount"
+
+      - name: order_cost
+        agg: sum
+        expr: cost
+        description: "Total order cost"
+
+      - name: avg_order_value
+        agg: average
+        expr: amount
+        description: "Average order value"
+
+      - name: max_order_value
+        agg: max
+        expr: amount
+        description: "Maximum order value"
+
+      - name: min_order_value
+        agg: min
+        expr: amount
+        description: "Minimum order value"
+
+      - name: distinct_customers
+        agg: count_distinct
+        expr: customer_id
+        description: "Count of distinct customers"
+
+  - name: subscriptions
+    model: ref('subscriptions')
+    description: "Subscription fact table for testing cumulative metrics"
+
+    config:
+      meta:
+        hex:
+          table: public.subscriptions
+
+    defaults:
+      agg_time_dimension: subscription_date
+
+    entities:
+      - name: subscription
+        type: primary
+        expr: subscription_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+
+    dimensions:
+      - name: subscription_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: start_date
+        description: "Subscription start date"
+
+      - name: subscription_type
+        type: categorical
+        expr: type
+        description: "Type of subscription"
+
+    measures:
+      - name: subscription_count
+        agg: sum
+        expr: is_active
+        description: "Count of active subscriptions"
+        non_additive_dimension:
+          name: subscription_date
+          window_choice: max
+
+      - name: mrr
+        agg: sum
+        expr: monthly_amount
+        description: "Monthly recurring revenue"
+
+metrics:
+  # Simple metric - references a measure
+  - name: total_order_revenue
+    type: simple
+    description: "Total revenue from all orders"
+    label: "Total Revenue"
+    type_params:
+      measure:
+        name: order_total
+
+  # Ratio metric - division of two measures
+  - name: average_order_value
+    type: ratio
+    description: "Average value per order (revenue / order count)"
+    label: "Average Order Value"
+    type_params:
+      numerator: order_total
+      denominator: order_count
+
+  # Another ratio metric
+  - name: profit_margin
+    type: ratio
+    description: "Profit margin percentage"
+    label: "Profit Margin %"
+    type_params:
+      numerator: order_total
+      denominator: order_cost
+
+  # Derived metric - expression using other metrics
+  - name: order_gross_profit
+    type: derived
+    description: "Gross profit from orders (revenue - cost)"
+    label: "Order Gross Profit"
+    type_params:
+      expr: revenue - cost
+      metrics:
+        - name: total_order_revenue
+          alias: revenue
+        - name: total_order_cost
+          alias: cost
+
+  # Derived metric with filters
+  - name: food_order_profit
+    type: derived
+    description: "Gross profit from food orders only"
+    label: "Food Order Profit"
+    type_params:
+      expr: revenue - cost
+      metrics:
+        - name: total_order_revenue
+          alias: revenue
+          filter: |
+            {{ Dimension('order__is_food_order') }} = True
+        - name: total_order_cost
+          alias: cost
+          filter: |
+            {{ Dimension('order__is_food_order') }} = True
+
+  # Cumulative metric - no window (all time)
+  - name: cumulative_revenue
+    type: cumulative
+    description: "Cumulative revenue over all time"
+    label: "Cumulative Revenue (All Time)"
+    type_params:
+      measure: order_total
+
+  # Cumulative metric with window
+  - name: weekly_revenue
+    type: cumulative
+    description: "Revenue over rolling 7-day window"
+    label: "Weekly Revenue"
+    type_params:
+      measure: order_total
+      window: 7d
+
+  # Cumulative metric with grain to date
+  - name: monthly_revenue
+    type: cumulative
+    description: "Revenue month-to-date"
+    label: "Monthly Revenue (MTD)"
+    type_params:
+      measure: order_total
+      grain_to_date: month
+
+  # Supporting metric for derived metric
+  - name: total_order_cost
+    type: simple
+    description: "Total cost from all orders"
+    label: "Total Cost"
+    type_params:
+      measure:
+        name: order_cost
+
+  # Cumulative metric with non-additive dimension
+  - name: active_subscriptions
+    type: cumulative
+    description: "Count of active subscriptions"
+    label: "Active Subscriptions"
+    type_params:
+      measure: subscription_count

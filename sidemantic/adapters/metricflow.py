@@ -202,7 +202,7 @@ class MetricFlowAdapter(BaseAdapter):
         return Dimension(
             name=name,
             type=sidemantic_type,
-            expr=dim_def.get("expr"),
+            sql=dim_def.get("expr"),
             granularity=granularity,
             description=dim_def.get("description"),
             label=dim_def.get("label"),
@@ -259,7 +259,7 @@ class MetricFlowAdapter(BaseAdapter):
         return Metric(
             name=name,
             agg=sidemantic_agg,
-            expr=measure_def.get("expr"),
+            sql=measure_def.get("expr"),
             description=measure_def.get("description"),
             label=measure_def.get("label"),
             filters=filters,
@@ -336,9 +336,16 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Cumulative metric
         window = None
+        grain_to_date = None
         if metric_type == "cumulative":
-            cumulative_params = type_params.get("cumulative_type_params", {})
-            window = cumulative_params.get("window")
+            # Window can be directly in type_params
+            window = type_params.get("window")
+            grain_to_date = type_params.get("grain_to_date")
+            # Or in cumulative_type_params (alternative structure)
+            if not window and not grain_to_date:
+                cumulative_params = type_params.get("cumulative_type_params", {})
+                window = cumulative_params.get("window")
+                grain_to_date = cumulative_params.get("grain_to_date")
 
         # Parse filter
         filter_expr = metric_def.get("filter")
@@ -360,6 +367,7 @@ class MetricFlowAdapter(BaseAdapter):
             numerator=numerator,
             denominator=denominator,
             window=window,
+            grain_to_date=grain_to_date,
             filters=filters,
             format=format_str,
             value_format_name=value_format_name,

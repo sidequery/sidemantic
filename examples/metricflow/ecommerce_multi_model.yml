@@ -1,0 +1,295 @@
+semantic_models:
+  - name: customers
+    model: ref('dim_customers')
+    description: "Customer dimension table"
+
+    config:
+      meta:
+        hex:
+          table: public.customers
+
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_id
+
+    dimensions:
+      - name: customer_name
+        type: categorical
+        expr: name
+        description: "Customer full name"
+        label: "Customer Name"
+
+      - name: customer_email
+        type: categorical
+        expr: email
+        description: "Customer email address"
+
+      - name: region
+        type: categorical
+        expr: region
+        description: "Customer region"
+        label: "Region"
+
+      - name: tier
+        type: categorical
+        expr: tier
+        description: "Customer tier (gold, silver, bronze)"
+        label: "Customer Tier"
+
+      - name: signup_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: created_at
+        description: "Date customer signed up"
+
+    measures:
+      - name: customer_count
+        agg: count
+        description: "Total number of customers"
+
+  - name: products
+    model: ref('dim_products')
+    description: "Product dimension table"
+
+    config:
+      meta:
+        hex:
+          table: public.products
+
+    entities:
+      - name: product
+        type: primary
+        expr: product_id
+
+    dimensions:
+      - name: product_name
+        type: categorical
+        expr: name
+        description: "Product name"
+        label: "Product Name"
+
+      - name: category
+        type: categorical
+        expr: category
+        description: "Product category"
+        label: "Category"
+
+      - name: subcategory
+        type: categorical
+        expr: subcategory
+        description: "Product subcategory"
+        label: "Subcategory"
+
+      - name: price
+        type: categorical
+        expr: price
+        description: "Product price"
+
+    measures:
+      - name: product_count
+        agg: count
+        description: "Total number of products"
+
+  - name: orders
+    model: ref('fact_orders')
+    description: "Order fact table at the order level"
+
+    config:
+      meta:
+        hex:
+          table: public.orders
+
+    defaults:
+      agg_time_dimension: order_date
+
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: product
+        type: foreign
+        expr: product_id
+
+    dimensions:
+      - name: order_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: created_at
+        description: "Date when order was placed"
+
+      - name: shipped_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: shipped_at
+        description: "Date when order was shipped"
+
+      - name: status
+        type: categorical
+        expr: status
+        description: "Order status (pending, completed, cancelled)"
+
+      - name: payment_method
+        type: categorical
+        expr: payment_method
+        description: "Payment method used"
+
+    measures:
+      - name: order_count
+        agg: count
+        description: "Count of orders"
+
+      - name: order_total
+        agg: sum
+        expr: amount
+        description: "Total order amount"
+
+      - name: order_cost
+        agg: sum
+        expr: cost
+        description: "Total order cost"
+
+      - name: distinct_customers
+        agg: count_distinct
+        expr: customer_id
+        description: "Count of distinct customers who placed orders"
+
+      - name: distinct_products
+        agg: count_distinct
+        expr: product_id
+        description: "Count of distinct products ordered"
+
+  - name: line_items
+    model: ref('fact_line_items')
+    description: "Line item fact table at the line item level"
+
+    config:
+      meta:
+        hex:
+          table: public.line_items
+
+    defaults:
+      agg_time_dimension: order_date
+
+    entities:
+      - name: line_item
+        type: primary
+        expr: line_item_id
+      - name: order
+        type: foreign
+        expr: order_id
+      - name: product
+        type: foreign
+        expr: product_id
+
+    dimensions:
+      - name: order_date
+        type: time
+        type_params:
+          time_granularity: day
+        expr: created_at
+        description: "Date of the order containing this line item"
+
+      - name: quantity
+        type: categorical
+        expr: quantity
+        description: "Quantity of product in line item"
+
+    measures:
+      - name: line_item_count
+        agg: count
+        description: "Count of line items"
+
+      - name: line_item_total
+        agg: sum
+        expr: amount
+        description: "Total line item amount"
+
+      - name: quantity_sold
+        agg: sum
+        expr: quantity
+        description: "Total quantity sold"
+
+      - name: avg_quantity_per_line
+        agg: average
+        expr: quantity
+        description: "Average quantity per line item"
+
+metrics:
+  # Simple metrics
+  - name: ecommerce_total_orders
+    type: simple
+    description: "Total number of orders"
+    label: "Total Orders"
+    type_params:
+      measure:
+        name: order_count
+
+  - name: ecommerce_total_revenue
+    type: simple
+    description: "Total revenue from all orders"
+    label: "Total Revenue"
+    type_params:
+      measure:
+        name: order_total
+
+  - name: ecommerce_total_customers
+    type: simple
+    description: "Total number of customers"
+    label: "Total Customers"
+    type_params:
+      measure:
+        name: customer_count
+
+  # Ratio metrics
+  - name: ecommerce_average_order_value
+    type: ratio
+    description: "Average order value (total revenue / order count)"
+    label: "Average Order Value"
+    type_params:
+      numerator: order_total
+      denominator: order_count
+
+  - name: ecommerce_revenue_per_customer
+    type: ratio
+    description: "Average revenue per customer"
+    label: "Revenue per Customer"
+    type_params:
+      numerator: order_total
+      denominator: distinct_customers
+
+  - name: ecommerce_items_per_order
+    type: ratio
+    description: "Average number of items per order"
+    label: "Items per Order"
+    type_params:
+      numerator: line_item_count
+      denominator: order_count
+
+  # Derived metrics
+  - name: ecommerce_gross_profit
+    type: derived
+    description: "Gross profit (revenue - cost)"
+    label: "Gross Profit"
+    type_params:
+      expr: revenue - cost
+      metrics:
+        - name: ecommerce_total_revenue
+          alias: revenue
+        - name: ecommerce_total_cost
+          alias: cost
+
+  # Supporting metric
+  - name: ecommerce_total_cost
+    type: simple
+    description: "Total cost of goods sold"
+    label: "Total Cost"
+    type_params:
+      measure:
+        name: order_cost

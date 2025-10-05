@@ -15,7 +15,7 @@ website:
     left:
       - text: "Home"
         href: index.qmd
-      - text: "Interactive Tour"
+      - text: "Interactive Demo"
         href: marimo-interactive.qmd
       - text: "Getting Started"
         href: getting-started.qmd

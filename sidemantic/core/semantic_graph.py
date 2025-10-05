@@ -44,6 +44,17 @@ class SemanticGraph:
             raise ValueError(f"Model {model.name} already exists")
 
         self.models[model.name] = model
+
+        # Auto-register graph-level metrics from model
+        # Graph-level metric types: time_comparison, conversion
+        # These need to be accessible without model prefix
+        if model.metrics:
+            for metric in model.metrics:
+                if metric.type in ("time_comparison", "conversion"):
+                    # Register at graph level if not already there
+                    if metric.name not in self.metrics:
+                        self.metrics[metric.name] = metric
+
         self._build_adjacency()
 
     def add_metric(self, measure: Metric) -> None:

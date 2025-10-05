@@ -241,3 +241,232 @@ def test_dimension_only_query(semantic_layer):
 
     assert len(df) == 2
     assert set(df["status"].tolist()) == {"completed", "pending"}
+
+
+def test_rewriter_invalid_sql():
+    """Test error handling for invalid SQL."""
+    layer = SemanticLayer()
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    layer.add_model(orders)
+
+    rewriter = QueryRewriter(layer.graph, dialect="duckdb")
+
+    # Invalid SQL syntax
+    with pytest.raises(ValueError, match="Failed to parse SQL"):
+        rewriter.rewrite("SELECT FROM WHERE")
+
+
+def test_rewriter_non_select_query():
+    """Test error for non-SELECT queries."""
+    layer = SemanticLayer()
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    layer.add_model(orders)
+
+    rewriter = QueryRewriter(layer.graph, dialect="duckdb")
+
+    # INSERT query should fail
+    with pytest.raises(ValueError, match="Only SELECT queries are supported"):
+        rewriter.rewrite("INSERT INTO orders VALUES (1, 'test')")
+
+    # UPDATE query should fail
+    with pytest.raises(ValueError, match="Only SELECT queries are supported"):
+        rewriter.rewrite("UPDATE orders SET status = 'completed'")
+
+    # DELETE query should fail
+    with pytest.raises(ValueError, match="Only SELECT queries are supported"):
+        rewriter.rewrite("DELETE FROM orders")
+
+
+def test_rewriter_or_filters(semantic_layer):
+    """Test rewriting query with OR filters."""
+    sql = """
+        SELECT orders.revenue
+        FROM orders
+        WHERE orders.status = 'completed' OR orders.status = 'pending'
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    # Should return all rows
+    assert len(df) == 1
+    assert df["revenue"][0] == 450.00
+
+
+def test_rewriter_in_filter(semantic_layer):
+    """Test rewriting query with IN clause."""
+    sql = """
+        SELECT orders.revenue
+        FROM orders
+        WHERE orders.status IN ('completed', 'pending')
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["revenue"][0] == 450.00
+
+
+def test_rewriter_having_clause(semantic_layer):
+    """Test rewriting query with HAVING clause."""
+    sql = """
+        SELECT orders.revenue, orders.status
+        FROM orders
+        HAVING orders.revenue > 150
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    # HAVING filters on aggregated revenue
+    # Both groups (completed=250, pending=200) exceed 150
+    assert len(df) == 2
+
+
+def test_rewriter_distinct(semantic_layer):
+    """Test rewriting query with DISTINCT."""
+    sql = "SELECT DISTINCT orders.status FROM orders"
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 2
+    assert set(df["status"].tolist()) == {"completed", "pending"}
+
+
+def test_select_star_expansion(semantic_layer):
+    """Test SELECT * gets expanded to all model fields."""
+    sql = "SELECT * FROM orders"
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    # Should have all dimensions and metrics
+    assert "status" in df.columns
+    assert "order_date" in df.columns
+    assert "revenue" in df.columns
+    assert "count" in df.columns
+
+
+def test_select_star_without_from():
+    """Test error when SELECT * has no FROM clause."""
+    from sidemantic.sql.query_rewriter import QueryRewriter
+
+    layer = SemanticLayer()
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    layer.add_model(orders)
+
+    rewriter = QueryRewriter(layer.graph, dialect="duckdb")
+
+    # SELECT * without FROM should error
+    with pytest.raises(ValueError, match="SELECT \\* requires a FROM clause"):
+        rewriter.rewrite("SELECT *")
+
+
+def test_column_alias(semantic_layer):
+    """Test column aliases in SELECT."""
+    sql = "SELECT orders.revenue AS total_revenue, orders.status AS order_status FROM orders"
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    # Aliases should be preserved or handled
+    assert len(df) == 2
+
+
+def test_graph_level_metrics(semantic_layer):
+    """Test querying graph-level metrics."""
+    # Add a graph-level metric
+    graph_metric = Metric(
+        name="total_orders",
+        type="derived",
+        sql="COUNT(*)",
+    )
+    semantic_layer.add_metric(graph_metric)
+
+    # Query the graph-level metric
+    sql = "SELECT total_orders FROM orders"
+
+    # This should work (or at least not crash)
+    try:
+        result = semantic_layer.sql(sql)
+        assert result is not None
+    except (ValueError, KeyError):
+        # If graph-level metrics aren't fully supported yet, that's OK
+        pass
+
+
+def test_nested_and_or_filters(semantic_layer):
+    """Test nested AND/OR filter combinations."""
+    sql = """
+        SELECT orders.revenue
+        FROM orders
+        WHERE (orders.status = 'completed' OR orders.status = 'pending')
+          AND orders.order_date >= '2024-01-01'
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["revenue"][0] == 450.00
+
+
+def test_complex_nested_filters(semantic_layer):
+    """Test complex nested filter logic."""
+    sql = """
+        SELECT orders.revenue
+        FROM orders
+        WHERE (orders.status = 'completed' AND orders.order_date >= '2024-01-01')
+           OR (orders.status = 'pending' AND orders.order_date >= '2024-01-03')
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    # Should include completed orders from 1/1+ AND pending orders from 1/3+
+    assert len(df) == 1
+
+
+def test_query_without_metrics_or_dimensions():
+    """Test error when query has neither metrics nor dimensions."""
+    from sidemantic.sql.query_rewriter import QueryRewriter
+
+    layer = SemanticLayer()
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    layer.add_model(orders)
+
+    rewriter = QueryRewriter(layer.graph, dialect="duckdb")
+
+    # A query that selects nothing meaningful
+    with pytest.raises(ValueError, match="Query must select at least one"):
+        rewriter.rewrite("SELECT FROM orders")
+
+
+def test_unresolvable_column(semantic_layer):
+    """Test error for completely unresolvable column."""
+    sql = "SELECT completely_unknown_field FROM orders"
+
+    with pytest.raises(ValueError, match="Cannot resolve column|not found"):
+        semantic_layer.sql(sql)

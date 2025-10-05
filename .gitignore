@@ -10,6 +10,10 @@ docs/_site
 __pycache__/
 *.py[cod]
 
+# Coverage reports
+.coverage
+htmlcov/
+
 # Virtual envs
 .venv/
 

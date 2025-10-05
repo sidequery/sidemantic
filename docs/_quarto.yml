@@ -48,3 +48,4 @@ format:
     toc: true
     toc-depth: 3
     include-in-header: _includes/posthog.html
+    css: _includes/custom.css

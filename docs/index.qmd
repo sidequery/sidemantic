@@ -3,9 +3,9 @@ title: "Sidemantic"
 subtitle: "Define metrics once, query them anywhere with SQL"
 ---
 
-## What is Sidemantic?
+Sidemantic is a semantic layer that turns messy data modeling into clean SQL. Define your business metrics once in YAML, then query them with familiar SQL or Python.
 
-Sidemantic is a semantic layer that turns messy data modeling into clean SQL. Define your business metrics once in YAML, then query them with familiar SQL syntax. No more copy-pasting calculations or joining the same tables over and over.
+**Compatible with 8+ formats:** Cube, MetricFlow (dbt), LookML (Looker), Hex, Rill, Superset, Omni, or native Sidemantic YAML.
 
 ```yaml
 # Define once
@@ -19,41 +19,26 @@ models:
 ```
 
 ```python
-# Query anywhere with SQL
-layer.sql("SELECT revenue FROM orders")
+# Query with SQL
+layer.sql("SELECT revenue FROM orders WHERE status = 'completed'")
+
+# Or use Python API
+layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    filters=["orders.status = 'completed'"]
+)
 ```
 
-## Key Features
+## Why Sidemantic?
 
-### Core Capabilities
-- **YAML definitions** with JSON Schema for autocomplete
-- **SQL query interface** - write familiar SQL, get semantic results
-- **Automatic joins** - define relationships once, query across models
-- **Multi-hop joins** - automatic 2+ hop join path discovery
-- **Auto-detected dependencies** - no manual dependency declarations needed!
-- **Multi-dialect** - SQLGlot powers cross-database SQL generation
+**Write SQL, get semantic results.** Query your metrics with familiar SQL syntax while Sidemantic handles the complexity behind the scenes.
 
-### Rich Metric Types
-- **Aggregations** - sum, avg, count, count_distinct, min, max
-- **Ratios** - revenue / order_count
-- **Derived formulas** - (revenue - cost) / revenue
-- **Cumulative** - running totals, rolling windows
-- **Time comparisons** - YoY, MoM, WoW with LAG window functions
-- **Conversion funnels** - signup → purchase rate
+**Smart automation.** Automatic joins across models, dependency detection, and multi-hop relationship discovery mean less configuration, more productivity.
 
-### Advanced Features
-- **Segments** - reusable named filters with template placeholders
-- **Metric-level filters** - auto-applied filters for business logic
-- **Jinja2 templating** - full conditionals and loops in SQL
-- **Inheritance** - extend models and metrics (DRY principles)
-- **Hierarchies** - parent/child dimensions with drill-down API
-- **Relative dates** - "last 7 days", "this month", etc.
+**Rich metric types.** From simple aggregations to ratios, time comparisons, conversion funnels, and cumulative calculations.
 
-### Metadata & Governance
-- **Display formatting** - format strings and named formats (USD, percent)
-- **Drill fields** - define drill-down paths for BI tools
-- **Non-additivity markers** - prevent incorrect aggregation
-- **Default dimensions** - default time dimensions and granularity
+**Flexible and powerful.** Jinja2 templating, reusable segments, hierarchies, and inheritance let you build sophisticated analytics without the complexity.
 
 ## Quick Example
 
@@ -103,5 +88,9 @@ df = result.fetchdf()
 ## Learn More
 
 - [Getting Started](getting-started.qmd) - Step-by-step tutorial
-- [Examples](examples.qmd) - Real-world examples
+- [Interactive Demo](dashboard.qmd) - Try Sidemantic in your browser
+- [Python API](python-api.qmd) - Programmatic query interface
+- [Adapters](adapters.qmd) - Import from Cube, dbt, Looker, and more
+- [Advanced Features](advanced-features.qmd) - Full feature list and examples
+- [Examples](examples.qmd) - Sample use cases
 - [YAML Reference](YAML_FORMAT.md) - Complete YAML specification

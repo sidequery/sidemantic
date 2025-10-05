@@ -910,7 +910,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0.0" },
-    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "jinja2", specifier = ">=3.1.0" },
     { name = "lkml", specifier = ">=1.3.7" },
     { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.2,<3" },
     { name = "pydantic", specifier = ">=2.0.0" },

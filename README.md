@@ -415,11 +415,17 @@ Run tests:
 uv run pytest -v
 ```
 
+## Database Support
+
+**DuckDB** is the primary supported database (via [Sidequery](https://github.com/sidequery/sidequery), our parent project).
+
+While the SQL generation layer uses SQLGlot and can transpile to other dialects, DuckDB is the only actively tested and supported execution engine. Additional database support may be added based on Sidequery's roadmap.
+
 ## Status
 
 See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 
-**Completed:**
+**Core Features (Complete):**
 - ✅ SQL query interface with automatic rewriting
 - ✅ Core semantic layer with SQLGlot generation
 - ✅ Relationship-based automatic joins (many_to_one, one_to_many, one_to_one)
@@ -442,9 +448,9 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 - ✅ Pre-aggregations with automatic query routing (disabled by default)
 - ✅ Predicate pushdown with SQLGlot parsing (always enabled)
 
-**Future:**
-- Additional query optimizations (partition pruning, index hints)
-- Pre-aggregation materialization automation
+**Cloud Features:**
+- Pre-aggregation materialization and refresh scheduling will be part of the Sidequery cloud platform
+- Additional database connectors will be added based on Sidequery platform requirements
 
 ## Examples
 

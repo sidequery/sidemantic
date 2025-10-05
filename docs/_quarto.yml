@@ -47,3 +47,4 @@ format:
     theme: cosmo
     toc: true
     toc-depth: 3
+    include-in-header: _includes/posthog.html

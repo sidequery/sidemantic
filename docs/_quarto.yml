@@ -17,6 +17,8 @@ website:
         href: marimo-interactive.qmd
       - text: "Getting Started"
         href: getting-started.qmd
+      - text: "Adapters"
+        href: adapters.qmd
       - text: "Core Concepts"
         menu:
           - text: "Models"
@@ -27,8 +29,6 @@ website:
             href: relationships.qmd
           - text: "SQL Queries"
             href: sql-queries.qmd
-      - text: "Integrations"
-        href: adapters.qmd
       - text: "Reference"
         menu:
           - text: "Python API"

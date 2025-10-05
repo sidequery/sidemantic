@@ -1,5 +1,5 @@
 ---
-title: "Format Adapters"
+title: "Adapters"
 ---
 
 Sidemantic can import semantic models from other popular semantic layer formats, letting you use your existing metric definitions with Sidemantic's query engine and features.

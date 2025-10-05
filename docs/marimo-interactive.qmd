@@ -1,5 +1,5 @@
 ---
-title: "Interactive Notebook"
+title: "Interactive Tour"
 page-layout: article
 description: "Interactive Sidemantic demo: define models and joins, compile metrics to SQL, run in DuckDB, filter across models, and view an ER diagram generated from the semantic graph."
 filters:
@@ -8,7 +8,7 @@ pyproject: |
   requires-python = ">=3.11"
   dependencies = [
       "marimo>=0.16.5",
-      "sidemantic==0.2.3",
+      "sidemantic==0.2.4",
       "duckdb>=1.0",
       "sqlglot>=25",
       "pydantic>=2",
@@ -31,7 +31,7 @@ import micropip
 try:
     import sidemantic  # type: ignore
 except ModuleNotFoundError:
-    await micropip.install(["sidemantic==0.2.3"], deps=False)
+    await micropip.install(["sidemantic==0.2.4"], deps=False)
     import sidemantic  # type: ignore
 ```
 

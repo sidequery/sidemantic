@@ -455,8 +455,14 @@ mo.vstack([
 ```
 
 ```python {.marimo}
-# Data Model
-python_src = """
+mo.md("---")
+```
+
+## Data Model
+
+### Python Definition
+
+```python
 from sidemantic.core.model import Model
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -472,17 +478,17 @@ orders_model = Model(
     table="orders",
     primary_key="id",
     dimensions=[
-        Dimension(name="status", type="categorical", expr="status"),
-        Dimension(name="order_date", type="time", expr="order_date", granularity="day"),
-        Dimension(name="region", type="categorical", expr="region"),
-        Dimension(name="category", type="categorical", expr="category"),
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        Dimension(name="region", type="categorical", sql="region"),
+        Dimension(name="category", type="categorical", sql="category"),
     ],
     metrics=[
-        Metric(name="revenue", agg="sum", expr="amount"),
+        Metric(name="revenue", agg="sum", sql="amount"),
         Metric(name="order_count", agg="count"),
-        Metric(name="avg_order_value", agg="avg", expr="amount"),
-        Metric(name="cost", agg="sum", expr="cost"),
-        Metric(name="profit", agg="sum", expr="profit"),
+        Metric(name="avg_order_value", agg="avg", sql="amount"),
+        Metric(name="cost", agg="sum", sql="cost"),
+        Metric(name="profit", agg="sum", sql="profit"),
         Metric(name="returns", agg="count", filters=["{model}.status = 'returned'"]),
         Metric(name="return_rate", type="ratio", numerator="orders.returns", denominator="orders.order_count"),
     ],
@@ -499,7 +505,7 @@ customers_model = Model(
     primary_key="id",
     dimensions=[
         Dimension(name="tier", type="categorical", sql="tier"),
-        Dimension(name="region", type="categorical", expr="region"),
+        Dimension(name="region", type="categorical", sql="region"),
     ],
     relationships=[Relationship(name="region_map", type="many_to_one", foreign_key="region", primary_key="region")],
 )
@@ -516,11 +522,11 @@ graph.add_model(customers_model)
 graph.add_model(region_map_model)
 
 generator = SQLGenerator(graph, dialect="duckdb")
-"""
 ```
 
-```python {.marimo}
-yaml_src = """
+### YAML Definition
+
+```yaml
 models:
   - name: orders
     table: orders
@@ -528,32 +534,32 @@ models:
     dimensions:
       - name: status
         type: categorical
-        expr: status
+        sql: status
       - name: order_date
         type: time
-        expr: order_date
+        sql: order_date
         granularity: day
       - name: region
         type: categorical
-        expr: region
+        sql: region
       - name: category
         type: categorical
-        expr: category
+        sql: category
     metrics:
       - name: revenue
         agg: sum
-        expr: amount
+        sql: amount
       - name: order_count
         agg: count
       - name: avg_order_value
         agg: avg
-        expr: amount
+        sql: amount
       - name: cost
         agg: sum
-        expr: cost
+        sql: cost
       - name: profit
         agg: sum
-        expr: profit
+        sql: profit
       - name: returns
         agg: count
         filters:
@@ -577,10 +583,10 @@ models:
     dimensions:
       - name: tier
         type: categorical
-        expr: tier
+        sql: tier
       - name: region
         type: categorical
-        expr: region
+        sql: region
     relationships:
       - name: region_map
         type: many_to_one
@@ -592,23 +598,7 @@ models:
     dimensions:
       - name: region_group
         type: categorical
-        expr: region_group
-"""
-```
-
-```python {.marimo}
-mo.md("---")
-```
-
-```python {.marimo}
-# Data Model (code + ER diagram)
-mo.vstack([
-    mo.md('## Data Model'),
-    mo.accordion({
-        "Python Definition": mo.ui.code_editor(value=python_src, language='python', disabled=True, min_height=360),
-        "YAML Definition": mo.ui.code_editor(value=yaml_src, language='yaml', disabled=True, min_height=420),
-    }),
-])
+        sql: region_group
 ```
 
 ```python {.marimo}

@@ -27,11 +27,24 @@ def auto_register_model(model):
         layer.add_model(model)
 
 
-def auto_register_measure(model_name: str, measure):
-    """Auto-register measure with current layer if available.
+def auto_register_metric(metric):
+    """Auto-register graph-level metric with current layer if available.
 
-    Note: Metrics are added to models, so we need the model name.
+    Only auto-registers standalone metrics (not part of a model).
+    For model-level metrics, time_comparison and conversion types are auto-registered
+    when the model is added to the layer (handled in SemanticGraph.add_model).
+
+    Note: This is called from Metric.__init__ for all metrics, but we only
+    register standalone graph-level metrics like derived or ratio metrics created
+    outside of a model.
     """
-    # For now, measures are registered via their model
-    # Complex measures (metrics) would need model context
-    pass
+    layer = get_current_layer()
+    if layer is not None:
+        # Only register if it's a metric type that makes sense at graph level
+        # Don't register simple aggregations (they belong to models)
+        if not metric.agg or metric.type in ("derived", "ratio"):
+            try:
+                layer.add_metric(metric)
+            except Exception:
+                # Ignore errors (metric might already exist or validation might fail)
+                pass

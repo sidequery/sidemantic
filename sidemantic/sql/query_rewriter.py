@@ -149,7 +149,7 @@ class QueryRewriter:
         self.inferred_table = self._extract_from_table(parsed)
 
         # Extract components
-        metrics, dimensions = self._extract_metrics_and_dimensions(parsed)
+        metrics, dimensions, aliases = self._extract_metrics_and_dimensions(parsed)
         filters = self._extract_filters(parsed)
         order_by = self._extract_order_by(parsed)
         limit = self._extract_limit(parsed)
@@ -167,19 +167,22 @@ class QueryRewriter:
             order_by=order_by,
             limit=limit,
             offset=offset,
+            aliases=aliases,
         )
 
-    def _extract_metrics_and_dimensions(self, select: exp.Select) -> tuple[list[str], list[str]]:
+    def _extract_metrics_and_dimensions(self, select: exp.Select) -> tuple[list[str], list[str], dict[str, str]]:
         """Extract metrics and dimensions from SELECT clause.
 
         Args:
             select: Parsed SELECT statement
 
         Returns:
-            Tuple of (metrics, dimensions)
+            Tuple of (metrics, dimensions, aliases)
+            where aliases is a dict mapping field reference to custom alias
         """
         metrics = []
         dimensions = []
+        aliases = {}
 
         for projection in select.expressions:
             # Handle SELECT *
@@ -208,9 +211,11 @@ class QueryRewriter:
 
                 continue
 
-            # Get column name (handle aliases)
+            # Get column name and alias
+            custom_alias = None
             if isinstance(projection, exp.Alias):
                 column = projection.this
+                custom_alias = projection.alias
             else:
                 column = projection
 
@@ -218,6 +223,10 @@ class QueryRewriter:
             ref = self._resolve_column(column)
             if not ref:
                 raise ValueError(f"Cannot resolve column: {column.sql(dialect=self.dialect)}")
+
+            # Store custom alias if provided
+            if custom_alias:
+                aliases[ref] = custom_alias
 
             # Handle graph-level metrics (no model prefix)
             if "." not in ref:
@@ -252,7 +261,7 @@ class QueryRewriter:
                 f"Field '{metric_ref}' not found. Must be a metric, measure, or dimension in model '{model_name}'"
             )
 
-        return metrics, dimensions
+        return metrics, dimensions, aliases
 
     def _extract_filters(self, select: exp.Select) -> list[str]:
         """Extract filters from WHERE clause.

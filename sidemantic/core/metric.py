@@ -17,10 +17,20 @@ class Metric(BaseModel):
     - Cumulative: running totals, period-to-date
     - Time comparisons: YoY, MoM growth
     - Conversion funnels: signup -> purchase rate
+
+    Auto-registers as a graph-level metric with the current semantic layer context if available.
     """
 
     name: str = Field(..., description="Unique measure name")
     extends: str | None = Field(None, description="Parent metric to inherit from")
+
+    def __init__(self, **data):
+        super().__init__(**data)
+
+        # Auto-register graph-level metrics with current layer if in context
+        from .registry import auto_register_metric
+
+        auto_register_metric(self)
 
     # Basic aggregation (for simple measures)
     agg: Literal["sum", "count", "count_distinct", "avg", "min", "max", "median"] | None = Field(

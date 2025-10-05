@@ -398,8 +398,12 @@ def test_column_alias(semantic_layer):
     result = semantic_layer.sql(sql)
     df = result.fetchdf()
 
-    # Aliases should be preserved or handled
+    # Aliases should be preserved in column names
     assert len(df) == 2
+    assert "total_revenue" in df.columns
+    assert "order_status" in df.columns
+    assert "revenue" not in df.columns
+    assert "status" not in df.columns
 
 
 def test_graph_level_metrics(semantic_layer):
@@ -911,3 +915,55 @@ def test_filter_on_multiple_joined_tables(semantic_layer):
     # Note: We'll skip this test since adding product_id column is complex
     # Just showing the concept
     return
+
+
+def test_multiple_aliases(semantic_layer):
+    """Test multiple columns with aliases."""
+    sql = """
+        SELECT
+            orders.revenue AS total_sales,
+            orders.count AS order_count,
+            orders.status AS current_status
+        FROM orders
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert "total_sales" in df.columns
+    assert "order_count" in df.columns
+    assert "current_status" in df.columns
+
+
+def test_alias_with_join(semantic_layer):
+    """Test aliases work with cross-model queries."""
+    sql = """
+        SELECT
+            orders.revenue AS sales,
+            customers.region AS market
+        FROM orders
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert "sales" in df.columns
+    assert "market" in df.columns
+    assert "revenue" not in df.columns
+    assert "region" not in df.columns
+
+
+def test_alias_mixed_with_no_alias(semantic_layer):
+    """Test mixing aliased and non-aliased columns."""
+    sql = """
+        SELECT
+            orders.revenue AS total_revenue,
+            orders.status
+        FROM orders
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert "total_revenue" in df.columns
+    assert "status" in df.columns

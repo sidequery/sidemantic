@@ -60,6 +60,7 @@ class SQLGenerator:
         parameters: dict[str, any] | None = None,
         ungrouped: bool = False,
         use_preaggregations: bool = False,
+        aliases: dict[str, str] | None = None,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -74,6 +75,7 @@ class SQLGenerator:
             parameters: User-provided parameter values for interpolation
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
+            aliases: Custom aliases for fields (dict mapping field reference to alias)
 
         Returns:
             SQL query string
@@ -83,6 +85,7 @@ class SQLGenerator:
         filters = filters or []
         segments = segments or []
         parameters = parameters or {}
+        aliases = aliases or {}
 
         # Resolve segments to SQL filters
         segment_filters = self._resolve_segments(segments)
@@ -163,7 +166,7 @@ class SQLGenerator:
         needs_window_functions = any(metric_needs_window(m) for m in metrics)
 
         if needs_window_functions:
-            return self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset)
+            return self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset, aliases)
 
         # Parse dimension references and extract granularities
         parsed_dims = self._parse_dimension_refs(dimensions)
@@ -248,6 +251,7 @@ class SQLGenerator:
             limit=limit,
             offset=offset,
             ungrouped=ungrouped,
+            aliases=aliases,
         )
 
         # Combine CTEs and main query
@@ -641,6 +645,7 @@ class SQLGenerator:
         limit: int | None,
         offset: int | None = None,
         ungrouped: bool = False,
+        aliases: dict[str, str] | None = None,
     ) -> str:
         """Build main SELECT using SQLGlot builder API.
 
@@ -655,10 +660,12 @@ class SQLGenerator:
             limit: Row limit
             offset: Row offset
             ungrouped: If True, return raw rows without aggregation
+            aliases: Custom aliases for fields (dict mapping field reference to alias)
 
         Returns:
             SQL SELECT statement
         """
+        aliases = aliases or {}
         # Detect if symmetric aggregates are needed
         symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
 
@@ -689,13 +696,18 @@ class SQLGenerator:
         for dim_ref, gran in parsed_dims:
             model_name, dim_name = dim_ref.split(".")
             cte_col_name = f"{dim_name}__{gran}" if gran else dim_name
-            base_alias = f"{dim_name}__{gran}" if gran else dim_name
 
-            # Add model prefix if there's a collision
-            if has_collision.get(base_alias, False):
-                alias = f"{model_name}_{base_alias}"
+            # Check for custom alias first
+            full_ref = f"{model_name}.{dim_name}__{gran}" if gran else dim_ref
+            if full_ref in aliases:
+                alias = aliases[full_ref]
             else:
-                alias = base_alias
+                # Generate alias (with model prefix if collision)
+                base_alias = f"{dim_name}__{gran}" if gran else dim_name
+                if has_collision.get(base_alias, False):
+                    alias = f"{model_name}_{base_alias}"
+                else:
+                    alias = base_alias
 
             select_exprs.append(f"{model_name}_cte.{cte_col_name} AS {alias}")
 
@@ -708,11 +720,15 @@ class SQLGenerator:
                 measure = model.get_metric(measure_name)
 
                 if measure:
-                    # Add model prefix if there's a collision
-                    if has_collision.get(measure_name, False):
-                        alias = f"{model_name}_{measure_name}"
+                    # Check for custom alias first
+                    if metric_ref in aliases:
+                        alias = aliases[metric_ref]
                     else:
-                        alias = measure_name
+                        # Add model prefix if there's a collision
+                        if has_collision.get(measure_name, False):
+                            alias = f"{model_name}_{measure_name}"
+                        else:
+                            alias = measure_name
 
                     # Complex metric types (derived, ratio) can be built inline
                     # Note: cumulative, time_comparison, conversion are handled via special query generators
@@ -1258,6 +1274,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
         order_by: list[str] | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        aliases: dict[str, str] | None = None,
     ) -> str:
         """Generate SQL with window functions for cumulative metrics.
 
@@ -1271,10 +1288,12 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             filters: List of filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows to return
+            aliases: Custom aliases for fields (dict mapping field reference to alias)
 
         Returns:
             SQL query string
         """
+        aliases = aliases or {}
         # Separate window function metrics from regular metrics
         cumulative_metrics = []
         time_comparison_metrics = []

@@ -206,6 +206,18 @@ def test_unsupported_aggregation(semantic_layer):
         semantic_layer.sql(sql)
 
 
+def test_explicit_join_not_supported(semantic_layer):
+    """Test that explicit JOIN syntax is rejected."""
+    sql = """
+        SELECT orders.revenue, customers.region
+        FROM orders
+        JOIN customers ON orders.customer_id = customers.id
+    """
+
+    with pytest.raises(ValueError, match="Explicit JOIN syntax is not supported"):
+        semantic_layer.sql(sql)
+
+
 def test_rewriter_directly():
     """Test QueryRewriter class directly."""
     layer = SemanticLayer()

@@ -155,16 +155,17 @@ These SQL features are **NOT supported**:
 
 ### No Explicit JOINs
 
-❌ Can't write:
+❌ Can't write explicit JOIN syntax:
 ```sql
-SELECT *
+SELECT orders.revenue, customers.name
 FROM orders
 JOIN customers ON orders.customer_id = customers.id
 ```
+This will raise an error: `Explicit JOIN syntax is not supported`
 
-✅ Instead:
+✅ Instead, reference both models:
 ```sql
--- Just reference both models - joins happen automatically
+-- Joins happen automatically based on model relationships
 SELECT orders.revenue, customers.name
 FROM orders
 ```

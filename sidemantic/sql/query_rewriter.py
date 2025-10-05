@@ -45,6 +45,17 @@ class QueryRewriter:
         if not isinstance(parsed, exp.Select):
             raise ValueError("Only SELECT queries are supported")
 
+        # Check for explicit JOINs - these are not supported
+        if parsed.args.get("joins"):
+            raise ValueError(
+                "Explicit JOIN syntax is not supported. "
+                "Joins are automatic based on model relationships.\n\n"
+                "Instead of:\n"
+                "  SELECT orders.revenue, customers.name FROM orders JOIN customers ON ...\n\n"
+                "Use:\n"
+                "  SELECT orders.revenue, customers.name FROM orders"
+            )
+
         # Extract FROM table for inference
         self.inferred_table = self._extract_from_table(parsed)
 

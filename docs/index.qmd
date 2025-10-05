@@ -1,11 +1,11 @@
 ---
 title: "Sidemantic"
-subtitle: "SQLGlot-based semantic layer"
+subtitle: "Define metrics once, query them anywhere with SQL"
 ---
 
 ## What is Sidemantic?
 
-Sidemantic is a semantic layer that lets you define metrics once and query them with SQL. It automatically handles joins, aggregations, and complex calculations.
+Sidemantic is a semantic layer that turns messy data modeling into clean SQL. Define your business metrics once in YAML, then query them with familiar SQL syntax. No more copy-pasting calculations or joining the same tables over and over.
 
 ```yaml
 # Define once

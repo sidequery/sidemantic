@@ -288,31 +288,6 @@ For maximum flexibility, define relationships from both models:
       foreign_key: order_id
 ```
 
-## Migration from Joins
-
-If you're upgrading from the old `joins` syntax:
-
-**Old (deprecated):**
-```yaml
-joins:
-  - name: customers
-    type: belongs_to
-    foreign_key: customer_id
-```
-
-**New:**
-```yaml
-relationships:
-  - name: customer
-    type: many_to_one
-    foreign_key: customer_id
-```
-
-**Type mapping:**
-- `belongs_to` → `many_to_one` (FK in THIS table)
-- `has_many` → `one_to_many` (FK in OTHER table)
-- `has_one` → `one_to_one` (FK in OTHER table, unique)
-
 ## Troubleshooting
 
 ::: {.callout-warning}

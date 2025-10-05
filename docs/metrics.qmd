@@ -289,24 +289,6 @@ Define basic aggregations first, then build complex metrics on top:
 :::
 
 ::: {.callout-tip}
-## Auto-Detected Dependencies
-No need to manually declare dependencies! They're automatically extracted from `sql` expressions:
-
-```yaml
-# Old way (manual dependencies - deprecated)
-- name: profit_margin
-  type: derived
-  sql: "profit / revenue"
-  metrics: ["profit", "revenue"]  # Don't need this!
-
-# New way (auto-detected)
-- name: profit_margin
-  type: derived
-  sql: "profit / revenue"  # Dependencies detected automatically!
-```
-:::
-
-::: {.callout-tip}
 ## Reusability
 Define metrics once, use everywhere:
 - In SQL queries: `SELECT revenue FROM orders`

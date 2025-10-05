@@ -239,6 +239,37 @@ class SemanticLayer:
         """
         return list(self.graph.metrics.keys())
 
+    def get_catalog_metadata(self, schema: str = "public") -> dict:
+        """Export semantic layer as Postgres-compatible catalog metadata.
+
+        Returns metadata that can be used to populate information_schema
+        and pg_catalog tables, enabling Postgres protocol compatibility.
+
+        Similar to Cube.dev's SQL API, this exposes:
+        - Models as tables in information_schema.tables
+        - Dimensions and metrics as columns in information_schema.columns
+        - Relationships as foreign keys in table_constraints
+
+        Args:
+            schema: Schema name to use (default: 'public')
+
+        Returns:
+            Dictionary containing:
+            - tables: List of table metadata
+            - columns: List of column metadata
+            - constraints: List of constraint metadata
+            - key_column_usage: Foreign key column mappings
+
+        Example:
+            >>> catalog = layer.get_catalog_metadata()
+            >>> # Use for Postgres wire protocol
+            >>> for table in catalog['tables']:
+            ...     print(f"{table['table_name']}: {len([c for c in catalog['columns'] if c['table_name'] == table['table_name']])} columns")
+        """
+        from sidemantic.core.catalog import get_catalog_metadata
+
+        return get_catalog_metadata(self.graph, schema=schema)
+
     @classmethod
     def from_yaml(cls, path: str | Path, connection: str = "duckdb:///:memory:") -> "SemanticLayer":
         """Load semantic layer from native YAML file.

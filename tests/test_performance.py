@@ -136,7 +136,7 @@ def test_simple_rewrite_performance(performance_layer):
     start = time.perf_counter()
 
     for _ in range(iterations):
-        rewritten = rewriter.rewrite(sql)
+        rewriter.rewrite(sql)
 
     elapsed = time.perf_counter() - start
     avg_ms = (elapsed / iterations) * 1000
@@ -165,7 +165,7 @@ def test_complex_rewrite_performance(performance_layer):
     start = time.perf_counter()
 
     for _ in range(iterations):
-        rewritten = rewriter.rewrite(sql)
+        rewriter.rewrite(sql)
 
     elapsed = time.perf_counter() - start
     avg_ms = (elapsed / iterations) * 1000
@@ -184,7 +184,7 @@ def test_sql_generation_performance(performance_layer):
     start = time.perf_counter()
 
     for _ in range(iterations):
-        sql = generator.generate(
+        generator.generate(
             metrics=["orders.revenue"],
             dimensions=["orders.status"],
             filters=["orders.status = 'completed'"],
@@ -207,7 +207,7 @@ def test_multi_join_generation_performance(performance_layer):
     start = time.perf_counter()
 
     for _ in range(iterations):
-        sql = generator.generate(
+        generator.generate(
             metrics=["orders.revenue", "customers.customer_count", "products.avg_price"],
             dimensions=["customers.region", "products.category"],
             filters=["customers.region = 'US'"],
@@ -233,7 +233,7 @@ def test_end_to_end_execution_performance(performance_layer):
 
     for _ in range(iterations):
         result = performance_layer.sql(sql)
-        df = result.fetchdf()
+        result.fetchdf()
 
     elapsed = time.perf_counter() - start
     avg_ms = (elapsed / iterations) * 1000
@@ -259,7 +259,7 @@ def test_filter_parsing_performance(performance_layer):
     start = time.perf_counter()
 
     for _ in range(iterations):
-        sql = generator.generate(
+        generator.generate(
             metrics=["orders.revenue"],
             dimensions=["orders.status"],
             filters=filters,
@@ -319,7 +319,7 @@ def test_parameter_substitution_performance(performance_layer):
     start = time.perf_counter()
 
     for _ in range(iterations):
-        result = generator.generate(
+        generator.generate(
             metrics=["orders.revenue"],
             dimensions=[],
             filters=[

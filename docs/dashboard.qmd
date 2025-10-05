@@ -253,7 +253,7 @@ def run_query(metrics, dims, order_by=None, limit=None, extra_filters=None, _sta
 #| fill: false
 
 mo.vstack([
-    mo.md("**Sidemantic runs directly in your browser**, executing SQL queries against DuckDB."),
+    mo.md("**This demo runs entirely in your browser** using Pyodide and DuckDB WASM."),
     mo.md("Use the filters below to explore the data. Sidemantic automatically compiles metrics and dimensions to SQL, applies filters across models, and executes queries in DuckDB."),
     mo.md("""
 ### Features

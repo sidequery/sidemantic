@@ -386,20 +386,20 @@ This table shows which Sidemantic features are supported when importing from oth
 |---------|------------|------|------------|--------|-----|------|----------|------|-------|
 | **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
 | **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
-| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset: single-model only; Omni: in model file |
-| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
 | **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
-| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset don't have native ratio metric type |
+| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
+| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset: single-model only; Omni: in model file |
 | **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
+| **Metric Filters** | ✅ | ✅ | ❌ | ✅ | ✅ | ⚠️ | ❌ | ✅ | Rill has basic support; Superset lacks filters |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset don't have native ratio metric type |
+| **Segments** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only Cube and LookML have native segment support |
 | **Cumulative Metrics** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Cube has rolling_window; MetricFlow has cumulative; others lack native support |
 | **Time Comparison** | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Only MetricFlow has native time comparison metrics |
-| **Segments** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only Cube and LookML have native segment support |
-| **Metric Filters** | ✅ | ✅ | ❌ | ✅ | ✅ | ⚠️ | ❌ | ✅ | Rill has basic support; Superset lacks filters |
-| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | LookML uses Liquid templating |
 | **Hierarchies** | ✅ | ⚠️ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | Cube/LookML/Omni: via drill_fields |
 | **Inheritance** | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only LookML has native extends support |
-| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | LookML uses Liquid templating |
 | **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | Label and description support varies by format |
+| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
 | **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
 
 **Legend:**

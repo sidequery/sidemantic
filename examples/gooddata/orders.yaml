@@ -1,0 +1,64 @@
+type: dataset
+id: orders
+title: Customer Orders
+description: Order transactions with customer and product information
+table_path: public/orders
+primary_key: order_id
+fields:
+  order_id:
+    type: attribute
+    title: Order ID
+    data_type: STRING
+  customer_id:
+    type: attribute
+    title: Customer ID
+    data_type: STRING
+  order_date:
+    type: attribute
+    title: Order Date
+    data_type: DATE
+  status:
+    type: attribute
+    title: Order Status
+    data_type: STRING
+    labels:
+      status_label:
+        source_column: status
+        value_type: TEXT
+        title: Status Display Name
+  amount:
+    type: fact
+    title: Order Amount
+  quantity:
+    type: fact
+    title: Order Quantity
+references:
+  - dataset: customers
+    foreign_key: customer_id
+---
+type: metric
+id: total_revenue
+title: Total Revenue
+description: Sum of all order amounts
+maql: SELECT SUM({fact/amount})
+format: "#,##0.00"
+---
+type: metric
+id: order_count
+title: Order Count
+description: Total number of orders
+maql: SELECT COUNT({fact/order_id})
+---
+type: metric
+id: avg_order_value
+title: Average Order Value
+description: Average order amount
+maql: SELECT AVG({fact/amount})
+format: "#,##0.00"
+---
+type: metric
+id: completed_revenue
+title: Completed Revenue
+description: Revenue from completed orders only
+maql: SELECT SUM({fact/amount}) WHERE {label/status}="completed"
+format: "#,##0.00"

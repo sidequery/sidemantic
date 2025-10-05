@@ -18,6 +18,7 @@ Sidemantic can import semantic models from other popular semantic layer formats,
 | **Rill** | ✅ | ✅* | ⚠️ No relationships, segments, or cross-model metrics; single-model only |
 | **Superset** (Apache) | ✅ | ✅* | No relationships in datasets |
 | **Omni** | ✅ | ✅* | Relationships in separate model file |
+| **GoodData** | ✅ | ✅* | Facts and attributes; MAQL metrics |
 
 \* Export is in alpha
 
@@ -25,25 +26,25 @@ Sidemantic can import semantic models from other popular semantic layer formats,
 
 This table shows which Sidemantic features are preserved when importing/exporting to other formats:
 
-| Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Superset | Omni | Notes |
-|---------|------------|------|------------|--------|-----|------|----------|------|-------|
-| **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
-| **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
-| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset: single-model only; Omni: in model file |
-| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
-| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
-| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | Rill/Superset: exported as derived metric with formula |
-| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
-| **Cumulative Metrics** | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Cube: rolling_window; others: exported as SQL |
-| **Time Comparison** | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | MetricFlow: native; others: exported as calculated measure |
-| **Segments** | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ | ❌ | ⚠️ | MetricFlow/Hex/Omni: stored in meta; Rill/Superset: not supported |
-| **Metric Filters** | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ❌ | ✅ | MetricFlow: stored in meta; Rill: basic support; Superset: none; Omni: native |
-| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
-| **Hierarchies** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | ⚠️ | Cube/LookML/Omni: drill_fields; MetricFlow/Hex: meta; Rill/Superset: none |
-| **Inheritance** | ✅ | ⚠️ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | LookML: native extends; others: resolved before export |
-| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | LookML uses Liquid instead of Jinja |
-| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | Superset/Omni: label support; others: label/description preserved |
-| **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Superset | Omni | GoodData | Notes |
+|---------|------------|------|------------|--------|-----|------|----------|------|----------|-------|
+| **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
+| **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
+| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | Rill/Superset: single-model only; Omni: in model file; GoodData: references |
+| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
+| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ✅ | Rill/Superset: exported as derived metric with formula |
+| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
+| **Cumulative Metrics** | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | Cube: rolling_window; others: exported as SQL/MAQL |
+| **Time Comparison** | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | MetricFlow: native; others: exported as calculated measure |
+| **Segments** | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ | ❌ | ⚠️ | ⚠️ | MetricFlow/Hex/Omni/GoodData: stored in meta; Rill/Superset: not supported |
+| **Metric Filters** | ✅ | ✅ | ⚠️ | ✅ | ✅ | ⚠️ | ❌ | ✅ | ✅ | MetricFlow: stored in meta; Rill: basic support; Superset: none; Omni/GoodData: native |
+| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| **Hierarchies** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | ⚠️ | ⚠️ | Cube/LookML/Omni: drill_fields; MetricFlow/Hex/GoodData: meta; Rill/Superset: none |
+| **Inheritance** | ✅ | ⚠️ | ⚠️ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | LookML: native extends; others: resolved before export |
+| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | ❌ | LookML uses Liquid; GoodData uses MAQL |
+| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | ✅ | Superset/Omni/GoodData: label support; others: label/description preserved |
+| **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
 
 **Legend:**
 
@@ -179,6 +180,23 @@ layer = SemanticLayer(graph=graph)
 result = layer.sql("SELECT total_revenue FROM orders")
 ```
 
+### From GoodData
+
+Read GoodData datasets into Sidemantic:
+
+```python
+from sidemantic.adapters.gooddata import GoodDataAdapter
+
+# Import from GoodData YAML datasets
+adapter = GoodDataAdapter()
+graph = adapter.parse("gooddata/")  # Directory of YAML files
+
+# Query with Sidemantic
+from sidemantic import SemanticLayer
+layer = SemanticLayer(graph=graph)
+result = layer.sql("SELECT total_revenue FROM orders")
+```
+
 ## Exporting from Sidemantic (Alpha)
 
 Export support is experimental. Some features may be lost or simplified when exporting to other formats.
@@ -258,6 +276,17 @@ from sidemantic.adapters.omni import OmniAdapter
 layer = SemanticLayer.from_yaml("semantic_layer.yml")
 adapter = OmniAdapter()
 adapter.export(layer.graph, "omni/")  # Creates views/ directory and model.yaml
+```
+
+### To GoodData
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.adapters.gooddata import GoodDataAdapter
+
+layer = SemanticLayer.from_yaml("semantic_layer.yml")
+adapter = GoodDataAdapter()
+adapter.export(layer.graph, "gooddata/")  # Creates dataset YAML files
 ```
 
 ## Migration Examples
@@ -469,6 +498,39 @@ layer.to_yaml("semantic_layer.yml")
 - Relationships → exported to separate model.yaml file with `join_from_view`, `join_to_view`, `on_sql`
 - Segments not directly supported (stored in meta if needed)
 
+### GoodData
+
+**Import (GoodData → Sidemantic):**
+
+- `id` (dataset) → model `name`
+- `table_path` → model `table`
+- `sql` → model `sql` (for SQL-based datasets)
+- `fields` with `type: fact` → numeric dimensions
+- `fields` with `type: attribute` → categorical/time dimensions
+- Attribute `labels` → additional dimensions
+- `data_type: DATE` → time dimension
+- `primary_key` → model primary key
+- `references` → model relationships
+- MAQL metrics (from separate files) → metrics
+- MAQL `SELECT SUM({fact/name})` → aggregation extraction
+- MAQL `WHERE {label/field}="value"` → metric filters
+
+**Export (Sidemantic → GoodData):**
+
+- Each model → separate dataset YAML file
+- Model `name` → dataset `id`
+- Model `description` → dataset `title`
+- Model `table` → `table_path`
+- Model `sql` → dataset `sql`
+- Numeric dimensions → `type: fact` fields
+- Categorical/time dimensions → `type: attribute` fields
+- Time dimensions → `data_type: DATE`
+- Relationships → `references` array
+- Metrics exported as MAQL expressions (not included in dataset files by default)
+- Aggregations → MAQL format: `SELECT SUM({fact/field})`
+- Metric filters → MAQL WHERE clause with {label/field}="value"
+- Segments not directly supported (stored in meta if needed)
+
 ## Round-Trip Considerations
 
 These conversions lose some information:
@@ -480,6 +542,7 @@ These conversions lose some information:
 - **Sidemantic → Rill → Sidemantic**: Loses relationships, segments, hierarchies
 - **Sidemantic → Superset → Sidemantic**: Loses relationships, segments, metric filters, hierarchies
 - **Sidemantic → Omni → Sidemantic**: Loses segments, some field reference complexity
+- **Sidemantic → GoodData → Sidemantic**: Loses segments, metrics stored separately (not in datasets)
 - **Any format → Sidemantic**: May lose format-specific metadata
 
 Keep your source of truth in one format and export to others as needed. Don't round-trip unless necessary.

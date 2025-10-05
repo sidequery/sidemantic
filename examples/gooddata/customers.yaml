@@ -1,0 +1,43 @@
+type: dataset
+id: customers
+title: Customers
+description: Customer master data
+table_path: public/customers
+primary_key: customer_id
+fields:
+  customer_id:
+    type: attribute
+    title: Customer ID
+    data_type: STRING
+  name:
+    type: attribute
+    title: Customer Name
+    data_type: STRING
+  email:
+    type: attribute
+    title: Email Address
+    data_type: STRING
+  country:
+    type: attribute
+    title: Country
+    data_type: STRING
+  created_at:
+    type: attribute
+    title: Registration Date
+    data_type: DATE
+  lifetime_value:
+    type: fact
+    title: Customer Lifetime Value
+---
+type: metric
+id: customer_count
+title: Customer Count
+description: Total number of customers
+maql: SELECT COUNT({fact/customer_id})
+---
+type: metric
+id: total_ltv
+title: Total Customer LTV
+description: Sum of customer lifetime values
+maql: SELECT SUM({fact/lifetime_value})
+format: "$#,##0"

@@ -172,10 +172,7 @@ class SQLGenerator:
             if preagg_sql:
                 # Add instrumentation comment
                 instrumentation = self._generate_instrumentation_comment(
-                    models=[model_names[0]],
-                    metrics=metrics,
-                    dimensions=dimensions,
-                    used_preagg=True
+                    models=[model_names[0]], metrics=metrics, dimensions=dimensions, used_preagg=True
                 )
                 return preagg_sql + "\n" + instrumentation
 
@@ -250,10 +247,7 @@ class SQLGenerator:
 
         # Add instrumentation comment for query analysis
         instrumentation = self._generate_instrumentation_comment(
-            models=list(all_models),
-            metrics=metrics,
-            dimensions=dimensions,
-            used_preagg=False
+            models=list(all_models), metrics=metrics, dimensions=dimensions, used_preagg=False
         )
         full_sql = full_sql + "\n" + instrumentation
 
@@ -1657,11 +1651,7 @@ FROM {from_clause}{where_clause}{group_by_clause}{order_by_clause}{limit_clause}
         return query
 
     def _generate_instrumentation_comment(
-        self,
-        models: list[str],
-        metrics: list[str],
-        dimensions: list[str],
-        used_preagg: bool = False
+        self, models: list[str], metrics: list[str], dimensions: list[str], used_preagg: bool = False
     ) -> str:
         """Generate instrumentation comment for query analysis.
 

@@ -7,7 +7,7 @@ This script demonstrates how to:
 3. Get pre-aggregation recommendations based on usage
 """
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer, PreAggregationRecommender
+from sidemantic import Dimension, Metric, Model, PreAggregationRecommender, SemanticLayer
 
 # 1. Set up semantic layer
 sl = SemanticLayer()
@@ -67,7 +67,7 @@ print()
 print("Analyzing query patterns...")
 recommender = PreAggregationRecommender(
     min_query_count=10,  # Require at least 10 occurrences
-    min_benefit_score=0.0  # No minimum benefit score
+    min_benefit_score=0.0,  # No minimum benefit score
 )
 
 recommender.parse_query_log(queries)
@@ -88,7 +88,7 @@ for i, rec in enumerate(recommendations, 1):
     print(f"\n{i}. {rec.suggested_name}")
     print(f"   Query count: {rec.query_count}")
     print(f"   Benefit score: {rec.estimated_benefit_score:.3f}")
-    print(f"   Pattern:")
+    print("   Pattern:")
     print(f"     - Model: {rec.pattern.model}")
     print(f"     - Metrics: {', '.join(sorted(rec.pattern.metrics))}")
     print(f"     - Dimensions: {', '.join(sorted(rec.pattern.dimensions))}")
@@ -97,8 +97,8 @@ for i, rec in enumerate(recommendations, 1):
 
     # Generate pre-aggregation definition
     preagg = recommender.generate_preagg_definition(rec)
-    print(f"\n   PreAggregation definition:")
-    print(f"   PreAggregation(")
+    print("\n   PreAggregation definition:")
+    print("   PreAggregation(")
     print(f"       name='{preagg.name}',")
     print(f"       measures={preagg.measures},")
     print(f"       dimensions={preagg.dimensions},")
@@ -106,12 +106,12 @@ for i, rec in enumerate(recommendations, 1):
         print(f"       time_dimension='{preagg.time_dimension}',")
     if preagg.granularity:
         print(f"       granularity='{preagg.granularity}',")
-    print(f"   )")
+    print("   )")
 
 # 6. Example: Parsing from a query log file
-print("\n" + "="*60)
+print("\n" + "=" * 60)
 print("Example: Parsing from a file")
-print("="*60)
+print("=" * 60)
 
 # Create a sample query log file
 with open("/tmp/query_log.sql", "w") as f:

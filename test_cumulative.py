@@ -2,7 +2,7 @@
 
 import duckdb
 
-from sidemantic import Dimension, Entity, Measure, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model, SemanticLayer
 
 conn = duckdb.connect(":memory:")
 
@@ -29,11 +29,11 @@ sl.conn = conn
 orders = Model(
     name="orders",
     table="orders",
-    entities=[Entity(name="order", type="primary", expr="order_id")],
-    dimensions=[Dimension(name="order_date", type="time", granularity="day", expr="order_date")],
-    measures=[
-        Measure(name="revenue", agg="sum", expr="order_amount"),
-        Measure(name="order_count", agg="count"),
+    primary_key="order_id",
+    dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="order_amount"),
+        Metric(name="order_count", agg="count"),
     ],
 )
 
@@ -41,10 +41,10 @@ sl.add_model(orders)
 
 # Define cumulative metric
 sl.add_metric(
-    Measure(
+    Metric(
         name="running_total_revenue",
         type="cumulative",
-        expr="orders.revenue",
+        sql="orders.revenue",
         description="Running total of revenue",
     )
 )

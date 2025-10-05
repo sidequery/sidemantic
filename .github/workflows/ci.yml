@@ -26,6 +26,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      - name: Check version consistency
+        run: |
+          PYPROJECT_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          INIT_VERSION=$(grep '^__version__ = ' sidemantic/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
+          if [ "$PYPROJECT_VERSION" != "$INIT_VERSION" ]; then
+            echo "Version mismatch: pyproject.toml=$PYPROJECT_VERSION, __init__.py=$INIT_VERSION"
+            exit 1
+          fi
+          echo "Version check passed: $PYPROJECT_VERSION"
+
       - name: Run ruff check
         run: uv run ruff check . --exclude docs/_extensions
 

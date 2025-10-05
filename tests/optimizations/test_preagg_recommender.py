@@ -120,19 +120,23 @@ def test_get_recommendations():
 
     # Simulate 100 queries for one pattern, 50 for another, 1 for a third
     for i in range(100):
-        recommender.parse_query_log([
-            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day"
-        ])
+        recommender.parse_query_log(
+            [
+                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day"
+            ]
+        )
 
     for i in range(50):
-        recommender.parse_query_log([
-            "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region"
-        ])
+        recommender.parse_query_log(
+            ["SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region"]
+        )
 
     for i in range(1):
-        recommender.parse_query_log([
-            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.customer_id"
-        ])
+        recommender.parse_query_log(
+            [
+                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.customer_id"
+            ]
+        )
 
     recommendations = recommender.get_recommendations()
 
@@ -180,9 +184,11 @@ def test_generate_preagg_definition():
     recommender = PreAggregationRecommender(min_query_count=1)
 
     # Add pattern
-    recommender.parse_query_log([
-        "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.created_at granularities=day"
-    ])
+    recommender.parse_query_log(
+        [
+            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.created_at granularities=day"
+        ]
+    )
 
     recommendations = recommender.get_recommendations()
     assert len(recommendations) == 1

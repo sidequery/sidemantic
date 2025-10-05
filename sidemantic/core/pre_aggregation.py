@@ -220,9 +220,7 @@ class PreAggregation(BaseModel):
 
         # Execute appropriate refresh strategy
         if mode == "full":
-            rows_inserted, rows_updated, new_watermark = self._refresh_full(
-                connection, source_sql, table_name
-            )
+            rows_inserted, rows_updated, new_watermark = self._refresh_full(connection, source_sql, table_name)
         elif mode == "incremental":
             if not watermark_column:
                 raise ValueError("watermark_column required for incremental refresh")
@@ -249,9 +247,7 @@ class PreAggregation(BaseModel):
             timestamp=datetime.now(),
         )
 
-    def _get_current_watermark(
-        self, connection: Any, table_name: str, watermark_column: str
-    ) -> Any | None:
+    def _get_current_watermark(self, connection: Any, table_name: str, watermark_column: str) -> Any | None:
         """Get current watermark from table (STATELESS - no metadata table).
 
         Args:
@@ -263,17 +259,13 @@ class PreAggregation(BaseModel):
             Current max watermark value or None if table empty/doesn't exist
         """
         try:
-            result = connection.execute(
-                f"SELECT MAX({watermark_column}) as max_watermark FROM {table_name}"
-            ).fetchone()
+            result = connection.execute(f"SELECT MAX({watermark_column}) as max_watermark FROM {table_name}").fetchone()
             return result[0] if result else None
         except Exception:
             # Table doesn't exist yet
             return None
 
-    def _refresh_full(
-        self, connection: Any, source_sql: str, table_name: str
-    ) -> tuple[int, int, Any | None]:
+    def _refresh_full(self, connection: Any, source_sql: str, table_name: str) -> tuple[int, int, Any | None]:
         """Execute full refresh (truncate and reload).
 
         Args:

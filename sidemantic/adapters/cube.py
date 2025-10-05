@@ -185,7 +185,7 @@ class CubeAdapter(BaseAdapter):
         return Dimension(
             name=name,
             type=sidemantic_type,
-            expr=dim_def.get("sql"),
+            sql=dim_def.get("sql"),
             granularity=granularity,
             description=dim_def.get("description"),
             format=dim_def.get("format"),
@@ -246,7 +246,7 @@ class CubeAdapter(BaseAdapter):
             name=name,
             type=metric_type,
             agg=agg_type,
-            expr=measure_def.get("sql"),
+            sql=measure_def.get("sql"),
             window=window,
             filters=filters if filters else None,
             description=measure_def.get("description"),

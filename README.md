@@ -4,7 +4,6 @@ A semantic layer with multi-format adapter support.
 
 ## Features
 
-### Core Capabilities
 - **Simple API**: Define metrics once, use them everywhere
 - **SQL query interface**: Write familiar SQL that gets rewritten to use semantic layer
 - **Automatic joins**: Define relationships, joins happen automatically via graph traversal
@@ -12,7 +11,8 @@ A semantic layer with multi-format adapter support.
 - **SQLGlot-powered**: Dialect-agnostic SQL generation with transpilation support
 - **Type-safe**: Pydantic models with validation
 
-### Rich Metric Types
+### Metric Types
+
 - **Aggregations**: sum, avg, count, count_distinct, min, max
 - **Ratios**: revenue / order_count
 - **Derived formulas**: (revenue - cost) / revenue
@@ -20,25 +20,18 @@ A semantic layer with multi-format adapter support.
 - **Time comparisons**: YoY, MoM, WoW with LAG window functions
 - **Conversion funnels**: signup → purchase rate
 
-### Advanced Features
-- **Pre-aggregations**: Automatic query routing to materialized rollups for 100-10,000x speedups
-- **Predicate pushdown**: Filters automatically pushed into CTEs for 5-10x speedup (always enabled)
+### Additional Features
+
+- **Pre-aggregations**: Automatic query routing to materialized rollups (disabled by default)
+- **Predicate pushdown**: Filters pushed into CTEs for improved performance (always enabled)
 - **Segments**: Reusable named filters with template placeholders
 - **Metric-level filters**: Auto-applied filters for consistent business logic
-- **Jinja2 templating**: Full conditional logic and loops in SQL
-- **Inheritance**: Extend models and metrics (DRY principles)
+- **Jinja2 templating**: Conditional logic and loops in SQL
+- **Inheritance**: Extend models and metrics
 - **Hierarchies**: Parent/child dimensions with drill-down API
 - **Relative dates**: Natural language like "last 7 days", "this month"
 - **Ungrouped queries**: Raw row access without aggregation
 - **Multi-hop joins**: Automatic 2+ hop join discovery
-- **Auto-detected dependencies**: No manual dependency declarations needed
-
-### Metadata & Governance
-- **Display formatting**: Format strings and named formats (USD, percent, etc.)
-- **Drill fields**: Define drill-down paths for BI tools
-- **Non-additivity markers**: Prevent incorrect aggregation
-- **Default dimensions**: Default time dimensions and granularity
-- **Comprehensive descriptions**: Labels, descriptions on all objects
 
 ## Quick Start
 
@@ -186,7 +179,7 @@ Full round-trip support: Sidemantic ↔ Cube ↔ MetricFlow
 
 ### Complex Metrics
 
-Define ratios, formulas, cumulative metrics with **automatic dependency detection**:
+Define ratios, formulas, cumulative metrics with automatic dependency detection:
 
 ```yaml
 models:
@@ -282,8 +275,6 @@ result = layer.sql("""
 
 ### Relationship Types
 
-Use explicit, readable relationship types:
-
 - **many_to_one**: Many records in THIS table → one record in OTHER table (e.g., orders → customer)
 - **one_to_many**: One record in THIS table → many records in OTHER table (e.g., customer → orders)
 - **one_to_one**: One record in THIS table → one record in OTHER table (e.g., order → invoice)
@@ -372,18 +363,7 @@ sql = layer.compile(
 )
 ```
 
-## Test Coverage
-
-- **202 passing tests** - comprehensive coverage
-- Real DuckDB integration
-- SQL query rewriting
-- Round-trip adapter tests
-- Multi-hop join verification
-- Formula parsing validation
-- Automatic dependency detection
-- Jinja template integration
-- Inheritance resolution
-- Hierarchy navigation
+## Testing
 
 Run tests:
 ```bash

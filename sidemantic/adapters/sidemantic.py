@@ -161,7 +161,7 @@ class SidemanticAdapter(BaseAdapter):
             sql=model_def.get("sql"),
             description=model_def.get("description"),
             primary_key=model_def.get("primary_key", "id"),
-            joins=joins,
+            relationships=joins,
             dimensions=dimensions,
             metrics=measures,
             segments=segments,

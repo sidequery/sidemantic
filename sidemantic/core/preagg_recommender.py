@@ -227,7 +227,12 @@ class PreAggregationRecommender:
         # Add granularity if present
         if pattern.granularities:
             # Use the finest granularity for naming
-            grans = sorted(pattern.granularities, key=lambda g: ["hour", "day", "week", "month", "quarter", "year"].index(g) if g in ["hour", "day", "week", "month", "quarter", "year"] else 99)
+            grans = sorted(
+                pattern.granularities,
+                key=lambda g: ["hour", "day", "week", "month", "quarter", "year"].index(g)
+                if g in ["hour", "day", "week", "month", "quarter", "year"]
+                else 99,
+            )
             if grans:
                 parts.append(grans[0])
 
@@ -287,7 +292,12 @@ class PreAggregationRecommender:
 
             # Use finest granularity
             if time_dimension:
-                grans = sorted(pattern.granularities, key=lambda g: ["hour", "day", "week", "month", "quarter", "year"].index(g) if g in ["hour", "day", "week", "month", "quarter", "year"] else 99)
+                grans = sorted(
+                    pattern.granularities,
+                    key=lambda g: ["hour", "day", "week", "month", "quarter", "year"].index(g)
+                    if g in ["hour", "day", "week", "month", "quarter", "year"]
+                    else 99,
+                )
                 if grans:
                     granularity = grans[0]
 

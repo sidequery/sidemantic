@@ -569,18 +569,13 @@ def test_refresh_full():
         FROM generate_series(0, 9) as t(i)
     """)
 
-    preagg = PreAggregation(
-        name="daily_rollup",
-        measures=["revenue"],
-        time_dimension="order_date",
-        granularity="day"
-    )
+    preagg = PreAggregation(name="daily_rollup", measures=["revenue"], time_dimension="order_date", granularity="day")
 
     result = preagg.refresh(
         connection=conn,
         source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders GROUP BY order_date",
         table_name="orders_preagg_daily",
-        mode="full"
+        mode="full",
     )
 
     assert result.mode == "full"
@@ -605,7 +600,7 @@ def test_refresh_incremental_stateless():
         measures=["revenue"],
         time_dimension="order_date",
         granularity="day",
-        refresh_key=RefreshKey(incremental=True)
+        refresh_key=RefreshKey(incremental=True),
     )
 
     # First refresh
@@ -614,7 +609,7 @@ def test_refresh_incremental_stateless():
         source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
         table_name="orders_preagg_daily",
         mode="incremental",
-        watermark_column="order_date"
+        watermark_column="order_date",
     )
 
     count1 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
@@ -635,7 +630,7 @@ def test_refresh_incremental_stateless():
         source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
         table_name="orders_preagg_daily",
         mode="incremental",
-        watermark_column="order_date"
+        watermark_column="order_date",
     )
 
     count2 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
@@ -655,12 +650,7 @@ def test_refresh_incremental_with_lookback():
         FROM generate_series(0, 9) as t(i)
     """)
 
-    preagg = PreAggregation(
-        name="daily_rollup",
-        measures=["revenue"],
-        time_dimension="order_date",
-        granularity="day"
-    )
+    preagg = PreAggregation(name="daily_rollup", measures=["revenue"], time_dimension="order_date", granularity="day")
 
     # First refresh
     preagg.refresh(
@@ -668,7 +658,7 @@ def test_refresh_incremental_with_lookback():
         source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
         table_name="orders_preagg_daily",
         mode="incremental",
-        watermark_column="order_date"
+        watermark_column="order_date",
     )
 
     # Update old data (simulating late-arriving data)
@@ -685,7 +675,7 @@ def test_refresh_incremental_with_lookback():
         table_name="orders_preagg_daily",
         mode="incremental",
         watermark_column="order_date",
-        lookback="5 days"
+        lookback="5 days",
     )
 
     # With append mode, we'll have duplicates
@@ -710,12 +700,7 @@ def test_refresh_merge_idempotent():
         FROM generate_series(0, 9) as t(i)
     """)
 
-    preagg = PreAggregation(
-        name="daily_rollup",
-        measures=["revenue"],
-        time_dimension="order_date",
-        granularity="day"
-    )
+    preagg = PreAggregation(name="daily_rollup", measures=["revenue"], time_dimension="order_date", granularity="day")
 
     # First refresh
     preagg.refresh(
@@ -723,7 +708,7 @@ def test_refresh_merge_idempotent():
         source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
         table_name="orders_preagg_daily",
         mode="merge",
-        watermark_column="order_date"
+        watermark_column="order_date",
     )
 
     count1 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
@@ -747,7 +732,7 @@ def test_refresh_merge_idempotent():
         table_name="orders_preagg_daily",
         mode="merge",
         watermark_column="order_date",
-        lookback="5 days"
+        lookback="5 days",
     )
 
     count2 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
@@ -774,12 +759,7 @@ def test_refresh_external_watermark():
         FROM generate_series(0, 14) as t(i)
     """)
 
-    preagg = PreAggregation(
-        name="daily_rollup",
-        measures=["revenue"],
-        time_dimension="order_date",
-        granularity="day"
-    )
+    preagg = PreAggregation(name="daily_rollup", measures=["revenue"], time_dimension="order_date", granularity="day")
 
     # Simulating orchestrator storing watermark
     watermark_store = {}
@@ -790,7 +770,7 @@ def test_refresh_external_watermark():
         source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
         table_name="orders_preagg_daily",
         mode="incremental",
-        watermark_column="order_date"
+        watermark_column="order_date",
     )
 
     watermark_store["daily_orders"] = result1.new_watermark
@@ -801,13 +781,13 @@ def test_refresh_external_watermark():
     conn.execute("DROP TABLE orders_preagg_daily")
 
     # Refresh with external watermark (stateless)
-    result2 = preagg.refresh(
+    preagg.refresh(
         connection=conn,
         source_sql="SELECT order_date, SUM(revenue) as total_revenue FROM orders WHERE order_date > {WATERMARK} GROUP BY order_date",
         table_name="orders_preagg_daily",
         mode="incremental",
         watermark_column="order_date",
-        from_watermark=f"'{watermark_store['daily_orders']}'"
+        from_watermark=f"'{watermark_store['daily_orders']}'",
     )
 
     count2 = conn.execute("SELECT COUNT(*) FROM orders_preagg_daily").fetchone()[0]
@@ -822,7 +802,7 @@ def test_refresh_result_dataclass():
         rows_updated=0,
         new_watermark="2024-01-15",
         duration_seconds=1.23,
-        timestamp=datetime.now()
+        timestamp=datetime.now(),
     )
 
     assert result.mode == "incremental"

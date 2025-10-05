@@ -1138,7 +1138,7 @@ class SQLGenerator:
         within the specified time window.
 
         Args:
-            metric_name: Name of the conversion metric
+            metric_name: Name of the conversion metric (can be "metric" or "model.metric" format)
             dimensions: List of dimension references
             filters: List of filter expressions
             order_by: List of fields to order by
@@ -1147,29 +1147,44 @@ class SQLGenerator:
         Returns:
             SQL query string
         """
-        metric = self.graph.get_metric(metric_name)
+        # Handle both "metric" and "model.metric" formats
+        metric = None
+        model = None
+
+        if "." in metric_name:
+            # model.metric format
+            model_name, measure_name = metric_name.split(".", 1)
+            model = self.graph.get_model(model_name)
+            if model:
+                metric = model.get_metric(measure_name)
+        else:
+            # Just metric name - try graph-level metric
+            try:
+                metric = self.graph.get_metric(metric_name)
+            except KeyError:
+                pass
+
         if not metric or not metric.entity or not metric.base_event or not metric.conversion_event:
             raise ValueError(f"Conversion metric {metric_name} missing required fields")
 
-        # Find the model that owns this metric or has the entity dimension
-        model = None
-
-        # First, try to find which model has this conversion metric defined
-        for m_name, m in self.graph.models.items():
-            if m.get_metric(metric_name):
-                model = m
-                break
-
-        # If not found in any model, try to find a model with matching entity dimension
+        # Find the model that owns this metric if we haven't already
         if not model:
+            # First, try to find which model has this conversion metric defined
             for m_name, m in self.graph.models.items():
-                # Check if this model has a dimension matching the entity
-                for dim in m.dimensions:
-                    if dim.name == metric.entity:
-                        model = m
-                        break
-                if model:
+                if m.get_metric(metric_name):
+                    model = m
                     break
+
+            # If not found in any model, try to find a model with matching entity dimension
+            if not model:
+                for m_name, m in self.graph.models.items():
+                    # Check if this model has a dimension matching the entity
+                    for dim in m.dimensions:
+                        if dim.name == metric.entity:
+                            model = m
+                            break
+                    if model:
+                        break
 
         if not model:
             raise ValueError(f"No model found for conversion metric {metric_name}")
@@ -1268,31 +1283,41 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
         base_metrics = []
 
         for m in metrics:
+            # Check both graph-level metrics (no dot) and model.measure format
+            metric = None
             if "." not in m:
+                # Graph-level metric
                 metric = self.graph.get_metric(m)
-                if metric and metric.type == "cumulative":
-                    cumulative_metrics.append(m)
-                    # Add the base measure/metric to base_metrics
-                    if metric.sql:
-                        base_metrics.append(metric.sql)
-                elif metric and metric.type == "time_comparison":
-                    time_comparison_metrics.append(m)
-                    # Add the base metric to base_metrics
-                    if metric.base_metric:
-                        base_metrics.append(metric.base_metric)
-                elif metric and metric.type == "ratio" and metric.offset_window:
-                    offset_ratio_metrics.append(m)
-                    # Add numerator and denominator to base_metrics
-                    if metric.numerator:
-                        base_metrics.append(metric.numerator)
-                    if metric.denominator:
-                        base_metrics.append(metric.denominator)
-                elif metric and metric.type == "conversion":
-                    conversion_metrics.append(m)
-                    # Conversion metrics need special handling - don't add to base_metrics
-                else:
-                    base_metrics.append(m)
             else:
+                # model.measure format - check if it's a metric on the model
+                model_name, measure_name = m.split(".", 1)
+                model = self.graph.get_model(model_name)
+                if model:
+                    metric = model.get_metric(measure_name)
+
+            # Classify metric by type
+            if metric and metric.type == "cumulative":
+                cumulative_metrics.append(m)
+                # Add the base measure/metric to base_metrics
+                if metric.sql:
+                    base_metrics.append(metric.sql)
+            elif metric and metric.type == "time_comparison":
+                time_comparison_metrics.append(m)
+                # Add the base metric to base_metrics
+                if metric.base_metric:
+                    base_metrics.append(metric.base_metric)
+            elif metric and metric.type == "ratio" and metric.offset_window:
+                offset_ratio_metrics.append(m)
+                # Add numerator and denominator to base_metrics
+                if metric.numerator:
+                    base_metrics.append(metric.numerator)
+                if metric.denominator:
+                    base_metrics.append(metric.denominator)
+            elif metric and metric.type == "conversion":
+                conversion_metrics.append(m)
+                # Conversion metrics need special handling - don't add to base_metrics
+            else:
+                # Regular metric or measure
                 base_metrics.append(m)
 
         # Handle conversion metrics separately - they need a completely different pattern

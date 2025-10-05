@@ -30,7 +30,7 @@ layer.query(
 
 ## Why Sidemantic?
 
-**Write SQL, get semantic results.** Query your metrics with familiar SQL syntax while Sidemantic handles the complexity behind the scenes.
+**Governed calculations.** Define metrics once and query them consistently. No more copy-pasting formulas or maintaining duplicate logic across dashboards and reports.
 
 **Accurate by design.** Prevents common errors like join fan-out, incorrect aggregations, and double-counting through relationship-aware query generation.
 

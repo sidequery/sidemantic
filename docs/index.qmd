@@ -48,7 +48,6 @@ layer.sql("SELECT revenue FROM orders")
 - **Inheritance** - extend models and metrics (DRY principles)
 - **Hierarchies** - parent/child dimensions with drill-down API
 - **Relative dates** - "last 7 days", "this month", etc.
-- **Ungrouped queries** - raw row access without aggregation
 
 ### Metadata & Governance
 - **Display formatting** - format strings and named formats (USD, percent)

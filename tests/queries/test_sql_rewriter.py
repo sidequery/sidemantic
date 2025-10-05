@@ -736,3 +736,116 @@ def test_cte_mixed_semantic_and_regular(semantic_layer):
     assert len(df) == 2  # Two status groups joined with labels
     assert "label" in df.columns
     assert "revenue" in df.columns
+
+
+def test_from_metrics_table(semantic_layer):
+    """Test querying FROM metrics with fully qualified field names."""
+    sql = """
+        SELECT orders.revenue, customers.region
+        FROM metrics
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 2  # Grouped by region
+    assert "revenue" in df.columns
+    assert "region" in df.columns
+
+
+def test_from_metrics_multiple_models(semantic_layer):
+    """Test querying multiple models FROM metrics."""
+    sql = """
+        SELECT
+            orders.revenue,
+            orders.status,
+            customers.region
+        FROM metrics
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    # Should get data grouped by status and region
+    assert len(df) >= 1
+    assert "revenue" in df.columns
+    assert "status" in df.columns
+    assert "region" in df.columns
+
+
+def test_from_metrics_requires_qualified_names(semantic_layer):
+    """Test that FROM metrics requires fully qualified column names for model-level fields."""
+    sql = """
+        SELECT revenue FROM metrics
+    """
+
+    # "revenue" is a model-level metric, not a top-level metric
+    with pytest.raises(ValueError, match="must be fully qualified"):
+        semantic_layer.sql(sql)
+
+
+def test_from_metrics_no_select_star(semantic_layer):
+    """Test that SELECT * is not supported with FROM metrics."""
+    sql = """
+        SELECT * FROM metrics
+    """
+
+    with pytest.raises(ValueError, match="SELECT \\* is not supported with FROM metrics"):
+        semantic_layer.sql(sql)
+
+
+def test_from_metrics_with_filters(semantic_layer):
+    """Test FROM metrics with WHERE clause."""
+    sql = """
+        SELECT orders.revenue, orders.status
+        FROM metrics
+        WHERE orders.status = 'completed'
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["status"][0] == "completed"
+    assert df["revenue"][0] == 250.00
+
+
+def test_from_metrics_in_cte(semantic_layer):
+    """Test using FROM metrics in a CTE."""
+    sql = """
+        WITH all_metrics AS (
+            SELECT orders.revenue, customers.region
+            FROM metrics
+        )
+        SELECT * FROM all_metrics WHERE region = 'US'
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert len(df) == 1
+    assert df["region"][0] == "US"
+
+
+def test_from_metrics_allows_graph_level_metrics(semantic_layer):
+    """Test that FROM metrics allows unqualified names for graph-level metrics."""
+    # Add a graph-level derived metric
+    from sidemantic.core.metric import Metric
+
+    total_revenue = Metric(
+        name="total_revenue",
+        type="derived",
+        sql="orders.revenue",
+    )
+    semantic_layer.add_metric(total_revenue)
+
+    # Graph-level metrics don't need a table prefix when using FROM metrics
+    sql = """
+        SELECT total_revenue
+        FROM metrics
+    """
+
+    result = semantic_layer.sql(sql)
+    df = result.fetchdf()
+
+    assert "total_revenue" in df.columns

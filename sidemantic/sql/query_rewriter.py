@@ -115,6 +115,9 @@ class QueryRewriter:
         table_expr = from_clause.this
         if isinstance(table_expr, exp.Table):
             table_name = table_expr.name
+            # "metrics" is a special virtual table for semantic layer
+            if table_name == "metrics":
+                return True
             # Check if this is a known model
             return table_name in self.graph.models
 
@@ -183,6 +186,14 @@ class QueryRewriter:
                 if not self.inferred_table:
                     raise ValueError("SELECT * requires a FROM clause with a single table")
 
+                # FROM metrics: expand to all metrics/dimensions from all models
+                if self.inferred_table == "metrics":
+                    raise ValueError(
+                        "SELECT * is not supported with FROM metrics.\n"
+                        "You must explicitly select fields, e.g.:\n"
+                        "  SELECT orders.revenue, customers.region FROM metrics"
+                    )
+
                 model = self.graph.get_model(self.inferred_table)
 
                 # Add all dimensions
@@ -205,6 +216,15 @@ class QueryRewriter:
             ref = self._resolve_column(column)
             if not ref:
                 raise ValueError(f"Cannot resolve column: {column.sql(dialect=self.dialect)}")
+
+            # Handle graph-level metrics (no model prefix)
+            if "." not in ref:
+                # This is a graph-level metric
+                if ref in self.graph.metrics:
+                    metrics.append(ref)
+                    continue
+                else:
+                    raise ValueError(f"Field '{ref}' not found as a graph-level metric")
 
             model_name, field_name = ref.split(".", 1)
 
@@ -352,7 +372,8 @@ class QueryRewriter:
             select: Parsed SELECT statement
 
         Returns:
-            Table name or None if multiple tables or no FROM
+            Table name or None if multiple tables or no FROM.
+            Returns "metrics" if FROM metrics (special generic semantic layer table)
         """
         from_clause = select.args.get("from")
         if not from_clause:
@@ -361,7 +382,11 @@ class QueryRewriter:
         # Get the table expression
         table_expr = from_clause.this
         if isinstance(table_expr, exp.Table):
-            return table_expr.name
+            table_name = table_expr.name
+            # "metrics" is a special virtual table for generic semantic queries
+            if table_name == "metrics":
+                return "metrics"
+            return table_name
 
         return None
 
@@ -384,6 +409,18 @@ class QueryRewriter:
             else:
                 # Try to infer from single FROM table
                 if self.inferred_table:
+                    # FROM metrics allows unqualified top-level metrics
+                    if self.inferred_table == "metrics":
+                        # Check if this is a top-level/graph metric
+                        if name in self.graph.metrics:
+                            # Top-level metric, return as-is (no model prefix)
+                            return name
+                        else:
+                            raise ValueError(
+                                f"Column '{name}' must be fully qualified when using FROM metrics.\n"
+                                f"Use model.{name} for model-level metrics, or define '{name}' as a graph-level metric.\n\n"
+                                f"Example: SELECT orders.revenue, total_orders FROM metrics"
+                            )
                     return f"{self.inferred_table}.{name}"
                 else:
                     raise ValueError(f"Column '{name}' must have table prefix (e.g., orders.{name})")

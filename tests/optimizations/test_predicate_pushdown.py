@@ -3,13 +3,11 @@
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 
 
-def test_single_model_filter_pushdown():
+def test_single_model_filter_pushdown(layer):
     """Test that filters on a single model get pushed into the CTE."""
-    sl = SemanticLayer()
-
     model = Model(
         name="orders",
         table="orders_table",
@@ -23,9 +21,9 @@ def test_single_model_filter_pushdown():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["orders.status"],
         filters=["orders.region = 'US'"],
@@ -55,10 +53,8 @@ def test_single_model_filter_pushdown():
     assert "US" in where_sql
 
 
-def test_multi_model_filter_not_pushed():
+def test_multi_model_filter_not_pushed(layer):
     """Test that filters referencing multiple models stay in main query."""
-    sl = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -81,10 +77,10 @@ def test_multi_model_filter_not_pushed():
         ],
     )
 
-    sl.add_model(orders)
-    sl.add_model(customers)
+    layer.add_model(orders)
+    layer.add_model(customers)
 
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["customer.region"],
         filters=["orders.amount > 100", "customer.region = 'US'"],
@@ -117,10 +113,8 @@ def test_multi_model_filter_not_pushed():
     assert "region" in customer_where.sql()
 
 
-def test_filters_pushed_to_correct_ctes():
+def test_filters_pushed_to_correct_ctes(layer):
     """Test that each filter goes to the correct CTE."""
-    sl = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -145,10 +139,10 @@ def test_filters_pushed_to_correct_ctes():
         ],
     )
 
-    sl.add_model(orders)
-    sl.add_model(customers)
+    layer.add_model(orders)
+    layer.add_model(customers)
 
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["customer.region"],
         filters=[
@@ -206,10 +200,8 @@ def test_filters_pushed_to_correct_ctes():
     assert "amount" not in customer_where_sql
 
 
-def test_no_filters_no_where_clause():
+def test_no_filters_no_where_clause(layer):
     """Test that CTEs without filters don't have WHERE clauses."""
-    sl = SemanticLayer()
-
     model = Model(
         name="orders",
         table="orders_table",
@@ -222,9 +214,9 @@ def test_no_filters_no_where_clause():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.count"],
         dimensions=["orders.status"],
     )
@@ -245,11 +237,9 @@ def test_no_filters_no_where_clause():
     assert where_clause is None, "CTE should not have WHERE clause when no filters"
 
 
-def test_segment_filters_pushed_down():
+def test_segment_filters_pushed_down(layer):
     """Test that segment filters get pushed down into CTEs."""
     from sidemantic import Segment
-
-    sl = SemanticLayer()
 
     model = Model(
         name="orders",
@@ -267,9 +257,9 @@ def test_segment_filters_pushed_down():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         segments=["orders.completed"],
     )
@@ -293,10 +283,8 @@ def test_segment_filters_pushed_down():
     assert "completed" in where_sql
 
 
-def test_metric_level_filters_not_pushed():
+def test_metric_level_filters_not_pushed(layer):
     """Test that metric-level filters stay in main query, not pushed to CTE."""
-    sl = SemanticLayer()
-
     model = Model(
         name="orders",
         table="orders_table",
@@ -315,9 +303,9 @@ def test_metric_level_filters_not_pushed():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.completed_revenue"],
         filters=["orders.region = 'US'"],
     )

@@ -5,12 +5,12 @@ These should have been included in the original commit but weren't.
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 from sidemantic.core.table_calculation import TableCalculation
 from sidemantic.sql.table_calc_processor import TableCalculationProcessor
 
 
-def test_count_without_sql_generates_valid_cte():
+def test_count_without_sql_generates_valid_cte(layer):
     """Test that COUNT(*) metrics don't generate invalid '* AS metric_raw' syntax.
 
     Bug: COUNT metrics without explicit sql generated SELECT ..., * AS order_count_raw ...
@@ -30,7 +30,6 @@ def test_count_without_sql_generates_valid_cte():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
 
     sql = layer.compile(metrics=["orders.order_count"], dimensions=["orders.region"])
@@ -86,7 +85,7 @@ def test_table_calculation_rejects_dangerous_operations():
         processor._safe_eval("(5).__class__")
 
 
-def test_conversion_metrics_use_correct_model():
+def test_conversion_metrics_use_correct_model(layer):
     """Test that conversion metrics find the correct model, not just first one.
 
     Bug: Conversion query generation always grabbed first model from graph.models.
@@ -124,7 +123,6 @@ def test_conversion_metrics_use_correct_model():
         ],
     )
 
-    layer = SemanticLayer()
     # Add in order that would cause bug (users first, events second)
     layer.add_model(users)
     layer.add_model(events)
@@ -136,7 +134,7 @@ def test_conversion_metrics_use_correct_model():
     assert "events_table" in sql or "events" in sql.lower()
 
 
-def test_conversion_metrics_handle_table_backed_models():
+def test_conversion_metrics_handle_table_backed_models(layer):
     """Test that conversion metrics work with models defined via table=, not sql=.
 
     Bug: Conversion query builder injected {model.sql} directly, breaking for table-backed models.
@@ -163,7 +161,6 @@ def test_conversion_metrics_handle_table_backed_models():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(events)
 
     sql = layer.compile(metrics=["events.conversion_rate"], dimensions=["events.timestamp__month"])
@@ -172,7 +169,7 @@ def test_conversion_metrics_handle_table_backed_models():
     assert "FROM events_table" in sql or "FROM (None)" not in sql
 
 
-def test_derived_metric_substitution_uses_word_boundaries():
+def test_derived_metric_substitution_uses_word_boundaries(layer):
     """Test that derived metric substitution doesn't mangle identifier substrings.
 
     Bug: Replacing "revenue" also replaced it inside "gross_revenue", breaking SQL.
@@ -193,7 +190,6 @@ def test_derived_metric_substitution_uses_word_boundaries():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
 
     sql = layer.compile(metrics=["orders.net_revenue"], dimensions=["orders.region"])
@@ -227,7 +223,7 @@ def test_end_to_end_duckdb_coverage():
     assert assertion_count > pass_count, "test_with_data.py should have real tests, not just pass statements"
 
 
-def test_count_metrics_with_filters():
+def test_count_metrics_with_filters(layer):
     """Test COUNT metrics work correctly with filters."""
     orders = Model(
         name="orders",
@@ -241,7 +237,6 @@ def test_count_metrics_with_filters():
         ],
     )
 
-    layer = SemanticLayer()
     layer.add_model(orders)
 
     sql = layer.compile(metrics=["orders.completed_orders"], dimensions=["orders.status"])

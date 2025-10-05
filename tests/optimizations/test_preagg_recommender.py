@@ -2,14 +2,12 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 from sidemantic.core.preagg_recommender import PreAggregationRecommender, QueryPattern
 
 
-def test_query_instrumentation():
+def test_query_instrumentation(layer):
     """Test that generated queries include instrumentation comments."""
-    sl = SemanticLayer()
-
     model = Model(
         name="orders",
         table="public.orders",
@@ -24,10 +22,10 @@ def test_query_instrumentation():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
     # Generate query
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue", "orders.count"],
         dimensions=["orders.status", "orders.created_at__day"],
     )
@@ -266,10 +264,8 @@ def test_multi_model_queries_ignored():
     assert pattern is None
 
 
-def test_end_to_end_with_semantic_layer():
+def test_end_to_end_with_semantic_layer(layer):
     """Test end-to-end workflow with semantic layer."""
-    sl = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="public.orders",
@@ -284,12 +280,12 @@ def test_end_to_end_with_semantic_layer():
         ],
     )
 
-    sl.add_model(orders)
+    layer.add_model(orders)
 
     # Generate 100 similar queries
     queries = []
     for i in range(100):
-        sql = sl.compile(
+        sql = layer.compile(
             metrics=["orders.revenue"],
             dimensions=["orders.status", "orders.created_at__day"],
         )

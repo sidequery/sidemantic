@@ -1,6 +1,6 @@
 """Test dimension hierarchies."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 
 
 def test_dimension_parent_field():
@@ -14,10 +14,8 @@ def test_dimension_parent_field():
     assert country.parent is None
 
 
-def test_hierarchy_in_model():
+def test_hierarchy_in_model(layer):
     """Test hierarchical dimensions in a model."""
-    layer = SemanticLayer()
-
     locations = Model(
         name="locations",
         table="locations_table",

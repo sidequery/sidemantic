@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship
 
 
 def test_create_model():
@@ -22,10 +22,8 @@ def test_create_model():
     assert len(model.metrics) == 1
 
 
-def test_semantic_layer():
+def test_semantic_layer(layer):
     """Test semantic layer basic operations."""
-    sl = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="public.orders",
@@ -34,16 +32,14 @@ def test_semantic_layer():
         metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
     )
 
-    sl.add_model(orders)
+    layer.add_model(orders)
 
-    assert "orders" in sl.list_models()
-    assert sl.get_model("orders").name == "orders"
+    assert "orders" in layer.list_models()
+    assert layer.get_model("orders").name == "orders"
 
 
-def test_join_path_discovery():
+def test_join_path_discovery(layer):
     """Test automatic join path discovery."""
-    sl = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="public.orders",
@@ -57,11 +53,11 @@ def test_join_path_discovery():
         primary_key="customer_id",
     )
 
-    sl.add_model(orders)
-    sl.add_model(customers)
+    layer.add_model(orders)
+    layer.add_model(customers)
 
     # Test join path finding
-    join_path = sl.graph.find_relationship_path("orders", "customers")
+    join_path = layer.graph.find_relationship_path("orders", "customers")
     assert len(join_path) == 1
     assert join_path[0].from_model == "orders"
     assert join_path[0].to_model == "customers"
@@ -108,10 +104,8 @@ def test_ratio_metric():
     assert metric.denominator == "orders.revenue"
 
 
-def test_sql_compilation():
+def test_sql_compilation(layer):
     """Test SQL query compilation."""
-    sl = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="public.orders",
@@ -120,9 +114,9 @@ def test_sql_compilation():
         metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
     )
 
-    sl.add_model(orders)
+    layer.add_model(orders)
 
-    sql = sl.compile(metrics=["orders.revenue"], dimensions=["orders.status"])
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"])
 
     # Check that SQL contains expected components
     assert "WITH" in sql
@@ -131,10 +125,8 @@ def test_sql_compilation():
     assert "GROUP BY" in sql
 
 
-def test_multi_model_query():
+def test_multi_model_query(layer):
     """Test query across multiple models."""
-    sl = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="public.orders",
@@ -151,10 +143,10 @@ def test_multi_model_query():
         dimensions=[Dimension(name="region", type="categorical")],
     )
 
-    sl.add_model(orders)
-    sl.add_model(customers)
+    layer.add_model(orders)
+    layer.add_model(customers)
 
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["customers.region"],
     )

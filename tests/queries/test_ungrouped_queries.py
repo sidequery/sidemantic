@@ -1,12 +1,10 @@
 """Test ungrouped queries (raw row queries without GROUP BY)."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 
 
-def test_ungrouped_basic():
+def test_ungrouped_basic(layer):
     """Test basic ungrouped query returns raw rows."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -38,10 +36,8 @@ def test_ungrouped_basic():
     assert "status" in sql
 
 
-def test_ungrouped_multiple_dimensions():
+def test_ungrouped_multiple_dimensions(layer):
     """Test ungrouped query with multiple dimensions."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -67,10 +63,8 @@ def test_ungrouped_multiple_dimensions():
     assert "region" in sql
 
 
-def test_ungrouped_with_filters():
+def test_ungrouped_with_filters(layer):
     """Test ungrouped query with filters."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -100,10 +94,8 @@ def test_ungrouped_with_filters():
     assert "GROUP BY" not in sql
 
 
-def test_ungrouped_with_order_and_limit():
+def test_ungrouped_with_order_and_limit(layer):
     """Test ungrouped query with ORDER BY and LIMIT."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -134,10 +126,8 @@ def test_ungrouped_with_order_and_limit():
     assert "GROUP BY" not in sql
 
 
-def test_grouped_vs_ungrouped():
+def test_grouped_vs_ungrouped(layer):
     """Compare grouped and ungrouped queries."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -167,10 +157,8 @@ def test_grouped_vs_ungrouped():
     assert "SUM(" not in ungrouped_sql
 
 
-def test_ungrouped_multiple_metrics():
+def test_ungrouped_multiple_metrics(layer):
     """Test ungrouped query with multiple metrics."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",

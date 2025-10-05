@@ -1,12 +1,10 @@
 """Tests for Postgres catalog metadata export."""
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship
 
 
-def test_basic_catalog_metadata():
+def test_basic_catalog_metadata(layer):
     """Test basic catalog metadata export."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders",
@@ -89,10 +87,8 @@ def test_basic_catalog_metadata():
     assert customer_col_names == {"id", "name", "region", "customer_count"}
 
 
-def test_foreign_key_constraints():
+def test_foreign_key_constraints(layer):
     """Test foreign key constraint metadata."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders",
@@ -141,10 +137,8 @@ def test_foreign_key_constraints():
     assert customer_id_col["is_foreign_key"] is True
 
 
-def test_type_mappings():
+def test_type_mappings(layer):
     """Test all type mappings."""
-    layer = SemanticLayer()
-
     test_model = Model(
         name="test",
         table="test",
@@ -187,10 +181,8 @@ def test_type_mappings():
     assert cols["max_metric"]["data_type"] == "NUMERIC"
 
 
-def test_custom_schema():
+def test_custom_schema(layer):
     """Test custom schema name."""
-    layer = SemanticLayer()
-
     model = Model(
         name="test",
         table="test",
@@ -206,10 +198,8 @@ def test_custom_schema():
     assert catalog["columns"][0]["table_schema"] == "analytics"
 
 
-def test_ordinal_positions():
+def test_ordinal_positions(layer):
     """Test column ordinal positions."""
-    layer = SemanticLayer()
-
     model = Model(
         name="test",
         table="test",
@@ -249,10 +239,8 @@ def test_ordinal_positions():
     assert cols[4]["ordinal_position"] == 5
 
 
-def test_metadata_fields():
+def test_metadata_fields(layer):
     """Test description and label metadata."""
-    layer = SemanticLayer()
-
     model = Model(
         name="test",
         table="test",

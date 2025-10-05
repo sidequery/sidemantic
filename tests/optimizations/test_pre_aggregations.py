@@ -5,7 +5,7 @@ from datetime import datetime
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey, RefreshResult
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
 
@@ -294,9 +294,9 @@ def test_preagg_matcher_best_match_selection():
     assert preagg.name == "specific"  # More specific match preferred
 
 
-def test_sql_generation_with_preagg():
+def test_sql_generation_with_preagg(layer):
     """Test SQL generation using pre-aggregation."""
-    sl = SemanticLayer(use_preaggregations=True)
+    layer.use_preaggregations = True
 
     model = Model(
         name="orders",
@@ -321,10 +321,10 @@ def test_sql_generation_with_preagg():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
     # Query that matches the pre-aggregation
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["orders.status", "orders.created_at__day"],
     )
@@ -336,10 +336,8 @@ def test_sql_generation_with_preagg():
     assert "WITH" not in sql or "_cte" not in sql
 
 
-def test_sql_generation_without_preagg():
+def test_sql_generation_without_preagg(layer):
     """Test SQL generation falls back when no pre-aggregation matches."""
-    sl = SemanticLayer()
-
     model = Model(
         name="orders",
         table="public.orders",
@@ -360,10 +358,10 @@ def test_sql_generation_without_preagg():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
     # Query uses customer_id which isn't in pre-agg
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["orders.customer_id"],
     )
@@ -374,9 +372,9 @@ def test_sql_generation_without_preagg():
     assert "orders_cte" in sql or "FROM public.orders" in sql
 
 
-def test_preagg_with_filters():
+def test_preagg_with_filters(layer):
     """Test pre-aggregation usage with filters."""
-    sl = SemanticLayer(use_preaggregations=True)
+    layer.use_preaggregations = True
 
     model = Model(
         name="orders",
@@ -398,10 +396,10 @@ def test_preagg_with_filters():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
     # Query with filter
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["orders.status"],
         filters=["orders.region = 'US'"],
@@ -412,9 +410,9 @@ def test_preagg_with_filters():
     assert "region = 'US'" in sql or "region='US'" in sql
 
 
-def test_preagg_granularity_conversion():
+def test_preagg_granularity_conversion(layer):
     """Test pre-aggregation with granularity conversion."""
-    sl = SemanticLayer(use_preaggregations=True)
+    layer.use_preaggregations = True
 
     model = Model(
         name="orders",
@@ -437,10 +435,10 @@ def test_preagg_granularity_conversion():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
     # Query at month level (coarser than day)
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["orders.created_at__month"],
     )
@@ -450,9 +448,9 @@ def test_preagg_granularity_conversion():
     assert "DATE_TRUNC('month'" in sql
 
 
-def test_preagg_disabled_by_default():
+def test_preagg_disabled_by_default(layer):
     """Test that pre-aggregations are disabled by default."""
-    sl = SemanticLayer()  # No use_preaggregations flag
+    # layer fixture has use_preaggregations=False by default
 
     model = Model(
         name="orders",
@@ -476,10 +474,10 @@ def test_preagg_disabled_by_default():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
     # Query that could match pre-aggregation
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["orders.status", "orders.created_at__day"],
     )
@@ -490,9 +488,9 @@ def test_preagg_disabled_by_default():
     assert "orders_cte" in sql
 
 
-def test_preagg_per_query_override():
+def test_preagg_per_query_override(layer):
     """Test per-query override of pre-aggregation setting."""
-    sl = SemanticLayer(use_preaggregations=False)  # Disabled globally
+    layer.use_preaggregations = False  # Disabled globally
 
     model = Model(
         name="orders",
@@ -516,10 +514,10 @@ def test_preagg_per_query_override():
         ],
     )
 
-    sl.add_model(model)
+    layer.add_model(model)
 
     # Override to enable for this query
-    sql = sl.compile(
+    sql = layer.compile(
         metrics=["orders.revenue"],
         dimensions=["orders.status", "orders.created_at__day"],
         use_preaggregations=True,

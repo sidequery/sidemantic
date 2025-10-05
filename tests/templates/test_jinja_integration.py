@@ -1,11 +1,10 @@
 """Test Jinja template integration with parameter system."""
 
-from sidemantic import Dimension, Metric, Model, Parameter, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Parameter
 
 
-def test_simple_parameter_substitution():
+def test_simple_parameter_substitution(layer):
     """Test simple parameter substitution still works."""
-    layer = SemanticLayer()
     layer.graph.add_parameter(Parameter(name="min_amount", type="number", default_value=100))
 
     orders = Model(
@@ -35,9 +34,8 @@ def test_simple_parameter_substitution():
     assert "{{ min_amount }}" not in sql
 
 
-def test_jinja_conditional_with_parameters():
+def test_jinja_conditional_with_parameters(layer):
     """Test Jinja conditional template with parameters."""
-    layer = SemanticLayer()
     layer.graph.add_parameter(Parameter(name="include_pending", type="yesno", default_value=False))
 
     orders = Model(

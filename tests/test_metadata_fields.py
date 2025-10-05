@@ -1,6 +1,6 @@
 """Test metadata fields on Metrics and Dimensions."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 
 
 def test_metric_format_fields():
@@ -100,10 +100,8 @@ def test_all_metadata_fields_together():
     assert metric.label == "Revenue (USD)"
 
 
-def test_metadata_fields_in_model():
+def test_metadata_fields_in_model(layer):
     """Test metadata fields work when Metric is part of a Model."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -180,10 +178,8 @@ def test_default_grain_validation():
         assert metric.default_grain == grain
 
 
-def test_metadata_survives_query_compilation():
+def test_metadata_survives_query_compilation(layer):
     """Test that metadata fields don't break query compilation."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",

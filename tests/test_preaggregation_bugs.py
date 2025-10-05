@@ -3,11 +3,11 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, PreAggregation, SemanticLayer
+from sidemantic import Dimension, Metric, Model, PreAggregation
 from tests.utils import fetch_dicts
 
 
-def test_avg_metric_with_filtered_count_fails():
+def test_avg_metric_with_filtered_count_fails(layer):
     """Test that AVG metrics with filtered counts produce wrong results.
 
     Bug: _generate_from_preaggregation hard-codes count_raw as denominator,
@@ -44,7 +44,6 @@ def test_avg_metric_with_filtered_count_fails():
         FROM orders
     """)
 
-    layer = SemanticLayer()
     layer.conn = conn
 
     orders = Model(
@@ -97,7 +96,7 @@ def test_avg_metric_with_filtered_count_fails():
         pytest.fail(f"Query should have routed to pre-aggregation. SQL:\n{sql}")
 
 
-def test_filter_on_unmaterialized_dimension():
+def test_filter_on_unmaterialized_dimension(layer):
     """Test that filters prevent routing to incompatible pre-aggregations.
 
     Fix: Matcher checks that all filter columns exist in pre-agg,
@@ -131,7 +130,6 @@ def test_filter_on_unmaterialized_dimension():
         GROUP BY region
     """)
 
-    layer = SemanticLayer()
     layer.conn = conn
 
     orders = Model(
@@ -181,7 +179,7 @@ def test_filter_on_unmaterialized_dimension():
     assert len(records) == 2
 
 
-def test_filter_on_unmaterialized_time_grain():
+def test_filter_on_unmaterialized_time_grain(layer):
     """Test that time filters are compatible with pre-agg time dimensions.
 
     Fix: Matcher checks that time dimension filters are compatible with pre-agg.
@@ -213,7 +211,6 @@ def test_filter_on_unmaterialized_time_grain():
         GROUP BY created_at_day
     """)
 
-    layer = SemanticLayer()
     layer.conn = conn
 
     orders = Model(
@@ -257,7 +254,7 @@ def test_filter_on_unmaterialized_time_grain():
         assert records[0]["revenue"] == 450.0
 
 
-def test_week_to_month_granularity_wrong_results():
+def test_week_to_month_granularity_wrong_results(layer):
     """Test that weekly to monthly rollup is prevented.
 
     Fix: Granularity compatibility check rejects week-to-month routing
@@ -299,7 +296,6 @@ def test_week_to_month_granularity_wrong_results():
         GROUP BY sale_date_week
     """)
 
-    layer = SemanticLayer()
     layer.conn = conn
 
     sales = Model(
@@ -353,7 +349,7 @@ def test_week_to_month_granularity_wrong_results():
     assert monthly_revenue["2024-02"] == 400.0
 
 
-def test_avg_metric_needs_correct_count():
+def test_avg_metric_needs_correct_count(layer):
     """Test that AVG metric routing requires the specific count column.
 
     Fix: Matcher should verify the exact count measure name, and generator
@@ -385,7 +381,6 @@ def test_avg_metric_needs_correct_count():
         FROM orders
     """)
 
-    layer = SemanticLayer()
     layer.conn = conn
 
     orders = Model(

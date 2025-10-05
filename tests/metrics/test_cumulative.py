@@ -7,7 +7,7 @@ Examples: running_total_revenue, 7_day_rolling_average
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 
 
 @pytest.fixture
@@ -35,10 +35,9 @@ def timeseries_db():
     return conn
 
 
-def test_running_total(timeseries_db):
+def test_running_total(timeseries_db, layer):
     """Test running total cumulative metric."""
-    sl = SemanticLayer(connection="duckdb:///:memory:")
-    sl.conn = timeseries_db
+    layer.conn = timeseries_db
 
     # Define model
     orders = Model(
@@ -48,7 +47,7 @@ def test_running_total(timeseries_db):
         dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
         metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
     )
-    sl.add_model(orders)
+    layer.add_model(orders)
 
     # Define cumulative metric
     running_total = Metric(
@@ -56,10 +55,10 @@ def test_running_total(timeseries_db):
         type="cumulative",
         sql="orders.daily_revenue",
     )
-    sl.add_metric(running_total)
+    layer.add_metric(running_total)
 
     # Query with cumulative metric
-    result = sl.query(
+    result = layer.query(
         metrics=["orders.daily_revenue", "running_total_revenue"],
         dimensions=["orders.order_date"],
         order_by=["orders.order_date"],
@@ -78,10 +77,9 @@ def test_running_total(timeseries_db):
     assert df["running_total_revenue"].iloc[4] == 750.00  # Day 5: 100 + 150 + 200 + 120 + 180
 
 
-def test_rolling_window(timeseries_db):
+def test_rolling_window(timeseries_db, layer):
     """Test rolling window cumulative metric."""
-    sl = SemanticLayer(connection="duckdb:///:memory:")
-    sl.conn = timeseries_db
+    layer.conn = timeseries_db
 
     # Define model
     orders = Model(
@@ -91,7 +89,7 @@ def test_rolling_window(timeseries_db):
         dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
         metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
     )
-    sl.add_model(orders)
+    layer.add_model(orders)
 
     # Define 3-day rolling window metric
     rolling_metric = Metric(
@@ -100,10 +98,10 @@ def test_rolling_window(timeseries_db):
         sql="orders.daily_revenue",
         window="2 days",  # Current + 2 preceding = 3 days total
     )
-    sl.add_metric(rolling_metric)
+    layer.add_metric(rolling_metric)
 
     # Query
-    result = sl.query(
+    result = layer.query(
         metrics=["orders.daily_revenue", "rolling_3day_revenue"],
         dimensions=["orders.order_date"],
         order_by=["orders.order_date"],
@@ -127,10 +125,9 @@ def test_rolling_window(timeseries_db):
     assert df["rolling_3day_revenue"].iloc[4] == 500.00
 
 
-def test_cumulative_with_regular_metric(timeseries_db):
+def test_cumulative_with_regular_metric(timeseries_db, layer):
     """Test cumulative metric alongside regular metric."""
-    sl = SemanticLayer(connection="duckdb:///:memory:")
-    sl.conn = timeseries_db
+    layer.conn = timeseries_db
 
     # Define model
     orders = Model(
@@ -140,17 +137,17 @@ def test_cumulative_with_regular_metric(timeseries_db):
         dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
         metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
     )
-    sl.add_model(orders)
+    layer.add_model(orders)
 
     # Define both regular and cumulative metrics
     total_revenue = Metric(name="total_revenue", sql="orders.daily_revenue")
     running_total = Metric(name="running_total", type="cumulative", sql="orders.daily_revenue")
 
-    sl.add_metric(total_revenue)
-    sl.add_metric(running_total)
+    layer.add_metric(total_revenue)
+    layer.add_metric(running_total)
 
     # Query with both metric types
-    result = sl.query(
+    result = layer.query(
         metrics=["total_revenue", "running_total"],
         dimensions=["orders.order_date"],
         order_by=["orders.order_date"],

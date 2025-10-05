@@ -1,12 +1,10 @@
 """Test segment functionality."""
 
-from sidemantic import Dimension, Metric, Model, Segment, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Segment
 
 
-def test_segment_basic():
+def test_segment_basic(layer):
     """Test basic segment usage."""
-    layer = SemanticLayer()
-
     # Create a model with a segment
     orders = Model(
         name="orders",
@@ -44,10 +42,8 @@ def test_segment_basic():
     assert "WHERE" in sql
 
 
-def test_multiple_segments():
+def test_multiple_segments(layer):
     """Test multiple segments combined with AND."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -75,10 +71,8 @@ def test_multiple_segments():
     assert "WHERE" in sql
 
 
-def test_segment_with_filters():
+def test_segment_with_filters(layer):
     """Test segments combined with regular filters."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",

@@ -1,6 +1,5 @@
 """Tests for metric auto-registration."""
 
-
 from sidemantic import Dimension, Metric, Model, SemanticLayer
 
 

@@ -1,12 +1,10 @@
 """Test metric-level filters."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Metric, Model
 
 
-def test_metric_level_filter_basic():
+def test_metric_level_filter_basic(layer):
     """Test basic metric-level filter."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -40,10 +38,8 @@ def test_metric_level_filter_basic():
     assert "WHERE" in sql
 
 
-def test_metric_level_multiple_filters():
+def test_metric_level_multiple_filters(layer):
     """Test metric with multiple filters."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -73,10 +69,8 @@ def test_metric_level_multiple_filters():
     assert "orders_cte.amount > 100" in sql
 
 
-def test_metric_filters_combined_with_query_filters():
+def test_metric_filters_combined_with_query_filters(layer):
     """Test metric-level filters combined with query-level filters."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -106,10 +100,8 @@ def test_metric_filters_combined_with_query_filters():
     assert "region = 'US'" in sql  # Query filter pushed down into CTE
 
 
-def test_mixed_filtered_and_unfiltered_metrics():
+def test_mixed_filtered_and_unfiltered_metrics(layer):
     """Test querying both filtered and unfiltered metrics together."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",
@@ -140,10 +132,8 @@ def test_mixed_filtered_and_unfiltered_metrics():
     assert "completed_revenue" in sql
 
 
-def test_metric_filter_with_time_dimension():
+def test_metric_filter_with_time_dimension(layer):
     """Test metric filters work with time dimensions."""
-    layer = SemanticLayer()
-
     orders = Model(
         name="orders",
         table="orders_table",

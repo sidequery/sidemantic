@@ -1691,11 +1691,21 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             metric_names.append(metric_name)
 
         # Try to find matching pre-aggregation
+        # Need to extract filter column names (without model prefix) for compatibility checking
+        filter_exprs = []
+        if filters:
+            for f in filters:
+                # Strip model prefix for filter compatibility check
+                # e.g., "orders.status = 'completed'" -> "status = 'completed'"
+                filter_expr = f.replace(f"{model_name}.", "").replace(f"{model_name}_cte.", "")
+                filter_exprs.append(filter_expr)
+
         matcher = PreAggregationMatcher(model)
         preagg = matcher.find_matching_preagg(
             metrics=metric_names,
             dimensions=dim_names,
             time_granularity=time_granularity,
+            filters=filter_exprs,
         )
 
         if not preagg:
@@ -1819,6 +1829,20 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 # Replace model_cte. with nothing (pre-agg table doesn't use CTEs)
                 # Also replace model. with nothing
                 rewritten_f = f.replace(f"{model.name}_cte.", "").replace(f"{model.name}.", "")
+
+                # If this filter references the time dimension, map it to the pre-agg time column
+                # e.g., created_at -> created_at_day for daily pre-agg
+                if preagg.time_dimension and preagg.granularity:
+                    time_col_name = f"{preagg.time_dimension}_{preagg.granularity}"
+                    # Replace time dimension name with time column name
+                    import re
+                    # Match time dimension as a whole word (not part of another word)
+                    rewritten_f = re.sub(
+                        r'\b' + re.escape(preagg.time_dimension) + r'\b',
+                        time_col_name,
+                        rewritten_f
+                    )
+
                 rewritten_filters.append(rewritten_f)
 
             where_clause = f"\nWHERE {' AND '.join(rewritten_filters)}"

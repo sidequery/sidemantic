@@ -38,6 +38,7 @@ class PreAggregationMatcher:
         metrics: list[str] | None = None,
         dimensions: list[str] | None = None,
         time_granularity: str | None = None,
+        filters: list[str] | None = None,
     ) -> PreAggregation | None:
         """Find the best matching pre-aggregation for a query.
 
@@ -45,6 +46,7 @@ class PreAggregationMatcher:
             metrics: List of metric names requested
             dimensions: List of dimension names requested (without model prefix)
             time_granularity: Time granularity requested (e.g., 'day', 'month')
+            filters: List of filter expressions (optional, for compatibility checking)
 
         Returns:
             Best matching PreAggregation, or None if no match found
@@ -59,6 +61,7 @@ class PreAggregationMatcher:
         """
         metrics = metrics or []
         dimensions = dimensions or []
+        filters = filters or []
 
         candidates = []
 
@@ -68,6 +71,7 @@ class PreAggregationMatcher:
                 query_metrics=metrics,
                 query_dimensions=dimensions,
                 query_granularity=time_granularity,
+                filters=filters,
             ):
                 # Score based on specificity (prefer smaller, more specific rollups)
                 score = self._score_match(preagg, dimensions, time_granularity)
@@ -86,6 +90,7 @@ class PreAggregationMatcher:
         query_metrics: list[str],
         query_dimensions: list[str],
         query_granularity: str | None = None,
+        filters: list[str] | None = None,
     ) -> bool:
         """Check if a pre-aggregation can satisfy a query.
 
@@ -94,6 +99,7 @@ class PreAggregationMatcher:
             query_metrics: Metrics requested in query
             query_dimensions: Dimensions requested in query
             query_granularity: Time granularity requested (e.g., 'day', 'month')
+            filters: Filter expressions in query (optional)
 
         Returns:
             True if pre-aggregation can satisfy the query
@@ -127,7 +133,42 @@ class PreAggregationMatcher:
             if not self._is_granularity_compatible(query_granularity, preagg.granularity):
                 return False
 
+        # 4. Check filter compatibility
+        # All filter columns must be available in the pre-agg
+        if filters:
+            filter_columns = self._extract_filter_columns(filters)
+            available_columns = set(preagg.dimensions or [])
+            if preagg.time_dimension:
+                available_columns.add(preagg.time_dimension)
+
+            for col in filter_columns:
+                if col not in available_columns:
+                    return False
+
         return True
+
+    def _extract_filter_columns(self, filters: list[str]) -> set[str]:
+        """Extract column names referenced in filter expressions.
+
+        Args:
+            filters: List of filter expressions (e.g., ["status = 'completed'", "created_at >= '2024-01-01'"])
+
+        Returns:
+            Set of column names (without model prefix)
+        """
+        import re
+
+        columns = set()
+        for filter_expr in filters:
+            # Remove model prefix if present (e.g., "orders.status" -> "status")
+            # Simple regex to extract column names before operators
+            # This handles: column = value, column >= value, etc.
+            matches = re.findall(r'(\w+\.)?(\w+)\s*[=<>!]', filter_expr)
+            for match in matches:
+                # match[0] is model prefix (optional), match[1] is column name
+                columns.add(match[1])
+
+        return columns
 
     def _is_measure_derivable(self, query_metric: Metric, preagg: PreAggregation) -> bool:
         """Check if a metric can be derived from pre-aggregation measures.
@@ -227,6 +268,9 @@ class PreAggregationMatcher:
         Query granularity must be >= pre-agg granularity (coarser or equal).
         Can roll up from day→month, but not month→day.
 
+        IMPORTANT: Week cannot roll up to month because weeks span month boundaries,
+        causing data to be misallocated.
+
         Args:
             query_granularity: Requested granularity (e.g., 'month')
             preagg_granularity: Pre-agg granularity (e.g., 'day')
@@ -240,6 +284,11 @@ class PreAggregationMatcher:
         if query_level is None or preagg_level is None:
             # Unknown granularity, be conservative
             return query_granularity == preagg_granularity
+
+        # SPECIAL CASE: Week cannot roll up to month or quarter or year
+        # because weeks span month boundaries
+        if preagg_granularity == "week" and query_granularity in ["month", "quarter", "year"]:
+            return False
 
         # Query level must be coarser or equal to pre-agg level
         # (lower number = coarser, higher number = finer)

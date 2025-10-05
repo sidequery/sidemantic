@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .dependency_analyzer import extract_metric_dependencies
 
@@ -26,7 +26,32 @@ class Metric(BaseModel):
     agg: Literal["sum", "count", "count_distinct", "avg", "min", "max", "median"] | None = Field(
         None, description="Aggregation function (for simple measures)"
     )
-    sql: str | None = Field(None, description="SQL expression or formula")
+    sql: str | None = Field(None, description="SQL expression or formula (accepts 'expr' as alias)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def handle_expr_alias(cls, data):
+        """Handle expr as an alias for sql.
+
+        This allows users to specify either sql= or expr= when creating metrics.
+        Both are equivalent and will be stored as 'sql'.
+        """
+        if isinstance(data, dict):
+            expr_val = data.get("expr")
+            sql_val = data.get("sql")
+
+            # If both provided, they must match
+            if expr_val is not None and sql_val is not None and expr_val != sql_val:
+                raise ValueError(f"Cannot specify both sql='{sql_val}' and expr='{expr_val}' with different values")
+
+            # If only expr provided, copy to sql
+            if expr_val is not None and sql_val is None:
+                data["sql"] = expr_val
+
+            # Remove expr from data to avoid storing it
+            data.pop("expr", None)
+
+        return data
 
     # Metric type (if this is a complex metric, not just a simple aggregation)
     type: Literal["ratio", "derived", "cumulative", "time_comparison", "conversion"] | None = Field(

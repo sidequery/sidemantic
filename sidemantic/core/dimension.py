@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Dimension(BaseModel):
@@ -13,7 +13,7 @@ class Dimension(BaseModel):
 
     name: str = Field(..., description="Unique dimension name within model")
     type: Literal["categorical", "time", "boolean", "numeric"] = Field(..., description="Dimension type")
-    sql: str | None = Field(None, description="SQL expression (defaults to name)")
+    sql: str | None = Field(None, description="SQL expression (defaults to name; accepts 'expr' as alias)")
     granularity: Literal["hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Base granularity for time dimensions"
     )
@@ -27,6 +27,31 @@ class Dimension(BaseModel):
 
     # Hierarchy
     parent: str | None = Field(None, description="Parent dimension for hierarchies (e.g., 'state' parent is 'country')")
+
+    @model_validator(mode="before")
+    @classmethod
+    def handle_expr_alias(cls, data):
+        """Handle expr as an alias for sql.
+
+        This allows users to specify either sql= or expr= when creating dimensions.
+        Both are equivalent and will be stored as 'sql'.
+        """
+        if isinstance(data, dict):
+            expr_val = data.get("expr")
+            sql_val = data.get("sql")
+
+            # If both provided, they must match
+            if expr_val is not None and sql_val is not None and expr_val != sql_val:
+                raise ValueError(f"Cannot specify both sql='{sql_val}' and expr='{expr_val}' with different values")
+
+            # If only expr provided, copy to sql
+            if expr_val is not None and sql_val is None:
+                data["sql"] = expr_val
+
+            # Remove expr from data to avoid storing it
+            data.pop("expr", None)
+
+        return data
 
     def __hash__(self) -> int:
         return hash((self.name, self.type, self.sql))

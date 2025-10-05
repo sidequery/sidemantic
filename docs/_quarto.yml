@@ -3,6 +3,7 @@ project:
   output-dir: _site
   resources:
     - assets/**
+    - CNAME
 
 # Enable marimo extension for interactive cells with per-page pyproject
 filters:

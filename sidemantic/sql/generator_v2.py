@@ -407,16 +407,29 @@ class SQLGenerator:
 
             # Find all table references in the filter
             referenced_models = set()
-            for table in parsed.find_all(exp.Column):
-                table_name = table.table
+            references_metric = False
+
+            for column in parsed.find_all(exp.Column):
+                table_name = column.table
+                column_name = column.name
+
                 if table_name:
                     # Remove _cte suffix if present
                     clean_name = table_name.replace("_cte", "")
                     if clean_name in all_models:
                         referenced_models.add(clean_name)
 
-            # If filter references exactly one model, push it down
-            if len(referenced_models) == 1:
+                        # Check if this column is a metric
+                        model = self.graph.get_model(clean_name)
+                        if model and model.get_metric(column_name):
+                            references_metric = True
+
+            # Filters that reference metrics must stay in main query (can't push down)
+            # because metrics don't exist in CTEs (only _raw columns)
+            if references_metric:
+                main_query_filters.append(filter_expr)
+            # If filter references exactly one model and no metrics, push it down
+            elif len(referenced_models) == 1:
                 model = list(referenced_models)[0]
                 pushdown_filters[model].append(filter_expr)
             else:
@@ -636,6 +649,26 @@ class SQLGenerator:
         # Detect if symmetric aggregates are needed
         symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
 
+        # Check for dimension/metric name collisions across models
+        # If there are collisions, prefix with model name
+        field_names = {}  # field_name -> list of model names
+        for dim_ref, gran in parsed_dims:
+            model_name, dim_name = dim_ref.split(".")
+            field_key = f"{dim_name}__{gran}" if gran else dim_name
+            if field_key not in field_names:
+                field_names[field_key] = []
+            field_names[field_key].append(model_name)
+
+        for metric_ref in metrics:
+            if "." in metric_ref:
+                model_name, measure_name = metric_ref.split(".")
+                if measure_name not in field_names:
+                    field_names[measure_name] = []
+                field_names[measure_name].append(model_name)
+
+        # Determine which fields have collisions
+        has_collision = {name: len(models) > 1 for name, models in field_names.items()}
+
         # Build SELECT columns
         select_exprs = []
 
@@ -643,7 +676,13 @@ class SQLGenerator:
         for dim_ref, gran in parsed_dims:
             model_name, dim_name = dim_ref.split(".")
             cte_col_name = f"{dim_name}__{gran}" if gran else dim_name
-            alias = f"{dim_name}__{gran}" if gran else dim_name
+            base_alias = f"{dim_name}__{gran}" if gran else dim_name
+
+            # Add model prefix if there's a collision
+            if has_collision.get(base_alias, False):
+                alias = f"{model_name}_{base_alias}"
+            else:
+                alias = base_alias
 
             select_exprs.append(f"{model_name}_cte.{cte_col_name} AS {alias}")
 
@@ -656,9 +695,15 @@ class SQLGenerator:
                 measure = model.get_metric(measure_name)
 
                 if measure:
+                    # Add model prefix if there's a collision
+                    if has_collision.get(measure_name, False):
+                        alias = f"{model_name}_{measure_name}"
+                    else:
+                        alias = measure_name
+
                     if ungrouped:
                         # For ungrouped queries, select raw column without aggregation
-                        select_exprs.append(f"{model_name}_cte.{measure_name}_raw AS {measure_name}")
+                        select_exprs.append(f"{model_name}_cte.{measure_name}_raw AS {alias}")
                     else:
                         # Check if this model needs symmetric aggregates
                         if symmetric_agg_needed.get(model_name, False):
@@ -682,7 +727,7 @@ class SQLGenerator:
                             else:
                                 agg_expr = f"{agg_func}({model_name}_cte.{measure_name}_raw)"
 
-                        select_exprs.append(f"{agg_expr} AS {measure_name}")
+                        select_exprs.append(f"{agg_expr} AS {alias}")
                 else:
                     # Try as metric
                     metric = self.graph.get_metric(metric_ref)
@@ -756,22 +801,48 @@ class SQLGenerator:
                                 metric_filters.append(aliased_filter)
                             break  # Only use first dependency's model for now
 
-        # Combine query-level and metric-level filters
-        all_filters = (filters or []) + metric_filters
+        # Separate filters into WHERE (dimension/row-level) and HAVING (metric/aggregation-level)
+        # Query-level filters: check if they reference metrics (HAVING) or dimensions (WHERE)
+        # Metric-level filters: always WHERE (they're row-level filters defined in Metric.filters)
+        where_filters = []
+        having_filters = []
 
-        # Add WHERE clause
-        if all_filters:
+        import re
+
+        # Process query-level filters
+        for filter_expr in filters or []:
+            # Determine if this filter references a metric or dimension
+            references_metric = False
+
+            for model_name in [base_model_name] + other_models:
+                model_obj = self.graph.get_model(model_name)
+                # Check if filter contains model.metric_name
+                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
+                matches = re.findall(pattern, filter_expr)
+                for field_name in matches:
+                    if model_obj.get_metric(field_name):
+                        references_metric = True
+                        break
+                if references_metric:
+                    break
+
+            if references_metric:
+                having_filters.append(filter_expr)
+            else:
+                where_filters.append(filter_expr)
+
+        # Metric-level filters always go to WHERE (they're row-level filters)
+        where_filters.extend(metric_filters)
+
+        # Add WHERE clause (dimension filters and metric-level row filters)
+        if where_filters:
             # Parse filters to add table aliases and handle measure vs dimension columns
-            for filter_expr in all_filters:
+            for filter_expr in where_filters:
                 parsed_filter = filter_expr
                 for model_name in [base_model_name] + other_models:
                     # Replace model.field references
                     # Check if field is a measure (needs _raw suffix) or dimension
                     model_obj = self.graph.get_model(model_name)
-
-                    # Find all field references for this model in the filter
-                    # Use negative lookahead/lookbehind to avoid matching inside quotes
-                    import re
 
                     # Split by quotes to avoid replacing inside string literals
                     parts = []
@@ -818,6 +889,25 @@ class SQLGenerator:
         if parsed_dims and not ungrouped:
             group_by_positions = list(range(1, len(parsed_dims) + 1))
             query = query.group_by(*group_by_positions)
+
+        # Add HAVING clause (metric filters applied after aggregation)
+        if having_filters:
+            for filter_expr in having_filters:
+                # Replace model.metric_name with metric_name (the aggregated column alias)
+                parsed_having = filter_expr
+                for model_name in [base_model_name] + other_models:
+                    model_obj = self.graph.get_model(model_name)
+                    # Replace model.field with just field (aggregated column name)
+                    pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
+
+                    def replace_metric_ref(match):
+                        field_name = match.group(1)
+                        # Just use the metric name (it's the SELECT alias)
+                        return field_name
+
+                    parsed_having = re.sub(pattern, replace_metric_ref, parsed_having)
+
+                query = query.having(parsed_having)
 
         # Add ORDER BY
         if order_by:

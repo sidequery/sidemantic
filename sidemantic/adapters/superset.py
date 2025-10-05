@@ -134,12 +134,7 @@ class SupersetAdapter(BaseAdapter):
                 granularity = "day"
             else:
                 granularity = "hour"
-        elif (
-            "INT" in sql_type
-            or "NUMERIC" in sql_type
-            or "FLOAT" in sql_type
-            or "DOUBLE" in sql_type
-        ):
+        elif "INT" in sql_type or "NUMERIC" in sql_type or "FLOAT" in sql_type or "DOUBLE" in sql_type:
             dim_type = "numeric"
         elif "BOOL" in sql_type:
             dim_type = "boolean"

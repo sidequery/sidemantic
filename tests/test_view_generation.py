@@ -99,9 +99,7 @@ def test_join_view_against_other_tables():
     generator = SQLGenerator(graph)
 
     # Generate view
-    view_sql = generator.generate_view(
-        view_name="product_metrics", metrics=["avg_price"], dimensions=["products.name"]
-    )
+    view_sql = generator.generate_view(view_name="product_metrics", metrics=["avg_price"], dimensions=["products.name"])
 
     # Execute in DuckDB
     conn = duckdb.connect(":memory:")

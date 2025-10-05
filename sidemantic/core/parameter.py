@@ -17,9 +17,7 @@ class Parameter(BaseModel):
     """
 
     name: str = Field(..., description="Unique parameter name")
-    type: Literal["string", "number", "date", "unquoted", "yesno"] = Field(
-        ..., description="Parameter data type"
-    )
+    type: Literal["string", "number", "date", "unquoted", "yesno"] = Field(..., description="Parameter data type")
     description: str | None = Field(None, description="Human-readable description")
     label: str | None = Field(None, description="Display label for UI")
 
@@ -27,14 +25,10 @@ class Parameter(BaseModel):
     default_value: Any = Field(None, description="Default value if not provided")
 
     # For string/number types with limited options
-    allowed_values: list[Any] | None = Field(
-        None, description="List of allowed values (for dropdown/select)"
-    )
+    allowed_values: list[Any] | None = Field(None, description="List of allowed values (for dropdown/select)")
 
     # For date parameters
-    default_to_today: bool = Field(
-        False, description="Default to current date (for date parameters)"
-    )
+    default_to_today: bool = Field(False, description="Default to current date (for date parameters)")
 
     def __hash__(self) -> int:
         return hash(self.name)

@@ -23,18 +23,14 @@ class Model(BaseModel):
     extends: str | None = Field(None, description="Parent model to inherit from")
 
     # Relationships
-    relationships: list[Relationship] = Field(
-        default_factory=list, description="Relationships to other models"
-    )
+    relationships: list[Relationship] = Field(default_factory=list, description="Relationships to other models")
 
     # Primary key (required)
     primary_key: str = Field(default="id", description="Primary key column")
 
     dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
     metrics: list[Metric] = Field(default_factory=list, description="Measure definitions")
-    segments: list[Segment] = Field(
-        default_factory=list, description="Segment (named filter) definitions"
-    )
+    segments: list[Segment] = Field(default_factory=list, description="Segment (named filter) definitions")
     pre_aggregations: list[PreAggregation] = Field(
         default_factory=list, description="Pre-aggregation definitions for query optimization"
     )

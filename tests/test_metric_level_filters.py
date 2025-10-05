@@ -164,12 +164,8 @@ def test_metric_filter_with_time_dimension():
 
     layer.add_model(orders)
 
-    sql = layer.compile(
-        metrics=["orders.recent_completed_revenue"], dimensions=["orders.created_at__month"]
-    )
+    sql = layer.compile(metrics=["orders.recent_completed_revenue"], dimensions=["orders.created_at__month"])
 
     # Should contain both filters
     assert "orders_cte.status = 'completed'" in sql
-    assert (
-        "CURRENT_DATE - 30" in sql or "CURRENT_DATE-30" in sql
-    )  # SQLGlot might format differently
+    assert "CURRENT_DATE - 30" in sql or "CURRENT_DATE-30" in sql  # SQLGlot might format differently

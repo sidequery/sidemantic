@@ -29,9 +29,7 @@ start_date_param = Parameter(
     description="Start date for analysis",
 )
 
-min_amount_param = Parameter(
-    name="min_amount", type="number", default_value=0, description="Minimum order amount"
-)
+min_amount_param = Parameter(name="min_amount", type="number", default_value=0, description="Minimum order amount")
 
 graph.add_parameter(status_param)
 graph.add_parameter(start_date_param)

@@ -23,9 +23,7 @@ def test_belongs_to_join():
         name="orders",
         table="orders",
         primary_key="id",
-        relationships=[
-            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
-        ],
+        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
         dimensions=[],
         metrics=[Metric(name="revenue", agg="sum", sql="amount")],
     )
@@ -98,9 +96,7 @@ def test_has_many_join():
 def test_multi_relationship_join():
     """Test model with multiple relationships."""
     conn = duckdb.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER, amount DECIMAL(10, 2))"
-    )
+    conn.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER, amount DECIMAL(10, 2))")
     conn.execute("CREATE TABLE customers (id INTEGER, name VARCHAR)")
     conn.execute("CREATE TABLE products (product_id INTEGER, category VARCHAR)")
     conn.execute("INSERT INTO orders VALUES (1, 101, 1, 100.00)")
@@ -144,9 +140,7 @@ def test_multi_relationship_join():
     sl.add_model(products)
 
     # Query should work across multiple relationships
-    result = sl.query(
-        metrics=["orders.revenue"], dimensions=["customers.name", "products.category"]
-    )
+    result = sl.query(metrics=["orders.revenue"], dimensions=["customers.name", "products.category"])
 
     df = result.df()
     print("\nMulti-Relationship Results:")

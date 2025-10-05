@@ -271,7 +271,7 @@ def test_query_imported_cube_example():
     assert "status" in sql.lower()
 
     # Test ratio metric (if detected as ratio/derived with proper dependencies)
-    conversion_rate = next(m for m in graph.models["orders"].metrics if m.name == "conversion_rate")
+    next(m for m in graph.models["orders"].metrics if m.name == "conversion_rate")
     # Note: Cube's ${measure} syntax doesn't translate directly to Sidemantic,
     # so derived metrics from Cube may not be queryable without modification
     # This is expected behavior - the metric was imported but needs manual adjustment
@@ -292,9 +292,7 @@ def test_query_imported_metricflow_example():
     assert "SUM" in sql.upper()
 
     # Test with dimension
-    sql = layer.compile(
-        metrics=["orders.revenue", "orders.order_count"], dimensions=["orders.status"]
-    )
+    sql = layer.compile(metrics=["orders.revenue", "orders.order_count"], dimensions=["orders.status"])
     assert "GROUP BY" in sql.upper()
     assert "status" in sql.lower()
 
@@ -415,12 +413,8 @@ def test_roundtrip_real_metricflow_example():
         for model_name in graph1.models:
             model1 = graph1.models[model_name]
             model2 = graph2.models[model_name]
-            assert len(model1.dimensions) == len(model2.dimensions), (
-                f"Dimension count mismatch for {model_name}"
-            )
-            assert len(model1.metrics) == len(model2.metrics), (
-                f"Metric count mismatch for {model_name}"
-            )
+            assert len(model1.dimensions) == len(model2.dimensions), f"Dimension count mismatch for {model_name}"
+            assert len(model1.metrics) == len(model2.metrics), f"Metric count mismatch for {model_name}"
 
         # Verify graph-level metrics count preserved
         # Note: Simple metrics may not round-trip, so we just check that ratio metrics are there
@@ -1009,9 +1003,7 @@ def test_query_imported_hex_example():
     assert "SUM" in sql.upper()
 
     # Test with dimension
-    sql = layer.compile(
-        metrics=["orders.revenue", "orders.order_count"], dimensions=["orders.status"]
-    )
+    sql = layer.compile(metrics=["orders.revenue", "orders.order_count"], dimensions=["orders.status"])
     assert "GROUP BY" in sql.upper()
     assert "status" in sql.lower()
 

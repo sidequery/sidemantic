@@ -86,9 +86,7 @@ def test_fanout_join_detection_single_join():
         primary_key="id",
         dimensions=[Dimension(name="order_date", type="time", sql="order_date")],
         metrics=[Metric(name="revenue", agg="sum", sql="amount")],
-        relationships=[
-            Relationship(name="order_items", type="one_to_many", sql="id", foreign_key="order_id")
-        ],
+        relationships=[Relationship(name="order_items", type="one_to_many", sql="id", foreign_key="order_id")],
     )
 
     # Order items (many)
@@ -98,11 +96,7 @@ def test_fanout_join_detection_single_join():
         primary_key="id",
         dimensions=[],
         metrics=[Metric(name="quantity", agg="sum", sql="quantity")],
-        relationships=[
-            Relationship(
-                name="orders", type="many_to_one", foreign_key="order_id", primary_key="id"
-            )
-        ],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     graph.add_model(orders)
@@ -140,11 +134,7 @@ def test_fanout_join_detection_multiple_joins():
         primary_key="id",
         dimensions=[],
         metrics=[Metric(name="quantity", agg="sum", sql="quantity")],
-        relationships=[
-            Relationship(
-                name="orders", type="many_to_one", foreign_key="order_id", primary_key="id"
-            )
-        ],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     # Shipments (many)
@@ -154,11 +144,7 @@ def test_fanout_join_detection_multiple_joins():
         primary_key="id",
         dimensions=[],
         metrics=[Metric(name="shipment_count", agg="count", sql="*")],
-        relationships=[
-            Relationship(
-                name="orders", type="many_to_one", foreign_key="order_id", primary_key="id"
-            )
-        ],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     graph.add_model(orders)
@@ -199,11 +185,7 @@ def test_symmetric_aggregates_in_sql_generation():
         primary_key="id",
         dimensions=[],
         metrics=[Metric(name="quantity", agg="sum", sql="quantity")],
-        relationships=[
-            Relationship(
-                name="orders", type="many_to_one", foreign_key="order_id", primary_key="id"
-            )
-        ],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     # Shipments
@@ -213,11 +195,7 @@ def test_symmetric_aggregates_in_sql_generation():
         primary_key="id",
         dimensions=[],
         metrics=[Metric(name="shipment_count", agg="count", sql="*")],
-        relationships=[
-            Relationship(
-                name="orders", type="many_to_one", foreign_key="order_id", primary_key="id"
-            )
-        ],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     graph.add_model(orders)
@@ -292,11 +270,7 @@ def test_symmetric_aggregates_with_data():
         primary_key="id",
         dimensions=[],
         metrics=[Metric(name="quantity", agg="sum", sql="quantity")],
-        relationships=[
-            Relationship(
-                name="orders", type="many_to_one", foreign_key="order_id", primary_key="id"
-            )
-        ],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     shipments = Model(
@@ -305,11 +279,7 @@ def test_symmetric_aggregates_with_data():
         primary_key="id",
         dimensions=[],
         metrics=[Metric(name="shipment_count", agg="count", sql="*")],
-        relationships=[
-            Relationship(
-                name="orders", type="many_to_one", foreign_key="order_id", primary_key="id"
-            )
-        ],
+        relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id")],
     )
 
     graph.add_model(orders)

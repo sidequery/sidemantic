@@ -134,9 +134,7 @@ def main():
     print_section("2. Defining Metrics (Dependencies Auto-Detected!)")
 
     # Simple metric
-    total_revenue = Measure(
-        name="total_revenue", expr="orders.amount", description="Total revenue from all orders"
-    )
+    total_revenue = Measure(name="total_revenue", expr="orders.amount", description="Total revenue from all orders")
     print("Simple metric: total_revenue")
 
     # Ratio metric
@@ -177,9 +175,7 @@ def main():
     graph.add_metric(revenue_per_customer)
     graph.add_metric(running_total)
 
-    print(
-        f"\nSemantic graph built with {len(graph.models)} models and {len(graph.metrics)} metrics"
-    )
+    print(f"\nSemantic graph built with {len(graph.models)} models and {len(graph.metrics)} metrics")
 
     # =========================================================================
     # 3. Traditional API: Generate SQL directly
@@ -189,9 +185,7 @@ def main():
     generator = SQLGenerator(graph)
 
     # Query metrics by dimension
-    sql = generator.generate(
-        metrics=["total_revenue", "avg_order_value"], dimensions=["orders.status"]
-    )
+    sql = generator.generate(metrics=["total_revenue", "avg_order_value"], dimensions=["orders.status"])
 
     print_sql(sql)
 

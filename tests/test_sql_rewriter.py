@@ -28,9 +28,7 @@ def semantic_layer():
             Metric(name="revenue", agg="sum", sql="amount"),
             Metric(name="count", agg="count"),
         ],
-        relationships=[
-            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
-        ],
+        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
     )
 
     # Create customers model

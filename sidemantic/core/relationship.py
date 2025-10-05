@@ -22,9 +22,7 @@ class Relationship(BaseModel):
     foreign_key: str | None = Field(
         default=None, description="Foreign key column (defaults to {name}_id for many_to_one)"
     )
-    primary_key: str | None = Field(
-        default=None, description="Primary key column in related model (defaults to id)"
-    )
+    primary_key: str | None = Field(default=None, description="Primary key column in related model (defaults to id)")
 
     @property
     def sql_expr(self) -> str:

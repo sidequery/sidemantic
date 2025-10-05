@@ -30,9 +30,7 @@ from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
 
 # Set page config
-st.set_page_config(
-    page_title="Sidemantic Dashboard", layout="wide", initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Sidemantic Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 
 @st.cache_resource
@@ -210,11 +208,7 @@ def setup_semantic_layer():
     graph.add_model(order_items)
 
     # Add metrics
-    graph.add_metric(
-        Measure(
-            name="total_revenue", expr="orders.revenue", description="Total revenue from all orders"
-        )
-    )
+    graph.add_metric(Measure(name="total_revenue", expr="orders.revenue", description="Total revenue from all orders"))
 
     return graph
 
@@ -287,9 +281,7 @@ def main():
         )
 
     # Status filter
-    status = st.sidebar.selectbox(
-        "Order Status", ["all", "completed", "pending", "cancelled"], index=0
-    )
+    status = st.sidebar.selectbox("Order Status", ["all", "completed", "pending", "cancelled"], index=0)
 
     # Region filter
     region = st.sidebar.selectbox("Customer Region", ["all", "US", "EU", "APAC"], index=0)
@@ -307,12 +299,8 @@ def main():
     }
 
     # Build filters - include customer filters for queries with customer dimensions
-    filters_with_customers = build_filters(
-        status, region, tier, start_date, end_date, include_customer_filters=True
-    )
-    filters_orders_only = build_filters(
-        status, region, tier, start_date, end_date, include_customer_filters=False
-    )
+    filters_with_customers = build_filters(status, region, tier, start_date, end_date, include_customer_filters=True)
+    filters_orders_only = build_filters(status, region, tier, start_date, end_date, include_customer_filters=False)
 
     # Show active filters
     st.sidebar.markdown("---")
@@ -342,14 +330,10 @@ def main():
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric(
-            "Total Revenue", f"${kpi_df['revenue'].iloc[0]:,.2f}" if not kpi_df.empty else "$0.00"
-        )
+        st.metric("Total Revenue", f"${kpi_df['revenue'].iloc[0]:,.2f}" if not kpi_df.empty else "$0.00")
 
     with col2:
-        st.metric(
-            "Total Orders", f"{int(kpi_df['order_count'].iloc[0]):,}" if not kpi_df.empty else "0"
-        )
+        st.metric("Total Orders", f"{int(kpi_df['order_count'].iloc[0]):,}" if not kpi_df.empty else "0")
 
     with col3:
         st.metric(
@@ -466,9 +450,7 @@ def main():
     if not monthly_df.empty:
         # Format the dataframe
         display_df = monthly_df.copy()
-        display_df["order_date__month"] = pd.to_datetime(
-            display_df["order_date__month"]
-        ).dt.strftime("%B %Y")
+        display_df["order_date__month"] = pd.to_datetime(display_df["order_date__month"]).dt.strftime("%B %Y")
         display_df["revenue"] = display_df["revenue"].apply(lambda x: f"${x:,.2f}")
         display_df["avg_order_value"] = display_df["avg_order_value"].apply(lambda x: f"${x:,.2f}")
         display_df.columns = ["Month", "Revenue", "Orders", "Avg Order Value"]

@@ -103,10 +103,8 @@ class QueryRewriter:
             # Get column name (handle aliases)
             if isinstance(projection, exp.Alias):
                 column = projection.this
-                alias = projection.alias
             else:
                 column = projection
-                alias = None
 
             # Extract table.column reference
             ref = self._resolve_column(column)
@@ -293,9 +291,7 @@ class QueryRewriter:
                 if self.inferred_table:
                     return f"{self.inferred_table}.{name}"
                 else:
-                    raise ValueError(
-                        f"Column '{name}' must have table prefix (e.g., orders.{name})"
-                    )
+                    raise ValueError(f"Column '{name}' must have table prefix (e.g., orders.{name})")
 
         # Handle aggregate functions - must be pre-defined as measures
         if isinstance(column, exp.Func):

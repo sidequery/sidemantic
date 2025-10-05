@@ -26,53 +26,29 @@ def test_last_n_weeks():
 def test_this_last_next_week():
     """Test this/last/next week."""
     assert RelativeDateRange.parse("this week") == "DATE_TRUNC('week', CURRENT_DATE)"
-    assert (
-        RelativeDateRange.parse("last week")
-        == "DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '1 week'"
-    )
-    assert (
-        RelativeDateRange.parse("next week")
-        == "DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '1 week'"
-    )
+    assert RelativeDateRange.parse("last week") == "DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '1 week'"
+    assert RelativeDateRange.parse("next week") == "DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '1 week'"
 
 
 def test_this_last_next_month():
     """Test this/last/next month."""
     assert RelativeDateRange.parse("this month") == "DATE_TRUNC('month', CURRENT_DATE)"
-    assert (
-        RelativeDateRange.parse("last month")
-        == "DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'"
-    )
-    assert (
-        RelativeDateRange.parse("next month")
-        == "DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'"
-    )
+    assert RelativeDateRange.parse("last month") == "DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'"
+    assert RelativeDateRange.parse("next month") == "DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'"
 
 
 def test_this_last_next_quarter():
     """Test this/last/next quarter."""
     assert RelativeDateRange.parse("this quarter") == "DATE_TRUNC('quarter', CURRENT_DATE)"
-    assert (
-        RelativeDateRange.parse("last quarter")
-        == "DATE_TRUNC('quarter', CURRENT_DATE) - INTERVAL '3 months'"
-    )
-    assert (
-        RelativeDateRange.parse("next quarter")
-        == "DATE_TRUNC('quarter', CURRENT_DATE) + INTERVAL '3 months'"
-    )
+    assert RelativeDateRange.parse("last quarter") == "DATE_TRUNC('quarter', CURRENT_DATE) - INTERVAL '3 months'"
+    assert RelativeDateRange.parse("next quarter") == "DATE_TRUNC('quarter', CURRENT_DATE) + INTERVAL '3 months'"
 
 
 def test_this_last_next_year():
     """Test this/last/next year."""
     assert RelativeDateRange.parse("this year") == "DATE_TRUNC('year', CURRENT_DATE)"
-    assert (
-        RelativeDateRange.parse("last year")
-        == "DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'"
-    )
-    assert (
-        RelativeDateRange.parse("next year")
-        == "DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'"
-    )
+    assert RelativeDateRange.parse("last year") == "DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'"
+    assert RelativeDateRange.parse("next year") == "DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'"
 
 
 def test_to_range_last_n_days():

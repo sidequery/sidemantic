@@ -17,9 +17,7 @@ class TableCalculationProcessor:
         """
         self.calculations = calculations
 
-    def process(
-        self, results: list[tuple], column_names: list[str]
-    ) -> tuple[list[tuple], list[str]]:
+    def process(self, results: list[tuple], column_names: list[str]) -> tuple[list[tuple], list[str]]:
         """Apply table calculations to query results.
 
         Args:
@@ -47,9 +45,7 @@ class TableCalculationProcessor:
 
         return processed_results, column_names
 
-    def _apply_calculation(
-        self, calc: TableCalculation, rows: list[dict], column_names: list[str]
-    ) -> list[dict]:
+    def _apply_calculation(self, calc: TableCalculation, rows: list[dict], column_names: list[str]) -> list[dict]:
         """Apply a single table calculation to rows.
 
         Args:
@@ -127,18 +123,14 @@ class TableCalculationProcessor:
         for row in rows:
             value = row.get(calc.field)
             if prev_value is not None and prev_value != 0:
-                row[calc.name] = (
-                    ((value - prev_value) / prev_value * 100) if value is not None else None
-                )
+                row[calc.name] = ((value - prev_value) / prev_value * 100) if value is not None else None
             else:
                 row[calc.name] = None
             prev_value = value
 
         return rows
 
-    def _apply_percent_of_column_total(
-        self, calc: TableCalculation, rows: list[dict]
-    ) -> list[dict]:
+    def _apply_percent_of_column_total(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
         """Calculate percent of column total (within partition)."""
         if not calc.field:
             raise ValueError(f"percent_of_column_total calculation {calc.name} missing field")

@@ -29,7 +29,7 @@ class SemanticGraph:
 
     def __init__(self):
         self.models: dict[str, Model] = {}
-        self.metrics: dict[str, Measure] = {}
+        self.metrics: dict[str, Metric] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
         self._adjacency: dict[str, list[tuple[str, str]]] = {}  # model -> [(entity, target_model)]
@@ -185,9 +185,7 @@ class SemanticGraph:
                     # one_to_one or one_to_many: related model has foreign key pointing here
                     # Example: customers one_to_many orders (customers.id <- orders.customer_id)
                     local_key = model.primary_key  # Use model's primary key
-                    remote_key = (
-                        relationship.foreign_key or relationship.sql_expr
-                    )  # customer_id (in orders)
+                    remote_key = relationship.foreign_key or relationship.sql_expr  # customer_id (in orders)
 
                 # Add bidirectional edge
                 if model_name not in self._adjacency:
@@ -354,15 +352,11 @@ class SemanticGraph:
                 elif current_relationship and current_relationship.type == "many_to_one":
                     relationship = "many_to_one"
                 elif next_relationship and next_relationship.type == "one_to_many":
-                    relationship = (
-                        "many_to_one"  # next has many current, so current is many to next
-                    )
+                    relationship = "many_to_one"  # next has many current, so current is many to next
                 elif next_relationship and next_relationship.type == "one_to_one":
                     relationship = "one_to_one"
                 elif next_relationship and next_relationship.type == "many_to_one":
-                    relationship = (
-                        "one_to_many"  # next belongs to current, so current is one to next
-                    )
+                    relationship = "one_to_many"  # next belongs to current, so current is one to next
                 else:
                     relationship = "many_to_one"  # default
 

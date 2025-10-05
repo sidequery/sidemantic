@@ -67,9 +67,7 @@ def test_multiple_segments():
 
     layer.add_model(orders)
 
-    sql = layer.compile(
-        metrics=["orders.revenue"], segments=["orders.completed", "orders.high_value"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], segments=["orders.completed", "orders.high_value"])
 
     # Should contain both segment filters (pushed down into CTE)
     assert "status = 'completed'" in sql

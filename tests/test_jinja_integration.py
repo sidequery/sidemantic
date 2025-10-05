@@ -58,22 +58,15 @@ def test_jinja_conditional_with_parameters():
     template_filter = "{% if include_pending %}orders_cte.status IN ('completed', 'pending'){% else %}orders_cte.status = 'completed'{% endif %}"
 
     # With include_pending = False
-    sql = layer.compile(
-        metrics=["orders.revenue"], filters=[template_filter], parameters={"include_pending": False}
-    )
+    sql = layer.compile(metrics=["orders.revenue"], filters=[template_filter], parameters={"include_pending": False})
 
     assert "status = 'completed'" in sql
     assert "pending" not in sql.lower()
 
     # With include_pending = True
-    sql = layer.compile(
-        metrics=["orders.revenue"], filters=[template_filter], parameters={"include_pending": True}
-    )
+    sql = layer.compile(metrics=["orders.revenue"], filters=[template_filter], parameters={"include_pending": True})
 
-    assert (
-        "status IN ('completed', 'pending')" in sql
-        or "IN('completed', 'pending')" in sql.replace(" ", "")
-    )
+    assert "status IN ('completed', 'pending')" in sql or "IN('completed', 'pending')" in sql.replace(" ", "")
 
 
 def test_jinja_loop_with_parameters():

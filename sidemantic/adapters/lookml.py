@@ -544,9 +544,7 @@ class LookMLAdapter(BaseAdapter):
             elif metric.type == "ratio":
                 measure_def["type"] = "number"
                 if metric.numerator and metric.denominator:
-                    measure_def["sql"] = (
-                        f"1.0 * ${{{metric.numerator}}} / NULLIF(${{{metric.denominator}}}, 0)"
-                    )
+                    measure_def["sql"] = f"1.0 * ${{{metric.numerator}}} / NULLIF(${{{metric.denominator}}}, 0)"
             else:
                 # Regular aggregation measure
                 type_mapping = {

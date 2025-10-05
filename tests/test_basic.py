@@ -48,9 +48,7 @@ def test_join_path_discovery():
         name="orders",
         table="public.orders",
         primary_key="order_id",
-        relationships=[
-            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
-        ],
+        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
     )
 
     customers = Model(
@@ -141,9 +139,7 @@ def test_multi_model_query():
         name="orders",
         table="public.orders",
         primary_key="order_id",
-        relationships=[
-            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
-        ],
+        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
         dimensions=[Dimension(name="status", type="categorical")],
         metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
     )

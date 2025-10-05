@@ -64,7 +64,7 @@ class RillAdapter:
             return None
 
         model_name = data.get("name") or file_path.stem
-        display_name = data.get("display_name")
+        data.get("display_name")
         description = data.get("description")
 
         # Get the source table or model
@@ -82,9 +82,7 @@ class RillAdapter:
 
         # If timeseries is specified but not found in dimensions, create it
         if timeseries_column:
-            has_timeseries = any(
-                d.sql == timeseries_column or d.name == timeseries_column for d in dimensions
-            )
+            has_timeseries = any(d.sql == timeseries_column or d.name == timeseries_column for d in dimensions)
             if not has_timeseries:
                 time_dim = Dimension(
                     name=timeseries_column,
@@ -137,9 +135,7 @@ class RillAdapter:
             return None
 
         # Determine if this is the timeseries dimension
-        is_timeseries = timeseries_column and (
-            sql == timeseries_column or name == timeseries_column
-        )
+        is_timeseries = timeseries_column and (sql == timeseries_column or name == timeseries_column)
 
         return Dimension(
             name=name,

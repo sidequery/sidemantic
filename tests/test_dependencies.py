@@ -55,8 +55,6 @@ def test_cumulative_metric_dependencies():
 
 def test_time_comparison_metric_dependencies():
     """Test time comparison metric returns base metric."""
-    metric = Metric(
-        name="revenue_yoy", type="time_comparison", base_metric="revenue", comparison_type="yoy"
-    )
+    metric = Metric(name="revenue_yoy", type="time_comparison", base_metric="revenue", comparison_type="yoy")
     deps = metric.get_dependencies()
     assert deps == {"revenue"}

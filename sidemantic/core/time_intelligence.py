@@ -95,7 +95,7 @@ def generate_time_comparison_sql(
     Returns:
         SQL expression for the comparison calculation
     """
-    offset = comparison.get_sql_offset()
+    comparison.get_sql_offset()
 
     # Build SQL for offset metric
     # This uses a self-join to get the prior period value
@@ -109,9 +109,7 @@ def generate_time_comparison_sql(
     if comparison.calculation == "difference":
         return f"({current_metric_sql} - {offset_metric_sql})"
     elif comparison.calculation == "percent_change":
-        return (
-            f"(({current_metric_sql} - {offset_metric_sql}) / NULLIF({offset_metric_sql}, 0) * 100)"
-        )
+        return f"(({current_metric_sql} - {offset_metric_sql}) / NULLIF({offset_metric_sql}, 0) * 100)"
     elif comparison.calculation == "ratio":
         return f"({current_metric_sql} / NULLIF({offset_metric_sql}, 0))"
 

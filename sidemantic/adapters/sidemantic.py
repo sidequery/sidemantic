@@ -78,9 +78,7 @@ class SidemanticAdapter(BaseAdapter):
         }
 
         if graph.metrics:
-            data["metrics"] = [
-                self._export_metric(metric, graph) for metric in graph.metrics.values()
-            ]
+            data["metrics"] = [self._export_metric(metric, graph) for metric in graph.metrics.values()]
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -220,16 +218,8 @@ class SidemanticAdapter(BaseAdapter):
                 {
                     "name": relationship.name,
                     "type": relationship.type,
-                    **(
-                        {"foreign_key": relationship.foreign_key}
-                        if relationship.foreign_key
-                        else {}
-                    ),
-                    **(
-                        {"primary_key": relationship.primary_key}
-                        if relationship.primary_key
-                        else {}
-                    ),
+                    **({"foreign_key": relationship.foreign_key} if relationship.foreign_key else {}),
+                    **({"primary_key": relationship.primary_key} if relationship.primary_key else {}),
                 }
                 for relationship in model.relationships
             ]

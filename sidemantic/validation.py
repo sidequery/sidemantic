@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from sidemantic.core.metric import Metric
     from sidemantic.core.model import Model
     from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -60,9 +61,7 @@ def validate_model(model: "Model") -> list[str]:
 
         # Time dimensions should have granularity
         if dim.type == "time" and not dim.granularity:
-            errors.append(
-                f"Model '{model.name}': time dimension '{dim.name}' should have a granularity defined"
-            )
+            errors.append(f"Model '{model.name}': time dimension '{dim.name}' should have a granularity defined")
 
     # Check that measures have valid aggregation types
     for measure in model.metrics:
@@ -75,7 +74,7 @@ def validate_model(model: "Model") -> list[str]:
     return errors
 
 
-def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
+def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
     """Validate a measure definition.
 
     Args:
@@ -110,9 +109,7 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
             if not model:
                 errors.append(f"Metric '{measure.name}': model '{model_name}' not found")
             elif not model.get_metric(measure_name):
-                errors.append(
-                    f"Metric '{measure.name}': measure '{measure_name}' not found in model '{model_name}'"
-                )
+                errors.append(f"Metric '{measure.name}': measure '{measure_name}' not found in model '{model_name}'")
 
     # Validate based on type
     if measure.type == "ratio":
@@ -130,9 +127,7 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
                 model_name, measure_name = ref.split(".")
                 model = graph.models.get(model_name)
                 if not model:
-                    errors.append(
-                        f"Ratio measure '{measure.name}': {ref_type} model '{model_name}' not found"
-                    )
+                    errors.append(f"Ratio measure '{measure.name}': {ref_type} model '{model_name}' not found")
                 elif not model.get_metric(measure_name):
                     errors.append(
                         f"Ratio measure '{measure.name}': {ref_type} measure '{measure_name}' not found in model '{model_name}'"
@@ -151,9 +146,7 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
         else:
             circular_deps = _check_circular_dependencies(measure, graph, set())
             if circular_deps:
-                errors.append(
-                    f"Derived measure '{measure.name}' has circular dependency: {' -> '.join(circular_deps)}"
-                )
+                errors.append(f"Derived measure '{measure.name}' has circular dependency: {' -> '.join(circular_deps)}")
 
     elif measure.type == "cumulative":
         if not measure.sql:
@@ -163,7 +156,7 @@ def validate_metric(measure: "Measure", graph: "SemanticGraph") -> list[str]:
 
 
 def _check_circular_dependencies(
-    measure: "Measure", graph: "SemanticGraph", visited: set[str], path: list[str] | None = None
+    measure: "Metric", graph: "SemanticGraph", visited: set[str], path: list[str] | None = None
 ) -> list[str] | None:
     """Check for circular dependencies in derived measures.
 
@@ -195,9 +188,7 @@ def _check_circular_dependencies(
         try:
             dep_measure = graph.get_metric(dep_name)
             if dep_measure:
-                cycle = _check_circular_dependencies(
-                    dep_measure, graph, visited.copy(), path.copy()
-                )
+                cycle = _check_circular_dependencies(dep_measure, graph, visited.copy(), path.copy())
                 if cycle:
                     return cycle
         except KeyError:
@@ -235,7 +226,7 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
         else:
             # Metric reference
             try:
-                metric = graph.get_metric(metric_ref)
+                graph.get_metric(metric_ref)
             except KeyError:
                 errors.append(f"Metric '{metric_ref}' not found")
 
@@ -258,9 +249,7 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
             if not model:
                 errors.append(f"Model '{model_name}' not found (referenced in '{dim_ref}')")
             elif not model.get_dimension(dim_name):
-                errors.append(
-                    f"Dimension '{dim_name}' not found in model '{model_name}' (referenced in '{dim_ref}')"
-                )
+                errors.append(f"Dimension '{dim_name}' not found in model '{model_name}' (referenced in '{dim_ref}')")
         else:
             errors.append(f"Dimension reference '{dim_ref}' must be in 'model.dimension' format")
 

@@ -163,9 +163,7 @@ class PreAggregationMatcher:
             # AVG is derivable if we have the sum measure
             # We can compute AVG by re-aggregating: SUM(sum_raw) / SUM(count_raw)
             # But we need to ensure the pre-agg has both sum and count
-            has_count = "count" in preagg_measures or any(
-                m.startswith("count") for m in preagg_measures
-            )
+            has_count = "count" in preagg_measures or any(m.startswith("count") for m in preagg_measures)
             return has_count
 
         if agg_type == "count_distinct":

@@ -26,9 +26,7 @@ def test_month_to_date_metric():
     )
 
     # MTD cumulative - resets each month
-    mtd_revenue = Metric(
-        name="mtd_revenue", type="cumulative", sql="sales.amount", grain_to_date="month"
-    )
+    mtd_revenue = Metric(name="mtd_revenue", type="cumulative", sql="sales.amount", grain_to_date="month")
 
     graph = SemanticGraph()
     graph.add_model(sales)
@@ -73,9 +71,7 @@ def test_year_to_date_metric():
         metrics=[Metric(name="amount", agg="sum", sql="amount")],
     )
 
-    ytd_revenue = Metric(
-        name="ytd_revenue", type="cumulative", sql="sales.amount", grain_to_date="year"
-    )
+    ytd_revenue = Metric(name="ytd_revenue", type="cumulative", sql="sales.amount", grain_to_date="year")
 
     graph = SemanticGraph()
     graph.add_model(sales)

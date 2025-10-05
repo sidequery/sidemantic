@@ -21,9 +21,7 @@ def test_conditional_template():
     assert result == "status = 'active'"
 
     # With condition false
-    result = renderer.render(
-        "{% if active %}status = 'active'{% else %}1=1{% endif %}", {"active": False}
-    )
+    result = renderer.render("{% if active %}status = 'active'{% else %}1=1{% endif %}", {"active": False})
     assert result == "1=1"
 
 
@@ -67,7 +65,7 @@ def test_template_with_filters():
 
 def test_template_in_metric_sql():
     """Test using templates in metric SQL."""
-    layer = SemanticLayer()
+    SemanticLayer()
 
     # Note: This test just validates the template would work
     # Actual integration would need parameter passing
@@ -111,9 +109,7 @@ def test_complex_template_example():
     END
     """.strip()
 
-    result = renderer.render(
-        template, {"status_map": {"completed": 1, "pending": 0.5, "cancelled": 0}}
-    )
+    result = renderer.render(template, {"status_map": {"completed": 1, "pending": 0.5, "cancelled": 0}})
 
     assert "WHEN status = 'completed' THEN 1" in result
     assert "WHEN status = 'pending' THEN 0.5" in result

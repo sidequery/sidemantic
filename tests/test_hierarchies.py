@@ -24,9 +24,7 @@ def test_hierarchy_in_model():
         primary_key="location_id",
         dimensions=[
             Dimension(name="country", type="categorical", description="Country"),
-            Dimension(
-                name="state", type="categorical", parent="country", description="State/Province"
-            ),
+            Dimension(name="state", type="categorical", parent="country", description="State/Province"),
             Dimension(name="city", type="categorical", parent="state", description="City"),
         ],
         metrics=[

@@ -36,9 +36,7 @@ class Metric(BaseModel):
     # Ratio parameters
     numerator: str | None = Field(None, description="Numerator measure for ratio")
     denominator: str | None = Field(None, description="Denominator measure for ratio")
-    offset_window: str | None = Field(
-        None, description="Time offset for denominator (e.g., '1 month')"
-    )
+    offset_window: str | None = Field(None, description="Time offset for denominator (e.g., '1 month')")
 
     # Derived metric parameters (uses expr field)
 
@@ -66,24 +64,16 @@ class Metric(BaseModel):
 
     # Common parameters
     filters: list[str] | None = Field(None, description="Optional WHERE clause filters")
-    fill_nulls_with: int | float | str | None = Field(
-        None, description="Default value when result is NULL"
-    )
+    fill_nulls_with: int | float | str | None = Field(None, description="Default value when result is NULL")
     description: str | None = Field(None, description="Human-readable description")
     label: str | None = Field(None, description="Display label")
 
     # Display formatting
-    format: str | None = Field(
-        None, description="Display format string (e.g., '$#,##0.00', '0.00%')"
-    )
-    value_format_name: str | None = Field(
-        None, description="Named format (e.g., 'usd', 'percent', 'decimal_2')"
-    )
+    format: str | None = Field(None, description="Display format string (e.g., '$#,##0.00', '0.00%')")
+    value_format_name: str | None = Field(None, description="Named format (e.g., 'usd', 'percent', 'decimal_2')")
 
     # Drill-down configuration
-    drill_fields: list[str] | None = Field(
-        None, description="Fields to show when drilling into this metric"
-    )
+    drill_fields: list[str] | None = Field(None, description="Fields to show when drilling into this metric")
 
     # Non-additivity
     non_additive_dimension: str | None = Field(
@@ -92,9 +82,7 @@ class Metric(BaseModel):
     )
 
     # Defaults
-    default_time_dimension: str | None = Field(
-        None, description="Default time dimension for this metric"
-    )
+    default_time_dimension: str | None = Field(None, description="Default time dimension for this metric")
     default_grain: Literal["hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Default time granularity for this metric"
     )
@@ -121,9 +109,7 @@ class Metric(BaseModel):
             SQL aggregation expression (e.g., "SUM(amount)", "COUNT(*)")
         """
         if not self.agg:
-            raise ValueError(
-                f"Cannot convert complex metric '{self.name}' to SQL - use type-specific logic"
-            )
+            raise ValueError(f"Cannot convert complex metric '{self.name}' to SQL - use type-specific logic")
 
         agg_func = self.agg.upper()
         if agg_func == "COUNT_DISTINCT":

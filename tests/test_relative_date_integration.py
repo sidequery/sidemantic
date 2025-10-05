@@ -83,16 +83,11 @@ def test_this_month_filter():
 
     layer.add_model(orders)
 
-    sql = layer.compile(
-        metrics=["orders.revenue"], filters=["orders_cte.created_at = 'this month'"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], filters=["orders_cte.created_at = 'this month'"])
 
     # Should expand to range (case insensitive since SQLGlot may uppercase)
     sql_upper = sql.upper()
-    assert (
-        "DATE_TRUNC('MONTH', CURRENT_DATE)" in sql_upper
-        or "DATE_TRUNC('month', CURRENT_DATE)" in sql
-    )
+    assert "DATE_TRUNC('MONTH', CURRENT_DATE)" in sql_upper or "DATE_TRUNC('month', CURRENT_DATE)" in sql
     assert "INTERVAL" in sql_upper and "MONTH" in sql_upper
 
 
@@ -115,9 +110,7 @@ def test_non_relative_date_unchanged():
     layer.add_model(orders)
 
     # Regular date literal
-    sql = layer.compile(
-        metrics=["orders.revenue"], filters=["orders_cte.created_at >= '2024-01-01'"]
-    )
+    sql = layer.compile(metrics=["orders.revenue"], filters=["orders_cte.created_at >= '2024-01-01'"])
 
     # Should remain unchanged
     assert "'2024-01-01'" in sql or "2024-01-01" in sql

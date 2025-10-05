@@ -18,9 +18,7 @@ def test_model_has_default_primary_key():
     model = Model(
         name="orders",
         table="orders",
-        relationships=[
-            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
-        ],
+        relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
         dimensions=[Dimension(name="status", type="categorical")],
         metrics=[],
     )
@@ -52,10 +50,7 @@ def test_metric_validation_simple_no_measure():
     with pytest.raises(Exception) as exc_info:
         Metric(name="bad_metric", type="invalid_type")
 
-    assert (
-        "literal_error" in str(exc_info.value).lower()
-        or "validation" in str(exc_info.value).lower()
-    )
+    assert "literal_error" in str(exc_info.value).lower() or "validation" in str(exc_info.value).lower()
 
 
 def test_metric_validation_measure_not_found():
@@ -194,17 +189,13 @@ def test_query_validation_invalid_granularity():
             name="orders",
             table="orders",
             primary_key="id",
-            dimensions=[
-                Dimension(name="order_date", type="time", granularity="day", sql="created_at")
-            ],
+            dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="created_at")],
             metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
 
     with pytest.raises(QueryValidationError) as exc_info:
-        sl.compile(
-            metrics=["orders.revenue"], dimensions=["orders.order_date__invalid_granularity"]
-        )
+        sl.compile(metrics=["orders.revenue"], dimensions=["orders.order_date__invalid_granularity"])
 
     assert "Invalid time granularity 'invalid_granularity'" in str(exc_info.value)
 

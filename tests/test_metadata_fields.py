@@ -5,9 +5,7 @@ from sidemantic import Dimension, Metric, Model, SemanticLayer
 
 def test_metric_format_fields():
     """Test format and value_format_name fields on Metric."""
-    metric = Metric(
-        name="revenue", agg="sum", sql="amount", format="$#,##0.00", value_format_name="usd"
-    )
+    metric = Metric(name="revenue", agg="sum", sql="amount", format="$#,##0.00", value_format_name="usd")
 
     assert metric.format == "$#,##0.00"
     assert metric.value_format_name == "usd"
@@ -15,9 +13,7 @@ def test_metric_format_fields():
 
 def test_dimension_format_fields():
     """Test format and value_format_name fields on Dimension."""
-    dimension = Dimension(
-        name="discount_rate", type="numeric", format="0.00%", value_format_name="percent"
-    )
+    dimension = Dimension(name="discount_rate", type="numeric", format="0.00%", value_format_name="percent")
 
     assert dimension.format == "0.00%"
     assert dimension.value_format_name == "percent"
@@ -39,9 +35,7 @@ def test_metric_drill_fields():
 def test_metric_non_additive_dimension():
     """Test non_additive_dimension for metrics that can't be summed."""
     # Average metrics shouldn't be summed across time
-    avg_metric = Metric(
-        name="avg_order_value", agg="avg", sql="order_amount", non_additive_dimension="order_date"
-    )
+    avg_metric = Metric(name="avg_order_value", agg="avg", sql="order_amount", non_additive_dimension="order_date")
 
     assert avg_metric.non_additive_dimension == "order_date"
 
@@ -116,9 +110,7 @@ def test_metadata_fields_in_model():
         primary_key="order_id",
         dimensions=[
             Dimension(name="status", type="categorical", label="Order Status"),
-            Dimension(
-                name="discount_pct", type="numeric", format="0.0%", value_format_name="percent"
-            ),
+            Dimension(name="discount_pct", type="numeric", format="0.0%", value_format_name="percent"),
         ],
         metrics=[
             Metric(

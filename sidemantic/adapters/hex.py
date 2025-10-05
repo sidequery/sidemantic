@@ -398,9 +398,7 @@ class HexAdapter(BaseAdapter):
             elif metric.type == "ratio":
                 # Ratio metrics - export as func_sql
                 if metric.numerator and metric.denominator:
-                    measure_def["func_sql"] = (
-                        f"{metric.numerator} / NULLIF({metric.denominator}, 0)"
-                    )
+                    measure_def["func_sql"] = f"{metric.numerator} / NULLIF({metric.denominator}, 0)"
             else:
                 # Standard aggregation
                 if metric.agg:

@@ -99,12 +99,7 @@ class MetricFlowAdapter(BaseAdapter):
         if not table:
             # Try to extract from ref()
             if "ref(" in model_ref:
-                ref_model = (
-                    model_ref.replace("ref('", "")
-                    .replace("')", "")
-                    .replace('ref("', "")
-                    .replace('")', "")
-                )
+                ref_model = model_ref.replace("ref('", "").replace("')", "").replace('ref("', "").replace('")', "")
                 table = ref_model
 
         # Parse entities to extract primary key and relationships
@@ -121,9 +116,7 @@ class MetricFlowAdapter(BaseAdapter):
                 primary_key = entity_expr
             elif entity_type == "foreign":
                 # Create a many_to_one relationship
-                relationships.append(
-                    Relationship(name=entity_name, type="many_to_one", foreign_key=entity_expr)
-                )
+                relationships.append(Relationship(name=entity_name, type="many_to_one", foreign_key=entity_expr))
 
         # Parse dimensions
         dimensions = []
@@ -402,9 +395,7 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Export metrics if present
         if resolved_metrics:
-            data["metrics"] = [
-                self._export_metric(metric, graph) for metric in resolved_metrics.values()
-            ]
+            data["metrics"] = [self._export_metric(metric, graph) for metric in resolved_metrics.values()]
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -38,19 +38,13 @@ class TableCalculation(BaseModel):
     )
 
     # Field reference for calculations
-    field: str | None = Field(
-        None, description="Field to calculate on (for percent_of_total, running_total, etc.)"
-    )
+    field: str | None = Field(None, description="Field to calculate on (for percent_of_total, running_total, etc.)")
 
     # Partition by for window calculations
-    partition_by: list[str] | None = Field(
-        None, description="Fields to partition by for window calculations"
-    )
+    partition_by: list[str] | None = Field(None, description="Fields to partition by for window calculations")
 
     # Order by for window calculations
-    order_by: list[str] | None = Field(
-        None, description="Fields to order by for ranked/sequential calculations"
-    )
+    order_by: list[str] | None = Field(None, description="Fields to order by for ranked/sequential calculations")
 
     # Moving average window
     window_size: int | None = Field(

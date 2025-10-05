@@ -54,7 +54,7 @@ class SQLGenerator:
 
         # Determine base model (first model in query)
         base_model_name = list(model_names)[0]
-        base_model = self.graph.get_model(base_model_name)
+        self.graph.get_model(base_model_name)
 
         # Build CTEs for each model
         ctes = []
@@ -88,9 +88,7 @@ class SQLGenerator:
 
             # Use alias for SELECT
             alias = f"{dim_name}__{gran}" if gran else dim_name
-            select_exprs.append(
-                exp.Alias(this=exp.Column(this=cte_col_name, table=table_alias), alias=alias)
-            )
+            select_exprs.append(exp.Alias(this=exp.Column(this=cte_col_name, table=table_alias), alias=alias))
 
         # Add metrics to SELECT
         for metric_ref in metrics:
@@ -117,9 +115,7 @@ class SQLGenerator:
         where_clause = None
         if filters:
             where_exprs = [sqlglot.parse_one(f, dialect=self.dialect) for f in filters]
-            where_clause = (
-                where_exprs[0] if len(where_exprs) == 1 else exp.And(expressions=where_exprs)
-            )
+            where_clause = where_exprs[0] if len(where_exprs) == 1 else exp.And(expressions=where_exprs)
 
         # Build GROUP BY clause (all dimensions)
         group_by_exprs = [exp.Literal.number(i + 1) for i in range(len(parsed_dims))]
@@ -127,9 +123,7 @@ class SQLGenerator:
         # Build ORDER BY clause
         order_by_exprs = None
         if order_by:
-            order_by_exprs = [
-                exp.Ordered(this=exp.Column(this=exp.Identifier(this=o))) for o in order_by
-            ]
+            order_by_exprs = [exp.Ordered(this=exp.Column(this=exp.Identifier(this=o))) for o in order_by]
 
         # Build main SELECT statement
         select_stmt = exp.Select(
@@ -264,9 +258,7 @@ class SQLGenerator:
         select_stmt = exp.Select(expressions=select_exprs, from_=from_clause)
 
         # Create CTE
-        return exp.CTE(
-            this=select_stmt, alias=exp.TableAlias(this=exp.Identifier(this=model_name + "_cte"))
-        )
+        return exp.CTE(this=select_stmt, alias=exp.TableAlias(this=exp.Identifier(this=model_name + "_cte")))
 
     def _build_joins(self, base_model: str, other_models: list[str]) -> list[exp.Join]:
         """Build JOIN clauses between models.

@@ -193,9 +193,7 @@ def main():
     # Example 10: LIMIT
     print("10. Top 2 regions by revenue (with LIMIT):")
     print("-" * 40)
-    sql10 = (
-        "SELECT orders.revenue, customers.region FROM orders ORDER BY orders.revenue DESC LIMIT 2"
-    )
+    sql10 = "SELECT orders.revenue, customers.region FROM orders ORDER BY orders.revenue DESC LIMIT 2"
     print(f"SQL: {sql10}")
     result10 = layer.sql(sql10)
     print(result10.fetchdf())

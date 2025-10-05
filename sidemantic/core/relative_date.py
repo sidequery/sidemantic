@@ -98,9 +98,7 @@ class RelativeDateRange:
                 return f"{column} >= {sql_expr}"
 
         # For "this/last month/quarter/year" - use range
-        if any(word in expr for word in ["month", "quarter", "year"]) and expr.startswith(
-            ("this ", "last ", "next ")
-        ):
+        if any(word in expr for word in ["month", "quarter", "year"]) and expr.startswith(("this ", "last ", "next ")):
             start_sql = cls.parse(expr)
             if start_sql:
                 # Determine the interval to add for end date

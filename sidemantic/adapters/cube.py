@@ -129,9 +129,7 @@ class CubeAdapter(BaseAdapter):
             join_name = join_def.get("name")
             if join_name:
                 # Cube joins are typically many_to_one from the cube to the joined table
-                relationships.append(
-                    Relationship(name=join_name, type="many_to_one", foreign_key=f"{join_name}_id")
-                )
+                relationships.append(Relationship(name=join_name, type="many_to_one", foreign_key=f"{join_name}_id"))
 
         # Parse pre-aggregations
         pre_aggregations = []
@@ -320,9 +318,7 @@ class CubeAdapter(BaseAdapter):
                 index_columns = index_def.get("columns", [])
 
                 # Strip CUBE prefix from column names
-                cleaned_columns = [
-                    col.replace("CUBE.", "").replace(f"{cube_name}.", "") for col in index_columns
-                ]
+                cleaned_columns = [col.replace("CUBE.", "").replace(f"{cube_name}.", "") for col in index_columns]
 
                 indexes.append(
                     Index(
@@ -506,9 +502,7 @@ class CubeAdapter(BaseAdapter):
             # Add drill fields if specified
             if measure.drill_fields and drill_members:
                 # Only include drill fields that exist in this model
-                valid_drill = [
-                    f for f in measure.drill_fields if f in [d.name for d in model.dimensions]
-                ]
+                valid_drill = [f for f in measure.drill_fields if f in [d.name for d in model.dimensions]]
                 if valid_drill:
                     measure_def["drill_members"] = valid_drill
             elif drill_members:

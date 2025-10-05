@@ -95,8 +95,7 @@ class SemanticLayer:
         errors = validate_metric(measure, self.graph)
         if errors:
             raise MetricValidationError(
-                f"Measure '{measure.name}' validation failed:\n"
-                + "\n".join(f"  - {e}" for e in errors)
+                f"Measure '{measure.name}' validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
             )
 
         self.graph.add_metric(measure)
@@ -182,14 +181,10 @@ class SemanticLayer:
         # Validate query
         errors = validate_query(metrics, dimensions, self.graph)
         if errors:
-            raise QueryValidationError(
-                "Query validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
-            )
+            raise QueryValidationError("Query validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
 
         # Determine if pre-aggregations should be used
-        use_preaggs = (
-            use_preaggregations if use_preaggregations is not None else self.use_preaggregations
-        )
+        use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
         generator = SQLGenerator(self.graph, dialect=dialect or self.dialect)
 

@@ -115,7 +115,6 @@ def test_conversion_metrics_use_correct_model():
         metrics=[
             Metric(
                 name="conversion_rate",
-                agg="sum",  # Still needs an aggregation
                 type="conversion",
                 entity="user_id",
                 base_event="signup",
@@ -155,7 +154,6 @@ def test_conversion_metrics_handle_table_backed_models():
         metrics=[
             Metric(
                 name="conversion_rate",
-                agg="sum",  # Still needs an aggregation
                 type="conversion",
                 entity="user_id",
                 base_event="signup",
@@ -190,8 +188,8 @@ def test_derived_metric_substitution_uses_word_boundaries():
         metrics=[
             Metric(name="revenue", agg="sum", sql="amount"),
             Metric(name="gross_revenue", agg="sum", sql="gross_amount"),
-            # Derived metric that references both (still needs agg even though it's derived)
-            Metric(name="net_revenue", agg="sum", type="derived", sql="orders.gross_revenue - orders.revenue"),
+            # Derived metric that references both (no agg needed for derived metrics)
+            Metric(name="net_revenue", type="derived", sql="orders.gross_revenue - orders.revenue"),
         ],
     )
 

@@ -64,7 +64,12 @@ def validate_model(model: "Model") -> list[str]:
             errors.append(f"Model '{model.name}': time dimension '{dim.name}' should have a granularity defined")
 
     # Check that measures have valid aggregation types
+    # Derived, ratio, cumulative, time_comparison, and conversion metrics don't need agg
     for measure in model.metrics:
+        # Skip validation for complex metric types that don't use agg
+        if measure.type in ["derived", "ratio", "cumulative", "time_comparison", "conversion"]:
+            continue
+
         if measure.agg not in ["sum", "count", "count_distinct", "avg", "min", "max", "median"]:
             errors.append(
                 f"Model '{model.name}': measure '{measure.name}' has invalid aggregation '{measure.agg}'. "

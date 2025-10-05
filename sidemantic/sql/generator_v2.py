@@ -131,11 +131,24 @@ class SQLGenerator:
 
         # Check if any metrics need window functions (cumulative or time_comparison)
         def metric_needs_window(m):
+            # Try to get metric - could be model.measure or just metric name
+            metric = None
             if "." in m:
-                return False
-            metric = self.graph.get_metric(m)
+                # model.measure format
+                model_name, measure_name = m.split(".")
+                model = self.graph.get_model(model_name)
+                if model:
+                    metric = model.get_metric(measure_name)
+            else:
+                # Just metric name - try graph-level metric
+                try:
+                    metric = self.graph.get_metric(m)
+                except KeyError:
+                    pass
+
             if not metric:
                 return False
+
             # Cumulative and time_comparison always need windows
             if metric.type in ("cumulative", "time_comparison"):
                 return True
@@ -701,10 +714,25 @@ class SQLGenerator:
                     else:
                         alias = measure_name
 
-                    if ungrouped:
+                    # Complex metric types (derived, ratio) can be built inline
+                    # Note: cumulative, time_comparison, conversion are handled via special query generators
+                    # and won't appear in this code path
+                    if measure.type in ["derived", "ratio"]:
+                        # Use complex metric builder
+                        metric_expr = self._build_metric_sql(measure)
+                        metric_expr = self._wrap_with_fill_nulls(metric_expr, measure)
+                        select_exprs.append(f"{metric_expr} AS {alias}")
+                    elif not measure.agg:
+                        # Complex types that need special handling (shouldn't reach here normally)
+                        raise ValueError(
+                            f"Metric '{measure.name}' with type '{measure.type}' cannot be queried directly. "
+                            f"Use generate() instead of _build_main_select() for this metric type."
+                        )
+                    elif ungrouped:
                         # For ungrouped queries, select raw column without aggregation
                         select_exprs.append(f"{model_name}_cte.{measure_name}_raw AS {alias}")
                     else:
+                        # Simple aggregation measures
                         # Check if this model needs symmetric aggregates
                         if symmetric_agg_needed.get(model_name, False):
                             # Use symmetric aggregates to prevent double-counting

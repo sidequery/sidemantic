@@ -41,6 +41,9 @@ website:
             href: GOTCHAS.md
       - text: "Examples"
         href: examples.qmd
+    right:
+      - icon: github
+        href: https://github.com/sidequery/sidemantic
 
 format:
   html:

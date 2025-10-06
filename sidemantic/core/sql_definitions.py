@@ -6,14 +6,14 @@ import yaml
 from sqlglot import exp
 
 from sidemantic.core.dialect import (
-    ModelDef,
-    DimensionDef,
-    RelationshipDef,
-    MetricDef,
-    SegmentDef,
-    PropertyEQ,
-    parse,
     PROPERTY_ALIASES,
+    DimensionDef,
+    MetricDef,
+    ModelDef,
+    PropertyEQ,
+    RelationshipDef,
+    SegmentDef,
+    parse,
 )
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -295,8 +295,9 @@ def _parse_metric_def(metric_def: MetricDef) -> Metric | None:
                 if value.strip().startswith("["):
                     try:
                         import ast
+
                         metric_data[field_name] = ast.literal_eval(value)
-                    except:
+                    except (ValueError, SyntaxError):
                         metric_data[field_name] = [value]
                 else:
                     metric_data[field_name] = [value]
@@ -306,7 +307,7 @@ def _parse_metric_def(metric_def: MetricDef) -> Metric | None:
             # Try to convert to number
             try:
                 metric_data[field_name] = float(value) if "." in str(value) else int(value)
-            except:
+            except (ValueError, TypeError):
                 metric_data[field_name] = value
         else:
             # Default: use value as-is

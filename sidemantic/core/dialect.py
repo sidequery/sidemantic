@@ -136,7 +136,6 @@ class SidemanticParser(parser.Parser):
         key = self._prev.text.lower()
 
         # Collect tokens until comma or closing paren, respecting parentheses depth
-        start = self._index
         depth = 0
         value_parts = []
 

@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.sql_definitions import parse_sql_definitions, parse_sql_file_with_frontmatter
 from sidemantic.core.semantic_layer import SemanticLayer
+from sidemantic.core.sql_definitions import parse_sql_definitions, parse_sql_file_with_frontmatter
 
 
 def test_parse_simple_metric():

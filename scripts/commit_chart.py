@@ -6,8 +6,8 @@
 # ///
 
 import subprocess
-from datetime import datetime, timedelta
 from collections import Counter
+from datetime import datetime, timedelta
 
 # Get commits from the past 4.5 days
 days_ago = datetime.now() - timedelta(days=4.5)
@@ -43,7 +43,7 @@ while current <= end_hour:
 max_count = max(commits_by_hour.values()) if commits_by_hour else 1
 bar_width = 50
 
-print(f"\nCommits by Hour (past 4.5 days)")
+print("\nCommits by Hour (past 4.5 days)")
 print(f"{'='*70}")
 
 for hour in all_hours:

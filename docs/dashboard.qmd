@@ -2,6 +2,7 @@
 title: "Interactive Demo"
 format:
   dashboard:
+    css: _includes/custom.css
     nav-buttons:
       - icon: github
         href: https://github.com/sidequery/sidemantic

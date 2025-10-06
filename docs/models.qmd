@@ -4,7 +4,13 @@ title: "Models"
 
 Models define your data sources and their structure.
 
+Sidemantic supports **three syntaxes**: YAML, SQL, and Python. Examples show all three.
+
 ## Basic Model
+
+::: {.panel-tabset}
+
+## YAML
 
 ```yaml
 models:
@@ -13,7 +19,17 @@ models:
     primary_key: order_id
 ```
 
-Or in Python:
+## SQL
+
+```sql
+MODEL (
+    name orders,
+    table orders,
+    primary_key order_id
+);
+```
+
+## Python
 
 ```python
 from sidemantic import Model
@@ -24,6 +40,8 @@ orders = Model(
     primary_key="order_id"
 )
 ```
+
+:::
 
 ## Properties
 
@@ -44,6 +62,10 @@ orders = Model(
 ## Dimensions
 
 Dimensions are attributes for grouping and filtering:
+
+::: {.panel-tabset}
+
+## YAML
 
 ```yaml
 models:
@@ -67,6 +89,57 @@ models:
         sql: total_amount
 ```
 
+## SQL
+
+```sql
+MODEL (name orders, table orders, primary_key order_id);
+
+DIMENSION (
+    name status,
+    type categorical,
+    sql status
+);
+
+DIMENSION (
+    name order_date,
+    type time,
+    sql created_at,
+    granularity day
+);
+
+DIMENSION (
+    name is_weekend,
+    type boolean,
+    sql DAYOFWEEK(order_date) IN (6, 7)
+);
+
+DIMENSION (
+    name amount,
+    type numeric,
+    sql total_amount
+);
+```
+
+## Python
+
+```python
+from sidemantic import Model, Dimension
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="order_id",
+    dimensions=[
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="created_at", granularity="day"),
+        Dimension(name="is_weekend", type="boolean", sql="DAYOFWEEK(order_date) IN (6, 7)"),
+        Dimension(name="amount", type="numeric", sql="total_amount"),
+    ]
+)
+```
+
+:::
+
 ### Dimension Types
 
 - **categorical**: Text/enum values (status, region, product)
@@ -88,6 +161,10 @@ Query with: `orders.order_date__month` to automatically roll up to month.
 ## Metrics (Model-Level)
 
 Model-level metrics define aggregations on a single model:
+
+::: {.panel-tabset}
+
+## YAML
 
 ```yaml
 models:
@@ -117,6 +194,68 @@ models:
         sql: "quantity * price"
 ```
 
+## SQL
+
+```sql
+MODEL (name orders, table orders, primary_key order_id);
+
+-- Simple aggregations
+METRIC (
+    name revenue,
+    agg sum,
+    sql amount
+);
+
+METRIC (
+    name order_count,
+    agg count
+);
+
+METRIC (
+    name avg_order_value,
+    agg avg,
+    sql amount
+);
+
+-- With filters
+METRIC (
+    name completed_revenue,
+    agg sum,
+    sql amount,
+    filters status = 'completed'
+);
+
+-- SQL expressions
+METRIC (
+    name total_value,
+    agg sum,
+    sql quantity * price
+);
+```
+
+## Python
+
+```python
+from sidemantic import Model, Metric
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="order_id",
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
+        Metric(name="avg_order_value", agg="avg", sql="amount"),
+        Metric(name="completed_revenue", agg="sum", sql="amount",
+               filters=["status = 'completed'"]),
+        Metric(name="total_value", agg="sum", sql="quantity * price"),
+    ]
+)
+```
+
+:::
+
+
 ### Aggregation Types
 
 - **sum**: Sum values
@@ -132,6 +271,10 @@ See [Metrics](metrics.qmd) for graph-level metrics (ratios, derived, cumulative)
 ## Relationships
 
 Define how models join to each other:
+
+::: {.panel-tabset}
+
+## YAML
 
 ```yaml
 models:
@@ -152,6 +295,54 @@ models:
         foreign_key: customer_id
 ```
 
+## SQL
+
+```sql
+-- orders.sql
+MODEL (name orders, table orders, primary_key order_id);
+
+RELATIONSHIP (
+    name customer,
+    type many_to_one,
+    foreign_key customer_id
+);
+
+-- customers.sql
+MODEL (name customers, table customers, primary_key customer_id);
+
+RELATIONSHIP (
+    name orders,
+    type one_to_many,
+    foreign_key customer_id
+);
+```
+
+## Python
+
+```python
+from sidemantic import Model, Relationship
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="order_id",
+    relationships=[
+        Relationship(name="customer", type="many_to_one", foreign_key="customer_id")
+    ]
+)
+
+customers = Model(
+    name="customers",
+    table="customers",
+    primary_key="customer_id",
+    relationships=[
+        Relationship(name="orders", type="one_to_many", foreign_key="customer_id")
+    ]
+)
+```
+
+:::
+
 See [Relationships](relationships.qmd) for details.
 
 ## Derived Models
@@ -171,6 +362,10 @@ models:
 ```
 
 ## Complete Example
+
+::: {.panel-tabset}
+
+## YAML
 
 ```yaml
 models:
@@ -226,6 +421,118 @@ models:
         agg: count
         filters: ["amount > 1000"]
 ```
+
+## SQL
+
+See `examples/sql/orders.sql` for the complete SQL version:
+
+```sql
+MODEL (
+    name orders,
+    table orders,
+    primary_key order_id,
+    description 'Customer orders'
+);
+
+-- Relationships
+RELATIONSHIP (
+    name customer,
+    type many_to_one,
+    foreign_key customer_id
+);
+
+-- Dimensions
+DIMENSION (
+    name status,
+    type categorical,
+    sql status
+);
+
+DIMENSION (
+    name order_date,
+    type time,
+    sql created_at,
+    granularity day
+);
+
+DIMENSION (
+    name customer_tier,
+    type categorical,
+    sql CASE WHEN total_amount > 1000 THEN 'premium' WHEN total_amount > 100 THEN 'standard' ELSE 'basic' END
+);
+
+-- Metrics
+METRIC (
+    name revenue,
+    agg sum,
+    sql amount,
+    description 'Total order revenue'
+);
+
+METRIC (
+    name order_count,
+    agg count,
+    description 'Number of orders'
+);
+
+METRIC (
+    name avg_order_value,
+    agg avg,
+    sql amount
+);
+
+METRIC (
+    name completed_revenue,
+    agg sum,
+    sql amount,
+    filters status = 'completed'
+);
+
+METRIC (
+    name large_orders,
+    agg count,
+    filters amount > 1000
+);
+```
+
+## Python
+
+```python
+from sidemantic import Model, Dimension, Relationship, Metric
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="order_id",
+    description="Customer orders",
+    relationships=[
+        Relationship(name="customer", type="many_to_one", foreign_key="customer_id")
+    ],
+    dimensions=[
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="created_at", granularity="day"),
+        Dimension(
+            name="customer_tier",
+            type="categorical",
+            sql="""CASE
+                WHEN total_amount > 1000 THEN 'premium'
+                WHEN total_amount > 100 THEN 'standard'
+                ELSE 'basic'
+            END"""
+        ),
+    ],
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount", description="Total order revenue"),
+        Metric(name="order_count", agg="count", description="Number of orders"),
+        Metric(name="avg_order_value", agg="avg", sql="amount"),
+        Metric(name="completed_revenue", agg="sum", sql="amount", filters=["status = 'completed'"]),
+        Metric(name="large_orders", agg="count", filters=["amount > 1000"]),
+    ]
+)
+```
+
+:::
+
 
 ## Best Practices
 

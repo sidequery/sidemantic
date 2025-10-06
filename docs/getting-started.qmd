@@ -24,7 +24,11 @@ This opens an interactive notebook where you can explore the semantic layer with
 
 ## Your First Semantic Layer
 
-### 1. Define Models (YAML)
+Sidemantic supports **three definition syntaxes**: YAML, SQL, and Python. Choose your preference!
+
+::: {.panel-tabset}
+
+## YAML
 
 Create `semantic_layer.yml`:
 
@@ -53,13 +57,77 @@ models:
         agg: count
 ```
 
-### 2. Query with SQL
+## SQL
+
+Create `semantic_layer.sql`:
+
+```sql
+MODEL (
+    name orders,
+    table orders,
+    primary_key order_id
+);
+
+DIMENSION (
+    name order_date,
+    type time,
+    sql order_date,
+    granularity day
+);
+
+DIMENSION (
+    name status,
+    type categorical,
+    sql status
+);
+
+METRIC (
+    name revenue,
+    agg sum,
+    sql amount
+);
+
+METRIC (
+    name order_count,
+    agg count
+);
+```
+
+## Python
+
+Create your semantic layer in code:
+
+```python
+from sidemantic import SemanticLayer, Model, Dimension, Metric
+
+layer = SemanticLayer()
+
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="order_id",
+    dimensions=[
+        Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        Dimension(name="status", type="categorical", sql="status"),
+    ],
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
+    ]
+)
+
+layer.add_model(orders)
+```
+
+:::
+
+### Query with SQL
 
 ```python
 from sidemantic import SemanticLayer
 
-# Load semantic layer
-layer = SemanticLayer.from_yaml("semantic_layer.yml")
+# Load from YAML or SQL file
+layer = SemanticLayer.from_yaml("semantic_layer.yml")  # or .sql
 
 # Query with SQL
 result = layer.sql("""
@@ -71,6 +139,10 @@ result = layer.sql("""
 df = result.fetchdf()
 print(df)
 ```
+
+::: {.callout-note}
+`from_yaml()` works with both `.yml` and `.sql` files!
+:::
 
 ### 3. Add Relationships
 

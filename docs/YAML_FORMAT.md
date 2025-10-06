@@ -5,7 +5,6 @@ Complete specification for Sidemantic YAML files.
 ## File Structure
 
 ```yaml
-# yaml-language-server: $schema=./sidemantic-schema.json
 
 models:
   - name: orders
@@ -327,7 +326,6 @@ parameters:
 ## Complete Example
 
 ```yaml
-# yaml-language-server: $schema=./sidemantic-schema.json
 
 models:
   - name: orders

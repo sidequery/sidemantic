@@ -1,19 +1,14 @@
 # Sidemantic
 
-A semantic layer with multi-format adapter support.
+SQL-first semantic layer for consistent metrics across your data stack. Define once, query anywhere.
 
 ## Features
 
-- **Simple API**: Define metrics once, use them everywhere
 - **SQL query interface**: Write familiar SQL that gets rewritten to use semantic layer
 - **Automatic joins**: Define relationships, joins happen automatically via graph traversal
-- **Multi-format adapters**: Import from 8 semantic layer formats
+- **Multi-format adapters**: Import from 8 semantic layer formats (Cube, dbt, Looker, Hex, and more)
 - **SQLGlot-powered**: Dialect-agnostic SQL generation with transpilation support
 - **Type-safe**: Pydantic models with validation
-
-## Database Support
-
-Currently **DuckDB only**. The library uses DuckDB for query execution and data processing. SQL generation supports multiple dialects (Snowflake, BigQuery, Postgres, etc.) via SQLGlot transpilation, but actual query execution requires DuckDB.
 
 ## Supported Formats
 
@@ -58,7 +53,6 @@ See the [Adapter Compatibility](#adapter-compatibility) section for feature supp
 
 ```yaml
 # semantic_layer.yml
-# yaml-language-server: $schema=./sidemantic-schema.json
 
 models:
   - name: orders

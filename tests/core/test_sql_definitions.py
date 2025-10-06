@@ -459,5 +459,150 @@ METRIC (
         temp_path.unlink(missing_ok=True)
 
 
+def test_parse_pure_sql_model():
+    """Test parsing complete model in pure SQL."""
+    sql_content = """
+MODEL (
+    name orders,
+    table orders,
+    primary_key order_id
+);
+
+DIMENSION (
+    name status,
+    type categorical,
+    sql status
+);
+
+DIMENSION (
+    name order_date,
+    type time,
+    sql created_at,
+    granularity day
+);
+
+RELATIONSHIP (
+    name customer,
+    type many_to_one,
+    foreign_key customer_id
+);
+
+METRIC (
+    name revenue,
+    agg sum,
+    sql amount
+);
+
+SEGMENT (
+    name completed,
+    expression status = 'completed'
+);
+"""
+
+    from sidemantic.core.sql_definitions import parse_sql_model
+
+    model = parse_sql_model(sql_content)
+
+    assert model is not None
+    assert model.name == "orders"
+    assert model.table == "orders"
+    assert model.primary_key == "order_id"
+
+    assert len(model.dimensions) == 2
+    assert model.dimensions[0].name == "status"
+    assert model.dimensions[1].name == "order_date"
+    assert model.dimensions[1].granularity == "day"
+
+    assert len(model.relationships) == 1
+    assert model.relationships[0].name == "customer"
+    assert model.relationships[0].type == "many_to_one"
+
+    assert len(model.metrics) == 1
+    assert model.metrics[0].name == "revenue"
+
+    assert len(model.segments) == 1
+    assert model.segments[0].name == "completed"
+
+
+def test_adapter_parse_pure_sql_file():
+    """Test SidemanticAdapter parsing pure SQL file without frontmatter."""
+    sql_content = """
+MODEL (
+    name orders,
+    table orders,
+    primary_key order_id
+);
+
+DIMENSION (
+    name status,
+    type categorical,
+    sql status
+);
+
+METRIC (
+    name revenue,
+    agg sum,
+    sql amount
+);
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
+        f.write(sql_content)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = SidemanticAdapter()
+        graph = adapter.parse(temp_path)
+
+        assert len(graph.models) == 1
+        assert "orders" in graph.models
+
+        orders = graph.models["orders"]
+        assert orders.table == "orders"
+        assert len(orders.dimensions) == 1
+        assert len(orders.metrics) == 1
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_semantic_layer_from_pure_sql():
+    """Test loading pure SQL file into SemanticLayer."""
+    sql_content = """
+MODEL (
+    name orders,
+    table orders,
+    primary_key order_id
+);
+
+DIMENSION (
+    name status,
+    type categorical,
+    sql status
+);
+
+METRIC (
+    name revenue,
+    agg sum,
+    sql amount
+);
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
+        f.write(sql_content)
+        temp_path = Path(f.name)
+
+    try:
+        sl = SemanticLayer.from_yaml(temp_path)
+
+        assert "orders" in sl.list_models()
+        model = sl.graph.models["orders"]
+        assert len(model.dimensions) == 1
+        assert len(model.metrics) == 1
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -5,8 +5,20 @@ from pathlib import Path
 import yaml
 from sqlglot import exp
 
-from sidemantic.core.dialect import MetricDef, SegmentDef, PropertyEQ, parse, PROPERTY_ALIASES
+from sidemantic.core.dialect import (
+    ModelDef,
+    DimensionDef,
+    RelationshipDef,
+    MetricDef,
+    SegmentDef,
+    PropertyEQ,
+    parse,
+    PROPERTY_ALIASES,
+)
+from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
+from sidemantic.core.model import Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 
 
@@ -39,6 +51,64 @@ def parse_sql_definitions(sql: str) -> tuple[list[Metric], list[Segment]]:
                 segments.append(segment)
 
     return metrics, segments
+
+
+def parse_sql_model(sql: str) -> Model | None:
+    """Parse SQL string containing a complete model definition.
+
+    Expects MODEL(), DIMENSION(), RELATIONSHIP(), METRIC(), and SEGMENT() statements.
+
+    Args:
+        sql: SQL string with model definition
+
+    Returns:
+        Model instance or None
+    """
+    model_def = None
+    dimensions = []
+    relationships = []
+    metrics = []
+    segments = []
+
+    try:
+        statements = parse(sql)
+    except Exception:
+        return None
+
+    for stmt in statements:
+        if isinstance(stmt, ModelDef):
+            model_def = _parse_model_def(stmt)
+        elif isinstance(stmt, DimensionDef):
+            dimension = _parse_dimension_def(stmt)
+            if dimension:
+                dimensions.append(dimension)
+        elif isinstance(stmt, RelationshipDef):
+            relationship = _parse_relationship_def(stmt)
+            if relationship:
+                relationships.append(relationship)
+        elif isinstance(stmt, MetricDef):
+            metric = _parse_metric_def(stmt)
+            if metric:
+                metrics.append(metric)
+        elif isinstance(stmt, SegmentDef):
+            segment = _parse_segment_def(stmt)
+            if segment:
+                segments.append(segment)
+
+    if not model_def:
+        return None
+
+    # Merge parsed definitions with model
+    if dimensions:
+        model_def.dimensions.extend(dimensions)
+    if relationships:
+        model_def.relationships.extend(relationships)
+    if metrics:
+        model_def.metrics.extend(metrics)
+    if segments:
+        model_def.segments.extend(segments)
+
+    return model_def
 
 
 def parse_sql_file_with_frontmatter(path: Path) -> tuple[dict, list[Metric], list[Segment]]:
@@ -80,6 +150,114 @@ def parse_sql_file_with_frontmatter(path: Path) -> tuple[dict, list[Metric], lis
 
     metrics, segments = parse_sql_definitions(sql_body)
     return frontmatter, metrics, segments
+
+
+def _parse_model_def(model_def: ModelDef) -> Model | None:
+    """Convert ModelDef expression to Model instance.
+
+    Args:
+        model_def: Parsed MODEL() expression
+
+    Returns:
+        Model instance or None
+    """
+    props = _extract_properties(model_def)
+
+    # Get field names from Model
+    model_fields = set(Model.model_fields.keys())
+
+    model_data = {}
+
+    for prop_name, value in props.items():
+        # Resolve aliases
+        field_name = PROPERTY_ALIASES.get(prop_name, prop_name)
+
+        # Skip if not a valid field
+        if field_name not in model_fields:
+            continue
+
+        # Default: use value as-is
+        model_data[field_name] = value
+
+    # Validate required fields
+    if "name" not in model_data:
+        return None
+
+    # Initialize empty lists for child objects (will be populated separately)
+    model_data.setdefault("dimensions", [])
+    model_data.setdefault("relationships", [])
+    model_data.setdefault("metrics", [])
+    model_data.setdefault("segments", [])
+
+    return Model(**model_data)
+
+
+def _parse_dimension_def(dimension_def: DimensionDef) -> Dimension | None:
+    """Convert DimensionDef expression to Dimension instance.
+
+    Args:
+        dimension_def: Parsed DIMENSION() expression
+
+    Returns:
+        Dimension instance or None
+    """
+    props = _extract_properties(dimension_def)
+
+    # Get field names from Dimension model
+    dimension_fields = set(Dimension.model_fields.keys())
+
+    dimension_data = {}
+
+    for prop_name, value in props.items():
+        # Resolve aliases
+        field_name = PROPERTY_ALIASES.get(prop_name, prop_name)
+
+        # Skip if not a valid field
+        if field_name not in dimension_fields:
+            continue
+
+        # Default: use value as-is
+        dimension_data[field_name] = value
+
+    # Validate required fields
+    if "name" not in dimension_data or "type" not in dimension_data:
+        return None
+
+    return Dimension(**dimension_data)
+
+
+def _parse_relationship_def(relationship_def: RelationshipDef) -> Relationship | None:
+    """Convert RelationshipDef expression to Relationship instance.
+
+    Args:
+        relationship_def: Parsed RELATIONSHIP() expression
+
+    Returns:
+        Relationship instance or None
+    """
+    props = _extract_properties(relationship_def)
+
+    # Get field names from Relationship model
+    relationship_fields = set(Relationship.model_fields.keys())
+
+    relationship_data = {}
+
+    for prop_name, value in props.items():
+        # Resolve aliases
+        field_name = PROPERTY_ALIASES.get(prop_name, prop_name)
+
+        # Skip if not a valid field
+        if field_name not in relationship_fields:
+            continue
+
+        # Default: use value as-is
+        relationship_data[field_name] = value
+
+    # Validate required fields
+    if "name" not in relationship_data or "type" not in relationship_data:
+        return None
+
+    return Relationship(**relationship_data)
 
 
 def _parse_metric_def(metric_def: MetricDef) -> Metric | None:

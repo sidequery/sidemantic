@@ -12,6 +12,45 @@ PROPERTY_ALIASES = {
 }
 
 
+class ModelDef(exp.Expression):
+    """MODEL() definition statement.
+
+    Syntax:
+        MODEL (
+            name orders,
+            table orders,
+            primary_key order_id
+        );
+    """
+    arg_types = {"expressions": True}
+
+
+class DimensionDef(exp.Expression):
+    """DIMENSION() definition statement.
+
+    Syntax:
+        DIMENSION (
+            name status,
+            type categorical,
+            sql status
+        );
+    """
+    arg_types = {"expressions": True}
+
+
+class RelationshipDef(exp.Expression):
+    """RELATIONSHIP() definition statement.
+
+    Syntax:
+        RELATIONSHIP (
+            name customer,
+            type many_to_one,
+            foreign_key customer_id
+        );
+    """
+    arg_types = {"expressions": True}
+
+
 class MetricDef(exp.Expression):
     """METRIC() definition statement.
 
@@ -46,17 +85,20 @@ class PropertyEQ(exp.Expression):
 
 
 class SidemanticParser(parser.Parser):
-    """Extended parser with METRIC and SEGMENT support."""
+    """Extended parser with MODEL, DIMENSION, RELATIONSHIP, METRIC, and SEGMENT support."""
 
     FUNCTIONS = {
         **parser.Parser.FUNCTIONS,
+        "MODEL": lambda args: ModelDef(expressions=args),
+        "DIMENSION": lambda args: DimensionDef(expressions=args),
+        "RELATIONSHIP": lambda args: RelationshipDef(expressions=args),
         "METRIC": lambda args: MetricDef(expressions=args),
         "SEGMENT": lambda args: SegmentDef(expressions=args),
     }
 
     def _parse_statement(self) -> exp.Expression | None:
-        """Override to handle METRIC and SEGMENT as statements."""
-        if self._match_texts(("METRIC", "SEGMENT")):
+        """Override to handle MODEL, DIMENSION, RELATIONSHIP, METRIC, and SEGMENT as statements."""
+        if self._match_texts(("MODEL", "DIMENSION", "RELATIONSHIP", "METRIC", "SEGMENT")):
             func_name = self._prev.text.upper()
             self._match(tokens.TokenType.L_PAREN)
 
@@ -72,9 +114,16 @@ class SidemanticParser(parser.Parser):
                     self._match(tokens.TokenType.R_PAREN)
                     break
 
-            if func_name == "METRIC":
+            # Return appropriate definition type
+            if func_name == "MODEL":
+                return ModelDef(expressions=properties)
+            elif func_name == "DIMENSION":
+                return DimensionDef(expressions=properties)
+            elif func_name == "RELATIONSHIP":
+                return RelationshipDef(expressions=properties)
+            elif func_name == "METRIC":
                 return MetricDef(expressions=properties)
-            else:
+            else:  # SEGMENT
                 return SegmentDef(expressions=properties)
 
         return super()._parse_statement()
@@ -141,12 +190,18 @@ class SidemanticParser(parser.Parser):
 
     @staticmethod
     def _get_property_names() -> set[str]:
-        """Derive property names from Metric and Segment models."""
+        """Derive property names from all Sidemantic models."""
+        from sidemantic.core.dimension import Dimension
         from sidemantic.core.metric import Metric
+        from sidemantic.core.model import Model
+        from sidemantic.core.relationship import Relationship
         from sidemantic.core.segment import Segment
 
-        # Get all field names from both models
+        # Get all field names from all models
         names = set()
+        names.update(field.upper() for field in Model.model_fields.keys())
+        names.update(field.upper() for field in Dimension.model_fields.keys())
+        names.update(field.upper() for field in Relationship.model_fields.keys())
         names.update(field.upper() for field in Metric.model_fields.keys())
         names.update(field.upper() for field in Segment.model_fields.keys())
 

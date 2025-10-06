@@ -11,7 +11,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.sql_definitions import parse_sql_definitions, parse_sql_file_with_frontmatter
+from sidemantic.core.sql_definitions import parse_sql_definitions, parse_sql_file_with_frontmatter, parse_sql_model
 
 
 class SidemanticAdapter(BaseAdapter):
@@ -50,23 +50,34 @@ class SidemanticAdapter(BaseAdapter):
         graph = SemanticGraph()
         source_path = Path(source)
 
-        # Handle .sql files with YAML frontmatter
+        # Handle .sql files
         if source_path.suffix == ".sql":
-            frontmatter, sql_metrics, sql_segments = parse_sql_file_with_frontmatter(source_path)
+            # Read file content to check if it's pure SQL or has frontmatter
+            with open(source_path) as f:
+                content = f.read()
 
-            # Parse frontmatter as model definition if present
-            if frontmatter:
-                model = self._parse_model(frontmatter)
+            # Check if file contains MODEL() statement (pure SQL)
+            if "MODEL" in content.upper() and "MODEL (" in content.upper():
+                model = parse_sql_model(content)
                 if model:
-                    # Add SQL-defined metrics/segments to the model
-                    model.metrics.extend(sql_metrics)
-                    model.segments.extend(sql_segments)
                     graph.add_model(model)
             else:
-                # No frontmatter - treat as graph-level metrics/segments
-                for metric in sql_metrics:
-                    graph.add_metric(metric)
-                # Segments need to be attached to models, skip if no model
+                # YAML frontmatter + SQL metrics/segments
+                frontmatter, sql_metrics, sql_segments = parse_sql_file_with_frontmatter(source_path)
+
+                # Parse frontmatter as model definition if present
+                if frontmatter:
+                    model = self._parse_model(frontmatter)
+                    if model:
+                        # Add SQL-defined metrics/segments to the model
+                        model.metrics.extend(sql_metrics)
+                        model.segments.extend(sql_segments)
+                        graph.add_model(model)
+                else:
+                    # No frontmatter - treat as graph-level metrics/segments
+                    for metric in sql_metrics:
+                        graph.add_metric(metric)
+                    # Segments need to be attached to models, skip if no model
 
             return graph
 

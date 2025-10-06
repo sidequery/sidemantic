@@ -496,6 +496,137 @@ mo.vstack([
 mo.md("---")
 ```
 
+## SQL Editor
+
+Try editing the SQL model definition and querying it!
+
+```python {.marimo}
+# SQL Editor - Left: SQL model definitions, Right: SQL query editor
+sql_model_def = mo.ui.code_editor(
+    value="""MODEL (
+    name orders,
+    table orders,
+    primary_key id
+);
+
+DIMENSION (
+    name status,
+    type categorical,
+    sql status
+);
+
+DIMENSION (
+    name order_date,
+    type time,
+    sql order_date,
+    granularity day
+);
+
+DIMENSION (
+    name region,
+    type categorical,
+    sql region
+);
+
+DIMENSION (
+    name category,
+    type categorical,
+    sql category
+);
+
+RELATIONSHIP (
+    name customers,
+    type many_to_one,
+    foreign_key customer_id
+);
+
+METRIC (
+    name revenue,
+    agg sum,
+    sql amount
+);
+
+METRIC (
+    name order_count,
+    agg count
+);
+
+METRIC (
+    name avg_order_value,
+    agg avg,
+    sql amount
+);
+
+SEGMENT (
+    name completed,
+    expression status = 'completed'
+);
+""",
+    language="sql",
+    label="Model Definition (SQL)"
+)
+
+sql_query_input = mo.ui.text_area(
+    value="""SELECT revenue, order_count, status
+FROM orders
+WHERE status = 'completed'""",
+    label="SQL Query",
+    rows=10,
+    full_width=True
+)
+
+mo.hstack([
+    mo.vstack([
+        mo.md("**Edit Model Definition:**"),
+        sql_model_def,
+    ], widths=[1]),
+    mo.vstack([
+        mo.md("**Write SQL Query:**"),
+        sql_query_input,
+    ], widths=[1]),
+], widths=[1, 1])
+```
+
+```python {.marimo}
+# Parse SQL definitions and execute query
+from sidemantic.core.sql_definitions import parse_sql_model
+from sidemantic.core.semantic_layer import SemanticLayer
+
+try:
+    # Parse the SQL model definition
+    parsed_model = parse_sql_model(sql_model_def.value)
+
+    if parsed_model:
+        # Create semantic layer with the parsed model
+        sql_editor_layer = SemanticLayer()
+        sql_editor_layer.add_model(parsed_model)
+
+        # Execute the SQL query
+        result = sql_editor_layer.sql(sql_query_input.value, conn=conn)
+        rows = result.fetchall()
+        cols = [d[0] for d in result.description]
+
+        # Convert to list of dicts for table display
+        result_data = [dict(zip(cols, row)) for row in rows]
+
+        # Show compiled SQL and results
+        mo.vstack([
+            mo.md("**Compiled SQL:**"),
+            mo.md(f"```sql\n{result.compiled_sql}\n```"),
+            mo.md("**Results:**"),
+            mo.ui.table(result_data) if result_data else mo.md("_No results_"),
+        ])
+    else:
+        mo.md("⚠️ **Error:** Could not parse SQL model definition")
+
+except Exception as e:
+    mo.md(f"⚠️ **Error:** {str(e)}")
+```
+
+```python {.marimo}
+mo.md("---")
+```
+
 ## Semantic Model Definition
 
 ### Python Definition
@@ -560,6 +691,44 @@ graph.add_model(customers_model)
 graph.add_model(region_map_model)
 
 generator = SQLGenerator(graph, dialect="duckdb")
+```
+
+### SQL Definition
+
+```sql
+-- orders model
+MODEL (name orders, table orders, primary_key id);
+
+DIMENSION (name status, type categorical, sql status);
+DIMENSION (name order_date, type time, sql order_date, granularity day);
+DIMENSION (name region, type categorical, sql region);
+DIMENSION (name category, type categorical, sql category);
+
+RELATIONSHIP (name customers, type many_to_one, foreign_key customer_id);
+
+METRIC (name revenue, agg sum, sql amount);
+METRIC (name order_count, agg count);
+METRIC (name avg_order_value, agg avg, sql amount);
+METRIC (name cost, agg sum, sql cost);
+METRIC (name profit, agg sum, sql profit);
+METRIC (name returns, agg count, filters status = 'returned');
+METRIC (name return_rate, type ratio, numerator orders.returns, denominator orders.order_count);
+
+SEGMENT (name completed, expression status = 'completed');
+SEGMENT (name high_value, expression amount >= 300);
+
+-- customers model
+MODEL (name customers, table customers, primary_key id);
+
+DIMENSION (name tier, type categorical, sql tier);
+DIMENSION (name region, type categorical, sql region);
+
+RELATIONSHIP (name region_map, type many_to_one, foreign_key region, primary_key region);
+
+-- region_map model
+MODEL (name region_map, table region_map, primary_key region);
+
+DIMENSION (name region_group, type categorical, sql region_group);
 ```
 
 ### YAML Definition

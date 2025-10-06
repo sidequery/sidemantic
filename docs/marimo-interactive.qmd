@@ -7,7 +7,7 @@ pyproject: |
   requires-python = ">=3.11"
   dependencies = [
       "marimo>=0.16.5",
-      "sidemantic==0.2.9",
+      "sidemantic==0.2.10",
       "duckdb>=1.0",
       "sqlglot>=25",
       "pydantic>=2",
@@ -21,7 +21,7 @@ import micropip
 try:
     import sidemantic  # type: ignore
 except ModuleNotFoundError:
-    await micropip.install(["sidemantic==0.2.9"], deps=False)
+    await micropip.install(["sidemantic==0.2.10"], deps=False)
     import sidemantic  # type: ignore
 ```
 

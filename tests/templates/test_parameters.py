@@ -6,7 +6,7 @@ import pytest
 from sidemantic.core.model import Dimension, Metric, Model
 from sidemantic.core.parameter import Parameter, ParameterSet
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator_v2 import SQLGenerator
+from sidemantic.sql.generator import SQLGenerator
 from tests.utils import fetch_rows
 
 

@@ -177,7 +177,7 @@ def test_complex_rewrite_performance(performance_layer):
 
 def test_sql_generation_performance(performance_layer):
     """Measure performance of SQL generation."""
-    from sidemantic.sql.generator_v2 import SQLGenerator
+    from sidemantic.sql.generator import SQLGenerator
 
     generator = SQLGenerator(performance_layer.graph, dialect="duckdb")
 
@@ -200,7 +200,7 @@ def test_sql_generation_performance(performance_layer):
 
 def test_multi_join_generation_performance(performance_layer):
     """Measure performance of SQL generation with multiple joins."""
-    from sidemantic.sql.generator_v2 import SQLGenerator
+    from sidemantic.sql.generator import SQLGenerator
 
     generator = SQLGenerator(performance_layer.graph, dialect="duckdb")
 
@@ -245,7 +245,7 @@ def test_end_to_end_execution_performance(performance_layer):
 
 def test_filter_parsing_performance(performance_layer):
     """Measure performance of filter parsing and transformation."""
-    from sidemantic.sql.generator_v2 import SQLGenerator
+    from sidemantic.sql.generator import SQLGenerator
 
     generator = SQLGenerator(performance_layer.graph, dialect="duckdb")
 
@@ -307,7 +307,7 @@ def test_query_rewriter_warm_vs_cold(performance_layer):
 
 def test_parameter_substitution_performance(performance_layer):
     """Measure performance with parameter substitution."""
-    from sidemantic.sql.generator_v2 import SQLGenerator
+    from sidemantic.sql.generator import SQLGenerator
 
     generator = SQLGenerator(performance_layer.graph, dialect="duckdb")
 

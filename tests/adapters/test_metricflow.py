@@ -75,7 +75,7 @@ def test_metricflow_adapter_join_discovery():
     assert customer_rel.type == "many_to_one"
 
     # Verify that queries can now build join paths
-    from sidemantic.sql.generator_v2 import SQLGenerator
+    from sidemantic.sql.generator import SQLGenerator
 
     generator = SQLGenerator(graph)
 

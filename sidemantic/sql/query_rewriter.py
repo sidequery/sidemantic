@@ -7,7 +7,7 @@ import sqlglot
 from sqlglot import exp
 
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator_v2 import SQLGenerator
+from sidemantic.sql.generator import SQLGenerator
 
 
 class QueryRewriter:

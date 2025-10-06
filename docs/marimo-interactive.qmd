@@ -133,7 +133,7 @@ Metric = import_module("sidemantic.core.metric").Metric
 Relationship = import_module("sidemantic.core.relationship").Relationship
 Segment = import_module("sidemantic.core.segment").Segment
 SemanticGraph = import_module("sidemantic.core.semantic_graph").SemanticGraph
-SQLGenerator = import_module("sidemantic.sql.generator_v2").SQLGenerator
+SQLGenerator = import_module("sidemantic.sql.generator").SQLGenerator
 
 graph = SemanticGraph()
 
@@ -507,7 +507,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator_v2 import SQLGenerator
+from sidemantic.sql.generator import SQLGenerator
 
 graph = SemanticGraph()
 

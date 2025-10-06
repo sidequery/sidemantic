@@ -26,7 +26,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator_v2 import SQLGenerator
+from sidemantic.sql.generator import SQLGenerator
 
 # Set page config
 st.set_page_config(page_title="Sidemantic Dashboard", layout="wide", initial_sidebar_state="expanded")

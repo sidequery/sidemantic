@@ -22,7 +22,7 @@ from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.table_calculation import TableCalculation
-from sidemantic.sql.generator_v2 import SQLGenerator
+from sidemantic.sql.generator import SQLGenerator
 from sidemantic.sql.table_calc_processor import TableCalculationProcessor
 
 

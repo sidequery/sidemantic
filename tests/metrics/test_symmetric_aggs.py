@@ -5,7 +5,7 @@ import duckdb
 from sidemantic.core.model import Dimension, Metric, Model, Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
-from sidemantic.sql.generator_v2 import SQLGenerator
+from sidemantic.sql.generator import SQLGenerator
 from tests.utils import fetch_rows
 
 

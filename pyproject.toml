@@ -1,6 +1,6 @@
 [project]
 name = "sidemantic"
-version = "0.2.11"
+version = "0.2.12"
 description = "SQLGlot-based semantic layer with multi-format adapter support"
 readme = "README.md"
 license = {file = "LICENSE"}

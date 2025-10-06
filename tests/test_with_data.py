@@ -153,9 +153,7 @@ def test_multiple_metrics(test_db, semantic_layer):
         metrics=["orders.revenue", "orders.order_count", "orders.avg_order_value"], dimensions=["orders.status"]
     )
     records = fetch_dicts(result)
-    results_dict = {
-        row["status"]: (row["revenue"], row["order_count"], row["avg_order_value"]) for row in records
-    }
+    results_dict = {row["status"]: (row["revenue"], row["order_count"], row["avg_order_value"]) for row in records}
 
     # Completed: 650 total, 3 orders, avg 216.67
     assert results_dict["completed"][0] == 650.00

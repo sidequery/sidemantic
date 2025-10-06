@@ -329,11 +329,7 @@ def test_week_to_month_granularity_wrong_results(layer):
     assert "sales_preagg_weekly" not in sql, "Should not use weekly pre-agg table"
 
     # Should fall back to regular query and get correct results
-    result = layer.query(
-        metrics=["sales.revenue"],
-        dimensions=["sales.sale_date__month"],
-        use_preaggregations=True
-    )
+    result = layer.query(metrics=["sales.revenue"], dimensions=["sales.sale_date__month"], use_preaggregations=True)
     records = fetch_dicts(result)
 
     def month_key(value):

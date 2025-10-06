@@ -97,9 +97,7 @@ def test_derived_metric_by_dimension(layer, orders_db):
     )
     layer.add_metric(revenue_per_order)
 
-    result = layer.query(
-        metrics=["revenue_per_order"], dimensions=["orders.created_at__month"]
-    )
+    result = layer.query(metrics=["revenue_per_order"], dimensions=["orders.created_at__month"])
     records = fetch_dicts(result)
 
     # January: (100+200)/2 = 150
@@ -182,9 +180,7 @@ def test_all_metrics_together(layer, orders_db):
     )
     layer.add_metric(revenue_per_order)
 
-    result = layer.query(
-        metrics=["orders.revenue", "orders.order_count", "revenue_per_order"]
-    )
+    result = layer.query(metrics=["orders.revenue", "orders.order_count", "revenue_per_order"])
     columns = fetch_columns(result)
     records = fetch_dicts(result)
 

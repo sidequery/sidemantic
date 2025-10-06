@@ -442,12 +442,15 @@ See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
 - ✅ Native YAML format
 - ✅ Adapters for 8 semantic layer formats (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni)
 - ✅ DuckDB integration
-- ✅ Pre-aggregations with automatic query routing (disabled by default)
-- ✅ Predicate pushdown with SQLGlot parsing (always enabled)
+- ✅ Pre-aggregations with automatic query routing
+- ✅ Predicate pushdown with SQLGlot parsing
 
-**Cloud Features (Coming Soon):**
+## Roadmap
+
 - Pre-aggregation materialization and refresh scheduling
-- Additional database connectors beyond DuckDB
+- Additional database engine support (Postgres, MySQL, Snowflake, BigQuery, etc.)
+- Postgres wire protocol proxy for broader client compatibility
+- REST API endpoints for HTTP-based queries
 
 ## Examples
 

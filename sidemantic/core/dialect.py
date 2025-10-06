@@ -22,6 +22,7 @@ class ModelDef(exp.Expression):
             primary_key order_id
         );
     """
+
     arg_types = {"expressions": True}
 
 
@@ -35,6 +36,7 @@ class DimensionDef(exp.Expression):
             sql status
         );
     """
+
     arg_types = {"expressions": True}
 
 
@@ -48,6 +50,7 @@ class RelationshipDef(exp.Expression):
             foreign_key customer_id
         );
     """
+
     arg_types = {"expressions": True}
 
 
@@ -61,6 +64,7 @@ class MetricDef(exp.Expression):
             description 'Total revenue'
         );
     """
+
     arg_types = {"expressions": True}
 
 
@@ -73,6 +77,7 @@ class SegmentDef(exp.Expression):
             expression status = 'active'
         );
     """
+
     arg_types = {"expressions": True}
 
 
@@ -81,6 +86,7 @@ class PropertyEQ(exp.Expression):
 
     Represents: name value or name 'string value'
     """
+
     arg_types = {"this": True, "expression": True}
 
 
@@ -143,40 +149,40 @@ class SidemanticParser(parser.Parser):
             if self._curr.token_type == tokens.TokenType.L_PAREN:
                 depth += 1
                 # Don't add space before opening paren if last token was identifier/function name
-                if value_parts and value_parts[-1] not in ('(', ',', '='):
-                    value_parts.append('(')
+                if value_parts and value_parts[-1] not in ("(", ",", "="):
+                    value_parts.append("(")
                 else:
-                    value_parts.append('(')
+                    value_parts.append("(")
                 self._advance()
             elif self._curr.token_type == tokens.TokenType.R_PAREN:
                 if depth == 0:
                     break
                 depth -= 1
-                value_parts.append(')')
+                value_parts.append(")")
                 self._advance()
             elif self._curr.token_type == tokens.TokenType.COMMA and depth == 0:
                 break
             elif self._curr.token_type == tokens.TokenType.STRING:
                 # Preserve string quotes
-                if value_parts and value_parts[-1] not in ('(', ',', '=', ' '):
-                    value_parts.append(' ')
+                if value_parts and value_parts[-1] not in ("(", ",", "=", " "):
+                    value_parts.append(" ")
                 value_parts.append(f"'{self._curr.text}'")
                 self._advance()
             else:
                 # Add space before token if needed
                 curr_text = self._curr.text
-                needs_space_before = value_parts and value_parts[-1] not in ('(', ',', ' ')
-                needs_space_after_prev = value_parts and value_parts[-1] in (' ',)  # Space already added
+                needs_space_before = value_parts and value_parts[-1] not in ("(", ",", " ")
+                needs_space_after_prev = value_parts and value_parts[-1] in (" ",)  # Space already added
 
                 if needs_space_before and not needs_space_after_prev:
-                    if curr_text not in (')', ','):
-                        value_parts.append(' ')
+                    if curr_text not in (")", ","):
+                        value_parts.append(" ")
 
                 value_parts.append(curr_text)
 
                 # Add space after =
-                if curr_text == '=':
-                    value_parts.append(' ')
+                if curr_text == "=":
+                    value_parts.append(" ")
 
                 self._advance()
 

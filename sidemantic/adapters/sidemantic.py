@@ -1,4 +1,4 @@
-"""Sidemantic native YAML adapter."""
+"""Sidemantic native YAML adapter with SQL syntax support."""
 
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.core.sql_definitions import parse_sql_definitions, parse_sql_file_with_frontmatter
 
 
 class SidemanticAdapter(BaseAdapter):
@@ -33,10 +34,15 @@ class SidemanticAdapter(BaseAdapter):
     """
 
     def parse(self, source: str | Path) -> SemanticGraph:
-        """Parse Sidemantic YAML into semantic graph.
+        """Parse Sidemantic YAML or SQL into semantic graph.
+
+        Supports:
+        - Pure YAML files (.yml, .yaml)
+        - SQL files with YAML frontmatter (.sql)
+        - YAML files with embedded SQL blocks (sql_metrics, sql_segments fields)
 
         Args:
-            source: Path to YAML file
+            source: Path to YAML or SQL file
 
         Returns:
             Semantic graph with imported models and metrics
@@ -44,6 +50,27 @@ class SidemanticAdapter(BaseAdapter):
         graph = SemanticGraph()
         source_path = Path(source)
 
+        # Handle .sql files with YAML frontmatter
+        if source_path.suffix == ".sql":
+            frontmatter, sql_metrics, sql_segments = parse_sql_file_with_frontmatter(source_path)
+
+            # Parse frontmatter as model definition if present
+            if frontmatter:
+                model = self._parse_model(frontmatter)
+                if model:
+                    # Add SQL-defined metrics/segments to the model
+                    model.metrics.extend(sql_metrics)
+                    model.segments.extend(sql_segments)
+                    graph.add_model(model)
+            else:
+                # No frontmatter - treat as graph-level metrics/segments
+                for metric in sql_metrics:
+                    graph.add_metric(metric)
+                # Segments need to be attached to models, skip if no model
+
+            return graph
+
+        # Handle YAML files
         with open(source_path) as f:
             data = yaml.safe_load(f)
 
@@ -61,6 +88,17 @@ class SidemanticAdapter(BaseAdapter):
             metric = self._parse_metric(metric_def)
             if metric:
                 graph.add_metric(metric)
+
+        # Parse SQL-defined metrics/segments if present
+        if "sql_metrics" in data:
+            sql_metrics, _ = parse_sql_definitions(data["sql_metrics"])
+            for metric in sql_metrics:
+                graph.add_metric(metric)
+
+        if "sql_segments" in data:
+            _, sql_segments = parse_sql_definitions(data["sql_segments"])
+            # Note: segments need to be attached to models
+            # For now, skip graph-level segments
 
         return graph
 
@@ -154,6 +192,15 @@ class SidemanticAdapter(BaseAdapter):
                 public=seg_def.get("public", True),
             )
             segments.append(segment)
+
+        # Parse SQL-defined metrics/segments if present
+        if "sql_metrics" in model_def:
+            sql_metrics, _ = parse_sql_definitions(model_def["sql_metrics"])
+            measures.extend(sql_metrics)
+
+        if "sql_segments" in model_def:
+            _, sql_segments = parse_sql_definitions(model_def["sql_segments"])
+            segments.extend(sql_segments)
 
         return Model(
             name=name,

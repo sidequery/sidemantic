@@ -568,6 +568,122 @@ mo.vstack([
 ], justify="start")
 ```
 
+# SQL Editor {orientation="columns"}
+
+## Column {width="50%"}
+
+### Model Definition (SQL)
+
+```sql
+MODEL (
+    name orders,
+    table orders,
+    primary_key id
+);
+
+DIMENSION (
+    name status,
+    type categorical,
+    sql status
+);
+
+DIMENSION (
+    name order_date,
+    type time,
+    sql order_date,
+    granularity day
+);
+
+DIMENSION (
+    name region,
+    type categorical,
+    sql region
+);
+
+DIMENSION (
+    name category,
+    type categorical,
+    sql category
+);
+
+RELATIONSHIP (
+    name customers,
+    type many_to_one,
+    foreign_key customer_id
+);
+
+METRIC (
+    name revenue,
+    agg sum,
+    sql amount
+);
+
+METRIC (
+    name order_count,
+    agg count
+);
+
+METRIC (
+    name avg_order_value,
+    agg avg,
+    sql amount
+);
+
+SEGMENT (
+    name completed,
+    expression status = 'completed'
+);
+```
+
+## Column {width="50%"}
+
+```python {.marimo}
+# SQL Query Editor
+sql_query_input = mo.ui.text_area(
+    value="""SELECT revenue, order_count, status
+FROM orders
+WHERE status = 'completed'""",
+    label="SQL Query",
+    rows=10,
+    full_width=True
+)
+
+run_button = mo.ui.button(label="Run Query")
+
+mo.vstack([
+    sql_query_input,
+    run_button,
+])
+```
+
+```python {.marimo}
+# Execute query (reactive to button and query changes)
+SemanticLayer = import_module("sidemantic.core.semantic_layer").SemanticLayer
+
+# Create semantic layer from existing graph
+sql_layer = SemanticLayer()
+sql_layer.graph = graph
+
+# Reference button to create dependency
+_ = run_button.value
+
+try:
+    result = sql_layer.sql(sql_query_input.value, conn=conn)
+    compiled_sql = result.compiled_sql
+    rows = result.fetchall()
+    cols = [d[0] for d in result.description]
+    result_data = [dict(zip(cols, row)) for row in rows]
+
+    mo.vstack([
+        mo.md("**Compiled SQL:**"),
+        mo.md(f"```sql\n{compiled_sql}\n```"),
+        mo.md(f"**Results ({len(result_data)} rows):**"),
+        mo.ui.table(result_data) if result_data else mo.md("_No results_"),
+    ])
+except Exception as e:
+    mo.md(f"⚠️ **Error:** {str(e)}")
+```
+
 # Model Definition {orientation="columns"}
 
 ## Column {.tabset}

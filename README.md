@@ -12,16 +12,16 @@ SQL-first semantic layer for consistent metrics across your data stack. Unapolog
 
 ## Supported Formats
 
-Sidemantic can import semantic models from:
+Import semantic models from:
 
-- **Sidemantic** (native) - Full feature support
-- **Cube** - Import with segment support
-- **MetricFlow** (dbt) - Import with metric types
-- **LookML** (Looker) - Import with Liquid templating
-- **Hex** - Import data models
-- **Rill** - Import metrics views
-- **Superset** (Apache) - Import datasets
-- **Omni** - Import views and models
+- **Sidemantic** (native)
+- **Cube** - Headless BI and semantic layer
+- **MetricFlow** - dbt's semantic layer
+- **LookML** - Looker's modeling language
+- **Hex** - Data workspace and notebooks
+- **Rill** - Metrics layer and BI
+- **Superset** - Apache's open source BI
+- **Omni** - BI and semantic layer
 
 See the [Adapter Compatibility](#adapter-compatibility) section for feature support details.
 

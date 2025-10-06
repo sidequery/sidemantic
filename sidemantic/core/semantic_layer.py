@@ -10,6 +10,8 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator_v2 import SQLGenerator
+
+
 class SemanticLayer:
     """Main semantic layer interface.
 
@@ -304,7 +306,7 @@ class SemanticLayer:
         return get_catalog_metadata(self.graph, schema=schema)
 
     @classmethod
-    def from_yaml(cls, path: str | Path, connection: str = "duckdb:///:memory:") -> "SemanticLayer":
+    def from_yaml(cls, path: str | Path, connection: str = "duckdb:///:memory:") -> SemanticLayer:
         """Load semantic layer from native YAML file.
 
         Args:

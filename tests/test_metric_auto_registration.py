@@ -1,7 +1,5 @@
 """Tests for metric auto-registration."""
 
-import pytest
-
 from sidemantic import Dimension, Metric, Model, SemanticLayer
 
 
@@ -25,7 +23,7 @@ def test_standalone_metric_auto_registers_with_auto_register_param():
     layer = SemanticLayer(auto_register=True)
 
     # First create the model that the metric depends on
-    orders = Model(
+    Model(
         name="orders",
         table="orders_table",
         primary_key="id",
@@ -37,7 +35,7 @@ def test_standalone_metric_auto_registers_with_auto_register_param():
     )
 
     # Now create a standalone ratio metric - should auto-register
-    margin_pct = Metric(
+    Metric(
         name="margin_pct",
         type="ratio",
         numerator="orders.profit",
@@ -52,7 +50,7 @@ def test_model_metrics_dont_auto_register():
     """Test that model-level metrics don't auto-register at graph level."""
     with SemanticLayer() as layer:
         # Create model with metrics - simple aggregations should not auto-register at graph level
-        orders = Model(
+        Model(
             name="orders",
             table="orders_table",
             primary_key="id",
@@ -88,7 +86,7 @@ def test_no_auto_register_without_context():
 def test_time_comparison_metrics_auto_register():
     """Test that time_comparison metrics in models auto-register at graph level."""
     with SemanticLayer() as layer:
-        orders = Model(
+        Model(
             name="orders",
             table="orders_table",
             primary_key="id",
@@ -106,7 +104,7 @@ def test_time_comparison_metrics_auto_register():
 def test_conversion_metrics_auto_register():
     """Test that conversion metrics in models auto-register at graph level."""
     with SemanticLayer() as layer:
-        events = Model(
+        Model(
             name="events",
             table="events_table",
             primary_key="id",

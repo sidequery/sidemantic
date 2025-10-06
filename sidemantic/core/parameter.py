@@ -7,7 +7,6 @@ Parameters will be removed in a future version.
 """
 
 import warnings
-
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -71,7 +70,7 @@ class Parameter(BaseModel):
             return f"'{value}'"
         elif self.type == "number":
             # Validate that value is actually numeric to prevent SQL injection
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 return str(value)
             elif isinstance(value, str):
                 # Try to parse as float to ensure it's valid

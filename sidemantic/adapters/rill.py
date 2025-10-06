@@ -178,7 +178,7 @@ class RillAdapter:
             parsed = sqlglot.parse_one(expression, read="duckdb")
 
             # Check if this is a simple aggregation function
-            if isinstance(parsed, (exp.Sum, exp.Avg, exp.Count, exp.Min, exp.Max)):
+            if isinstance(parsed, exp.Sum | exp.Avg | exp.Count | exp.Min | exp.Max):
                 # Map sqlglot aggregation types to Sidemantic agg types
                 if isinstance(parsed, exp.Sum):
                     agg_type = "sum"

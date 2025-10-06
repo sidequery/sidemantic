@@ -1,7 +1,8 @@
 """Test that time_comparison metrics defined in model.metrics are auto-registered at graph level."""
 
-import duckdb
 import math
+
+import duckdb
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric

@@ -278,7 +278,7 @@ class QueryRewriter:
         where = select.args["where"].this
 
         # Handle compound conditions (AND/OR)
-        if isinstance(where, (exp.And, exp.Or)):
+        if isinstance(where, exp.And | exp.Or):
             return self._extract_compound_filters(where)
 
         # Single condition
@@ -298,7 +298,7 @@ class QueryRewriter:
         if isinstance(condition, exp.And):
             # Split AND into separate filters
             for expr in [condition.left, condition.right]:
-                if isinstance(expr, (exp.And, exp.Or)):
+                if isinstance(expr, exp.And | exp.Or):
                     filters.extend(self._extract_compound_filters(expr))
                 else:
                     filters.append(expr.sql(dialect=self.dialect))

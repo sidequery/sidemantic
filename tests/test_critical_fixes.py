@@ -1,7 +1,6 @@
 """Tests for critical production bug fixes."""
 
 import duckdb
-import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from tests.utils import df_rows
@@ -158,8 +157,8 @@ def test_duplicate_column_names_get_prefixed():
         final_select = sql[final_select_start:]
         # Get lines with aliases in the final SELECT
         lines = final_select.split("\n")
-        select_lines = [l for l in lines if " AS " in l and not l.strip().startswith("--")]
-        aliases = [l.split(" AS ")[-1].strip().rstrip(",") for l in select_lines]
+        select_lines = [line for line in lines if " AS " in line and not line.strip().startswith("--")]
+        aliases = [line.split(" AS ")[-1].strip().rstrip(",") for line in select_lines]
 
         # Check for duplicates in final SELECT
         assert len(aliases) == len(set(aliases)), f"Duplicate column aliases in final SELECT: {aliases}"

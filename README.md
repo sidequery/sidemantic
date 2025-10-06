@@ -1,6 +1,8 @@
 # Sidemantic
 
-SQL-first semantic layer for consistent metrics across your data stack. Unapologetically supports DuckDB and DuckDB *only* at the moment.
+SQL-first semantic layer for consistent metrics across your data stack. Import from Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, and Omni. Unapologetically supports DuckDB and DuckDB *only* at the moment.
+
+[Documentation](https://sidemantic.com) • [GitHub](https://github.com/sidequery/sidemantic)
 
 ## Features
 
@@ -9,35 +11,8 @@ SQL-first semantic layer for consistent metrics across your data stack. Unapolog
 - **Multi-format adapters**: Import from 8 semantic layer formats (Cube, dbt, Looker, Hex, and more)
 - **SQLGlot-powered**: Dialect-agnostic SQL generation with transpilation support
 - **Type-safe**: Pydantic models with validation
-
-## Supported Formats
-
-Import semantic models from:
-
-- **Sidemantic** (native)
-- **Cube** - Headless BI and semantic layer
-- **MetricFlow** - dbt's semantic layer
-- **LookML** - Looker's modeling language
-- **Hex** - Data workspace and notebooks
-- **Rill** - Metrics layer and BI
-- **Superset** - Apache's open source BI
-- **Omni** - BI and semantic layer
-
-See the [Adapter Compatibility](#adapter-compatibility) section for feature support details.
-
-### Metric Types
-
-- **Aggregations**: sum, avg, count, count_distinct, min, max
-- **Ratios**: revenue / order_count
-- **Derived formulas**: (revenue - cost) / revenue
-- **Cumulative**: running totals, rolling windows
-- **Time comparisons**: YoY, MoM, WoW with LAG window functions
-- **Conversion funnels**: signup → purchase rate
-
-### Additional Features
-
-- **Pre-aggregations**: Automatic query routing to materialized rollups (disabled by default)
-- **Predicate pushdown**: Filters pushed into CTEs for improved performance (always enabled)
+- **Pre-aggregations**: Automatic query routing to materialized rollups
+- **Predicate pushdown**: Filters pushed into CTEs for improved performance
 - **Segments**: Reusable named filters with template placeholders
 - **Metric-level filters**: Auto-applied filters for consistent business logic
 - **Jinja2 templating**: Conditional logic and loops in SQL
@@ -46,6 +21,30 @@ See the [Adapter Compatibility](#adapter-compatibility) section for feature supp
 - **Relative dates**: Natural language like "last 7 days", "this month"
 - **Ungrouped queries**: Raw row access without aggregation
 - **Multi-hop joins**: Automatic 2+ hop join discovery
+
+## Metric Types
+
+- **Aggregations**: sum, avg, count, count_distinct, min, max
+- **Ratios**: revenue / order_count
+- **Derived formulas**: (revenue - cost) / revenue
+- **Cumulative**: running totals, rolling windows
+- **Time comparisons**: YoY, MoM, WoW with LAG window functions
+- **Conversion funnels**: signup → purchase rate
+
+## Supported Formats
+
+Import semantic models from:
+
+- **Sidemantic** (native)
+- **Cube**
+- **MetricFlow** (dbt)
+- **LookML** (Looker)
+- **Hex**
+- **Rill**
+- **Superset** (Apache)
+- **Omni**
+
+See the [Adapter Compatibility](#adapter-compatibility) section for detailed feature support.
 
 ## Quick Start
 

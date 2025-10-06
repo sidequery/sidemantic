@@ -12,7 +12,7 @@ pyproject: |
   requires-python = ">=3.11"
   dependencies = [
       "marimo>=0.16.5",
-      "sidemantic==0.2.7",
+      "sidemantic==0.2.8",
       "duckdb>=1.0",
       "sqlglot>=25",
       "pydantic>=2",
@@ -34,9 +34,7 @@ import micropip
 try:
     import sidemantic  # type: ignore
 except ModuleNotFoundError:
-    # Install typing-extensions first to avoid version conflicts
-    await micropip.install(["typing-extensions>=4.14.0"], keep_going=True)
-    await micropip.install(["sidemantic==0.2.7"], deps=False)
+    await micropip.install(["sidemantic==0.2.8"], deps=False)
     import sidemantic  # type: ignore
 ```
 

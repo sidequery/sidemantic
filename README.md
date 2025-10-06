@@ -48,43 +48,78 @@ See the [Adapter Compatibility](#adapter-compatibility) section for detailed fea
 
 ## Quick Start
 
-### Define your semantic layer (YAML)
+Sidemantic supports **three definition syntaxes**: YAML, SQL, and Python. Choose your preference!
+
+### Define your semantic layer
+
+**YAML:**
 
 ```yaml
 # semantic_layer.yml
-
 models:
   - name: orders
     table: orders
     primary_key: order_id
-
     relationships:
       - name: customer
         type: many_to_one
         foreign_key: customer_id
-
     dimensions:
       - name: status
         type: categorical
         sql: status
-
       - name: order_date
         type: time
         sql: created_at
         granularity: day
-
     metrics:
       - name: revenue
         agg: sum
         sql: amount
-
       - name: order_count
         agg: count
 
-# Graph-level metrics (dependencies auto-detected!)
 metrics:
   - name: total_revenue
     sql: orders.revenue
+```
+
+**SQL:**
+
+```sql
+-- semantic_layer.sql
+MODEL (name orders, table orders, primary_key order_id);
+
+RELATIONSHIP (name customer, type many_to_one, foreign_key customer_id);
+
+DIMENSION (name status, type categorical, sql status);
+DIMENSION (name order_date, type time, sql created_at, granularity day);
+
+METRIC (name revenue, agg sum, sql amount);
+METRIC (name order_count, agg count);
+```
+
+**Python:**
+
+```python
+from sidemantic import SemanticLayer, Model, Dimension, Metric, Relationship
+
+layer = SemanticLayer()
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="order_id",
+    relationships=[Relationship(name="customer", type="many_to_one", foreign_key="customer_id")],
+    dimensions=[
+        Dimension(name="status", type="categorical", sql="status"),
+        Dimension(name="order_date", type="time", sql="created_at", granularity="day"),
+    ],
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
+    ]
+)
+layer.add_model(orders)
 ```
 
 ### Query with SQL

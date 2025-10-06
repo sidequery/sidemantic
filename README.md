@@ -1,6 +1,6 @@
 # Sidemantic
 
-SQL-first semantic layer for consistent metrics across your data stack. Define once, query anywhere.
+SQL-first semantic layer for consistent metrics across your data stack. Unapologetically supports DuckDB and DuckDB *only* at the moment.
 
 ## Features
 

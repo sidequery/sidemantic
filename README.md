@@ -420,30 +420,27 @@ While the SQL generation layer uses SQLGlot and can transpile to other dialects,
 
 ## Status
 
-See [docs/STATUS.md](docs/STATUS.md) for detailed implementation status.
-
-**Core Features (Complete):**
-- ✅ SQL query interface with automatic rewriting
-- ✅ Core semantic layer with SQLGlot generation
-- ✅ Relationship-based automatic joins (many_to_one, one_to_many, one_to_one)
-- ✅ Multi-hop join discovery
-- ✅ Derived metrics with automatic dependency detection
-- ✅ Cumulative metrics (running totals, rolling windows)
-- ✅ Conversion funnel metrics
-- ✅ Time comparison metrics (YoY, MoM, WoW)
-- ✅ Segments (reusable filters)
-- ✅ Metric-level filters
-- ✅ Jinja2 templating
-- ✅ Model and metric inheritance
-- ✅ Hierarchies with drill-down API
-- ✅ Relative date parsing
-- ✅ Ungrouped queries (raw row access)
-- ✅ Metadata fields (format, drill_fields, non-additivity, defaults)
-- ✅ Native YAML format
-- ✅ Adapters for 8 semantic layer formats (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni)
-- ✅ DuckDB integration
-- ✅ Pre-aggregations with automatic query routing
-- ✅ Predicate pushdown with SQLGlot parsing
+- [x] SQL query interface with automatic rewriting
+- [x] Core semantic layer with SQLGlot generation
+- [x] Relationship-based automatic joins (many_to_one, one_to_many, one_to_one)
+- [x] Multi-hop join discovery
+- [x] Derived metrics with automatic dependency detection
+- [x] Cumulative metrics (running totals, rolling windows)
+- [x] Conversion funnel metrics
+- [x] Time comparison metrics (YoY, MoM, WoW)
+- [x] Segments (reusable filters)
+- [x] Metric-level filters
+- [x] Jinja2 templating
+- [x] Model and metric inheritance
+- [x] Hierarchies with drill-down API
+- [x] Relative date parsing
+- [x] Ungrouped queries (raw row access)
+- [x] Metadata fields (format, drill_fields, non-additivity, defaults)
+- [x] Native YAML format
+- [x] Adapters for 8 semantic layer formats (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni)
+- [x] DuckDB integration
+- [x] Pre-aggregations with automatic query routing
+- [x] Predicate pushdown with SQLGlot parsing
 
 ## Roadmap
 

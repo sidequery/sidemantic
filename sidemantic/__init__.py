@@ -1,6 +1,6 @@
 """Sidemantic: SQLGlot-based semantic layer with multi-format adapter support."""
 
-__version__ = "0.2.14"
+__version__ = "0.2.15"
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric

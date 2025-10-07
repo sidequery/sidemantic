@@ -1,0 +1,41 @@
+cubes:
+  - name: customers
+    sql_table: customers
+    description: Customer information and signup tracking (Cube format)
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: email
+        sql: email
+        type: string
+
+      - name: region
+        sql: region
+        type: string
+
+      - name: signup_date
+        sql: signup_date
+        type: time
+
+    measures:
+      - name: customer_count
+        type: count
+        description: Total number of customers
+
+      - name: avg_customers_per_region
+        type: count_distinct
+        sql: id
+        description: Unique customers per region
+
+    segments:
+      - name: north_region
+        sql: "${CUBE}.region = 'North'"
+        description: Customers in North region

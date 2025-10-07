@@ -1,0 +1,65 @@
+id: products
+base_sql_table: products
+description: Product catalog with pricing and categories
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: name
+    type: string
+    description: Product name
+
+  - id: category
+    type: string
+    description: Product category (Electronics, Furniture, Office Supplies)
+
+  - id: price
+    type: number
+    description: Product selling price
+
+  - id: cost
+    type: number
+    description: Product cost (for margin calculation)
+
+  - id: is_electronics
+    type: boolean
+    expr_sql: category = 'Electronics'
+    description: Whether product is in Electronics category
+
+  - id: is_high_value
+    type: boolean
+    expr_sql: price >= 200
+    description: Products priced at $200 or more
+
+  - id: profit_margin
+    type: number
+    expr_sql: (price - cost) / NULLIF(price, 0)
+    description: Profit margin as percentage
+
+measures:
+  - id: product_count
+    func: count
+    description: Total number of products
+
+  - id: avg_price
+    func: avg
+    of: price
+    description: Average product price
+
+  - id: total_catalog_value
+    func: sum
+    of: price
+    description: Total value of all products in catalog
+
+  - id: avg_profit_margin
+    func: avg
+    of: profit_margin
+    description: Average profit margin across products
+
+  - id: electronics_count
+    func: count
+    filters:
+      - is_electronics
+    description: Number of electronics products

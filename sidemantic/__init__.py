@@ -1,6 +1,6 @@
 """Sidemantic: Universal semantic layer with multi-format adapter support."""
 
-__version__ = "0.2.18"
+__version__ = "0.2.19"
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric

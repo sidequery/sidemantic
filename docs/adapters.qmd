@@ -49,7 +49,42 @@ This table shows which Sidemantic features are supported when importing from oth
 
 ## Importing into Sidemantic
 
-### From Cube
+### Quick Start: Auto-Discovery
+
+The easiest way to load semantic models from any format:
+
+```python
+from sidemantic import SemanticLayer, load_from_directory
+
+# Point at a directory with mixed formats
+layer = SemanticLayer(connection="duckdb:///data.db")
+load_from_directory(layer, "semantic_models/")
+
+# That's it! Automatically:
+# - Discovers all .lkml, .yml, .yaml files
+# - Detects format (Cube, Hex, LookML, MetricFlow, etc.)
+# - Parses with the right adapter
+# - Infers relationships from foreign key naming
+# - Builds the join graph
+```
+
+#### How Relationship Inference Works
+
+`load_from_directory()` automatically infers relationships based on foreign key naming conventions:
+
+- `orders.customer_id` → `customers.id` (many-to-one)
+- `line_items.order_id` → `orders.id` (many-to-one)
+- `products.category_id` → `categories.id` (many-to-one)
+
+It tries both singular and plural forms, so `customer_id` will match both `customer` and `customers` tables.
+
+Reverse relationships (one-to-many) are automatically added to the target model.
+
+### Manual Adapter Usage
+
+For more control over the import process, you can use adapters directly:
+
+#### From Cube
 
 Read Cube.js semantic models into Sidemantic:
 

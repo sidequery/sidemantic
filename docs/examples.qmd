@@ -578,3 +578,28 @@ layer.sql("""
     FROM orders
 """)
 ```
+
+## Multi-Format Loading
+
+Load semantic models from different formats (Cube, LookML, Hex, MetricFlow, etc.) all at once:
+
+```python
+from sidemantic import SemanticLayer, load_from_directory
+
+layer = SemanticLayer(connection="duckdb:///data.db")
+load_from_directory(layer, "semantic_models/")
+
+# Query across all formats seamlessly
+result = layer.query(
+    metrics=["orders.revenue", "products.avg_price"],
+    dimensions=["customers.region", "products.category"]
+)
+```
+
+`load_from_directory()` automatically:
+- Discovers all `.lkml`, `.yml`, `.yaml` files
+- Detects the format and parses with the right adapter
+- Infers relationships from foreign key naming (`customer_id` → `customers`)
+- Builds the join graph
+
+See the [multi_format_demo](https://github.com/sidequery/sidemantic/tree/main/examples/multi_format_demo) for a complete working example with Cube, Hex, and LookML.

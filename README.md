@@ -46,6 +46,61 @@ Import semantic models from:
 
 See the [Adapter Compatibility](#adapter-compatibility) section for detailed feature support.
 
+## CLI
+
+Sidemantic includes powerful CLI tools for working with your semantic layer:
+
+### Sidequery Workbench
+
+Interactive workbench for exploring and querying your semantic layer:
+
+```bash
+# Try the demo (no setup required!)
+uvx sidemantic workbench --demo
+
+# Or with your own models
+sidemantic workbench semantic_models/
+```
+
+Features:
+- **Tree browser** with hover tooltips showing full metadata
+- **Tabbed SQL editor** with syntax highlighting and 4 example queries
+- **Table and chart views** with automatic axis selection for time-series
+- **Chart types**: Bar, Line, and Scatter plots
+- **Keyboard shortcuts**: Ctrl+R to run, Ctrl+C to quit
+- **Demo mode**: Try it instantly with `--demo` flag (includes sample data from multiple formats)
+
+### Query Command
+
+Execute SQL queries from the command line and get CSV output:
+
+```bash
+# Query to stdout
+sidemantic query examples/multi_format_demo/ --sql "SELECT orders.total_revenue, customers.region FROM orders"
+
+# Query to file
+sidemantic query examples/multi_format_demo/ -q "SELECT orders.total_revenue FROM orders" -o results.csv
+
+# Pipe to other tools
+sidemantic query examples/multi_format_demo/ -q "SELECT * FROM orders" | head -5
+```
+
+Perfect for:
+- Shell scripts and automation
+- Piping to other tools (jq, csvkit, etc.)
+- Generating reports
+- CI/CD workflows
+
+### Other Commands
+
+```bash
+# Validate all definitions
+sidemantic validate semantic_models/
+
+# Quick info
+sidemantic info semantic_models/
+```
+
 ## Quick Start
 
 Sidemantic supports **three definition syntaxes**: YAML, SQL, and Python. Choose your preference!
@@ -189,10 +244,38 @@ Add to your YAML files:
 # yaml-language-server: $schema=./sidemantic-schema.json
 ```
 
-## Adapters
+## Loading From Multiple Formats
+
+The easiest way to load semantic models from any format:
 
 ```python
-from sidemantic.adapters import CubeAdapter, MetricFlowAdapter, SidemanticAdapter
+from sidemantic import SemanticLayer, load_from_directory
+
+# Point at a directory with mixed formats (Cube, LookML, Hex, MetricFlow, etc.)
+layer = SemanticLayer(connection="duckdb:///data.db")
+load_from_directory(layer, "semantic_models/")
+
+# That's it! Automatically:
+# - Discovers all semantic layer files
+# - Detects format (Cube, Hex, LookML, MetricFlow, Sidemantic)
+# - Parses with the right adapter
+# - Infers relationships from foreign key naming (customer_id -> customers)
+# - Ready to query!
+
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["customers.region"]
+)
+```
+
+### Manual Adapter Usage
+
+For more control, you can use adapters directly:
+
+```python
+from sidemantic.adapters.cube import CubeAdapter
+from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sidemantic.adapters.sidemantic import SidemanticAdapter
 
 # From Cube
 cube_adapter = CubeAdapter()

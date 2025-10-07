@@ -512,7 +512,12 @@ class SQLGenerator:
         # First, add all dimensions from this model (needed for filters/joins)
         for dimension in model.dimensions:
             if dimension.name not in columns_added:
-                select_cols.append(f"{dimension.sql_expr} AS {dimension.name}")
+                # For time dimensions with granularity, apply DATE_TRUNC
+                if dimension.type == "time" and dimension.granularity:
+                    dim_sql = dimension.with_granularity(dimension.granularity)
+                else:
+                    dim_sql = dimension.sql_expr
+                select_cols.append(f"{dim_sql} AS {dimension.name}")
                 columns_added.add(dimension.name)
 
         # Then, add time dimensions with specific granularities

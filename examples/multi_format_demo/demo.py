@@ -18,11 +18,13 @@ from sidemantic import SemanticLayer, load_from_directory
 BASE_DIR = Path(__file__).parent
 DB_PATH = f"duckdb:///{BASE_DIR / 'data' / 'ecommerce.db'}"
 
+
 def print_section(title):
     """Print a formatted section header."""
     print("\n" + "=" * 80)
     print(f"  {title}")
     print("=" * 80 + "\n")
+
 
 def main():
     print_section("Multi-Format Semantic Layer Demo")
@@ -75,10 +77,7 @@ def main():
     )
     """)
 
-    result = layer.query(
-        metrics=["orders.total_revenue", "orders.order_count"],
-        dimensions=["customers.region"]
-    )
+    result = layer.query(metrics=["orders.total_revenue", "orders.order_count"], dimensions=["customers.region"])
 
     print("\nResult:")
     df = result.fetchdf()
@@ -149,7 +148,7 @@ def main():
     result = layer.query(
         metrics=["orders.total_revenue", "orders.order_count"],
         dimensions=["customers.region"],
-        segments=["customers.north_region"]
+        segments=["customers.north_region"],
     )
 
     print("\nResult:")
@@ -173,6 +172,7 @@ def main():
     print("  ✓ Automatic joins between models from different formats")
     print("  ✓ Using segments defined in one format with metrics from another")
     print()
+
 
 if __name__ == "__main__":
     main()

@@ -117,15 +117,17 @@ for day in range(0, 365, 2):  # Every other day
         minute = random.randint(0, 59)
         created_at = order_date.replace(hour=hour, minute=minute)
 
-        orders.append((
-            order_id,
-            customer_id,
-            product_id,
-            quantity,
-            amount,
-            status,
-            created_at,
-        ))
+        orders.append(
+            (
+                order_id,
+                customer_id,
+                product_id,
+                quantity,
+                amount,
+                status,
+                created_at,
+            )
+        )
         order_id += 1
 
 con.executemany(

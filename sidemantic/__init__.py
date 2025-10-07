@@ -1,4 +1,4 @@
-"""Sidemantic: Universal semantic layer with multi-format adapter support."""
+"""Sidemantic: Universal semantic layer - import from Cube, dbt, LookML, Hex, and more."""
 
 __version__ = "0.2.19"
 

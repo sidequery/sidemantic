@@ -50,7 +50,7 @@ class MetricFlowAdapter(BaseAdapter):
         self._resolve_relationship_names(graph)
 
         # Rebuild adjacency graph after resolving relationship names
-        graph._build_adjacency()
+        graph.build_adjacency()
 
         return graph
 

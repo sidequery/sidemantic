@@ -29,6 +29,7 @@ __all__ = [
     "Relationship",
     "Segment",
     "SemanticLayer",
+    "load_from_directory",
 ]
 
 
@@ -37,4 +38,8 @@ def __getattr__(name):  # Lazy import to avoid importing duckdb on package impor
         from sidemantic.core.semantic_layer import SemanticLayer  # type: ignore
 
         return SemanticLayer
+    if name == "load_from_directory":
+        from sidemantic.loaders import load_from_directory  # type: ignore
+
+        return load_from_directory
     raise AttributeError(name)

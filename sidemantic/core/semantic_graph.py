@@ -55,7 +55,7 @@ class SemanticGraph:
                     if metric.name not in self.metrics:
                         self.metrics[metric.name] = metric
 
-        self._build_adjacency()
+        self.build_adjacency()
 
     def add_metric(self, measure: Metric) -> None:
         """Add a measure to the graph.
@@ -170,11 +170,16 @@ class SemanticGraph:
             raise KeyError(f"Measure {name} not found")
         return self.metrics[name]
 
-    def _build_adjacency(self) -> None:
+    def build_adjacency(self) -> None:
         """Build adjacency list for join path discovery.
 
         Creates edges between models using join relationships.
+
+        This is automatically called when models are added, but can be called
+        manually if relationships are modified after models are registered.
         """
+        if not hasattr(self, '_adjacency'):
+            self._adjacency = {}
         self._adjacency.clear()
 
         # Build adjacency from join relationships

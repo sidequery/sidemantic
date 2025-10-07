@@ -10,8 +10,9 @@ This demo shows how sidemantic can unify metrics defined in different formats:
 The demo queries across all three formats seamlessly.
 """
 
-from sidemantic import SemanticLayer, load_from_directory
 from pathlib import Path
+
+from sidemantic import SemanticLayer, load_from_directory
 
 # Database path
 BASE_DIR = Path(__file__).parent

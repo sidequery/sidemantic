@@ -8,9 +8,10 @@ This script creates three tables:
 - orders: Customer orders with product details
 """
 
-import duckdb
-from datetime import datetime, timedelta
 import random
+from datetime import datetime, timedelta
+
+import duckdb
 
 # Create database connection
 con = duckdb.connect("examples/multi_format_demo/data/ecommerce.db")

@@ -3,11 +3,12 @@
 from pathlib import Path
 
 import typer
-from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Header, Static, Tree as TreeWidget, DataTable, TextArea, Select, Label, Button
-from textual.binding import Binding
 from textual import events
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Button, DataTable, Footer, Header, Label, Select, Static, TextArea
+from textual.widgets import Tree as TreeWidget
 from textual_plotext import PlotextPlot
 
 from sidemantic import SemanticLayer, load_from_directory
@@ -160,13 +161,24 @@ class SidequeryWorkbench(App):
                     yield Button("Custom", id="btn-custom")
                 with Vertical(id="query-editors"):
                     with Vertical(id="editor-timeseries", classes="query-editor"):
-                        yield TextArea(EXAMPLE_QUERIES["Timeseries"], language="sql", show_line_numbers=True, classes="sql-editor")
+                        yield TextArea(
+                            EXAMPLE_QUERIES["Timeseries"], language="sql", show_line_numbers=True, classes="sql-editor"
+                        )
                     with Vertical(id="editor-top-customers", classes="query-editor"):
-                        yield TextArea(EXAMPLE_QUERIES["Top Customers"], language="sql", show_line_numbers=True, classes="sql-editor")
+                        yield TextArea(
+                            EXAMPLE_QUERIES["Top Customers"],
+                            language="sql",
+                            show_line_numbers=True,
+                            classes="sql-editor",
+                        )
                     with Vertical(id="editor-aggregates", classes="query-editor"):
-                        yield TextArea(EXAMPLE_QUERIES["Aggregates"], language="sql", show_line_numbers=True, classes="sql-editor")
+                        yield TextArea(
+                            EXAMPLE_QUERIES["Aggregates"], language="sql", show_line_numbers=True, classes="sql-editor"
+                        )
                     with Vertical(id="editor-custom", classes="query-editor"):
-                        yield TextArea(EXAMPLE_QUERIES["Custom"], language="sql", show_line_numbers=True, classes="sql-editor")
+                        yield TextArea(
+                            EXAMPLE_QUERIES["Custom"], language="sql", show_line_numbers=True, classes="sql-editor"
+                        )
                 with Vertical(id="results-panel"):
                     with Horizontal(id="view-buttons"):
                         yield Button("Table", id="btn-table", classes="active")
@@ -180,7 +192,11 @@ class SidequeryWorkbench(App):
                             yield Label("Y:", classes="config-label")
                             yield Select([], id="y-axis-select", allow_blank=True)
                             yield Label("Type:", classes="config-label")
-                            yield Select([("Bar", "bar"), ("Line", "line"), ("Scatter", "scatter")], id="plot-type-select", value="bar")
+                            yield Select(
+                                [("Bar", "bar"), ("Line", "line"), ("Scatter", "scatter")],
+                                id="plot-type-select",
+                                value="bar",
+                            )
                         yield PlotextPlot(id="chart-plot")
         yield Footer()
 
@@ -242,7 +258,7 @@ class SidequeryWorkbench(App):
                 model_node = tree.root.add(
                     f"[bold cyan]{model_name}[/bold cyan]",
                     data={"type": "model", "name": model_name, "tooltip": model_tooltip},
-                    expand=True
+                    expand=True,
                 )
 
                 # Add dimensions
@@ -280,8 +296,7 @@ class SidequeryWorkbench(App):
                             dim_tooltip_parts.append(f"\n{dim.description}")
 
                         dims_node.add_leaf(
-                            dim.name,
-                            data={"type": "dimension", "tooltip": "\n".join(dim_tooltip_parts)}
+                            dim.name, data={"type": "dimension", "tooltip": "\n".join(dim_tooltip_parts)}
                         )
 
                 # Add metrics
@@ -323,12 +338,13 @@ class SidequeryWorkbench(App):
                             metric_tooltip_parts.append(f"Format: {fmt}")
 
                         if metric.description:
-                            desc_preview = metric.description if len(metric.description) <= 80 else metric.description[:77] + "..."
+                            desc_preview = (
+                                metric.description if len(metric.description) <= 80 else metric.description[:77] + "..."
+                            )
                             metric_tooltip_parts.append(f"\n{desc_preview}")
 
                         metrics_node.add_leaf(
-                            metric.name,
-                            data={"type": "metric", "tooltip": "\n".join(metric_tooltip_parts)}
+                            metric.name, data={"type": "metric", "tooltip": "\n".join(metric_tooltip_parts)}
                         )
 
                 # Add relationships
@@ -345,15 +361,16 @@ class SidequeryWorkbench(App):
                         rel_tooltip_parts.append(f"Type: {rel.type}")
 
                         if rel.foreign_key and rel.primary_key:
-                            rel_tooltip_parts.append(f"Join: {model_name}.{rel.foreign_key} = {rel.name}.{rel.primary_key}")
+                            rel_tooltip_parts.append(
+                                f"Join: {model_name}.{rel.foreign_key} = {rel.name}.{rel.primary_key}"
+                            )
                         elif rel.foreign_key:
                             rel_tooltip_parts.append(f"Foreign Key: {rel.foreign_key}")
                         elif rel.primary_key:
                             rel_tooltip_parts.append(f"Primary Key: {rel.primary_key}")
 
                         rels_node.add_leaf(
-                            rel.name,
-                            data={"type": "relationship", "tooltip": "\n".join(rel_tooltip_parts)}
+                            rel.name, data={"type": "relationship", "tooltip": "\n".join(rel_tooltip_parts)}
                         )
 
             # Expand root
@@ -378,9 +395,9 @@ class SidequeryWorkbench(App):
         widget, _ = self.get_widget_at(*event.screen_offset)
 
         # Check if we're hovering over the tree
-        if widget is tree or (hasattr(widget, 'parent') and widget.parent is tree):
+        if widget is tree or (hasattr(widget, "parent") and widget.parent is tree):
             # Get the hovered node if available
-            if hasattr(tree, 'hover_node') and tree.hover_node:
+            if hasattr(tree, "hover_node") and tree.hover_node:
                 node = tree.hover_node
                 if node.data and "tooltip" in node.data:
                     tree.tooltip = node.data["tooltip"]
@@ -394,7 +411,7 @@ class SidequeryWorkbench(App):
                         node = lines[tree.hover_line].node
                         if node.data and "tooltip" in node.data:
                             tree.tooltip = node.data["tooltip"]
-                except:
+                except Exception:
                     pass
 
     def action_run_query(self) -> None:
@@ -461,7 +478,20 @@ class SidequeryWorkbench(App):
 
                 # Look for numeric/metric column for Y axis
                 # Heuristic: check if column contains metric-like keywords or appears to be numeric
-                metric_keywords = ["revenue", "total", "count", "sum", "avg", "average", "amount", "value", "price", "cost", "metric", "measure"]
+                metric_keywords = [
+                    "revenue",
+                    "total",
+                    "count",
+                    "sum",
+                    "avg",
+                    "average",
+                    "amount",
+                    "value",
+                    "price",
+                    "cost",
+                    "metric",
+                    "measure",
+                ]
 
                 for col in columns:
                     if col == x_default:
@@ -507,6 +537,7 @@ class SidequeryWorkbench(App):
         except Exception as e:
             # Show error in table
             import traceback
+
             table = self.query_one("#results-table", DataTable)
             table.clear(columns=True)
             table.add_column("Error", key="error")
@@ -638,7 +669,7 @@ class SidequeryWorkbench(App):
                             # Use index for non-numeric x values
                             x_data.append(len(x_data))
                             x_labels.append(str(x_val))
-                    except:
+                    except Exception:
                         x_data.append(len(x_data))
                         x_labels.append(str(x_val))
 
@@ -661,7 +692,7 @@ class SidequeryWorkbench(App):
                 chart.plt.ylabel(y_col)
                 chart.refresh()
 
-        except Exception as e:
+        except Exception:
             pass
 
 
@@ -749,9 +780,7 @@ class ValidationApp(App):
                 # Validate relationships
                 for rel in model.relationships:
                     if rel.name not in layer.graph.models:
-                        self.errors.append(
-                            f"Model '{model_name}' has relationship to '{rel.name}' which doesn't exist"
-                        )
+                        self.errors.append(f"Model '{model_name}' has relationship to '{rel.name}' which doesn't exist")
 
                 # Check for duplicate dimension names
                 dim_names = [d.name for d in model.dimensions]
@@ -847,6 +876,7 @@ def workbench(
     if demo:
         # Use packaged demo data
         import sidemantic
+
         package_dir = Path(sidemantic.__file__).parent
         demo_dir = package_dir / "examples" / "multi_format_demo"
 
@@ -944,7 +974,7 @@ def query(
         import sys
 
         if output:
-            with open(output, 'w', newline='') as f:
+            with open(output, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(columns)
                 writer.writerows(rows)

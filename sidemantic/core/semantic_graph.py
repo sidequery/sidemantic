@@ -178,7 +178,7 @@ class SemanticGraph:
         This is automatically called when models are added, but can be called
         manually if relationships are modified after models are registered.
         """
-        if not hasattr(self, '_adjacency'):
+        if not hasattr(self, "_adjacency"):
             self._adjacency = {}
         self._adjacency.clear()
 

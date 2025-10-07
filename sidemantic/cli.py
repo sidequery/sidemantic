@@ -73,11 +73,11 @@ class SidequeryWorkbench(App):
 
     .sql-editor {
         height: 100%;
-        border: solid $primary;
+        border: none;
     }
 
     .sql-editor:focus {
-        border: solid $accent;
+        border: none;
     }
 
     #results-panel {
@@ -134,25 +134,26 @@ class SidequeryWorkbench(App):
     }
     """
 
-    TITLE = "Sidequery Workbench"
+    TITLE = "Sidemantic Workbench"
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+r", "run_query", "Run Query"),
     ]
 
-    def __init__(self, directory: Path, show_sql: bool = False):
+    def __init__(self, directory: Path, show_sql: bool = False, demo_mode: bool = False):
         super().__init__()
         self.directory = directory
         self.layer = None
         self.last_result = None
+        self.demo_mode = demo_mode
 
     def compose(self) -> ComposeResult:
         """Create child widgets."""
         yield Header()
         with Horizontal(id="main"):
             with VerticalScroll(id="sidebar"):
-                yield TreeWidget("Semantic Layer", id="tree")
+                yield TreeWidget("Models", id="tree")
             with Vertical(id="query-panel"):
                 with Horizontal(id="query-buttons"):
                     yield Button("Timeseries", id="btn-timeseries", classes="active")
@@ -162,7 +163,10 @@ class SidequeryWorkbench(App):
                 with Vertical(id="query-editors"):
                     with Vertical(id="editor-timeseries", classes="query-editor"):
                         yield TextArea(
-                            EXAMPLE_QUERIES["Timeseries"], language="sql", show_line_numbers=True, classes="sql-editor"
+                            EXAMPLE_QUERIES["Timeseries"],
+                            language="sql",
+                            show_line_numbers=True,
+                            classes="sql-editor",
                         )
                     with Vertical(id="editor-top-customers", classes="query-editor"):
                         yield TextArea(
@@ -173,11 +177,17 @@ class SidequeryWorkbench(App):
                         )
                     with Vertical(id="editor-aggregates", classes="query-editor"):
                         yield TextArea(
-                            EXAMPLE_QUERIES["Aggregates"], language="sql", show_line_numbers=True, classes="sql-editor"
+                            EXAMPLE_QUERIES["Aggregates"],
+                            language="sql",
+                            show_line_numbers=True,
+                            classes="sql-editor",
                         )
                     with Vertical(id="editor-custom", classes="query-editor"):
                         yield TextArea(
-                            EXAMPLE_QUERIES["Custom"], language="sql", show_line_numbers=True, classes="sql-editor"
+                            EXAMPLE_QUERIES["Custom"],
+                            language="sql",
+                            show_line_numbers=True,
+                            classes="sql-editor",
                         )
                 with Vertical(id="results-panel"):
                     with Horizontal(id="view-buttons"):
@@ -200,23 +210,60 @@ class SidequeryWorkbench(App):
                         yield PlotextPlot(id="chart-plot")
         yield Footer()
 
+    def watch_theme(self, theme_name: str) -> None:
+        """Update TextArea themes when app theme changes."""
+        # Map app themes to TextArea themes (css, dracula, github_light, monokai, vscode_dark)
+        theme_map = {
+            "textual-dark": "vscode_dark",
+            "textual-light": "github_light",
+            "nord": "dracula",
+            "gruvbox": "monokai",
+            "tokyo-night": "vscode_dark",
+            "solarized-light": "github_light",
+            "catppuccin-mocha": "monokai",
+            "catppuccin-latte": "github_light",
+        }
+
+        # Default to vscode_dark for dark themes, github_light for light themes
+        editor_theme = theme_map.get(
+            theme_name,
+            "vscode_dark" if "dark" in theme_name.lower() or "mocha" in theme_name.lower() else "github_light",
+        )
+
+        # Update all SQL editors
+        for editor in self.query(".sql-editor").results(TextArea):
+            editor.theme = editor_theme
+
     def on_mount(self) -> None:
         """Load semantic layer and populate tree."""
         # Show first query editor
         self.query_one("#editor-timeseries").styles.display = "block"
 
         try:
-            # Try to find database file
-            db_path = None
-            data_dir = self.directory / "data"
-            if data_dir.exists():
-                # Look for .db files
-                db_files = list(data_dir.glob("*.db"))
-                if db_files:
-                    db_path = f"duckdb:///{db_files[0].absolute()}"
+            # Setup database connection
+            if self.demo_mode:
+                # Create in-memory demo database
+                from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
 
-            # Load semantic layer
-            self.layer = SemanticLayer(connection=db_path)
+                # Create layer with in-memory DB
+                self.layer = SemanticLayer(connection="duckdb:///:memory:")
+                # Populate with demo data
+                demo_conn = create_demo_database()
+                # Copy data from demo connection to layer's connection
+                for table in ["customers", "products", "orders"]:
+                    table_data = demo_conn.execute(f"SELECT * FROM {table}").df()  # noqa: F841
+                    self.layer.conn.execute(f"CREATE TABLE {table} AS SELECT * FROM table_data")
+            else:
+                # Try to find database file
+                db_path = None
+                data_dir = self.directory / "data"
+                if data_dir.exists():
+                    db_files = list(data_dir.glob("*.db"))
+                    if db_files:
+                        db_path = f"duckdb:///{db_files[0].absolute()}"
+                self.layer = SemanticLayer(connection=db_path)
+
+            # Load semantic layer models
             load_from_directory(self.layer, str(self.directory))
 
             tree = self.query_one("#tree", TreeWidget)
@@ -228,7 +275,7 @@ class SidequeryWorkbench(App):
             total_metrics = sum(len(m.metrics) for m in self.layer.graph.models.values())
             total_rels = sum(len(m.relationships) for m in self.layer.graph.models.values())
 
-            tree.label = f"Sidequery Workbench ({len(self.layer.graph.models)} models, {total_dims} dims, {total_metrics} metrics)"
+            tree.label = f"Models ({len(self.layer.graph.models)})"
 
             # Set root tooltip
             root_tooltip = f"[bold]Sidequery Workbench[/bold]\n\nLoaded from: {self.directory}\n\nModels: {len(self.layer.graph.models)}\nDimensions: {total_dims}\nMetrics: {total_metrics}\nRelationships: {total_rels}"
@@ -238,6 +285,12 @@ class SidequeryWorkbench(App):
             for model_name, model in sorted(self.layer.graph.models.items()):
                 # Build detailed model tooltip
                 tooltip_parts = [f"[bold cyan]Model: {model_name}[/bold cyan]"]
+
+                # Show source format if available
+                if hasattr(model, "_source_format"):
+                    tooltip_parts.append(f"Format: {model._source_format}")
+                if hasattr(model, "_source_file"):
+                    tooltip_parts.append(f"File: {model._source_file}")
 
                 if model.table:
                     tooltip_parts.append(f"Table: {model.table}")
@@ -874,27 +927,37 @@ def workbench(
       uvx sidemantic workbench --demo          # Run demo without installing
     """
     if demo:
-        # Use packaged demo data
+        # Use packaged demo models (just the YAML/LookML files, not the DB)
         import sidemantic
 
+        # Try packaged location first
         package_dir = Path(sidemantic.__file__).parent
         demo_dir = package_dir / "examples" / "multi_format_demo"
 
+        # Fall back to dev environment location
         if not demo_dir.exists():
-            typer.echo(f"Error: Demo data not found at {demo_dir}", err=True)
-            typer.echo("Demo may not be available in this installation.", err=True)
-            raise typer.Exit(1)
+            dev_demo_dir = package_dir.parent / "examples" / "multi_format_demo"
+            if dev_demo_dir.exists():
+                demo_dir = dev_demo_dir
+            else:
+                typer.echo("Error: Demo models not found", err=True)
+                typer.echo(f"Tried: {demo_dir}", err=True)
+                typer.echo(f"Tried: {dev_demo_dir}", err=True)
+                raise typer.Exit(1)
 
         directory = demo_dir
+        # Signal that we should create in-memory demo data
+        workbench_app = SidequeryWorkbench(directory, demo_mode=True)
+        workbench_app.run()
     elif directory is None:
         typer.echo("Error: Either provide a directory or use --demo flag", err=True)
         raise typer.Exit(1)
     elif not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
-
-    workbench_app = SidequeryWorkbench(directory)
-    workbench_app.run()
+    else:
+        workbench_app = SidequeryWorkbench(directory)
+        workbench_app.run()
 
 
 @app.command()

@@ -61,7 +61,10 @@ exclude = [
 packages = ["sidemantic"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"examples/multi_format_demo" = "sidemantic/examples/multi_format_demo"
+"examples/multi_format_demo/cube" = "sidemantic/examples/multi_format_demo/cube"
+"examples/multi_format_demo/hex" = "sidemantic/examples/multi_format_demo/hex"
+"examples/multi_format_demo/lookml" = "sidemantic/examples/multi_format_demo/lookml"
+"examples/multi_format_demo/demo_data.py" = "sidemantic/examples/multi_format_demo/demo_data.py"
 
 [tool.ruff]
 line-length = 120

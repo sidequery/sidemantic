@@ -61,6 +61,13 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         if adapter:
             try:
                 graph = adapter.parse(str(file_path))
+                # Track source format for each model
+                adapter_name = adapter.__class__.__name__.replace("Adapter", "")
+                for model in graph.models.values():
+                    if not hasattr(model, "_source_format"):
+                        model._source_format = adapter_name
+                    if not hasattr(model, "_source_file"):
+                        model._source_file = str(file_path.relative_to(directory))
                 all_models.update(graph.models)
             except Exception as e:
                 # Skip files that fail to parse

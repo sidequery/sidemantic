@@ -1,4 +1,4 @@
-"""Sidemantic: SQLGlot-based semantic layer with multi-format adapter support."""
+"""Sidemantic: Universal semantic layer with multi-format adapter support."""
 
 __version__ = "0.2.17"
 

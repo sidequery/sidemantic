@@ -40,12 +40,22 @@ exclude = [
   "/.claude",
   "/docs",
   "/tests",
-  "/examples",
+  "/examples/__pycache__",
+  "/examples/cube",
+  "/examples/hex",
+  "/examples/lookml",
+  "/examples/metricflow",
+  "/examples/omni",
+  "/examples/rill",
+  "/examples/sidemantic",
+  "/examples/sql",
+  "/examples/superset",
   "*.pkg",
   "test_*.py",
   "uv.lock",
 ]
 # README.md is included via readme field in [project]
+# examples/multi_format_demo is kept for demo mode
 
 [tool.hatch.build.targets.wheel]
 packages = ["sidemantic"]

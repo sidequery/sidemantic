@@ -3,6 +3,8 @@
 from pathlib import Path
 
 import typer
+
+from sidemantic import __version__
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -21,7 +23,20 @@ EXAMPLE_QUERIES = {
     "Custom": "-- Write your custom query here\nSELECT \n  \nFROM ",
 }
 
+def version_callback(value: bool):
+    """Print version and exit."""
+    if value:
+        typer.echo(f"sidemantic {__version__}")
+        raise typer.Exit()
+
 app = typer.Typer(help="Sidemantic: SQL-first semantic layer")
+
+@app.callback()
+def main(
+    version: bool = typer.Option(None, "--version", "-v", callback=version_callback, is_eager=True, help="Show version"),
+):
+    """Sidemantic CLI."""
+    pass
 
 
 class SidequeryWorkbench(App):

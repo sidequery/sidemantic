@@ -1089,5 +1089,83 @@ def info(
         raise typer.Exit(1)
 
 
+@app.command()
+def mcp_serve(
+    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
+    demo: bool = typer.Option(False, "--demo", help="Use demo data instead of a directory"),
+):
+    """
+    Start an MCP server for the semantic layer.
+
+    Provides tools for listing models, getting model details, and running queries
+    through the Model Context Protocol.
+
+    Examples:
+      sidemantic mcp-serve ./models
+      sidemantic mcp-serve ./models --db data/warehouse.db
+      sidemantic mcp-serve --demo
+    """
+    from sidemantic.mcp_server import initialize_layer, mcp
+
+    if demo:
+        # Use packaged demo models
+        import sidemantic
+
+        package_dir = Path(sidemantic.__file__).parent
+        demo_dir = package_dir / "examples" / "multi_format_demo"
+
+        # Fall back to dev environment location
+        if not demo_dir.exists():
+            dev_demo_dir = package_dir.parent / "examples" / "multi_format_demo"
+            if dev_demo_dir.exists():
+                demo_dir = dev_demo_dir
+            else:
+                typer.echo("Error: Demo models not found", err=True)
+                typer.echo(f"Tried: {demo_dir}", err=True)
+                typer.echo(f"Tried: {dev_demo_dir}", err=True)
+                raise typer.Exit(1)
+
+        directory = demo_dir
+        # For demo mode, use in-memory database
+        db_path = ":memory:"
+    elif directory is None:
+        typer.echo("Error: Either provide a directory or use --demo flag", err=True)
+        raise typer.Exit(1)
+    elif not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+    else:
+        db_path = str(db) if db else None
+
+    try:
+        # Initialize the semantic layer
+        initialize_layer(str(directory), db_path)
+
+        # If demo mode, populate with demo data
+        if demo:
+            from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
+            from sidemantic.mcp_server import get_layer
+
+            layer = get_layer()
+            demo_conn = create_demo_database()
+            # Copy data from demo connection to layer's connection
+            for table in ["customers", "products", "orders"]:
+                table_data = demo_conn.execute(f"SELECT * FROM {table}").df()  # noqa: F841
+                layer.conn.execute(f"CREATE TABLE {table} AS SELECT * FROM table_data")
+
+        typer.echo(f"Starting MCP server for: {directory}", err=True)
+        if db_path and db_path != ":memory:":
+            typer.echo(f"Using database: {db_path}", err=True)
+        typer.echo("Server running on stdio...", err=True)
+
+        # Run the MCP server
+        mcp.run(transport="stdio")
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

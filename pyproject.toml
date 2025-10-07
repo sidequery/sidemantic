@@ -17,6 +17,7 @@ dependencies = [
     "textual[syntax]>=1.0.0",
     "plotext>=5.3.2",
     "textual-plotext>=1.0.1",
+    "mcp[cli]>=1.16.0",
 ]
 
 [project.scripts]

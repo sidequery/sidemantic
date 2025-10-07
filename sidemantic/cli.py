@@ -110,6 +110,15 @@ class SidequeryWorkbench(App):
         display: none;
     }
 
+    #sql-view {
+        height: 1fr;
+        display: none;
+    }
+
+    #sql-display {
+        height: 100%;
+    }
+
     #results-table {
         height: 100%;
     }
@@ -146,6 +155,7 @@ class SidequeryWorkbench(App):
         self.directory = directory
         self.layer = None
         self.last_result = None
+        self.last_rendered_sql = None
         self.demo_mode = demo_mode
 
     def compose(self) -> ComposeResult:
@@ -193,8 +203,11 @@ class SidequeryWorkbench(App):
                     with Horizontal(id="view-buttons"):
                         yield Button("Table", id="btn-table", classes="active")
                         yield Button("Chart", id="btn-chart")
+                        yield Button("SQL", id="btn-sql")
                     with Vertical(id="table-view"):
                         yield DataTable(id="results-table")
+                    with Vertical(id="sql-view"):
+                        yield TextArea("", language="sql", show_line_numbers=True, read_only=True, id="sql-display")
                     with Vertical(id="chart-view"):
                         with Horizontal(id="chart-config", classes="config-row"):
                             yield Label("X:", classes="config-label")
@@ -234,6 +247,13 @@ class SidequeryWorkbench(App):
         for editor in self.query(".sql-editor").results(TextArea):
             editor.theme = editor_theme
 
+        # Update SQL display
+        try:
+            sql_display = self.query_one("#sql-display", TextArea)
+            sql_display.theme = editor_theme
+        except Exception:
+            pass  # SQL display may not exist yet
+
     def on_mount(self) -> None:
         """Load semantic layer and populate tree."""
         # Show first query editor
@@ -243,7 +263,22 @@ class SidequeryWorkbench(App):
             # Setup database connection
             if self.demo_mode:
                 # Create in-memory demo database
-                from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
+                try:
+                    # Try packaged import first
+                    from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
+                except ModuleNotFoundError:
+                    # Fall back to dev environment import
+                    import sys
+                    demo_data_path = self.directory / "demo_data.py"
+                    if demo_data_path.exists():
+                        import importlib.util
+                        spec = importlib.util.spec_from_file_location("demo_data", demo_data_path)
+                        demo_data_module = importlib.util.module_from_spec(spec)
+                        sys.modules["demo_data"] = demo_data_module
+                        spec.loader.exec_module(demo_data_module)
+                        create_demo_database = demo_data_module.create_demo_database
+                    else:
+                        raise ImportError(f"Could not find demo_data.py at {demo_data_path}")
 
                 # Create layer with in-memory DB
                 self.layer = SemanticLayer(connection="duckdb:///:memory:")
@@ -251,8 +286,18 @@ class SidequeryWorkbench(App):
                 demo_conn = create_demo_database()
                 # Copy data from demo connection to layer's connection
                 for table in ["customers", "products", "orders"]:
-                    table_data = demo_conn.execute(f"SELECT * FROM {table}").df()  # noqa: F841
-                    self.layer.conn.execute(f"CREATE TABLE {table} AS SELECT * FROM table_data")
+                    # Get table data as regular Python objects (no pandas)
+                    rows = demo_conn.execute(f"SELECT * FROM {table}").fetchall()
+                    columns = [desc[0] for desc in demo_conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
+
+                    # Create table in target connection
+                    create_sql = demo_conn.execute(f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'").fetchone()[0]
+                    self.layer.conn.execute(create_sql)
+
+                    # Insert data if there are rows
+                    if rows:
+                        placeholders = ", ".join(["?" for _ in columns])
+                        self.layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
             else:
                 # Try to find database file
                 db_path = None
@@ -487,8 +532,17 @@ class SidequeryWorkbench(App):
             if not sql:
                 return
 
-            # Execute query
-            result = self.layer.sql(sql)
+            # Execute query and get rendered SQL
+            from sidemantic.sql.query_rewriter import QueryRewriter
+
+            rewriter = QueryRewriter(self.layer.graph, dialect=self.layer.dialect)
+            rendered_sql = rewriter.rewrite(sql)
+
+            # Store rendered SQL
+            self.last_rendered_sql = rendered_sql
+
+            # Execute the query
+            result = self.layer.conn.execute(rendered_sql)
 
             # Get column names and rows
             columns = [desc[0] for desc in result.description]
@@ -496,6 +550,11 @@ class SidequeryWorkbench(App):
 
             # Store for chart rendering
             self.last_result = {"columns": columns, "rows": rows}
+
+            # Update SQL display
+            if rendered_sql:
+                sql_display = self.query_one("#sql-display", TextArea)
+                sql_display.text = rendered_sql
 
             # Update table
             table.clear(columns=True)
@@ -628,20 +687,32 @@ class SidequeryWorkbench(App):
                     else:
                         btn.remove_class("active")
 
-        # Handle table/chart view switching
+        # Handle table/chart/sql view switching
         table_view = self.query_one("#table-view")
         chart_view = self.query_one("#chart-view")
+        sql_view = self.query_one("#sql-view")
 
         if event.button.id == "btn-table":
             table_view.styles.display = "block"
             chart_view.styles.display = "none"
+            sql_view.styles.display = "none"
             self.query_one("#btn-table", Button).add_class("active")
             self.query_one("#btn-chart", Button).remove_class("active")
+            self.query_one("#btn-sql", Button).remove_class("active")
         elif event.button.id == "btn-chart":
             table_view.styles.display = "none"
             chart_view.styles.display = "block"
+            sql_view.styles.display = "none"
             self.query_one("#btn-table", Button).remove_class("active")
             self.query_one("#btn-chart", Button).add_class("active")
+            self.query_one("#btn-sql", Button).remove_class("active")
+        elif event.button.id == "btn-sql":
+            table_view.styles.display = "none"
+            chart_view.styles.display = "none"
+            sql_view.styles.display = "block"
+            self.query_one("#btn-table", Button).remove_class("active")
+            self.query_one("#btn-chart", Button).remove_class("active")
+            self.query_one("#btn-sql", Button).add_class("active")
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Handle chart axis selection changes."""
@@ -1144,15 +1215,41 @@ def mcp_serve(
 
         # If demo mode, populate with demo data
         if demo:
-            from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
+            try:
+                # Try packaged import first
+                from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
+            except ModuleNotFoundError:
+                # Fall back to dev environment import
+                import sys
+                import importlib.util
+                demo_data_path = directory / "demo_data.py"
+                if demo_data_path.exists():
+                    spec = importlib.util.spec_from_file_location("demo_data", demo_data_path)
+                    demo_data_module = importlib.util.module_from_spec(spec)
+                    sys.modules["demo_data"] = demo_data_module
+                    spec.loader.exec_module(demo_data_module)
+                    create_demo_database = demo_data_module.create_demo_database
+                else:
+                    raise ImportError(f"Could not find demo_data.py at {demo_data_path}")
+
             from sidemantic.mcp_server import get_layer
 
             layer = get_layer()
             demo_conn = create_demo_database()
             # Copy data from demo connection to layer's connection
             for table in ["customers", "products", "orders"]:
-                table_data = demo_conn.execute(f"SELECT * FROM {table}").df()  # noqa: F841
-                layer.conn.execute(f"CREATE TABLE {table} AS SELECT * FROM table_data")
+                # Get table data as regular Python objects (no pandas)
+                rows = demo_conn.execute(f"SELECT * FROM {table}").fetchall()
+                columns = [desc[0] for desc in demo_conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
+
+                # Create table in target connection
+                create_sql = demo_conn.execute(f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'").fetchone()[0]
+                layer.conn.execute(create_sql)
+
+                # Insert data if there are rows
+                if rows:
+                    placeholders = ", ".join(["?" for _ in columns])
+                    layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
         typer.echo(f"Starting MCP server for: {directory}", err=True)
         if db_path and db_path != ":memory:":

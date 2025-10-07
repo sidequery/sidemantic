@@ -478,21 +478,21 @@ class SQLGenerator:
         # Build SELECT columns
         select_cols = []
 
-        # Add join keys
-        join_keys_added = set()
+        # Track all columns added (not just join keys) to avoid duplicates
+        columns_added = set()
 
         # Include this model's primary key
-        if model.primary_key and model.primary_key not in join_keys_added:
+        if model.primary_key and model.primary_key not in columns_added:
             select_cols.append(f"{model.primary_key} AS {model.primary_key}")
-            join_keys_added.add(model.primary_key)
+            columns_added.add(model.primary_key)
 
         # Include foreign keys from belongs_to joins
         for relationship in model.relationships:
             if relationship.type == "many_to_one":
                 fk = relationship.sql_expr
-                if fk not in join_keys_added:
+                if fk not in columns_added:
                     select_cols.append(f"{fk} AS {fk}")
-                    join_keys_added.add(fk)
+                    columns_added.add(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         for other_model_name, other_model in self.graph.models.items():
@@ -504,14 +504,16 @@ class SQLGenerator:
                     # Other model expects this model to have a foreign key
                     # For has_many/has_one, foreign_key is the FK column in THIS model
                     fk = other_join.foreign_key or other_join.sql_expr
-                    if fk not in join_keys_added:
+                    if fk not in columns_added:
                         select_cols.append(f"{fk} AS {fk}")
-                        join_keys_added.add(fk)
+                        columns_added.add(fk)
 
         # Add dimension columns
         # First, add all dimensions from this model (needed for filters/joins)
         for dimension in model.dimensions:
-            select_cols.append(f"{dimension.sql_expr} AS {dimension.name}")
+            if dimension.name not in columns_added:
+                select_cols.append(f"{dimension.sql_expr} AS {dimension.name}")
+                columns_added.add(dimension.name)
 
         # Then, add time dimensions with specific granularities
         for dim_ref, gran in dimensions:
@@ -528,7 +530,9 @@ class SQLGenerator:
                 # Apply time granularity (in addition to base column)
                 dim_sql = dimension.with_granularity(gran)
                 alias = f"{dim_name}__{gran}"
-                select_cols.append(f"{dim_sql} AS {alias}")
+                if alias not in columns_added:
+                    select_cols.append(f"{dim_sql} AS {alias}")
+                    columns_added.add(alias)
 
         # Add measure columns (raw, not aggregated in CTE)
         # Collect all measures needed for metrics

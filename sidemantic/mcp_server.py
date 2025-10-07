@@ -85,8 +85,17 @@ mcp = FastMCP("sidemantic")
 def list_models() -> list[ModelInfo]:
     """List all available models in the semantic layer.
 
-    Returns basic information about each model including name, table,
-    dimensions, metrics, and relationship count.
+    Models are the core building blocks of the semantic layer. Each model represents
+    a business entity (e.g., orders, customers, products) and contains:
+    - Dimensions: attributes you can group by or filter on
+    - Metrics: measures you can aggregate (sum, count, average, etc.)
+    - Relationships: connections to other models for automatic joins
+
+    Use this to discover what data is available before constructing queries.
+
+    Returns:
+        List of models with basic information including name, table, dimensions,
+        metrics, and relationship count.
     """
     layer = get_layer()
 
@@ -108,6 +117,30 @@ def list_models() -> list[ModelInfo]:
 @mcp.tool()
 def get_models(model_names: list[str]) -> list[ModelDetail]:
     """Get detailed information about one or more models.
+
+    Returns comprehensive details about models including:
+    - All dimensions with their types, SQL definitions, and descriptions
+    - All metrics with their aggregation types, SQL formulas, filters, and descriptions
+    - All relationships showing how models connect for joins
+    - Source metadata (original format and file)
+
+    Dimension types:
+    - categorical: text/enum values for grouping (e.g., status, region)
+    - time: timestamps supporting granularity rollups (e.g., created_at)
+    - numeric: numbers that can be used in calculations
+    - boolean: true/false flags
+
+    Metric aggregations:
+    - sum, avg, min, max: numeric aggregations
+    - count, count_distinct: counting aggregations
+    - median: statistical median
+
+    Special metric types:
+    - ratio: division of two metrics
+    - derived: formula combining other metrics
+    - cumulative: running totals or rolling windows
+    - time_comparison: period-over-period calculations (YoY, MoM, etc.)
+    - conversion: funnel conversion rates
 
     Args:
         model_names: List of model names to retrieve details for
@@ -192,15 +225,58 @@ def run_query(
 ) -> QueryResult:
     """Run a query against the semantic layer.
 
+    Sidemantic automatically generates SQL from semantic references and handles joins between models.
+
+    Field References:
+    - Use model.field_name format (e.g., "orders.customer_name", "orders.total_revenue")
+    - Dimensions and metrics are namespaced by their model
+
+    Time Dimensions:
+    - Time dimensions support granularity suffixes using double underscore
+    - Available granularities: __year, __quarter, __month, __week, __day, __hour
+    - Example: "orders.created_at__month" groups by month
+    - Use the base dimension name without suffix for raw timestamp
+
+    Automatic Joins:
+    - Reference fields from multiple models to trigger automatic joins
+    - Joins are inferred from model relationships
+    - Example: ["orders.revenue", "customers.region"] automatically joins orders to customers
+
+    Filters:
+    - Use model.field_name in WHERE conditions
+    - Standard SQL operators: =, !=, <, >, <=, >=, IN, LIKE, BETWEEN
+    - Combine with AND/OR
+    - Example: "orders.status = 'completed' AND orders.amount > 100"
+
     Args:
-        dimensions: List of dimension names to include (e.g., ["orders.customer_name"])
-        metrics: List of metric names to include (e.g., ["orders.total_revenue"])
-        where: Optional WHERE clause filter (e.g., "orders.status = 'completed'")
-        order_by: List of columns to order by (e.g., ["orders.total_revenue desc"])
+        dimensions: List of dimension references (e.g., ["orders.customer_name", "orders.created_at__month"])
+        metrics: List of metric references (e.g., ["orders.total_revenue", "orders.order_count"])
+        where: Optional WHERE clause using model.field_name syntax
+        order_by: List of fields to order by with optional "asc" or "desc" (e.g., ["orders.total_revenue desc"])
         limit: Optional row limit
 
     Returns:
         Query result containing generated SQL, result rows, and row count.
+
+    Examples:
+        Simple aggregation:
+        - dimensions: ["orders.status"]
+        - metrics: ["orders.total_revenue"]
+
+        Time series with granularity:
+        - dimensions: ["orders.created_at__month"]
+        - metrics: ["orders.total_revenue", "orders.order_count"]
+
+        Cross-model query (automatic join):
+        - dimensions: ["customers.region", "products.category"]
+        - metrics: ["orders.total_revenue"]
+
+        With filters and sorting:
+        - dimensions: ["orders.status"]
+        - metrics: ["orders.total_revenue"]
+        - where: "orders.created_at >= '2024-01-01'"
+        - order_by: ["orders.total_revenue desc"]
+        - limit: 10
     """
     layer = get_layer()
 

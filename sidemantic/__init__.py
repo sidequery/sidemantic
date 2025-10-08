@@ -1,6 +1,6 @@
 """Sidemantic: Universal semantic layer - import from Cube, dbt, LookML, Hex, and more."""
 
-__version__ = "0.2.24"
+__version__ = "0.2.25"
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric

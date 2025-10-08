@@ -16,27 +16,49 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Pyodide
-        run: npm install pyodide
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sidemantic wheel
+        run: uv build
+
+      - name: Install Pyodide and dependencies
+        run: npm install pyodide glob
 
       - name: Test sidemantic in Pyodide
         run: |
           cat > test_pyodide.mjs << 'EOF'
           import { loadPyodide } from 'pyodide';
+          import { readFileSync } from 'fs';
+          import { globSync } from 'glob';
 
           async function main() {
             const pyodide = await loadPyodide();
 
-            console.log('Loading Pyodide packages...');
-            await pyodide.loadPackage(['micropip', 'pydantic', 'pyyaml', 'jinja2']);
+            console.log('Loading micropip...');
+            await pyodide.loadPackage('micropip');
 
-            console.log('Installing sidemantic without deps...');
+            // Find the built wheel
+            const wheels = globSync('dist/*.whl');
+            if (wheels.length === 0) {
+              throw new Error('No wheel file found in dist/');
+            }
+            const wheelPath = wheels[0];
+            console.log(`Installing local wheel: ${wheelPath}`);
+
+            // Load wheel into Pyodide virtual filesystem
+            const wheelData = readFileSync(wheelPath);
+            const wheelName = wheelPath.split('/').pop();
+            pyodide.FS.writeFile(`/tmp/${wheelName}`, wheelData);
+
+            console.log('Testing sidemantic install (same as dashboard)...');
             await pyodide.runPythonAsync(`
               import micropip
-              # Install missing pure-Python deps, then sidemantic without deps
-              # (avoids pydantic-core typing-extensions>=4.14.1 vs Pyodide 4.11.0 conflict)
-              await micropip.install(['sqlglot', 'lkml', 'inflect'], deps=False)
-              await micropip.install('sidemantic', deps=False)
+              # Install pydantic<2.10 to avoid typing-extensions conflict
+              # (pydantic-core 2.41+ needs typing-extensions>=4.14.1 but Pyodide has 4.11.0)
+              await micropip.install('pydantic<2.10')
+              # Then install sidemantic from local wheel without deps (same as dashboard.qmd)
+              await micropip.install('emfs:/tmp/` + wheelName + `', deps=False)
             `);
 
             console.log('Testing basic imports...');

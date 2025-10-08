@@ -46,8 +46,14 @@ This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
 
 **Version constraints with "PYODIDE:" comments are REQUIRED:**
 - Heavy deps (textual, riffq) are optional to avoid Pyodide conflicts
-- CI tests basic imports in Pyodide environment
+- Pyodide CI builds local wheel and installs it (same method as dashboard: pydantic<2.10 then sidemantic deps=False)
+- This ensures code changes are tested in Pyodide before publish
 - If adding new core deps, check they work in Pyodide or make them optional
+
+**If Pyodide CI fails:**
+- Check if a dep version changed that requires newer typing-extensions
+- Either downgrade that dep OR add workaround in dashboard.qmd install
+- CI installs local wheel to test current code, not PyPI version
 
 ## Testing
 

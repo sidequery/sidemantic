@@ -48,8 +48,8 @@ def start_server(
 
     # Create connection class with layer injected
     class BoundConnection(SemanticLayerConnection):
-        def __init__(self):
-            super().__init__(layer, username, password)
+        def __init__(self, connection_id, executor):
+            super().__init__(connection_id, executor, layer, username, password)
 
     # Start server
     server = riffq.RiffqServer(f"127.0.0.1:{port}", connection_cls=BoundConnection)

@@ -12,8 +12,10 @@ from sidemantic.sql.query_rewriter import QueryRewriter
 class SemanticLayerConnection(riffq.BaseConnection):
     """Connection handler that translates PostgreSQL queries to semantic layer queries."""
 
-    def __init__(self, layer: SemanticLayer, username: str | None = None, password: str | None = None):
-        super().__init__()
+    def __init__(
+        self, connection_id, executor, layer: SemanticLayer, username: str | None = None, password: str | None = None
+    ):
+        super().__init__(connection_id, executor)
         self.layer = layer
         self.username = username
         self.password = password
@@ -39,6 +41,14 @@ class SemanticLayerConnection(riffq.BaseConnection):
         """Handle a SQL query."""
         try:
             sql_lower = sql.lower().strip()
+
+            # Check for DML commands first (before multi-statement check)
+            # These are often PostgreSQL session config and should just succeed
+            if sql_lower.startswith(("set ", "update ", "insert ", "delete ")):
+                result = self.layer.conn.execute("SELECT 1 as ok WHERE FALSE")
+                reader = result.fetch_record_batch()
+                self.send_reader(reader, callback)
+                return
 
             # Try to handle PostgreSQL-specific system queries
             # Skip multi-statement queries to avoid response count mismatch
@@ -69,8 +79,8 @@ class SemanticLayerConnection(riffq.BaseConnection):
         """Try to handle PostgreSQL system queries. Returns True if handled."""
 
         # pg_get_keywords() - return DuckDB keywords instead
-        if "pg_get_keywords" in sql_lower:
-            result = self.layer.conn.execute("SELECT keyword as word, 'U' as catcode FROM duckdb_keywords()")
+        if "pg_get_keywords" in sql_lower and ";" not in sql:
+            result = self.layer.conn.execute("SELECT keyword_name as word, 'U' as catcode FROM duckdb_keywords()")
             reader = result.fetch_record_batch()
             self.send_reader(reader, callback)
             return True

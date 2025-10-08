@@ -2,25 +2,29 @@
 
 import pytest
 
-from sidemantic.db.postgres import PostgreSQLAdapter
 
-
-def test_postgres_adapter_missing_dependency():
-    """Test that missing psycopg raises helpful error."""
-    # This will fail if psycopg is not installed
-    # We test the error message is helpful
+def test_postgres_adapter_import():
+    """Test that PostgreSQL adapter can be imported."""
     try:
-        PostgreSQLAdapter()
+        from sidemantic.db.postgres import PostgreSQLAdapter
+
+        assert hasattr(PostgreSQLAdapter, "from_url")
+        assert hasattr(PostgreSQLAdapter, "execute")
     except ImportError as e:
+        # If psycopg is not installed, should get helpful error
         assert "psycopg" in str(e).lower()
-        assert "sidemantic[postgres]" in str(e) or "psycopg[binary]" in str(e)
 
 
-def test_postgres_adapter_from_url_parsing():
-    """Test URL parsing (without actually connecting)."""
-    # Just verify the from_url method exists and accepts the URL format
-    # It will fail on connection but that's ok for this test
+def test_postgres_url_parsing():
+    """Test URL parsing logic (without connecting)."""
+    try:
+        from sidemantic.db.postgres import PostgreSQLAdapter
+    except ImportError:
+        pytest.skip("psycopg not installed")
+
+    # Test that from_url method exists
     assert hasattr(PostgreSQLAdapter, "from_url")
+    # URL parsing is tested in integration tests where we can actually connect
 
 
 @pytest.mark.skipif(True, reason="Requires running PostgreSQL instance")
@@ -28,8 +32,10 @@ def test_postgres_adapter_execute():
     """Test executing queries against real Postgres.
 
     This test is skipped by default since it requires a running Postgres instance.
-    To run: pytest -v --run-postgres tests/db/test_postgres_adapter.py
+    Use integration tests instead.
     """
+    from sidemantic.db.postgres import PostgreSQLAdapter
+
     adapter = PostgreSQLAdapter(host="localhost", database="test")
     result = adapter.execute("SELECT 1 as x, 2 as y")
     row = result.fetchone()

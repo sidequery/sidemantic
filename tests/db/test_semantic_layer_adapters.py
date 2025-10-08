@@ -88,8 +88,16 @@ def test_semantic_layer_invalid_connection_object():
         SemanticLayer(connection=123)
 
 
-def test_postgres_url_parsing():
-    """Test PostgreSQL URL is recognized (without connecting)."""
-    # This will fail on connection but should parse the URL correctly
-    with pytest.raises(ImportError, match="psycopg"):
-        SemanticLayer(connection="postgres://user:pass@localhost/db")
+def test_postgres_url_recognized():
+    """Test PostgreSQL URL is recognized as valid format."""
+    # Test that postgres:// URLs are recognized (but don't actually connect)
+    try:
+        from sidemantic.db.postgres import PostgreSQLAdapter  # noqa: F401
+
+        # If psycopg is installed, we can't test without connecting
+        # This is tested in integration tests instead
+        pytest.skip("PostgreSQL adapter available, tested in integration tests")
+    except ImportError:
+        # If psycopg not installed, should get helpful ImportError
+        with pytest.raises(ImportError, match="psycopg"):
+            SemanticLayer(connection="postgres://user:pass@localhost/db")

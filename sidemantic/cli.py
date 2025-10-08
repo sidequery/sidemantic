@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 
 from sidemantic import SemanticLayer, __version__, load_from_directory
+from sidemantic.config import SidemanticConfig, build_connection_string, find_config, load_config
 
 
 def version_callback(value: bool):
@@ -16,21 +17,47 @@ def version_callback(value: bool):
 
 app = typer.Typer(help="Sidemantic: SQL-first semantic layer")
 
+# Global state for config (set in callback, used in commands)
+_loaded_config: SidemanticConfig | None = None
+
 
 @app.callback()
 def main(
     version: bool = typer.Option(
         None, "--version", "-v", callback=version_callback, is_eager=True, help="Show version"
     ),
+    config: Path = typer.Option(None, "--config", "-c", help="Path to config file (sidemantic.yaml)"),
 ):
-    """Sidemantic CLI."""
-    pass
+    """Sidemantic CLI.
+
+    You can use a config file (sidemantic.yaml or sidemantic.json) to set default values.
+    CLI arguments override config file values.
+    """
+    global _loaded_config
+
+    # Try to load config
+    config_path = None
+    if config:
+        # Explicit config path provided
+        config_path = config
+    else:
+        # Try to auto-discover config
+        config_path = find_config()
+
+    if config_path:
+        try:
+            _loaded_config = load_config(config_path)
+            typer.echo(f"Loaded config from: {config_path}", err=True)
+        except Exception as e:
+            typer.echo(f"Warning: Failed to load config: {e}", err=True)
+            _loaded_config = None
 
 
 @app.command()
 def workbench(
-    directory: Path = typer.Argument(None, help="Directory containing semantic layer files"),
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     demo: bool = typer.Option(False, "--demo", help="Launch with demo data (multi-format example)"),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
 ):
     """
     Interactive semantic layer workbench with SQL editor and charting.
@@ -40,6 +67,7 @@ def workbench(
     Examples:
       sidemantic workbench semantic_models/    # Your own models
       sidemantic workbench --demo              # Try the demo
+      sidemantic workbench ./models --db data/warehouse.db  # With database
       uvx sidemantic workbench --demo          # Run demo without installing
     """
     from sidemantic.workbench import run_workbench
@@ -63,15 +91,23 @@ def workbench(
                 raise typer.Exit(1)
 
         directory = demo_dir
-        run_workbench(directory, demo_mode=True)
-    elif directory is None:
-        typer.echo("Error: Either provide a directory or use --demo flag", err=True)
-        raise typer.Exit(1)
+        run_workbench(directory, demo_mode=True, connection=None)
     elif not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
     else:
-        run_workbench(directory)
+        # Build connection string from args or config
+        if db:
+            # Explicit --db arg provided
+            connection = f"duckdb:///{db.absolute()}"
+        elif _loaded_config and _loaded_config.connection:
+            # Use connection from config
+            connection = build_connection_string(_loaded_config)
+        else:
+            # Default behavior
+            connection = None
+
+        run_workbench(directory, connection=connection)
 
 
 @app.command()
@@ -314,11 +350,12 @@ def mcp_serve(
 
 @app.command()
 def serve(
-    directory: Path = typer.Argument(None, help="Directory containing semantic layer files"),
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     demo: bool = typer.Option(False, "--demo", help="Use demo data"),
-    port: int = typer.Option(5433, "--port", "-p", help="Port to listen on"),
-    username: str = typer.Option(None, "--username", "-u", help="Username for authentication (optional)"),
-    password: str = typer.Option(None, "--password", help="Password for authentication (optional)"),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
+    port: int = typer.Option(None, "--port", "-p", help="Port to listen on (overrides config)"),
+    username: str = typer.Option(None, "--username", "-u", help="Username for authentication (overrides config)"),
+    password: str = typer.Option(None, "--password", help="Password for authentication (overrides config)"),
 ):
     """
     Start a PostgreSQL-compatible server for the semantic layer.
@@ -328,6 +365,7 @@ def serve(
 
     Examples:
       sidemantic serve ./models --port 5433
+      sidemantic serve ./models --db data/warehouse.db
       sidemantic serve --demo
       sidemantic serve ./models --username user --password secret
     """
@@ -337,7 +375,7 @@ def serve(
 
     logging.basicConfig(level=logging.INFO)
 
-    # Resolve directory
+    # Resolve directory from args or config
     if demo:
         import sidemantic
 
@@ -353,15 +391,32 @@ def serve(
                 raise typer.Exit(1)
 
         directory = demo_dir
-    elif directory is None:
-        typer.echo("Error: Either provide a directory or use --demo flag", err=True)
-        raise typer.Exit(1)
-    elif not directory.exists():
+    elif directory == Path(".") and _loaded_config:
+        # Use config file models_dir if using default directory
+        directory = Path(_loaded_config.models_dir)
+
+    if not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
 
-    # Create semantic layer
-    layer = SemanticLayer(connection="duckdb:///:memory:")
+    # Resolve db from args or config
+    db_resolved = None
+    if db:
+        db_resolved = db
+    elif _loaded_config and _loaded_config.connection:
+        from sidemantic.config import DuckDBConnection
+
+        if isinstance(_loaded_config.connection, DuckDBConnection):
+            db_resolved = Path(_loaded_config.connection.path) if _loaded_config.connection.path != ":memory:" else None
+
+    # Resolve port, username, password from args or config
+    port_resolved = port if port is not None else (_loaded_config.pg_server.port if _loaded_config else 5433)
+    username_resolved = username or (_loaded_config.pg_server.username if _loaded_config else None)
+    password_resolved = password or (_loaded_config.pg_server.password if _loaded_config else None)
+
+    # Create semantic layer with explicit db or in-memory
+    db_path = f"duckdb:///{Path(db_resolved).absolute()}" if db_resolved else "duckdb:///:memory:"
+    layer = SemanticLayer(connection=db_path)
 
     # Load models
     load_from_directory(layer, str(directory))
@@ -403,7 +458,7 @@ def serve(
                 layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
     # Start the server
-    start_server(layer, port=port, username=username, password=password)
+    start_server(layer, port=port_resolved, username=username_resolved, password=password_resolved)
 
 
 if __name__ == "__main__":

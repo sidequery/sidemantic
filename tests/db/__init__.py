@@ -1,0 +1,1 @@
+"""Database adapter tests."""

@@ -154,13 +154,14 @@ class SidequeryWorkbench(App):
 
     sidebar_width = reactive(38)
 
-    def __init__(self, directory: Path, show_sql: bool = False, demo_mode: bool = False):
+    def __init__(self, directory: Path, show_sql: bool = False, demo_mode: bool = False, connection: str | None = None):
         super().__init__()
         self.directory = directory
         self.layer = None
         self.last_result = None
         self.last_rendered_sql = None
         self.demo_mode = demo_mode
+        self.connection = connection
         self.dragging_sidebar = False
         self.drag_start_x = 0
 
@@ -314,14 +315,18 @@ class SidequeryWorkbench(App):
                         placeholders = ", ".join(["?" for _ in columns])
                         self.layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
             else:
-                # Try to find database file
-                db_path = None
-                data_dir = self.directory / "data"
-                if data_dir.exists():
-                    db_files = list(data_dir.glob("*.db"))
-                    if db_files:
-                        db_path = f"duckdb:///{db_files[0].absolute()}"
-                self.layer = SemanticLayer(connection=db_path)
+                # Use explicit connection if provided, otherwise try to find database file
+                connection = None
+                if self.connection:
+                    connection = self.connection
+                else:
+                    # Auto-discover DuckDB file in data/ directory
+                    data_dir = self.directory / "data"
+                    if data_dir.exists():
+                        db_files = list(data_dir.glob("*.db"))
+                        if db_files:
+                            connection = f"duckdb:///{db_files[0].absolute()}"
+                self.layer = SemanticLayer(connection=connection)
 
             # Load semantic layer models
             load_from_directory(self.layer, str(self.directory))

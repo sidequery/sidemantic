@@ -6,9 +6,9 @@ from sidemantic.workbench.app import SidequeryWorkbench
 from sidemantic.workbench.validation_app import ValidationApp
 
 
-def run_workbench(directory: Path, demo_mode: bool = False):
+def run_workbench(directory: Path, demo_mode: bool = False, connection: str | None = None):
     """Run the interactive workbench application."""
-    workbench_app = SidequeryWorkbench(directory, demo_mode=demo_mode)
+    workbench_app = SidequeryWorkbench(directory, demo_mode=demo_mode, connection=connection)
     workbench_app.run()
 
 

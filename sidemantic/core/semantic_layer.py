@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import duckdb
-
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
@@ -20,37 +18,53 @@ class SemanticLayer:
 
     def __init__(
         self,
-        connection: str = "duckdb:///:memory:",
-        dialect: str = "duckdb",
+        connection: str | BaseDatabaseAdapter = "duckdb:///:memory:",  # type: ignore # noqa: F821
+        dialect: str | None = None,
         auto_register: bool = True,
         use_preaggregations: bool = False,
     ):
         """Initialize semantic layer.
 
         Args:
-            connection: Database connection string (default: in-memory DuckDB)
-            dialect: SQL dialect for query generation (default: duckdb)
+            connection: Database connection string or adapter instance (default: in-memory DuckDB)
+                Supported URLs:
+                - duckdb:///:memory: (default)
+                - duckdb:///path/to/db.duckdb
+                - postgres://user:pass@host:port/dbname
+            dialect: SQL dialect for query generation (optional, inferred from adapter)
             auto_register: Set as current layer for auto-registration (default: True)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
         """
+        from sidemantic.db.base import BaseDatabaseAdapter
+
         self.graph = SemanticGraph()
-        self.dialect = dialect
-        self.connection_string = connection
         self.use_preaggregations = use_preaggregations
 
-        # Initialize DuckDB connection
-        if connection.startswith("duckdb://"):
-            # Remove protocol prefix while preserving leading slash in file paths
-            # duckdb:///:memory: -> :memory:
-            # duckdb:///tmp/app.db -> /tmp/app.db
-            # duckdb:/// -> :memory:
-            db_path = connection[len("duckdb://") :]
-            # Handle :memory: special case (may have leading slash from URI)
-            if db_path in ("/:memory:", ":memory:", "", "/"):
-                db_path = ":memory:"
-            self.conn = duckdb.connect(db_path)
+        # Initialize adapter from connection string or use provided adapter
+        if isinstance(connection, BaseDatabaseAdapter):
+            self.adapter = connection
+            self.dialect = dialect or connection.dialect
+            self.connection_string = f"{connection.dialect}://custom"
+        elif isinstance(connection, str):
+            self.connection_string = connection
+
+            if connection.startswith("duckdb://"):
+                from sidemantic.db.duckdb import DuckDBAdapter
+
+                self.adapter = DuckDBAdapter.from_url(connection)
+                self.dialect = dialect or "duckdb"
+            elif connection.startswith(("postgres://", "postgresql://")):
+                from sidemantic.db.postgres import PostgreSQLAdapter
+
+                self.adapter = PostgreSQLAdapter.from_url(connection)
+                self.dialect = dialect or "postgres"
+            else:
+                raise ValueError(
+                    f"Unsupported connection URL: {connection}. "
+                    "Supported: duckdb:///, postgres://, or BaseDatabaseAdapter instance"
+                )
         else:
-            raise NotImplementedError(f"Connection type {connection} not yet supported")
+            raise TypeError(f"connection must be a string URL or BaseDatabaseAdapter instance, got {type(connection)}")
 
         # Set as current layer for auto-registration
         if auto_register:
@@ -70,6 +84,21 @@ class SemanticLayer:
         from .registry import set_current_layer
 
         set_current_layer(None)
+
+    @property
+    def conn(self):
+        """Get raw database connection for backward compatibility."""
+        return self.adapter.raw_connection
+
+    @conn.setter
+    def conn(self, value):
+        """Set raw database connection for backward compatibility.
+
+        This updates the adapter's internal connection.
+        Used by tests that directly assign connections.
+        """
+        # Update the adapter's connection
+        self.adapter.conn = value
 
     def add_model(self, model: Model) -> None:
         """Add a model to the semantic layer.
@@ -172,7 +201,7 @@ class SemanticLayer:
             use_preaggregations=use_preaggregations,
         )
 
-        return self.conn.execute(sql)
+        return self.adapter.execute(sql)
 
     def compile(
         self,

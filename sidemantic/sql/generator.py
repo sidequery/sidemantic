@@ -551,17 +551,20 @@ class SQLGenerator:
             select_cols.append(f"{model.primary_key} AS {model.primary_key}")
             columns_added.add(model.primary_key)
 
-        # Include foreign keys only if we're joining
-        if needs_joins:
-            # Include foreign keys from belongs_to joins
-            for relationship in model.relationships:
-                if relationship.type == "many_to_one" and relationship.name in all_models:
-                    fk = relationship.sql_expr
-                    if fk not in columns_added:
-                        select_cols.append(f"{fk} AS {fk}")
-                        columns_added.add(fk)
+        # Include foreign keys if we're joining OR if they're explicitly requested as dimensions
+        for relationship in model.relationships:
+            if relationship.type == "many_to_one":
+                fk = relationship.sql_expr
+                # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
+                should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
+                if should_include and fk not in columns_added:
+                    select_cols.append(f"{fk} AS {fk}")
+                    columns_added.add(fk)
+                    # Mark FK as "needed" so it's not duplicated as a dimension
+                    needed_dimensions.discard(fk)
 
-            # Check if other models have has_many/has_one pointing to this model
+        # Check if other models have has_many/has_one pointing to this model
+        if needs_joins:
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:
                     continue

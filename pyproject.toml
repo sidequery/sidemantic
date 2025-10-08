@@ -52,6 +52,10 @@ clickhouse = [
     "clickhouse-connect>=0.6.0",
     "pyarrow>=14.0.0",  # For Arrow support
 ]
+databricks = [
+    "databricks-sql-connector>=2.0.0",
+    "pyarrow>=14.0.0",  # For Arrow support
+]
 
 [build-system]
 requires = ["hatchling"]

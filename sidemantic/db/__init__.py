@@ -27,4 +27,8 @@ def __getattr__(name):
         from sidemantic.db.clickhouse import ClickHouseAdapter
 
         return ClickHouseAdapter
+    if name == "DatabricksAdapter":
+        from sidemantic.db.databricks import DatabricksAdapter
+
+        return DatabricksAdapter
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

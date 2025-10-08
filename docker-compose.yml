@@ -25,7 +25,7 @@ services:
     environment:
       POSTGRES_TEST: "1"
       POSTGRES_URL: "postgres://test:test@postgres:5432/sidemantic_test"
-    command: pytest tests/db/test_postgres_integration.py -v
+    command: pytest -m integration -v
 
 volumes:
   postgres_data:

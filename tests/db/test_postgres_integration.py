@@ -1,6 +1,6 @@
 """Integration tests for PostgreSQL adapter against real database.
 
-Run with: docker compose up -d && pytest tests/db/test_postgres_integration.py -v
+Run with: docker compose up -d && pytest -m integration tests/db/test_postgres_integration.py -v
 """
 
 import os
@@ -9,11 +9,14 @@ import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
 
-# Skip all tests if POSTGRES_TEST environment variable not set
-pytestmark = pytest.mark.skipif(
-    os.getenv("POSTGRES_TEST") != "1",
-    reason="Set POSTGRES_TEST=1 and run docker compose up -d to run Postgres integration tests",
-)
+# Mark all tests in this module as integration tests
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("POSTGRES_TEST") != "1",
+        reason="Set POSTGRES_TEST=1 and run docker compose up -d to run Postgres integration tests",
+    ),
+]
 
 # Use environment variable for URL (different in docker vs local)
 POSTGRES_URL = os.getenv("POSTGRES_URL", "postgres://test:test@localhost:5433/sidemantic_test")

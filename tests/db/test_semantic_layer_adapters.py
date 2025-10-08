@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Metric, Model, SemanticLayer
 from sidemantic.db.duckdb import DuckDBAdapter
 
 

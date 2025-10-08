@@ -18,10 +18,6 @@ def test_postgres_adapter_missing_dependency():
 
 def test_postgres_adapter_from_url_parsing():
     """Test URL parsing (without actually connecting)."""
-    # Test that URL parsing works correctly
-    # We can't test actual connection without a postgres instance
-    url = "postgres://user:pass@localhost:5432/testdb"
-
     # Just verify the from_url method exists and accepts the URL format
     # It will fail on connection but that's ok for this test
     assert hasattr(PostgreSQLAdapter, "from_url")

@@ -86,6 +86,10 @@ ignore = ["E501", "N807"]  # N807: dunder methods like __init__ are supposed to 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: marks tests as integration tests requiring external services (deselect with '-m \"not integration\"')",
+]
+addopts = "-m 'not integration'"  # Skip integration tests by default
 
 [tool.uv]
 prerelease = "if-necessary"

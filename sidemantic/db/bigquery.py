@@ -83,8 +83,8 @@ class BigQueryAdapter(BaseDatabaseAdapter):
         emulator_host = os.getenv("BIGQUERY_EMULATOR_HOST")
         if emulator_host:
             # Use anonymous credentials for emulator
-            from google.auth.credentials import AnonymousCredentials
             from google.api_core.client_options import ClientOptions
+            from google.auth.credentials import AnonymousCredentials
 
             # Set API endpoint to emulator
             client_options = ClientOptions(api_endpoint=f"http://{emulator_host}")

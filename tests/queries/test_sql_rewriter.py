@@ -304,6 +304,41 @@ def test_rewriter_non_select_query(layer):
         rewriter.rewrite("DELETE FROM orders")
 
 
+def test_rewriter_non_strict_mode(layer):
+    """Test non-strict mode passes through non-semantic queries."""
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    layer.add_model(orders)
+
+    rewriter = QueryRewriter(layer.graph, dialect="duckdb")
+
+    # System queries should pass through in non-strict mode
+    assert rewriter.rewrite("SELECT VERSION()", strict=False) == "SELECT VERSION()"
+    assert rewriter.rewrite("SHOW TABLES", strict=False) == "SHOW TABLES"
+    assert rewriter.rewrite("SET timezone = 'UTC'", strict=False) == "SET timezone = 'UTC'"
+
+    # Queries referencing non-semantic tables should pass through
+    assert (
+        rewriter.rewrite("SELECT * FROM pg_catalog.pg_namespace", strict=False)
+        == "SELECT * FROM pg_catalog.pg_namespace"
+    )
+
+    # Invalid SQL should pass through in non-strict mode
+    assert rewriter.rewrite("SELECT FROM WHERE", strict=False) == "SELECT FROM WHERE"
+
+    # Non-SELECT queries should pass through
+    assert rewriter.rewrite("INSERT INTO foo VALUES (1)", strict=False) == "INSERT INTO foo VALUES (1)"
+
+    # But semantic queries should still be rewritten
+    result = rewriter.rewrite("SELECT orders.status FROM orders", strict=False)
+    assert "SELECT" in result
+    assert result != "SELECT orders.status FROM orders"  # Should be rewritten
+
+
 def test_rewriter_or_filters(semantic_layer):
     """Test rewriting query with OR filters."""
     sql = """

@@ -24,7 +24,7 @@ class QueryRewriter:
         self.dialect = dialect
         self.generator = SQLGenerator(graph, dialect=dialect)
 
-    def rewrite(self, sql: str) -> str:
+    def rewrite(self, sql: str, strict: bool = True) -> str:
         """Rewrite user SQL to use semantic layer.
 
         Supports:
@@ -34,21 +34,45 @@ class QueryRewriter:
 
         Args:
             sql: User SQL query
+            strict: If True, raise errors for invalid SQL or non-SELECT queries.
+                   If False, pass through queries that can't be rewritten.
 
         Returns:
             Rewritten SQL using semantic layer
 
         Raises:
             ValueError: If SQL cannot be rewritten (unsupported features, invalid references, etc.)
+                       Only raised when strict=True
         """
+        sql = sql.strip()
+
+        # Handle multiple statements (some PostgreSQL clients send these)
+        if ";" in sql:
+            statements = [s.strip() for s in sql.split(";") if s.strip()]
+            if len(statements) > 1:
+                if strict:
+                    raise ValueError("Multiple statements are not supported")
+                # In non-strict mode, pass through
+                return sql
+
         # Parse SQL
         try:
             parsed = sqlglot.parse_one(sql, dialect=self.dialect)
         except Exception as e:
-            raise ValueError(f"Failed to parse SQL: {e}")
+            if strict:
+                raise ValueError(f"Failed to parse SQL: {e}")
+            # In non-strict mode, pass through unparseable SQL (e.g., SHOW, SET commands)
+            return sql
 
         if not isinstance(parsed, exp.Select):
-            raise ValueError("Only SELECT queries are supported")
+            if strict:
+                raise ValueError("Only SELECT queries are supported")
+            # In non-strict mode, pass through non-SELECT queries
+            return sql
+
+        # In non-strict mode, pass through queries that don't reference semantic models
+        if not strict and not self._references_semantic_model(parsed):
+            return sql
 
         # Check if this is a CTE-based query or has subqueries
         has_ctes = parsed.args.get("with") is not None
@@ -218,6 +242,13 @@ class QueryRewriter:
                 custom_alias = projection.alias
             else:
                 column = projection
+
+            # Skip literal values
+            if isinstance(column, exp.Literal):
+                raise ValueError(
+                    "Literal values in SELECT are not supported in semantic layer queries.\n"
+                    "Only metrics and dimensions can be selected."
+                )
 
             # Extract table.column reference
             ref = self._resolve_column(column)
@@ -444,7 +475,13 @@ class QueryRewriter:
             # Extract the expression being aggregated
             if column.args.get("this"):
                 arg = column.args["this"]
-                arg_sql = arg.sql(dialect=self.dialect) if not isinstance(arg, exp.Star) else "*"
+                # Handle both expression objects and strings
+                if isinstance(arg, str):
+                    arg_sql = arg
+                elif isinstance(arg, exp.Star):
+                    arg_sql = "*"
+                else:
+                    arg_sql = arg.sql(dialect=self.dialect)
             else:
                 arg_sql = "*"
 

@@ -3,17 +3,16 @@
 from pathlib import Path
 
 import typer
-
-from sidemantic import __version__
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.reactive import reactive
 from textual.widgets import Button, DataTable, Footer, Header, Label, Select, Static, TextArea
 from textual.widgets import Tree as TreeWidget
 from textual_plotext import PlotextPlot
 
-from sidemantic import SemanticLayer, load_from_directory
+from sidemantic import SemanticLayer, __version__, load_from_directory
 
 # Example queries
 EXAMPLE_QUERIES = {
@@ -23,17 +22,22 @@ EXAMPLE_QUERIES = {
     "Custom": "-- Write your custom query here\nSELECT \n  \nFROM ",
 }
 
+
 def version_callback(value: bool):
     """Print version and exit."""
     if value:
         typer.echo(f"sidemantic {__version__}")
         raise typer.Exit()
 
+
 app = typer.Typer(help="Sidemantic: SQL-first semantic layer")
+
 
 @app.callback()
 def main(
-    version: bool = typer.Option(None, "--version", "-v", callback=version_callback, is_eager=True, help="Show version"),
+    version: bool = typer.Option(
+        None, "--version", "-v", callback=version_callback, is_eager=True, help="Show version"
+    ),
 ):
     """Sidemantic CLI."""
     pass
@@ -52,8 +56,7 @@ class SidequeryWorkbench(App):
     }
 
     #sidebar {
-        width: 38;
-        border-right: solid $primary;
+        border-right: solid $accent;
     }
 
     #query-panel {
@@ -165,6 +168,8 @@ class SidequeryWorkbench(App):
         Binding("ctrl+r", "run_query", "Run Query"),
     ]
 
+    sidebar_width = reactive(38)
+
     def __init__(self, directory: Path, show_sql: bool = False, demo_mode: bool = False):
         super().__init__()
         self.directory = directory
@@ -172,6 +177,13 @@ class SidequeryWorkbench(App):
         self.last_result = None
         self.last_rendered_sql = None
         self.demo_mode = demo_mode
+        self.dragging_sidebar = False
+        self.drag_start_x = 0
+
+    def watch_sidebar_width(self, width: int) -> None:
+        """Update sidebar width when reactive value changes."""
+        sidebar = self.query_one("#sidebar")
+        sidebar.styles.width = width
 
     def compose(self) -> ComposeResult:
         """Create child widgets."""
@@ -284,9 +296,11 @@ class SidequeryWorkbench(App):
                 except ModuleNotFoundError:
                     # Fall back to dev environment import
                     import sys
+
                     demo_data_path = self.directory / "demo_data.py"
                     if demo_data_path.exists():
                         import importlib.util
+
                         spec = importlib.util.spec_from_file_location("demo_data", demo_data_path)
                         demo_data_module = importlib.util.module_from_spec(spec)
                         sys.modules["demo_data"] = demo_data_module
@@ -306,7 +320,9 @@ class SidequeryWorkbench(App):
                     columns = [desc[0] for desc in demo_conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
 
                     # Create table in target connection
-                    create_sql = demo_conn.execute(f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'").fetchone()[0]
+                    create_sql = demo_conn.execute(
+                        f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'"
+                    ).fetchone()[0]
                     self.layer.conn.execute(create_sql)
 
                     # Insert data if there are rows
@@ -501,7 +517,18 @@ class SidequeryWorkbench(App):
             tree.tooltip = node.data["tooltip"]
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        """Update tree tooltip on hover."""
+        """Handle mouse move for sidebar resize and tree tooltips."""
+        # Handle sidebar dragging
+        if self.dragging_sidebar:
+            # Calculate new width based on mouse position
+            new_width = event.screen_x + 1
+            # Clamp between reasonable values
+            new_width = max(20, min(100, new_width))
+            self.sidebar_width = new_width
+            event.stop()
+            return
+
+        # Update tree tooltip on hover
         tree = self.query_one("#tree", TreeWidget)
 
         # Get the widget under the mouse
@@ -526,6 +553,24 @@ class SidequeryWorkbench(App):
                             tree.tooltip = node.data["tooltip"]
                 except Exception:
                     pass
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Start sidebar resize on border click."""
+        sidebar = self.query_one("#sidebar")
+        # Check if clicking near right edge of sidebar
+        sidebar_region = sidebar.region
+        if sidebar_region.x <= event.screen_x <= sidebar_region.x + sidebar_region.width + 1:
+            # Check if near right edge (within 2 columns)
+            if abs(event.screen_x - (sidebar_region.x + sidebar_region.width)) <= 1:
+                self.dragging_sidebar = True
+                self.drag_start_x = event.screen_x
+                event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        """Stop sidebar resize."""
+        if self.dragging_sidebar:
+            self.dragging_sidebar = False
+            event.stop()
 
     def action_run_query(self) -> None:
         """Execute the SQL query and display results."""
@@ -1235,8 +1280,9 @@ def mcp_serve(
                 from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
             except ModuleNotFoundError:
                 # Fall back to dev environment import
-                import sys
                 import importlib.util
+                import sys
+
                 demo_data_path = directory / "demo_data.py"
                 if demo_data_path.exists():
                     spec = importlib.util.spec_from_file_location("demo_data", demo_data_path)
@@ -1258,7 +1304,9 @@ def mcp_serve(
                 columns = [desc[0] for desc in demo_conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
 
                 # Create table in target connection
-                create_sql = demo_conn.execute(f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'").fetchone()[0]
+                create_sql = demo_conn.execute(
+                    f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'"
+                ).fetchone()[0]
                 layer.conn.execute(create_sql)
 
                 # Insert data if there are rows

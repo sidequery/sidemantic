@@ -32,11 +32,23 @@ This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
 - Ruff should be in dev dependencies (`[dependency-groups] dev`)
 - DO NOT add dev tools to main dependencies unless explicitly requested
 - Optional features use `[project.optional-dependencies]`:
-  - `workbench` - textual, plotext (for TUI)
-  - `serve` - riffq, pyarrow (for PostgreSQL server)
-  - `mcp` - mcp[cli] (for MCP server, requires pydantic>=2.11 incompatible with Pyodide)
+  - `workbench` - textual, plotext, textual-plotext (for TUI, NOT Pyodide compatible)
+  - `serve` - mcp[cli], riffq, pyarrow (for PostgreSQL server, NOT Pyodide compatible)
+  - `dev` - pytest, ruff, pandas, numpy (for development)
+
+**CRITICAL: Pyodide Compatibility Rules**
+- **Core dependencies** (in main `dependencies` list) MUST work in Pyodide/WASM
+- **Optional dependencies** can use packages incompatible with Pyodide (textual, riffq, pyarrow, mcp)
+- **ALL imports** of optional deps MUST be lazy (inside functions, NOT at module level)
+- **Test**: `from sidemantic import Model, Dimension, Metric` must work without any optional deps
 
 ## Pyodide Compatibility
+
+**Import Structure:**
+- `sidemantic/__init__.py` - Only imports core classes (Model, Dimension, etc.)
+- `sidemantic/cli.py` - Imports typer (core dep) at top, workbench/server imports inside command functions
+- `sidemantic/workbench/__init__.py` - Lazy imports textual inside `run_workbench()` function
+- `sidemantic/server/` - Never imported unless `sidemantic serve` command is run
 
 **Pyodide typing-extensions issue:**
 - Pyodide has typing-extensions==4.11.0
@@ -45,8 +57,8 @@ This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
 - inflect<7.2 constraint in core deps marked with `# PYODIDE:` comment
 
 **Version constraints with "PYODIDE:" comments are REQUIRED:**
-- Heavy deps (textual, riffq) are optional to avoid Pyodide conflicts
-- Pyodide CI builds local wheel and installs it (same method as dashboard: pydantic<2.10 then sidemantic deps=False)
+- Heavy deps (textual, riffq, mcp) are optional to avoid Pyodide conflicts
+- Pyodide CI builds local wheel and installs it with `deps=False`
 - This ensures code changes are tested in Pyodide before publish
 - If adding new core deps, check they work in Pyodide or make them optional
 

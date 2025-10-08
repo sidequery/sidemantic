@@ -32,9 +32,8 @@ import micropip
 try:
     import sidemantic  # type: ignore
 except ModuleNotFoundError:
-    # Install pydantic<2.10 to avoid typing-extensions conflict
-    # (pydantic-core 2.41+ needs typing-extensions>=4.14.1 but Pyodide has 4.11.0)
-    await micropip.install("pydantic<2.10")
+    # Install sidemantic without deps - Marimo loads pydantic from Pyodide packages
+    # (avoids typing-extensions conflict: pydantic-core 2.41+ needs >=4.14.1, Pyodide has 4.11.0)
     await micropip.install("sidemantic", deps=False)
     import sidemantic  # type: ignore
 ```

@@ -35,8 +35,8 @@ jobs:
           async function main() {
             const pyodide = await loadPyodide();
 
-            console.log('Loading micropip...');
-            await pyodide.loadPackage('micropip');
+            console.log('Loading Pyodide packages (pydantic has compatible typing-extensions)...');
+            await pyodide.loadPackage(['micropip', 'pydantic', 'pyyaml', 'jinja2']);
 
             // Find the built wheel
             const wheels = globSync('dist/*.whl');
@@ -51,13 +51,12 @@ jobs:
             const wheelName = wheelPath.split('/').pop();
             pyodide.FS.writeFile(`/tmp/${wheelName}`, wheelData);
 
-            console.log('Testing sidemantic install (same as dashboard)...');
+            console.log('Installing missing deps and sidemantic...');
             await pyodide.runPythonAsync(`
               import micropip
-              # Install pydantic<2.10 to avoid typing-extensions conflict
-              # (pydantic-core 2.41+ needs typing-extensions>=4.14.1 but Pyodide has 4.11.0)
-              await micropip.install('pydantic<2.10')
-              # Then install sidemantic from local wheel without deps (same as dashboard.qmd)
+              # Install missing pure-Python deps
+              await micropip.install(['sqlglot', 'lkml', 'inflect'], deps=False)
+              # Install sidemantic from local wheel without deps
               await micropip.install('emfs:/tmp/` + wheelName + `', deps=False)
             `);
 

@@ -383,7 +383,9 @@ class SemanticLayer:
         graph = adapter.parse(path)
 
         # If connection not provided as parameter, try to read from YAML file
-        if connection is None:
+        # (skip for .sql files which may have multi-document YAML frontmatter)
+        path_obj = Path(path)
+        if connection is None and path_obj.suffix in (".yml", ".yaml"):
             with open(path) as f:
                 content = f.read()
             # Substitute environment variables

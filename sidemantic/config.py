@@ -24,6 +24,15 @@ class PostgreSQLConnection(BaseModel):
     password: str = Field(..., description="Password")
 
 
+class BigQueryConnection(BaseModel):
+    """BigQuery connection configuration."""
+
+    type: Literal["bigquery"] = "bigquery"
+    project_id: str = Field(..., description="GCP project ID")
+    dataset_id: str | None = Field(default=None, description="Default dataset ID (optional)")
+    location: str = Field(default="US", description="BigQuery location")
+
+
 class PostgresServerConfig(BaseModel):
     """PostgreSQL wire protocol server configuration (ALPHA).
 
@@ -35,7 +44,7 @@ class PostgresServerConfig(BaseModel):
     password: str | None = Field(default=None, description="Password for authentication (optional)")
 
 
-Connection = DuckDBConnection | PostgreSQLConnection
+Connection = DuckDBConnection | PostgreSQLConnection | BigQueryConnection
 
 
 class SidemanticConfig(BaseModel):
@@ -192,5 +201,8 @@ def build_connection_string(config: SidemanticConfig) -> str:
             f"postgres://{config.connection.username}{password_part}@"
             f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
         )
+    elif isinstance(config.connection, BigQueryConnection):
+        dataset_part = f"/{config.connection.dataset_id}" if config.connection.dataset_id else ""
+        return f"bigquery://{config.connection.project_id}{dataset_part}"
     else:
         raise ValueError(f"Unknown connection type: {type(config.connection)}")

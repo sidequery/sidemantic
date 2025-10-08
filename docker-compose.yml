@@ -15,6 +15,18 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  bigquery:
+    image: ghcr.io/goccy/bigquery-emulator:latest
+    platform: linux/amd64
+    ports:
+      - "9050:9050"
+    command: ["--project=test-project", "--dataset=test_dataset"]
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=:9050"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   test:
     build:
       context: .
@@ -22,9 +34,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      bigquery:
+        condition: service_healthy
     environment:
       POSTGRES_TEST: "1"
       POSTGRES_URL: "postgres://test:test@postgres:5432/sidemantic_test"
+      BIGQUERY_TEST: "1"
+      BIGQUERY_EMULATOR_HOST: "bigquery:9050"
+      BIGQUERY_PROJECT: "test-project"
+      BIGQUERY_DATASET: "test_dataset"
     command: pytest -m integration -v
 
 volumes:

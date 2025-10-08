@@ -39,6 +39,10 @@ postgres = [
     "psycopg[binary]>=3.0.0",
     "pyarrow>=14.0.0",  # For Arrow support
 ]
+bigquery = [
+    "google-cloud-bigquery>=3.0.0",
+    "pyarrow>=14.0.0",  # For Arrow support
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -57,7 +57,10 @@ def main(
 def workbench(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     demo: bool = typer.Option(False, "--demo", help="Launch with demo data (multi-format example)"),
-    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
 ):
     """
     Interactive semantic layer workbench with SQL editor and charting.
@@ -67,7 +70,8 @@ def workbench(
     Examples:
       sidemantic workbench semantic_models/    # Your own models
       sidemantic workbench --demo              # Try the demo
-      sidemantic workbench ./models --db data/warehouse.db  # With database
+      sidemantic workbench ./models --db data/warehouse.db  # With DuckDB
+      sidemantic workbench ./models --connection "postgres://localhost:5432/db"
       uvx sidemantic workbench --demo          # Run demo without installing
     """
     from sidemantic.workbench import run_workbench
@@ -97,17 +101,18 @@ def workbench(
         raise typer.Exit(1)
     else:
         # Build connection string from args or config
-        if db:
+        connection_str = None
+        if connection:
+            # Explicit --connection arg provided
+            connection_str = connection
+        elif db:
             # Explicit --db arg provided
-            connection = f"duckdb:///{db.absolute()}"
+            connection_str = f"duckdb:///{db.absolute()}"
         elif _loaded_config and _loaded_config.connection:
             # Use connection from config
-            connection = build_connection_string(_loaded_config)
-        else:
-            # Default behavior
-            connection = None
+            connection_str = build_connection_string(_loaded_config)
 
-        run_workbench(directory, connection=connection)
+        run_workbench(directory, connection=connection_str)
 
 
 @app.command()
@@ -150,27 +155,46 @@ def query(
     directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
     sql: str = typer.Option(..., "--sql", "-q", help="SQL query to execute"),
     output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
 ):
     """
     Execute a SQL query and output results as CSV.
 
-    Example: sidemantic query /path/to/models --sql "SELECT orders.revenue FROM orders"
+    Examples:
+      sidemantic query models/ --sql "SELECT revenue FROM orders"
+      sidemantic query models/ --sql "SELECT * FROM orders" --output results.csv
+      sidemantic query models/ --connection "postgres://localhost:5432/db" --sql "SELECT revenue FROM orders"
+      sidemantic query models/ --db data.duckdb --sql "SELECT revenue FROM orders"
     """
     if not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
 
     try:
-        # Try to find database file
-        db_path = None
-        data_dir = directory / "data"
-        if data_dir.exists():
-            db_files = list(data_dir.glob("*.db"))
-            if db_files:
-                db_path = f"duckdb:///{db_files[0].absolute()}"
+        # Build connection string from args or config
+        connection_str = None
+        if connection:
+            # Explicit --connection arg provided
+            connection_str = connection
+        elif db:
+            # Explicit --db arg provided
+            connection_str = f"duckdb:///{db.absolute()}"
+        elif _loaded_config and _loaded_config.connection:
+            # Use connection from config
+            connection_str = build_connection_string(_loaded_config)
+        else:
+            # Try to find database file in data/
+            data_dir = directory / "data"
+            if data_dir.exists():
+                db_files = list(data_dir.glob("*.db"))
+                if db_files:
+                    connection_str = f"duckdb:///{db_files[0].absolute()}"
 
         # Load semantic layer
-        layer = SemanticLayer(connection=db_path)
+        layer = SemanticLayer(connection=connection_str)
         load_from_directory(layer, str(directory))
 
         if not layer.graph.models:
@@ -352,7 +376,10 @@ def mcp_serve(
 def serve(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     demo: bool = typer.Option(False, "--demo", help="Use demo data"),
-    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
     port: int = typer.Option(None, "--port", "-p", help="Port to listen on (overrides config)"),
     username: str = typer.Option(None, "--username", "-u", help="Username for authentication (overrides config)"),
     password: str = typer.Option(None, "--password", help="Password for authentication (overrides config)"),
@@ -366,6 +393,8 @@ def serve(
     Examples:
       sidemantic serve ./models --port 5433
       sidemantic serve ./models --db data/warehouse.db
+      sidemantic serve ./models --connection "postgres://localhost:5432/analytics"
+      sidemantic serve ./models --connection "bigquery://project/dataset" --port 5433
       sidemantic serve --demo
       sidemantic serve ./models --username user --password secret
     """
@@ -399,24 +428,28 @@ def serve(
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
 
-    # Resolve db from args or config
-    db_resolved = None
-    if db:
-        db_resolved = db
+    # Build connection string from args or config
+    connection_str = None
+    if connection:
+        # Explicit --connection arg provided
+        connection_str = connection
+    elif db:
+        # Explicit --db arg provided
+        connection_str = f"duckdb:///{db.absolute()}"
     elif _loaded_config and _loaded_config.connection:
-        from sidemantic.config import DuckDBConnection
-
-        if isinstance(_loaded_config.connection, DuckDBConnection):
-            db_resolved = Path(_loaded_config.connection.path) if _loaded_config.connection.path != ":memory:" else None
+        # Use connection from config
+        connection_str = build_connection_string(_loaded_config)
+    else:
+        # Default to in-memory DuckDB
+        connection_str = "duckdb:///:memory:"
 
     # Resolve port, username, password from args or config
     port_resolved = port if port is not None else (_loaded_config.pg_server.port if _loaded_config else 5433)
     username_resolved = username or (_loaded_config.pg_server.username if _loaded_config else None)
     password_resolved = password or (_loaded_config.pg_server.password if _loaded_config else None)
 
-    # Create semantic layer with explicit db or in-memory
-    db_path = f"duckdb:///{Path(db_resolved).absolute()}" if db_resolved else "duckdb:///:memory:"
-    layer = SemanticLayer(connection=db_path)
+    # Create semantic layer with connection string
+    layer = SemanticLayer(connection=connection_str)
 
     # Load models
     load_from_directory(layer, str(directory))

@@ -750,6 +750,20 @@ class SidequeryWorkbench(App):
                 # Clear results when switching query tabs
                 table = self.query_one("#results-table", DataTable)
                 table.clear(columns=True)
+
+                # Clear SQL display
+                sql_display = self.query_one("#sql-display", TextArea)
+                sql_display.text = ""
+
+                # Clear chart
+                try:
+                    chart = self.query_one("#chart-plot", PlotextPlot)
+                    chart.plt.clear_data()
+                    chart.plt.clear_figure()
+                    chart.refresh()
+                except Exception:
+                    pass
+
                 self.last_result = None
                 self.last_rendered_sql = None
 

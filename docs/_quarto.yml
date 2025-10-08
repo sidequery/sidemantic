@@ -31,6 +31,12 @@ website:
             href: relationships.qmd
           - text: "SQL Queries"
             href: sql-queries.qmd
+      - text: "CLI"
+        menu:
+          - text: "Overview"
+            href: cli.qmd
+          - text: "Workbench"
+            href: workbench.qmd
       - text: "Reference"
         menu:
           - text: "Python API"

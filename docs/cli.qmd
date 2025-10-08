@@ -1,0 +1,191 @@
+---
+title: "Command Line Interface"
+---
+
+The Sidemantic CLI provides tools for working with semantic layers from the terminal.
+
+## Installation
+
+```bash
+pip install sidemantic
+# or
+uv add sidemantic
+```
+
+## Quick Start
+
+```bash
+# Get version
+sidemantic --version
+
+# Launch workbench with your models
+sidemantic workbench ./models
+
+# Try the demo
+sidemantic workbench --demo
+```
+
+## Commands
+
+### `workbench`
+
+Interactive TUI for exploring models, writing SQL queries, and visualizing results.
+
+```bash
+# Launch with your models
+sidemantic workbench ./models
+
+# Try demo mode
+sidemantic workbench --demo
+
+# Run without installing (using uvx)
+uvx sidemantic workbench --demo
+```
+
+See [Workbench](workbench.qmd) for detailed guide.
+
+### `query`
+
+Execute SQL queries and output results as CSV.
+
+```bash
+# Query to stdout
+sidemantic query ./models \
+  --sql "SELECT orders.revenue, customers.region FROM orders"
+
+# Save to file
+sidemantic query ./models \
+  --sql "SELECT * FROM orders" \
+  --output results.csv
+```
+
+Options:
+- `--sql`, `-q`: SQL query to execute (required)
+- `--output`, `-o`: Output file path (default: stdout)
+
+### `validate`
+
+Validate semantic layer definitions and show errors/warnings.
+
+```bash
+# Basic validation
+sidemantic validate ./models
+
+# Verbose output with detailed info
+sidemantic validate ./models --verbose
+```
+
+Options:
+- `--verbose`, `-v`: Show detailed validation results
+
+### `info`
+
+Display quick summary of the semantic layer.
+
+```bash
+sidemantic info ./models
+```
+
+Shows:
+- Number of models
+- List of models and their metrics
+- Relationships between models
+
+### `serve`
+
+Start a PostgreSQL-compatible server for your semantic layer.
+
+```bash
+# Basic server
+sidemantic serve ./models
+
+# Custom port
+sidemantic serve ./models --port 5433
+
+# With authentication
+sidemantic serve ./models --username admin --password secret
+
+# Demo mode
+sidemantic serve --demo
+```
+
+Options:
+- `--port`, `-p`: Port to listen on (default: 5433)
+- `--username`, `-u`: Username for authentication (optional)
+- `--password`: Password for authentication (optional)
+- `--demo`: Use demo data
+
+::: {.callout-note}
+Requires optional dependencies: `pip install sidemantic[serve]`
+:::
+
+Connect with any PostgreSQL client:
+
+```bash
+# psql
+psql -h 127.0.0.1 -p 5433 -U admin -d sidemantic
+
+# DBeaver, Tableau, Power BI, etc.
+# Host: 127.0.0.1
+# Port: 5433
+# Database: sidemantic
+```
+
+The server exposes:
+- Models as tables in `semantic_layer` schema
+- Dimensions and metrics as columns
+- Full semantic layer query rewriting
+- PostgreSQL catalog compatibility
+
+### `mcp-serve`
+
+Start a Model Context Protocol (MCP) server for AI integration.
+
+```bash
+# Serve your models
+sidemantic mcp-serve ./models
+
+# With DuckDB database
+sidemantic mcp-serve ./models --db data/warehouse.db
+
+# Demo mode
+sidemantic mcp-serve --demo
+```
+
+Options:
+- `--db`: Path to DuckDB database file
+- `--demo`: Use demo data
+
+The MCP server provides:
+- `list_models`: List all available models
+- `get_models`: Get detailed model information
+- `run_query`: Execute SQL queries
+
+Configure in Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "sidemantic": {
+      "command": "sidemantic",
+      "args": ["mcp-serve", "./models"]
+    }
+  }
+}
+```
+
+## Shell Completion
+
+Install completion for your shell:
+
+```bash
+sidemantic --install-completion
+```
+
+Supports bash, zsh, fish, and PowerShell.
+
+## Next Steps
+
+- [Workbench](workbench.qmd) - Interactive TUI guide
+- [SQL Queries](sql-queries.qmd) - Query syntax reference
+- [Python API](python-api.qmd) - Programmatic usage

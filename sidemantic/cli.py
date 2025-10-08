@@ -3,16 +3,25 @@
 from pathlib import Path
 
 import typer
-from textual import events
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.reactive import reactive
-from textual.widgets import Button, DataTable, Footer, Header, Label, Select, Static, TextArea
-from textual.widgets import Tree as TreeWidget
-from textual_plotext import PlotextPlot
 
 from sidemantic import SemanticLayer, __version__, load_from_directory
+
+# Try to import textual components (optional dependency)
+try:
+    from textual import events
+    from textual.app import App, ComposeResult
+    from textual.binding import Binding
+    from textual.containers import Horizontal, Vertical, VerticalScroll
+    from textual.reactive import reactive
+    from textual.widgets import Button, DataTable, Footer, Header, Label, Select, Static, TextArea
+    from textual.widgets import Tree as TreeWidget
+    from textual_plotext import PlotextPlot
+
+    TEXTUAL_AVAILABLE = True
+except ImportError:
+    TEXTUAL_AVAILABLE = False
+    # Create dummy base class for type checking
+    App = object  # type: ignore
 
 # Example queries
 EXAMPLE_QUERIES = {
@@ -43,8 +52,10 @@ def main(
     pass
 
 
-class SidequeryWorkbench(App):
-    """Sidequery Workbench - Interactive semantic layer workbench."""
+if TEXTUAL_AVAILABLE:
+
+    class SidequeryWorkbench(App):
+        """Sidequery Workbench - Interactive semantic layer workbench."""
 
     CSS = """
     Screen {
@@ -904,9 +915,8 @@ class SidequeryWorkbench(App):
         except Exception:
             pass
 
-
-class ValidationApp(App):
-    """Interactive validation results viewer."""
+    class ValidationApp(App):
+        """Interactive validation results viewer."""
 
     CSS = """
     Screen {
@@ -1082,6 +1092,12 @@ def workbench(
       sidemantic workbench --demo              # Try the demo
       uvx sidemantic workbench --demo          # Run demo without installing
     """
+    if not TEXTUAL_AVAILABLE:
+        typer.echo(
+            "Error: workbench requires optional dependencies. Install with: pip install sidemantic[workbench]", err=True
+        )
+        raise typer.Exit(1)
+
     if demo:
         # Use packaged demo models (just the YAML/LookML files, not the DB)
         import sidemantic
@@ -1123,6 +1139,12 @@ def tree(
     """
     Alias for 'workbench' command (deprecated).
     """
+    if not TEXTUAL_AVAILABLE:
+        typer.echo(
+            "Error: tree requires optional dependencies. Install with: pip install sidemantic[workbench]", err=True
+        )
+        raise typer.Exit(1)
+
     if not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
@@ -1141,6 +1163,12 @@ def validate(
 
     Shows errors, warnings, and optionally detailed info in an interactive view.
     """
+    if not TEXTUAL_AVAILABLE:
+        typer.echo(
+            "Error: validate requires optional dependencies. Install with: pip install sidemantic[workbench]", err=True
+        )
+        raise typer.Exit(1)
+
     if not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
@@ -1350,6 +1378,238 @@ def mcp_serve(
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
+
+
+@app.command()
+def serve(
+    directory: Path = typer.Argument(None, help="Directory containing semantic layer files"),
+    demo: bool = typer.Option(False, "--demo", help="Use demo data"),
+    port: int = typer.Option(5433, "--port", "-p", help="Port to listen on"),
+    username: str = typer.Option(None, "--username", "-u", help="Username for authentication (optional)"),
+    password: str = typer.Option(None, "--password", help="Password for authentication (optional)"),
+):
+    """
+    Start a PostgreSQL-compatible server for the semantic layer.
+
+    Exposes your semantic layer over the PostgreSQL wire protocol, allowing
+    you to connect with any PostgreSQL client (psql, DBeaver, Tableau, etc.).
+
+    Examples:
+      sidemantic serve ./models --port 5433
+      sidemantic serve --demo
+      sidemantic serve ./models --username user --password secret
+    """
+    try:
+        import pyarrow as pa
+        import riffq
+    except ImportError:
+        typer.echo("Error: riffq is not installed. Install with: pip install sidemantic[serve]", err=True)
+        raise typer.Exit(1)
+
+    import logging
+
+    logging.basicConfig(level=logging.INFO)
+
+    # Resolve directory
+    if demo:
+        import sidemantic
+
+        package_dir = Path(sidemantic.__file__).parent
+        demo_dir = package_dir / "examples" / "multi_format_demo"
+
+        if not demo_dir.exists():
+            dev_demo_dir = package_dir.parent / "examples" / "multi_format_demo"
+            if dev_demo_dir.exists():
+                demo_dir = dev_demo_dir
+            else:
+                typer.echo("Error: Demo models not found", err=True)
+                raise typer.Exit(1)
+
+        directory = demo_dir
+    elif directory is None:
+        typer.echo("Error: Either provide a directory or use --demo flag", err=True)
+        raise typer.Exit(1)
+    elif not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    # Create semantic layer
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+
+    # Load models
+    load_from_directory(layer, str(directory))
+
+    if not layer.graph.models:
+        typer.echo("Error: No models found", err=True)
+        raise typer.Exit(1)
+
+    # Populate demo data if needed
+    if demo:
+        try:
+            from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
+        except ModuleNotFoundError:
+            import importlib.util
+            import sys
+
+            demo_data_path = directory / "demo_data.py"
+            if demo_data_path.exists():
+                spec = importlib.util.spec_from_file_location("demo_data", demo_data_path)
+                demo_data_module = importlib.util.module_from_spec(spec)
+                sys.modules["demo_data"] = demo_data_module
+                spec.loader.exec_module(demo_data_module)
+                create_demo_database = demo_data_module.create_demo_database
+            else:
+                raise ImportError(f"Could not find demo_data.py at {demo_data_path}")
+
+        demo_conn = create_demo_database()
+        for table in ["customers", "products", "orders"]:
+            rows = demo_conn.execute(f"SELECT * FROM {table}").fetchall()
+            columns = [desc[0] for desc in demo_conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
+
+            create_sql = demo_conn.execute(f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'").fetchone()[
+                0
+            ]
+            layer.conn.execute(create_sql)
+
+            if rows:
+                placeholders = ", ".join(["?" for _ in columns])
+                layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+
+    # Define Connection class
+    class SemanticLayerConnection(riffq.BaseConnection):
+        def handle_auth(self, user, pwd, host, database=None, callback=callable):
+            # If username/password are set, check them
+            if username is not None and password is not None:
+                callback(user == username and pwd == password)
+            else:
+                # No auth required
+                callback(True)
+
+        def handle_connect(self, ip, port, callback=callable):
+            callback(True)
+
+        def handle_disconnect(self, ip, port, callback=callable):
+            callback(True)
+
+        def _handle_query(self, sql, callback, **kwargs):
+            try:
+                # Execute through semantic layer
+                from sidemantic.sql.query_rewriter import QueryRewriter
+
+                rewriter = QueryRewriter(layer.graph, dialect=layer.dialect)
+                rendered_sql = rewriter.rewrite(sql)
+
+                # Execute the query
+                result = layer.conn.execute(rendered_sql)
+
+                # Convert to Arrow record batch
+                reader = result.fetch_record_batch()
+                self.send_reader(reader, callback)
+
+            except Exception as exc:
+                logging.exception("Error executing query")
+                # Return error to client
+                batch = self.arrow_batch([pa.array(["ERROR"]), pa.array([str(exc)])], ["error", "message"])
+                self.send_reader(batch, callback)
+
+        def handle_query(self, sql, callback=callable, **kwargs):
+            self.executor.submit(self._handle_query, sql, callback, **kwargs)
+
+    # Type mapping from DuckDB to PostgreSQL
+    def map_type(duckdb_type: str) -> str:
+        """Map DuckDB types to PostgreSQL types."""
+        type_lower = duckdb_type.lower()
+        if "int" in type_lower or "integer" in type_lower:
+            if "big" in type_lower:
+                return "bigint"
+            elif "small" in type_lower:
+                return "smallint"
+            return "integer"
+        elif "varchar" in type_lower or "text" in type_lower:
+            return "text"
+        elif "decimal" in type_lower or "numeric" in type_lower:
+            return "numeric"
+        elif "double" in type_lower or "float" in type_lower:
+            return "double precision"
+        elif "date" in type_lower:
+            return "date"
+        elif "timestamp" in type_lower:
+            return "timestamp"
+        elif "bool" in type_lower:
+            return "boolean"
+        return "text"  # Default fallback
+
+    # Start server
+    server = riffq.RiffqServer(f"127.0.0.1:{port}", connection_cls=SemanticLayerConnection)
+
+    # Register catalog
+    typer.echo("Registering semantic layer catalog...", err=True)
+
+    # Register database
+    server._server.register_database("sidemantic")
+
+    # Register models as tables in the 'semantic_layer' schema
+    server._server.register_schema("sidemantic", "semantic_layer")
+
+    for model_name, model in layer.graph.models.items():
+        columns = []
+
+        # Add dimensions
+        for dim in model.dimensions:
+            # Map dimension type to SQL type
+            if dim.type == "time":
+                sql_type = "timestamp"
+            elif dim.type == "number":
+                sql_type = "numeric"
+            elif dim.type == "boolean":
+                sql_type = "boolean"
+            else:
+                sql_type = "text"
+
+            columns.append({dim.name: {"type": sql_type, "nullable": True}})
+
+        # Add metrics
+        for metric in model.metrics:
+            # Metrics are typically numeric
+            columns.append({metric.name: {"type": "numeric", "nullable": True}})
+
+        server._server.register_table("sidemantic", "semantic_layer", model_name, columns)
+        typer.echo(f"  Registered table: semantic_layer.{model_name}", err=True)
+
+    # Also register the magic 'metrics' table if there are graph-level metrics
+    if layer.graph.metrics:
+        metric_columns = []
+        for metric in layer.graph.metrics:
+            metric_columns.append({metric.name: {"type": "numeric", "nullable": True}})
+
+        # Add all dimension columns from all models
+        all_dims = set()
+        for model in layer.graph.models.values():
+            for dim in model.dimensions:
+                all_dims.add((dim.name, dim.type))
+
+        for dim_name, dim_type in all_dims:
+            if dim_type == "time":
+                sql_type = "timestamp"
+            elif dim_type == "number":
+                sql_type = "numeric"
+            elif dim_type == "boolean":
+                sql_type = "boolean"
+            else:
+                sql_type = "text"
+            metric_columns.append({dim_name: {"type": sql_type, "nullable": True}})
+
+        server._server.register_table("sidemantic", "semantic_layer", "metrics", metric_columns)
+        typer.echo("  Registered table: semantic_layer.metrics", err=True)
+
+    typer.echo(f"\nStarting PostgreSQL-compatible server on 127.0.0.1:{port}", err=True)
+    if username:
+        typer.echo(f"Authentication: username={username}", err=True)
+    else:
+        typer.echo("Authentication: disabled (any username/password accepted)", err=True)
+    typer.echo(f"\nConnect with: psql -h 127.0.0.1 -p {port} -U {username or 'any'} -d sidemantic\n", err=True)
+
+    server.start(catalog_emulation=True)
 
 
 if __name__ == "__main__":

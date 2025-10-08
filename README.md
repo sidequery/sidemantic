@@ -91,6 +91,34 @@ Perfect for:
 - Generating reports
 - CI/CD workflows
 
+### PostgreSQL Server
+
+Expose your semantic layer over the PostgreSQL wire protocol:
+
+```bash
+# Start server (demo mode)
+sidemantic serve --demo
+
+# Start with your models
+sidemantic serve semantic_models/ --port 5433
+
+# With authentication
+sidemantic serve semantic_models/ --username admin --password secret
+```
+
+Connect with any PostgreSQL client:
+```bash
+psql -h 127.0.0.1 -p 5433 -U admin -d sidemantic
+```
+
+**Note:** Requires `pip install sidemantic[serve]`
+
+Perfect for:
+- BI tools (Tableau, Power BI, Looker, Metabase)
+- SQL clients (DBeaver, DataGrip, pgAdmin)
+- Python libraries (psycopg2, SQLAlchemy)
+- Any PostgreSQL-compatible tool
+
 ### Other Commands
 
 ```bash
@@ -99,6 +127,9 @@ sidemantic validate semantic_models/
 
 # Quick info
 sidemantic info semantic_models/
+
+# MCP server for AI integration
+sidemantic mcp-serve semantic_models/
 ```
 
 ## Quick Start
@@ -559,12 +590,12 @@ While the SQL generation layer uses SQLGlot and can transpile to other dialects,
 - [x] DuckDB integration
 - [x] Pre-aggregations with automatic query routing
 - [x] Predicate pushdown with SQLGlot parsing
+- [x] PostgreSQL wire protocol server for broader client compatibility
 
 ## Roadmap
 
 - Pre-aggregation materialization and refresh scheduling
 - Additional database engine support (Postgres, MySQL, Snowflake, BigQuery, etc.)
-- Postgres wire protocol proxy for broader client compatibility
 - REST API endpoints for HTTP-based queries
 
 ## Examples

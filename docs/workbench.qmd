@@ -1,0 +1,238 @@
+---
+title: "Workbench"
+---
+
+The Sidemantic Workbench is an interactive terminal UI for exploring semantic layers, writing SQL queries, and visualizing results.
+
+## Quick Start
+
+```bash
+# Launch with your models
+sidemantic workbench ./models
+
+# Try the demo
+sidemantic workbench --demo
+
+# Run without installing
+uvx sidemantic workbench --demo
+```
+
+## Interface Overview
+
+The workbench has three main sections:
+
+### 1. Models Sidebar (Left)
+
+Explore your semantic layer structure:
+
+- **Models tree** - Browse all models in your semantic layer
+- **Expandable nodes** - Click to view dimensions and metrics
+- **Drag to resize** - Adjust sidebar width by dragging the right edge
+
+The sidebar displays:
+- Model names
+- Dimensions (with types)
+- Metrics (with aggregation types)
+- Relationships
+
+### 2. Query Editor (Top Right)
+
+Write and manage SQL queries with multiple tabs:
+
+**Query Tabs:**
+- **Timeseries** - Revenue by month and region
+- **Top Customers** - Customers ordered by revenue
+- **Aggregates** - Metrics grouped by dimension
+- **Custom** - Blank template for your own queries
+
+Features:
+- SQL syntax highlighting
+- Line numbers
+- Auto-indent
+- SQL keyword completion
+
+**Keyboard Shortcuts:**
+- `Ctrl+R` - Run query
+- `Ctrl+C` - Quit
+
+### 3. Results Panel (Bottom Right)
+
+View query results in three ways:
+
+#### Table View
+
+- Scrollable data table with column headers
+- Shows all rows and columns from query results
+- Automatically updates when you run a query
+
+#### Chart View
+
+Interactive visualizations with configurable axes:
+
+**Configuration:**
+- **X Axis** - Select dimension for x-axis (dropdown of available columns)
+- **Y Axis** - Select metric for y-axis (dropdown of available columns)
+- **Type** - Choose visualization:
+  - **Bar** - Vertical bar chart
+  - **Line** - Line plot
+  - **Scatter** - Scatter plot
+
+The chart auto-updates when you change configuration or run a new query.
+
+#### SQL View
+
+See the compiled SQL that Sidemantic generates:
+
+- Shows final SQL sent to database
+- Displays CTEs (Common Table Expressions) for model queries
+- Reveals automatic joins between models
+- Syntax highlighted and read-only
+
+This helps you:
+- Understand how Sidemantic translates your queries
+- Debug query issues
+- Learn SQL optimization patterns
+- Verify join logic
+
+## Writing Queries
+
+The workbench supports the full Sidemantic SQL syntax:
+
+### Basic Query
+
+```sql
+SELECT
+  orders.total_revenue,
+  orders.order_count,
+  customers.region
+FROM orders
+```
+
+### With Filters
+
+```sql
+SELECT
+  orders.total_revenue,
+  customers.region
+FROM orders
+WHERE customers.region = 'North'
+  AND orders.status = 'completed'
+```
+
+### Timeseries with Grouping
+
+```sql
+SELECT
+  orders.created_month,
+  customers.region,
+  orders.total_revenue,
+  orders.order_count
+FROM orders
+GROUP BY orders.created_month, customers.region
+ORDER BY orders.created_month DESC
+```
+
+### Cross-Model Queries
+
+Sidemantic automatically joins models based on relationships:
+
+```sql
+-- Automatically joins orders → customers → products
+SELECT
+  products.category,
+  customers.region,
+  orders.total_revenue
+FROM orders
+```
+
+### Aggregation
+
+Metrics are automatically aggregated correctly:
+
+```sql
+-- Metrics aggregated at region level
+SELECT
+  customers.region,
+  orders.total_revenue,  -- SUM(amount)
+  orders.avg_order_value -- AVG(amount)
+FROM orders
+GROUP BY customers.region
+```
+
+## Demo Mode
+
+Demo mode provides a pre-configured semantic layer with sample e-commerce data:
+
+```bash
+sidemantic workbench --demo
+```
+
+**Includes:**
+- 3 models: orders, customers, products
+- Sample metrics: revenue, order_count, avg_order_value
+- Dimensions: region, status, category, created_month
+- Relationships: orders → customers, orders → products
+- 365 days of synthetic order data
+
+Perfect for:
+- Learning Sidemantic syntax
+- Testing queries
+- Exploring features
+- Demos and presentations
+
+## Tips & Tricks
+
+### Keyboard Navigation
+
+- `Tab` - Move between UI elements
+- `Ctrl+R` - Run current query
+- `Ctrl+C` - Exit workbench
+- Arrow keys - Navigate tables and charts
+
+### Sidebar Resizing
+
+Drag the right edge of the sidebar to resize:
+- Default: 38 columns
+- Range: 20-100 columns
+- Persists during session
+
+### Query Development Workflow
+
+1. **Explore** - Browse models in sidebar to find dimensions/metrics
+2. **Write** - Draft query in Custom tab
+3. **Run** - Execute with `Ctrl+R`
+4. **View Table** - Check results in Table view
+5. **View SQL** - Examine generated SQL
+6. **Visualize** - Create chart with Chart view
+7. **Refine** - Iterate on query
+
+### Chart Best Practices
+
+- Use time dimensions (day, month, year) for x-axis on line charts
+- Use categorical dimensions (region, status) for x-axis on bar charts
+- Select numeric metrics for y-axis
+- Switch between chart types to find best visualization
+
+### Troubleshooting
+
+**No results showing:**
+- Check that query is valid SQL
+- Verify model/column names match your semantic layer
+- Look for errors in footer status bar
+
+**Chart not displaying:**
+- Ensure x and y axes are selected
+- Check that y-axis is numeric
+- Try different chart type
+
+**SQL looks wrong:**
+- Compare with expected joins
+- Check relationship definitions in models
+- Verify foreign key mappings
+
+## Next Steps
+
+- [SQL Queries](sql-queries.qmd) - Complete query syntax reference
+- [CLI](cli.qmd) - Other CLI commands
+- [Models](models.qmd) - Define your own models
+- [Metrics](metrics.qmd) - Create custom metrics

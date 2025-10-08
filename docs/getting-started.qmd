@@ -12,18 +12,10 @@ uv add sidemantic
 
 ## Workbench
 
-Try the interactive workbench locally:
+Try the interactive workbench with demo data (no installation required):
 
 ```bash
-sidemantic workbench examples/
-```
-
-Or explore with Marimo notebooks:
-
-```bash
-git clone https://github.com/sidequery/sidemantic
-cd sidemantic
-uv run marimo run examples/demo.py
+uvx sidemantic workbench --demo
 ```
 
 See [Workbench](workbench.qmd) for more details on the interactive TUI.

@@ -48,19 +48,18 @@ jobs:
   bigquery-integration:
     runs-on: ubuntu-latest
 
-    services:
-      bigquery:
-        image: ghcr.io/goccy/bigquery-emulator:latest
-        ports:
-          - 9050:9050
-        options: >-
-          --health-cmd "grpc_health_probe -addr=:9050"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start BigQuery emulator
+        run: |
+          docker run -d --name bigquery-emulator \
+            -p 9050:9050 \
+            ghcr.io/goccy/bigquery-emulator:latest \
+            --project=test-project --dataset=test_dataset
+
+          # Wait for emulator to be ready
+          sleep 5
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

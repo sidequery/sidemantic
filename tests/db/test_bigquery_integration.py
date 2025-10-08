@@ -207,3 +207,173 @@ def test_semantic_layer_sql_generation(bigquery_layer):
     assert "SELECT" in sql.upper()
     assert "SUM" in sql.upper()
     assert bigquery_layer.dialect == "bigquery"
+
+
+def test_semantic_layer_order_by(bigquery_layer):
+    """Test ORDER BY with SemanticLayer."""
+    scores = Model(
+        name="scores",
+        table="""(
+            SELECT 'Alice' as name, 85 as score UNION ALL
+            SELECT 'Bob', 92 UNION ALL
+            SELECT 'Charlie', 78 UNION ALL
+            SELECT 'Diana', 95
+        )""",
+        primary_key="name",
+        dimensions=[Dimension(name="name", type="categorical")],
+        metrics=[Metric(name="avg_score", agg="avg", sql="score")],
+    )
+    bigquery_layer.add_model(scores)
+
+    # Order by dimension
+    result = bigquery_layer.query(
+        dimensions=["scores.name"], metrics=["scores.avg_score"], order_by=["scores.avg_score DESC"]
+    )
+    rows = result.fetchall()
+    # First row should have highest score
+    assert rows[0][1] == 95  # Diana
+    assert rows[-1][1] == 78  # Charlie
+
+
+def test_semantic_layer_limit(bigquery_layer):
+    """Test LIMIT with SemanticLayer."""
+    items = Model(
+        name="items",
+        table="""(
+            SELECT 1 as id, 'A' as category UNION ALL
+            SELECT 2, 'B' UNION ALL
+            SELECT 3, 'A' UNION ALL
+            SELECT 4, 'C' UNION ALL
+            SELECT 5, 'B'
+        )""",
+        primary_key="id",
+        dimensions=[Dimension(name="category", type="categorical")],
+        metrics=[Metric(name="count", agg="count", sql="id")],
+    )
+    bigquery_layer.add_model(items)
+
+    result = bigquery_layer.query(dimensions=["items.category"], metrics=["items.count"], limit=2)
+    rows = result.fetchall()
+    assert len(rows) == 2
+
+
+@pytest.mark.skip(reason="FORMAT_DATE appears to hang with BigQuery emulator")
+def test_semantic_layer_date_functions(bigquery_layer):
+    """Test date/time functions in metrics."""
+    events = Model(
+        name="events",
+        table="""(
+            SELECT DATE('2024-01-15') as event_date, 1 as event_id UNION ALL
+            SELECT DATE('2024-01-20'), 2 UNION ALL
+            SELECT DATE('2024-02-10'), 3 UNION ALL
+            SELECT DATE('2024-02-15'), 4
+        )""",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="month", type="time", sql="FORMAT_DATE('%Y-%m', event_date)", granularity="month"),
+            Dimension(name="year", type="time", sql="FORMAT_DATE('%Y', event_date)", granularity="year"),
+        ],
+        metrics=[Metric(name="event_count", agg="count", sql="event_id")],
+    )
+    bigquery_layer.add_model(events)
+
+    result = bigquery_layer.query(dimensions=["events.month"], metrics=["events.event_count"])
+    rows = result.fetchall()
+    results_dict = {row[0]: row[1] for row in rows}
+
+    assert results_dict["2024-01"] == 2
+    assert results_dict["2024-02"] == 2
+
+
+def test_semantic_layer_symmetric_aggregates(bigquery_layer):
+    """Test symmetric aggregates handle fan-out joins correctly."""
+    # Create a fan-out scenario: order has multiple line_items
+    orders_sym = Model(
+        name="orders_sym",
+        table="""(
+            SELECT 1 as order_id, 100 as subtotal UNION ALL
+            SELECT 2, 200
+        )""",
+        primary_key="order_id",
+        metrics=[Metric(name="total_subtotal", agg="sum", sql="subtotal")],
+    )
+
+    line_items_sym = Model(
+        name="line_items_sym",
+        table="""(
+            SELECT 1 as item_id, 1 as order_id, 50 as price UNION ALL
+            SELECT 2, 1, 30 UNION ALL
+            SELECT 3, 1, 20 UNION ALL
+            SELECT 4, 2, 100 UNION ALL
+            SELECT 5, 2, 100
+        )""",
+        primary_key="item_id",
+        metrics=[Metric(name="total_price", agg="sum", sql="price")],
+        relationships=[Relationship(name="orders_sym", type="many_to_one", foreign_key="order_id")],
+    )
+
+    bigquery_layer.add_model(orders_sym)
+    bigquery_layer.add_model(line_items_sym)
+
+    # Query both metrics - should use symmetric aggregation to avoid fan-out
+    result = bigquery_layer.query(metrics=["orders_sym.total_subtotal", "line_items_sym.total_price"])
+    row = result.fetchone()
+    cols = [desc[0] for desc in result.description]
+    row_dict = dict(zip(cols, row))
+
+    # Without symmetric aggregation, total_subtotal would be inflated
+    assert row_dict["total_subtotal"] == 300  # 100 + 200, not inflated
+    assert row_dict["total_price"] == 300  # 50+30+20+100+100
+
+
+def test_semantic_layer_multiple_joins(bigquery_layer):
+    """Test joining 3+ models together."""
+    users_multi = Model(
+        name="users_multi",
+        table="""(
+            SELECT 1 as user_id, 'Alice' as name UNION ALL
+            SELECT 2, 'Bob'
+        )""",
+        primary_key="user_id",
+        dimensions=[Dimension(name="name", type="categorical")],
+    )
+
+    orders_multi = Model(
+        name="orders_multi",
+        table="""(
+            SELECT 1 as order_id, 1 as user_id, 1 as product_id, 100 as amount UNION ALL
+            SELECT 2, 1, 2, 150 UNION ALL
+            SELECT 3, 2, 1, 200
+        )""",
+        primary_key="order_id",
+        metrics=[Metric(name="total", agg="sum", sql="amount")],
+        relationships=[
+            Relationship(name="users_multi", type="many_to_one", foreign_key="user_id"),
+            Relationship(name="products_multi", type="many_to_one", foreign_key="product_id"),
+        ],
+    )
+
+    products_multi = Model(
+        name="products_multi",
+        table="""(
+            SELECT 1 as product_id, 'Widget' as product_name UNION ALL
+            SELECT 2, 'Gadget'
+        )""",
+        primary_key="product_id",
+        dimensions=[Dimension(name="product_name", type="categorical")],
+    )
+
+    bigquery_layer.add_model(users_multi)
+    bigquery_layer.add_model(products_multi)
+    bigquery_layer.add_model(orders_multi)
+
+    # Query across 3 models
+    result = bigquery_layer.query(
+        metrics=["orders_multi.total"], dimensions=["users_multi.name", "products_multi.product_name"]
+    )
+    rows = result.fetchall()
+    results_dict = {(row[0], row[1]): row[2] for row in rows}
+
+    assert results_dict[("Alice", "Widget")] == 100
+    assert results_dict[("Alice", "Gadget")] == 150
+    assert results_dict[("Bob", "Widget")] == 200

@@ -680,7 +680,7 @@ class SQLGenerator:
     def _has_fanout_joins(self, base_model_name: str, other_models: list[str]) -> dict[str, bool]:
         """Determine which models need symmetric aggregates due to fan-out.
 
-        When multiple one-to-many joins exist from the base model, measures from
+        When one-to-many joins exist from the base model, measures from
         the base model need symmetric aggregates to prevent double-counting.
 
         Args:
@@ -692,8 +692,9 @@ class SQLGenerator:
         """
         needs_symmetric = {}
 
-        # Check if there are multiple one-to-many relationships
+        # Check if there are any one-to-many relationships
         one_to_many_count = 0
+        many_to_one_models = []
 
         for other_model in other_models:
             try:
@@ -701,15 +702,25 @@ class SQLGenerator:
                 # Check if first hop is one-to-many
                 if join_path and join_path[0].relationship == "one_to_many":
                     one_to_many_count += 1
+                elif join_path and join_path[0].relationship == "many_to_one":
+                    # Track models with many-to-one from base perspective
+                    many_to_one_models.append(other_model)
             except (ValueError, KeyError):
                 pass
 
-        # If we have multiple one-to-many joins, the base model needs symmetric aggregates
-        needs_symmetric[base_model_name] = one_to_many_count > 1
+        # Base model needs symmetric aggregates if there are any one-to-many joins
+        needs_symmetric[base_model_name] = one_to_many_count > 0
 
-        # Other models generally don't need it (they're on the "many" side)
+        # Models on the "many" side of a many-to-one relationship also need symmetric
+        # aggregation if they're being joined (because from their perspective,
+        # they're creating fan-out for the "one" side)
         for other_model in other_models:
-            needs_symmetric[other_model] = False
+            if other_model in many_to_one_models:
+                # Check if the "one" side (base) has metrics - if so, it needs symmetric agg
+                # But we're checking from the perspective of this model, so mark False
+                needs_symmetric[other_model] = False
+            else:
+                needs_symmetric[other_model] = False
 
         return needs_symmetric
 
@@ -841,6 +852,7 @@ class SQLGenerator:
                                 primary_key=pk,
                                 agg_type=measure.agg,
                                 model_alias=f"{model_name}_cte",
+                                dialect=self.dialect,
                             )
                         else:
                             # Regular aggregation

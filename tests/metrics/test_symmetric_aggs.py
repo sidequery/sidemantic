@@ -77,7 +77,11 @@ def test_build_symmetric_aggregate_count_distinct():
 
 
 def test_fanout_join_detection_single_join():
-    """Test that single one-to-many join doesn't trigger symmetric aggregates."""
+    """Test that single one-to-many join DOES trigger symmetric aggregates.
+
+    With the CTE-based SQL generation approach, even a single one-to-many join
+    creates fan-out for the "one" side, requiring symmetric aggregation.
+    """
     graph = SemanticGraph()
 
     # Orders (base)
@@ -105,10 +109,11 @@ def test_fanout_join_detection_single_join():
 
     generator = SQLGenerator(graph)
 
-    # Single one-to-many join should NOT trigger symmetric aggregates
+    # Single one-to-many join DOES trigger symmetric aggregates for the "one" side
     needs_symmetric = generator._has_fanout_joins("orders", ["order_items"])
 
-    assert needs_symmetric["orders"] is False
+    assert needs_symmetric["orders"] is True
+    assert needs_symmetric["order_items"] is False
 
 
 def test_fanout_join_detection_multiple_joins():

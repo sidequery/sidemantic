@@ -326,7 +326,12 @@ class SidequeryWorkbench(App):
                         db_files = list(data_dir.glob("*.db"))
                         if db_files:
                             connection = f"duckdb:///{db_files[0].absolute()}"
-                self.layer = SemanticLayer(connection=connection)
+
+                # Only pass connection if it's not None (to use default parameter)
+                if connection:
+                    self.layer = SemanticLayer(connection=connection)
+                else:
+                    self.layer = SemanticLayer()
 
             # Load semantic layer models
             load_from_directory(self.layer, str(self.directory))

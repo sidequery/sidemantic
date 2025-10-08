@@ -112,7 +112,11 @@ def workbench(
             # Use connection from config
             connection_str = build_connection_string(_loaded_config)
 
-        run_workbench(directory, connection=connection_str)
+        # Only pass connection if it's not None
+        if connection_str:
+            run_workbench(directory, connection=connection_str)
+        else:
+            run_workbench(directory)
 
 
 @app.command()
@@ -193,8 +197,11 @@ def query(
                 if db_files:
                     connection_str = f"duckdb:///{db_files[0].absolute()}"
 
-        # Load semantic layer
-        layer = SemanticLayer(connection=connection_str)
+        # Load semantic layer (only pass connection if not None)
+        if connection_str:
+            layer = SemanticLayer(connection=connection_str)
+        else:
+            layer = SemanticLayer()
         load_from_directory(layer, str(directory))
 
         if not layer.graph.models:
@@ -439,17 +446,17 @@ def serve(
     elif _loaded_config and _loaded_config.connection:
         # Use connection from config
         connection_str = build_connection_string(_loaded_config)
-    else:
-        # Default to in-memory DuckDB
-        connection_str = "duckdb:///:memory:"
 
     # Resolve port, username, password from args or config
     port_resolved = port if port is not None else (_loaded_config.pg_server.port if _loaded_config else 5433)
     username_resolved = username or (_loaded_config.pg_server.username if _loaded_config else None)
     password_resolved = password or (_loaded_config.pg_server.password if _loaded_config else None)
 
-    # Create semantic layer with connection string
-    layer = SemanticLayer(connection=connection_str)
+    # Create semantic layer (only pass connection if not None, otherwise use default)
+    if connection_str:
+        layer = SemanticLayer(connection=connection_str)
+    else:
+        layer = SemanticLayer()
 
     # Load models
     load_from_directory(layer, str(directory))

@@ -26,7 +26,7 @@ def build_symmetric_aggregate_sql(
         primary_key: The primary key field to use for deduplication
         agg_type: Type of aggregation (sum, avg, count, count_distinct)
         model_alias: Optional table/CTE alias to prefix columns
-        dialect: SQL dialect (duckdb, bigquery, postgres)
+        dialect: SQL dialect (duckdb, bigquery, postgres, snowflake)
 
     Returns:
         SQL expression using symmetric aggregates
@@ -56,6 +56,13 @@ def build_symmetric_aggregate_sql(
             return f"hashtext({col}::text)::bigint"
 
         multiplier = "1024"  # 2^10 as literal (smaller to avoid overflow)
+    elif dialect == "snowflake":
+        # Snowflake HASH returns very large 64-bit integers
+        # Use modulo to constrain range, then very small multiplier to avoid overflow
+        def hash_func(col):
+            return f"(HASH({col}) % 1000000000)"  # Modulo to constrain range
+
+        multiplier = "100"  # Very small multiplier to avoid overflow
     else:  # duckdb
 
         def hash_func(col):

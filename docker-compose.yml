@@ -22,6 +22,8 @@ services:
       - "9050:9050"
     command: ["--project=test-project", "--dataset=test_dataset"]
 
+  # Snowflake tests use fakesnow (Python library) for mocking, no Docker service needed
+
   test:
     build:
       context: .
@@ -38,6 +40,7 @@ services:
       BIGQUERY_EMULATOR_HOST: "bigquery:9050"
       BIGQUERY_PROJECT: "test-project"
       BIGQUERY_DATASET: "test_dataset"
+      SNOWFLAKE_TEST: "1"  # fakesnow patches snowflake.connector, no external service needed
     command: pytest -m integration -v
 
 volumes:

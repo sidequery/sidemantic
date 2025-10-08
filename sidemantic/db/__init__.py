@@ -15,4 +15,12 @@ def __getattr__(name):
         from sidemantic.db.postgres import PostgreSQLAdapter
 
         return PostgreSQLAdapter
+    if name == "BigQueryAdapter":
+        from sidemantic.db.bigquery import BigQueryAdapter
+
+        return BigQueryAdapter
+    if name == "SnowflakeAdapter":
+        from sidemantic.db.snowflake import SnowflakeAdapter
+
+        return SnowflakeAdapter
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

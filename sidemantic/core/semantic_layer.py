@@ -32,6 +32,7 @@ class SemanticLayer:
                 - duckdb:///path/to/db.duckdb
                 - postgres://user:pass@host:port/dbname
                 - bigquery://project_id/dataset_id
+                - snowflake://user:password@account/database/schema
             dialect: SQL dialect for query generation (optional, inferred from adapter)
             auto_register: Set as current layer for auto-registration (default: True)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
@@ -64,10 +65,15 @@ class SemanticLayer:
 
                 self.adapter = BigQueryAdapter.from_url(connection)
                 self.dialect = dialect or "bigquery"
+            elif connection.startswith("snowflake://"):
+                from sidemantic.db.snowflake import SnowflakeAdapter
+
+                self.adapter = SnowflakeAdapter.from_url(connection)
+                self.dialect = dialect or "snowflake"
             else:
                 raise ValueError(
                     f"Unsupported connection URL: {connection}. "
-                    "Supported: duckdb:///, postgres://, bigquery://, or BaseDatabaseAdapter instance"
+                    "Supported: duckdb:///, postgres://, bigquery://, snowflake://, or BaseDatabaseAdapter instance"
                 )
         else:
             raise TypeError(f"connection must be a string URL or BaseDatabaseAdapter instance, got {type(connection)}")

@@ -722,7 +722,7 @@ class SidequeryWorkbench(App):
         button_id = event.button.id
 
         # Handle query tab switching
-        if button_id.startswith("btn-") and button_id not in ("btn-table", "btn-chart"):
+        if button_id.startswith("btn-") and button_id not in ("btn-table", "btn-chart", "btn-sql"):
             # Map button id to editor id
             editor_mapping = {
                 "btn-timeseries": "editor-timeseries",
@@ -746,6 +746,12 @@ class SidequeryWorkbench(App):
                         btn.add_class("active")
                     else:
                         btn.remove_class("active")
+
+                # Clear results when switching query tabs
+                table = self.query_one("#results-table", DataTable)
+                table.clear(columns=True)
+                self.last_result = None
+                self.last_rendered_sql = None
 
         # Handle table/chart/sql view switching
         table_view = self.query_one("#table-view")

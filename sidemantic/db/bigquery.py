@@ -77,7 +77,23 @@ class BigQueryAdapter(BaseDatabaseAdapter):
                 "Install with: pip install sidemantic[bigquery] or pip install google-cloud-bigquery"
             ) from e
 
-        self.client = bigquery.Client(project=project_id, credentials=credentials, location=location, **kwargs)
+        # Check if using emulator
+        import os
+
+        emulator_host = os.getenv("BIGQUERY_EMULATOR_HOST")
+        if emulator_host:
+            # Use anonymous credentials for emulator
+            from google.auth.credentials import AnonymousCredentials
+            from google.api_core.client_options import ClientOptions
+
+            # Set API endpoint to emulator
+            client_options = ClientOptions(api_endpoint=f"http://{emulator_host}")
+            credentials = AnonymousCredentials()
+            self.client = bigquery.Client(
+                project=project_id, credentials=credentials, location=location, client_options=client_options, **kwargs
+            )
+        else:
+            self.client = bigquery.Client(project=project_id, credentials=credentials, location=location, **kwargs)
         self.project_id = project_id or self.client.project
         self.dataset_id = dataset_id
 

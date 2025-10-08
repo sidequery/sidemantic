@@ -20,12 +20,7 @@ services:
     platform: linux/amd64
     ports:
       - "9050:9050"
-    command: ["--project=test-project", "--dataset=test_dataset"]
-    healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=:9050"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+    command: ["--project=test-project"]
 
   test:
     build:
@@ -35,7 +30,7 @@ services:
       postgres:
         condition: service_healthy
       bigquery:
-        condition: service_healthy
+        condition: service_started
     environment:
       POSTGRES_TEST: "1"
       POSTGRES_URL: "postgres://test:test@postgres:5432/sidemantic_test"

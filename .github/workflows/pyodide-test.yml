@@ -30,12 +30,11 @@ jobs:
             console.log('Loading micropip...');
             await pyodide.loadPackage('micropip');
 
-            console.log('Installing core dependencies...');
+            console.log('Installing sidemantic without deps...');
             await pyodide.runPythonAsync(`
               import micropip
-              # Install required pure-Python deps first
-              await micropip.install(['sqlglot', 'pyyaml', 'pydantic', 'jinja2', 'lkml', 'inflect'])
-              # Then install sidemantic without deps (duckdb isn't pure Python)
+              # Install sidemantic without deps to avoid version conflicts
+              # (pydantic-core needs typing-extensions>=4.14.1, Pyodide has 4.11.0)
               await micropip.install('sidemantic', deps=False)
             `);
 

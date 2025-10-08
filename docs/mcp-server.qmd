@@ -8,28 +8,9 @@ The Sidemantic MCP (Model Context Protocol) server enables AI assistants like Cl
 
 [Model Context Protocol](https://modelcontextprotocol.io) is a standard for connecting AI assistants to external tools and data sources. The Sidemantic MCP server exposes your semantic layer as a set of tools that AI assistants can use.
 
-## Installation
-
-```bash
-pip install sidemantic
-```
-
 ## Quick Start
 
-### 1. Start the Server
-
-```bash
-# Serve your models
-sidemantic mcp-serve ./models
-
-# With a DuckDB database
-sidemantic mcp-serve ./models --db data/warehouse.db
-
-# Try the demo
-sidemantic mcp-serve --demo
-```
-
-### 2. Configure Claude Desktop
+### 1. Configure Claude Desktop
 
 Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
@@ -37,8 +18,8 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 {
   "mcpServers": {
     "sidemantic": {
-      "command": "sidemantic",
-      "args": ["mcp-serve", "./path/to/models"]
+      "command": "uvx",
+      "args": ["sidemantic", "mcp-serve", "./path/to/models"]
     }
   }
 }
@@ -50,14 +31,31 @@ With database:
 {
   "mcpServers": {
     "sidemantic": {
-      "command": "sidemantic",
-      "args": ["mcp-serve", "./path/to/models", "--db", "data/warehouse.db"]
+      "command": "uvx",
+      "args": ["sidemantic", "mcp-serve", "./path/to/models", "--db", "data/warehouse.db"]
     }
   }
 }
 ```
 
-### 3. Query from Claude
+::: {.callout-tip}
+Using `uvx` automatically manages the sidemantic installation - no need to install anything manually!
+:::
+
+### 2. Test Locally (Optional)
+
+```bash
+# Try the demo
+uvx sidemantic mcp-serve --demo
+
+# Serve your models
+uvx sidemantic mcp-serve ./models
+
+# With a DuckDB database
+uvx sidemantic mcp-serve ./models --db data/warehouse.db
+```
+
+### 3. Restart and Query
 
 Restart Claude Desktop and try:
 
@@ -181,8 +179,8 @@ You can use environment variables in your Claude Desktop config:
 {
   "mcpServers": {
     "sidemantic": {
-      "command": "sidemantic",
-      "args": ["mcp-serve", "${HOME}/projects/my-semantic-layer"],
+      "command": "uvx",
+      "args": ["sidemantic", "mcp-serve", "${HOME}/projects/my-semantic-layer"],
       "env": {
         "DB_PATH": "${HOME}/data/warehouse.db"
       }
@@ -199,12 +197,12 @@ Configure different servers for dev/prod:
 {
   "mcpServers": {
     "sidemantic-dev": {
-      "command": "sidemantic",
-      "args": ["mcp-serve", "./models", "--db", "dev.db"]
+      "command": "uvx",
+      "args": ["sidemantic", "mcp-serve", "./models", "--db", "dev.db"]
     },
     "sidemantic-prod": {
-      "command": "sidemantic",
-      "args": ["mcp-serve", "./models", "--db", "prod.db"]
+      "command": "uvx",
+      "args": ["sidemantic", "mcp-serve", "./models", "--db", "prod.db"]
     }
   }
 }
@@ -259,21 +257,27 @@ Here are some example questions you can ask Claude:
 
 ### Command Not Found
 
-Ensure `sidemantic` is installed and in your PATH:
+Ensure `uvx` is installed:
 
 ```bash
-which sidemantic
-# Should show path to sidemantic executable
+which uvx
+# Should show path to uvx executable
 ```
 
-If using a virtual environment, use the full path:
+If `uvx` is not available, install `uv`:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Or use `pipx` instead:
 
 ```json
 {
   "mcpServers": {
     "sidemantic": {
-      "command": "/path/to/venv/bin/sidemantic",
-      "args": ["mcp-serve", "./models"]
+      "command": "pipx",
+      "args": ["run", "sidemantic", "mcp-serve", "./models"]
     }
   }
 }

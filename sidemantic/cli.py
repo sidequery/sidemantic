@@ -274,7 +274,7 @@ def info(
 
 @app.command()
 def mcp_serve(
-    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
     demo: bool = typer.Option(False, "--demo", help="Use demo data instead of a directory"),
 ):
@@ -312,9 +312,6 @@ def mcp_serve(
         directory = demo_dir
         # For demo mode, use in-memory database
         db_path = ":memory:"
-    elif directory is None:
-        typer.echo("Error: Either provide a directory or use --demo flag", err=True)
-        raise typer.Exit(1)
     elif not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)

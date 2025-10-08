@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: sidemantic_test
+    ports:
+      - "5433:5432"  # Use 5433 to avoid conflicts with local Postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_TEST: "1"
+      POSTGRES_URL: "postgres://test:test@postgres:5432/sidemantic_test"
+    command: pytest tests/db/test_postgres_integration.py -v
+
+volumes:
+  postgres_data:

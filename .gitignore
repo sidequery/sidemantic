@@ -28,3 +28,7 @@ examples/*.db
 # Package installers
 *.pkg
 .claude/settings.local.json
+
+# Docker volumes
+docker-compose.override.yml
+Dockerfile.test

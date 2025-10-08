@@ -365,22 +365,38 @@ class SemanticLayer:
         return get_catalog_metadata(self.graph, schema=schema)
 
     @classmethod
-    def from_yaml(cls, path: str | Path, connection: str = "duckdb:///:memory:") -> SemanticLayer:
+    def from_yaml(cls, path: str | Path, connection: str | None = None) -> SemanticLayer:
         """Load semantic layer from native YAML file.
 
         Args:
             path: Path to YAML file
-            connection: Database connection string
+            connection: Database connection string (overrides connection in YAML file)
 
         Returns:
             SemanticLayer instance
         """
-        from sidemantic.adapters.sidemantic import SidemanticAdapter
+        import yaml
+
+        from sidemantic.adapters.sidemantic import SidemanticAdapter, substitute_env_vars
 
         adapter = SidemanticAdapter()
         graph = adapter.parse(path)
 
-        layer = cls(connection=connection)
+        # If connection not provided as parameter, try to read from YAML file
+        if connection is None:
+            with open(path) as f:
+                content = f.read()
+            # Substitute environment variables
+            content = substitute_env_vars(content)
+            data = yaml.safe_load(content)
+            if data and "connection" in data:
+                connection = data["connection"]
+
+        # Create layer with connection (or use default if still None)
+        if connection:
+            layer = cls(connection=connection)
+        else:
+            layer = cls()
         layer.graph = graph
 
         return layer

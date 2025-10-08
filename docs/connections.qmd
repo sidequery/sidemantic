@@ -290,6 +290,57 @@ sidemantic query models/ \
 
 Store credentials in environment variables for security. Never commit credentials to version control.
 
+Environment variables can be used in:
+- **YAML configuration files** - Using `${VAR}` syntax
+- **CLI flags** - Using shell variables like `$VAR`
+
+### In YAML Files
+
+Sidemantic supports environment variable substitution in YAML files using standard syntax:
+
+**Syntax:**
+- `${ENV_VAR}` - Substituted with environment variable value
+- `${ENV_VAR:-default}` - Use default if variable not set
+- `$ENV_VAR` - Simple form (uppercase variables only)
+
+**Example YAML:**
+```yaml
+# semantic_layer.yml
+connection: postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/${DB_NAME}
+
+models:
+  - name: orders
+    table: ${SCHEMA_NAME:-public}.orders
+    primary_key: order_id
+```
+
+**Set environment variables:**
+```bash
+export DB_USER=analyst
+export DB_PASSWORD=secret
+export DB_HOST=localhost
+export DB_NAME=analytics
+export SCHEMA_NAME=prod
+```
+
+**Load configuration:**
+```bash
+sidemantic query semantic_layer.yml --sql "SELECT revenue FROM orders"
+```
+
+The environment variables are substituted when the YAML file is loaded.
+
+### In CLI Flags
+
+Use shell environment variables in CLI commands:
+
+```bash
+export DATABASE_URL=postgres://user:pass@localhost:5432/analytics
+
+sidemantic query models/ --connection "$DATABASE_URL" \
+  --sql "SELECT revenue FROM orders"
+```
+
 ### Full Connection Strings
 
 Store complete connection string in an environment variable:

@@ -1,5 +1,7 @@
 """Sidemantic native YAML adapter with SQL syntax support."""
 
+import os
+import re
 from pathlib import Path
 
 import yaml
@@ -12,6 +14,59 @@ from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.sql_definitions import parse_sql_definitions, parse_sql_file_with_frontmatter, parse_sql_model
+
+
+def substitute_env_vars(content: str) -> str:
+    """Substitute environment variables in YAML content.
+
+    Supports:
+    - ${ENV_VAR} - replaced with environment variable value
+    - ${ENV_VAR:-default} - replaced with value or default if not set
+    - $ENV_VAR - simple form without braces
+
+    Args:
+        content: YAML content string
+
+    Returns:
+        Content with environment variables substituted
+
+    Examples:
+        >>> os.environ['DB_HOST'] = 'localhost'
+        >>> substitute_env_vars('host: ${DB_HOST}')
+        'host: localhost'
+        >>> substitute_env_vars('host: ${MISSING:-default}')
+        'host: default'
+    """
+    # Pattern for ${ENV_VAR} or ${ENV_VAR:-default}
+    def replace_var(match):
+        var_expr = match.group(1)
+        # Check for default value syntax: VAR_NAME:-default
+        if ":-" in var_expr:
+            var_name, default = var_expr.split(":-", 1)
+            return os.environ.get(var_name, default)
+        else:
+            var_name = var_expr
+            value = os.environ.get(var_name)
+            if value is None:
+                # Keep original if not found (don't fail, let user handle missing vars)
+                return match.group(0)
+            return value
+
+    # Replace ${VAR} and ${VAR:-default}
+    content = re.sub(r"\$\{([^}]+)\}", replace_var, content)
+
+    # Replace $VAR (simple form, no braces)
+    # Only match valid environment variable names (alphanumeric + underscore)
+    def replace_simple_var(match):
+        var_name = match.group(1)
+        value = os.environ.get(var_name)
+        if value is None:
+            return match.group(0)
+        return value
+
+    content = re.sub(r"\$([A-Z_][A-Z0-9_]*)", replace_simple_var, content)
+
+    return content
 
 
 class SidemanticAdapter(BaseAdapter):
@@ -83,7 +138,12 @@ class SidemanticAdapter(BaseAdapter):
 
         # Handle YAML files
         with open(source_path) as f:
-            data = yaml.safe_load(f)
+            content = f.read()
+
+        # Substitute environment variables
+        content = substitute_env_vars(content)
+
+        data = yaml.safe_load(content)
 
         if not data:
             return graph

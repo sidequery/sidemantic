@@ -12,6 +12,7 @@ Basic semantic layer YAML file:
 # semantic_layer.yml
 
 # Database connection (optional, defaults to in-memory DuckDB)
+# Supports environment variable substitution
 connection: duckdb:///data/analytics.duckdb
 
 # Models define your tables and metrics
@@ -75,6 +76,47 @@ connection: databricks://token@server/http-path?catalog=main
 
 # Spark SQL
 connection: spark://host:10000/database
+```
+
+### Environment Variables in YAML
+
+Use environment variables for sensitive credentials:
+
+```yaml
+# Use ${ENV_VAR} syntax
+connection: postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/${DB_NAME}
+
+# With default values
+connection: duckdb:///${DB_FILE:-/tmp/default.duckdb}
+
+# Simple form (uppercase vars only)
+connection: $DATABASE_URL
+```
+
+**Supported syntax:**
+
+- `${ENV_VAR}` - Substituted with environment variable value
+- `${ENV_VAR:-default}` - Use default if variable not set
+- `$ENV_VAR` - Simple form (uppercase variables only)
+
+**Example:**
+
+```bash
+# Set environment variables
+export DB_USER=analyst
+export DB_PASSWORD=secret
+export DB_HOST=localhost
+export DB_NAME=analytics
+```
+
+```yaml
+# semantic_layer.yml
+connection: postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/${DB_NAME}
+
+models:
+  - name: orders
+    table: ${SCHEMA_NAME:-public}.orders
+    primary_key: order_id
 ```
 
 See **[Database Connections](connections.qmd)** for complete connection string reference.

@@ -24,6 +24,27 @@ services:
 
   # Snowflake tests use fakesnow (Python library) for mocking, no Docker service needed
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    platform: linux/amd64
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native protocol (optional)
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
   test:
     build:
       context: .
@@ -33,6 +54,8 @@ services:
         condition: service_healthy
       bigquery:
         condition: service_started
+      clickhouse:
+        condition: service_healthy
     environment:
       POSTGRES_TEST: "1"
       POSTGRES_URL: "postgres://test:test@postgres:5432/sidemantic_test"
@@ -41,6 +64,10 @@ services:
       BIGQUERY_PROJECT: "test-project"
       BIGQUERY_DATASET: "test_dataset"
       SNOWFLAKE_TEST: "1"  # fakesnow patches snowflake.connector, no external service needed
+      CLICKHOUSE_TEST: "1"
+      CLICKHOUSE_HOST: "clickhouse"
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_PASSWORD: "clickhouse"
     command: pytest -m integration -v
 
 volumes:

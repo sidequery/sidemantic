@@ -33,6 +33,7 @@ class SemanticLayer:
                 - postgres://user:pass@host:port/dbname
                 - bigquery://project_id/dataset_id
                 - snowflake://user:password@account/database/schema
+                - clickhouse://user:password@host:port/database
             dialect: SQL dialect for query generation (optional, inferred from adapter)
             auto_register: Set as current layer for auto-registration (default: True)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
@@ -70,10 +71,15 @@ class SemanticLayer:
 
                 self.adapter = SnowflakeAdapter.from_url(connection)
                 self.dialect = dialect or "snowflake"
+            elif connection.startswith("clickhouse://"):
+                from sidemantic.db.clickhouse import ClickHouseAdapter
+
+                self.adapter = ClickHouseAdapter.from_url(connection)
+                self.dialect = dialect or "clickhouse"
             else:
                 raise ValueError(
                     f"Unsupported connection URL: {connection}. "
-                    "Supported: duckdb:///, postgres://, bigquery://, snowflake://, or BaseDatabaseAdapter instance"
+                    "Supported: duckdb:///, postgres://, bigquery://, snowflake://, clickhouse://, or BaseDatabaseAdapter instance"
                 )
         else:
             raise TypeError(f"connection must be a string URL or BaseDatabaseAdapter instance, got {type(connection)}")

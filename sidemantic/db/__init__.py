@@ -23,4 +23,8 @@ def __getattr__(name):
         from sidemantic.db.snowflake import SnowflakeAdapter
 
         return SnowflakeAdapter
+    if name == "ClickHouseAdapter":
+        from sidemantic.db.clickhouse import ClickHouseAdapter
+
+        return ClickHouseAdapter
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

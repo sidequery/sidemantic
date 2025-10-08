@@ -26,7 +26,7 @@ def build_symmetric_aggregate_sql(
         primary_key: The primary key field to use for deduplication
         agg_type: Type of aggregation (sum, avg, count, count_distinct)
         model_alias: Optional table/CTE alias to prefix columns
-        dialect: SQL dialect (duckdb, bigquery, postgres, snowflake)
+        dialect: SQL dialect (duckdb, bigquery, postgres, snowflake, clickhouse)
 
     Returns:
         SQL expression using symmetric aggregates
@@ -63,6 +63,12 @@ def build_symmetric_aggregate_sql(
             return f"(HASH({col}) % 1000000000)"  # Modulo to constrain range
 
         multiplier = "100"  # Very small multiplier to avoid overflow
+    elif dialect == "clickhouse":
+        # ClickHouse halfMD5 returns UInt64
+        def hash_func(col):
+            return f"halfMD5(CAST({col} AS String))"
+
+        multiplier = "1048576"  # 2^20 as literal
     else:  # duckdb
 
         def hash_func(col):

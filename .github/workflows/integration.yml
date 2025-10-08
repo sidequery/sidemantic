@@ -101,3 +101,39 @@ jobs:
         env:
           SNOWFLAKE_TEST: "1"
         run: uv run pytest -m integration tests/db/test_snowflake_integration.py -v
+
+  clickhouse-integration:
+    runs-on: ubuntu-latest
+
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "wget --spider -q localhost:8123/ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra clickhouse --extra dev
+
+      - name: Run ClickHouse integration tests
+        env:
+          CLICKHOUSE_TEST: "1"
+          CLICKHOUSE_HOST: "localhost"
+          CLICKHOUSE_PORT: "8123"
+          CLICKHOUSE_PASSWORD: "clickhouse"
+        run: uv run pytest -m integration tests/db/test_clickhouse_integration.py -v

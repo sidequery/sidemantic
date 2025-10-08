@@ -27,14 +27,15 @@ jobs:
           async function main() {
             const pyodide = await loadPyodide();
 
-            console.log('Loading micropip...');
-            await pyodide.loadPackage('micropip');
+            console.log('Loading Pyodide packages...');
+            await pyodide.loadPackage(['micropip', 'pydantic', 'pyyaml', 'jinja2']);
 
             console.log('Installing sidemantic without deps...');
             await pyodide.runPythonAsync(`
               import micropip
-              # Install sidemantic without deps to avoid version conflicts
-              # (pydantic-core needs typing-extensions>=4.14.1, Pyodide has 4.11.0)
+              # Install missing pure-Python deps, then sidemantic without deps
+              # (avoids pydantic-core typing-extensions>=4.14.1 vs Pyodide 4.11.0 conflict)
+              await micropip.install(['sqlglot', 'lkml', 'inflect'], deps=False)
               await micropip.install('sidemantic', deps=False)
             `);
 

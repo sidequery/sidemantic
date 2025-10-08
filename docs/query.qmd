@@ -11,6 +11,206 @@ Sidemantic provides two ways to query your semantic layer:
 1. **SQL Interface** - Familiar SQL syntax with automatic join handling
 2. **Python API** - Programmatic query building with type safety
 
+## SQL Interface
+
+### Basic SQL Queries
+
+```python
+# Simple metric query
+result = layer.sql("SELECT revenue FROM orders")
+
+# With dimensions and filters
+result = layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    WHERE status = 'completed'
+""")
+
+# Get DataFrame
+df = result.fetchdf()
+```
+
+### Supported SQL Features
+
+| Feature | Supported | Notes |
+|---------|-----------|-------|
+| **SELECT** | ✅ Yes | Metrics and dimensions |
+| **SELECT *** | ✅ Yes | Expands to all model fields |
+| **WHERE** | ✅ Yes | Standard SQL conditions |
+| **ORDER BY** | ✅ Yes | Sort by any field |
+| **LIMIT / OFFSET** | ✅ Yes | Pagination support |
+| **Parameters** | ✅ Yes | `{{ param }}` syntax |
+| **Cross-Model Queries** | ✅ Yes | Auto-joins via relationships |
+| **Subqueries** | ✅ Yes | Query semantic layer in subqueries |
+| **CTEs / WITH** | ✅ Yes | Use CTEs with semantic queries |
+| **JOIN** | ❌ No | Joins are automatic |
+| **GROUP BY** | ❌ No | Grouping is automatic |
+| **Aggregate Functions** | ❌ No | Use pre-defined metrics |
+| **HAVING** | ❌ No | Use WHERE on metrics instead |
+| **Window Functions** | ❌ No | Use cumulative metrics |
+| **DISTINCT** | ❌ No | Dimensions are auto-distinct |
+
+### SELECT
+
+Select metrics and dimensions:
+
+```python
+layer.sql("SELECT revenue, order_count, status FROM orders")
+```
+
+Table prefixes optional:
+
+```python
+# Both work
+layer.sql("SELECT orders.revenue FROM orders")
+layer.sql("SELECT revenue FROM orders")
+```
+
+::: {.callout-note}
+## FROM Clause Uses Model Names
+
+The FROM clause references **semantic model names**, not underlying table names:
+
+```yaml
+models:
+  - name: orders
+    table: raw_orders_staging
+```
+
+```python
+layer.sql("SELECT revenue FROM orders")  # ✅ Use model name
+```
+:::
+
+### WHERE
+
+Filter with standard SQL conditions:
+
+```python
+layer.sql("""
+    SELECT revenue
+    FROM orders
+    WHERE status = 'completed'
+      AND order_date >= '2024-01-01'
+      AND amount > 100
+""")
+```
+
+### ORDER BY and LIMIT
+
+```python
+layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    ORDER BY revenue DESC
+    LIMIT 10
+""")
+```
+
+### Cross-Model Queries
+
+Reference multiple models - joins happen automatically:
+
+```python
+layer.sql("""
+    SELECT
+        orders.revenue,
+        customers.region,
+        products.category
+    FROM orders
+""")
+```
+
+### Parameters
+
+Use `{{ param }}` syntax:
+
+```python
+layer.sql(
+    """
+    SELECT revenue
+    FROM orders
+    WHERE order_date >= {{ start_date }}
+      AND region = {{ region }}
+    """,
+    parameters={
+        "start_date": "2024-01-01",
+        "region": "US"
+    }
+)
+```
+
+::: {.callout-warning}
+## Don't Quote Parameters
+Parameters are automatically quoted based on type:
+
+- ❌ `WHERE date >= '{{ start_date }}'` (creates `''2024-01-01''`)
+- ✅ `WHERE date >= {{ start_date }}`
+:::
+
+### Subqueries
+
+Query semantic layer in subqueries:
+
+```python
+layer.sql("""
+    SELECT *
+    FROM (
+        SELECT revenue, status FROM orders
+    ) AS orders_agg
+    WHERE revenue > 1000
+""")
+```
+
+Join semantic query results with regular tables:
+
+```python
+layer.sql("""
+    SELECT
+        orders_agg.revenue,
+        r.continent
+    FROM (
+        SELECT orders.revenue, customers.region
+        FROM orders
+    ) AS orders_agg
+    JOIN regions r ON orders_agg.region = r.region
+""")
+```
+
+### CTEs
+
+Use CTEs with semantic layer queries:
+
+```python
+layer.sql("""
+    WITH orders_by_region AS (
+        SELECT revenue, status, customers.region
+        FROM orders
+    )
+    SELECT * FROM orders_by_region
+    WHERE revenue > 500
+    ORDER BY revenue DESC
+""")
+```
+
+Mix semantic and regular CTEs:
+
+```python
+layer.sql("""
+    WITH
+        orders_agg AS (
+            SELECT revenue, status FROM orders
+        ),
+        status_labels AS (
+            SELECT 'completed' as code, 'Complete' as label
+            UNION ALL SELECT 'pending', 'Pending'
+        )
+    SELECT o.revenue, s.label
+    FROM orders_agg o
+    JOIN status_labels s ON o.status = s.code
+""")
+```
+
 ## Python API
 
 ### Basic Query
@@ -215,205 +415,6 @@ sql = layer.compile(
 )
 ```
 
-## SQL Interface
-
-### Basic SQL Queries
-
-```python
-# Simple metric query
-result = layer.sql("SELECT revenue FROM orders")
-
-# With dimensions and filters
-result = layer.sql("""
-    SELECT revenue, status
-    FROM orders
-    WHERE status = 'completed'
-""")
-
-# Get DataFrame
-df = result.fetchdf()
-```
-
-### Supported SQL Features
-
-| Feature | Supported | Notes |
-|---------|-----------|-------|
-| **SELECT** | ✅ Yes | Metrics and dimensions |
-| **SELECT *** | ✅ Yes | Expands to all model fields |
-| **WHERE** | ✅ Yes | Standard SQL conditions |
-| **ORDER BY** | ✅ Yes | Sort by any field |
-| **LIMIT / OFFSET** | ✅ Yes | Pagination support |
-| **Parameters** | ✅ Yes | `{{ param }}` syntax |
-| **Cross-Model Queries** | ✅ Yes | Auto-joins via relationships |
-| **Subqueries** | ✅ Yes | Query semantic layer in subqueries |
-| **CTEs / WITH** | ✅ Yes | Use CTEs with semantic queries |
-| **JOIN** | ❌ No | Joins are automatic |
-| **GROUP BY** | ❌ No | Grouping is automatic |
-| **Aggregate Functions** | ❌ No | Use pre-defined metrics |
-| **HAVING** | ❌ No | Use WHERE on metrics instead |
-| **Window Functions** | ❌ No | Use cumulative metrics |
-| **DISTINCT** | ❌ No | Dimensions are auto-distinct |
-
-### SELECT
-
-Select metrics and dimensions:
-
-```python
-layer.sql("SELECT revenue, order_count, status FROM orders")
-```
-
-Table prefixes optional:
-
-```python
-# Both work
-layer.sql("SELECT orders.revenue FROM orders")
-layer.sql("SELECT revenue FROM orders")
-```
-
-::: {.callout-note}
-## FROM Clause Uses Model Names
-
-The FROM clause references **semantic model names**, not underlying table names:
-
-```yaml
-models:
-  - name: orders
-    table: raw_orders_staging
-```
-
-```python
-layer.sql("SELECT revenue FROM orders")  # ✅ Use model name
-```
-:::
-
-### WHERE
-
-Filter with standard SQL conditions:
-
-```python
-layer.sql("""
-    SELECT revenue
-    FROM orders
-    WHERE status = 'completed'
-      AND order_date >= '2024-01-01'
-      AND amount > 100
-""")
-```
-
-### ORDER BY and LIMIT
-
-```python
-layer.sql("""
-    SELECT revenue, status
-    FROM orders
-    ORDER BY revenue DESC
-    LIMIT 10
-""")
-```
-
-### Cross-Model Queries
-
-Reference multiple models - joins happen automatically:
-
-```python
-layer.sql("""
-    SELECT
-        orders.revenue,
-        customers.region,
-        products.category
-    FROM orders
-""")
-```
-
-### Parameters
-
-Use `{{ param }}` syntax:
-
-```python
-layer.sql(
-    """
-    SELECT revenue
-    FROM orders
-    WHERE order_date >= {{ start_date }}
-      AND region = {{ region }}
-    """,
-    parameters={
-        "start_date": "2024-01-01",
-        "region": "US"
-    }
-)
-```
-
-::: {.callout-warning}
-## Don't Quote Parameters
-Parameters are automatically quoted based on type:
-- ❌ `WHERE date >= '{{ start_date }}'` (creates `''2024-01-01''`)
-- ✅ `WHERE date >= {{ start_date }}`
-:::
-
-### Subqueries
-
-Query semantic layer in subqueries:
-
-```python
-layer.sql("""
-    SELECT *
-    FROM (
-        SELECT revenue, status FROM orders
-    ) AS orders_agg
-    WHERE revenue > 1000
-""")
-```
-
-Join semantic query results with regular tables:
-
-```python
-layer.sql("""
-    SELECT
-        orders_agg.revenue,
-        r.continent
-    FROM (
-        SELECT orders.revenue, customers.region
-        FROM orders
-    ) AS orders_agg
-    JOIN regions r ON orders_agg.region = r.region
-""")
-```
-
-### CTEs
-
-Use CTEs with semantic layer queries:
-
-```python
-layer.sql("""
-    WITH orders_by_region AS (
-        SELECT revenue, status, customers.region
-        FROM orders
-    )
-    SELECT * FROM orders_by_region
-    WHERE revenue > 500
-    ORDER BY revenue DESC
-""")
-```
-
-Mix semantic and regular CTEs:
-
-```python
-layer.sql("""
-    WITH
-        orders_agg AS (
-            SELECT revenue, status FROM orders
-        ),
-        status_labels AS (
-            SELECT 'completed' as code, 'Complete' as label
-            UNION ALL SELECT 'pending', 'Pending'
-        )
-    SELECT o.revenue, s.label
-    FROM orders_agg o
-    JOIN status_labels s ON o.status = s.code
-""")
-```
-
 ## CLI Query
 
 Query from command line:
@@ -541,24 +542,28 @@ for batch in batches:
 ## Comparison: Python API vs SQL
 
 **Python API:**
+
 - ✅ Type-safe query building
 - ✅ Dynamic query construction
 - ✅ Better for programmatic use
 - ✅ Explicit parameters
 
 **SQL Interface:**
+
 - ✅ Familiar syntax
 - ✅ Readable for static queries
 - ✅ Copy-paste friendly
 - ✅ Template parameters
 
 **Use Python API when:**
+
 - Building queries programmatically
 - Constructing dynamic filters
 - Need type safety
 - Building applications/APIs
 
 **Use SQL Interface when:**
+
 - Writing dashboard queries
 - Ad-hoc exploration
 - Static report queries

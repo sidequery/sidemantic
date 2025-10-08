@@ -1,0 +1,70 @@
+name: Pyodide Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-pyodide:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Pyodide
+        run: npm install pyodide
+
+      - name: Test sidemantic in Pyodide
+        run: |
+          cat > test_pyodide.mjs << 'EOF'
+          import { loadPyodide } from 'pyodide';
+
+          async function main() {
+            const pyodide = await loadPyodide();
+
+            console.log('Installing sidemantic...');
+            await pyodide.loadPackage('micropip');
+            await pyodide.runPythonAsync(`
+              import micropip
+              await micropip.install('sidemantic')
+            `);
+
+            console.log('Testing basic imports...');
+            await pyodide.runPythonAsync(`
+              from sidemantic import SemanticLayer, Model, Dimension, Metric
+              print('✓ Core imports successful')
+
+              # Test creating a simple semantic layer
+              layer = SemanticLayer()
+              print('✓ SemanticLayer instantiation successful')
+
+              # Test creating a model
+              model = Model(
+                  name="test",
+                  table="test_table",
+                  primary_key="id",
+                  dimensions=[
+                      Dimension(name="name", type="categorical", sql="name")
+                  ],
+                  metrics=[
+                      Metric(name="count", agg="count")
+                  ]
+              )
+              layer.add_model(model)
+              print('✓ Model creation successful')
+
+              print('All Pyodide tests passed!')
+            `);
+          }
+
+          main().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF
+          node test_pyodide.mjs

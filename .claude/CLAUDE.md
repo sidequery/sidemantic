@@ -35,6 +35,13 @@ This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
   - `workbench` - textual, plotext (for TUI)
   - `serve` - riffq, pyarrow (for PostgreSQL server)
 
+## Pyodide Compatibility
+
+- Core dependencies MUST be Pyodide-compatible (used in browser dashboard)
+- Heavy deps (textual, riffq) are optional to avoid Pyodide conflicts
+- CI tests basic imports in Pyodide environment
+- If adding new core deps, check they work in Pyodide or make them optional
+
 ## Testing
 
 Run tests before committing significant changes:

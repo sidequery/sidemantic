@@ -135,6 +135,11 @@ class SidequeryWorkbench(App):
 
     #sql-display {
         height: 100%;
+        border: none;
+    }
+
+    #sql-display:focus {
+        border: none;
     }
 
     #results-table {

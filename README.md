@@ -563,9 +563,44 @@ uv run pytest -v
 
 ## Database Support
 
-**DuckDB** is the primary supported database (via [Sidequery](https://github.com/sidequery/sidequery), our parent project).
+Sidemantic supports multiple production-ready databases:
 
-While the SQL generation layer uses SQLGlot and can transpile to other dialects, DuckDB is the only actively tested and supported execution engine. Additional database support may be added based on Sidequery's roadmap.
+| Database | Status | Installation |
+|----------|:------:|--------------|
+| **DuckDB** | ✅ | Built-in (default) |
+| **PostgreSQL** | ✅ | `pip install sidemantic[postgres]` |
+| **BigQuery** | ✅ | `pip install sidemantic[bigquery]` |
+| **Snowflake** | ✅ | `pip install sidemantic[snowflake]` |
+| **ClickHouse** | ✅ | `pip install sidemantic[clickhouse]` |
+| **Databricks** | ✅ | `pip install sidemantic[databricks]` |
+| **Spark SQL** | ✅ | `pip install sidemantic[spark]` |
+
+**Connection examples:**
+
+```yaml
+# DuckDB (default)
+connection: duckdb:///data.duckdb
+
+# PostgreSQL
+connection: postgres://user:pass@localhost:5432/analytics
+
+# BigQuery
+connection: bigquery://project-id/dataset-id
+
+# Snowflake
+connection: snowflake://user:pass@account/database/schema?warehouse=wh
+
+# ClickHouse
+connection: clickhouse://user:pass@localhost:8123/default
+
+# Databricks
+connection: databricks://token@server/http-path?catalog=main
+
+# Spark SQL
+connection: spark://localhost:10000/default
+```
+
+See the [documentation](https://sidemantic.com) for complete connection string formats and features.
 
 ## Status
 

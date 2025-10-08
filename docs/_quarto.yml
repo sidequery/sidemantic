@@ -23,6 +23,10 @@ website:
         href: adapters.qmd
       - text: "Core Concepts"
         menu:
+          - text: "Configuration"
+            href: config.qmd
+          - text: "Connections"
+            href: connections.qmd
           - text: "Models"
             href: models.qmd
           - text: "Metrics"

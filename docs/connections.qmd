@@ -1,0 +1,424 @@
+---
+title: "Database Connections"
+---
+
+Sidemantic supports multiple database engines for executing semantic layer queries. Connection strings are specified in your YAML configuration files or via CLI flags.
+
+## Supported Databases
+
+| Database | Production Ready | Notes |
+|----------|:----------------:|-------|
+| **DuckDB** | ✅ | Default, fully supported |
+| **PostgreSQL** | ✅ | Full feature support |
+| **BigQuery** | ✅ | Google Cloud Platform |
+| **Snowflake** | ✅ | Cloud data warehouse |
+| **ClickHouse** | ✅ | OLAP database |
+| **Databricks** | ✅ | Lakehouse platform |
+| **Spark SQL** | ✅ | Apache Spark (via Thrift server) |
+
+## Connection String Format
+
+### In YAML Files
+
+Add a `connection` field to your semantic layer YAML:
+
+```yaml
+# semantic_layer.yml
+connection: duckdb:///path/to/database.duckdb
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    # ...
+```
+
+### With CLI
+
+Override connection via `--connection` flag:
+
+```bash
+# Query command
+sidemantic query models/ --connection "postgres://localhost:5432/db" \
+  --sql "SELECT revenue FROM orders"
+
+# Workbench
+sidemantic workbench models/ --connection "bigquery://project/dataset"
+
+# PostgreSQL server
+sidemantic serve models/ --connection "snowflake://account/db/schema"
+```
+
+## Database-Specific Configuration
+
+### DuckDB (Default)
+
+No installation required.
+
+**In-memory (default):**
+```yaml
+connection: duckdb:///:memory:
+```
+
+**Persistent file:**
+```yaml
+connection: duckdb:///data/analytics.duckdb
+```
+
+**Read-only:**
+```yaml
+connection: duckdb:///data/warehouse.duckdb?access_mode=read_only
+```
+
+**CLI example:**
+```bash
+sidemantic query models/ --connection "duckdb:///data.duckdb" \
+  --sql "SELECT * FROM orders"
+```
+
+### PostgreSQL
+
+Install: `pip install sidemantic[postgres]`
+
+**Basic:**
+```yaml
+connection: postgres://username:password@host:port/database
+```
+
+**Example:**
+```yaml
+connection: postgres://analyst:secret@localhost:5432/analytics
+```
+
+**With SSL:**
+```yaml
+connection: postgres://user:pass@db.example.com:5432/analytics?sslmode=require
+```
+
+**CLI example:**
+```bash
+sidemantic query models/ \
+  --connection "postgres://analyst:secret@localhost:5432/analytics" \
+  --sql "SELECT revenue FROM orders"
+```
+
+**Features:**
+- Full semantic layer support
+- Symmetric aggregates for fan-out joins
+- Arrow format for performance
+
+### BigQuery
+
+Install: `pip install sidemantic[bigquery]`
+
+**Format:**
+```yaml
+connection: bigquery://project-id/dataset-id
+```
+
+**Example:**
+```yaml
+connection: bigquery://my-gcp-project/analytics_dataset
+```
+
+**CLI example:**
+```bash
+sidemantic query models/ \
+  --connection "bigquery://my-project/my-dataset" \
+  --sql "SELECT revenue FROM orders"
+```
+
+**Authentication:**
+
+Local development:
+```bash
+gcloud auth application-default login
+```
+
+Service account:
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+```
+
+**Features:**
+- Full semantic layer support
+- Uses FARM_FINGERPRINT for symmetric aggregates
+- Arrow format via BigQuery Storage API
+
+### Snowflake
+
+Install: `pip install sidemantic[snowflake]`
+
+**Format:**
+```yaml
+connection: snowflake://user:password@account/database/schema?warehouse=wh&role=role
+```
+
+**Example:**
+```yaml
+connection: snowflake://analyst:pass@xy12345.us-east-1/ANALYTICS/PUBLIC?warehouse=COMPUTE_WH&role=ANALYST
+```
+
+**CLI example:**
+```bash
+sidemantic query models/ \
+  --connection "snowflake://user:pass@account/db/schema?warehouse=wh" \
+  --sql "SELECT revenue FROM orders"
+```
+
+**Parameters:**
+- `account`: Snowflake account (e.g., `xy12345.us-east-1`)
+- `database`: Database name
+- `schema`: Schema name
+- `warehouse`: Compute warehouse (query parameter)
+- `role`: Role to use (query parameter)
+
+**Features:**
+- Full semantic layer support
+- Optimized symmetric aggregates
+- Arrow format for performance
+
+### ClickHouse
+
+Install: `pip install sidemantic[clickhouse]`
+
+**Format:**
+```yaml
+connection: clickhouse://user:password@host:port/database
+```
+
+**Example:**
+```yaml
+connection: clickhouse://default:clickhouse@localhost:8123/default
+```
+
+**With SSL:**
+```yaml
+connection: clickhouse://user:pass@host:8443/db?secure=true
+```
+
+**CLI example:**
+```bash
+sidemantic query models/ \
+  --connection "clickhouse://default:clickhouse@localhost:8123/default" \
+  --sql "SELECT revenue FROM orders"
+```
+
+**Features:**
+- Full semantic layer support
+- Uses halfMD5 for symmetric aggregates
+- Optimized for OLAP workloads
+
+### Databricks
+
+Install: `pip install sidemantic[databricks]`
+
+**Format:**
+```yaml
+connection: databricks://token@server-hostname/http-path?catalog=catalog&schema=schema
+```
+
+**Example:**
+```yaml
+connection: databricks://dapi12345@dbc-a1b2c3d4.cloud.databricks.com/sql/1.0/warehouses/abc123?catalog=main&schema=default
+```
+
+**CLI example:**
+```bash
+sidemantic query models/ \
+  --connection "databricks://dapi123@server/sql/1.0/warehouses/abc?catalog=main" \
+  --sql "SELECT revenue FROM orders"
+```
+
+**Parameters:**
+- `token`: Personal access token (as username in URL)
+- `server-hostname`: Databricks workspace URL
+- `http-path`: SQL warehouse HTTP path
+- `catalog`: Unity Catalog (query parameter)
+- `schema`: Schema name (query parameter)
+
+**Features:**
+- Full semantic layer support
+- Uses xxhash64 for symmetric aggregates
+- Optimized for lakehouse queries
+
+### Spark SQL
+
+Install: `pip install sidemantic[spark]`
+
+**Format:**
+```yaml
+connection: spark://host:port/database
+```
+
+**Example:**
+```yaml
+connection: spark://localhost:10000/default
+```
+
+**With authentication:**
+```yaml
+connection: spark://username:password@host:10000/database
+```
+
+**CLI example:**
+```bash
+sidemantic query models/ \
+  --connection "spark://localhost:10000/default" \
+  --sql "SELECT revenue FROM orders"
+```
+
+**Requirements:**
+- Spark Thrift server must be running
+- Uses HiveServer2 protocol
+
+**Features:**
+- Full semantic layer support
+- Uses xxhash64 for symmetric aggregates
+- Compatible with Apache Spark 3.x
+
+## Environment Variables
+
+Store credentials in environment variables for security:
+
+**Example .env file:**
+```bash
+# PostgreSQL
+DATABASE_URL=postgres://user:pass@localhost:5432/analytics
+
+# BigQuery
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+DATABASE_URL=bigquery://my-project/my-dataset
+
+# Snowflake
+DATABASE_URL=snowflake://user:pass@account/db/schema?warehouse=wh
+```
+
+**Reference in YAML:**
+```yaml
+# Use ${ENV_VAR} syntax (if supported by your tooling)
+connection: ${DATABASE_URL}
+```
+
+**Or use CLI flag:**
+```bash
+sidemantic query models/ --connection "$DATABASE_URL" \
+  --sql "SELECT revenue FROM orders"
+```
+
+## Testing Connections
+
+Test your connection string:
+
+```bash
+# Create a simple test model
+cat > test.yml <<EOF
+connection: postgres://localhost:5432/test
+
+models:
+  - name: test
+    table: (SELECT 1 as id, 100 as value)
+    primary_key: id
+    metrics:
+      - name: total
+        agg: sum
+        sql: value
+EOF
+
+# Run a query
+sidemantic query test.yml --sql "SELECT total FROM test"
+# Should output: 100
+```
+
+## CLI Connection Examples
+
+### Query Command
+
+```bash
+# DuckDB file
+sidemantic query models/ \
+  --connection "duckdb:///data.duckdb" \
+  --sql "SELECT revenue FROM orders"
+
+# PostgreSQL
+sidemantic query models/ \
+  --connection "postgres://localhost:5432/analytics" \
+  --sql "SELECT revenue, status FROM orders"
+
+# BigQuery
+sidemantic query models/ \
+  --connection "bigquery://my-project/analytics" \
+  --sql "SELECT revenue FROM orders WHERE status = 'completed'"
+```
+
+### Workbench
+
+```bash
+# Local DuckDB
+sidemantic workbench models/ --connection "duckdb:///warehouse.duckdb"
+
+# Snowflake
+sidemantic workbench models/ \
+  --connection "snowflake://user:pass@account/db/schema"
+
+# ClickHouse
+sidemantic workbench models/ \
+  --connection "clickhouse://localhost:8123/default"
+```
+
+### PostgreSQL Server
+
+```bash
+# Serve DuckDB over PostgreSQL protocol
+sidemantic serve models/ \
+  --connection "duckdb:///data.duckdb" \
+  --port 5433
+
+# Serve BigQuery over PostgreSQL protocol
+sidemantic serve models/ \
+  --connection "bigquery://project/dataset" \
+  --port 5433 \
+  --username admin \
+  --password secret
+```
+
+## Troubleshooting
+
+### Connection Errors
+
+**PostgreSQL:**
+```
+psycopg.OperationalError: connection failed
+```
+- Verify host, port, username, password
+- Check PostgreSQL is running
+- Test with `psql` first: `psql -h host -p 5432 -U user -d database`
+
+**BigQuery:**
+```
+google.auth.exceptions.DefaultCredentialsError
+```
+- Run `gcloud auth application-default login`
+- Or set `GOOGLE_APPLICATION_CREDENTIALS` environment variable
+
+**Snowflake:**
+```
+snowflake.connector.errors.DatabaseError: 250001
+```
+- Verify account identifier format
+- Check username/password
+- Ensure warehouse is running
+
+### Invalid Connection String
+
+```
+ValueError: Unsupported connection URL
+```
+- Check connection string format matches examples above
+- Ensure required extras installed: `pip install sidemantic[database]`
+
+## Related Documentation
+
+- **[Configuration](config.qmd)** - General YAML configuration options
+- **[CLI](cli.qmd)** - CLI commands and flags
+- **[Getting Started](getting-started.qmd)** - Installation and setup

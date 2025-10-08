@@ -115,9 +115,6 @@ Options:
 - `--password`: Password for authentication (optional)
 - `--demo`: Use demo data
 
-::: {.callout-note}
-Requires optional dependencies: `pip install sidemantic[serve]`
-:::
 
 Connect with any PostgreSQL client:
 

@@ -37,6 +37,8 @@ website:
             href: cli.qmd
           - text: "Workbench"
             href: workbench.qmd
+          - text: "MCP Server"
+            href: mcp-server.qmd
       - text: "Reference"
         menu:
           - text: "Python API"

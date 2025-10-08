@@ -37,6 +37,7 @@ def substitute_env_vars(content: str) -> str:
         >>> substitute_env_vars('host: ${MISSING:-default}')
         'host: default'
     """
+
     # Pattern for ${ENV_VAR} or ${ENV_VAR:-default}
     def replace_var(match):
         var_expr = match.group(1)

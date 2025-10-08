@@ -27,23 +27,24 @@ jobs:
           async function main() {
             const pyodide = await loadPyodide();
 
-            console.log('Installing sidemantic...');
-            await pyodide.loadPackage('micropip');
+            console.log('Loading duckdb-wasm from Pyodide...');
+            await pyodide.loadPackage(['micropip', 'sqlglot']);
+
+            console.log('Installing sidemantic (no deps)...');
             await pyodide.runPythonAsync(`
               import micropip
-              await micropip.install('sidemantic')
+              # Install without deps since duckdb isn't pure Python
+              # but we loaded sqlglot from Pyodide packages
+              await micropip.install('sidemantic', deps=False)
             `);
 
             console.log('Testing basic imports...');
             await pyodide.runPythonAsync(`
-              from sidemantic import SemanticLayer, Model, Dimension, Metric
+              from sidemantic import Model, Dimension, Metric, Relationship
+              from sidemantic.core.semantic_graph import SemanticGraph
               print('✓ Core imports successful')
 
-              # Test creating a simple semantic layer
-              layer = SemanticLayer()
-              print('✓ SemanticLayer instantiation successful')
-
-              # Test creating a model
+              # Test creating a model (doesn't need duckdb)
               model = Model(
                   name="test",
                   table="test_table",
@@ -53,12 +54,19 @@ jobs:
                   ],
                   metrics=[
                       Metric(name="count", agg="count")
+                  ],
+                  relationships=[
+                      Relationship(name="other", type="many_to_one", foreign_key="other_id")
                   ]
               )
-              layer.add_model(model)
               print('✓ Model creation successful')
 
-              print('All Pyodide tests passed!')
+              # Test semantic graph (doesn't need duckdb)
+              graph = SemanticGraph()
+              graph.add_model(model)
+              print('✓ SemanticGraph successful')
+
+              print('All Pyodide imports and basic operations work!')
             `);
           }
 

@@ -288,7 +288,11 @@ sidemantic query models/ \
 
 ## Environment Variables
 
-Store credentials in environment variables for security:
+Store credentials in environment variables for security. Never commit credentials to version control.
+
+### Full Connection Strings
+
+Store complete connection string in an environment variable:
 
 **Example .env file:**
 ```bash
@@ -297,20 +301,132 @@ DATABASE_URL=postgres://user:pass@localhost:5432/analytics
 
 # BigQuery
 GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-DATABASE_URL=bigquery://my-project/my-dataset
+BIGQUERY_URL=bigquery://my-project/my-dataset
 
 # Snowflake
-DATABASE_URL=snowflake://user:pass@account/db/schema?warehouse=wh
+SNOWFLAKE_URL=snowflake://user:pass@account/db/schema?warehouse=wh
+
+# ClickHouse
+CLICKHOUSE_URL=clickhouse://user:pass@localhost:8123/default
+
+# Databricks
+DATABRICKS_URL=databricks://token@server/http-path?catalog=main
+
+# Spark
+SPARK_URL=spark://localhost:10000/default
 ```
 
-**Reference in YAML:**
-```yaml
-# Use ${ENV_VAR} syntax (if supported by your tooling)
-connection: ${DATABASE_URL}
-```
-
-**Or use CLI flag:**
+**Use with CLI:**
 ```bash
+# Load .env file (many tools auto-load)
+export $(cat .env | xargs)
+
+# Use environment variable
+sidemantic query models/ --connection "$DATABASE_URL" \
+  --sql "SELECT revenue FROM orders"
+
+sidemantic workbench models/ --connection "$SNOWFLAKE_URL"
+
+sidemantic serve models/ --connection "$BIGQUERY_URL"
+```
+
+### Component Environment Variables
+
+Build connection strings from individual components:
+
+**Example .env file:**
+```bash
+# PostgreSQL components
+POSTGRES_HOST=db.example.com
+POSTGRES_PORT=5432
+POSTGRES_USER=analyst
+POSTGRES_PASSWORD=secret
+POSTGRES_DB=analytics
+
+# Snowflake components
+SNOWFLAKE_ACCOUNT=xy12345.us-east-1
+SNOWFLAKE_USER=analyst
+SNOWFLAKE_PASSWORD=secret
+SNOWFLAKE_DATABASE=ANALYTICS
+SNOWFLAKE_SCHEMA=PUBLIC
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+
+# BigQuery components
+BIGQUERY_PROJECT=my-gcp-project
+BIGQUERY_DATASET=analytics_dataset
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+```
+
+**Build connection string in shell:**
+```bash
+# PostgreSQL
+CONNECTION="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+sidemantic query models/ --connection "$CONNECTION" --sql "SELECT revenue FROM orders"
+
+# Snowflake
+CONNECTION="snowflake://${SNOWFLAKE_USER}:${SNOWFLAKE_PASSWORD}@${SNOWFLAKE_ACCOUNT}/${SNOWFLAKE_DATABASE}/${SNOWFLAKE_SCHEMA}?warehouse=${SNOWFLAKE_WAREHOUSE}"
+sidemantic workbench models/ --connection "$CONNECTION"
+
+# BigQuery
+CONNECTION="bigquery://${BIGQUERY_PROJECT}/${BIGQUERY_DATASET}"
+sidemantic serve models/ --connection "$CONNECTION"
+```
+
+### Security Best Practices
+
+**Never commit credentials:**
+```bash
+# Add to .gitignore
+echo ".env" >> .gitignore
+echo "*.secrets" >> .gitignore
+```
+
+**Use secret management:**
+```bash
+# AWS Secrets Manager
+export DATABASE_URL=$(aws secretsmanager get-secret-value \
+  --secret-id prod/database-url \
+  --query SecretString \
+  --output text)
+
+# Google Secret Manager
+export DATABASE_URL=$(gcloud secrets versions access latest \
+  --secret="database-url")
+
+# HashiCorp Vault
+export DATABASE_URL=$(vault kv get -field=url secret/database)
+```
+
+**Restrict file permissions:**
+```bash
+chmod 600 .env
+```
+
+### Per-Environment Configuration
+
+**Development:**
+```bash
+# .env.development
+DATABASE_URL=duckdb:///dev.duckdb
+```
+
+**Staging:**
+```bash
+# .env.staging
+DATABASE_URL=postgres://user:pass@staging-db:5432/analytics
+```
+
+**Production:**
+```bash
+# .env.production
+DATABASE_URL=snowflake://user:pass@prod-account/db/schema?warehouse=wh
+```
+
+**Load based on environment:**
+```bash
+ENV=${ENV:-development}
+export $(cat .env.${ENV} | xargs)
+
 sidemantic query models/ --connection "$DATABASE_URL" \
   --sql "SELECT revenue FROM orders"
 ```

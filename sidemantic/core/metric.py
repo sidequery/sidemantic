@@ -40,13 +40,16 @@ class Metric(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def handle_expr_alias(cls, data):
-        """Handle expr as an alias for sql.
+    def handle_expr_and_parse_agg(cls, data):
+        """Handle expr alias and parse aggregation from SQL expression.
 
-        This allows users to specify either sql= or expr= when creating metrics.
-        Both are equivalent and will be stored as 'sql'.
+        1. Converts expr= to sql= for backwards compatibility
+        2. Parses aggregation functions from SQL (e.g., SUM(amount) -> agg=sum, sql=amount)
         """
+        import re
+
         if isinstance(data, dict):
+            # Step 1: Handle expr alias
             expr_val = data.get("expr")
             sql_val = data.get("sql")
 
@@ -57,9 +60,34 @@ class Metric(BaseModel):
             # If only expr provided, copy to sql
             if expr_val is not None and sql_val is None:
                 data["sql"] = expr_val
+                sql_val = expr_val  # Update for next step
 
             # Remove expr from data to avoid storing it
             data.pop("expr", None)
+
+            # Step 2: Parse aggregation from SQL if needed
+            agg_val = data.get("agg")
+            type_val = data.get("type")
+
+            # Only parse if sql is provided and agg is not, and this isn't a complex metric
+            if sql_val and not agg_val and not type_val:
+                # Match aggregation functions at the start: SUM(expr), COUNT(expr), etc.
+                agg_pattern = r"^\s*(SUM|COUNT|AVG|MIN|MAX|MEDIAN|COUNT_DISTINCT)\s*\((.*)\)\s*$"
+                match = re.match(agg_pattern, sql_val, re.IGNORECASE)
+
+                if match:
+                    agg_func = match.group(1).lower()
+                    inner_expr = match.group(2).strip()
+
+                    # Extract DISTINCT for COUNT(DISTINCT col)
+                    if agg_func == "count":
+                        distinct_match = re.match(r"^\s*DISTINCT\s+(.+)$", inner_expr, re.IGNORECASE)
+                        if distinct_match:
+                            agg_func = "count_distinct"
+                            inner_expr = distinct_match.group(1).strip()
+
+                    data["agg"] = agg_func
+                    data["sql"] = inner_expr
 
         return data
 

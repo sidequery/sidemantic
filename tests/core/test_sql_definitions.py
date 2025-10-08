@@ -32,7 +32,7 @@ def test_parse_simple_metric():
 
 
 def test_parse_metric_with_expression_alias():
-    """Test that 'expression' is an alias for 'sql'."""
+    """Test that 'expression' is an alias for 'sql' and parses aggregation."""
     sql = """
     METRIC (
         name revenue,
@@ -44,7 +44,9 @@ def test_parse_metric_with_expression_alias():
 
     assert len(metrics) == 1
     assert metrics[0].name == "revenue"
-    assert metrics[0].sql == "SUM(amount)"
+    # Aggregation is now automatically parsed from the expression
+    assert metrics[0].agg == "sum"
+    assert metrics[0].sql == "amount"
 
 
 def test_parse_metric_all_fields():

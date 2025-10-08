@@ -2,18 +2,28 @@
 
 ## CRITICAL: Before Every Commit
 
-**ALWAYS run linting and formatting before committing:**
+**ALWAYS run the EXACT same commands CI runs before committing:**
 
 ```bash
-uv run ruff check --fix .
-uv run ruff format .
+# Run these in order:
+uv run ruff check . --exclude docs/_extensions
+uv run ruff format --check . --exclude docs/_extensions
+uv run pytest -v
 ```
 
-This is NON-NEGOTIABLE. If you modify Python code, you MUST lint and format before committing.
+If any fail, fix them:
+```bash
+# Fix ruff issues
+uv run ruff check --fix . --exclude docs/_extensions
+uv run ruff format . --exclude docs/_extensions
+```
+
+This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
 
 **Why this matters:**
-- CI runs ruff check and will fail if code isn't formatted
-- Ruff must be installed in `[project.optional-dependencies] dev` for CI
+- CI runs these exact commands and will fail if they don't pass
+- You keep pushing broken code because you don't run these locally
+- Ruff must be in `[project.optional-dependencies] dev` for CI
 - NOT in `[dependency-groups]` (that's uv-specific, CI uses optional-dependencies)
 
 ## Dependency Management

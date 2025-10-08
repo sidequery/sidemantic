@@ -7,8 +7,6 @@ import os
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-
 # Mark all tests in this module as integration tests
 pytestmark = [
     pytest.mark.integration,

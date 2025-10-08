@@ -1401,14 +1401,10 @@ def serve(
       sidemantic serve --demo
       sidemantic serve ./models --username user --password secret
     """
-    try:
-        import pyarrow as pa
-        import riffq
-    except ImportError:
-        typer.echo("Error: riffq is not installed. Install with: pip install sidemantic[serve]", err=True)
-        raise typer.Exit(1)
-
     import logging
+
+    import pyarrow as pa
+    import riffq
 
     logging.basicConfig(level=logging.INFO)
 

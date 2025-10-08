@@ -76,34 +76,12 @@ uv run pytest -v
 
 ## Publishing to PyPI
 
-**Use GitHub Actions (preferred method):**
-
-1. Merge your changes to main:
 ```bash
-git checkout main
-git merge your-branch
-git push
+gh workflow run publish.yml
 ```
-
-2. Go to GitHub Actions: https://github.com/sidequery/sidemantic/actions/workflows/publish.yml
-
-3. Click "Run workflow" → "Run workflow"
-   - Leave version empty to auto-increment patch version (0.2.30 → 0.2.31)
-   - Or specify a version like "0.3.0" for minor/major bumps
-
-4. The action will:
-   - Auto-increment version (or use your specified version)
-   - Update pyproject.toml and __init__.py
-   - Build the package
-   - Publish to PyPI
-   - Commit version bump and create git tag
-   - Push to main
-
-**Never publish manually** - always use the GitHub Action to ensure version bumps are committed and tagged.
 
 ## Common Mistakes to Avoid
 
 1. **Breaking ruff** - Always ensure ruff is installed in dev dependencies
 2. **Pyodide compatibility** - Keep heavy deps (textual, pygments) optional
 3. **Not linting** - Format and lint EVERY TIME before commit
-4. **Manual publishing** - Always use GitHub Actions for publishing

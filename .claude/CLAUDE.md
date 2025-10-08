@@ -34,10 +34,17 @@ This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
 - Optional features use `[project.optional-dependencies]`:
   - `workbench` - textual, plotext (for TUI)
   - `serve` - riffq, pyarrow (for PostgreSQL server)
+  - `mcp` - mcp[cli] (for MCP server, requires pydantic>=2.11 incompatible with Pyodide)
 
 ## Pyodide Compatibility
 
-- Core dependencies MUST be Pyodide-compatible (used in browser dashboard)
+**Pyodide typing-extensions issue:**
+- Pyodide has typing-extensions==4.11.0
+- Some deps (pydantic>=2.10, inflect>=7.2) require typing-extensions>=4.12+
+- Dashboard handles this by installing pydantic<2.10 with deps=False
+- inflect<7.2 constraint in core deps marked with `# PYODIDE:` comment
+
+**Version constraints with "PYODIDE:" comments are REQUIRED:**
 - Heavy deps (textual, riffq) are optional to avoid Pyodide conflicts
 - CI tests basic imports in Pyodide environment
 - If adding new core deps, check they work in Pyodide or make them optional

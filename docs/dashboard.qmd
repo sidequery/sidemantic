@@ -14,8 +14,6 @@ pyproject: |
       "marimo>=0.16.5",
       "sidemantic>=0.2.29",
       "duckdb>=1.0",
-      "sqlglot>=25",
-      "pydantic>=2",
       "altair>=5",
       "numpy",
   ]
@@ -34,7 +32,10 @@ import micropip
 try:
     import sidemantic  # type: ignore
 except ModuleNotFoundError:
-    await micropip.install(["sidemantic"], deps=False)
+    # Install pydantic<2.10 to avoid typing-extensions conflict
+    # (pydantic-core 2.41+ needs typing-extensions>=4.14.1 but Pyodide has 4.11.0)
+    await micropip.install("pydantic<2.10")
+    await micropip.install("sidemantic", deps=False)
     import sidemantic  # type: ignore
 ```
 

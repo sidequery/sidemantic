@@ -23,6 +23,26 @@ services:
     command: ["--project=test-project", "--dataset=test_dataset"]
 
   # Snowflake tests use fakesnow (Python library) for mocking, no Docker service needed
+  # Databricks tests require real Databricks workspace - no emulator available
+
+  spark:
+    image: apache/spark:3.5.0
+    platform: linux/amd64
+    ports:
+      - "10000:10000"  # Thrift server
+      - "4040:4040"    # Spark UI
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+    command: >
+      /bin/bash -c "
+      /opt/spark/sbin/start-thriftserver.sh &&
+      tail -f /opt/spark/logs/*
+      "
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "10000"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   clickhouse:
     image: clickhouse/clickhouse-server:latest

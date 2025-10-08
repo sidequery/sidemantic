@@ -35,6 +35,7 @@ class SemanticLayer:
                 - snowflake://user:password@account/database/schema
                 - clickhouse://user:password@host:port/database
                 - databricks://token@server-hostname/http-path
+                - spark://host:port/database
             dialect: SQL dialect for query generation (optional, inferred from adapter)
             auto_register: Set as current layer for auto-registration (default: True)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
@@ -82,10 +83,15 @@ class SemanticLayer:
 
                 self.adapter = DatabricksAdapter.from_url(connection)
                 self.dialect = dialect or "databricks"
+            elif connection.startswith("spark://"):
+                from sidemantic.db.spark import SparkAdapter
+
+                self.adapter = SparkAdapter.from_url(connection)
+                self.dialect = dialect or "spark"
             else:
                 raise ValueError(
                     f"Unsupported connection URL: {connection}. "
-                    "Supported: duckdb:///, postgres://, bigquery://, snowflake://, clickhouse://, databricks://, or BaseDatabaseAdapter instance"
+                    "Supported: duckdb:///, postgres://, bigquery://, snowflake://, clickhouse://, databricks://, spark://, or BaseDatabaseAdapter instance"
                 )
         else:
             raise TypeError(f"connection must be a string URL or BaseDatabaseAdapter instance, got {type(connection)}")

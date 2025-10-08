@@ -56,6 +56,13 @@ databricks = [
     "databricks-sql-connector>=2.0.0",
     "pyarrow>=14.0.0",  # For Arrow support
 ]
+spark = [
+    "PyHive>=0.7.0",
+    "thrift>=0.16.0",
+    "thrift_sasl>=0.4.3",
+    "pure-sasl>=0.6.2",  # Pure Python SASL for PyHive (no C deps)
+    "pyarrow>=14.0.0",  # For Arrow support
+]
 
 [build-system]
 requires = ["hatchling"]

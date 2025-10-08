@@ -573,6 +573,15 @@ wheels = [
 ]
 
 [[package]]
+name = "future"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/b2/4140c69c6a66432916b26158687e821ba631a4c9273c474343badf84d3ba/future-1.0.0.tar.gz", hash = "sha256:bd2968309307861edae1458a4f8a4f3598c03be43b97521076aebf5d94c07b05", size = 1228490 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/71/ae30dadffc90b9006d77af76b393cb9dfbfc9629f339fc1574a1c52e6806/future-1.0.0-py3-none-any.whl", hash = "sha256:929292d34f5872e70396626ef385ec22355a1fae8ad29e1a734c3e43f9fbc216", size = 491326 },
+]
+
+[[package]]
 name = "google-api-core"
 version = "2.25.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1605,6 +1614,12 @@ wheels = [
 ]
 
 [[package]]
+name = "pure-sasl"
+version = "0.6.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/b7/a0d688f86c869073cc28c0640899394a1cf68a6d87ee78a09565e9037da6/pure-sasl-0.6.2.tar.gz", hash = "sha256:53c1355f5da95e2b85b2cc9a6af435518edc20c81193faa0eea65fdc835138f4", size = 11617 }
+
+[[package]]
 name = "pyarrow"
 version = "21.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1796,6 +1811,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b014
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217 },
 ]
+
+[[package]]
+name = "pyhive"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "future" },
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f6/ec/5c658b3a4d99a6d9145030cc8e003c3f7efc668d866e88544812ab0af310/PyHive-0.7.0.tar.gz", hash = "sha256:585beff9578a61b99aed47140fec97e26323e8c685a5b5d0c8550a8ebf8a24e0", size = 46479 }
 
 [[package]]
 name = "pyjwt"
@@ -2247,6 +2272,13 @@ snowflake = [
     { name = "pyarrow" },
     { name = "snowflake-connector-python" },
 ]
+spark = [
+    { name = "pure-sasl" },
+    { name = "pyarrow" },
+    { name = "pyhive" },
+    { name = "thrift" },
+    { name = "thrift-sasl" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2269,13 +2301,16 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.2,<3" },
     { name = "plotext", specifier = ">=5.3.2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.0.0" },
+    { name = "pure-sasl", marker = "extra == 'spark'", specifier = ">=0.6.2" },
     { name = "pyarrow", marker = "extra == 'bigquery'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'clickhouse'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'databricks'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'postgres'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'serve'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'snowflake'", specifier = ">=14.0.0" },
+    { name = "pyarrow", marker = "extra == 'spark'", specifier = ">=14.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pyhive", marker = "extra == 'spark'", specifier = ">=0.7.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -2285,6 +2320,8 @@ requires-dist = [
     { name = "sqlglot", specifier = ">=25.0.0" },
     { name = "textual", extras = ["syntax"], specifier = ">=1.0.0" },
     { name = "textual-plotext", specifier = ">=1.0.1" },
+    { name = "thrift", marker = "extra == 'spark'", specifier = ">=0.16.0" },
+    { name = "thrift-sasl", marker = "extra == 'spark'", specifier = ">=0.4.3" },
     { name = "typer", specifier = ">=0.9.0" },
 ]
 
@@ -2477,6 +2514,20 @@ dependencies = [
     { name = "six" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e4/23/dd951c9883cb49a73b750bdfe91e39d78e8a3f1f7175608634f381a197d5/thrift-0.16.0.tar.gz", hash = "sha256:2b5b6488fcded21f9d312aa23c9ff6a0195d0f6ae26ddbd5ad9e3e25dfc14408", size = 59605 }
+
+[[package]]
+name = "thrift-sasl"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pure-sasl" },
+    { name = "six" },
+    { name = "thrift" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fa/fb/5d9ba73be60b32f6fda080a5556cff25e15daf33bafe043c226404b39b25/thrift_sasl-0.4.3.tar.gz", hash = "sha256:5bdd5b760d90a13d9b3abfce873db0425861aa8d6bf25912d3cc0467a4f773da", size = 3962 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/9e/636c24ce1c0d46ce3020c5836c5a375d8e862fa81a240e0e352cc991dcf8/thrift_sasl-0.4.3-py2.py3-none-any.whl", hash = "sha256:d24b49140115e6e2a96d08335cff225a27a28ea71866fb1b2bdb30ca5afca64e", size = 8304 },
+]
 
 [[package]]
 name = "tomli"

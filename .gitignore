@@ -27,3 +27,4 @@ examples/*.db
 
 # Package installers
 *.pkg
+.claude/settings.local.json

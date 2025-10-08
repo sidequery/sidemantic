@@ -52,12 +52,12 @@ class SidequeryWorkbench(App):
     }
 
     #sidebar {
-        width: 40%;
+        width: 35;
         border-right: solid $primary;
     }
 
     #query-panel {
-        width: 60%;
+        width: 1fr;
     }
 
     #query-buttons {

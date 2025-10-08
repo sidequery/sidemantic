@@ -23,7 +23,7 @@ BIGQUERY_PROJECT = os.getenv("BIGQUERY_PROJECT", "test-project")
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "test_dataset")
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def bigquery_adapter():
     """Create BigQuery adapter connected to emulator."""
     from sidemantic.db.bigquery import BigQueryAdapter
@@ -33,13 +33,6 @@ def bigquery_adapter():
     os.environ["BIGQUERY_EMULATOR_HOST"] = emulator_host
 
     adapter = BigQueryAdapter(project_id=BIGQUERY_PROJECT, dataset_id=BIGQUERY_DATASET)
-
-    # Create dataset if it doesn't exist
-    try:
-        adapter.client.create_dataset(BIGQUERY_DATASET, exists_ok=True)
-    except Exception:
-        pass  # May already exist
-
     yield adapter
     adapter.close()
 
@@ -47,14 +40,14 @@ def bigquery_adapter():
 @pytest.fixture
 def clean_bigquery(bigquery_adapter):
     """Clean BigQuery emulator by dropping all tables in dataset."""
-    # Drop all tables in the test dataset
+    # Clean up tables before test
     try:
         dataset_ref = bigquery_adapter.client.dataset(BIGQUERY_DATASET)
         tables = list(bigquery_adapter.client.list_tables(dataset_ref))
         for table in tables:
             bigquery_adapter.client.delete_table(f"{BIGQUERY_DATASET}.{table.table_id}")
     except Exception:
-        pass  # Dataset might not exist yet
+        pass
 
     yield bigquery_adapter
 

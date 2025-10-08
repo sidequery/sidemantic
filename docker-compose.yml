@@ -20,7 +20,7 @@ services:
     platform: linux/amd64
     ports:
       - "9050:9050"
-    command: ["--project=test-project"]
+    command: ["--project=test-project", "--dataset=test_dataset"]
 
   test:
     build:

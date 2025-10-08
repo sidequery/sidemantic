@@ -52,7 +52,7 @@ class SidequeryWorkbench(App):
     }
 
     #sidebar {
-        width: 35;
+        width: 38;
         border-right: solid $primary;
     }
 

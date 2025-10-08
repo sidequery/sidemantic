@@ -56,7 +56,7 @@ class SidequeryWorkbench(App):
     }
 
     #sidebar {
-        border-right: solid $accent;
+        border-right: solid $primary;
     }
 
     #query-panel {
@@ -77,7 +77,7 @@ class SidequeryWorkbench(App):
 
     #query-buttons Button.active {
         text-style: bold;
-        color: $accent;
+        color: $primary;
     }
 
     #query-editors {
@@ -116,7 +116,7 @@ class SidequeryWorkbench(App):
 
     #view-buttons Button.active {
         text-style: bold;
-        color: $accent;
+        color: $primary;
     }
 
     #table-view {

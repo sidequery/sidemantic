@@ -1,6 +1,6 @@
 # Sidemantic
 
-SQL-first semantic layer for consistent metrics across your data stack. Import from Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, and Omni. Unapologetically supports DuckDB and DuckDB *only* at the moment.
+SQL-first semantic layer for consistent metrics across your data stack. Import from Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, and Omni. Supports DuckDB, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, and Spark SQL.
 
 [Documentation](https://sidemantic.com) • [GitHub](https://github.com/sidequery/sidemantic)
 

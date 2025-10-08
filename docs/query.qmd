@@ -1,0 +1,573 @@
+---
+title: "Query"
+---
+
+Query the semantic layer using SQL syntax or the Python API.
+
+## Query Methods
+
+Sidemantic provides two ways to query your semantic layer:
+
+1. **SQL Interface** - Familiar SQL syntax with automatic join handling
+2. **Python API** - Programmatic query building with type safety
+
+## Python API
+
+### Basic Query
+
+```python
+from sidemantic import SemanticLayer
+
+layer = SemanticLayer.from_yaml("models.yml")
+
+# Query metrics and dimensions
+result = layer.query(
+    metrics=["orders.revenue", "orders.order_count"],
+    dimensions=["orders.status"]
+)
+
+# Get results as DataFrame
+df = result.fetchdf()
+print(df)
+```
+
+### Query Parameters
+
+**`metrics`** (list[str] | None)
+- List of metric references to aggregate
+- Format: `"model.metric"` or `"metric"` (for graph-level metrics)
+- Example: `["orders.revenue", "total_revenue"]`
+
+**`dimensions`** (list[str] | None)
+- List of dimensions to group by
+- Format: `"model.dimension"`
+- Example: `["orders.status", "customers.region"]`
+
+**`filters`** (list[str] | None)
+- SQL filter expressions
+- Example: `["orders.status = 'completed'", "orders.amount > 100"]`
+
+**`segments`** (list[str] | None)
+- Named segment references
+- Example: `["orders.high_value", "customers.active"]`
+
+**`order_by`** (list[str] | None)
+- Fields to order by with optional ASC/DESC
+- Example: `["orders.revenue DESC", "orders.status"]`
+
+**`limit`** (int | None)
+- Maximum rows to return
+- Example: `100`
+
+**`ungrouped`** (bool)
+- Return raw rows without aggregation (no GROUP BY)
+- Default: `False`
+
+**`parameters`** (dict[str, any] | None)
+- Jinja2 template parameters
+- Example: `{"include_tax": True, "region": "US"}`
+
+**`use_preaggregations`** (bool | None)
+- Override layer-level pre-aggregation setting
+- Default: `None` (uses layer setting)
+
+### Examples
+
+**Simple metric query:**
+```python
+result = layer.query(metrics=["orders.revenue"])
+print(result.fetchone())  # (12345.67,)
+```
+
+**With dimensions:**
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"]
+)
+df = result.fetchdf()
+#   status    revenue
+# 0 completed 10000.00
+# 1 pending    2345.67
+```
+
+**Cross-model query:**
+```python
+# Automatically joins orders -> customers
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["customers.region"]
+)
+```
+
+**With filters:**
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    filters=["orders.created_at >= '2024-01-01'"]
+)
+```
+
+**With segments:**
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    segments=["orders.completed"]
+)
+```
+
+**Sorting and pagination:**
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    order_by=["orders.revenue DESC"],
+    limit=10
+)
+```
+
+**Ungrouped (raw rows):**
+```python
+# Get individual order details without aggregation
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_id", "orders.customer_id"],
+    ungrouped=True,
+    limit=100
+)
+```
+
+**With parameters:**
+```python
+result = layer.query(
+    metrics=["orders.taxed_revenue"],
+    parameters={"include_tax": True, "tax_rate": 0.08}
+)
+```
+
+### Result Formats
+
+**fetchone()** - Single row as tuple:
+```python
+result = layer.query(metrics=["orders.revenue"])
+row = result.fetchone()
+print(row)  # (12345.67,)
+```
+
+**fetchall()** - All rows as list of tuples:
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"]
+)
+rows = result.fetchall()
+# [('completed', 10000.0), ('pending', 2345.67)]
+```
+
+**fetchdf()** - Pandas DataFrame:
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"]
+)
+df = result.fetchdf()
+```
+
+**description** - Column metadata:
+```python
+result = layer.query(metrics=["orders.revenue"])
+columns = [desc[0] for desc in result.description]
+print(columns)  # ['revenue']
+```
+
+### Compile Without Execution
+
+Generate SQL without executing:
+
+```python
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    filters=["orders.status = 'completed'"]
+)
+print(sql)
+# WITH orders_cte AS (
+#   SELECT status, SUM(amount) as revenue
+#   FROM orders
+#   WHERE status = 'completed'
+#   GROUP BY status
+# )
+# SELECT * FROM orders_cte
+```
+
+**Additional compile() parameters:**
+
+```python
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    filters=["orders.status = 'completed'"],
+    order_by=["orders.revenue DESC"],
+    limit=10,
+    offset=5,  # Skip first 5 rows
+    dialect="postgres"  # Override SQL dialect
+)
+```
+
+## SQL Interface
+
+### Basic SQL Queries
+
+```python
+# Simple metric query
+result = layer.sql("SELECT revenue FROM orders")
+
+# With dimensions and filters
+result = layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    WHERE status = 'completed'
+""")
+
+# Get DataFrame
+df = result.fetchdf()
+```
+
+### Supported SQL Features
+
+| Feature | Supported | Notes |
+|---------|-----------|-------|
+| **SELECT** | ✅ Yes | Metrics and dimensions |
+| **SELECT *** | ✅ Yes | Expands to all model fields |
+| **WHERE** | ✅ Yes | Standard SQL conditions |
+| **ORDER BY** | ✅ Yes | Sort by any field |
+| **LIMIT / OFFSET** | ✅ Yes | Pagination support |
+| **Parameters** | ✅ Yes | `{{ param }}` syntax |
+| **Cross-Model Queries** | ✅ Yes | Auto-joins via relationships |
+| **Subqueries** | ✅ Yes | Query semantic layer in subqueries |
+| **CTEs / WITH** | ✅ Yes | Use CTEs with semantic queries |
+| **JOIN** | ❌ No | Joins are automatic |
+| **GROUP BY** | ❌ No | Grouping is automatic |
+| **Aggregate Functions** | ❌ No | Use pre-defined metrics |
+| **HAVING** | ❌ No | Use WHERE on metrics instead |
+| **Window Functions** | ❌ No | Use cumulative metrics |
+| **DISTINCT** | ❌ No | Dimensions are auto-distinct |
+
+### SELECT
+
+Select metrics and dimensions:
+
+```python
+layer.sql("SELECT revenue, order_count, status FROM orders")
+```
+
+Table prefixes optional:
+
+```python
+# Both work
+layer.sql("SELECT orders.revenue FROM orders")
+layer.sql("SELECT revenue FROM orders")
+```
+
+::: {.callout-note}
+## FROM Clause Uses Model Names
+
+The FROM clause references **semantic model names**, not underlying table names:
+
+```yaml
+models:
+  - name: orders
+    table: raw_orders_staging
+```
+
+```python
+layer.sql("SELECT revenue FROM orders")  # ✅ Use model name
+```
+:::
+
+### WHERE
+
+Filter with standard SQL conditions:
+
+```python
+layer.sql("""
+    SELECT revenue
+    FROM orders
+    WHERE status = 'completed'
+      AND order_date >= '2024-01-01'
+      AND amount > 100
+""")
+```
+
+### ORDER BY and LIMIT
+
+```python
+layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    ORDER BY revenue DESC
+    LIMIT 10
+""")
+```
+
+### Cross-Model Queries
+
+Reference multiple models - joins happen automatically:
+
+```python
+layer.sql("""
+    SELECT
+        orders.revenue,
+        customers.region,
+        products.category
+    FROM orders
+""")
+```
+
+### Parameters
+
+Use `{{ param }}` syntax:
+
+```python
+layer.sql(
+    """
+    SELECT revenue
+    FROM orders
+    WHERE order_date >= {{ start_date }}
+      AND region = {{ region }}
+    """,
+    parameters={
+        "start_date": "2024-01-01",
+        "region": "US"
+    }
+)
+```
+
+::: {.callout-warning}
+## Don't Quote Parameters
+Parameters are automatically quoted based on type:
+- ❌ `WHERE date >= '{{ start_date }}'` (creates `''2024-01-01''`)
+- ✅ `WHERE date >= {{ start_date }}`
+:::
+
+### Subqueries
+
+Query semantic layer in subqueries:
+
+```python
+layer.sql("""
+    SELECT *
+    FROM (
+        SELECT revenue, status FROM orders
+    ) AS orders_agg
+    WHERE revenue > 1000
+""")
+```
+
+Join semantic query results with regular tables:
+
+```python
+layer.sql("""
+    SELECT
+        orders_agg.revenue,
+        r.continent
+    FROM (
+        SELECT orders.revenue, customers.region
+        FROM orders
+    ) AS orders_agg
+    JOIN regions r ON orders_agg.region = r.region
+""")
+```
+
+### CTEs
+
+Use CTEs with semantic layer queries:
+
+```python
+layer.sql("""
+    WITH orders_by_region AS (
+        SELECT revenue, status, customers.region
+        FROM orders
+    )
+    SELECT * FROM orders_by_region
+    WHERE revenue > 500
+    ORDER BY revenue DESC
+""")
+```
+
+Mix semantic and regular CTEs:
+
+```python
+layer.sql("""
+    WITH
+        orders_agg AS (
+            SELECT revenue, status FROM orders
+        ),
+        status_labels AS (
+            SELECT 'completed' as code, 'Complete' as label
+            UNION ALL SELECT 'pending', 'Pending'
+        )
+    SELECT o.revenue, s.label
+    FROM orders_agg o
+    JOIN status_labels s ON o.status = s.code
+""")
+```
+
+## CLI Query
+
+Query from command line:
+
+```bash
+# Query to stdout
+sidemantic query models.yml --sql "SELECT revenue FROM orders"
+
+# Save to file
+sidemantic query models.yml \
+  --sql "SELECT revenue, status FROM orders" \
+  --output results.csv
+
+# With connection override
+sidemantic query models.yml \
+  --connection "postgres://localhost:5432/analytics" \
+  --sql "SELECT revenue FROM orders WHERE status = 'completed'"
+```
+
+See **[CLI](cli.qmd)** for complete CLI reference.
+
+## Best Practices
+
+### Define Metrics in YAML
+
+Define metrics once, query anywhere:
+
+```yaml
+metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+
+  - name: high_value_revenue
+    agg: sum
+    sql: "CASE WHEN amount > 1000 THEN amount ELSE 0 END"
+```
+
+```python
+# Simple queries
+layer.query(metrics=["orders.revenue"])
+layer.sql("SELECT revenue FROM orders")
+```
+
+### Use Python API for Dynamic Queries
+
+Build queries programmatically:
+
+```python
+metrics = ["orders.revenue"]
+dimensions = []
+filters = []
+
+# Add dimensions based on condition
+if group_by_status:
+    dimensions.append("orders.status")
+
+# Add filters based on user input
+if start_date:
+    filters.append(f"orders.created_at >= '{start_date}'")
+
+result = layer.query(
+    metrics=metrics,
+    dimensions=dimensions,
+    filters=filters
+)
+```
+
+### Use SQL for Static Queries
+
+SQL is clearer for fixed queries:
+
+```python
+# Dashboard widget
+revenue_by_status = layer.sql("""
+    SELECT revenue, status
+    FROM orders
+    WHERE created_at >= '2024-01-01'
+    ORDER BY revenue DESC
+""")
+```
+
+### Compile for Inspection
+
+Inspect generated SQL:
+
+```python
+sql = layer.compile(
+    metrics=["orders.revenue"],
+    dimensions=["customers.region"]
+)
+print(sql)  # See what query will be executed
+```
+
+### Process Results Efficiently
+
+**Small results (< 1000 rows):**
+```python
+result = layer.query(metrics=["orders.revenue"])
+df = result.fetchdf()
+```
+
+**Large results:**
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.order_id"],
+    ungrouped=True
+)
+
+# Iterate rows
+for row in result.fetchall():
+    process(row)
+```
+
+**Streaming:**
+```python
+# Use Arrow for large datasets
+result = layer.adapter.execute(sql)
+batches = result.fetch_arrow_reader()
+for batch in batches:
+    process(batch)
+```
+
+## Comparison: Python API vs SQL
+
+**Python API:**
+- ✅ Type-safe query building
+- ✅ Dynamic query construction
+- ✅ Better for programmatic use
+- ✅ Explicit parameters
+
+**SQL Interface:**
+- ✅ Familiar syntax
+- ✅ Readable for static queries
+- ✅ Copy-paste friendly
+- ✅ Template parameters
+
+**Use Python API when:**
+- Building queries programmatically
+- Constructing dynamic filters
+- Need type safety
+- Building applications/APIs
+
+**Use SQL Interface when:**
+- Writing dashboard queries
+- Ad-hoc exploration
+- Static report queries
+- Prefer SQL syntax
+
+## Related Documentation
+
+- **[Configuration](config.qmd)** - YAML configuration reference
+- **[Models](models.qmd)** - Model definition
+- **[Metrics](metrics.qmd)** - Metric types
+- **[CLI](cli.qmd)** - CLI query command
+- **[Python API](python-api.qmd)** - Complete API reference

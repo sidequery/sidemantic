@@ -236,7 +236,14 @@ class SQLGenerator:
         cte_sqls = []
         for model_name in all_models:
             model_filters = pushdown_filters.get(model_name, [])
-            cte_sql = self._build_model_cte(model_name, parsed_dims, metrics, model_filters if model_filters else None)
+            cte_sql = self._build_model_cte(
+                model_name,
+                parsed_dims,
+                metrics,
+                model_filters if model_filters else None,
+                order_by=order_by,
+                all_models=all_models,
+            )
             cte_sqls.append(cte_sql)
 
         # Build main SELECT using builder API (only with filters that couldn't be pushed down)
@@ -455,12 +462,63 @@ class SQLGenerator:
 
         return pushdown_filters, main_query_filters
 
+    def _find_needed_dimensions(
+        self,
+        model_name: str,
+        dimensions: list[tuple[str, str | None]],
+        filters: list[str] | None,
+        order_by: list[str] | None,
+    ) -> set[str]:
+        """Find which dimensions from this model are actually needed.
+
+        Args:
+            model_name: Model to check
+            dimensions: Parsed dimension references from query
+            filters: Filter expressions
+            order_by: Order by fields
+
+        Returns:
+            Set of dimension names needed for this model
+        """
+        needed = set()
+
+        # Dimensions explicitly in SELECT
+        for dim_ref, _ in dimensions:
+            if dim_ref.startswith(model_name + "."):
+                dim_name = dim_ref.split(".")[1]
+                needed.add(dim_name)
+
+        # Dimensions referenced in filters
+        if filters:
+            for filter_expr in filters:
+                try:
+                    parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                    for col in parsed.find_all(exp.Column):
+                        if col.table and col.table.replace("_cte", "") == model_name:
+                            needed.add(col.name)
+                except Exception:
+                    pass
+
+        # Dimensions referenced in ORDER BY
+        if order_by:
+            for order_field in order_by:
+                # Strip DESC/ASC
+                field = order_field.replace(" DESC", "").replace(" ASC", "").strip()
+                if "." in field:
+                    model_part, dim_part = field.split(".", 1)
+                    if model_part == model_name:
+                        needed.add(dim_part)
+
+        return needed
+
     def _build_model_cte(
         self,
         model_name: str,
         dimensions: list[tuple[str, str | None]],
         metrics: list[str],
         filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        all_models: set[str] | None = None,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -469,11 +527,18 @@ class SQLGenerator:
             dimensions: Parsed dimension references
             metrics: Metric references
             filters: Filters to push down into this CTE (optional)
+            order_by: Order by fields (for determining needed dimensions)
+            all_models: All models in query (for determining if joins needed)
 
         Returns:
             CTE SQL string
         """
         model = self.graph.get_model(model_name)
+        all_models = all_models or {model_name}
+        needs_joins = len(all_models) > 1
+
+        # Find which dimensions are actually needed
+        needed_dimensions = self._find_needed_dimensions(model_name, dimensions, filters, order_by)
 
         # Build SELECT columns
         select_cols = []
@@ -481,37 +546,40 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
-        # Include this model's primary key
+        # Include this model's primary key (always needed for joins/grouping)
         if model.primary_key and model.primary_key not in columns_added:
             select_cols.append(f"{model.primary_key} AS {model.primary_key}")
             columns_added.add(model.primary_key)
 
-        # Include foreign keys from belongs_to joins
-        for relationship in model.relationships:
-            if relationship.type == "many_to_one":
-                fk = relationship.sql_expr
-                if fk not in columns_added:
-                    select_cols.append(f"{fk} AS {fk}")
-                    columns_added.add(fk)
-
-        # Check if other models have has_many/has_one pointing to this model
-        for other_model_name, other_model in self.graph.models.items():
-            for other_join in other_model.relationships:
-                if other_join.name == model_name and other_join.type in (
-                    "one_to_one",
-                    "one_to_many",
-                ):
-                    # Other model expects this model to have a foreign key
-                    # For has_many/has_one, foreign_key is the FK column in THIS model
-                    fk = other_join.foreign_key or other_join.sql_expr
+        # Include foreign keys only if we're joining
+        if needs_joins:
+            # Include foreign keys from belongs_to joins
+            for relationship in model.relationships:
+                if relationship.type == "many_to_one" and relationship.name in all_models:
+                    fk = relationship.sql_expr
                     if fk not in columns_added:
                         select_cols.append(f"{fk} AS {fk}")
                         columns_added.add(fk)
 
-        # Add dimension columns
-        # First, add all dimensions from this model (needed for filters/joins)
+            # Check if other models have has_many/has_one pointing to this model
+            for other_model_name, other_model in self.graph.models.items():
+                if other_model_name not in all_models:
+                    continue
+                for other_join in other_model.relationships:
+                    if other_join.name == model_name and other_join.type in (
+                        "one_to_one",
+                        "one_to_many",
+                    ):
+                        # Other model expects this model to have a foreign key
+                        # For has_many/has_one, foreign_key is the FK column in THIS model
+                        fk = other_join.foreign_key or other_join.sql_expr
+                        if fk not in columns_added:
+                            select_cols.append(f"{fk} AS {fk}")
+                            columns_added.add(fk)
+
+        # Add only needed dimension columns
         for dimension in model.dimensions:
-            if dimension.name not in columns_added:
+            if dimension.name in needed_dimensions and dimension.name not in columns_added:
                 # For time dimensions with granularity, apply DATE_TRUNC
                 if dimension.type == "time" and dimension.granularity:
                     dim_sql = dimension.with_granularity(dimension.granularity)

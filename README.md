@@ -554,13 +554,6 @@ This table shows which Sidemantic features are supported when importing from oth
 - ⚠️ Partial support - feature works with limitations
 - ❌ Not supported - feature not available in source format
 
-## Testing
-
-Run tests:
-```bash
-uv run pytest -v
-```
-
 ## Database Support
 
 Sidemantic supports multiple production-ready databases:
@@ -641,3 +634,10 @@ See `examples/` directory:
 - `sidemantic/orders.yml` - Native YAML example
 - `cube/orders.yml` - Cube format example
 - `metricflow/semantic_models.yml` - MetricFlow format example
+
+## Testing
+
+Run tests:
+```bash
+uv run pytest -v
+```

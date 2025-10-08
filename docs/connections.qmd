@@ -103,6 +103,7 @@ sidemantic query models/ \
 ```
 
 **Features:**
+
 - Full semantic layer support
 - Symmetric aggregates for fan-out joins
 - Arrow format for performance
@@ -141,6 +142,7 @@ export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
 ```
 
 **Features:**
+
 - Full semantic layer support
 - Uses FARM_FINGERPRINT for symmetric aggregates
 - Arrow format via BigQuery Storage API
@@ -167,6 +169,7 @@ sidemantic query models/ \
 ```
 
 **Parameters:**
+
 - `account`: Snowflake account (e.g., `xy12345.us-east-1`)
 - `database`: Database name
 - `schema`: Schema name
@@ -174,6 +177,7 @@ sidemantic query models/ \
 - `role`: Role to use (query parameter)
 
 **Features:**
+
 - Full semantic layer support
 - Optimized symmetric aggregates
 - Arrow format for performance
@@ -205,6 +209,7 @@ sidemantic query models/ \
 ```
 
 **Features:**
+
 - Full semantic layer support
 - Uses halfMD5 for symmetric aggregates
 - Optimized for OLAP workloads
@@ -231,6 +236,7 @@ sidemantic query models/ \
 ```
 
 **Parameters:**
+
 - `token`: Personal access token (as username in URL)
 - `server-hostname`: Databricks workspace URL
 - `http-path`: SQL warehouse HTTP path
@@ -238,6 +244,7 @@ sidemantic query models/ \
 - `schema`: Schema name (query parameter)
 
 **Features:**
+
 - Full semantic layer support
 - Uses xxhash64 for symmetric aggregates
 - Optimized for lakehouse queries
@@ -269,10 +276,12 @@ sidemantic query models/ \
 ```
 
 **Requirements:**
+
 - Spark Thrift server must be running
 - Uses HiveServer2 protocol
 
 **Features:**
+
 - Full semantic layer support
 - Uses xxhash64 for symmetric aggregates
 - Compatible with Apache Spark 3.x
@@ -390,6 +399,7 @@ sidemantic serve models/ \
 ```
 psycopg.OperationalError: connection failed
 ```
+
 - Verify host, port, username, password
 - Check PostgreSQL is running
 - Test with `psql` first: `psql -h host -p 5432 -U user -d database`
@@ -398,6 +408,7 @@ psycopg.OperationalError: connection failed
 ```
 google.auth.exceptions.DefaultCredentialsError
 ```
+
 - Run `gcloud auth application-default login`
 - Or set `GOOGLE_APPLICATION_CREDENTIALS` environment variable
 
@@ -405,6 +416,7 @@ google.auth.exceptions.DefaultCredentialsError
 ```
 snowflake.connector.errors.DatabaseError: 250001
 ```
+
 - Verify account identifier format
 - Check username/password
 - Ensure warehouse is running
@@ -414,6 +426,7 @@ snowflake.connector.errors.DatabaseError: 250001
 ```
 ValueError: Unsupported connection URL
 ```
+
 - Check connection string format matches examples above
 - Ensure required extras installed: `pip install sidemantic[database]`
 

@@ -48,7 +48,7 @@ def test_coverage_analyzer_basic():
     analysis = report.query_analyses[0]
     assert analysis.can_rewrite
     assert "orders_table" in analysis.tables
-    assert ("sum", "amount", "") in analysis.aggregations  # table name is empty when not qualified
+    assert ("sum", "amount", "orders_table") in analysis.aggregations  # table name is inferred from FROM clause
     assert ("", "status") in analysis.group_by_columns  # table name is empty when not qualified
     assert analysis.suggested_rewrite is not None
     assert "orders.status" in analysis.suggested_rewrite

@@ -19,6 +19,7 @@ class QueryAnalysis:
     table_aliases: dict[str, str] = field(default_factory=dict)  # alias -> table_name
     columns: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # table -> columns
     aggregations: list[tuple[str, str, str]] = field(default_factory=list)  # (agg_type, column, table)
+    aggregation_aliases: dict[str, str] = field(default_factory=dict)  # aggregation_sql -> alias
     derived_metrics: list[tuple[str, str, str]] = field(
         default_factory=list
     )  # (name/alias, sql_expression, table) for calculated metrics
@@ -305,47 +306,92 @@ class CoverageAnalyzer:
         return analysis.from_table
 
     def _extract_aggregations(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract aggregation functions using sqlglot's AggFunc base class."""
-        # Use sqlglot's AggFunc to find all aggregations generically
-        for agg in parsed.find_all(exp.AggFunc):
-            # Get aggregation type from class name
-            agg_type_name = type(agg).__name__.lower()
+        """Extract aggregation functions from SELECT clause, capturing aliases."""
+        # Find SELECT clause and extract aggregations with their aliases
+        for select in parsed.find_all(exp.Select):
+            for select_expr in select.expressions:
+                # Check if this is an alias wrapping an aggregation
+                if isinstance(select_expr, exp.Alias):
+                    alias_name = select_expr.alias
+                    inner_expr = select_expr.this
+                else:
+                    alias_name = None
+                    inner_expr = select_expr
 
-            # Map common aggregation class names to standard names
-            agg_name_map = {
-                "sum": "sum",
-                "avg": "avg",
-                "count": "count",
-                "min": "min",
-                "max": "max",
-                "stddev": "stddev",
-                "stddevpop": "stddev_pop",
-                "stddevsamp": "stddev_samp",
-                "variance": "variance",
-                "variancepop": "var_pop",
-                "median": "median",
-                "approxdistinct": "approx_distinct",
-                "approxquantile": "approx_quantile",
-            }
+                # Find aggregations in this SELECT expression
+                aggs = list(inner_expr.find_all(exp.AggFunc))
 
-            agg_name = agg_name_map.get(agg_type_name, agg_type_name)
+                # Check if this is a derived metric (has operators AND aggregations)
+                operators = (exp.Div, exp.Mul, exp.Add, exp.Sub)
+                is_derived = any(isinstance(node, operators) for node in inner_expr.walk()) and len(aggs) > 0
 
-            # Get the column being aggregated
-            col = agg.this
-            if isinstance(col, exp.Column):
-                col_name = col.name
-                table_name = col.table if col.table else None
-                analysis.aggregations.append((agg_name, col_name, table_name or ""))
-            elif isinstance(col, exp.Star):
-                # COUNT(*)
-                analysis.aggregations.append((agg_name, "*", ""))
-            elif isinstance(col, exp.Distinct):
-                # COUNT(DISTINCT col) - handle specially
-                if col.expressions and isinstance(col.expressions[0], exp.Column):
-                    distinct_col = col.expressions[0]
-                    col_name = distinct_col.name
-                    table_name = distinct_col.table if distinct_col.table else None
-                    analysis.aggregations.append(("count_distinct", col_name, table_name or ""))
+                # Handle aggregations (even if part of derived metrics - we need base metrics for model generation)
+                for agg in aggs:
+                    agg_type_name = type(agg).__name__.lower()
+
+                    # Map common aggregation class names to standard names
+                    agg_name_map = {
+                        "sum": "sum",
+                        "avg": "avg",
+                        "count": "count",
+                        "min": "min",
+                        "max": "max",
+                        "stddev": "stddev",
+                        "stddevpop": "stddev_pop",
+                        "stddevsamp": "stddev_samp",
+                        "variance": "variance",
+                        "variancepop": "var_pop",
+                        "median": "median",
+                        "approxdistinct": "approx_distinct",
+                        "approxquantile": "approx_quantile",
+                    }
+
+                    agg_name = agg_name_map.get(agg_type_name, agg_type_name)
+                    col = agg.this
+
+                    # Determine table
+                    table_name = None
+
+                    # Extract column/expression info
+                    if isinstance(col, exp.Column):
+                        col_name = col.name
+                        table_name = col.table if col.table else None
+                    elif isinstance(col, exp.Star):
+                        col_name = "*"
+                    elif isinstance(col, exp.Distinct):
+                        if col.expressions and isinstance(col.expressions[0], exp.Column):
+                            distinct_col = col.expressions[0]
+                            col_name = distinct_col.name
+                            table_name = distinct_col.table if distinct_col.table else None
+                            agg_name = "count_distinct"
+                        else:
+                            col_name = str(col)
+                    else:
+                        # Complex expression - use alias if available, otherwise full SQL
+                        col_name = str(col)
+                        # Try to infer table from columns in expression
+                        columns = list(col.find_all(exp.Column))
+                        if columns:
+                            first_col = columns[0]
+                            table_name = first_col.table if first_col.table else None
+
+                    # Infer table if not found
+                    if not table_name and len(analysis.tables) == 1:
+                        table_name = list(analysis.tables)[0]
+
+                    # Store aggregation
+                    analysis.aggregations.append((agg_name, col_name, table_name or ""))
+
+                    # Mark if part of a derived metric
+                    if is_derived:
+                        analysis.aggregations_in_derived.add((agg_name, col_name, table_name or ""))
+
+                    # If this is a complex expression with an alias (not part of derived), also add as derived metric
+                    if alias_name and not isinstance(col, (exp.Column, exp.Star)) and not is_derived:
+                        # This is a complex aggregation with an alias - treat as derived metric
+                        analysis.derived_metrics.append((alias_name, str(agg), table_name or ""))
+                        # Mark this aggregation as part of a derived metric
+                        analysis.aggregations_in_derived.add((agg_name, col_name, table_name or ""))
 
     def _extract_derived_metrics(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract derived metrics from SELECT clause - expressions with operators and aggregations.
@@ -413,14 +459,27 @@ class CoverageAnalyzer:
                 analysis.aggregations_in_derived.add((agg_type, col_name, table_name))
 
     def _extract_group_by(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract GROUP BY columns."""
+        """Extract GROUP BY columns, handling complex expressions."""
         for group in parsed.find_all(exp.Group):
             for expr in group.expressions:
                 if isinstance(expr, exp.Column):
+                    # Simple column
                     table_name = expr.table if expr.table else ""
                     col_name = expr.name
                     if col_name:
                         analysis.group_by_columns.add((table_name, col_name))
+                elif isinstance(expr, exp.Literal):
+                    # GROUP BY ordinal position (e.g., GROUP BY 1, 2)
+                    # Skip - we'll get the actual columns from SELECT
+                    continue
+                else:
+                    # Complex expression (CASE, EXTRACT, COALESCE, etc.)
+                    # Extract all columns referenced in the expression
+                    for col in expr.find_all(exp.Column):
+                        table_name = col.table if col.table else ""
+                        col_name = col.name
+                        if col_name:
+                            analysis.group_by_columns.add((table_name, col_name))
 
     def _extract_joins(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract JOIN clauses with proper table and alias tracking."""
@@ -545,7 +604,7 @@ class CoverageAnalyzer:
                 analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
 
     def _extract_time_dimensions(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract time dimensions with granularity from DATE_TRUNC, TIMESTAMP_TRUNC, etc."""
+        """Extract time dimensions with granularity from DATE_TRUNC, TIMESTAMP_TRUNC, EXTRACT, etc."""
         # Look for TIMESTAMP_TRUNC (sqlglot converts DATE_TRUNC to this)
         for func in parsed.find_all(exp.TimestampTrunc):
             # TIMESTAMP_TRUNC(column, granularity) in sqlglot format
@@ -555,7 +614,23 @@ class CoverageAnalyzer:
             if isinstance(column_expr, exp.Column) and unit_expr:
                 col_name = column_expr.name
                 table_name = column_expr.table if column_expr.table else ""
-                granularity = str(unit_expr).lower()
+                granularity = str(unit_expr).lower().strip("'\"")
+
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+
+                analysis.time_dimensions.append((table_name, col_name, granularity))
+
+        # Look for EXTRACT(part FROM column)
+        for func in parsed.find_all(exp.Extract):
+            # In sqlglot's Extract: this=part (YEAR), expression=column (order_date)
+            part_expr = func.this  # The date part (YEAR, MONTH, etc.)
+            column_expr = func.expression  # The column being extracted from
+
+            if isinstance(column_expr, exp.Column):
+                col_name = column_expr.name
+                table_name = column_expr.table if column_expr.table else ""
+                granularity = str(part_expr).lower()
 
                 if not table_name and len(analysis.tables) == 1:
                     table_name = list(analysis.tables)[0]
@@ -915,20 +990,25 @@ class CoverageAnalyzer:
 
             # Add dimensions
             dims = []
+            # Build set of time dimension column names for this table
+            time_dim_cols = {col_name for col_name, _ in table_time_dimensions.get(table, set())}
+
             if table in table_dimensions:
                 for dim_name in sorted(table_dimensions[table]):
+                    # Check if this is a time dimension
+                    dim_type = "time" if dim_name in time_dim_cols else "categorical"
                     dims.append(
                         {
                             "name": dim_name,
                             "sql": dim_name,
-                            "type": "categorical",
+                            "type": dim_type,
                         }
                     )
 
-            # Add time dimensions
+            # Add time dimensions that weren't in GROUP BY
             if table in table_time_dimensions:
                 for col_name, _granularity in sorted(table_time_dimensions[table]):
-                    # Only add if not already added as regular dimension
+                    # Only add if not already added from GROUP BY
                     if col_name not in table_dimensions.get(table, set()):
                         dims.append(
                             {

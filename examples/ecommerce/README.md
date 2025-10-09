@@ -5,10 +5,10 @@ A complete example semantic layer for an e-commerce analytics platform, demonstr
 ## Contents
 
 - **models/** - Semantic model definitions
-  - `customers.yml` - Customer dimensions and metrics
-  - `orders.yml` - Order transactions and metrics
-  - `products.yml` - Product catalog
-  - `order_items.yml` - Order line items
+  - `customers.yml` - Customer dimensions and metrics (YAML format)
+  - `orders.yml` - Order transactions and metrics (YAML format)
+  - `products.sql` - Product catalog (pure SQL format)
+  - `order_items.sql` - Order line items (pure SQL format)
   - `metrics.yml` - Cross-model derived metrics
 
 - **data/** - Sample database
@@ -115,9 +115,14 @@ SELECT revenue, created_at__month FROM orders
 SELECT revenue, created_at__year FROM orders
 ```
 
-### Pure YAML format
-All models defined in clean, readable YAML with support for:
-- Complex SQL expressions in dimensions
-- Filtered metrics
-- Cross-model relationships
-- Derived metrics
+### Both YAML and SQL formats
+Mix and match based on your preference:
+- **YAML**: `customers.yml`, `orders.yml` - declarative, structured
+- **SQL**: `products.sql`, `order_items.sql` - pure SQL with MODEL(), DIMENSION(), METRIC() statements
+
+Both formats support:
+- Complex SQL expressions
+- Filtered metrics with WHERE clauses
+- Relationships (many_to_one, one_to_many)
+- Segments for reusable filters
+- Derived and ratio metrics

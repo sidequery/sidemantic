@@ -46,6 +46,9 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
         if suffix == ".lkml":
             adapter = LookMLAdapter()
+        elif suffix == ".sql":
+            # Sidemantic SQL files (pure SQL or with YAML frontmatter)
+            adapter = SidemanticAdapter()
         elif suffix in (".yml", ".yaml"):
             # Try to detect which format by reading the file
             content = file_path.read_text()

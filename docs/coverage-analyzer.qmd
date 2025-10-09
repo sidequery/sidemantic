@@ -268,24 +268,31 @@ For complex calculations, base aggregations are still extracted - define derived
 
 ## CLI Usage
 
-```bash
-# Analyze folder
-sidemantic coverage-analyzer analyze queries/ --output-dir models/
+Analyze queries and generate models:
 
+```bash
+sidemantic coverage-analyzer analyze queries/ --output-dir models/
+```
+
+This analyzes all SQL files in `queries/` and generates model YAML files in `models/`.
+
+Options:
+
+- `--pattern "*.sql"` - File pattern to match
+- `--output-dir` - Where to write generated models
+- `--rewrite` - Also generate rewritten queries
+- `--verbose` - Show detailed analysis
+
+Other commands:
+
+```bash
 # Analyze specific query
 sidemantic coverage-analyzer analyze-query \
     "SELECT status, COUNT(*) FROM orders GROUP BY status"
 
-# Generate report
+# Generate coverage report
 sidemantic coverage-analyzer report queries/ > coverage-report.txt
 ```
-
-Options:
-
-- `--pattern "*.sql"` - File pattern
-- `--output-dir` - Where to write models
-- `--rewrite` - Also generate rewritten queries
-- `--verbose` - Show details
 
 ## Migration Workflow
 

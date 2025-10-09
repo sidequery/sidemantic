@@ -599,50 +599,6 @@ SELECT SUM(amount) as total_revenue FROM orders
 
 ## Best Practices
 
-### Write Analyzable Queries
-
-Good patterns for analysis:
-
-✅ **Use explicit aliases**:
-```sql
-SELECT
-    customer_id,
-    SUM(amount) as total_revenue,  -- Uses "total_revenue"
-    AVG(amount) as avg_order_value
-FROM orders
-GROUP BY customer_id
-```
-
-✅ **Qualify columns**:
-```sql
-SELECT
-    o.status,
-    c.region,
-    COUNT(o.id)
-FROM orders o
-JOIN customers c ON o.customer_id = c.id
-GROUP BY o.status, c.region
-```
-
-✅ **Use simple GROUP BY**:
-```sql
--- Good: Direct column reference
-GROUP BY status, region
-
--- Also good: Ordinals
-GROUP BY 1, 2
-```
-
-❌ Avoid:
-```sql
--- Unqualified columns in joins
-SELECT status, region, COUNT(*)
-FROM orders JOIN customers  -- Can't determine which table has status
-
--- Complex GROUP BY without matching SELECT
-GROUP BY CASE WHEN ... THEN ... END  -- Hard to match to SELECT
-```
-
 ### Incremental Migration
 
 1. **Start with simple queries** - Basic aggregations first

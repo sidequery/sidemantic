@@ -5,13 +5,13 @@ from pathlib import Path
 import duckdb
 
 from sidemantic import SemanticLayer
-from sidemantic.core.coverage_analyzer import CoverageAnalyzer
+from sidemantic.core.migrator import Migrator
 
 
 def test_coverage_analysis_example_queries_rewritable():
     """Test that example queries can be analyzed and rewritten."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Load queries from example directory
     queries_dir = Path("examples/coverage_analysis/raw_queries")
@@ -143,7 +143,7 @@ def test_coverage_analysis_queries_produce_same_results():
 
     # Analyze and generate models
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
     report = analyzer.analyze_queries([original_query])
     models = analyzer.generate_models(report)
 
@@ -170,7 +170,7 @@ def test_coverage_analysis_queries_produce_same_results():
         layer.add_model(model)
 
     # Update analyzer with new semantic layer
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
     report = analyzer.analyze_queries([original_query])
 
     # Query should now be rewritable
@@ -272,7 +272,7 @@ def test_coverage_analysis_join_query():
 
     # Analyze query
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
     report = analyzer.analyze_queries([original_query])
 
     # Generate rewritten query
@@ -302,7 +302,7 @@ def test_coverage_analysis_join_query():
 def test_coverage_analysis_date_trunc_query():
     """Test that DATE_TRUNC queries are rewritten with granularity syntax."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     query = """
         SELECT
@@ -334,7 +334,7 @@ def test_coverage_analysis_date_trunc_query():
 def test_coverage_analysis_having_order_limit():
     """Test that HAVING, ORDER BY, and LIMIT are preserved."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     query = """
         SELECT

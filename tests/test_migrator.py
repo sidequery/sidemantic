@@ -1,7 +1,7 @@
 """Tests for semantic layer coverage analyzer."""
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.coverage_analyzer import CoverageAnalyzer
+from sidemantic.core.migrator import Migrator
 
 
 def test_coverage_analyzer_basic():
@@ -26,7 +26,7 @@ def test_coverage_analyzer_basic():
     layer.graph.add_model(orders)
 
     # Create analyzer
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Analyze a query that can be fully rewritten
     queries = [
@@ -61,7 +61,7 @@ def test_coverage_analyzer_missing_model():
     layer = SemanticLayer(auto_register=False)
 
     # Create analyzer
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Analyze a query with a missing table
     queries = [
@@ -104,7 +104,7 @@ def test_coverage_analyzer_missing_dimension():
     layer.graph.add_model(orders)
 
     # Create analyzer
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Analyze a query with a missing dimension
     queries = [
@@ -146,7 +146,7 @@ def test_coverage_analyzer_missing_metric():
     layer.graph.add_model(orders)
 
     # Create analyzer
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Analyze a query with a missing metric
     queries = [
@@ -190,7 +190,7 @@ def test_coverage_analyzer_multiple_queries():
     layer.graph.add_model(orders)
 
     # Create analyzer
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Analyze multiple queries
     queries = [
@@ -214,7 +214,7 @@ def test_coverage_analyzer_parse_error():
     layer = SemanticLayer(auto_register=False)
 
     # Create analyzer
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Analyze an invalid query
     queries = ["SELECT FROM WHERE"]
@@ -254,7 +254,7 @@ def test_coverage_analyzer_with_execution():
     layer.graph.add_model(orders)
 
     # Create analyzer
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Analyze a query
     queries = [

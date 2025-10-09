@@ -1,13 +1,13 @@
 """Tests for coverage analyzer model and query generation."""
 
 from sidemantic import SemanticLayer
-from sidemantic.core.coverage_analyzer import CoverageAnalyzer
+from sidemantic.core.migrator import Migrator
 
 
 def test_generate_models_from_queries():
     """Test generating model definitions from queries."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -65,7 +65,7 @@ def test_generate_models_from_queries():
 def test_generate_models_count_distinct():
     """Test COUNT(DISTINCT col) generates correct metric."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -89,7 +89,7 @@ def test_generate_models_count_distinct():
 def test_generate_models_no_duplicate_metrics():
     """Test that duplicate metrics are not generated."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         "SELECT status, SUM(amount) FROM orders GROUP BY status",
@@ -109,7 +109,7 @@ def test_generate_models_no_duplicate_metrics():
 def test_generate_rewritten_queries():
     """Test generating rewritten queries."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -141,7 +141,7 @@ def test_generate_rewritten_queries():
 def test_generate_rewritten_queries_with_filter():
     """Test generating rewritten queries with WHERE clause."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -165,7 +165,7 @@ def test_generate_rewritten_queries_with_filter():
 def test_generate_rewritten_queries_skips_unparseable():
     """Test that unparseable queries are skipped."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         "SELECT FROM WHERE",  # Invalid
@@ -182,7 +182,7 @@ def test_generate_rewritten_queries_skips_unparseable():
 def test_write_model_files(tmp_path):
     """Test writing model files to disk."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         "SELECT status, SUM(amount) FROM orders GROUP BY status",
@@ -212,7 +212,7 @@ def test_write_model_files(tmp_path):
 def test_write_rewritten_queries(tmp_path):
     """Test writing rewritten queries to disk."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         "SELECT status, COUNT(*) FROM orders GROUP BY status",
@@ -239,7 +239,7 @@ def test_write_rewritten_queries(tmp_path):
 def test_generate_models_multiple_aggregations_same_column():
     """Test handling multiple aggregation types on same column."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -269,7 +269,7 @@ def test_generate_models_multiple_aggregations_same_column():
 def test_generate_models_with_date_trunc():
     """Test extracting time dimensions from DATE_TRUNC."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -296,7 +296,7 @@ def test_generate_models_with_date_trunc():
 def test_generate_rewritten_query_with_date_trunc():
     """Test rewriting queries with DATE_TRUNC to use granularity syntax."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -321,7 +321,7 @@ def test_generate_rewritten_query_with_date_trunc():
 def test_generate_rewritten_query_with_having():
     """Test rewriting queries with HAVING clause."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -347,7 +347,7 @@ def test_generate_rewritten_query_with_having():
 def test_generate_rewritten_query_with_order_by_limit():
     """Test rewriting queries with ORDER BY and LIMIT."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -374,7 +374,7 @@ def test_generate_rewritten_query_with_order_by_limit():
 def test_generate_rewritten_query_multi_table():
     """Test rewriting multi-table queries with JOINs."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -405,7 +405,7 @@ def test_generate_rewritten_query_multi_table():
 def test_generate_rewritten_query_left_join():
     """Test rewriting LEFT JOIN queries."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -431,7 +431,7 @@ def test_generate_rewritten_query_left_join():
 def test_generate_rewritten_query_multiple_joins():
     """Test rewriting queries with multiple JOINs."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -460,7 +460,7 @@ def test_generate_rewritten_query_multiple_joins():
 def test_extract_having_clause():
     """Test that HAVING clauses are extracted."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -481,7 +481,7 @@ def test_extract_having_clause():
 def test_extract_order_by():
     """Test that ORDER BY is extracted."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -501,7 +501,7 @@ def test_extract_order_by():
 def test_extract_limit():
     """Test that LIMIT is extracted."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -521,7 +521,7 @@ def test_extract_limit():
 def test_extract_derived_metrics():
     """Test that derived metrics are extracted from expressions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -555,7 +555,7 @@ def test_extract_derived_metrics():
 def test_generate_models_with_derived_metrics():
     """Test that models include derived metrics."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -588,7 +588,7 @@ def test_generate_models_with_derived_metrics():
 def test_extract_relationships_from_joins():
     """Test that relationships are extracted from JOIN ON conditions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -625,7 +625,7 @@ def test_extract_relationships_from_joins():
 def test_generate_models_with_relationships():
     """Test that generated models include relationships."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -659,7 +659,7 @@ def test_generate_models_with_relationships():
 def test_generate_models_with_multiple_joins():
     """Test relationship extraction with multiple JOINs."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -691,7 +691,7 @@ def test_generate_models_with_multiple_joins():
 def test_rewrite_query_with_derived_metrics():
     """Test that derived metrics appear in rewritten queries without base metrics."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -743,7 +743,7 @@ def test_information_schema_relationship_detection():
 
     # Create analyzer with connection
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer, connection=con)
+    analyzer = Migrator(layer, connection=con)
 
     # Verify schema metadata was loaded
     assert "customers" in analyzer.primary_keys
@@ -807,7 +807,7 @@ def test_information_schema_column_inference():
 
     # Create analyzer with connection
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer, connection=con)
+    analyzer = Migrator(layer, connection=con)
 
     # Verify column metadata was loaded
     assert "region" in analyzer.table_columns["customers"]

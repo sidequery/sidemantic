@@ -1,13 +1,13 @@
 """Tests for edge cases in coverage analyzer model generation."""
 
 from sidemantic import SemanticLayer
-from sidemantic.core.coverage_analyzer import CoverageAnalyzer
+from sidemantic.core.migrator import Migrator
 
 
 def test_generate_models_with_case_when_aggregation():
     """Test handling CASE WHEN inside aggregations."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -34,7 +34,7 @@ def test_generate_models_with_case_when_aggregation():
 def test_generate_models_with_extract_date_part():
     """Test handling EXTRACT() function for date parts."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -61,7 +61,7 @@ def test_generate_models_with_extract_date_part():
 def test_generate_models_with_cast_in_aggregation():
     """Test handling CAST/type conversions in aggregations."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -88,7 +88,7 @@ def test_generate_models_with_cast_in_aggregation():
 def test_generate_models_with_math_expressions():
     """Test handling mathematical expressions in aggregations."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -117,7 +117,7 @@ def test_generate_models_with_math_expressions():
 def test_generate_models_with_coalesce():
     """Test handling COALESCE in dimensions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -144,7 +144,7 @@ def test_generate_models_with_coalesce():
 def test_generate_models_with_string_functions():
     """Test handling string functions in dimensions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -173,7 +173,7 @@ def test_generate_models_with_string_functions():
 def test_generate_models_no_group_by():
     """Test handling aggregations without GROUP BY (single row result)."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -200,7 +200,7 @@ def test_generate_models_no_group_by():
 def test_generate_models_with_boolean_dimension():
     """Test handling boolean expressions as dimensions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -229,7 +229,7 @@ def test_generate_models_with_boolean_dimension():
 def test_generate_rewritten_query_with_cte():
     """Test handling CTEs (WITH clauses)."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -256,7 +256,7 @@ def test_generate_rewritten_query_with_cte():
 def test_generate_models_implicit_join():
     """Test handling implicit joins (comma-separated FROM)."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -284,7 +284,7 @@ def test_generate_models_implicit_join():
 def test_generate_models_self_join():
     """Test handling self-joins."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -314,7 +314,7 @@ def test_generate_models_self_join():
 def test_generate_models_right_join():
     """Test handling RIGHT JOIN."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -339,7 +339,7 @@ def test_generate_models_right_join():
 def test_generate_models_full_outer_join():
     """Test handling FULL OUTER JOIN."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -364,7 +364,7 @@ def test_generate_models_full_outer_join():
 def test_generate_models_with_where_in():
     """Test handling WHERE IN clauses."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -391,7 +391,7 @@ def test_generate_models_with_where_in():
 def test_generate_models_with_complex_where():
     """Test handling complex WHERE with nested conditions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -418,7 +418,7 @@ def test_generate_models_with_complex_where():
 def test_handle_query_with_comments():
     """Test handling queries with SQL comments."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -446,7 +446,7 @@ def test_handle_query_with_comments():
 def test_handle_empty_or_whitespace_query():
     """Test handling empty or whitespace-only queries."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         "",
@@ -468,7 +468,7 @@ def test_handle_empty_or_whitespace_query():
 def test_generate_models_union_queries():
     """Test handling UNION queries."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -494,7 +494,7 @@ def test_generate_models_union_queries():
 def test_generate_models_with_distinct():
     """Test handling SELECT DISTINCT."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -519,7 +519,7 @@ def test_generate_models_with_distinct():
 def test_generate_models_nested_case_statements():
     """Test handling nested CASE statements."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -553,7 +553,7 @@ def test_generate_models_nested_case_statements():
 def test_generate_models_group_by_ordinal():
     """Test handling GROUP BY with ordinal positions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -580,7 +580,7 @@ def test_generate_models_group_by_ordinal():
 def test_generate_models_with_percent_aggregations():
     """Test handling percentage calculations."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -607,7 +607,7 @@ def test_generate_models_with_percent_aggregations():
 def test_generate_models_from_subquery():
     """Test extracting models from queries with subqueries in FROM."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -643,7 +643,7 @@ def test_generate_models_from_subquery():
 def test_generate_models_from_nested_subquery():
     """Test extracting models from nested subqueries."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -677,7 +677,7 @@ def test_generate_models_from_nested_subquery():
 def test_generate_models_with_running_total():
     """Test extracting cumulative metrics from running total window functions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -707,7 +707,7 @@ def test_generate_models_with_running_total():
 def test_generate_models_with_rolling_window():
     """Test extracting cumulative metrics from rolling window functions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -741,7 +741,7 @@ def test_generate_models_with_rolling_window():
 def test_generate_models_with_period_to_date():
     """Test extracting cumulative metrics from period-to-date window functions."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     queries = [
         """
@@ -775,7 +775,7 @@ def test_generate_models_with_period_to_date():
 def test_window_functions_ignore_rank_functions():
     """Test that ROW_NUMBER and other rank functions are ignored."""
     layer = SemanticLayer(auto_register=False)
-    analyzer = CoverageAnalyzer(layer)
+    analyzer = Migrator(layer)
 
     # Simpler query without GROUP BY to avoid parsing complexity
     queries = [

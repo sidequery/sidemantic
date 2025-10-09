@@ -1,5 +1,5 @@
 ---
-title: "Coverage Analyzer"
+title: "Migrator"
 ---
 
 Migrates existing SQL queries to semantic layer by analyzing queries and generating model definitions.
@@ -15,7 +15,7 @@ Migrates existing SQL queries to semantic layer by analyzing queries and generat
 Generate models from your existing queries:
 
 ```bash
-sidemantic coverage-analyzer analyze queries/ --output-dir models/
+sidemantic migrator analyze queries/ --output-dir models/
 ```
 
 This analyzes SQL files in `queries/` and generates model YAML files in `models/`.
@@ -43,7 +43,7 @@ metrics:
 Add `--rewrite` to also generate rewritten queries:
 
 ```bash
-sidemantic coverage-analyzer analyze queries/ --output-dir models/ --rewrite
+sidemantic migrator analyze queries/ --output-dir models/ --rewrite
 ```
 
 Original query:
@@ -250,13 +250,13 @@ Base aggregations inside complex calculations are still extracted as regular met
 Generate models from queries:
 
 ```bash
-sidemantic coverage-analyzer analyze queries/ --output-dir models/
+sidemantic migrator analyze queries/ --output-dir models/
 ```
 
 Generate models and rewritten queries:
 
 ```bash
-sidemantic coverage-analyzer analyze queries/ --output-dir models/ --rewrite
+sidemantic migrator analyze queries/ --output-dir models/ --rewrite
 ```
 
 This analyzes all SQL files in `queries/` and generates:
@@ -267,11 +267,11 @@ Other commands:
 
 ```bash
 # Analyze specific query
-sidemantic coverage-analyzer analyze-query \
+sidemantic migrator analyze-query \
     "SELECT status, COUNT(*) FROM orders GROUP BY status"
 
 # Generate coverage report
-sidemantic coverage-analyzer report queries/ > coverage-report.txt
+sidemantic migrator report queries/ > coverage-report.txt
 ```
 
 Options:
@@ -286,7 +286,7 @@ Options:
 ### 1. Analyze queries and generate models
 
 ```bash
-sidemantic coverage-analyzer analyze queries/ --output-dir models/generated/ --verbose
+sidemantic migrator analyze queries/ --output-dir models/generated/ --verbose
 ```
 
 Review generated models in `models/generated/` directory.
@@ -294,7 +294,7 @@ Review generated models in `models/generated/` directory.
 ### 2. Generate rewritten queries
 
 ```bash
-sidemantic coverage-analyzer analyze queries/ --output-dir models/generated/ --rewrite
+sidemantic migrator analyze queries/ --output-dir models/generated/ --rewrite
 ```
 
 This creates:
@@ -322,7 +322,7 @@ Load into your semantic layer and start using.
 **Fix**: Generate models from your queries first:
 
 ```bash
-sidemantic coverage-analyzer analyze queries/ --output-dir models/
+sidemantic migrator analyze queries/ --output-dir models/
 ```
 
 Then load those models into your semantic layer before re-analyzing.
@@ -379,7 +379,7 @@ Provide database connection for better inference:
 import duckdb
 
 conn = duckdb.connect(":memory:")
-analyzer = CoverageAnalyzer(layer, connection=conn)
+analyzer = Migrator(layer, connection=conn)
 ```
 
 Benefits: Resolves ambiguous columns, infers relationships from foreign keys, detects primary keys.

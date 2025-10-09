@@ -54,7 +54,7 @@ def main(
 
 
 @app.command()
-def coverage(
+def migrator(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     queries: Path = typer.Option(
         None, "--queries", "-q", help="Path to file or folder containing SQL queries to analyze"
@@ -68,23 +68,20 @@ def coverage(
     ),
 ):
     """
-    Analyze SQL queries for semantic layer coverage.
+    Migrate SQL queries to semantic layer by generating model definitions.
 
-    Determines which queries can be rewritten using your semantic layer and
-    identifies missing models, dimensions, and metrics.
-
-    Can also bootstrap a semantic layer from raw SQL queries.
+    Analyzes existing SQL queries to generate model definitions and rewrite
+    queries to use semantic layer syntax.
 
     Examples:
-      sidemantic coverage --queries queries/
-      sidemantic coverage models/ --queries queries/ --verbose
-      sidemantic coverage --queries raw_queries/ --generate-models output/
+      sidemantic migrator --queries queries/ --generate-models output/
+      sidemantic migrator models/ --queries queries/ --verbose
     """
-    from sidemantic.core.coverage_analyzer import CoverageAnalyzer
+    from sidemantic.core.migrator import Migrator
 
     if not queries:
         typer.echo("Error: --queries is required", err=True)
-        typer.echo("Usage: sidemantic coverage [models_dir] --queries <path>", err=True)
+        typer.echo("Usage: sidemantic migrator [models_dir] --queries <path>", err=True)
         raise typer.Exit(1)
 
     if not queries.exists():
@@ -96,7 +93,7 @@ def coverage(
         try:
             # Create empty semantic layer for analysis
             layer = SemanticLayer(auto_register=False)
-            analyzer = CoverageAnalyzer(layer)
+            analyzer = Migrator(layer)
 
             # Analyze queries
             if queries.is_file():
@@ -148,7 +145,7 @@ def coverage(
                 raise typer.Exit(1)
 
             # Create analyzer
-            analyzer = CoverageAnalyzer(layer)
+            analyzer = Migrator(layer)
 
             # Analyze queries
             if queries.is_file():

@@ -62,7 +62,7 @@ class QueryAnalysis:
 
 
 @dataclass
-class CoverageReport:
+class MigrationReport:
     """Overall coverage analysis report."""
 
     total_queries: int
@@ -77,7 +77,7 @@ class CoverageReport:
     coverage_percentage: float = 0.0
 
 
-class CoverageAnalyzer:
+class Migrator:
     """Analyzes raw SQL queries for semantic layer coverage.
 
     Takes raw SQL queries and determines:
@@ -161,7 +161,7 @@ class CoverageAnalyzer:
             # (will fall back to pattern-based detection)
             print(f"Warning: Could not load schema metadata: {e}")
 
-    def analyze_queries(self, queries: list[str]) -> CoverageReport:
+    def analyze_queries(self, queries: list[str]) -> MigrationReport:
         """Analyze a list of SQL queries.
 
         Args:
@@ -178,7 +178,7 @@ class CoverageAnalyzer:
 
         return self._generate_report()
 
-    def analyze_folder(self, folder_path: str, pattern: str = "*.sql") -> CoverageReport:
+    def analyze_folder(self, folder_path: str, pattern: str = "*.sql") -> MigrationReport:
         """Analyze all SQL files in a folder.
 
         Args:
@@ -1106,7 +1106,7 @@ class CoverageAnalyzer:
 
         return f"layer.query({', '.join(parts)})"
 
-    def _generate_report(self) -> CoverageReport:
+    def _generate_report(self) -> MigrationReport:
         """Generate coverage report from analyses.
 
         Returns:
@@ -1132,7 +1132,7 @@ class CoverageAnalyzer:
 
         coverage_pct = (rewritable / total * 100) if total > 0 else 0.0
 
-        return CoverageReport(
+        return MigrationReport(
             total_queries=total,
             parseable_queries=parseable,
             rewritable_queries=rewritable,
@@ -1143,7 +1143,7 @@ class CoverageAnalyzer:
             coverage_percentage=coverage_pct,
         )
 
-    def print_report(self, report: CoverageReport, verbose: bool = False) -> None:
+    def print_report(self, report: MigrationReport, verbose: bool = False) -> None:
         """Print coverage report to console.
 
         Args:
@@ -1236,7 +1236,7 @@ class CoverageAnalyzer:
 
         print(f"\n{'=' * 80}\n")
 
-    def generate_models(self, report: CoverageReport) -> dict[str, dict]:
+    def generate_models(self, report: MigrationReport) -> dict[str, dict]:
         """Generate model definitions from query analysis.
 
         Args:
@@ -1495,7 +1495,7 @@ class CoverageAnalyzer:
 
             print(f"Generated: {file_path}")
 
-    def generate_rewritten_queries(self, report: CoverageReport) -> dict[str, str]:
+    def generate_rewritten_queries(self, report: MigrationReport) -> dict[str, str]:
         """Generate rewritten SQL queries using semantic layer syntax.
 
         Args:

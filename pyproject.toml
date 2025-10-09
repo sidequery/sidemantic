@@ -1,6 +1,6 @@
 [project]
 name = "sidemantic"
-version = "0.2.36"
+version = "0.2.37"
 description = "Universal semantic layer - import from Cube, dbt, LookML, Hex, and more"
 readme = "README.md"
 license = {file = "LICENSE"}

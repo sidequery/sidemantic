@@ -1,0 +1,87 @@
+models:
+  - name: orders
+    table: orders
+    description: Order transactions
+    primary_key: order_id
+
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+        description: Order status (pending, processing, shipped, delivered, cancelled)
+
+      - name: created_at
+        type: time
+        sql: created_at
+        granularity: day
+        description: Order creation date
+
+      - name: updated_at
+        type: time
+        sql: updated_at
+        granularity: day
+
+      - name: is_first_order
+        type: categorical
+        sql: is_first_order
+        description: Whether this is customer's first order
+
+      - name: payment_method
+        type: categorical
+        sql: payment_method
+        description: Payment method used
+
+    metrics:
+      - name: order_count
+        agg: count
+        description: Total number of orders
+
+      - name: revenue
+        agg: sum
+        sql: total_amount
+        description: Total revenue from orders
+
+      - name: avg_order_value
+        agg: avg
+        sql: total_amount
+        description: Average order value
+
+      - name: completed_orders
+        agg: count
+        filters:
+          - status IN ('shipped', 'delivered')
+        description: Number of completed orders
+
+      - name: completed_revenue
+        agg: sum
+        sql: total_amount
+        filters:
+          - status IN ('shipped', 'delivered')
+        description: Revenue from completed orders
+
+      - name: cancelled_orders
+        agg: count
+        filters:
+          - status = 'cancelled'
+        description: Number of cancelled orders
+
+      - name: first_order_count
+        agg: count
+        filters:
+          - is_first_order = true
+        description: Number of first-time orders
+
+      - name: repeat_order_count
+        agg: count
+        filters:
+          - is_first_order = false
+        description: Number of repeat orders
+
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+
+      - name: order_items
+        type: one_to_many
+        foreign_key: order_id

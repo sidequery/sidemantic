@@ -1,0 +1,68 @@
+models:
+  - name: sales
+    table: sales_data
+    description: Sales transactions
+    primary_key: sale_id
+    dimensions:
+      - name: product_category
+        type: categorical
+        sql: category
+        description: Product category
+
+      - name: sale_date
+        type: time
+        sql: sale_date
+        granularity: day
+        description: Date of sale
+
+      - name: is_large_sale
+        type: categorical
+        sql: amount > 500
+        description: Whether sale is over $500
+
+    metrics:
+      - name: total_sales
+        agg: sum
+        sql: amount
+        description: Total sales amount
+
+      - name: sale_count
+        agg: count
+        description: Number of sales
+
+      - name: avg_sale_amount
+        agg: avg
+        sql: amount
+        description: Average sale amount
+
+    relationships:
+      - name: stores
+        type: many_to_one
+        foreign_key: store_id
+
+  - name: stores
+    table: store_data
+    description: Store information
+    primary_key: store_id
+    dimensions:
+      - name: store_name
+        type: categorical
+        sql: name
+
+      - name: city
+        type: categorical
+        sql: city
+
+      - name: state
+        type: categorical
+        sql: state
+
+metrics:
+  - name: revenue
+    description: Total revenue from all sales
+    sql: sales.total_sales
+
+  - name: avg_order_value
+    type: derived
+    description: Average value per sale
+    sql: revenue / sale_count

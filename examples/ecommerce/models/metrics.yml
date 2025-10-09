@@ -1,0 +1,38 @@
+metrics:
+  - name: total_revenue
+    description: Total revenue across all orders
+    sql: orders.revenue
+
+  - name: completion_rate
+    type: ratio
+    description: Percentage of orders that are completed
+    numerator: orders.completed_orders
+    denominator: orders.order_count
+
+  - name: cancellation_rate
+    type: ratio
+    description: Percentage of orders that are cancelled
+    numerator: orders.cancelled_orders
+    denominator: orders.order_count
+
+  - name: customer_lifetime_value
+    type: derived
+    description: Average revenue per customer
+    sql: total_revenue / customer_count
+
+  - name: repeat_customer_rate
+    type: ratio
+    description: Percentage of orders from repeat customers
+    numerator: orders.repeat_order_count
+    denominator: orders.order_count
+
+  - name: avg_items_per_order
+    type: derived
+    description: Average number of items per order
+    sql: order_items.item_count / orders.order_count
+
+  - name: discount_rate
+    type: ratio
+    description: Percentage of revenue that is discounts
+    numerator: order_items.discount_amount_total
+    denominator: order_items.gross_revenue

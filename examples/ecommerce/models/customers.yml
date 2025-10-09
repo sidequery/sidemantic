@@ -1,0 +1,70 @@
+models:
+  - name: customers
+    table: customers
+    description: Customer information and demographics
+    primary_key: customer_id
+
+    dimensions:
+      - name: email
+        type: categorical
+        sql: email
+        description: Customer email address
+
+      - name: first_name
+        type: categorical
+        sql: first_name
+
+      - name: last_name
+        type: categorical
+        sql: last_name
+
+      - name: full_name
+        type: categorical
+        sql: first_name || ' ' || last_name
+        description: Full customer name
+
+      - name: country
+        type: categorical
+        sql: country
+        description: Customer country
+
+      - name: state
+        type: categorical
+        sql: state
+        description: Customer state/region
+
+      - name: city
+        type: categorical
+        sql: city
+
+      - name: tier
+        type: categorical
+        sql: tier
+        description: Customer tier (bronze, silver, gold, platinum)
+
+      - name: created_at
+        type: time
+        sql: created_at
+        granularity: day
+        description: Customer signup date
+
+      - name: is_active
+        type: categorical
+        sql: is_active
+        description: Whether customer has placed an order in last 90 days
+
+    metrics:
+      - name: customer_count
+        agg: count
+        description: Total number of customers
+
+      - name: active_customer_count
+        agg: count
+        filters:
+          - is_active = true
+        description: Number of active customers
+
+    relationships:
+      - name: orders
+        type: one_to_many
+        foreign_key: customer_id

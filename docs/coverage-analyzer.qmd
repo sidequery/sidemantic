@@ -268,20 +268,21 @@ Base aggregations inside complex calculations are still extracted as regular met
 
 ## CLI Usage
 
-Analyze queries and generate models:
+Generate models from queries:
 
 ```bash
 sidemantic coverage-analyzer analyze queries/ --output-dir models/
 ```
 
-This analyzes all SQL files in `queries/` and generates model YAML files in `models/`.
+Generate models and rewritten queries:
 
-Options:
+```bash
+sidemantic coverage-analyzer analyze queries/ --output-dir models/ --rewrite
+```
 
-- `--pattern "*.sql"` - File pattern to match
-- `--output-dir` - Where to write generated models
-- `--rewrite` - Also generate rewritten queries
-- `--verbose` - Show detailed analysis
+This analyzes all SQL files in `queries/` and generates:
+- Model YAML files in `models/`
+- Rewritten queries in `queries_rewritten/` (if `--rewrite` flag used)
 
 Other commands:
 
@@ -293,6 +294,13 @@ sidemantic coverage-analyzer analyze-query \
 # Generate coverage report
 sidemantic coverage-analyzer report queries/ > coverage-report.txt
 ```
+
+Options:
+
+- `--pattern "*.sql"` - File pattern to match
+- `--output-dir` - Where to write generated models
+- `--rewrite` - Also generate rewritten queries
+- `--verbose` - Show detailed analysis
 
 ## Migration Workflow
 

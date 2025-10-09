@@ -1,5 +1,6 @@
 """MCP server for Sidemantic semantic layer."""
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
@@ -84,6 +85,16 @@ def get_layer() -> SemanticLayer:
     if _layer is None:
         raise RuntimeError("Semantic layer not initialized. Call initialize_layer first.")
     return _layer
+
+
+def _convert_to_json_compatible(value: Any) -> Any:
+    """Convert value to JSON-compatible type.
+
+    Handles Decimal and other non-JSON-serializable types from database results.
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
 
 
 # Create MCP server
@@ -304,10 +315,10 @@ def run_query(
     # Execute query
     result = layer.conn.execute(sql)
 
-    # Convert to list of dicts
+    # Convert to list of dicts with JSON-compatible values
     rows = result.fetchall()
     columns = [desc[0] for desc in result.description]
-    row_dicts = [dict(zip(columns, row)) for row in rows]
+    row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]
 
     return {
         "sql": sql,
@@ -412,7 +423,7 @@ def create_chart(
     result = layer.conn.execute(sql)
     rows = result.fetchall()
     columns = [desc[0] for desc in result.description]
-    row_dicts = [dict(zip(columns, row)) for row in rows]
+    row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]
 
     if not row_dicts:
         raise ValueError("Query returned no data - cannot create chart")

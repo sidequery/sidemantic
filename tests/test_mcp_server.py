@@ -1,11 +1,13 @@
 """Tests for MCP server functionality."""
 
+import json
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from sidemantic.mcp_server import get_models, initialize_layer, list_models, run_query
+from sidemantic.mcp_server import create_chart, get_models, initialize_layer, list_models, run_query
 
 
 @pytest.fixture
@@ -201,3 +203,116 @@ def test_run_query_metrics_only(demo_layer):
     assert result["sql"] is not None
     assert "SUM" in result["sql"].upper()
     assert "COUNT" in result["sql"].upper()
+
+
+def test_run_query_decimal_conversion(demo_layer):
+    """Test that Decimal values are converted to float for JSON serialization."""
+    result = run_query(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.total_revenue"],
+    )
+
+    # Verify we have results
+    assert result["row_count"] > 0
+    assert len(result["rows"]) > 0
+
+    # Check that no Decimal objects are in the results
+    for row in result["rows"]:
+        for key, value in row.items():
+            assert not isinstance(value, Decimal), f"Found Decimal value for {key}: {value}"
+            # Revenue should be a float or int
+            if "revenue" in key.lower():
+                assert isinstance(value, (int, float)), f"Expected numeric type for {key}, got {type(value)}"
+
+    # Verify the entire result is JSON serializable
+    try:
+        json.dumps(result)
+    except TypeError as e:
+        pytest.fail(f"Result is not JSON serializable: {e}")
+
+
+def test_create_chart_basic(demo_layer):
+    """Test creating a basic chart."""
+    result = create_chart(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.total_revenue"],
+        chart_type="bar",
+        title="Revenue by Customer",
+    )
+
+    # Check all expected keys are present
+    assert "sql" in result
+    assert "vega_spec" in result
+    assert "png_base64" in result
+    assert "row_count" in result
+
+    # Verify SQL was generated
+    assert result["sql"] is not None
+    assert "SELECT" in result["sql"].upper()
+
+    # Verify vega spec is a dict
+    assert isinstance(result["vega_spec"], dict)
+    assert "data" in result["vega_spec"]
+
+    # Verify PNG is base64 encoded
+    assert result["png_base64"].startswith("data:image/png;base64,")
+
+    # Verify row count
+    assert result["row_count"] == 2  # Alice and Bob
+
+
+def test_create_chart_decimal_conversion(demo_layer):
+    """Test that create_chart converts Decimals to floats for JSON serialization."""
+    result = create_chart(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.total_revenue"],
+        chart_type="bar",
+    )
+
+    # The vega_spec contains the data embedded, so it must be JSON serializable
+    vega_spec = result["vega_spec"]
+
+    # Check that the embedded data has no Decimal values
+    if "data" in vega_spec and "values" in vega_spec["data"]:
+        for row in vega_spec["data"]["values"]:
+            for key, value in row.items():
+                assert not isinstance(value, Decimal), f"Found Decimal in vega_spec data for {key}: {value}"
+
+    # Verify the entire result is JSON serializable
+    try:
+        json.dumps(result)
+    except TypeError as e:
+        pytest.fail(f"create_chart result is not JSON serializable: {e}")
+
+
+def test_create_chart_with_filter(demo_layer):
+    """Test creating a chart with a filter."""
+    result = create_chart(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.total_revenue"],
+        where="orders.customer_name = 'Alice'",
+        chart_type="bar",
+    )
+
+    assert result["sql"] is not None
+    assert "WHERE" in result["sql"].upper()
+    assert "Alice" in result["sql"]
+
+
+def test_create_chart_time_series(demo_layer):
+    """Test creating a time series chart."""
+    result = create_chart(
+        dimensions=["orders.order_date"],
+        metrics=["orders.total_revenue"],
+        chart_type="line",
+        title="Revenue Over Time",
+    )
+
+    assert result["sql"] is not None
+    assert result["row_count"] > 0
+
+    # Verify it's JSON serializable
+    try:
+        json.dumps(result)
+    except TypeError as e:
+        pytest.fail(f"Time series chart result is not JSON serializable: {e}")

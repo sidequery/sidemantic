@@ -19,7 +19,9 @@ class QueryAnalysis:
     table_aliases: dict[str, str] = field(default_factory=dict)  # alias -> table_name
     columns: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # table -> columns
     aggregations: list[tuple[str, str, str]] = field(default_factory=list)  # (agg_type, column, table)
-    aggregation_aliases: dict[str, str] = field(default_factory=dict)  # aggregation_sql -> alias
+    aggregation_aliases: dict[tuple[str, str, str], str] = field(
+        default_factory=dict
+    )  # (agg_type, col, table) -> alias
     derived_metrics: list[tuple[str, str, str]] = field(
         default_factory=list
     )  # (name/alias, sql_expression, table) for calculated metrics
@@ -48,6 +50,11 @@ class QueryAnalysis:
     missing_metrics: set[tuple[str, str, str]] = field(default_factory=set)  # (model, agg, column)
     suggested_rewrite: str | None = None
     parse_error: str | None = None
+
+    @property
+    def success(self) -> bool:
+        """Return True if query was successfully parsed."""
+        return self.parse_error is None
 
 
 @dataclass
@@ -209,6 +216,7 @@ class CoverageAnalyzer:
             self._extract_aggregations(parsed, analysis)
             self._extract_derived_metrics(parsed, analysis)
             self._extract_group_by(parsed, analysis)
+            self._extract_select_dimensions(parsed, analysis)
             self._extract_time_dimensions(parsed, analysis)
             self._extract_joins(parsed, analysis)
             self._extract_relationships(parsed, analysis)
@@ -380,11 +388,17 @@ class CoverageAnalyzer:
                         table_name = list(analysis.tables)[0]
 
                     # Store aggregation
-                    analysis.aggregations.append((agg_name, col_name, table_name or ""))
+                    agg_tuple = (agg_name, col_name, table_name or "")
+                    analysis.aggregations.append(agg_tuple)
+
+                    # Track alias if this SELECT expression has only one aggregation
+                    # For derived metrics (multiple aggs with operators), the alias goes on the derived metric, not individual aggs
+                    if alias_name and len(aggs) == 1:
+                        analysis.aggregation_aliases[agg_tuple] = alias_name
 
                     # Mark if part of a derived metric
                     if is_derived:
-                        analysis.aggregations_in_derived.add((agg_name, col_name, table_name or ""))
+                        analysis.aggregations_in_derived.add(agg_tuple)
 
                     # If this is a complex expression with an alias (not part of derived), also add as derived metric
                     if alias_name and not isinstance(col, (exp.Column, exp.Star)) and not is_derived:
@@ -459,24 +473,45 @@ class CoverageAnalyzer:
                 analysis.aggregations_in_derived.add((agg_type, col_name, table_name))
 
     def _extract_group_by(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract GROUP BY columns, handling complex expressions."""
+        """Extract GROUP BY columns, handling complex expressions and ordinals."""
         for group in parsed.find_all(exp.Group):
             for expr in group.expressions:
                 if isinstance(expr, exp.Column):
-                    # Simple column
+                    # Simple column - resolve alias to real table name
                     table_name = expr.table if expr.table else ""
+                    if table_name and table_name in analysis.table_aliases:
+                        table_name = analysis.table_aliases[table_name]
                     col_name = expr.name
                     if col_name:
                         analysis.group_by_columns.add((table_name, col_name))
                 elif isinstance(expr, exp.Literal):
                     # GROUP BY ordinal position (e.g., GROUP BY 1, 2)
-                    # Skip - we'll get the actual columns from SELECT
-                    continue
+                    # Resolve ordinal to actual SELECT expression
+                    try:
+                        ordinal = int(str(expr))
+                        # Find the SELECT clause and get the expression at this position
+                        for select in parsed.find_all(exp.Select):
+                            if ordinal <= len(select.expressions):
+                                select_expr = select.expressions[ordinal - 1]
+                                # Extract columns from this expression
+                                for col in select_expr.find_all(exp.Column):
+                                    table_name = col.table if col.table else ""
+                                    if table_name and table_name in analysis.table_aliases:
+                                        table_name = analysis.table_aliases[table_name]
+                                    col_name = col.name
+                                    if col_name:
+                                        analysis.group_by_columns.add((table_name, col_name))
+                                break
+                    except (ValueError, AttributeError):
+                        # Not a valid ordinal, skip
+                        continue
                 else:
                     # Complex expression (CASE, EXTRACT, COALESCE, etc.)
                     # Extract all columns referenced in the expression
                     for col in expr.find_all(exp.Column):
                         table_name = col.table if col.table else ""
+                        if table_name and table_name in analysis.table_aliases:
+                            table_name = analysis.table_aliases[table_name]
                         col_name = col.name
                         if col_name:
                             analysis.group_by_columns.add((table_name, col_name))
@@ -494,9 +529,11 @@ class CoverageAnalyzer:
                     join_parts.append(join.side)
                 if join.kind:
                     join_parts.append(join.kind)
-                else:
-                    # If no kind specified, default to JOIN
+
+                # Always ensure "JOIN" is at the end if not already present
+                if not join_parts or join_parts[-1] != "JOIN":
                     join_parts.append("JOIN")
+
                 join_type = " ".join(join_parts)
 
                 # Get ON condition
@@ -509,10 +546,85 @@ class CoverageAnalyzer:
                 analysis.joins.append((from_table, from_alias, to_table, to_alias, join_type, on_clause))
 
     def _extract_relationships(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract relationships from JOIN ON conditions.
+        """Extract relationships from JOIN ON conditions and WHERE clause equality conditions.
 
         Uses information_schema data if available, falls back to pattern matching.
         """
+
+        # Helper function to extract relationship from an equality condition
+        def extract_relationship_from_eq(eq_expr: exp.EQ) -> None:
+            left = eq_expr.left
+            right = eq_expr.right
+
+            # Both sides should be columns
+            if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+                return
+
+            # Resolve table aliases
+            left_table = analysis.table_aliases.get(left.table, left.table) if left.table else ""
+            right_table = analysis.table_aliases.get(right.table, right.table) if right.table else ""
+
+            # Skip if same table (not a relationship)
+            if left_table == right_table:
+                return
+
+            # Try information_schema first
+            fk_table = None
+            fk_column = None
+            pk_table = None
+            pk_column = None
+
+            # Check if left side is a known FK
+            if (left_table, left.name) in self.foreign_keys:
+                pk_table, pk_column = self.foreign_keys[(left_table, left.name)]
+                fk_table = left_table
+                fk_column = left.name
+            # Check if right side is a known FK
+            elif (right_table, right.name) in self.foreign_keys:
+                pk_table, pk_column = self.foreign_keys[(right_table, right.name)]
+                fk_table = right_table
+                fk_column = right.name
+
+            # Fall back to pattern matching if information_schema didn't help
+            if not fk_table:
+                # Determine which side has the foreign key by checking column names
+                # Foreign keys typically end with _id (e.g., customer_id, product_id)
+                left_is_fk = left.name.endswith("_id")
+                right_is_fk = right.name.endswith("_id")
+
+                if left_is_fk and not right_is_fk:
+                    # Left has the FK, right has the PK
+                    fk_table = left_table
+                    fk_column = left.name
+                    pk_table = right_table
+                    pk_column = right.name
+                elif right_is_fk and not left_is_fk:
+                    # Right has the FK, left has the PK
+                    fk_table = right_table
+                    fk_column = right.name
+                    pk_table = left_table
+                    pk_column = left.name
+                else:
+                    # Can't determine - use left as FK
+                    fk_table = left_table
+                    fk_column = left.name
+                    pk_table = right_table
+                    pk_column = right.name
+
+            # Infer primary key column if not from information_schema
+            if pk_column and not self.foreign_keys:
+                # If it ends with _id, the actual PK is probably "id"
+                pk_column = "id" if pk_column.endswith("_id") else pk_column
+
+            # Generate relationships for both directions
+            # FK table has many_to_one relationship to PK table
+            analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
+
+            # PK table has one_to_many relationship to FK table
+            # For one_to_many, we don't store FK (it's on the other side)
+            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+
+        # Extract from JOIN ON conditions
         for join in parsed.find_all(exp.Join):
             if not isinstance(join.this, exp.Table):
                 continue
@@ -521,87 +633,77 @@ class CoverageAnalyzer:
 
             # Parse ON condition
             on_clause = join.args.get("on")
-            if not on_clause:
-                continue
-
-            # Handle equality joins (most common)
-            if isinstance(on_clause, exp.EQ):
+            if on_clause and isinstance(on_clause, exp.EQ):
+                # For ambiguous cases, pass context about which table is being joined TO
                 left = on_clause.left
                 right = on_clause.right
 
-                # Both sides should be columns
-                if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
-                    continue
+                if isinstance(left, exp.Column) and isinstance(right, exp.Column):
+                    left_table = analysis.table_aliases.get(left.table, left.table) if left.table else ""
+                    right_table = analysis.table_aliases.get(right.table, right.table) if right.table else ""
 
-                # Resolve table aliases
-                left_table = analysis.table_aliases.get(left.table, left.table) if left.table else ""
-                right_table = analysis.table_aliases.get(right.table, right.table) if right.table else ""
-
-                # Try information_schema first
-                fk_table = None
-                fk_column = None
-                pk_table = None
-                pk_column = None
-
-                # Check if left side is a known FK
-                if (left_table, left.name) in self.foreign_keys:
-                    pk_table, pk_column = self.foreign_keys[(left_table, left.name)]
-                    fk_table = left_table
-                    fk_column = left.name
-                # Check if right side is a known FK
-                elif (right_table, right.name) in self.foreign_keys:
-                    pk_table, pk_column = self.foreign_keys[(right_table, right.name)]
-                    fk_table = right_table
-                    fk_column = right.name
-
-                # Fall back to pattern matching if information_schema didn't help
-                if not fk_table:
-                    # Determine which side has the foreign key by checking column names
-                    # Foreign keys typically end with _id (e.g., customer_id, product_id)
-                    left_is_fk = left.name.endswith("_id")
-                    right_is_fk = right.name.endswith("_id")
-
-                    if left_is_fk and not right_is_fk:
-                        # Left has the FK, right has the PK
-                        fk_table = left_table
-                        fk_column = left.name
-                        pk_table = right_table
-                        pk_column = right.name
-                    elif right_is_fk and not left_is_fk:
-                        # Right has the FK, left has the PK
-                        fk_table = right_table
-                        fk_column = right.name
-                        pk_table = left_table
-                        pk_column = left.name
-                    else:
-                        # Can't determine from column names, fall back to join direction
+                    # If both columns end with _id, use join direction to determine FK
+                    if left.name.endswith("_id") and right.name.endswith("_id"):
                         # The table being joined TO (to_table) usually has the FK
                         if right_table == to_table:
+                            # Right table is being joined, so it has the FK
                             fk_table = right_table
                             fk_column = right.name
                             pk_table = left_table
-                            pk_column = left.name
+                            pk_column = "id" if right.name.endswith("_id") else right.name
+
+                            analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
+                            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+                            continue
                         elif left_table == to_table:
+                            # Left table is being joined, so it has the FK
                             fk_table = left_table
                             fk_column = left.name
                             pk_table = right_table
-                            pk_column = right.name
-                        else:
-                            # Neither side matches the joined table, skip
+                            pk_column = "id" if left.name.endswith("_id") else left.name
+
+                            analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
+                            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
                             continue
 
-                # Infer primary key column if not from information_schema
-                if pk_column and not self.foreign_keys:
-                    # If it ends with _id, the actual PK is probably "id"
-                    pk_column = "id" if pk_column.endswith("_id") else pk_column
+                extract_relationship_from_eq(on_clause)
 
-                # Generate relationships for both directions
-                # FK table has many_to_one relationship to PK table
-                analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
+        # Extract from WHERE clause (for implicit joins like FROM t1, t2 WHERE t1.id = t2.fk)
+        for where in parsed.find_all(exp.Where):
+            # Find all equality conditions in WHERE
+            for eq_expr in where.find_all(exp.EQ):
+                extract_relationship_from_eq(eq_expr)
 
-                # PK table has one_to_many relationship to FK table
-                # For one_to_many, we don't store FK (it's on the other side)
-                analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+    def _extract_select_dimensions(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
+        """Extract dimensions from SELECT clause when no GROUP BY exists.
+
+        For queries like SELECT DISTINCT status, region FROM orders,
+        treat the selected columns as dimensions.
+        """
+        # Only extract if there's no GROUP BY and no aggregations
+        if analysis.group_by_columns or analysis.aggregations:
+            return
+
+        for select in parsed.find_all(exp.Select):
+            for select_expr in select.expressions:
+                # Skip Star (SELECT *)
+                if isinstance(select_expr, exp.Star):
+                    continue
+
+                # Extract simple columns
+                if isinstance(select_expr, exp.Column):
+                    table_name = select_expr.table if select_expr.table else ""
+                    col_name = select_expr.name
+                    if col_name:
+                        analysis.group_by_columns.add((table_name, col_name))
+
+                # Extract from aliased columns
+                elif isinstance(select_expr, exp.Alias) and isinstance(select_expr.this, exp.Column):
+                    col = select_expr.this
+                    table_name = col.table if col.table else ""
+                    col_name = col.name
+                    if col_name:
+                        analysis.group_by_columns.add((table_name, col_name))
 
     def _extract_time_dimensions(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract time dimensions with granularity from DATE_TRUNC, TIMESTAMP_TRUNC, EXTRACT, etc."""
@@ -935,6 +1037,7 @@ class CoverageAnalyzer:
         table_metrics = defaultdict(set)
         table_derived_metrics = defaultdict(list)  # (name, sql_expression)
         table_relationships = defaultdict(list)  # (to_model, type, foreign_key, primary_key)
+        metric_aliases = {}  # (table, agg_type, col_name) -> alias
 
         for analysis in report.query_analyses:
             if analysis.parse_error:
@@ -963,6 +1066,10 @@ class CoverageAnalyzer:
                     table_name = list(analysis.tables)[0]
                 if table_name:
                     table_metrics[table_name].add((agg_type, col_name))
+                    # Track alias if one exists
+                    agg_tuple = (agg_type, col_name, table_name)
+                    if agg_tuple in analysis.aggregation_aliases:
+                        metric_aliases[(table_name, agg_type, col_name)] = analysis.aggregation_aliases[agg_tuple]
 
             # Track derived metrics
             for metric_name, metric_sql, table_name in analysis.derived_metrics:
@@ -1026,16 +1133,21 @@ class CoverageAnalyzer:
                 metrics = []
                 seen_metrics = set()
                 for agg_type, col_name in sorted(table_metrics[table]):
-                    # Generate metric name
-                    if agg_type == "count" and col_name == "*":
-                        metric_name = "count"
-                    elif agg_type == "count" and col_name != "*":
-                        # COUNT(column) - use column_count pattern
-                        metric_name = f"{col_name}_count"
-                    elif agg_type == "count_distinct":
-                        metric_name = f"{col_name}_count"
+                    # Check if we have an alias for this metric
+                    alias_key = (table, agg_type, col_name)
+                    if alias_key in metric_aliases:
+                        metric_name = metric_aliases[alias_key]
                     else:
-                        metric_name = f"{agg_type}_{col_name}"
+                        # Generate metric name
+                        if agg_type == "count" and col_name == "*":
+                            metric_name = "count"
+                        elif agg_type == "count" and col_name != "*":
+                            # COUNT(column) - use column_count pattern
+                            metric_name = f"{col_name}_count"
+                        elif agg_type == "count_distinct":
+                            metric_name = f"{col_name}_count"
+                        else:
+                            metric_name = f"{agg_type}_{col_name}"
 
                     # Avoid duplicates
                     if metric_name in seen_metrics:

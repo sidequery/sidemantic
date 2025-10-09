@@ -2,14 +2,10 @@
 title: "Coverage Analyzer"
 ---
 
-# Coverage Analyzer
-
-The coverage analyzer helps you migrate existing SQL queries to a semantic layer by:
-
-1. **Analyzing** raw SQL queries to understand what they do
-2. **Generating** model definitions (dimensions, metrics, relationships)
-3. **Rewriting** queries to use semantic layer syntax
-4. **Identifying** gaps in your semantic layer
+Analyzes existing SQL queries to:
+1. Generate semantic layer model definitions
+2. Rewrite queries to use semantic layer syntax
+3. Measure coverage gaps
 
 ## Quick Start
 
@@ -17,57 +13,27 @@ The coverage analyzer helps you migrate existing SQL queries to a semantic layer
 from sidemantic import SemanticLayer
 from sidemantic.core.coverage_analyzer import CoverageAnalyzer
 
-# Create analyzer with your semantic layer
 layer = SemanticLayer(auto_register=False)
 analyzer = CoverageAnalyzer(layer)
 
-# Analyze existing queries
-queries = [
-    """
+queries = ["""
     SELECT status, region, SUM(amount), COUNT(*)
     FROM orders
     WHERE status = 'completed'
     GROUP BY status, region
-    """
-]
+"""]
 
 report = analyzer.analyze_queries(queries)
-
-# Print coverage report
 analyzer.print_report(report, verbose=True)
 ```
 
-Output:
-```
-================================================================================
-SEMANTIC LAYER COVERAGE REPORT
-================================================================================
-
-Total Queries:      1
-Parseable:          1
-Rewritable:         0
-Coverage:           0.0%
-
-────────────────────────────────────────────────────────────────────────────────
-MISSING MODELS
-────────────────────────────────────────────────────────────────────────────────
-  • orders
-```
-
-## From Queries to Models
-
-### Generate Model Definitions
-
-Automatically create model definitions from your queries:
+## Generate Models from Queries
 
 ```python
-# Analyze queries
-report = analyzer.analyze_queries(queries)
-
-# Generate YAML model definitions
+# Generate model definitions
 models = analyzer.generate_models(report)
 
-# Write to files
+# Write YAML files
 analyzer.write_model_files(models, output_dir="models/")
 ```
 
@@ -76,7 +42,6 @@ Generated `models/orders.yml`:
 model:
   name: orders
   table: orders
-  description: Auto-generated from query analysis
 dimensions:
   - name: status
     sql: status
@@ -93,74 +58,56 @@ metrics:
     sql: "*"
 ```
 
-### Rewrite Queries
-
-Convert raw SQL to semantic layer queries:
+## Rewrite Queries
 
 ```python
-# Generate rewritten queries
+# Generate semantic layer queries
 rewritten = analyzer.generate_rewritten_queries(report)
-
-# Write to files
 analyzer.write_rewritten_queries(rewritten, output_dir="queries/")
 ```
 
-Generated `queries/query_1.sql`:
 ```sql
-SELECT
-    orders.status,
-    orders.region,
-    orders.sum_amount,
-    orders.count
+-- Original
+SELECT status, region, SUM(amount), COUNT(*)
+FROM orders
+WHERE status = 'completed'
+GROUP BY status, region
+
+-- Rewritten
+SELECT orders.status, orders.region, orders.sum_amount, orders.count
 FROM orders
 WHERE status = 'completed'
 ```
 
-Or use Python API:
-```python
-df = layer.query(
-    dimensions=["orders.status", "orders.region"],
-    metrics=["orders.sum_amount", "orders.count"],
-    where="status = 'completed'"
-)
-```
-
-## Supported SQL Patterns
+## Supported Patterns
 
 ### Basic Aggregations
 
+Extracts dimensions from GROUP BY and metrics from aggregations:
+
 ```sql
 SELECT
     status,
-    SUM(amount) as total_revenue,
-    AVG(amount) as avg_order_value,
-    COUNT(*) as order_count,
-    COUNT(DISTINCT customer_id) as unique_customers
+    SUM(amount) as revenue,
+    COUNT(DISTINCT customer_id) as customers
 FROM orders
 GROUP BY status
 ```
 
-**Extracts**:
-- Dimension: `status`
-- Metrics: `total_revenue` (sum), `avg_order_value` (avg), `order_count` (count), `unique_customers` (count_distinct)
+### Complex Expressions
 
-### Complex Aggregations
-
-Handles expressions inside aggregations:
+Handles CASE, COALESCE, CAST, math, string functions:
 
 ```sql
 SELECT
-    status,
-    SUM(quantity * price) as revenue,
+    UPPER(status) as status,
     SUM(CASE WHEN priority = 'high' THEN amount ELSE 0 END) as high_priority_revenue,
-    SUM(CAST(amount AS FLOAT)) as amount_float
+    SUM(quantity * price) as total_revenue
 FROM orders
-GROUP BY status
+GROUP BY UPPER(status)
 ```
 
-**Extracts**:
-- Uses aliases for metric names when available
-- Extracts underlying columns from expressions
+Extracts underlying columns (`status`, `amount`, `quantity`, `price`).
 
 ### Time Dimensions
 
@@ -173,22 +120,9 @@ FROM orders
 GROUP BY DATE_TRUNC('month', order_date), EXTRACT(YEAR FROM order_date)
 ```
 
-**Extracts**:
-- Time dimension: `order_date` (type: time)
-- Tracks granularity: `month`, `year`
-
-**Rewrites to**:
-```sql
-SELECT
-    orders.order_date__month,
-    orders.order_date__year,
-    orders.revenue
-FROM orders
-```
+Extracts `order_date` as time dimension. Rewrites to `orders.order_date__month`, `orders.order_date__year`.
 
 ### Derived Metrics
-
-Recognizes calculated metrics:
 
 ```sql
 SELECT
@@ -199,11 +133,7 @@ FROM orders
 GROUP BY status
 ```
 
-**Extracts**:
-- Base metrics: `sum(revenue)`, `count(*)`
-- Derived metrics: `avg_revenue_per_order`, `net_amount`
-
-Generated model includes:
+Extracts base metrics and derived metrics separately:
 ```yaml
 metrics:
   - name: sum_revenue
@@ -220,24 +150,16 @@ metrics:
 ### Joins and Relationships
 
 ```sql
-SELECT
-    c.region,
-    COUNT(o.order_id) as order_count
+SELECT c.region, COUNT(o.order_id) as order_count
 FROM customers c
 JOIN orders o ON c.id = o.customer_id
 GROUP BY c.region
 ```
 
-**Extracts**:
-- Tables: `customers`, `orders`
-- Relationship: `orders.customer_id` → `customers.id` (many_to_one)
-- Dimensions and metrics for each table
+Extracts relationship: `orders.customer_id` → `customers.id` (many_to_one).
 
-Generated models include relationships:
 ```yaml
 # orders.yml
-model:
-  name: orders
 relationships:
   - name: customers
     type: many_to_one
@@ -249,86 +171,22 @@ relationships:
 Resolves subquery aliases to underlying tables:
 
 ```sql
-SELECT
-    sub.status,
-    COUNT(*) as order_count
-FROM (
-    SELECT status, amount
-    FROM orders
-    WHERE amount > 100
-) sub
+SELECT sub.status, COUNT(*) as order_count
+FROM (SELECT status, amount FROM orders WHERE amount > 100) sub
 GROUP BY sub.status
 ```
 
-**Extracts**:
-- Table: `orders` (resolved from subquery)
-- Dimension: `status` (resolved from `sub.status`)
+Extracts `orders` table and resolves `sub.status` → `orders.status`.
 
-### Advanced Patterns
+### Window Functions and Cumulative Metrics
 
-#### GROUP BY Ordinals
+Detects window functions and generates cumulative metric definitions.
+
+**Running totals**:
 ```sql
-SELECT status, region, COUNT(*)
-FROM orders
-GROUP BY 1, 2  -- References status, region
-```
-
-#### String Functions
-```sql
-SELECT
-    UPPER(status) as status_upper,
-    LOWER(region) as region_lower,
-    COUNT(*)
-FROM orders
-GROUP BY UPPER(status), LOWER(region)
-```
-**Extracts**: Underlying `status` and `region` columns
-
-#### COALESCE/CASE
-```sql
-SELECT
-    COALESCE(region, 'Unknown') as region,
-    CASE WHEN amount > 1000 THEN 'high' ELSE 'low' END as tier,
-    COUNT(*)
-FROM orders
-GROUP BY COALESCE(region, 'Unknown'), CASE WHEN amount > 1000 THEN 'high' ELSE 'low' END
-```
-**Extracts**: `region` and `amount` columns
-
-#### Implicit Joins
-```sql
-SELECT c.region, COUNT(o.order_id)
-FROM customers c, orders o
-WHERE c.id = o.customer_id
-GROUP BY c.region
-```
-**Extracts**: Relationships from WHERE clause equality conditions
-
-#### Self-Joins
-```sql
-SELECT
-    o1.status,
-    COUNT(o2.id) as related_orders
-FROM orders o1
-LEFT JOIN orders o2 ON o1.parent_order_id = o2.id
-GROUP BY o1.status
-```
-**Extracts**: Single `orders` model with appropriate dimensions
-
-## Window Functions and Cumulative Metrics
-
-The analyzer detects window function patterns and generates cumulative metric definitions.
-
-### Running Totals
-
-```sql
-SELECT
-    order_date,
-    SUM(amount) OVER (ORDER BY order_date) as running_total
+SELECT order_date, SUM(amount) OVER (ORDER BY order_date) as running_total
 FROM orders
 ```
-
-**Generates**:
 ```yaml
 metrics:
   - name: running_total
@@ -336,40 +194,26 @@ metrics:
     sql: "orders.sum_amount"
 ```
 
-### Rolling Windows
-
+**Rolling windows**:
 ```sql
-SELECT
-    order_date,
-    SUM(amount) OVER (
-        ORDER BY order_date
-        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
-    ) as rolling_7day_revenue
+SELECT order_date,
+    SUM(amount) OVER (ORDER BY order_date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) as rolling_7day
 FROM orders
 ```
-
-**Generates**:
 ```yaml
 metrics:
-  - name: rolling_7day_revenue
+  - name: rolling_7day
     type: cumulative
     sql: "orders.sum_amount"
     window: "6 days"
 ```
 
-### Period-to-Date
-
+**Period-to-date**:
 ```sql
-SELECT
-    order_date,
-    SUM(amount) OVER (
-        PARTITION BY DATE_TRUNC('month', order_date)
-        ORDER BY order_date
-    ) as mtd_revenue
+SELECT order_date,
+    SUM(amount) OVER (PARTITION BY DATE_TRUNC('month', order_date) ORDER BY order_date) as mtd_revenue
 FROM orders
 ```
-
-**Generates**:
 ```yaml
 metrics:
   - name: mtd_revenue
@@ -378,76 +222,51 @@ metrics:
     grain_to_date: "month"
 ```
 
-### What Gets Extracted vs. Ignored
+**What's extracted**:
+- Aggregation window functions: `SUM/AVG/COUNT/MIN/MAX` with `OVER()`
+- Rolling windows with `ROWS BETWEEN`
+- Period-to-date with `PARTITION BY DATE_TRUNC()`
 
-**✅ Extracted as Cumulative Metrics**:
-- `SUM/AVG/COUNT/MIN/MAX` with `OVER (ORDER BY ...)`
-- Rolling windows with `ROWS/RANGE BETWEEN`
-- Period-to-date with `PARTITION BY DATE_TRUNC(...)`
+**What's ignored**:
+- Window-only functions: `ROW_NUMBER()`, `RANK()`, `LAG()`, `LEAD()`
+- Complex window calculations with operators
 
-**❌ Not Extracted**:
-- Window-only functions: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LAG()`, `LEAD()`
-- Complex window calculations with operators (e.g., `COUNT(*) * 100.0 / SUM(COUNT(*)) OVER()`)
+For complex calculations, base aggregations are still extracted - define derived metrics on top.
 
-For complex calculations, the base aggregations are still extracted - you can define derived metrics on top of them.
+### Other Patterns
 
-### CTEs (WITH Clauses)
-
-CTE structure is preserved in rewritten queries but not extracted as separate models:
-
-```sql
-WITH high_value AS (
-    SELECT status, SUM(amount) as revenue
-    FROM orders
-    WHERE amount > 100
-    GROUP BY status
-)
-SELECT * FROM high_value WHERE revenue > 1000
-```
-
-**Extracts**: Underlying `orders` table and its patterns
+- **CTEs**: Extracts from underlying tables, preserves structure in rewrites
+- **GROUP BY ordinals**: `GROUP BY 1, 2` resolved to columns
+- **Implicit joins**: `FROM a, b WHERE a.id = b.fk` extracts relationships
+- **Self-joins**: Generates single model
 
 ## CLI Usage
 
-### Analyze Queries from Files
-
 ```bash
+# Analyze folder
 sidemantic coverage-analyzer analyze queries/ --output-dir models/
-```
 
-Options:
-- `--pattern "*.sql"` - File pattern to match
-- `--output-dir` - Where to write generated models
-- `--rewrite` - Also generate rewritten queries
-- `--verbose` - Show detailed analysis
-
-### Analyze Specific Query
-
-```bash
+# Analyze specific query
 sidemantic coverage-analyzer analyze-query "SELECT status, COUNT(*) FROM orders GROUP BY status"
-```
 
-### Generate Report
-
-```bash
+# Generate report
 sidemantic coverage-analyzer report queries/ > coverage-report.txt
 ```
 
+Options:
+- `--pattern "*.sql"` - File pattern
+- `--output-dir` - Where to write models
+- `--rewrite` - Also generate rewritten queries
+- `--verbose` - Show details
+
 ## Python API
 
-### Analyze Folder
-
-```python
-# Analyze all .sql files in a folder
-report = analyzer.analyze_folder("queries/", pattern="*.sql")
-```
-
-### Get Coverage Metrics
+### Coverage Metrics
 
 ```python
 report = analyzer.analyze_queries(queries)
 
-print(f"Total queries: {report.total_queries}")
+print(f"Total: {report.total_queries}")
 print(f"Parseable: {report.parseable_queries}")
 print(f"Rewritable: {report.rewritable_queries}")
 print(f"Coverage: {report.coverage_percentage:.1f}%")
@@ -465,11 +284,6 @@ for model, dims in report.missing_dimensions.items():
 
 ```python
 for analysis in report.query_analyses:
-    print(f"Can rewrite: {analysis.can_rewrite}")
-    print(f"Tables: {analysis.tables}")
-    print(f"Aggregations: {analysis.aggregations}")
-    print(f"Dimensions: {analysis.group_by_columns}")
-
     if not analysis.can_rewrite:
         print(f"Missing models: {analysis.missing_models}")
         print(f"Missing dimensions: {analysis.missing_dimensions}")
@@ -478,8 +292,6 @@ for analysis in report.query_analyses:
 
 ### With Database Connection
 
-Provide connection for better table/column inference:
-
 ```python
 import duckdb
 
@@ -487,47 +299,38 @@ conn = duckdb.connect(":memory:")
 conn.execute("CREATE TABLE orders (id INT, customer_id INT, amount DECIMAL)")
 conn.execute("CREATE TABLE customers (id INT, region VARCHAR)")
 
-# Analyzer uses information_schema for better inference
+# Uses information_schema for better inference
 analyzer = CoverageAnalyzer(layer, connection=conn)
-
-# Resolves ambiguous columns
-# Infers relationships from foreign keys
-# Detects primary keys
 ```
+
+Benefits:
+- Resolves ambiguous columns
+- Infers relationships from foreign keys
+- Detects primary keys
 
 ## Migration Workflow
 
-### 1. Inventory Existing Queries
+### 1. Generate Models
 
 ```bash
-# Find all SQL queries
-find . -name "*.sql" -o -name "*.sql.j2" > query-inventory.txt
-
-# Analyze coverage
 sidemantic coverage-analyzer analyze queries/ --output-dir models/generated/
 ```
 
-### 2. Review Generated Models
+### 2. Review and Refine
 
 ```python
-# Load and inspect
 models = analyzer.generate_models(report)
 
 for name, model_def in models.items():
-    print(f"\n{name}:")
-    print(f"  Dimensions: {len(model_def.get('dimensions', []))}")
-    print(f"  Metrics: {len(model_def.get('metrics', []))}")
-    print(f"  Relationships: {len(model_def.get('relationships', []))}")
+    print(f"{name}: {len(model_def.get('dimensions', []))} dims, {len(model_def.get('metrics', []))} metrics")
 ```
 
-### 3. Refine and Merge
+### 3. Merge Multiple Analyses
 
 ```python
-# Merge multiple query analyses for same table
 report1 = analyzer.analyze_queries(queries_set1)
 report2 = analyzer.analyze_queries(queries_set2)
 
-# Combine models (takes union of dimensions/metrics)
 all_analyses = report1.query_analyses + report2.query_analyses
 combined_report = CoverageReport(
     total_queries=len(all_analyses),
@@ -542,143 +345,85 @@ models = analyzer.generate_models(combined_report)
 ### 4. Test Rewrites
 
 ```python
-# Generate rewritten queries
 rewritten = analyzer.generate_rewritten_queries(report)
 
-# Test they produce same results
 for query_name, sql in rewritten.items():
     original_result = conn.execute(original_queries[query_name]).fetchdf()
     rewritten_result = conn.execute(sql).fetchdf()
-
-    assert original_result.equals(rewritten_result), f"{query_name} mismatch!"
+    assert original_result.equals(rewritten_result)
 ```
 
-### 5. Deploy Models
+### 5. Deploy
 
 ```bash
-# Copy generated models to project
 cp models/generated/*.yml models/
-
-# Register with semantic layer
 sidemantic load models/
 ```
 
 ## Troubleshooting
 
-### Query Not Parseable
+### Low Coverage
 
-**Issue**: `parseable_queries < total_queries`
-
-**Solutions**:
-- Check for SQL dialect incompatibilities (analyzer uses DuckDB parser)
-- Fix syntax errors in queries
-- Split multi-statement queries (separated by `;`)
-
-### Low Coverage Percentage
-
-**Issue**: `rewritable_queries` much lower than expected
-
-**Common causes**:
-1. **Missing models** - Tables not defined in semantic layer
-2. **Missing dimensions** - GROUP BY columns not in model
-3. **Missing metrics** - Aggregations not defined
+**Cause**: Missing models, dimensions, or metrics.
 
 **Fix**:
 ```python
-# Use generated models as starting point
+# Generate and load models
 models = analyzer.generate_models(report)
 analyzer.write_model_files(models, "models/")
 
-# Load into semantic layer
 layer = SemanticLayer.from_folder("models/")
-
-# Re-analyze
 analyzer = CoverageAnalyzer(layer)
-report = analyzer.analyze_queries(queries)
-# Should have higher coverage now
+report = analyzer.analyze_queries(queries)  # Higher coverage now
 ```
 
 ### Dimensions Not Extracted
 
-**Issue**: Generated model missing expected dimensions
+**Cause**: No `GROUP BY` clause.
 
-**Causes**:
-- No `GROUP BY` clause (add dimensions explicitly or use SELECT DISTINCT)
-- Dimensions in complex expressions (may extract underlying columns instead)
-- Subquery with multiple tables (can't resolve alias)
-
-**Example**:
 ```sql
--- ❌ No dimensions extracted (no GROUP BY)
+-- ❌ No dimensions (no GROUP BY)
 SELECT COUNT(*) FROM orders
 
--- ✅ Extracts status dimension
+-- ✅ Extracts status
 SELECT status, COUNT(*) FROM orders GROUP BY status
-
--- ✅ Also works
-SELECT DISTINCT status FROM orders
 ```
 
 ### Relationships Not Detected
 
-**Issue**: JOIN relationships not extracted
-
 **Causes**:
-- Non-equi joins (`ON a.x > b.y`)
-- Complex join conditions with functions
-- Multiple join conditions
+- Non-equi joins
+- Complex conditions
+- Multiple join keys
 
-**Solutions**:
-- Provide database connection for FK detection: `CoverageAnalyzer(layer, connection=conn)`
-- Manually define relationships in generated models
-- Use simple equality joins when possible
+**Fix**: Provide database connection for FK detection or manually define relationships.
 
-### Metric Names Incorrect
+### Metric Names Don't Match
 
-**Issue**: Generated metric names don't match expected
-
-**Cause**: Analyzer generates names from aggregation + column:
+Analyzer generates names from `agg_column`:
 - `SUM(amount)` → `sum_amount`
 - `COUNT(*)` → `count`
-- `AVG(price)` → `avg_price`
 
-**Fix**: Use aliases in queries:
+Use aliases to control names:
 ```sql
--- Analyzer will use alias as metric name
-SELECT SUM(amount) as total_revenue FROM orders
--- Generates: total_revenue (not sum_amount)
+SELECT SUM(amount) as total_revenue FROM orders  -- Generates "total_revenue"
 ```
 
 ## Best Practices
 
-### Incremental Migration
+1. Start with simple queries for baseline coverage
+2. Generate models to get 80% coverage quickly
+3. Refine incrementally
+4. Test old vs new queries in parallel
+5. Migrate one dashboard at a time
 
-1. **Start with simple queries** - Basic aggregations first
-2. **Generate baseline models** - Get 80% coverage quickly
-3. **Refine iteratively** - Add missing dimensions/metrics
-4. **Test in parallel** - Run old and new queries side-by-side
-5. **Migrate gradually** - One report/dashboard at a time
-
-### Maintain Coverage
+### Maintain Coverage in CI
 
 ```python
-# Regular coverage checks in CI/CD
 def test_query_coverage():
     analyzer = CoverageAnalyzer(layer)
     report = analyzer.analyze_folder("queries/")
 
-    # Ensure high coverage
-    assert report.coverage_percentage >= 90.0, (
-        f"Coverage dropped to {report.coverage_percentage}%"
-    )
-
-    # No unparseable queries
+    assert report.coverage_percentage >= 90.0
     assert report.parseable_queries == report.total_queries
 ```
-
-## See Also
-
-- [CLI Reference](/cli.html) - Command-line usage
-- [Models](/models.html) - Define models
-- [Metrics](/metrics.html) - Define metrics
-- [Query API](/query.html) - Query semantic layer

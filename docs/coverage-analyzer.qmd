@@ -315,11 +315,9 @@ GROUP BY o1.status
 ```
 **Extracts**: Single `orders` model with appropriate dimensions
 
-## Patterns NOT Extracted
+## Window Functions
 
-### Window Functions
-
-Window functions are post-aggregation operations and are **intentionally ignored**:
+Window functions have special handling:
 
 ```sql
 SELECT
@@ -331,13 +329,26 @@ FROM orders
 GROUP BY status
 ```
 
-**Extracts**:
-- Base metric: `order_count` (COUNT(*))
-- Ignores: `pct_of_total`, `rank` (window functions)
+**What Gets Extracted**:
+- ✅ Base aggregations: `COUNT(*)` from `order_count`
+- ✅ Base aggregations inside window functions: `COUNT(*)` from `SUM(COUNT(*)) OVER()`
+- ✅ Dimensions from GROUP BY and PARTITION BY: `status`
 
-**Why**: Window functions are transformations applied after aggregation. Model them as:
-- **Derived metrics** if reusable: `pct_of_total`
-- **Table calculations** if one-off: `rank`
+**What Gets Ignored**:
+- ❌ Window calculations: `pct_of_total` (the division and `OVER()` part)
+- ❌ Window-only functions: `rank` (`ROW_NUMBER()` has no base aggregation)
+
+**Why**: Window functions apply transformations *after* aggregation. The analyzer extracts the base data you need (aggregations, dimensions), but the window calculations themselves aren't extracted.
+
+**If you want** `pct_of_total` as a reusable metric, manually add to generated model:
+```yaml
+metrics:
+  - name: pct_of_total
+    type: derived
+    sql: "order_count * 100.0 / SUM(order_count) OVER()"
+```
+
+Or apply as a post-query table calculation for one-off use.
 
 ### CTEs (WITH Clauses)
 

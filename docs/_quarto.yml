@@ -39,6 +39,8 @@ website:
         menu:
           - text: "Overview"
             href: cli.qmd
+          - text: "Coverage Analyzer"
+            href: coverage-analyzer.qmd
           - text: "Workbench"
             href: workbench.qmd
           - text: "MCP Server"
@@ -47,8 +49,6 @@ website:
         menu:
           - text: "Python API"
             href: python-api.qmd
-          - text: "Window Functions & SQL Patterns"
-            href: window-functions.qmd
           - text: "YAML Format"
             href: YAML_FORMAT.md
           - text: "Gotchas"

@@ -25,9 +25,13 @@ class QueryAnalysis:
     derived_metrics: list[tuple[str, str, str]] = field(
         default_factory=list
     )  # (name/alias, sql_expression, table) for calculated metrics
+    cumulative_metrics: list[dict] = field(default_factory=list)  # Cumulative/window function metrics with params
     aggregations_in_derived: set[tuple[str, str, str]] = field(
         default_factory=set
     )  # Aggregations that are part of derived metrics (exclude from SELECT)
+    aggregations_in_cumulative: set[tuple[str, str, str]] = field(
+        default_factory=set
+    )  # Aggregations that are part of cumulative metrics (exclude from base metrics)
     group_by_columns: set[tuple[str, str]] = field(default_factory=set)  # (table, column)
     time_dimensions: list[tuple[str, str, str]] = field(
         default_factory=list
@@ -218,6 +222,7 @@ class CoverageAnalyzer:
             self._extract_group_by(parsed, analysis)
             self._extract_select_dimensions(parsed, analysis)
             self._extract_time_dimensions(parsed, analysis)
+            self._extract_window_functions(parsed, analysis)
             self._extract_joins(parsed, analysis)
             self._extract_relationships(parsed, analysis)
             self._extract_filters(parsed, analysis)
@@ -778,6 +783,179 @@ class CoverageAnalyzer:
 
                 analysis.time_dimensions.append((table_name, col_name, granularity))
 
+    def _extract_window_functions(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
+        """Extract window functions and generate cumulative metric definitions.
+
+        Detects patterns:
+        - Running total: SUM(x) OVER (ORDER BY date)
+        - Rolling window: SUM(x) OVER (ORDER BY date ROWS BETWEEN N PRECEDING AND CURRENT ROW)
+        - Period-to-date: SUM(x) OVER (PARTITION BY DATE_TRUNC('month', date) ORDER BY date)
+        """
+        try:
+            for select in parsed.find_all(exp.Select):
+                for select_expr in select.expressions:
+                    # Get alias if present
+                    metric_name = None
+                if isinstance(select_expr, exp.Alias):
+                    metric_name = select_expr.alias
+                    inner_expr = select_expr.this
+                else:
+                    inner_expr = select_expr
+
+                # Check if this is a window function
+                if not isinstance(inner_expr, exp.Window):
+                    continue
+
+                # Extract the base aggregation inside the window
+                agg_func = inner_expr.this
+                if not isinstance(agg_func, exp.AggFunc):
+                    # Skip non-aggregation window functions (ROW_NUMBER, RANK, etc.)
+                    continue
+
+                # Get aggregation type and column
+                agg_type_name = type(agg_func).__name__.lower()
+                agg_name_map = {
+                    "sum": "sum",
+                    "avg": "avg",
+                    "count": "count",
+                    "min": "min",
+                    "max": "max",
+                }
+                agg_type = agg_name_map.get(agg_type_name, agg_type_name)
+
+                # Extract column from aggregation
+                col_expr = agg_func.this
+                if col_expr is None:
+                    # No column expression - skip this window function
+                    continue
+                elif isinstance(col_expr, exp.Column):
+                    col_name = col_expr.name
+                    table_name = col_expr.table if col_expr.table else ""
+                elif isinstance(col_expr, exp.Star):
+                    col_name = "*"
+                    table_name = ""
+                else:
+                    # Complex expression
+                    col_name = str(col_expr)
+                    table_name = ""
+                    # Try to infer table
+                    columns = list(col_expr.find_all(exp.Column))
+                    if columns:
+                        table_name = columns[0].table if columns[0].table else ""
+
+                # Infer table if not found
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+
+                # Generate base metric reference
+                if agg_type == "count" and col_name == "*":
+                    base_metric_name = "count"
+                elif agg_type == "count_distinct":
+                    base_metric_name = f"{col_name}_count"
+                else:
+                    base_metric_name = f"{agg_type}_{col_name}"
+
+                # Build base metric reference in model.metric format
+                base_metric_ref = f"{table_name}.{base_metric_name}" if table_name else base_metric_name
+
+                # Analyze OVER clause
+                cumulative_params = self._analyze_window_spec(inner_expr, analysis)
+
+                # Generate metric name if not aliased
+                if not metric_name:
+                    if cumulative_params.get("window"):
+                        metric_name = f"rolling_{base_metric_name}"
+                    elif cumulative_params.get("grain_to_date"):
+                        grain = cumulative_params["grain_to_date"]
+                        metric_name = f"{grain}_to_date_{base_metric_name}"
+                    else:
+                        metric_name = f"running_{base_metric_name}"
+
+                # Store cumulative metric info
+                cumulative_metric = {
+                    "name": metric_name,
+                    "base_metric": base_metric_ref,
+                    "table": table_name,
+                    **cumulative_params,
+                }
+
+                analysis.cumulative_metrics.append(cumulative_metric)
+
+                # Mark the base aggregation as being part of a cumulative metric
+                # so it doesn't get added as a standalone metric
+                base_agg_tuple = (agg_type, col_name, table_name)
+                analysis.aggregations_in_cumulative.add(base_agg_tuple)
+        except (AttributeError, TypeError, KeyError):
+            # If there are any issues extracting window functions, just skip them
+            # This ensures the analyzer doesn't fail on complex window function queries
+            pass
+
+    def _analyze_window_spec(self, window_expr: exp.Window, analysis: QueryAnalysis) -> dict:
+        """Analyze the OVER clause to determine cumulative metric parameters.
+
+        Returns:
+            Dictionary with cumulative metric parameters (window, grain_to_date, etc.)
+        """
+        params = {}
+
+        try:
+            # Check for PARTITION BY
+            partition_by = window_expr.args.get("partition_by")
+            if partition_by:
+                # Handle list of partition expressions
+                partition_exprs = partition_by if isinstance(partition_by, list) else [partition_by]
+
+                # Look for DATE_TRUNC or EXTRACT in PARTITION BY
+                for partition_expr in partition_exprs:
+                    if partition_expr is None:
+                        continue
+
+                    # Check for TIMESTAMP_TRUNC (DATE_TRUNC)
+                    if isinstance(partition_expr, exp.TimestampTrunc):
+                        unit_expr = partition_expr.args.get("unit")
+                        if unit_expr:
+                            grain = str(unit_expr).lower().strip("'\"")
+                            params["grain_to_date"] = grain
+                            break
+                    # Check for EXTRACT
+                    elif isinstance(partition_expr, exp.Extract):
+                        part_expr = partition_expr.this
+                        if part_expr:
+                            grain = str(part_expr).lower()
+                            # Map EXTRACT parts to grain_to_date values
+                            grain_map = {
+                                "year": "year",
+                                "quarter": "quarter",
+                                "month": "month",
+                                "week": "week",
+                                "day": "day",
+                            }
+                            if grain in grain_map:
+                                params["grain_to_date"] = grain_map[grain]
+                                break
+
+            # Check for window frame (ROWS/RANGE BETWEEN)
+            frame = window_expr.args.get("spec")
+            if frame:
+                # Look for ROWS BETWEEN N PRECEDING
+                frame_str = str(frame).upper()
+                if "ROWS BETWEEN" in frame_str or "RANGE BETWEEN" in frame_str:
+                    # Try to extract window size
+                    # Pattern: "N PRECEDING" where N is a number
+                    import re
+
+                    match = re.search(r"(\d+)\s+PRECEDING", frame_str)
+                    if match:
+                        window_size = int(match.group(1))
+                        # Store as "N days" (we assume time-based windows)
+                        # This is a simplification - ideally we'd detect the time unit from context
+                        params["window"] = f"{window_size} days"
+        except (AttributeError, TypeError):
+            # If there are any issues parsing the window spec, just return empty params
+            pass
+
+        return params
+
     def _extract_filters(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract WHERE clause filters."""
         for where in parsed.find_all(exp.Where):
@@ -1075,6 +1253,7 @@ class CoverageAnalyzer:
         table_time_dimensions = defaultdict(set)  # (col_name, granularity)
         table_metrics = defaultdict(set)
         table_derived_metrics = defaultdict(list)  # (name, sql_expression)
+        table_cumulative_metrics = defaultdict(list)  # cumulative metric dicts
         table_relationships = defaultdict(list)  # (to_model, type, foreign_key, primary_key)
         metric_aliases = {}  # (table, agg_type, col_name) -> alias
 
@@ -1099,16 +1278,18 @@ class CoverageAnalyzer:
                 if table_name:
                     table_time_dimensions[table_name].add((col_name, granularity))
 
-            # Track metrics from aggregations
+            # Track metrics from aggregations (but skip those in cumulative metrics)
             for agg_type, col_name, table_name in analysis.aggregations:
                 if not table_name and len(analysis.tables) == 1:
                     table_name = list(analysis.tables)[0]
                 if table_name:
-                    table_metrics[table_name].add((agg_type, col_name))
-                    # Track alias if one exists
+                    # Skip if this aggregation is part of a cumulative metric
                     agg_tuple = (agg_type, col_name, table_name)
-                    if agg_tuple in analysis.aggregation_aliases:
-                        metric_aliases[(table_name, agg_type, col_name)] = analysis.aggregation_aliases[agg_tuple]
+                    if agg_tuple not in analysis.aggregations_in_cumulative:
+                        table_metrics[table_name].add((agg_type, col_name))
+                        # Track alias if one exists
+                        if agg_tuple in analysis.aggregation_aliases:
+                            metric_aliases[(table_name, agg_type, col_name)] = analysis.aggregation_aliases[agg_tuple]
 
             # Track derived metrics
             for metric_name, metric_sql, table_name in analysis.derived_metrics:
@@ -1116,6 +1297,14 @@ class CoverageAnalyzer:
                     table_name = list(analysis.tables)[0]
                 if table_name:
                     table_derived_metrics[table_name].append((metric_name, metric_sql))
+
+            # Track cumulative metrics
+            for cumulative_metric in analysis.cumulative_metrics:
+                table_name = cumulative_metric.get("table")
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+                if table_name:
+                    table_cumulative_metrics[table_name].append(cumulative_metric)
 
             # Track relationships
             for from_model, to_model, rel_type, fk_col, pk_col in analysis.relationships:
@@ -1167,43 +1356,49 @@ class CoverageAnalyzer:
             if dims:
                 model_def["dimensions"] = dims
 
-            # Add metrics
-            if table in table_metrics:
+            # Add metrics (base, derived, and cumulative)
+            # Check if there are any metrics to add
+            has_metrics = table in table_metrics or table in table_derived_metrics or table in table_cumulative_metrics
+
+            if has_metrics:
                 metrics = []
                 seen_metrics = set()
-                for agg_type, col_name in sorted(table_metrics[table]):
-                    # Check if we have an alias for this metric
-                    alias_key = (table, agg_type, col_name)
-                    if alias_key in metric_aliases:
-                        metric_name = metric_aliases[alias_key]
-                    else:
-                        # Generate metric name
-                        if agg_type == "count" and col_name == "*":
-                            metric_name = "count"
-                        elif agg_type == "count" and col_name != "*":
-                            # COUNT(column) - use column_count pattern
-                            metric_name = f"{col_name}_count"
-                        elif agg_type == "count_distinct":
-                            metric_name = f"{col_name}_count"
+
+                # Add base metrics
+                if table in table_metrics:
+                    for agg_type, col_name in sorted(table_metrics[table]):
+                        # Check if we have an alias for this metric
+                        alias_key = (table, agg_type, col_name)
+                        if alias_key in metric_aliases:
+                            metric_name = metric_aliases[alias_key]
                         else:
-                            metric_name = f"{agg_type}_{col_name}"
+                            # Generate metric name
+                            if agg_type == "count" and col_name == "*":
+                                metric_name = "count"
+                            elif agg_type == "count" and col_name != "*":
+                                # COUNT(column) - use column_count pattern
+                                metric_name = f"{col_name}_count"
+                            elif agg_type == "count_distinct":
+                                metric_name = f"{col_name}_count"
+                            else:
+                                metric_name = f"{agg_type}_{col_name}"
 
-                    # Avoid duplicates
-                    if metric_name in seen_metrics:
-                        continue
-                    seen_metrics.add(metric_name)
+                        # Avoid duplicates
+                        if metric_name in seen_metrics:
+                            continue
+                        seen_metrics.add(metric_name)
 
-                    metric_def = {
-                        "name": metric_name,
-                        "agg": agg_type,
-                    }
+                        metric_def = {
+                            "name": metric_name,
+                            "agg": agg_type,
+                        }
 
-                    if col_name != "*":
-                        metric_def["sql"] = col_name
-                    else:
-                        metric_def["sql"] = "*"
+                        if col_name != "*":
+                            metric_def["sql"] = col_name
+                        else:
+                            metric_def["sql"] = "*"
 
-                    metrics.append(metric_def)
+                        metrics.append(metric_def)
 
                 # Add derived metrics
                 if table in table_derived_metrics:
@@ -1219,6 +1414,29 @@ class CoverageAnalyzer:
                             "type": "derived",
                         }
                         metrics.append(derived_metric_def)
+
+                # Add cumulative metrics
+                if table in table_cumulative_metrics:
+                    for cumulative_metric in table_cumulative_metrics[table]:
+                        metric_name = cumulative_metric["name"]
+                        # Avoid duplicates
+                        if metric_name in seen_metrics:
+                            continue
+                        seen_metrics.add(metric_name)
+
+                        cumulative_metric_def = {
+                            "name": metric_name,
+                            "type": "cumulative",
+                            "sql": cumulative_metric["base_metric"],
+                        }
+
+                        # Add optional cumulative parameters
+                        if "window" in cumulative_metric:
+                            cumulative_metric_def["window"] = cumulative_metric["window"]
+                        if "grain_to_date" in cumulative_metric:
+                            cumulative_metric_def["grain_to_date"] = cumulative_metric["grain_to_date"]
+
+                        metrics.append(cumulative_metric_def)
 
                 model_def["metrics"] = metrics
 

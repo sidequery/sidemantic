@@ -672,3 +672,141 @@ def test_generate_models_from_nested_subquery():
     assert "dimensions" in orders
     dims = {d["name"]: d for d in orders["dimensions"]}
     assert "status" in dims
+
+
+def test_generate_models_with_running_total():
+    """Test extracting cumulative metrics from running total window functions."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            order_date,
+            SUM(amount) OVER (ORDER BY order_date) as running_total
+        FROM orders
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    assert "orders" in models
+    orders = models["orders"]
+
+    # Should have the cumulative metric
+    metrics = {m["name"]: m for m in orders["metrics"]}
+    assert "running_total" in metrics
+
+    # Should be cumulative type
+    cumulative_metric = metrics["running_total"]
+    assert cumulative_metric["type"] == "cumulative"
+    assert "orders.sum_amount" in cumulative_metric["sql"]
+
+
+def test_generate_models_with_rolling_window():
+    """Test extracting cumulative metrics from rolling window functions."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            order_date,
+            SUM(amount) OVER (
+                ORDER BY order_date
+                ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+            ) as rolling_7day_total
+        FROM orders
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    assert "orders" in models
+    orders = models["orders"]
+
+    # Should have the cumulative metric
+    metrics = {m["name"]: m for m in orders["metrics"]}
+    assert "rolling_7day_total" in metrics
+
+    # Should be cumulative type with window
+    cumulative_metric = metrics["rolling_7day_total"]
+    assert cumulative_metric["type"] == "cumulative"
+    assert "window" in cumulative_metric
+    assert "6 days" in cumulative_metric["window"]
+
+
+def test_generate_models_with_period_to_date():
+    """Test extracting cumulative metrics from period-to-date window functions."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            order_date,
+            SUM(amount) OVER (
+                PARTITION BY DATE_TRUNC('month', order_date)
+                ORDER BY order_date
+            ) as mtd_revenue
+        FROM orders
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    assert "orders" in models
+    orders = models["orders"]
+
+    # Should have the cumulative metric
+    metrics = {m["name"]: m for m in orders.get("metrics", [])}
+    assert "mtd_revenue" in metrics
+
+    # Should be cumulative type with grain_to_date
+    cumulative_metric = metrics["mtd_revenue"]
+    assert cumulative_metric["type"] == "cumulative"
+    assert "grain_to_date" in cumulative_metric
+    assert cumulative_metric["grain_to_date"] == "month"
+
+
+def test_window_functions_ignore_rank_functions():
+    """Test that ROW_NUMBER and other rank functions are ignored."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    # Simpler query without GROUP BY to avoid parsing complexity
+    queries = [
+        """
+        SELECT
+            status,
+            amount,
+            SUM(amount) OVER (ORDER BY status) as total_amount
+        FROM orders
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+
+    # Check that window functions were processed
+    assert len(report.query_analyses) > 0
+    analysis = report.query_analyses[0]
+
+    # Should not have parse errors
+    assert analysis.parse_error is None, f"Parse error: {analysis.parse_error}"
+
+    models = analyzer.generate_models(report)
+
+    # Should create orders model with cumulative metric
+    assert "orders" in models
+    orders = models["orders"]
+
+    # Should have the cumulative metric
+    assert "metrics" in orders
+    metrics = {m["name"]: m for m in orders["metrics"]}
+
+    # Should have cumulative metric for SUM window function
+    assert "total_amount" in metrics
+    assert metrics["total_amount"]["type"] == "cumulative"

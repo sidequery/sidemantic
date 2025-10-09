@@ -315,40 +315,81 @@ GROUP BY o1.status
 ```
 **Extracts**: Single `orders` model with appropriate dimensions
 
-## Window Functions
+## Window Functions and Cumulative Metrics
 
-Window functions have special handling:
+The analyzer detects window function patterns and generates cumulative metric definitions.
+
+### Running Totals
 
 ```sql
 SELECT
-    status,
-    COUNT(*) as order_count,
-    COUNT(*) * 100.0 / SUM(COUNT(*)) OVER() as pct_of_total,
-    ROW_NUMBER() OVER (PARTITION BY status ORDER BY amount DESC) as rank
+    order_date,
+    SUM(amount) OVER (ORDER BY order_date) as running_total
 FROM orders
-GROUP BY status
 ```
 
-**What Gets Extracted**:
-- ✅ Base aggregations: `COUNT(*)` from `order_count`
-- ✅ Base aggregations inside window functions: `COUNT(*)` from `SUM(COUNT(*)) OVER()`
-- ✅ Dimensions from GROUP BY and PARTITION BY: `status`
-
-**What Gets Ignored**:
-- ❌ Window calculations: `pct_of_total` (the division and `OVER()` part)
-- ❌ Window-only functions: `rank` (`ROW_NUMBER()` has no base aggregation)
-
-**Why**: Window functions apply transformations *after* aggregation. The analyzer extracts the base data you need (aggregations, dimensions), but the window calculations themselves aren't extracted.
-
-**If you want** `pct_of_total` as a reusable metric, manually add to generated model:
+**Generates**:
 ```yaml
 metrics:
-  - name: pct_of_total
-    type: derived
-    sql: "order_count * 100.0 / SUM(order_count) OVER()"
+  - name: running_total
+    type: cumulative
+    sql: "orders.sum_amount"
 ```
 
-Or apply as a post-query table calculation for one-off use.
+### Rolling Windows
+
+```sql
+SELECT
+    order_date,
+    SUM(amount) OVER (
+        ORDER BY order_date
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) as rolling_7day_revenue
+FROM orders
+```
+
+**Generates**:
+```yaml
+metrics:
+  - name: rolling_7day_revenue
+    type: cumulative
+    sql: "orders.sum_amount"
+    window: "6 days"
+```
+
+### Period-to-Date
+
+```sql
+SELECT
+    order_date,
+    SUM(amount) OVER (
+        PARTITION BY DATE_TRUNC('month', order_date)
+        ORDER BY order_date
+    ) as mtd_revenue
+FROM orders
+```
+
+**Generates**:
+```yaml
+metrics:
+  - name: mtd_revenue
+    type: cumulative
+    sql: "orders.sum_amount"
+    grain_to_date: "month"
+```
+
+### What Gets Extracted vs. Ignored
+
+**✅ Extracted as Cumulative Metrics**:
+- `SUM/AVG/COUNT/MIN/MAX` with `OVER (ORDER BY ...)`
+- Rolling windows with `ROWS/RANGE BETWEEN`
+- Period-to-date with `PARTITION BY DATE_TRUNC(...)`
+
+**❌ Not Extracted**:
+- Window-only functions: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LAG()`, `LEAD()`
+- Complex window calculations with operators (e.g., `COUNT(*) * 100.0 / SUM(COUNT(*)) OVER()`)
+
+For complex calculations, the base aggregations are still extracted - you can define derived metrics on top of them.
 
 ### CTEs (WITH Clauses)
 

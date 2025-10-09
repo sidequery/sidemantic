@@ -585,6 +585,109 @@ def test_generate_models_with_derived_metrics():
     assert "SUM(total_amount)" in metrics["avg_order_value"]["sql"]
 
 
+def test_extract_relationships_from_joins():
+    """Test that relationships are extracted from JOIN ON conditions."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT c.region, COUNT(o.order_id)
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        GROUP BY c.region
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    # Should extract relationships
+    assert len(analysis.relationships) == 2
+
+    # Check relationships
+    rels_by_table = {}
+    for from_model, to_model, rel_type, fk_col, pk_col in analysis.relationships:
+        rels_by_table[from_model] = (to_model, rel_type, fk_col, pk_col)
+
+    # orders has many_to_one to customers
+    assert "orders" in rels_by_table
+    assert rels_by_table["orders"][0] == "customers"  # to_model
+    assert rels_by_table["orders"][1] == "many_to_one"  # rel_type
+    assert rels_by_table["orders"][2] == "customer_id"  # fk_col
+
+    # customers has one_to_many to orders
+    assert "customers" in rels_by_table
+    assert rels_by_table["customers"][0] == "orders"  # to_model
+    assert rels_by_table["customers"][1] == "one_to_many"  # rel_type
+
+
+def test_generate_models_with_relationships():
+    """Test that generated models include relationships."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT c.name, COUNT(o.order_id)
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.name
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    # Check customers model
+    customers = models["customers"]
+    assert "relationships" in customers
+    cust_rels = {r["name"]: r for r in customers["relationships"]}
+    assert "orders" in cust_rels
+    assert cust_rels["orders"]["type"] == "one_to_many"
+    assert "foreign_key" not in cust_rels["orders"]  # FK is on orders side
+
+    # Check orders model
+    orders = models["orders"]
+    assert "relationships" in orders
+    orders_rels = {r["name"]: r for r in orders["relationships"]}
+    assert "customers" in orders_rels
+    assert orders_rels["customers"]["type"] == "many_to_one"
+    assert orders_rels["customers"]["foreign_key"] == "customer_id"
+
+
+def test_generate_models_with_multiple_joins():
+    """Test relationship extraction with multiple JOINs."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT c.region, p.category, SUM(o.amount)
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        JOIN products p ON o.product_id = p.id
+        GROUP BY c.region, p.category
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    # orders should have relationships to both customers and products
+    orders = models["orders"]
+    assert "relationships" in orders
+    orders_rels = {r["name"]: r for r in orders["relationships"]}
+
+    assert "customers" in orders_rels
+    assert orders_rels["customers"]["type"] == "many_to_one"
+    assert orders_rels["customers"]["foreign_key"] == "customer_id"
+
+    assert "products" in orders_rels
+    assert orders_rels["products"]["type"] == "many_to_one"
+    assert orders_rels["products"]["foreign_key"] == "product_id"
+
+
 def test_rewrite_query_with_derived_metrics():
     """Test that derived metrics appear in rewritten queries without base metrics."""
     layer = SemanticLayer(auto_register=False)

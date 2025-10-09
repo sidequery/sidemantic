@@ -32,6 +32,9 @@ class QueryAnalysis:
     joins: list[tuple[str, str, str, str]] = field(
         default_factory=list
     )  # (from_table, from_alias, to_table, to_alias, join_type, condition)
+    relationships: list[tuple[str, str, str, str, str]] = field(
+        default_factory=list
+    )  # (from_model, to_model, relationship_type, foreign_key, primary_key)
     from_table: str | None = None  # Main FROM table
     from_alias: str | None = None  # Alias for main FROM table
     filters: list[str] = field(default_factory=list)
@@ -147,6 +150,7 @@ class CoverageAnalyzer:
             self._extract_group_by(parsed, analysis)
             self._extract_time_dimensions(parsed, analysis)
             self._extract_joins(parsed, analysis)
+            self._extract_relationships(parsed, analysis)
             self._extract_filters(parsed, analysis)
             self._extract_having(parsed, analysis)
             self._extract_order_by(parsed, analysis)
@@ -331,6 +335,78 @@ class CoverageAnalyzer:
                 from_alias = analysis.from_alias
 
                 analysis.joins.append((from_table, from_alias, to_table, to_alias, join_type, on_clause))
+
+    def _extract_relationships(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
+        """Extract relationships from JOIN ON conditions."""
+        for join in parsed.find_all(exp.Join):
+            if not isinstance(join.this, exp.Table):
+                continue
+
+            to_table = join.this.name
+
+            # Parse ON condition
+            on_clause = join.args.get("on")
+            if not on_clause:
+                continue
+
+            # Handle equality joins (most common)
+            if isinstance(on_clause, exp.EQ):
+                left = on_clause.left
+                right = on_clause.right
+
+                # Both sides should be columns
+                if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+                    continue
+
+                # Resolve table aliases
+                left_table = analysis.table_aliases.get(left.table, left.table) if left.table else ""
+                right_table = analysis.table_aliases.get(right.table, right.table) if right.table else ""
+
+                # Determine which side has the foreign key by checking column names
+                # Foreign keys typically end with _id (e.g., customer_id, product_id)
+
+                left_is_fk = left.name.endswith("_id")
+                right_is_fk = right.name.endswith("_id")
+
+                if left_is_fk and not right_is_fk:
+                    # Left has the FK, right has the PK
+                    fk_table = left_table
+                    fk_column = left.name
+                    pk_table = right_table
+                    pk_column = right.name
+                elif right_is_fk and not left_is_fk:
+                    # Right has the FK, left has the PK
+                    fk_table = right_table
+                    fk_column = right.name
+                    pk_table = left_table
+                    pk_column = left.name
+                else:
+                    # Can't determine from column names, fall back to join direction
+                    # The table being joined TO (to_table) usually has the FK
+                    if right_table == to_table:
+                        fk_table = right_table
+                        fk_column = right.name
+                        pk_table = left_table
+                        pk_column = left.name
+                    elif left_table == to_table:
+                        fk_table = left_table
+                        fk_column = left.name
+                        pk_table = right_table
+                        pk_column = right.name
+                    else:
+                        # Neither side matches the joined table, skip
+                        continue
+
+                # Infer primary key column - if it ends with _id, the actual PK is probably "id"
+                inferred_pk_column = "id" if pk_column.endswith("_id") else pk_column
+
+                # Generate relationships for both directions
+                # FK table has many_to_one relationship to PK table
+                analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, inferred_pk_column))
+
+                # PK table has one_to_many relationship to FK table
+                # For one_to_many, we don't store FK (it's on the other side)
+                analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
 
     def _extract_time_dimensions(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract time dimensions with granularity from DATE_TRUNC, TIMESTAMP_TRUNC, etc."""
@@ -647,6 +723,7 @@ class CoverageAnalyzer:
         table_time_dimensions = defaultdict(set)  # (col_name, granularity)
         table_metrics = defaultdict(set)
         table_derived_metrics = defaultdict(list)  # (name, sql_expression)
+        table_relationships = defaultdict(list)  # (to_model, type, foreign_key, primary_key)
 
         for analysis in report.query_analyses:
             if analysis.parse_error:
@@ -682,6 +759,12 @@ class CoverageAnalyzer:
                     table_name = list(analysis.tables)[0]
                 if table_name:
                     table_derived_metrics[table_name].append((metric_name, metric_sql))
+
+            # Track relationships
+            for from_model, to_model, rel_type, fk_col, pk_col in analysis.relationships:
+                if from_model and to_model:
+                    # Store relationship on the from_model
+                    table_relationships[from_model].append((to_model, rel_type, fk_col, pk_col))
 
         # Generate model definitions
         for table in sorted(all_tables):
@@ -771,6 +854,36 @@ class CoverageAnalyzer:
                         metrics.append(derived_metric_def)
 
                 model_def["metrics"] = metrics
+
+            # Add relationships
+            if table in table_relationships:
+                relationships = []
+                seen_relationships = set()
+
+                for to_model, rel_type, fk_col, pk_col in table_relationships[table]:
+                    # Create unique key to avoid duplicates
+                    rel_key = (to_model, rel_type)
+                    if rel_key in seen_relationships:
+                        continue
+                    seen_relationships.add(rel_key)
+
+                    rel_def = {
+                        "name": to_model,
+                        "type": rel_type,
+                    }
+
+                    # Add foreign_key for many_to_one relationships
+                    if rel_type == "many_to_one" and fk_col:
+                        rel_def["foreign_key"] = fk_col
+
+                    # Optionally add primary_key if it's not the default "id"
+                    if pk_col and pk_col != "id":
+                        rel_def["primary_key"] = pk_col
+
+                    relationships.append(rel_def)
+
+                if relationships:
+                    model_def["relationships"] = relationships
 
             models[model_name] = model_def
 

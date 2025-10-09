@@ -264,3 +264,255 @@ def test_generate_models_multiple_aggregations_same_column():
     assert "avg_amount" in metric_names
     assert "min_amount" in metric_names
     assert "max_amount" in metric_names
+
+
+def test_generate_models_with_date_trunc():
+    """Test extracting time dimensions from DATE_TRUNC."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            DATE_TRUNC('month', order_date) as month,
+            COUNT(*) as count
+        FROM orders
+        GROUP BY DATE_TRUNC('month', order_date)
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    orders = models["orders"]
+
+    # Should have order_date as time dimension
+    assert "dimensions" in orders
+    dims = {d["name"]: d for d in orders["dimensions"]}
+    assert "order_date" in dims
+    assert dims["order_date"]["type"] == "time"
+
+
+def test_generate_rewritten_query_with_date_trunc():
+    """Test rewriting queries with DATE_TRUNC to use granularity syntax."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            DATE_TRUNC('month', order_date),
+            SUM(amount)
+        FROM orders
+        GROUP BY DATE_TRUNC('month', order_date)
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    rewritten = analyzer.generate_rewritten_queries(report)
+
+    sql = rewritten["query_1"]
+
+    # Should use semantic layer granularity syntax
+    assert "orders.order_date__month" in sql
+    assert "orders.sum_amount" in sql
+
+
+def test_generate_rewritten_query_with_having():
+    """Test rewriting queries with HAVING clause."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            category,
+            SUM(revenue)
+        FROM products
+        GROUP BY category
+        HAVING SUM(revenue) > 10000
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    rewritten = analyzer.generate_rewritten_queries(report)
+
+    sql = rewritten["query_1"]
+
+    # Should preserve HAVING clause
+    assert "HAVING" in sql
+    assert "SUM(revenue) > 10000" in sql
+
+
+def test_generate_rewritten_query_with_order_by_limit():
+    """Test rewriting queries with ORDER BY and LIMIT."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            status,
+            COUNT(*)
+        FROM orders
+        GROUP BY status
+        ORDER BY COUNT(*) DESC
+        LIMIT 10
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    rewritten = analyzer.generate_rewritten_queries(report)
+
+    sql = rewritten["query_1"]
+
+    # Should preserve ORDER BY and LIMIT
+    assert "ORDER BY" in sql
+    assert "LIMIT 10" in sql
+
+
+def test_generate_rewritten_query_multi_table():
+    """Test rewriting multi-table queries with JOINs."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            c.region,
+            COUNT(o.order_id)
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        GROUP BY c.region
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    rewritten = analyzer.generate_rewritten_queries(report)
+
+    sql = rewritten["query_1"]
+
+    # Should preserve JOIN with aliases
+    assert "FROM customers c" in sql
+    assert "JOIN orders o" in sql
+    assert "ON c.customer_id = o.customer_id" in sql
+
+    # Should resolve aliases to real table names in SELECT
+    assert "customers.region" in sql
+    assert "orders.order_id_count" in sql
+
+
+def test_generate_rewritten_query_left_join():
+    """Test rewriting LEFT JOIN queries."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            c.name,
+            COUNT(o.id) as order_count
+        FROM customers c
+        LEFT JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.name
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    rewritten = analyzer.generate_rewritten_queries(report)
+
+    sql = rewritten["query_1"]
+
+    # Should preserve LEFT JOIN
+    assert "LEFT JOIN orders o" in sql
+    assert "ON c.id = o.customer_id" in sql
+
+
+def test_generate_rewritten_query_multiple_joins():
+    """Test rewriting queries with multiple JOINs."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            c.region,
+            p.category,
+            SUM(o.amount)
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        JOIN products p ON o.product_id = p.id
+        GROUP BY c.region, p.category
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    rewritten = analyzer.generate_rewritten_queries(report)
+
+    sql = rewritten["query_1"]
+
+    # Should preserve both JOINs
+    assert "FROM customers c" in sql
+    assert "JOIN orders o" in sql
+    assert "JOIN products p" in sql
+
+
+def test_extract_having_clause():
+    """Test that HAVING clauses are extracted."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT category, SUM(amount)
+        FROM products
+        GROUP BY category
+        HAVING SUM(amount) > 1000
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    assert len(analysis.having_clauses) == 1
+    assert "SUM(amount) > 1000" in analysis.having_clauses[0]
+
+
+def test_extract_order_by():
+    """Test that ORDER BY is extracted."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT status, COUNT(*)
+        FROM orders
+        GROUP BY status
+        ORDER BY COUNT(*) DESC, status ASC
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    assert len(analysis.order_by) == 2
+
+
+def test_extract_limit():
+    """Test that LIMIT is extracted."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT status, COUNT(*)
+        FROM orders
+        GROUP BY status
+        LIMIT 20
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    assert analysis.limit == 20

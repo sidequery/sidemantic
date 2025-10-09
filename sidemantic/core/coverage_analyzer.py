@@ -16,11 +16,22 @@ class QueryAnalysis:
 
     query: str
     tables: set[str] = field(default_factory=set)
+    table_aliases: dict[str, str] = field(default_factory=dict)  # alias -> table_name
     columns: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # table -> columns
     aggregations: list[tuple[str, str, str]] = field(default_factory=list)  # (agg_type, column, table)
     group_by_columns: set[tuple[str, str]] = field(default_factory=set)  # (table, column)
-    joins: list[tuple[str, str, str]] = field(default_factory=list)  # (from_table, to_table, condition)
+    time_dimensions: list[tuple[str, str, str]] = field(
+        default_factory=list
+    )  # (table, column, granularity) for DATE_TRUNC etc
+    joins: list[tuple[str, str, str, str]] = field(
+        default_factory=list
+    )  # (from_table, from_alias, to_table, to_alias, join_type, condition)
+    from_table: str | None = None  # Main FROM table
+    from_alias: str | None = None  # Alias for main FROM table
     filters: list[str] = field(default_factory=list)
+    having_clauses: list[str] = field(default_factory=list)
+    order_by: list[str] = field(default_factory=list)
+    limit: int | None = None
     can_rewrite: bool = False
     missing_models: set[str] = field(default_factory=set)
     missing_dimensions: set[tuple[str, str]] = field(default_factory=set)  # (model, dimension)
@@ -127,8 +138,12 @@ class CoverageAnalyzer:
             self._extract_columns(parsed, analysis)
             self._extract_aggregations(parsed, analysis)
             self._extract_group_by(parsed, analysis)
+            self._extract_time_dimensions(parsed, analysis)
             self._extract_joins(parsed, analysis)
             self._extract_filters(parsed, analysis)
+            self._extract_having(parsed, analysis)
+            self._extract_order_by(parsed, analysis)
+            self._extract_limit(parsed, analysis)
 
             # Check coverage and generate suggestions
             self._check_coverage(analysis)
@@ -139,11 +154,22 @@ class CoverageAnalyzer:
         return analysis
 
     def _extract_tables(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract table references."""
+        """Extract table references and aliases."""
+        # Find the main FROM clause
+        from_clause = parsed.find(exp.From)
+        if from_clause and isinstance(from_clause.this, exp.Table):
+            analysis.from_table = from_clause.this.name
+            analysis.from_alias = from_clause.this.alias or None
+            if analysis.from_alias:
+                analysis.table_aliases[analysis.from_alias] = analysis.from_table
+
+        # Collect all tables and their aliases
         for table in parsed.find_all(exp.Table):
             table_name = table.name
             if table_name:
                 analysis.tables.add(table_name)
+                if table.alias:
+                    analysis.table_aliases[table.alias] = table_name
 
     def _extract_columns(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract column references grouped by table."""
@@ -211,20 +237,49 @@ class CoverageAnalyzer:
                         analysis.group_by_columns.add((table_name, col_name))
 
     def _extract_joins(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract JOIN clauses."""
+        """Extract JOIN clauses with proper table and alias tracking."""
         for join in parsed.find_all(exp.Join):
-            # Get joined table
             if isinstance(join.this, exp.Table):
                 to_table = join.this.name
+                to_alias = join.this.alias or None
+
+                # Get join type - sqlglot separates side (LEFT/RIGHT/FULL) from kind (JOIN/OUTER)
+                join_parts = []
+                if join.side:
+                    join_parts.append(join.side)
+                if join.kind:
+                    join_parts.append(join.kind)
+                else:
+                    # If no kind specified, default to JOIN
+                    join_parts.append("JOIN")
+                join_type = " ".join(join_parts)
 
                 # Get ON condition
                 on_clause = str(join.args.get("on", "")) if join.args.get("on") else ""
 
-                # Try to find the "from" table from context
-                # This is a simplification - in practice we'd need more context
-                from_table = list(analysis.tables)[0] if analysis.tables else ""
+                # The from_table is the main FROM table
+                from_table = analysis.from_table or ""
+                from_alias = analysis.from_alias
 
-                analysis.joins.append((from_table, to_table, on_clause))
+                analysis.joins.append((from_table, from_alias, to_table, to_alias, join_type, on_clause))
+
+    def _extract_time_dimensions(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
+        """Extract time dimensions with granularity from DATE_TRUNC, TIMESTAMP_TRUNC, etc."""
+        # Look for TIMESTAMP_TRUNC (sqlglot converts DATE_TRUNC to this)
+        for func in parsed.find_all(exp.TimestampTrunc):
+            # TIMESTAMP_TRUNC(column, granularity) in sqlglot format
+            column_expr = func.this
+            unit_expr = func.args.get("unit")
+
+            if isinstance(column_expr, exp.Column) and unit_expr:
+                col_name = column_expr.name
+                table_name = column_expr.table if column_expr.table else ""
+                granularity = str(unit_expr).lower()
+
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+
+                analysis.time_dimensions.append((table_name, col_name, granularity))
 
     def _extract_filters(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract WHERE clause filters."""
@@ -232,6 +287,30 @@ class CoverageAnalyzer:
             filter_expr = str(where.this)
             if filter_expr:
                 analysis.filters.append(filter_expr)
+
+    def _extract_having(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
+        """Extract HAVING clause."""
+        for having in parsed.find_all(exp.Having):
+            having_expr = str(having.this)
+            if having_expr:
+                analysis.having_clauses.append(having_expr)
+
+    def _extract_order_by(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
+        """Extract ORDER BY clause."""
+        for order in parsed.find_all(exp.Order):
+            for expr in order.expressions:
+                order_expr = str(expr)
+                if order_expr:
+                    analysis.order_by.append(order_expr)
+
+    def _extract_limit(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
+        """Extract LIMIT clause."""
+        for limit in parsed.find_all(exp.Limit):
+            if limit.expression:
+                try:
+                    analysis.limit = int(str(limit.expression))
+                except ValueError:
+                    pass
 
     def _check_coverage(self, analysis: QueryAnalysis) -> None:
         """Check if query can be rewritten and identify gaps."""
@@ -487,6 +566,7 @@ class CoverageAnalyzer:
         # Aggregate all discovered patterns
         all_tables = set()
         table_dimensions = defaultdict(set)
+        table_time_dimensions = defaultdict(set)  # (col_name, granularity)
         table_metrics = defaultdict(set)
 
         for analysis in report.query_analyses:
@@ -502,6 +582,13 @@ class CoverageAnalyzer:
                     table_name = list(analysis.tables)[0]
                 if table_name:
                     table_dimensions[table_name].add(col_name)
+
+            # Track time dimensions
+            for table_name, col_name, granularity in analysis.time_dimensions:
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+                if table_name:
+                    table_time_dimensions[table_name].add((col_name, granularity))
 
             # Track metrics from aggregations
             for agg_type, col_name, table_name in analysis.aggregations:
@@ -522,8 +609,8 @@ class CoverageAnalyzer:
             }
 
             # Add dimensions
+            dims = []
             if table in table_dimensions:
-                dims = []
                 for dim_name in sorted(table_dimensions[table]):
                     dims.append(
                         {
@@ -532,6 +619,21 @@ class CoverageAnalyzer:
                             "type": "categorical",
                         }
                     )
+
+            # Add time dimensions
+            if table in table_time_dimensions:
+                for col_name, _granularity in sorted(table_time_dimensions[table]):
+                    # Only add if not already added as regular dimension
+                    if col_name not in table_dimensions.get(table, set()):
+                        dims.append(
+                            {
+                                "name": col_name,
+                                "sql": col_name,
+                                "type": "time",
+                            }
+                        )
+
+            if dims:
                 model_def["dimensions"] = dims
 
             # Add metrics
@@ -542,6 +644,9 @@ class CoverageAnalyzer:
                     # Generate metric name
                     if agg_type == "count" and col_name == "*":
                         metric_name = "count"
+                    elif agg_type == "count" and col_name != "*":
+                        # COUNT(column) - use column_count pattern
+                        metric_name = f"{col_name}_count"
                     elif agg_type == "count_distinct":
                         metric_name = f"{col_name}_count"
                     else:
@@ -606,29 +711,52 @@ class CoverageAnalyzer:
             if analysis.parse_error:
                 continue
 
+            # Helper to resolve table name from alias
+            def resolve_table(table_or_alias: str) -> str:
+                if not table_or_alias:
+                    return ""
+                # Check if it's an alias
+                if table_or_alias in analysis.table_aliases:
+                    return analysis.table_aliases[table_or_alias]
+                return table_or_alias
+
             # Build SELECT clause with model.dimension and model.metric format
             select_parts = []
 
-            # Add dimensions
+            # Add regular dimensions
             for table_name, col_name in analysis.group_by_columns:
-                if not table_name and len(analysis.tables) == 1:
-                    table_name = list(analysis.tables)[0]
-                select_parts.append(f"{table_name}.{col_name}")
+                # Resolve alias to real table name
+                real_table = resolve_table(table_name)
+                if not real_table and len(analysis.tables) == 1:
+                    real_table = list(analysis.tables)[0]
+                select_parts.append(f"{real_table}.{col_name}")
+
+            # Add time dimensions with granularity
+            for table_name, col_name, granularity in analysis.time_dimensions:
+                real_table = resolve_table(table_name)
+                if not real_table and len(analysis.tables) == 1:
+                    real_table = list(analysis.tables)[0]
+                # Use semantic layer syntax: model.dimension__granularity
+                select_parts.append(f"{real_table}.{col_name}__{granularity}")
 
             # Add metrics
             for agg_type, col_name, table_name in analysis.aggregations:
-                if not table_name and len(analysis.tables) == 1:
-                    table_name = list(analysis.tables)[0]
+                real_table = resolve_table(table_name)
+                if not real_table and len(analysis.tables) == 1:
+                    real_table = list(analysis.tables)[0]
 
                 # Generate metric name
                 if agg_type == "count" and col_name == "*":
                     metric_name = "count"
+                elif agg_type == "count" and col_name != "*":
+                    # COUNT(column) - use column_count pattern
+                    metric_name = f"{col_name}_count"
                 elif agg_type == "count_distinct":
                     metric_name = f"{col_name}_count"
                 else:
                     metric_name = f"{agg_type}_{col_name}"
 
-                select_parts.append(f"{table_name}.{metric_name}")
+                select_parts.append(f"{real_table}.{metric_name}")
 
             if not select_parts:
                 continue
@@ -637,15 +765,55 @@ class CoverageAnalyzer:
             sql = "SELECT\n"
             sql += "    " + ",\n    ".join(select_parts)
 
-            # Determine main table
-            if len(analysis.tables) == 1:
+            # Add FROM clause with JOINs preserved
+            if analysis.joins:
+                # Multi-table query with JOINs
+                from_table = analysis.from_table or ""
+                from_alias = analysis.from_alias
+
+                if from_alias:
+                    sql += f"\nFROM {from_table} {from_alias}"
+                else:
+                    sql += f"\nFROM {from_table}"
+
+                # Add each JOIN
+                for _from_table, _from_alias, to_table, to_alias, join_type, on_clause in analysis.joins:
+                    if to_alias:
+                        sql += f"\n{join_type} {to_table} {to_alias}"
+                    else:
+                        sql += f"\n{join_type} {to_table}"
+
+                    if on_clause:
+                        sql += f" ON {on_clause}"
+
+            elif len(analysis.tables) == 1:
+                # Single table query
                 main_table = list(analysis.tables)[0]
                 sql += f"\nFROM {main_table}"
+            else:
+                # Multi-table query without explicit JOINs
+                tables_str = ", ".join(sorted(analysis.tables))
+                sql += f"\nFROM {tables_str}"
 
             # Add WHERE clause
             if analysis.filters:
-                where_clause = analysis.filters[0]
+                # Combine all filters
+                where_clause = " AND ".join(analysis.filters)
                 sql += f"\nWHERE {where_clause}"
+
+            # Add HAVING clause
+            if analysis.having_clauses:
+                having_clause = " AND ".join(analysis.having_clauses)
+                sql += f"\nHAVING {having_clause}"
+
+            # Add ORDER BY clause
+            if analysis.order_by:
+                order_clause = ", ".join(analysis.order_by)
+                sql += f"\nORDER BY {order_clause}"
+
+            # Add LIMIT clause
+            if analysis.limit:
+                sql += f"\nLIMIT {analysis.limit}"
 
             query_name = f"query_{i}"
             rewritten[query_name] = sql

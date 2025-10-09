@@ -273,6 +273,73 @@ def info(
 
 
 @app.command()
+def coverage(
+    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
+    queries: Path = typer.Option(
+        None, "--queries", "-q", help="Path to file or folder containing SQL queries to analyze"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed analysis for each query"),
+):
+    """
+    Analyze SQL queries for semantic layer coverage.
+
+    Determines which queries can be rewritten using your semantic layer and
+    identifies missing models, dimensions, and metrics.
+
+    Examples:
+      sidemantic coverage models/ --queries queries/
+      sidemantic coverage models/ --queries query.sql
+      sidemantic coverage models/ --queries queries/ --verbose
+    """
+    from sidemantic.core.coverage_analyzer import CoverageAnalyzer
+
+    if not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    if not queries:
+        typer.echo("Error: --queries is required", err=True)
+        typer.echo("Usage: sidemantic coverage <models_dir> --queries <path>", err=True)
+        raise typer.Exit(1)
+
+    if not queries.exists():
+        typer.echo(f"Error: {queries} does not exist", err=True)
+        raise typer.Exit(1)
+
+    try:
+        # Load semantic layer
+        layer = SemanticLayer()
+        load_from_directory(layer, str(directory))
+
+        if not layer.graph.models:
+            typer.echo("Error: No models found in semantic layer", err=True)
+            raise typer.Exit(1)
+
+        # Create analyzer
+        analyzer = CoverageAnalyzer(layer)
+
+        # Analyze queries
+        if queries.is_file():
+            # Single file - load queries from it
+            query_list = queries.read_text().split(";")
+            query_list = [q.strip() for q in query_list if q.strip()]
+            report = analyzer.analyze_queries(query_list)
+        else:
+            # Directory - load all .sql files
+            report = analyzer.analyze_folder(str(queries))
+
+        # Print report
+        analyzer.print_report(report, verbose=verbose)
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        import traceback
+
+        traceback.print_exc()
+        raise typer.Exit(1)
+
+
+@app.command()
 def mcp_serve(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),

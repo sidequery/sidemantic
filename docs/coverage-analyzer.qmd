@@ -252,9 +252,9 @@ metrics:
 **What's ignored**:
 
 - Window-only functions: `ROW_NUMBER()`, `RANK()`, `LAG()`, `LEAD()`
-- Complex window calculations with operators
+- Complex window calculations like `COUNT(*) * 100.0 / SUM(COUNT(*)) OVER()`
 
-For complex calculations, base aggregations are still extracted - define derived metrics on top.
+Base aggregations inside complex calculations are still extracted as regular metrics.
 
 ### Other Patterns
 

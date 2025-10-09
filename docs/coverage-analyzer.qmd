@@ -12,35 +12,16 @@ Migrates existing SQL queries to semantic layer by analyzing queries and generat
 
 ## Quick Start
 
-```python
-from sidemantic import SemanticLayer
-from sidemantic.core.coverage_analyzer import CoverageAnalyzer
+Generate models from your existing queries:
 
-layer = SemanticLayer(auto_register=False)
-analyzer = CoverageAnalyzer(layer)
-
-queries = ["""
-    SELECT status, region, SUM(amount), COUNT(*)
-    FROM orders
-    WHERE status = 'completed'
-    GROUP BY status, region
-"""]
-
-report = analyzer.analyze_queries(queries)
-analyzer.print_report(report, verbose=True)
+```bash
+sidemantic coverage-analyzer analyze queries/ --output-dir models/
 ```
 
-## Generate Models from Queries
+This analyzes SQL files in `queries/` and generates model YAML files in `models/`.
 
-```python
-# Generate model definitions
-models = analyzer.generate_models(report)
+Example output `models/orders.yml`:
 
-# Write YAML files
-analyzer.write_model_files(models, output_dir="models/")
-```
-
-Generated `models/orders.yml`:
 ```yaml
 model:
   name: orders
@@ -48,10 +29,8 @@ model:
 dimensions:
   - name: status
     sql: status
-    type: categorical
   - name: region
     sql: region
-    type: categorical
 metrics:
   - name: sum_amount
     agg: sum
@@ -61,22 +40,22 @@ metrics:
     sql: "*"
 ```
 
-## Rewrite Queries
+Add `--rewrite` to also generate rewritten queries:
 
-```python
-# Generate semantic layer queries
-rewritten = analyzer.generate_rewritten_queries(report)
-analyzer.write_rewritten_queries(rewritten, output_dir="queries/")
+```bash
+sidemantic coverage-analyzer analyze queries/ --output-dir models/ --rewrite
 ```
 
+Original query:
 ```sql
--- Original
 SELECT status, region, SUM(amount), COUNT(*)
 FROM orders
 WHERE status = 'completed'
 GROUP BY status, region
+```
 
--- Rewritten
+Rewritten query:
+```sql
 SELECT orders.status, orders.region, orders.sum_amount, orders.count
 FROM orders
 WHERE status = 'completed'
@@ -304,55 +283,35 @@ Options:
 
 ## Migration Workflow
 
-### 1. Generate Models
+### 1. Analyze queries and generate models
 
 ```bash
-sidemantic coverage-analyzer analyze queries/ --output-dir models/generated/
+sidemantic coverage-analyzer analyze queries/ --output-dir models/generated/ --verbose
 ```
 
-### 2. Review and Refine
+Review generated models in `models/generated/` directory.
 
-```python
-models = analyzer.generate_models(report)
+### 2. Generate rewritten queries
 
-for name, model_def in models.items():
-    print(f"{name}: {len(model_def.get('dimensions', []))} dims, {len(model_def.get('metrics', []))} metrics")
+```bash
+sidemantic coverage-analyzer analyze queries/ --output-dir models/generated/ --rewrite
 ```
 
-### 3. Merge Multiple Analyses
+This creates:
+- Model definitions in `models/generated/`
+- Rewritten queries in `queries_rewritten/`
 
-```python
-report1 = analyzer.analyze_queries(queries_set1)
-report2 = analyzer.analyze_queries(queries_set2)
+### 3. Test rewritten queries
 
-all_analyses = report1.query_analyses + report2.query_analyses
-combined_report = CoverageReport(
-    total_queries=len(all_analyses),
-    parseable_queries=sum(1 for a in all_analyses if not a.parse_error),
-    rewritable_queries=sum(1 for a in all_analyses if a.can_rewrite),
-    query_analyses=all_analyses
-)
+Compare results between original and rewritten queries to ensure correctness.
 
-models = analyzer.generate_models(combined_report)
-```
-
-### 4. Test Rewrites
-
-```python
-rewritten = analyzer.generate_rewritten_queries(report)
-
-for query_name, sql in rewritten.items():
-    original_result = conn.execute(original_queries[query_name]).fetchdf()
-    rewritten_result = conn.execute(sql).fetchdf()
-    assert original_result.equals(rewritten_result)
-```
-
-### 5. Deploy
+### 4. Deploy models
 
 ```bash
 cp models/generated/*.yml models/
-sidemantic load models/
 ```
+
+Load into your semantic layer and start using.
 
 ## Troubleshooting
 
@@ -360,16 +319,13 @@ sidemantic load models/
 
 **Cause**: Missing models, dimensions, or metrics.
 
-**Fix**:
-```python
-# Generate and load models
-models = analyzer.generate_models(report)
-analyzer.write_model_files(models, "models/")
+**Fix**: Generate models from your queries first:
 
-layer = SemanticLayer.from_folder("models/")
-analyzer = CoverageAnalyzer(layer)
-report = analyzer.analyze_queries(queries)  # Higher coverage now
+```bash
+sidemantic coverage-analyzer analyze queries/ --output-dir models/
 ```
+
+Then load those models into your semantic layer before re-analyzing.
 
 ### Dimensions Not Extracted
 
@@ -391,7 +347,7 @@ SELECT status, COUNT(*) FROM orders GROUP BY status
 - Complex conditions
 - Multiple join keys
 
-**Fix**: Provide database connection for FK detection or manually define relationships.
+**Fix**: Manually add relationships to generated models or use simple equality joins in queries.
 
 ### Metric Names Don't Match
 

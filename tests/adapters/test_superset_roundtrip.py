@@ -18,7 +18,7 @@ def test_superset_to_sidemantic_to_superset_roundtrip():
     adapter = SupersetAdapter()
 
     # Import original
-    graph1 = adapter.parse("examples/superset/orders.yaml")
+    graph1 = adapter.parse("tests/fixtures/superset/orders.yaml")
 
     # Export
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -46,7 +46,7 @@ def test_superset_to_cube_conversion():
     cube_adapter = CubeAdapter()
 
     # Import from Superset
-    graph = superset_adapter.parse("examples/superset/orders.yaml")
+    graph = superset_adapter.parse("tests/fixtures/superset/orders.yaml")
 
     # Export to Cube
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -69,7 +69,7 @@ def test_cube_to_superset_conversion():
     superset_adapter = SupersetAdapter()
 
     # Import from Cube
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to Superset
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -89,7 +89,7 @@ def test_superset_to_metricflow_conversion():
     mf_adapter = MetricFlowAdapter()
 
     # Import from Superset
-    graph = superset_adapter.parse("examples/superset/orders.yaml")
+    graph = superset_adapter.parse("tests/fixtures/superset/orders.yaml")
 
     # Export to MetricFlow
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -106,7 +106,7 @@ def test_superset_to_lookml_conversion():
     lookml_adapter = LookMLAdapter()
 
     # Import from Superset
-    graph = superset_adapter.parse("examples/superset/orders.yaml")
+    graph = superset_adapter.parse("tests/fixtures/superset/orders.yaml")
 
     # Export to LookML
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -123,7 +123,7 @@ def test_superset_to_rill_conversion():
     rill_adapter = RillAdapter()
 
     # Import from Superset
-    graph = superset_adapter.parse("examples/superset/orders.yaml")
+    graph = superset_adapter.parse("tests/fixtures/superset/orders.yaml")
 
     # Export to Rill
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -140,7 +140,7 @@ def test_omni_to_superset_conversion():
     superset_adapter = SupersetAdapter()
 
     # Import from Omni
-    graph = omni_adapter.parse("examples/omni/")
+    graph = omni_adapter.parse("tests/fixtures/omni/")
 
     # Export to Superset
     with tempfile.TemporaryDirectory() as tmpdir:

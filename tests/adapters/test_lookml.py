@@ -8,7 +8,7 @@ from sidemantic.adapters.lookml import LookMLAdapter
 def test_lookml_adapter_basic():
     """Test LookML adapter with basic orders example."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/orders.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/orders.lkml"))
 
     # Check models were imported
     assert "orders" in graph.models
@@ -86,7 +86,7 @@ def test_lookml_adapter_basic():
 def test_lookml_adapter_ecommerce():
     """Test LookML adapter with comprehensive ecommerce example."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/ecommerce.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/ecommerce.lkml"))
 
     # Check all models were imported
     assert "orders" in graph.models
@@ -189,7 +189,7 @@ def test_lookml_adapter_ecommerce():
 def test_lookml_adapter_advanced_measures():
     """Test LookML adapter with advanced measures example."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/advanced_measures.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/advanced_measures.lkml"))
 
     # Check models
     assert "sales_analytics" in graph.models
@@ -255,8 +255,8 @@ def test_lookml_adapter_explores():
         tmpdir_path = Path(tmpdir)
 
         # Copy the files we need for this test
-        shutil.copy("examples/lookml/orders.lkml", tmpdir_path / "orders.lkml")
-        shutil.copy("examples/lookml/orders.explore.lkml", tmpdir_path / "orders.explore.lkml")
+        shutil.copy("tests/fixtures/lookml/orders.lkml", tmpdir_path / "orders.lkml")
+        shutil.copy("tests/fixtures/lookml/orders.explore.lkml", tmpdir_path / "orders.explore.lkml")
 
         # Parse the directory
         graph = adapter.parse(tmpdir_path)
@@ -290,8 +290,8 @@ def test_lookml_adapter_explores_multi_join():
         tmpdir_path = Path(tmpdir)
 
         # Copy the ecommerce files
-        shutil.copy("examples/lookml/ecommerce.lkml", tmpdir_path / "ecommerce.lkml")
-        shutil.copy("examples/lookml/ecommerce_explores.lkml", tmpdir_path / "ecommerce_explores.lkml")
+        shutil.copy("tests/fixtures/lookml/ecommerce.lkml", tmpdir_path / "ecommerce.lkml")
+        shutil.copy("tests/fixtures/lookml/ecommerce_explores.lkml", tmpdir_path / "ecommerce_explores.lkml")
 
         # Parse the directory
         graph = adapter.parse(tmpdir_path)
@@ -335,7 +335,7 @@ def test_lookml_adapter_explores_multi_join():
 def test_lookml_adapter_derived_tables():
     """Test LookML adapter with derived tables."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/derived_tables.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/derived_tables.lkml"))
 
     # Check model was created from derived table
     assert "customer_summary" in graph.models
@@ -378,7 +378,7 @@ def test_lookml_adapter_export():
     adapter = LookMLAdapter()
 
     # Parse a simple example
-    graph = adapter.parse(Path("examples/lookml/orders.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/orders.lkml"))
 
     # Export to a temporary file
     import tempfile
@@ -413,7 +413,7 @@ def test_lookml_adapter_export():
 def test_lookml_thelook_orders():
     """Test LookML adapter with real thelook orders example from looker-open-source."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/thelook_orders.view.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/thelook_orders.view.lkml"))
 
     # Check model was imported
     assert "orders" in graph.models
@@ -481,7 +481,7 @@ def test_lookml_thelook_orders():
 def test_lookml_thelook_users():
     """Test LookML adapter with real thelook users example."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/thelook_users.view.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/thelook_users.view.lkml"))
 
     assert "users" in graph.models
     users = graph.get_model("users")
@@ -528,7 +528,7 @@ def test_lookml_thelook_users():
 def test_lookml_thelook_products():
     """Test LookML adapter with real thelook products example."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/thelook_products.view.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/thelook_products.view.lkml"))
 
     assert "products" in graph.models
     products = graph.get_model("products")
@@ -559,7 +559,7 @@ def test_lookml_thelook_products():
 def test_lookml_thelook_order_items():
     """Test LookML adapter with real thelook order_items example."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/thelook_order_items.view.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/thelook_order_items.view.lkml"))
 
     assert "order_items" in graph.models
     order_items = graph.get_model("order_items")
@@ -611,7 +611,7 @@ def test_lookml_thelook_order_items():
 def test_lookml_thelook_inventory_items():
     """Test LookML adapter with real thelook inventory_items example."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/thelook_inventory_items.view.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/thelook_inventory_items.view.lkml"))
 
     assert "inventory_items" in graph.models
     inventory = graph.get_model("inventory_items")
@@ -642,7 +642,7 @@ def test_lookml_thelook_inventory_items():
 def test_lookml_bq_thelook_events():
     """Test LookML adapter with BigQuery thelook events example (compact syntax)."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/bq_thelook_events.view.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/bq_thelook_events.view.lkml"))
 
     assert "events" in graph.models
     events = graph.get_model("events")
@@ -716,7 +716,7 @@ def test_lookml_bq_thelook_events():
 def test_lookml_bq_thelook_inventory_compact():
     """Test LookML adapter with compact syntax (no ${TABLE} references)."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/bq_thelook_inventory.view.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/bq_thelook_inventory.view.lkml"))
 
     assert "inventory_items" in graph.models
     inventory = graph.get_model("inventory_items")
@@ -751,7 +751,7 @@ def test_lookml_bq_thelook_inventory_compact():
 def test_lookml_bq_thelook_distribution_centers():
     """Test LookML adapter with geographic dimensions."""
     adapter = LookMLAdapter()
-    graph = adapter.parse(Path("examples/lookml/bq_thelook_distribution_centers.view.lkml"))
+    graph = adapter.parse(Path("tests/fixtures/lookml/bq_thelook_distribution_centers.view.lkml"))
 
     assert "distribution_centers" in graph.models
     dc = graph.get_model("distribution_centers")
@@ -774,6 +774,59 @@ def test_lookml_bq_thelook_distribution_centers():
     # Check measure
     count_measure = dc.get_metric("count")
     assert count_measure is not None
+
+
+def test_lookml_bq_thelook_derived_table():
+    """Test LookML adapter with derived table using explore_source."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/bq_thelook_derived_table.view.lkml"))
+
+    # Check model was created from derived table with explore_source
+    assert "filtered_lookml_dt" in graph.models
+    filtered_dt = graph.get_model("filtered_lookml_dt")
+
+    # Should not have a table name (it's a derived table)
+    assert filtered_dt.table is None
+
+    # Check dimensions from explore_source
+    age_dim = filtered_dt.get_dimension("age")
+    assert age_dim is not None
+    assert age_dim.type == "numeric"
+
+    people_dim = filtered_dt.get_dimension("people")
+    assert people_dim is not None
+    assert people_dim.type == "numeric"
+
+
+def test_lookml_bq_thelook_user_facts():
+    """Test LookML adapter with user facts derived table."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/bq_thelook_user_facts.view.lkml"))
+
+    # Check model was created
+    assert "user_order_facts" in graph.models
+    user_facts = graph.get_model("user_order_facts")
+
+    # Should not have a table name (it's a derived table)
+    assert user_facts.table is None
+
+    # Check dimensions from explore_source
+    user_id_dim = user_facts.get_dimension("user_id")
+    assert user_id_dim is not None
+
+    lifetime_revenue_dim = user_facts.get_dimension("lifetime_revenue")
+    assert lifetime_revenue_dim is not None
+    assert lifetime_revenue_dim.type == "numeric"
+
+    lifetime_orders_dim = user_facts.get_dimension("lifetime_number_of_orders")
+    assert lifetime_orders_dim is not None
+    assert lifetime_orders_dim.type == "numeric"
+
+    lifetime_categories_dim = user_facts.get_dimension("lifetime_product_categories")
+    assert lifetime_categories_dim is not None
+
+    lifetime_brands_dim = user_facts.get_dimension("lifetime_brands")
+    assert lifetime_brands_dim is not None
 
 
 def test_lookml_period_over_period_import():

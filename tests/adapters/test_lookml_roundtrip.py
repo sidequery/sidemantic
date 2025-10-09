@@ -13,7 +13,7 @@ from sidemantic.adapters.metricflow import MetricFlowAdapter
 def test_import_real_lookml_example():
     """Test importing a real LookML view file."""
     adapter = LookMLAdapter()
-    graph = adapter.parse("examples/lookml/orders.lkml")
+    graph = adapter.parse("tests/fixtures/lookml/orders.lkml")
 
     # Verify models loaded
     assert "orders" in graph.models
@@ -63,7 +63,7 @@ def test_import_real_lookml_example():
 def test_import_lookml_derived_table():
     """Test importing LookML view with derived table."""
     adapter = LookMLAdapter()
-    graph = adapter.parse("examples/lookml/derived_tables.lkml")
+    graph = adapter.parse("tests/fixtures/lookml/derived_tables.lkml")
 
     # Verify model loaded
     assert "customer_summary" in graph.models
@@ -94,7 +94,7 @@ def test_lookml_to_sidemantic_to_lookml_roundtrip():
     """Test that LookML -> Sidemantic -> LookML preserves structure."""
     # Import from LookML
     lookml_adapter = LookMLAdapter()
-    graph = lookml_adapter.parse("examples/lookml/orders.lkml")
+    graph = lookml_adapter.parse("tests/fixtures/lookml/orders.lkml")
 
     # Export back to LookML
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
@@ -132,7 +132,7 @@ def test_lookml_to_cube_conversion():
     """Test converting LookML format to Cube format."""
     # Import from LookML
     lookml_adapter = LookMLAdapter()
-    graph = lookml_adapter.parse("examples/lookml/orders.lkml")
+    graph = lookml_adapter.parse("tests/fixtures/lookml/orders.lkml")
 
     # Export to Cube
     cube_adapter = CubeAdapter()
@@ -168,7 +168,7 @@ def test_lookml_to_metricflow_conversion():
     """Test converting LookML format to MetricFlow format."""
     # Import from LookML
     lookml_adapter = LookMLAdapter()
-    graph = lookml_adapter.parse("examples/lookml/orders.lkml")
+    graph = lookml_adapter.parse("tests/fixtures/lookml/orders.lkml")
 
     # Export to MetricFlow
     mf_adapter = MetricFlowAdapter()
@@ -205,7 +205,7 @@ def test_query_imported_lookml_example():
     from sidemantic import SemanticLayer
 
     adapter = LookMLAdapter()
-    graph = adapter.parse("examples/lookml/orders.lkml")
+    graph = adapter.parse("tests/fixtures/lookml/orders.lkml")
 
     layer = SemanticLayer()
     layer.graph = graph
@@ -237,8 +237,8 @@ def test_lookml_explore_parsing():
         tmpdir_path = Path(tmpdir)
 
         # Copy just the orders files
-        shutil.copy("examples/lookml/orders.lkml", tmpdir_path / "orders.lkml")
-        shutil.copy("examples/lookml/orders.explore.lkml", tmpdir_path / "orders.explore.lkml")
+        shutil.copy("tests/fixtures/lookml/orders.lkml", tmpdir_path / "orders.lkml")
+        shutil.copy("tests/fixtures/lookml/orders.explore.lkml", tmpdir_path / "orders.explore.lkml")
 
         graph = adapter.parse(tmpdir_path)
 
@@ -261,7 +261,7 @@ def test_query_with_time_dimension_lookml():
     from sidemantic import SemanticLayer
 
     adapter = LookMLAdapter()
-    graph = adapter.parse("examples/lookml/orders.lkml")
+    graph = adapter.parse("tests/fixtures/lookml/orders.lkml")
 
     layer = SemanticLayer()
     layer.graph = graph
@@ -277,7 +277,7 @@ def test_roundtrip_real_lookml_example():
     adapter = LookMLAdapter()
 
     # Import original
-    graph1 = adapter.parse("examples/lookml/orders.lkml")
+    graph1 = adapter.parse("tests/fixtures/lookml/orders.lkml")
 
     # Export
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:

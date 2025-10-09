@@ -7,7 +7,7 @@ from sidemantic.core.semantic_layer import SemanticLayer
 
 # Load from native Sidemantic YAML
 print("Loading native Sidemantic YAML...")
-sl = SemanticLayer.from_yaml("examples/sidemantic/orders.yml")
+sl = SemanticLayer.from_yaml("tests/fixtures/sidemantic/orders.yml")
 print(f"Loaded {len(sl.list_models())} models and {len(sl.list_metrics())} metrics")
 
 # Export to Cube format

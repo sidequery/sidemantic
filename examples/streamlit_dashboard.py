@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # dependencies = [
+#   "sidemantic",
 #   "duckdb",
 #   "streamlit",
 #   "plotly",

@@ -8,7 +8,7 @@ from sidemantic.adapters.rill import RillAdapter
 def test_import_real_rill_example():
     """Test importing a real Rill metrics view YAML file."""
     adapter = RillAdapter()
-    graph = adapter.parse("examples/rill/orders.yaml")
+    graph = adapter.parse("tests/fixtures/rill/orders.yaml")
 
     # Verify models loaded
     assert "orders" in graph.models
@@ -37,7 +37,7 @@ def test_import_real_rill_example():
 def test_import_rill_with_derived_measures():
     """Test importing Rill metrics view with derived measures."""
     adapter = RillAdapter()
-    graph = adapter.parse("examples/rill/users.yaml")
+    graph = adapter.parse("tests/fixtures/rill/users.yaml")
 
     assert "users" in graph.models
     users = graph.models["users"]
@@ -54,7 +54,7 @@ def test_import_rill_with_derived_measures():
 def test_import_rill_with_table_reference():
     """Test importing Rill metrics view that references a table."""
     adapter = RillAdapter()
-    graph = adapter.parse("examples/rill/sales.yaml")
+    graph = adapter.parse("tests/fixtures/rill/sales.yaml")
 
     assert "sales" in graph.models
     sales = graph.models["sales"]
@@ -75,7 +75,7 @@ def test_query_imported_rill_example():
     from sidemantic import SemanticLayer
 
     adapter = RillAdapter()
-    graph = adapter.parse("examples/rill/orders.yaml")
+    graph = adapter.parse("tests/fixtures/rill/orders.yaml")
 
     layer = SemanticLayer()
     layer.graph = graph

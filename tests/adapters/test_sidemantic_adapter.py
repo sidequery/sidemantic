@@ -12,7 +12,7 @@ from sidemantic.core.semantic_layer import SemanticLayer
 def test_parse_native_yaml():
     """Test parsing native Sidemantic YAML."""
     adapter = SidemanticAdapter()
-    graph = adapter.parse("examples/sidemantic/orders.yml")
+    graph = adapter.parse("tests/fixtures/sidemantic/orders.yml")
 
     # Verify models
     assert len(graph.models) == 2
@@ -42,7 +42,7 @@ def test_export_native_yaml():
     """Test exporting to native Sidemantic YAML."""
     # Load example
     adapter = SidemanticAdapter()
-    graph = adapter.parse("examples/sidemantic/orders.yml")
+    graph = adapter.parse("tests/fixtures/sidemantic/orders.yml")
 
     # Export to temp file
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -69,7 +69,7 @@ def test_export_native_yaml():
 
 def test_semantic_layer_from_yaml():
     """Test SemanticLayer.from_yaml() convenience method."""
-    sl = SemanticLayer.from_yaml("examples/sidemantic/orders.yml")
+    sl = SemanticLayer.from_yaml("tests/fixtures/sidemantic/orders.yml")
 
     assert sl.list_models() == ["orders", "customers"]
     assert set(sl.list_metrics()) == {"total_revenue", "conversion_rate", "revenue_per_order"}
@@ -77,7 +77,7 @@ def test_semantic_layer_from_yaml():
 
 def test_semantic_layer_to_yaml():
     """Test SemanticLayer.to_yaml() convenience method."""
-    sl = SemanticLayer.from_yaml("examples/sidemantic/orders.yml")
+    sl = SemanticLayer.from_yaml("tests/fixtures/sidemantic/orders.yml")
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)
@@ -98,7 +98,7 @@ def test_semantic_layer_to_yaml():
 def test_adapter_validation():
     """Test adapter validation catches errors."""
     adapter = SidemanticAdapter()
-    graph = adapter.parse("examples/sidemantic/orders.yml")
+    graph = adapter.parse("tests/fixtures/sidemantic/orders.yml")
 
     # Should have no errors
     errors = adapter.validate(graph)

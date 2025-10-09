@@ -18,7 +18,7 @@ def test_rill_to_sidemantic_to_rill_roundtrip():
     adapter = RillAdapter()
 
     # Import original
-    graph1 = adapter.parse("examples/rill/orders.yaml")
+    graph1 = adapter.parse("tests/fixtures/rill/orders.yaml")
 
     # Export
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -45,7 +45,7 @@ def test_rill_to_cube_conversion():
     """Test converting Rill format to Cube format."""
     # Import from Rill
     rill_adapter = RillAdapter()
-    graph = rill_adapter.parse("examples/rill/orders.yaml")
+    graph = rill_adapter.parse("tests/fixtures/rill/orders.yaml")
 
     # Export to Cube
     cube_adapter = CubeAdapter()
@@ -77,7 +77,7 @@ def test_cube_to_rill_conversion():
     """Test converting Cube format to Rill format."""
     # Import from Cube
     cube_adapter = CubeAdapter()
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to Rill
     rill_adapter = RillAdapter()
@@ -104,7 +104,7 @@ def test_rill_to_metricflow_conversion():
     """Test converting Rill format to MetricFlow format."""
     # Import from Rill
     rill_adapter = RillAdapter()
-    graph = rill_adapter.parse("examples/rill/orders.yaml")
+    graph = rill_adapter.parse("tests/fixtures/rill/orders.yaml")
 
     # Export to MetricFlow
     mf_adapter = MetricFlowAdapter()
@@ -136,7 +136,7 @@ def test_rill_to_lookml_conversion():
     """Test converting Rill format to LookML format."""
     # Import from Rill
     rill_adapter = RillAdapter()
-    graph = rill_adapter.parse("examples/rill/orders.yaml")
+    graph = rill_adapter.parse("tests/fixtures/rill/orders.yaml")
 
     # Export to LookML
     lookml_adapter = LookMLAdapter()
@@ -169,7 +169,7 @@ def test_roundtrip_real_rill_example():
     adapter = RillAdapter()
 
     # Import original
-    graph1 = adapter.parse("examples/rill/orders.yaml")
+    graph1 = adapter.parse("tests/fixtures/rill/orders.yaml")
 
     # Export
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -197,7 +197,7 @@ def test_superset_to_rill_conversion():
     rill_adapter = RillAdapter()
 
     # Import from Superset
-    graph = superset_adapter.parse("examples/superset/orders.yaml")
+    graph = superset_adapter.parse("tests/fixtures/superset/orders.yaml")
 
     # Export to Rill
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -214,7 +214,7 @@ def test_omni_to_rill_conversion():
     rill_adapter = RillAdapter()
 
     # Import from Omni
-    graph = omni_adapter.parse("examples/omni/")
+    graph = omni_adapter.parse("tests/fixtures/omni/")
 
     # Export to Rill
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -8,7 +8,7 @@ from sidemantic.adapters.omni import OmniAdapter
 def test_import_real_omni_example():
     """Test importing real Omni view files."""
     adapter = OmniAdapter()
-    graph = adapter.parse("examples/omni/")
+    graph = adapter.parse("tests/fixtures/omni/")
 
     # Verify models loaded
     assert "orders" in graph.models
@@ -54,7 +54,7 @@ def test_import_real_omni_example():
 def test_import_omni_with_timeframes():
     """Test that Omni timeframes are properly imported."""
     adapter = OmniAdapter()
-    graph = adapter.parse("examples/omni/views/orders.yaml")
+    graph = adapter.parse("tests/fixtures/omni/views/orders.yaml")
 
     orders = graph.models["orders"]
 
@@ -62,6 +62,26 @@ def test_import_omni_with_timeframes():
     created_at = next(d for d in orders.dimensions if d.name == "created_at")
     assert created_at.type == "time"
     assert created_at.granularity is not None
+
+
+def test_import_omni_model_relationships():
+    """Test that Omni model.yaml files with relationships are properly imported."""
+    adapter = OmniAdapter()
+    graph = adapter.parse("tests/fixtures/omni/")
+
+    # Verify models loaded
+    assert "orders" in graph.models
+    assert "customers" in graph.models
+
+    # Verify relationships from model.yaml were parsed
+    orders = graph.models["orders"]
+    rel_names = [r.name for r in orders.relationships]
+    assert "customers" in rel_names
+
+    # Check relationship properties
+    customers_rel = next(r for r in orders.relationships if r.name == "customers")
+    assert customers_rel.type == "many_to_one"
+    assert customers_rel.foreign_key == "customer_id"
 
 
 def test_omni_time_comparison_import():

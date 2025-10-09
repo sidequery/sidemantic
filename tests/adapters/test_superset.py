@@ -8,7 +8,7 @@ from sidemantic.adapters.superset import SupersetAdapter
 def test_import_real_superset_example():
     """Test importing real Superset dataset files."""
     adapter = SupersetAdapter()
-    graph = adapter.parse("examples/superset/")
+    graph = adapter.parse("tests/fixtures/superset/")
 
     # Verify models loaded
     assert "orders" in graph.models
@@ -50,7 +50,7 @@ def test_import_real_superset_example():
 def test_import_superset_virtual_dataset():
     """Test that Superset virtual datasets (SQL-based) are imported."""
     adapter = SupersetAdapter()
-    graph = adapter.parse("examples/superset/sales_summary.yaml")
+    graph = adapter.parse("tests/fixtures/superset/sales_summary.yaml")
 
     sales = graph.models["sales_summary"]
 

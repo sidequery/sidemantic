@@ -15,7 +15,7 @@ def test_cube_export():
     """Test export to Cube format."""
     # Load native format
     native_adapter = SidemanticAdapter()
-    graph = native_adapter.parse("examples/sidemantic/orders.yml")
+    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
 
     # Export to Cube
     cube_adapter = CubeAdapter()
@@ -51,7 +51,7 @@ def test_metricflow_export():
     """Test export to MetricFlow format."""
     # Load native format
     native_adapter = SidemanticAdapter()
-    graph = native_adapter.parse("examples/sidemantic/orders.yml")
+    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
 
     # Export to MetricFlow
     mf_adapter = MetricFlowAdapter()
@@ -105,7 +105,7 @@ def test_cube_round_trip():
     """Test Sidemantic -> Cube -> Sidemantic round-trip."""
     # Load native
     native_adapter = SidemanticAdapter()
-    graph = native_adapter.parse("examples/sidemantic/orders.yml")
+    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
 
     # Export to Cube
     cube_adapter = CubeAdapter()
@@ -134,7 +134,7 @@ def test_metricflow_round_trip():
     """Test Sidemantic -> MetricFlow -> Sidemantic round-trip."""
     # Load native
     native_adapter = SidemanticAdapter()
-    graph = native_adapter.parse("examples/sidemantic/orders.yml")
+    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
 
     # Export to MetricFlow
     mf_adapter = MetricFlowAdapter()

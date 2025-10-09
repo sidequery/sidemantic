@@ -15,7 +15,7 @@ def test_hex_to_sidemantic_to_hex_roundtrip():
     """Test that Hex -> Sidemantic -> Hex preserves structure."""
     # Import from Hex
     hex_adapter = HexAdapter()
-    graph = hex_adapter.parse("examples/hex/orders.yml")
+    graph = hex_adapter.parse("tests/fixtures/hex/orders.yml")
 
     # Export back to Hex
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -48,7 +48,7 @@ def test_hex_to_cube_conversion():
     """Test converting Hex format to Cube format."""
     # Import from Hex
     hex_adapter = HexAdapter()
-    graph = hex_adapter.parse("examples/hex/orders.yml")
+    graph = hex_adapter.parse("tests/fixtures/hex/orders.yml")
 
     # Export to Cube
     cube_adapter = CubeAdapter()
@@ -80,7 +80,7 @@ def test_cube_to_hex_conversion():
     """Test converting Cube format to Hex format."""
     # Import from Cube
     cube_adapter = CubeAdapter()
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to Hex
     hex_adapter = HexAdapter()
@@ -112,7 +112,7 @@ def test_hex_to_metricflow_conversion():
     """Test converting Hex format to MetricFlow format."""
     # Import from Hex
     hex_adapter = HexAdapter()
-    graph = hex_adapter.parse("examples/hex/orders.yml")
+    graph = hex_adapter.parse("tests/fixtures/hex/orders.yml")
 
     # Export to MetricFlow
     mf_adapter = MetricFlowAdapter()
@@ -144,7 +144,7 @@ def test_hex_to_lookml_conversion():
     """Test converting Hex format to LookML format."""
     # Import from Hex
     hex_adapter = HexAdapter()
-    graph = hex_adapter.parse("examples/hex/orders.yml")
+    graph = hex_adapter.parse("tests/fixtures/hex/orders.yml")
 
     # Export to LookML
     lookml_adapter = LookMLAdapter()
@@ -177,7 +177,7 @@ def test_roundtrip_real_hex_example():
     adapter = HexAdapter()
 
     # Import original
-    graph1 = adapter.parse("examples/hex/orders.yml")
+    graph1 = adapter.parse("tests/fixtures/hex/orders.yml")
 
     # Export
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:

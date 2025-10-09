@@ -8,7 +8,7 @@ from sidemantic.adapters.hex import HexAdapter
 def test_import_real_hex_example():
     """Test importing real Hex semantic model files."""
     adapter = HexAdapter()
-    graph = adapter.parse("examples/hex/")
+    graph = adapter.parse("tests/fixtures/hex/")
 
     # Verify models loaded
     assert "orders" in graph.models
@@ -54,7 +54,7 @@ def test_import_real_hex_example():
 def test_import_hex_with_relations():
     """Test that Hex relations are properly imported."""
     adapter = HexAdapter()
-    graph = adapter.parse("examples/hex/")
+    graph = adapter.parse("tests/fixtures/hex/")
 
     users = graph.models["users"]
     orgs = graph.models["organizations"]
@@ -73,7 +73,7 @@ def test_import_hex_with_relations():
 def test_import_hex_calculated_dimensions():
     """Test that Hex calculated dimensions (expr_sql) are imported."""
     adapter = HexAdapter()
-    graph = adapter.parse("examples/hex/users.yml")
+    graph = adapter.parse("tests/fixtures/hex/users.yml")
 
     users = graph.models["users"]
 
@@ -88,7 +88,7 @@ def test_query_imported_hex_example():
     from sidemantic import SemanticLayer
 
     adapter = HexAdapter()
-    graph = adapter.parse("examples/hex/orders.yml")
+    graph = adapter.parse("tests/fixtures/hex/orders.yml")
 
     layer = SemanticLayer()
     layer.graph = graph

@@ -12,7 +12,7 @@ from sidemantic.adapters.metricflow import MetricFlowAdapter
 def test_import_real_metricflow_example():
     """Test importing a real dbt MetricFlow schema file."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse("examples/metricflow/semantic_models.yml")
+    graph = adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
 
     # Verify models loaded
     assert "orders" in graph.models
@@ -60,7 +60,7 @@ def test_metricflow_to_sidemantic_to_metricflow_roundtrip():
     """Test that MetricFlow -> Sidemantic -> MetricFlow preserves structure."""
     # Import from MetricFlow
     mf_adapter = MetricFlowAdapter()
-    graph = mf_adapter.parse("examples/metricflow/semantic_models.yml")
+    graph = mf_adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
 
     # Export back to MetricFlow
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -96,7 +96,7 @@ def test_metricflow_to_cube_conversion():
     """Test converting MetricFlow format to Cube format."""
     # Import from MetricFlow
     mf_adapter = MetricFlowAdapter()
-    graph = mf_adapter.parse("examples/metricflow/semantic_models.yml")
+    graph = mf_adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
 
     # Export to Cube
     cube_adapter = CubeAdapter()
@@ -131,7 +131,7 @@ def test_query_imported_metricflow_example():
     from sidemantic import SemanticLayer
 
     adapter = MetricFlowAdapter()
-    graph = adapter.parse("examples/metricflow/semantic_models.yml")
+    graph = adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
 
     layer = SemanticLayer()
     layer.graph = graph
@@ -173,7 +173,7 @@ def test_query_with_filter_metricflow():
     from sidemantic import SemanticLayer
 
     adapter = MetricFlowAdapter()
-    graph = adapter.parse("examples/metricflow/semantic_models.yml")
+    graph = adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
 
     layer = SemanticLayer()
     layer.graph = graph
@@ -190,7 +190,7 @@ def test_roundtrip_real_metricflow_example():
     adapter = MetricFlowAdapter()
 
     # Import original
-    graph1 = adapter.parse("examples/metricflow/semantic_models.yml")
+    graph1 = adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
 
     # Export
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:

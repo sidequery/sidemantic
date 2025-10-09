@@ -18,7 +18,7 @@ def test_omni_to_sidemantic_to_omni_roundtrip():
     adapter = OmniAdapter()
 
     # Import original
-    graph1 = adapter.parse("examples/omni/")
+    graph1 = adapter.parse("tests/fixtures/omni/")
 
     # Export
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -46,7 +46,7 @@ def test_omni_to_cube_conversion():
     cube_adapter = CubeAdapter()
 
     # Import from Omni
-    graph = omni_adapter.parse("examples/omni/")
+    graph = omni_adapter.parse("tests/fixtures/omni/")
 
     # Export to Cube
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -63,7 +63,7 @@ def test_cube_to_omni_conversion():
     omni_adapter = OmniAdapter()
 
     # Import from Cube
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to Omni
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -83,7 +83,7 @@ def test_omni_to_metricflow_conversion():
     mf_adapter = MetricFlowAdapter()
 
     # Import from Omni
-    graph = omni_adapter.parse("examples/omni/")
+    graph = omni_adapter.parse("tests/fixtures/omni/")
 
     # Export to MetricFlow
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -100,7 +100,7 @@ def test_omni_to_lookml_conversion():
     lookml_adapter = LookMLAdapter()
 
     # Import from Omni
-    graph = omni_adapter.parse("examples/omni/")
+    graph = omni_adapter.parse("tests/fixtures/omni/")
 
     # Export to LookML
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -117,7 +117,7 @@ def test_omni_to_superset_conversion():
     superset_adapter = SupersetAdapter()
 
     # Import from Omni
-    graph = omni_adapter.parse("examples/omni/")
+    graph = omni_adapter.parse("tests/fixtures/omni/")
 
     # Export to Superset
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -134,7 +134,7 @@ def test_omni_to_rill_conversion():
     rill_adapter = RillAdapter()
 
     # Import from Omni
-    graph = omni_adapter.parse("examples/omni/")
+    graph = omni_adapter.parse("tests/fixtures/omni/")
 
     # Export to Rill
     with tempfile.TemporaryDirectory() as tmpdir:

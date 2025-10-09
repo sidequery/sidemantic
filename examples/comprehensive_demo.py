@@ -14,22 +14,13 @@ Run with: uv run examples/comprehensive_demo.py
 """
 # /// script
 # dependencies = [
+#   "sidemantic",
 #   "duckdb",
-#   "sqlglot",
-#   "pydantic",
-#   "pyyaml"
 # ]
 # requires-python = ">=3.12"
 # ///
 
-# Add parent directory to path so we can import sidemantic
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import duckdb
-from sidemantic.sql.rewriter import SemanticSQLRewriter
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -37,6 +28,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator import SQLGenerator
+from sidemantic.sql.query_rewriter import QueryRewriter
 
 
 def print_section(title: str):
@@ -198,16 +190,16 @@ def main():
     # =========================================================================
     print_section("4. SQL Rewriter: Write SQL Against Semantic Layer")
 
-    rewriter = SemanticSQLRewriter(graph)
+    rewriter = QueryRewriter(graph)
 
     # Example 1: Simple query without GROUP BY
     print("\nExample 1: Query without GROUP BY")
     user_sql = """
         SELECT
-            status,
+            orders.status,
             total_revenue,
             avg_order_value
-        FROM semantic_layer.orders
+        FROM metrics
     """
     print(f"\nUser writes:\n{user_sql}")
 
@@ -217,25 +209,15 @@ def main():
     results = conn.execute(rewritten).fetchall()
     print_results(results, "Revenue Metrics by Status")
 
-    # Example 2: Join semantic layer with regular table
-    print("\nExample 2: Join semantic layer with regular table")
-
-    # Create a regular table
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS promotions AS
-        SELECT 'completed' AS status, 'Completion Bonus' AS promo_name, 0.10 AS discount
-        UNION ALL
-        SELECT 'pending', 'Pending Discount', 0.05
-    """)
+    # Example 2: Query from single model
+    print("\nExample 2: Query from single model")
 
     user_sql = """
         SELECT
-            o.status,
-            o.total_revenue,
-            p.promo_name,
-            p.discount
-        FROM semantic_layer.orders AS o
-        JOIN promotions AS p ON o.status = p.status
+            orders.status,
+            orders.amount AS revenue,
+            orders.order_count
+        FROM orders
     """
     print(f"\nUser writes:\n{user_sql}")
 
@@ -243,18 +225,17 @@ def main():
     print_sql(rewritten)
 
     results = conn.execute(rewritten).fetchall()
-    print_results(results, "Revenue + Promotions")
+    print_results(results, "Revenue by status from orders model")
 
-    # Example 3: Cross-model join (using Rails relationships)
-    print("\nExample 3: Cross-model join using Rails-like relationships")
+    # Example 3: Cross-model metrics
+    print("\nExample 3: Cross-model metrics using 'metrics' virtual table")
 
     user_sql = """
         SELECT
-            c.name,
-            o.status,
-            o.total_revenue
-        FROM semantic_layer.customers AS c
-        JOIN semantic_layer.orders AS o ON c.customer_id = o.customer_id
+            customers.region,
+            total_revenue,
+            avg_order_value
+        FROM metrics
     """
     print(f"\nUser writes:\n{user_sql}")
 
@@ -262,7 +243,7 @@ def main():
     print_sql(rewritten)
 
     results = conn.execute(rewritten).fetchall()
-    print_results(results, "Customer Revenue (cross-model join)")
+    print_results(results, "Revenue by customer region")
 
     # =========================================================================
     # 5. Generate reusable views

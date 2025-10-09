@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # dependencies = [
+#   "sidemantic",
 #   "duckdb",
+#   "pandas",
 # ]
 # ///
 """Example demonstrating symmetric aggregates for fan-out joins.

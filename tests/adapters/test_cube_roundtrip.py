@@ -17,7 +17,7 @@ from sidemantic.adapters.superset import SupersetAdapter
 def test_import_real_cube_example():
     """Test importing a real Cube.js schema file."""
     adapter = CubeAdapter()
-    graph = adapter.parse("examples/cube/orders.yml")
+    graph = adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Verify models loaded
     assert "orders" in graph.models
@@ -60,7 +60,7 @@ def test_cube_to_sidemantic_to_cube_roundtrip():
     """Test that Cube -> Sidemantic -> Cube preserves structure."""
     # Import from Cube
     cube_adapter = CubeAdapter()
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export back to Cube
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -96,7 +96,7 @@ def test_cube_to_metricflow_conversion():
     """Test converting Cube format to MetricFlow format."""
     # Import from Cube
     cube_adapter = CubeAdapter()
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to MetricFlow
     mf_adapter = MetricFlowAdapter()
@@ -134,7 +134,7 @@ def test_query_imported_cube_example():
     from sidemantic import SemanticLayer
 
     adapter = CubeAdapter()
-    graph = adapter.parse("examples/cube/orders.yml")
+    graph = adapter.parse("tests/fixtures/cube/orders.yml")
 
     layer = SemanticLayer()
     layer.graph = graph
@@ -165,7 +165,7 @@ def test_query_with_time_dimension_cube():
     from sidemantic import SemanticLayer
 
     adapter = CubeAdapter()
-    graph = adapter.parse("examples/cube/orders.yml")
+    graph = adapter.parse("tests/fixtures/cube/orders.yml")
 
     layer = SemanticLayer()
     layer.graph = graph
@@ -181,7 +181,7 @@ def test_roundtrip_real_cube_example():
     adapter = CubeAdapter()
 
     # Import original
-    graph1 = adapter.parse("examples/cube/orders.yml")
+    graph1 = adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -217,7 +217,7 @@ def test_cube_to_lookml_conversion():
     """Test converting Cube format to LookML format."""
     # Import from Cube
     cube_adapter = CubeAdapter()
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to LookML
     lookml_adapter = LookMLAdapter()
@@ -253,7 +253,7 @@ def test_cube_to_hex_conversion():
     """Test converting Cube format to Hex format."""
     # Import from Cube
     cube_adapter = CubeAdapter()
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to Hex
     hex_adapter = HexAdapter()
@@ -285,7 +285,7 @@ def test_cube_to_rill_conversion():
     """Test converting Cube format to Rill format."""
     # Import from Cube
     cube_adapter = CubeAdapter()
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to Rill
     rill_adapter = RillAdapter()
@@ -314,7 +314,7 @@ def test_cube_to_superset_conversion():
     superset_adapter = SupersetAdapter()
 
     # Import from Cube
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to Superset
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -334,7 +334,7 @@ def test_cube_to_omni_conversion():
     omni_adapter = OmniAdapter()
 
     # Import from Cube
-    graph = cube_adapter.parse("examples/cube/orders.yml")
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export to Omni
     with tempfile.TemporaryDirectory() as tmpdir:

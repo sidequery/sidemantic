@@ -10,7 +10,7 @@ from sidemantic.adapters.cube import CubeAdapter
 def test_cube_adapter():
     """Test Cube adapter with example YAML."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/orders.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/orders.yml"))
 
     # Check models were imported
     assert "orders" in graph.models
@@ -48,7 +48,7 @@ def test_cube_adapter():
 def test_cube_adapter_join_discovery():
     """Test that Cube adapter enables join discovery."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/orders.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/orders.yml"))
 
     # Check that relationships were imported
     orders = graph.get_model("orders")
@@ -60,7 +60,7 @@ def test_cube_adapter_join_discovery():
 def test_cube_adapter_pre_aggregations():
     """Test Cube adapter with pre-aggregations."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/orders_with_preagg.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/orders_with_preagg.yml"))
 
     orders = graph.get_model("orders")
     assert orders is not None
@@ -85,7 +85,7 @@ def test_cube_adapter_pre_aggregations():
 def test_cube_adapter_multi_cube():
     """Test Cube adapter with multiple related cubes."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/ecommerce_multi_cube.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/ecommerce_multi_cube.yml"))
 
     # Check all models were imported
     assert "orders" in graph.models
@@ -118,7 +118,7 @@ def test_cube_adapter_multi_cube():
 def test_cube_adapter_segments():
     """Test Cube adapter segment parsing with SQL transformations."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/ecommerce_multi_cube.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/ecommerce_multi_cube.yml"))
 
     # Test orders segments
     orders = graph.get_model("orders")
@@ -141,7 +141,7 @@ def test_cube_adapter_segments():
 def test_cube_adapter_drill_members():
     """Test Cube adapter drill member parsing."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/ecommerce_multi_cube.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/ecommerce_multi_cube.yml"))
 
     orders = graph.get_model("orders")
     count_metric = orders.get_metric("count")
@@ -157,7 +157,7 @@ def test_cube_adapter_drill_members():
 def test_cube_saas_analytics():
     """Test Cube adapter with SaaS analytics example."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/saas_analytics.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/saas_analytics.yml"))
 
     # Check all models were imported
     assert "users" in graph.models
@@ -236,7 +236,7 @@ def test_cube_saas_analytics():
 def test_cube_retail_analytics():
     """Test Cube adapter with retail analytics example."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/retail_analytics.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/retail_analytics.yml"))
 
     # Check all models were imported
     assert "products" in graph.models
@@ -306,7 +306,7 @@ def test_cube_retail_analytics():
 def test_cube_web_analytics():
     """Test Cube adapter with web analytics example."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/web_analytics.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/web_analytics.yml"))
 
     # Check all models were imported
     assert "page_views" in graph.models
@@ -381,7 +381,7 @@ def test_cube_web_analytics():
 def test_cube_financial_analytics():
     """Test Cube adapter with financial analytics example."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/financial_analytics.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/financial_analytics.yml"))
 
     # Check all models were imported
     assert "transactions" in graph.models
@@ -437,7 +437,7 @@ def test_cube_financial_analytics():
 def test_cube_logistics_shipping():
     """Test Cube adapter with logistics/shipping example."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/logistics_shipping.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/logistics_shipping.yml"))
 
     # Check all models were imported
     assert "shipments" in graph.models
@@ -499,7 +499,7 @@ def test_cube_logistics_shipping():
 def test_cube_iot_sensors():
     """Test Cube adapter with IoT/sensor data example."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/iot_sensors.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/iot_sensors.yml"))
 
     # Check all models were imported
     assert "sensor_readings" in graph.models
@@ -563,7 +563,7 @@ def test_cube_iot_sensors():
 def test_cube_healthcare_patients():
     """Test Cube adapter with healthcare analytics example."""
     adapter = CubeAdapter()
-    graph = adapter.parse(Path("examples/cube/healthcare_patients.yml"))
+    graph = adapter.parse(Path("tests/fixtures/cube/healthcare_patients.yml"))
 
     # Check all models were imported
     assert "patients" in graph.models

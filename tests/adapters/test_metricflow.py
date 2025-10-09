@@ -8,7 +8,7 @@ from sidemantic.adapters.metricflow import MetricFlowAdapter
 def test_metricflow_adapter():
     """Test MetricFlow adapter with example YAML."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/semantic_models.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/semantic_models.yml"))
 
     # Check models were imported
     assert "orders" in graph.models
@@ -59,7 +59,7 @@ def test_metricflow_adapter():
 def test_metricflow_adapter_join_discovery():
     """Test that MetricFlow adapter resolves entity names to model names."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/semantic_models.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/semantic_models.yml"))
 
     # MetricFlow uses entity names for relationships
     # The orders model has a relationship to "customer" (entity name)
@@ -92,7 +92,7 @@ def test_metricflow_adapter_join_discovery():
 def test_metricflow_advanced_metrics():
     """Test MetricFlow adapter with comprehensive metric types."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/advanced_metrics.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/advanced_metrics.yml"))
 
     # Check models were imported
     assert "orders" in graph.models
@@ -208,7 +208,7 @@ def test_metricflow_advanced_metrics():
 def test_metricflow_multi_model():
     """Test MetricFlow adapter with multiple related models."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/ecommerce_multi_model.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/ecommerce_multi_model.yml"))
 
     # Check all models were imported
     assert "customers" in graph.models
@@ -291,7 +291,7 @@ def test_metricflow_multi_model():
 def test_metricflow_advanced_dimensions():
     """Test MetricFlow adapter with advanced dimension features."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/advanced_dimensions.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/advanced_dimensions.yml"))
 
     # Check transactions model
     assert "transactions" in graph.models
@@ -403,7 +403,7 @@ def test_metricflow_advanced_dimensions():
 def test_metricflow_aggregation_types():
     """Test that MetricFlow adapter correctly maps all aggregation types."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/advanced_metrics.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/advanced_metrics.yml"))
 
     orders = graph.get_model("orders")
 
@@ -430,7 +430,7 @@ def test_metricflow_aggregation_types():
 def test_metricflow_dimension_types():
     """Test that MetricFlow adapter correctly parses dimension types."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/advanced_dimensions.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/advanced_dimensions.yml"))
 
     transactions = graph.get_model("transactions")
 
@@ -467,7 +467,7 @@ def test_metricflow_dimension_types():
 def test_metricflow_metric_dependencies():
     """Test that MetricFlow adapter correctly parses metric dependencies."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/advanced_metrics.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/advanced_metrics.yml"))
 
     # Derived metrics should have expressions referencing other metrics
     gross_profit = graph.get_metric("order_gross_profit")
@@ -485,7 +485,7 @@ def test_metricflow_metric_dependencies():
 def test_metricflow_coalesce_2023_orders():
     """Test MetricFlow adapter with Coalesce 2023 orders example."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/coalesce_2023_orders.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/coalesce_2023_orders.yml"))
 
     # Check semantic model
     assert "orders" in graph.models
@@ -538,7 +538,7 @@ def test_metricflow_coalesce_2023_orders():
 def test_metricflow_coalesce_2023_customers():
     """Test MetricFlow adapter with Coalesce 2023 customers example."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/coalesce_2023_customers.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/coalesce_2023_customers.yml"))
 
     # Check semantic model
     assert "customers" in graph.models
@@ -583,7 +583,7 @@ def test_metricflow_coalesce_2023_customers():
 def test_metricflow_coalesce_2023_order_items():
     """Test MetricFlow adapter with Coalesce 2023 order items example."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/coalesce_2023_order_items.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/coalesce_2023_order_items.yml"))
 
     # Check semantic model
     assert "order_item" in graph.models
@@ -630,7 +630,7 @@ def test_metricflow_coalesce_2023_order_items():
 def test_metricflow_conversion_metrics():
     """Test MetricFlow adapter with conversion metrics."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/conversion_metrics.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/conversion_metrics.yml"))
 
     # Check semantic model
     assert "user_events" in graph.models
@@ -660,7 +660,7 @@ def test_metricflow_conversion_metrics():
 def test_metricflow_cumulative_grain_to_date():
     """Test MetricFlow adapter with cumulative metrics and grain_to_date."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/cumulative_metrics_grain_to_date.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/cumulative_metrics_grain_to_date.yml"))
 
     # Check semantic model
     assert "revenue_transactions" in graph.models
@@ -705,7 +705,7 @@ def test_metricflow_cumulative_grain_to_date():
 def test_metricflow_jaffle_sl_testing():
     """Test MetricFlow adapter with jaffle-sl-testing order items example."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/jaffle_sl_testing_order_items.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/jaffle_sl_testing_order_items.yml"))
 
     # Check semantic model
     assert "order_items" in graph.models
@@ -747,7 +747,7 @@ def test_metricflow_jaffle_sl_testing():
 def test_metricflow_saved_queries():
     """Test MetricFlow adapter with saved queries example."""
     adapter = MetricFlowAdapter()
-    graph = adapter.parse(Path("examples/metricflow/saved_queries_example.yml"))
+    graph = adapter.parse(Path("tests/fixtures/metricflow/saved_queries_example.yml"))
 
     # Check semantic model
     assert "sales_data" in graph.models

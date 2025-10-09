@@ -54,229 +54,8 @@ def main(
 
 
 @app.command()
-def workbench(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
-    demo: bool = typer.Option(False, "--demo", help="Launch with demo data (multi-format example)"),
-    connection: str = typer.Option(
-        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
-    ),
-    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
-):
-    """
-    Interactive semantic layer workbench with SQL editor and charting.
-
-    Explore models, write SQL queries, and visualize results with interactive charts.
-
-    Examples:
-      sidemantic workbench semantic_models/    # Your own models
-      sidemantic workbench --demo              # Try the demo
-      sidemantic workbench ./models --db data/warehouse.db  # With DuckDB
-      sidemantic workbench ./models --connection "postgres://localhost:5432/db"
-      uvx sidemantic workbench --demo          # Run demo without installing
-    """
-    from sidemantic.workbench import run_workbench
-
-    if demo:
-        import sidemantic
-
-        # Try packaged location first
-        package_dir = Path(sidemantic.__file__).parent
-        demo_dir = package_dir / "examples" / "multi_format_demo"
-
-        # Fall back to dev environment location
-        if not demo_dir.exists():
-            dev_demo_dir = package_dir.parent / "examples" / "multi_format_demo"
-            if dev_demo_dir.exists():
-                demo_dir = dev_demo_dir
-            else:
-                typer.echo("Error: Demo models not found", err=True)
-                typer.echo(f"Tried: {demo_dir}", err=True)
-                typer.echo(f"Tried: {dev_demo_dir}", err=True)
-                raise typer.Exit(1)
-
-        directory = demo_dir
-        run_workbench(directory, demo_mode=True, connection=None)
-    elif not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-    else:
-        # Build connection string from args or config
-        connection_str = None
-        if connection:
-            # Explicit --connection arg provided
-            connection_str = connection
-        elif db:
-            # Explicit --db arg provided
-            connection_str = f"duckdb:///{db.absolute()}"
-        elif _loaded_config and _loaded_config.connection:
-            # Use connection from config
-            connection_str = build_connection_string(_loaded_config)
-
-        # Only pass connection if it's not None
-        if connection_str:
-            run_workbench(directory, connection=connection_str)
-        else:
-            run_workbench(directory)
-
-
-@app.command()
-def tree(
-    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
-):
-    """
-    Alias for 'workbench' command (deprecated).
-    """
-    from sidemantic.workbench import run_workbench
-
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
-    run_workbench(directory)
-
-
-@app.command()
-def validate(
-    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed validation results"),
-):
-    """
-    Validate semantic layer definitions.
-
-    Shows errors, warnings, and optionally detailed info in an interactive view.
-    """
-    from sidemantic.workbench import run_validation
-
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
-    run_validation(directory, verbose=verbose)
-
-
-@app.command()
-def query(
-    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
-    sql: str = typer.Option(..., "--sql", "-q", help="SQL query to execute"),
-    output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
-    connection: str = typer.Option(
-        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
-    ),
-    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
-):
-    """
-    Execute a SQL query and output results as CSV.
-
-    Examples:
-      sidemantic query models/ --sql "SELECT revenue FROM orders"
-      sidemantic query models/ --sql "SELECT * FROM orders" --output results.csv
-      sidemantic query models/ --connection "postgres://localhost:5432/db" --sql "SELECT revenue FROM orders"
-      sidemantic query models/ --db data.duckdb --sql "SELECT revenue FROM orders"
-    """
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
-    try:
-        # Build connection string from args or config
-        connection_str = None
-        if connection:
-            # Explicit --connection arg provided
-            connection_str = connection
-        elif db:
-            # Explicit --db arg provided
-            connection_str = f"duckdb:///{db.absolute()}"
-        elif _loaded_config and _loaded_config.connection:
-            # Use connection from config
-            connection_str = build_connection_string(_loaded_config)
-        else:
-            # Try to find database file in data/
-            data_dir = directory / "data"
-            if data_dir.exists():
-                db_files = list(data_dir.glob("*.db"))
-                if db_files:
-                    connection_str = f"duckdb:///{db_files[0].absolute()}"
-
-        # Load semantic layer (only pass connection if not None)
-        if connection_str:
-            layer = SemanticLayer(connection=connection_str)
-        else:
-            layer = SemanticLayer()
-        load_from_directory(layer, str(directory))
-
-        if not layer.graph.models:
-            typer.echo("Error: No models found", err=True)
-            raise typer.Exit(1)
-
-        # Execute query
-        result = layer.sql(sql)
-
-        # Get results
-        columns = [desc[0] for desc in result.description]
-        rows = result.fetchall()
-
-        # Output as CSV
-        import csv
-        import sys
-
-        if output:
-            with open(output, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(columns)
-                writer.writerows(rows)
-            typer.echo(f"Results written to {output}", err=True)
-        else:
-            writer = csv.writer(sys.stdout)
-            writer.writerow(columns)
-            writer.writerows(rows)
-
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-
-@app.command()
-def info(
-    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
-):
-    """
-    Show quick info about the semantic layer.
-    """
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
-    try:
-        layer = SemanticLayer()
-        load_from_directory(layer, str(directory))
-
-        if not layer.graph.models:
-            typer.echo("No models found")
-            raise typer.Exit(0)
-
-        typer.echo(f"\nSemantic Layer: {directory}\n")
-
-        for model_name, model in sorted(layer.graph.models.items()):
-            typer.echo(f"● {model_name}")
-            typer.echo(f"  Table: {model.table or 'N/A'}")
-            typer.echo(f"  Dimensions: {len(model.dimensions)}")
-            typer.echo(f"  Metrics: {len(model.metrics)}")
-            typer.echo(f"  Relationships: {len(model.relationships)}")
-            if model.relationships:
-                rel_names = [r.name for r in model.relationships]
-                typer.echo(f"  Connected to: {', '.join(rel_names)}")
-            typer.echo()
-
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-
-@app.command()
 def coverage(
-    directory: Path = typer.Argument(
-        None, help="Directory containing semantic layer files (optional if using --generate-models)"
-    ),
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     queries: Path = typer.Option(
         None, "--queries", "-q", help="Path to file or folder containing SQL queries to analyze"
     ),
@@ -297,11 +76,8 @@ def coverage(
     Can also bootstrap a semantic layer from raw SQL queries.
 
     Examples:
-      # Analyze coverage
-      sidemantic coverage models/ --queries queries/
-      sidemantic coverage models/ --queries query.sql --verbose
-
-      # Bootstrap semantic layer from raw queries
+      sidemantic coverage --queries queries/
+      sidemantic coverage models/ --queries queries/ --verbose
       sidemantic coverage --queries raw_queries/ --generate-models output/
     """
     from sidemantic.core.coverage_analyzer import CoverageAnalyzer
@@ -358,11 +134,6 @@ def coverage(
 
     # Coverage analysis mode - compare queries against existing models
     else:
-        if not directory:
-            typer.echo("Error: directory is required when not using --generate-models", err=True)
-            typer.echo("Usage: sidemantic coverage <models_dir> --queries <path>", err=True)
-            raise typer.Exit(1)
-
         if not directory.exists():
             typer.echo(f"Error: Directory {directory} does not exist", err=True)
             raise typer.Exit(1)
@@ -401,6 +172,47 @@ def coverage(
 
 
 @app.command()
+def info(
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+):
+    """
+    Show quick info about the semantic layer.
+
+    Examples:
+      sidemantic info
+      sidemantic info ./models
+    """
+    if not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    try:
+        layer = SemanticLayer()
+        load_from_directory(layer, str(directory))
+
+        if not layer.graph.models:
+            typer.echo("No models found")
+            raise typer.Exit(0)
+
+        typer.echo(f"\nSemantic Layer: {directory}\n")
+
+        for model_name, model in sorted(layer.graph.models.items()):
+            typer.echo(f"● {model_name}")
+            typer.echo(f"  Table: {model.table or 'N/A'}")
+            typer.echo(f"  Dimensions: {len(model.dimensions)}")
+            typer.echo(f"  Metrics: {len(model.metrics)}")
+            typer.echo(f"  Relationships: {len(model.relationships)}")
+            if model.relationships:
+                rel_names = [r.name for r in model.relationships]
+                typer.echo(f"  Connected to: {', '.join(rel_names)}")
+            typer.echo()
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def mcp_serve(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
@@ -413,7 +225,7 @@ def mcp_serve(
     through the Model Context Protocol.
 
     Examples:
-      sidemantic mcp-serve ./models
+      sidemantic mcp-serve
       sidemantic mcp-serve ./models --db data/warehouse.db
       sidemantic mcp-serve --demo
     """
@@ -505,6 +317,88 @@ def mcp_serve(
 
 
 @app.command()
+def query(
+    sql: str = typer.Argument(..., help="SQL query to execute"),
+    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+):
+    """
+    Execute a SQL query and output results as CSV.
+
+    Examples:
+      sidemantic query "SELECT revenue FROM orders"
+      sidemantic query "SELECT * FROM orders" --output results.csv
+      sidemantic query "SELECT * FROM orders" --models ./models
+      sidemantic query "SELECT revenue FROM orders" --connection "postgres://localhost:5432/db"
+      sidemantic query "SELECT revenue FROM orders" --db data.duckdb
+    """
+    if not models.exists():
+        typer.echo(f"Error: Directory {models} does not exist", err=True)
+        raise typer.Exit(1)
+
+    try:
+        # Build connection string from args or config
+        connection_str = None
+        if connection:
+            # Explicit --connection arg provided
+            connection_str = connection
+        elif db:
+            # Explicit --db arg provided
+            connection_str = f"duckdb:///{db.absolute()}"
+        elif _loaded_config and _loaded_config.connection:
+            # Use connection from config
+            connection_str = build_connection_string(_loaded_config)
+        else:
+            # Try to find database file in data/
+            data_dir = models / "data"
+            if data_dir.exists():
+                db_files = list(data_dir.glob("*.db"))
+                if db_files:
+                    connection_str = f"duckdb:///{db_files[0].absolute()}"
+
+        # Load semantic layer (only pass connection if not None)
+        if connection_str:
+            layer = SemanticLayer(connection=connection_str)
+        else:
+            layer = SemanticLayer()
+        load_from_directory(layer, str(models))
+
+        if not layer.graph.models:
+            typer.echo("Error: No models found", err=True)
+            raise typer.Exit(1)
+
+        # Execute query
+        result = layer.sql(sql)
+
+        # Get results
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+
+        # Output as CSV
+        import csv
+        import sys
+
+        if output:
+            with open(output, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(columns)
+                writer.writerows(rows)
+            typer.echo(f"Results written to {output}", err=True)
+        else:
+            writer = csv.writer(sys.stdout)
+            writer.writerow(columns)
+            writer.writerows(rows)
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def serve(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     demo: bool = typer.Option(False, "--demo", help="Use demo data"),
@@ -523,12 +417,12 @@ def serve(
     you to connect with any PostgreSQL client (psql, DBeaver, Tableau, etc.).
 
     Examples:
-      sidemantic serve ./models --port 5433
+      sidemantic serve --port 5433
       sidemantic serve ./models --db data/warehouse.db
-      sidemantic serve ./models --connection "postgres://localhost:5432/analytics"
-      sidemantic serve ./models --connection "bigquery://project/dataset" --port 5433
+      sidemantic serve --connection "postgres://localhost:5432/analytics"
+      sidemantic serve --connection "bigquery://project/dataset" --port 5433
       sidemantic serve --demo
-      sidemantic serve ./models --username user --password secret
+      sidemantic serve --username user --password secret
     """
     import logging
 
@@ -624,6 +518,111 @@ def serve(
 
     # Start the server
     start_server(layer, port=port_resolved, username=username_resolved, password=password_resolved)
+
+
+@app.command(hidden=True)
+def tree(
+    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
+):
+    """
+    Alias for 'workbench' command (deprecated).
+    """
+    from sidemantic.workbench import run_workbench
+
+    if not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    run_workbench(directory)
+
+
+@app.command()
+def validate(
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed validation results"),
+):
+    """
+    Validate semantic layer definitions.
+
+    Shows errors, warnings, and optionally detailed info in an interactive view.
+
+    Examples:
+      sidemantic validate
+      sidemantic validate ./models --verbose
+    """
+    from sidemantic.workbench import run_validation
+
+    if not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    run_validation(directory, verbose=verbose)
+
+
+@app.command()
+def workbench(
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    demo: bool = typer.Option(False, "--demo", help="Launch with demo data (multi-format example)"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+):
+    """
+    Interactive semantic layer workbench with SQL editor and charting.
+
+    Explore models, write SQL queries, and visualize results with interactive charts.
+
+    Examples:
+      sidemantic workbench
+      sidemantic workbench --demo
+      sidemantic workbench ./models --db data/warehouse.db
+      sidemantic workbench ./models --connection "postgres://localhost:5432/db"
+      uvx sidemantic workbench --demo
+    """
+    from sidemantic.workbench import run_workbench
+
+    if demo:
+        import sidemantic
+
+        # Try packaged location first
+        package_dir = Path(sidemantic.__file__).parent
+        demo_dir = package_dir / "examples" / "multi_format_demo"
+
+        # Fall back to dev environment location
+        if not demo_dir.exists():
+            dev_demo_dir = package_dir.parent / "examples" / "multi_format_demo"
+            if dev_demo_dir.exists():
+                demo_dir = dev_demo_dir
+            else:
+                typer.echo("Error: Demo models not found", err=True)
+                typer.echo(f"Tried: {demo_dir}", err=True)
+                typer.echo(f"Tried: {dev_demo_dir}", err=True)
+                raise typer.Exit(1)
+
+        directory = demo_dir
+        run_workbench(directory, demo_mode=True, connection=None)
+    elif not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+    else:
+        # Build connection string from args or config
+        connection_str = None
+        if connection:
+            # Explicit --connection arg provided
+            connection_str = connection
+        elif db:
+            # Explicit --db arg provided
+            connection_str = f"duckdb:///{db.absolute()}"
+        elif _loaded_config and _loaded_config.connection:
+            # Use connection from config
+            connection_str = build_connection_string(_loaded_config)
+
+        # Only pass connection if it's not None
+        if connection_str:
+            run_workbench(directory, connection=connection_str)
+        else:
+            run_workbench(directory)
 
 
 if __name__ == "__main__":

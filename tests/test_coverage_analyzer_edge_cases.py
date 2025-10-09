@@ -602,3 +602,73 @@ def test_generate_models_with_percent_aggregations():
 
     # Should have count and sum_amount at minimum
     assert "count" in metrics or len(metrics) > 0
+
+
+def test_generate_models_from_subquery():
+    """Test extracting models from queries with subqueries in FROM."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            sub.status,
+            COUNT(*) as order_count
+        FROM (
+            SELECT status, amount
+            FROM orders
+            WHERE amount > 100
+        ) sub
+        GROUP BY sub.status
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    # Should extract orders table from subquery
+    assert "orders" in models
+
+    orders = models["orders"]
+
+    # Should have status dimension (resolved from sub.status)
+    dims = {d["name"]: d for d in orders["dimensions"]}
+    assert "status" in dims
+
+    # Should have count metric
+    metrics = {m["name"]: m for m in orders["metrics"]}
+    assert "order_count" in metrics or "count" in metrics
+
+
+def test_generate_models_from_nested_subquery():
+    """Test extracting models from nested subqueries."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            outer_sub.status,
+            AVG(outer_sub.revenue) as avg_revenue
+        FROM (
+            SELECT status, SUM(amount) as revenue
+            FROM orders
+            WHERE amount > 0
+            GROUP BY status
+        ) outer_sub
+        GROUP BY outer_sub.status
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    # Should extract orders table from nested subquery
+    assert "orders" in models
+
+    orders = models["orders"]
+
+    # Should have status dimension (resolved from nested subquery)
+    assert "dimensions" in orders
+    dims = {d["name"]: d for d in orders["dimensions"]}
+    assert "status" in dims

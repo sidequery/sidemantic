@@ -234,14 +234,34 @@ class CoverageAnalyzer:
         return analysis
 
     def _extract_tables(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract table references and aliases."""
+        """Extract table references and aliases, including subquery aliases."""
         # Find the main FROM clause
         from_clause = parsed.find(exp.From)
-        if from_clause and isinstance(from_clause.this, exp.Table):
-            analysis.from_table = from_clause.this.name
-            analysis.from_alias = from_clause.this.alias or None
-            if analysis.from_alias:
-                analysis.table_aliases[analysis.from_alias] = analysis.from_table
+        if from_clause:
+            if isinstance(from_clause.this, exp.Table):
+                analysis.from_table = from_clause.this.name
+                analysis.from_alias = from_clause.this.alias or None
+                if analysis.from_alias:
+                    analysis.table_aliases[analysis.from_alias] = analysis.from_table
+            elif isinstance(from_clause.this, exp.Subquery):
+                # FROM clause is a subquery - extract underlying tables
+                subquery = from_clause.this
+                subquery_alias = subquery.alias
+                if subquery_alias:
+                    # Find tables inside the subquery
+                    inner_tables = list(subquery.find_all(exp.Table))
+                    if len(inner_tables) == 1:
+                        # Single table in subquery - map alias to that table
+                        analysis.from_table = inner_tables[0].name
+                        analysis.from_alias = subquery_alias
+                        analysis.table_aliases[subquery_alias] = inner_tables[0].name
+                        analysis.tables.add(inner_tables[0].name)
+                    elif len(inner_tables) > 1:
+                        # Multiple tables in subquery - can't map to single table
+                        # Just track the tables but leave alias unmapped
+                        for table in inner_tables:
+                            if table.name:
+                                analysis.tables.add(table.name)
 
         # Collect all tables and their aliases
         for table in parsed.find_all(exp.Table):
@@ -250,6 +270,25 @@ class CoverageAnalyzer:
                 analysis.tables.add(table_name)
                 if table.alias:
                     analysis.table_aliases[table.alias] = table_name
+
+        # Handle subqueries in JOIN clauses
+        for join in parsed.find_all(exp.Join):
+            if isinstance(join.this, exp.Subquery):
+                subquery = join.this
+                subquery_alias = subquery.alias
+                if subquery_alias:
+                    # Find tables inside the subquery
+                    inner_tables = list(subquery.find_all(exp.Table))
+                    if len(inner_tables) == 1:
+                        # Single table in subquery - map alias to that table
+                        inner_table = inner_tables[0].name
+                        analysis.table_aliases[subquery_alias] = inner_table
+                        analysis.tables.add(inner_table)
+                    elif len(inner_tables) > 1:
+                        # Multiple tables in subquery
+                        for table in inner_tables:
+                            if table.name:
+                                analysis.tables.add(table.name)
 
     def _extract_columns(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract column references grouped by table.

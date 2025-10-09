@@ -88,7 +88,7 @@ def main():
     )
 
     vega_spec = chart_to_vega(chart)
-    print(f"Chart type: Area")
+    print("Chart type: Area")
     print(f"Data points: {len(data)}")
     print(f"Vega spec keys: {list(vega_spec.keys())}")
     print()
@@ -113,7 +113,7 @@ def main():
     )
 
     vega_spec = chart_to_vega(chart)
-    print(f"Chart type: Bar")
+    print("Chart type: Bar")
     print(f"Data points: {len(data)}")
     print(f"Vega spec keys: {list(vega_spec.keys())}")
     print()
@@ -140,9 +140,9 @@ def main():
     )
 
     vega_spec = chart_to_vega(chart)
-    print(f"Chart type: Line (multiple metrics)")
+    print("Chart type: Line (multiple metrics)")
     print(f"Data points: {len(data)}")
-    print(f"Metrics: revenue, order_count")
+    print("Metrics: revenue, order_count")
     print(f"Vega spec keys: {list(vega_spec.keys())}")
     print()
 

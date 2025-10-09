@@ -392,7 +392,8 @@ def create_chart(
         - metrics: ["orders.total_revenue", "orders.order_count"]
         - chart_type: "line"
     """
-    from sidemantic.charts import chart_to_base64_png, chart_to_vega, create_chart as make_chart
+    from sidemantic.charts import chart_to_base64_png, chart_to_vega
+    from sidemantic.charts import create_chart as make_chart
 
     layer = get_layer()
 

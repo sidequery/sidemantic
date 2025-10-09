@@ -1,7 +1,7 @@
 """MCP server for Sidemantic semantic layer."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -50,6 +50,15 @@ class QueryResult(BaseModel):
 
     sql: str
     rows: list[dict[str, Any]]
+    row_count: int
+
+
+class ChartResult(BaseModel):
+    """Chart generation result."""
+
+    sql: str
+    vega_spec: dict[str, Any]
+    png_base64: str
     row_count: int
 
 
@@ -302,3 +311,166 @@ def run_query(
         rows=row_dicts,
         row_count=len(row_dicts),
     )
+
+
+@mcp.tool()
+def create_chart(
+    dimensions: list[str] | None = None,
+    metrics: list[str] | None = None,
+    where: str | None = None,
+    order_by: list[str] | None = None,
+    limit: int | None = None,
+    chart_type: Literal["auto", "bar", "line", "area", "scatter", "point"] = "auto",
+    title: str | None = None,
+    width: int = 600,
+    height: int = 400,
+) -> ChartResult:
+    """Generate a beautiful chart from a semantic layer query.
+
+    This tool combines query execution with intelligent chart generation, producing
+    professional, publication-quality visualizations with carefully designed aesthetic defaults.
+
+    Chart Type Selection (when chart_type="auto"):
+    - Time dimension + metrics → Line chart (multiple metrics) or Area chart (single metric)
+    - Categorical dimension + metrics → Bar chart
+    - Two numeric dimensions → Scatter plot
+    - Multiple metrics over time → Multi-line chart
+
+    Visual Design:
+    - Modern, accessible color palette (not rainbow defaults)
+    - Clean typography with Inter font family
+    - Minimal gridlines and chartjunk
+    - Responsive tooltips showing all relevant data
+    - Smart axis formatting (currency, percentages, thousands separators)
+    - Professional spacing and proportions
+
+    Query Semantics (same as run_query):
+    - Use model.field_name format for all references
+    - Time dimensions support granularity: dimension__month, dimension__year, etc.
+    - Automatic joins when referencing multiple models
+    - Standard SQL operators in WHERE clause
+
+    Args:
+        dimensions: List of dimension references (e.g., ["orders.created_at__month", "customers.region"])
+        metrics: List of metric references (e.g., ["orders.total_revenue", "orders.order_count"])
+        where: Optional WHERE clause filter using model.field_name syntax
+        order_by: List of fields to order by with optional "asc" or "desc"
+        limit: Optional row limit
+        chart_type: Chart type ("auto" for smart selection, or "bar", "line", "area", "scatter", "point")
+        title: Chart title (auto-generated if not provided)
+        width: Chart width in pixels (default: 600)
+        height: Chart height in pixels (default: 400)
+
+    Returns:
+        Chart result containing:
+        - sql: Generated SQL query
+        - vega_spec: Vega-Lite JSON specification (can be rendered client-side)
+        - png_base64: Base64-encoded PNG image (ready for display)
+        - row_count: Number of data points in the chart
+
+    Examples:
+        Revenue trend over time:
+        - dimensions: ["orders.created_at__month"]
+        - metrics: ["orders.total_revenue"]
+        - title: "Monthly Revenue Trend"
+
+        Top products by revenue:
+        - dimensions: ["products.name"]
+        - metrics: ["orders.total_revenue"]
+        - order_by: ["orders.total_revenue desc"]
+        - limit: 10
+        - chart_type: "bar"
+
+        Revenue by region and status:
+        - dimensions: ["customers.region"]
+        - metrics: ["orders.total_revenue"]
+        - where: "orders.status = 'completed'"
+        - chart_type: "bar"
+
+        Multiple metrics over time:
+        - dimensions: ["orders.created_at__month"]
+        - metrics: ["orders.total_revenue", "orders.order_count"]
+        - chart_type: "line"
+    """
+    from sidemantic.charts import chart_to_base64_png, chart_to_vega, create_chart as make_chart
+
+    layer = get_layer()
+
+    # Compile and execute query (same as run_query)
+    sql = layer.compile(
+        dimensions=dimensions or [],
+        metrics=metrics or [],
+        filters=[where] if where else None,
+        order_by=order_by,
+        limit=limit,
+    )
+
+    result = layer.conn.execute(sql)
+    rows = result.fetchall()
+    columns = [desc[0] for desc in result.description]
+    row_dicts = [dict(zip(columns, row)) for row in rows]
+
+    if not row_dicts:
+        raise ValueError("Query returned no data - cannot create chart")
+
+    # Auto-generate title if not provided
+    if title is None:
+        title = _generate_chart_title(dimensions or [], metrics or [])
+
+    # Create chart with beautiful defaults
+    chart = make_chart(
+        data=row_dicts,
+        chart_type=chart_type,
+        title=title,
+        width=width,
+        height=height,
+    )
+
+    # Export to both formats
+    vega_spec = chart_to_vega(chart)
+    png_base64 = chart_to_base64_png(chart)
+
+    return ChartResult(
+        sql=sql,
+        vega_spec=vega_spec,
+        png_base64=png_base64,
+        row_count=len(row_dicts),
+    )
+
+
+def _generate_chart_title(dimensions: list[str], metrics: list[str]) -> str:
+    """Generate a descriptive title from query parameters."""
+    if not metrics:
+        return "Data Visualization"
+
+    # Format metric names
+    metric_names = [_format_field_name(m) for m in metrics]
+
+    if len(metric_names) == 1:
+        title = metric_names[0]
+    elif len(metric_names) == 2:
+        title = f"{metric_names[0]} & {metric_names[1]}"
+    else:
+        title = f"{metric_names[0]} & {len(metric_names) - 1} more"
+
+    # Add dimension context if present
+    if dimensions:
+        dim_name = _format_field_name(dimensions[0])
+        title = f"{title} by {dim_name}"
+
+    return title
+
+
+def _format_field_name(field: str) -> str:
+    """Format field name for display (remove model prefix, format as title)."""
+    # Remove model prefix
+    if "." in field:
+        _, field = field.rsplit(".", 1)
+
+    # Handle granularity suffix
+    if "__" in field:
+        base, granularity = field.rsplit("__", 1)
+        field = f"{base} ({granularity})"
+
+    # Convert to title case
+    return field.replace("_", " ").title()

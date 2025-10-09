@@ -35,6 +35,8 @@ dev = [
 serve = [
     "riffq>=0.1.0",
     "pyarrow>=14.0.0",
+    "altair>=5.0.0",
+    "vl-convert-python>=1.0.0",
 ]
 postgres = [
     "psycopg[binary]>=3.0.0",

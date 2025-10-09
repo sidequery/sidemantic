@@ -714,3 +714,124 @@ def test_rewrite_query_with_derived_metrics():
     # Should NOT include base metrics in SELECT
     assert "orders.sum_revenue" not in sql
     assert "orders.count" not in sql
+
+
+def test_information_schema_relationship_detection():
+    """Test that relationships are detected using information_schema."""
+    import duckdb
+
+    # Create in-memory database with FK constraints
+    con = duckdb.connect(":memory:")
+
+    con.execute("""
+        CREATE TABLE customers (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR,
+            region VARCHAR
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            customer_id INTEGER,
+            amount DECIMAL,
+            status VARCHAR,
+            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        )
+    """)
+
+    # Create analyzer with connection
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer, connection=con)
+
+    # Verify schema metadata was loaded
+    assert "customers" in analyzer.primary_keys
+    assert "id" in analyzer.primary_keys["customers"]
+    assert ("orders", "customer_id") in analyzer.foreign_keys
+    assert analyzer.foreign_keys[("orders", "customer_id")] == ("customers", "id")
+
+    # Analyze a query
+    queries = [
+        """
+        SELECT c.region, COUNT(o.id)
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.region
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    # Should extract relationships using information_schema
+    assert len(analysis.relationships) == 2
+
+    # Verify correct FK/PK detection
+    rels_by_table = {}
+    for from_model, to_model, rel_type, fk_col, pk_col in analysis.relationships:
+        if rel_type == "many_to_one":
+            rels_by_table[from_model] = (to_model, rel_type, fk_col, pk_col)
+
+    # orders has many_to_one to customers with correct PK
+    assert "orders" in rels_by_table
+    assert rels_by_table["orders"][0] == "customers"
+    assert rels_by_table["orders"][2] == "customer_id"
+    assert rels_by_table["orders"][3] == "id"  # PK from information_schema, not inferred
+
+    con.close()
+
+
+def test_information_schema_column_inference():
+    """Test unqualified column inference using information_schema."""
+    import duckdb
+
+    # Create in-memory database
+    con = duckdb.connect(":memory:")
+
+    con.execute("""
+        CREATE TABLE customers (
+            id INTEGER,
+            name VARCHAR,
+            region VARCHAR
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE orders (
+            id INTEGER,
+            customer_id INTEGER,
+            amount DECIMAL
+        )
+    """)
+
+    # Create analyzer with connection
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer, connection=con)
+
+    # Verify column metadata was loaded
+    assert "region" in analyzer.table_columns["customers"]
+    assert "amount" in analyzer.table_columns["orders"]
+
+    # Analyze query with unqualified columns
+    queries = [
+        """
+        SELECT region, SUM(amount)
+        FROM customers
+        JOIN orders ON customers.id = orders.customer_id
+        GROUP BY region
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    # Should infer that 'region' belongs to 'customers'
+    assert "customers" in analysis.columns
+    assert "region" in analysis.columns["customers"]
+
+    # Should infer that 'amount' belongs to 'orders'
+    assert "orders" in analysis.columns
+    assert "amount" in analysis.columns["orders"]
+
+    con.close()

@@ -74,13 +74,16 @@ class CoverageAnalyzer:
     - How to rewrite queries using the semantic layer
     """
 
-    def __init__(self, layer: SemanticLayer):
+    def __init__(self, layer: SemanticLayer, connection=None):
         """Initialize analyzer.
 
         Args:
             layer: Semantic layer to analyze coverage for
+            connection: Optional database connection for querying information_schema.
+                       Should have an execute() method that returns results.
         """
         self.layer = layer
+        self.connection = connection
         self.analyses: list[QueryAnalysis] = []
 
         # Build mapping from table names to model names
@@ -88,6 +91,63 @@ class CoverageAnalyzer:
         for model_name, model in layer.graph.models.items():
             if model.table:
                 self.table_to_model[model.table] = model_name
+
+        # Cache information_schema data if connection available
+        self.primary_keys: dict[str, set[str]] = {}  # table -> pk columns
+        self.foreign_keys: dict[tuple[str, str], tuple[str, str]] = {}  # (fk_table, fk_col) -> (pk_table, pk_col)
+        self.table_columns: dict[str, set[str]] = defaultdict(set)  # table -> columns
+
+        if self.connection:
+            self._load_schema_metadata()
+
+    def _load_schema_metadata(self) -> None:
+        """Load schema metadata from information_schema."""
+        try:
+            # Load primary keys
+            pk_query = """
+                SELECT table_name, column_name
+                FROM information_schema.key_column_usage
+                WHERE constraint_name IN (
+                    SELECT constraint_name
+                    FROM information_schema.table_constraints
+                    WHERE constraint_type = 'PRIMARY KEY'
+                )
+            """
+            pk_results = self.connection.execute(pk_query).fetchall()
+            for table_name, column_name in pk_results:
+                self.primary_keys.setdefault(table_name, set()).add(column_name)
+
+            # Load foreign keys
+            # DuckDB information_schema uses referential_constraints to map FK to PK constraints
+            fk_query = """
+                SELECT
+                    fk_kcu.table_name AS fk_table,
+                    fk_kcu.column_name AS fk_column,
+                    pk_kcu.table_name AS pk_table,
+                    pk_kcu.column_name AS pk_column
+                FROM information_schema.referential_constraints rc
+                JOIN information_schema.key_column_usage fk_kcu
+                    ON rc.constraint_name = fk_kcu.constraint_name
+                JOIN information_schema.key_column_usage pk_kcu
+                    ON rc.unique_constraint_name = pk_kcu.constraint_name
+            """
+            fk_results = self.connection.execute(fk_query).fetchall()
+            for fk_table, fk_column, pk_table, pk_column in fk_results:
+                self.foreign_keys[(fk_table, fk_column)] = (pk_table, pk_column)
+
+            # Load all columns for each table
+            col_query = """
+                SELECT table_name, column_name
+                FROM information_schema.columns
+            """
+            col_results = self.connection.execute(col_query).fetchall()
+            for table_name, column_name in col_results:
+                self.table_columns[table_name].add(column_name)
+
+        except Exception as e:
+            # If information_schema queries fail, just continue without metadata
+            # (will fall back to pattern-based detection)
+            print(f"Warning: Could not load schema metadata: {e}")
 
     def analyze_queries(self, queries: list[str]) -> CoverageReport:
         """Analyze a list of SQL queries.
@@ -183,13 +243,66 @@ class CoverageAnalyzer:
                     analysis.table_aliases[table.alias] = table_name
 
     def _extract_columns(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract column references grouped by table."""
+        """Extract column references grouped by table.
+
+        Handles both qualified (table.column) and unqualified (column) references.
+        For unqualified columns, attempts to infer table using information_schema.
+        """
         for col in parsed.find_all(exp.Column):
             col_name = col.name
             table_name = col.table if col.table else None
 
-            if col_name and table_name:
-                analysis.columns[table_name].add(col_name)
+            if not col_name:
+                continue
+
+            # If column has explicit table qualifier, use it
+            if table_name:
+                # Resolve alias to real table name
+                real_table = analysis.table_aliases.get(table_name, table_name)
+                analysis.columns[real_table].add(col_name)
+            else:
+                # Unqualified column - try to infer table
+                inferred_table = self._infer_table_for_column(col_name, analysis)
+                if inferred_table:
+                    analysis.columns[inferred_table].add(col_name)
+
+    def _infer_table_for_column(self, col_name: str, analysis: QueryAnalysis) -> str | None:
+        """Infer which table an unqualified column belongs to.
+
+        Uses information_schema data if available, otherwise falls back to heuristics.
+
+        Args:
+            col_name: Column name to infer table for
+            analysis: Current query analysis
+
+        Returns:
+            Table name or None if can't be inferred
+        """
+        # Get tables involved in this query
+        query_tables = list(analysis.tables)
+
+        if not query_tables:
+            return None
+
+        # If only one table in query, must be that table
+        if len(query_tables) == 1:
+            return query_tables[0]
+
+        # Use information_schema to find which tables have this column
+        if self.table_columns:
+            matching_tables = [t for t in query_tables if col_name in self.table_columns.get(t, set())]
+
+            # If exactly one table in the query has this column, use it
+            if len(matching_tables) == 1:
+                return matching_tables[0]
+
+            # If multiple tables have it, prefer the FROM table (if available)
+            if len(matching_tables) > 1 and analysis.from_table:
+                if analysis.from_table in matching_tables:
+                    return analysis.from_table
+
+        # Fall back to FROM table if we can't determine
+        return analysis.from_table
 
     def _extract_aggregations(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract aggregation functions using sqlglot's AggFunc base class."""
@@ -337,7 +450,10 @@ class CoverageAnalyzer:
                 analysis.joins.append((from_table, from_alias, to_table, to_alias, join_type, on_clause))
 
     def _extract_relationships(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract relationships from JOIN ON conditions."""
+        """Extract relationships from JOIN ON conditions.
+
+        Uses information_schema data if available, falls back to pattern matching.
+        """
         for join in parsed.find_all(exp.Join):
             if not isinstance(join.this, exp.Table):
                 continue
@@ -362,47 +478,67 @@ class CoverageAnalyzer:
                 left_table = analysis.table_aliases.get(left.table, left.table) if left.table else ""
                 right_table = analysis.table_aliases.get(right.table, right.table) if right.table else ""
 
-                # Determine which side has the foreign key by checking column names
-                # Foreign keys typically end with _id (e.g., customer_id, product_id)
+                # Try information_schema first
+                fk_table = None
+                fk_column = None
+                pk_table = None
+                pk_column = None
 
-                left_is_fk = left.name.endswith("_id")
-                right_is_fk = right.name.endswith("_id")
-
-                if left_is_fk and not right_is_fk:
-                    # Left has the FK, right has the PK
+                # Check if left side is a known FK
+                if (left_table, left.name) in self.foreign_keys:
+                    pk_table, pk_column = self.foreign_keys[(left_table, left.name)]
                     fk_table = left_table
                     fk_column = left.name
-                    pk_table = right_table
-                    pk_column = right.name
-                elif right_is_fk and not left_is_fk:
-                    # Right has the FK, left has the PK
+                # Check if right side is a known FK
+                elif (right_table, right.name) in self.foreign_keys:
+                    pk_table, pk_column = self.foreign_keys[(right_table, right.name)]
                     fk_table = right_table
                     fk_column = right.name
-                    pk_table = left_table
-                    pk_column = left.name
-                else:
-                    # Can't determine from column names, fall back to join direction
-                    # The table being joined TO (to_table) usually has the FK
-                    if right_table == to_table:
-                        fk_table = right_table
-                        fk_column = right.name
-                        pk_table = left_table
-                        pk_column = left.name
-                    elif left_table == to_table:
+
+                # Fall back to pattern matching if information_schema didn't help
+                if not fk_table:
+                    # Determine which side has the foreign key by checking column names
+                    # Foreign keys typically end with _id (e.g., customer_id, product_id)
+                    left_is_fk = left.name.endswith("_id")
+                    right_is_fk = right.name.endswith("_id")
+
+                    if left_is_fk and not right_is_fk:
+                        # Left has the FK, right has the PK
                         fk_table = left_table
                         fk_column = left.name
                         pk_table = right_table
                         pk_column = right.name
+                    elif right_is_fk and not left_is_fk:
+                        # Right has the FK, left has the PK
+                        fk_table = right_table
+                        fk_column = right.name
+                        pk_table = left_table
+                        pk_column = left.name
                     else:
-                        # Neither side matches the joined table, skip
-                        continue
+                        # Can't determine from column names, fall back to join direction
+                        # The table being joined TO (to_table) usually has the FK
+                        if right_table == to_table:
+                            fk_table = right_table
+                            fk_column = right.name
+                            pk_table = left_table
+                            pk_column = left.name
+                        elif left_table == to_table:
+                            fk_table = left_table
+                            fk_column = left.name
+                            pk_table = right_table
+                            pk_column = right.name
+                        else:
+                            # Neither side matches the joined table, skip
+                            continue
 
-                # Infer primary key column - if it ends with _id, the actual PK is probably "id"
-                inferred_pk_column = "id" if pk_column.endswith("_id") else pk_column
+                # Infer primary key column if not from information_schema
+                if pk_column and not self.foreign_keys:
+                    # If it ends with _id, the actual PK is probably "id"
+                    pk_column = "id" if pk_column.endswith("_id") else pk_column
 
                 # Generate relationships for both directions
                 # FK table has many_to_one relationship to PK table
-                analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, inferred_pk_column))
+                analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
 
                 # PK table has one_to_many relationship to FK table
                 # For one_to_many, we don't store FK (it's on the other side)

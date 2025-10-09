@@ -516,3 +516,98 @@ def test_extract_limit():
     analysis = report.query_analyses[0]
 
     assert analysis.limit == 20
+
+
+def test_extract_derived_metrics():
+    """Test that derived metrics are extracted from expressions."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            status,
+            SUM(total_amount) / COUNT(*) as avg_order_value,
+            SUM(revenue) / COUNT(DISTINCT customer_id) as revenue_per_customer,
+            COUNT(*) * 100 as count_pct
+        FROM orders
+        GROUP BY status
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    # Should extract derived metrics
+    assert len(analysis.derived_metrics) == 3
+    metric_names = {m[0] for m in analysis.derived_metrics}
+    assert "avg_order_value" in metric_names
+    assert "revenue_per_customer" in metric_names
+    assert "count_pct" in metric_names
+
+    # Should still have base aggregations for model generation
+    assert len(analysis.aggregations) > 0
+
+    # Base aggregations should be marked as part of derived metrics
+    assert len(analysis.aggregations_in_derived) > 0
+
+
+def test_generate_models_with_derived_metrics():
+    """Test that models include derived metrics."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            status,
+            SUM(total_amount) / COUNT(*) as avg_order_value
+        FROM orders
+        GROUP BY status
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    orders = models["orders"]
+
+    # Should have both base metrics and derived metrics
+    metrics = {m["name"]: m for m in orders["metrics"]}
+
+    # Base metrics needed for derived calculation
+    assert "sum_total_amount" in metrics
+    assert "count" in metrics
+
+    # Derived metric
+    assert "avg_order_value" in metrics
+    assert metrics["avg_order_value"]["type"] == "derived"
+    assert "SUM(total_amount)" in metrics["avg_order_value"]["sql"]
+
+
+def test_rewrite_query_with_derived_metrics():
+    """Test that derived metrics appear in rewritten queries without base metrics."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = CoverageAnalyzer(layer)
+
+    queries = [
+        """
+        SELECT
+            status,
+            SUM(revenue) / COUNT(*) as avg_revenue
+        FROM orders
+        GROUP BY status
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    rewritten = analyzer.generate_rewritten_queries(report)
+    sql = rewritten["query_1"]
+
+    # Should include dimension and derived metric
+    assert "orders.status" in sql
+    assert "orders.avg_revenue" in sql
+
+    # Should NOT include base metrics in SELECT
+    assert "orders.sum_revenue" not in sql
+    assert "orders.count" not in sql

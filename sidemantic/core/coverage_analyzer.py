@@ -19,6 +19,12 @@ class QueryAnalysis:
     table_aliases: dict[str, str] = field(default_factory=dict)  # alias -> table_name
     columns: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # table -> columns
     aggregations: list[tuple[str, str, str]] = field(default_factory=list)  # (agg_type, column, table)
+    derived_metrics: list[tuple[str, str, str]] = field(
+        default_factory=list
+    )  # (name/alias, sql_expression, table) for calculated metrics
+    aggregations_in_derived: set[tuple[str, str, str]] = field(
+        default_factory=set
+    )  # Aggregations that are part of derived metrics (exclude from SELECT)
     group_by_columns: set[tuple[str, str]] = field(default_factory=set)  # (table, column)
     time_dimensions: list[tuple[str, str, str]] = field(
         default_factory=list
@@ -137,6 +143,7 @@ class CoverageAnalyzer:
             self._extract_tables(parsed, analysis)
             self._extract_columns(parsed, analysis)
             self._extract_aggregations(parsed, analysis)
+            self._extract_derived_metrics(parsed, analysis)
             self._extract_group_by(parsed, analysis)
             self._extract_time_dimensions(parsed, analysis)
             self._extract_joins(parsed, analysis)
@@ -181,50 +188,112 @@ class CoverageAnalyzer:
                 analysis.columns[table_name].add(col_name)
 
     def _extract_aggregations(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract aggregation functions."""
-        # Build map of available aggregation functions
-        agg_map = {
-            exp.Sum: "sum",
-            exp.Avg: "avg",
-            exp.Count: "count",
-            exp.Min: "min",
-            exp.Max: "max",
-        }
+        """Extract aggregation functions using sqlglot's AggFunc base class."""
+        # Use sqlglot's AggFunc to find all aggregations generically
+        for agg in parsed.find_all(exp.AggFunc):
+            # Get aggregation type from class name
+            agg_type_name = type(agg).__name__.lower()
 
-        # Add optional aggregation functions if they exist in this version of sqlglot
-        optional_aggs = {
-            "Stddev": "stddev",
-            "StddevPop": "stddev_pop",
-            "StddevSamp": "stddev_samp",
-            "Variance": "variance",
-            "VariancePop": "var_pop",
-            "Median": "median",
-            "ApproxDistinct": "approx_distinct",
-            "ApproxQuantile": "approx_quantile",
-        }
+            # Map common aggregation class names to standard names
+            agg_name_map = {
+                "sum": "sum",
+                "avg": "avg",
+                "count": "count",
+                "min": "min",
+                "max": "max",
+                "stddev": "stddev",
+                "stddevpop": "stddev_pop",
+                "stddevsamp": "stddev_samp",
+                "variance": "variance",
+                "variancepop": "var_pop",
+                "median": "median",
+                "approxdistinct": "approx_distinct",
+                "approxquantile": "approx_quantile",
+            }
 
-        for exp_name, agg_name in optional_aggs.items():
-            if hasattr(exp, exp_name):
-                agg_map[getattr(exp, exp_name)] = agg_name
+            agg_name = agg_name_map.get(agg_type_name, agg_type_name)
 
-        for agg_type, agg_name in agg_map.items():
-            for agg in parsed.find_all(agg_type):
-                # Get the column being aggregated
-                col = agg.this
-                if isinstance(col, exp.Column):
-                    col_name = col.name
-                    table_name = col.table if col.table else None
-                    analysis.aggregations.append((agg_name, col_name, table_name or ""))
-                elif isinstance(col, exp.Star):
-                    # COUNT(*)
-                    analysis.aggregations.append((agg_name, "*", ""))
-                elif isinstance(col, exp.Distinct):
-                    # COUNT(DISTINCT col) - handle specially
-                    if col.expressions and isinstance(col.expressions[0], exp.Column):
-                        distinct_col = col.expressions[0]
-                        col_name = distinct_col.name
-                        table_name = distinct_col.table if distinct_col.table else None
-                        analysis.aggregations.append(("count_distinct", col_name, table_name or ""))
+            # Get the column being aggregated
+            col = agg.this
+            if isinstance(col, exp.Column):
+                col_name = col.name
+                table_name = col.table if col.table else None
+                analysis.aggregations.append((agg_name, col_name, table_name or ""))
+            elif isinstance(col, exp.Star):
+                # COUNT(*)
+                analysis.aggregations.append((agg_name, "*", ""))
+            elif isinstance(col, exp.Distinct):
+                # COUNT(DISTINCT col) - handle specially
+                if col.expressions and isinstance(col.expressions[0], exp.Column):
+                    distinct_col = col.expressions[0]
+                    col_name = distinct_col.name
+                    table_name = distinct_col.table if distinct_col.table else None
+                    analysis.aggregations.append(("count_distinct", col_name, table_name or ""))
+
+    def _extract_derived_metrics(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
+        """Extract derived metrics from SELECT clause - expressions with operators and aggregations.
+
+        Also tracks which aggregations are part of derived metrics so they can be excluded
+        from direct SELECT (they're only needed as base metrics for derived calculations).
+        """
+        # Track aggregations that are part of derived metrics
+        derived_agg_sql = set()
+
+        for select_expr in parsed.find_all(exp.Select):
+            for expr in select_expr.expressions:
+                # Skip simple columns (dimensions)
+                if isinstance(expr.this, exp.Column):
+                    continue
+
+                # Skip simple aggregations (already handled)
+                if isinstance(expr.this, exp.AggFunc) and isinstance(expr, exp.Alias):
+                    # Check if it's a simple aggregation with no operators
+                    aggs = list(expr.find_all(exp.AggFunc))
+                    if len(aggs) == 1:
+                        continue
+
+                # Check for expressions with operators (Div, Mul, Add, Sub)
+                operators = (exp.Div, exp.Mul, exp.Add, exp.Sub)
+                if isinstance(expr.this, operators):
+                    # This is a derived metric
+                    metric_name = expr.alias_or_name
+                    metric_sql = str(expr.this)
+
+                    # Find all aggregations in the expression
+                    aggs = list(expr.find_all(exp.AggFunc))
+
+                    # Track these aggregations so we don't include them separately
+                    for agg in aggs:
+                        derived_agg_sql.add(str(agg))
+
+                    # Determine the table - try to infer from aggregations
+                    table_name = ""
+                    for agg in aggs:
+                        for col in agg.find_all(exp.Column):
+                            if col.table:
+                                table_name = col.table
+                                break
+                        if table_name:
+                            break
+
+                    # If no table found and single table query, use that table
+                    if not table_name and len(analysis.tables) == 1:
+                        table_name = list(analysis.tables)[0]
+
+                    analysis.derived_metrics.append((metric_name, metric_sql, table_name))
+
+        # Mark which aggregations are part of derived metrics (for query rewriting)
+        # Store this info so we can filter during rewriting but keep for model generation
+        for agg_type, col_name, table_name in analysis.aggregations:
+            if agg_type == "count" and col_name == "*":
+                agg_sql = "COUNT(*)"
+            elif agg_type == "count_distinct":
+                agg_sql = f"COUNT(DISTINCT {col_name})"
+            else:
+                agg_sql = f"{agg_type.upper()}({col_name})"
+
+            if agg_sql in derived_agg_sql:
+                analysis.aggregations_in_derived.add((agg_type, col_name, table_name))
 
     def _extract_group_by(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract GROUP BY columns."""
@@ -296,10 +365,19 @@ class CoverageAnalyzer:
                 analysis.having_clauses.append(having_expr)
 
     def _extract_order_by(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
-        """Extract ORDER BY clause."""
+        """Extract ORDER BY clause with direction (ASC/DESC)."""
         for order in parsed.find_all(exp.Order):
-            for expr in order.expressions:
-                order_expr = str(expr)
+            for ordered_expr in order.expressions:
+                # Extract the column/expression and direction
+                if isinstance(ordered_expr, exp.Ordered):
+                    column_expr = str(ordered_expr.this)
+                    # desc attribute is True if DESC, False/None if ASC
+                    direction = "DESC" if ordered_expr.args.get("desc") else "ASC"
+                    order_expr = f"{column_expr} {direction}"
+                else:
+                    # Fallback for simple expressions without explicit ordering
+                    order_expr = str(ordered_expr)
+
                 if order_expr:
                     analysis.order_by.append(order_expr)
 
@@ -568,6 +646,7 @@ class CoverageAnalyzer:
         table_dimensions = defaultdict(set)
         table_time_dimensions = defaultdict(set)  # (col_name, granularity)
         table_metrics = defaultdict(set)
+        table_derived_metrics = defaultdict(list)  # (name, sql_expression)
 
         for analysis in report.query_analyses:
             if analysis.parse_error:
@@ -596,6 +675,13 @@ class CoverageAnalyzer:
                     table_name = list(analysis.tables)[0]
                 if table_name:
                     table_metrics[table_name].add((agg_type, col_name))
+
+            # Track derived metrics
+            for metric_name, metric_sql, table_name in analysis.derived_metrics:
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+                if table_name:
+                    table_derived_metrics[table_name].append((metric_name, metric_sql))
 
         # Generate model definitions
         for table in sorted(all_tables):
@@ -669,6 +755,21 @@ class CoverageAnalyzer:
 
                     metrics.append(metric_def)
 
+                # Add derived metrics
+                if table in table_derived_metrics:
+                    for metric_name, metric_sql in table_derived_metrics[table]:
+                        # Avoid duplicates
+                        if metric_name in seen_metrics:
+                            continue
+                        seen_metrics.add(metric_name)
+
+                        derived_metric_def = {
+                            "name": metric_name,
+                            "sql": metric_sql,
+                            "type": "derived",
+                        }
+                        metrics.append(derived_metric_def)
+
                 model_def["metrics"] = metrics
 
             models[model_name] = model_def
@@ -739,8 +840,12 @@ class CoverageAnalyzer:
                 # Use semantic layer syntax: model.dimension__granularity
                 select_parts.append(f"{real_table}.{col_name}__{granularity}")
 
-            # Add metrics
+            # Add metrics (but skip those that are only part of derived metrics)
             for agg_type, col_name, table_name in analysis.aggregations:
+                # Skip if this aggregation is only part of a derived metric
+                if (agg_type, col_name, table_name) in analysis.aggregations_in_derived:
+                    continue
+
                 real_table = resolve_table(table_name)
                 if not real_table and len(analysis.tables) == 1:
                     real_table = list(analysis.tables)[0]
@@ -756,6 +861,13 @@ class CoverageAnalyzer:
                 else:
                     metric_name = f"{agg_type}_{col_name}"
 
+                select_parts.append(f"{real_table}.{metric_name}")
+
+            # Add derived metrics
+            for metric_name, _metric_sql, table_name in analysis.derived_metrics:
+                real_table = resolve_table(table_name)
+                if not real_table and len(analysis.tables) == 1:
+                    real_table = list(analysis.tables)[0]
                 select_parts.append(f"{real_table}.{metric_name}")
 
             if not select_parts:

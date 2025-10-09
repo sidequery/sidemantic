@@ -274,11 +274,19 @@ def info(
 
 @app.command()
 def coverage(
-    directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),
+    directory: Path = typer.Argument(
+        None, help="Directory containing semantic layer files (optional if using --generate-models)"
+    ),
     queries: Path = typer.Option(
         None, "--queries", "-q", help="Path to file or folder containing SQL queries to analyze"
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed analysis for each query"),
+    generate_models: Path = typer.Option(
+        None,
+        "--generate-models",
+        "-g",
+        help="Generate model definitions from queries and write to this directory",
+    ),
 ):
     """
     Analyze SQL queries for semantic layer coverage.
@@ -286,57 +294,110 @@ def coverage(
     Determines which queries can be rewritten using your semantic layer and
     identifies missing models, dimensions, and metrics.
 
+    Can also bootstrap a semantic layer from raw SQL queries.
+
     Examples:
+      # Analyze coverage
       sidemantic coverage models/ --queries queries/
-      sidemantic coverage models/ --queries query.sql
-      sidemantic coverage models/ --queries queries/ --verbose
+      sidemantic coverage models/ --queries query.sql --verbose
+
+      # Bootstrap semantic layer from raw queries
+      sidemantic coverage --queries raw_queries/ --generate-models output/
     """
     from sidemantic.core.coverage_analyzer import CoverageAnalyzer
 
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
     if not queries:
         typer.echo("Error: --queries is required", err=True)
-        typer.echo("Usage: sidemantic coverage <models_dir> --queries <path>", err=True)
+        typer.echo("Usage: sidemantic coverage [models_dir] --queries <path>", err=True)
         raise typer.Exit(1)
 
     if not queries.exists():
         typer.echo(f"Error: {queries} does not exist", err=True)
         raise typer.Exit(1)
 
-    try:
-        # Load semantic layer
-        layer = SemanticLayer()
-        load_from_directory(layer, str(directory))
+    # Bootstrap mode - generate models from queries
+    if generate_models:
+        try:
+            # Create empty semantic layer for analysis
+            layer = SemanticLayer(auto_register=False)
+            analyzer = CoverageAnalyzer(layer)
 
-        if not layer.graph.models:
-            typer.echo("Error: No models found in semantic layer", err=True)
+            # Analyze queries
+            if queries.is_file():
+                query_list = queries.read_text().split(";")
+                query_list = [q.strip() for q in query_list if q.strip()]
+                report = analyzer.analyze_queries(query_list)
+            else:
+                report = analyzer.analyze_folder(str(queries))
+
+            # Generate model definitions
+            typer.echo("\nGenerating model definitions...", err=True)
+            models = analyzer.generate_models(report)
+
+            models_dir = generate_models / "models"
+            analyzer.write_model_files(models, str(models_dir))
+
+            # Generate rewritten queries
+            typer.echo("\nGenerating rewritten queries...", err=True)
+            rewritten = analyzer.generate_rewritten_queries(report)
+
+            queries_dir = generate_models / "rewritten_queries"
+            analyzer.write_rewritten_queries(rewritten, str(queries_dir))
+
+            typer.echo(
+                f"\n✓ Generated {len(models)} models and {len(rewritten)} rewritten queries in {generate_models}",
+                err=True,
+            )
+
+        except Exception as e:
+            typer.echo(f"Error: {e}", err=True)
+            import traceback
+
+            traceback.print_exc()
             raise typer.Exit(1)
 
-        # Create analyzer
-        analyzer = CoverageAnalyzer(layer)
+    # Coverage analysis mode - compare queries against existing models
+    else:
+        if not directory:
+            typer.echo("Error: directory is required when not using --generate-models", err=True)
+            typer.echo("Usage: sidemantic coverage <models_dir> --queries <path>", err=True)
+            raise typer.Exit(1)
 
-        # Analyze queries
-        if queries.is_file():
-            # Single file - load queries from it
-            query_list = queries.read_text().split(";")
-            query_list = [q.strip() for q in query_list if q.strip()]
-            report = analyzer.analyze_queries(query_list)
-        else:
-            # Directory - load all .sql files
-            report = analyzer.analyze_folder(str(queries))
+        if not directory.exists():
+            typer.echo(f"Error: Directory {directory} does not exist", err=True)
+            raise typer.Exit(1)
 
-        # Print report
-        analyzer.print_report(report, verbose=verbose)
+        try:
+            # Load semantic layer
+            layer = SemanticLayer()
+            load_from_directory(layer, str(directory))
 
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        import traceback
+            if not layer.graph.models:
+                typer.echo("Error: No models found in semantic layer", err=True)
+                raise typer.Exit(1)
 
-        traceback.print_exc()
-        raise typer.Exit(1)
+            # Create analyzer
+            analyzer = CoverageAnalyzer(layer)
+
+            # Analyze queries
+            if queries.is_file():
+                # Single file - load queries from it
+                query_list = queries.read_text().split(";")
+                query_list = [q.strip() for q in query_list if q.strip()]
+                report = analyzer.analyze_queries(query_list)
+            else:
+                # Directory - load all .sql files
+                report = analyzer.analyze_folder(str(queries))
+
+            # Print report
+            analyzer.print_report(report, verbose=verbose)
+
+        except Exception as e:
+            typer.echo(f"Error: {e}", err=True)
+            import traceback
+
+            traceback.print_exc()
+            raise typer.Exit(1)
 
 
 @app.command()

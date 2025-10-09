@@ -471,3 +471,201 @@ class CoverageAnalyzer:
                         print(f"    • {model}.{agg}({col})")
 
         print(f"\n{'=' * 80}\n")
+
+    def generate_models(self, report: CoverageReport) -> dict[str, dict]:
+        """Generate model definitions from query analysis.
+
+        Args:
+            report: Coverage report
+
+        Returns:
+            Dictionary mapping model names to model definitions (YAML-ready)
+        """
+        models = {}
+
+        # Aggregate all discovered patterns
+        all_tables = set()
+        table_dimensions = defaultdict(set)
+        table_metrics = defaultdict(set)
+
+        for analysis in report.query_analyses:
+            if analysis.parse_error:
+                continue
+
+            # Track tables
+            all_tables.update(analysis.tables)
+
+            # Track dimensions from GROUP BY
+            for table_name, col_name in analysis.group_by_columns:
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+                if table_name:
+                    table_dimensions[table_name].add(col_name)
+
+            # Track metrics from aggregations
+            for agg_type, col_name, table_name in analysis.aggregations:
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+                if table_name:
+                    table_metrics[table_name].add((agg_type, col_name))
+
+        # Generate model definitions
+        for table in sorted(all_tables):
+            model_name = table
+            model_def = {
+                "model": {
+                    "name": model_name,
+                    "table": table,
+                    "description": "Auto-generated from query analysis",
+                }
+            }
+
+            # Add dimensions
+            if table in table_dimensions:
+                dims = []
+                for dim_name in sorted(table_dimensions[table]):
+                    dims.append(
+                        {
+                            "name": dim_name,
+                            "sql": dim_name,
+                            "type": "categorical",
+                        }
+                    )
+                model_def["dimensions"] = dims
+
+            # Add metrics
+            if table in table_metrics:
+                metrics = []
+                seen_metrics = set()
+                for agg_type, col_name in sorted(table_metrics[table]):
+                    # Generate metric name
+                    if agg_type == "count" and col_name == "*":
+                        metric_name = "count"
+                    elif agg_type == "count_distinct":
+                        metric_name = f"{col_name}_count"
+                    else:
+                        metric_name = f"{agg_type}_{col_name}"
+
+                    # Avoid duplicates
+                    if metric_name in seen_metrics:
+                        continue
+                    seen_metrics.add(metric_name)
+
+                    metric_def = {
+                        "name": metric_name,
+                        "agg": agg_type,
+                    }
+
+                    if col_name != "*":
+                        metric_def["sql"] = col_name
+                    else:
+                        metric_def["sql"] = "*"
+
+                    metrics.append(metric_def)
+
+                model_def["metrics"] = metrics
+
+            models[model_name] = model_def
+
+        return models
+
+    def write_model_files(self, models: dict[str, dict], output_dir: str) -> None:
+        """Write model definitions to YAML files.
+
+        Args:
+            models: Dictionary of model definitions from generate_models()
+            output_dir: Directory to write model files to
+        """
+        from pathlib import Path
+
+        import yaml
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        for model_name, model_def in models.items():
+            file_path = output_path / f"{model_name}.yml"
+            with open(file_path, "w") as f:
+                yaml.dump(model_def, f, default_flow_style=False, sort_keys=False)
+
+            print(f"Generated: {file_path}")
+
+    def generate_rewritten_queries(self, report: CoverageReport) -> dict[str, str]:
+        """Generate rewritten queries using semantic layer.
+
+        Args:
+            report: Coverage report
+
+        Returns:
+            Dictionary mapping query names to rewritten Python code
+        """
+        rewritten = {}
+
+        for i, analysis in enumerate(report.query_analyses, 1):
+            if analysis.parse_error or not analysis.can_rewrite:
+                continue
+
+            # Build dimension references
+            dimensions = []
+            for table_name, col_name in analysis.group_by_columns:
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+                dimensions.append(f"{table_name}.{col_name}")
+
+            # Build metric references
+            metrics = []
+            for agg_type, col_name, table_name in analysis.aggregations:
+                if not table_name and len(analysis.tables) == 1:
+                    table_name = list(analysis.tables)[0]
+
+                # Generate metric name
+                if agg_type == "count" and col_name == "*":
+                    metric_name = "count"
+                elif agg_type == "count_distinct":
+                    metric_name = f"{col_name}_count"
+                else:
+                    metric_name = f"{agg_type}_{col_name}"
+
+                metrics.append(f"{table_name}.{metric_name}")
+
+            # Build filter clause
+            where_clause = None
+            if analysis.filters:
+                where_clause = analysis.filters[0]
+
+            # Generate Python code
+            parts = []
+            if dimensions:
+                parts.append(f"    dimensions={dimensions}")
+            if metrics:
+                parts.append(f"    metrics={metrics}")
+            if where_clause:
+                parts.append(f'    where="{where_clause}"')
+
+            query_name = f"query_{i}"
+            code = f"# Original query:\n# {analysis.query.strip()}\n\n"
+            code += "result = layer.query(\n" + ",\n".join(parts) + "\n)"
+
+            rewritten[query_name] = code
+
+        return rewritten
+
+    def write_rewritten_queries(self, queries: dict[str, str], output_dir: str) -> None:
+        """Write rewritten queries to Python files.
+
+        Args:
+            queries: Dictionary of rewritten queries from generate_rewritten_queries()
+            output_dir: Directory to write query files to
+        """
+        from pathlib import Path
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        for query_name, code in queries.items():
+            file_path = output_path / f"{query_name}.py"
+            with open(file_path, "w") as f:
+                f.write(code)
+                f.write("\n")
+
+            print(f"Generated: {file_path}")

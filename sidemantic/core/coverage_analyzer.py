@@ -194,9 +194,10 @@ class CoverageAnalyzer:
                     analysis.aggregations.append((agg_name, "*", ""))
                 elif isinstance(col, exp.Distinct):
                     # COUNT(DISTINCT col) - handle specially
-                    if isinstance(col.this, exp.Column):
-                        col_name = col.this.name
-                        table_name = col.this.table if col.this.table else None
+                    if col.expressions and isinstance(col.expressions[0], exp.Column):
+                        distinct_col = col.expressions[0]
+                        col_name = distinct_col.name
+                        table_name = distinct_col.table if distinct_col.table else None
                         analysis.aggregations.append(("count_distinct", col_name, table_name or ""))
 
     def _extract_group_by(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
@@ -591,29 +592,30 @@ class CoverageAnalyzer:
             print(f"Generated: {file_path}")
 
     def generate_rewritten_queries(self, report: CoverageReport) -> dict[str, str]:
-        """Generate rewritten queries using semantic layer.
+        """Generate rewritten SQL queries using semantic layer syntax.
 
         Args:
             report: Coverage report
 
         Returns:
-            Dictionary mapping query names to rewritten Python code
+            Dictionary mapping query names to rewritten SQL
         """
         rewritten = {}
 
         for i, analysis in enumerate(report.query_analyses, 1):
-            if analysis.parse_error or not analysis.can_rewrite:
+            if analysis.parse_error:
                 continue
 
-            # Build dimension references
-            dimensions = []
+            # Build SELECT clause with model.dimension and model.metric format
+            select_parts = []
+
+            # Add dimensions
             for table_name, col_name in analysis.group_by_columns:
                 if not table_name and len(analysis.tables) == 1:
                     table_name = list(analysis.tables)[0]
-                dimensions.append(f"{table_name}.{col_name}")
+                select_parts.append(f"{table_name}.{col_name}")
 
-            # Build metric references
-            metrics = []
+            # Add metrics
             for agg_type, col_name, table_name in analysis.aggregations:
                 if not table_name and len(analysis.tables) == 1:
                     table_name = list(analysis.tables)[0]
@@ -626,32 +628,32 @@ class CoverageAnalyzer:
                 else:
                     metric_name = f"{agg_type}_{col_name}"
 
-                metrics.append(f"{table_name}.{metric_name}")
+                select_parts.append(f"{table_name}.{metric_name}")
 
-            # Build filter clause
-            where_clause = None
+            if not select_parts:
+                continue
+
+            # Build SQL query
+            sql = "SELECT\n"
+            sql += "    " + ",\n    ".join(select_parts)
+
+            # Determine main table
+            if len(analysis.tables) == 1:
+                main_table = list(analysis.tables)[0]
+                sql += f"\nFROM {main_table}"
+
+            # Add WHERE clause
             if analysis.filters:
                 where_clause = analysis.filters[0]
-
-            # Generate Python code
-            parts = []
-            if dimensions:
-                parts.append(f"    dimensions={dimensions}")
-            if metrics:
-                parts.append(f"    metrics={metrics}")
-            if where_clause:
-                parts.append(f'    where="{where_clause}"')
+                sql += f"\nWHERE {where_clause}"
 
             query_name = f"query_{i}"
-            code = f"# Original query:\n# {analysis.query.strip()}\n\n"
-            code += "result = layer.query(\n" + ",\n".join(parts) + "\n)"
-
-            rewritten[query_name] = code
+            rewritten[query_name] = sql
 
         return rewritten
 
     def write_rewritten_queries(self, queries: dict[str, str], output_dir: str) -> None:
-        """Write rewritten queries to Python files.
+        """Write rewritten queries to SQL files.
 
         Args:
             queries: Dictionary of rewritten queries from generate_rewritten_queries()
@@ -662,10 +664,10 @@ class CoverageAnalyzer:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        for query_name, code in queries.items():
-            file_path = output_path / f"{query_name}.py"
+        for query_name, sql in queries.items():
+            file_path = output_path / f"{query_name}.sql"
             with open(file_path, "w") as f:
-                f.write(code)
+                f.write(sql)
                 f.write("\n")
 
             print(f"Generated: {file_path}")

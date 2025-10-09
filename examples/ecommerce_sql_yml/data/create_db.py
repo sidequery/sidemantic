@@ -169,7 +169,7 @@ def create_database():
     """)
 
     # Generate order items
-    print(f"Generating order items...")
+    print("Generating order items...")
     order_items = []
     order_item_id = 1
     order_totals = {}

@@ -75,15 +75,15 @@ def test_list_models(demo_layer):
     models = list_models()
 
     assert len(models) == 1
-    assert models[0].name == "orders"
-    assert models[0].table == "orders_table"
-    assert len(models[0].dimensions) == 3
-    assert len(models[0].metrics) == 2
-    assert "order_id" in models[0].dimensions
-    assert "customer_name" in models[0].dimensions
-    assert "order_date" in models[0].dimensions
-    assert "total_revenue" in models[0].metrics
-    assert "order_count" in models[0].metrics
+    assert models[0]["name"] == "orders"
+    assert models[0]["table"] == "orders_table"
+    assert len(models[0]["dimensions"]) == 3
+    assert len(models[0]["metrics"]) == 2
+    assert "order_id" in models[0]["dimensions"]
+    assert "customer_name" in models[0]["dimensions"]
+    assert "order_date" in models[0]["dimensions"]
+    assert "total_revenue" in models[0]["metrics"]
+    assert "order_count" in models[0]["metrics"]
 
 
 def test_get_models(demo_layer):
@@ -92,24 +92,24 @@ def test_get_models(demo_layer):
 
     assert len(models) == 1
     model = models[0]
-    assert model.name == "orders"
-    assert model.table == "orders_table"
+    assert model["name"] == "orders"
+    assert model["table"] == "orders_table"
 
     # Check dimensions
-    assert len(model.dimensions) == 3
-    dim_names = [d["name"] for d in model.dimensions]
+    assert len(model["dimensions"]) == 3
+    dim_names = [d["name"] for d in model["dimensions"]]
     assert "order_id" in dim_names
     assert "customer_name" in dim_names
     assert "order_date" in dim_names
 
     # Check metrics
-    assert len(model.metrics) == 2
-    metric_names = [m["name"] for m in model.metrics]
+    assert len(model["metrics"]) == 2
+    metric_names = [m["name"] for m in model["metrics"]]
     assert "total_revenue" in metric_names
     assert "order_count" in metric_names
 
     # Check metric details
-    revenue_metric = next(m for m in model.metrics if m["name"] == "total_revenue")
+    revenue_metric = next(m for m in model["metrics"] if m["name"] == "total_revenue")
     assert revenue_metric["agg"] == "sum"
     assert revenue_metric["sql"] == "amount"
 
@@ -124,7 +124,7 @@ def test_get_models_multiple(demo_layer):
     """Test getting multiple models (only one exists)."""
     models = get_models(["orders", "nonexistent"])
     assert len(models) == 1
-    assert models[0].name == "orders"
+    assert models[0]["name"] == "orders"
 
 
 def test_run_query_basic(demo_layer):
@@ -134,13 +134,13 @@ def test_run_query_basic(demo_layer):
         metrics=["orders.total_revenue"],
     )
 
-    assert result.sql is not None
-    assert "SELECT" in result.sql.upper()
-    assert "customer_name" in result.sql
-    assert "SUM" in result.sql.upper()
+    assert result["sql"] is not None
+    assert "SELECT" in result["sql"].upper()
+    assert "customer_name" in result["sql"]
+    assert "SUM" in result["sql"].upper()
     # Should have 2 rows (Alice and Bob)
-    assert result.row_count == 2
-    assert len(result.rows) == 2
+    assert result["row_count"] == 2
+    assert len(result["rows"]) == 2
 
 
 def test_run_query_with_filter(demo_layer):
@@ -151,9 +151,9 @@ def test_run_query_with_filter(demo_layer):
         where="orders.customer_name = 'Alice'",
     )
 
-    assert result.sql is not None
-    assert "WHERE" in result.sql.upper()
-    assert "Alice" in result.sql
+    assert result["sql"] is not None
+    assert "WHERE" in result["sql"].upper()
+    assert "Alice" in result["sql"]
 
 
 def test_run_query_with_order_by(demo_layer):
@@ -164,8 +164,8 @@ def test_run_query_with_order_by(demo_layer):
         order_by=["orders.total_revenue desc"],
     )
 
-    assert result.sql is not None
-    assert "ORDER BY" in result.sql.upper()
+    assert result["sql"] is not None
+    assert "ORDER BY" in result["sql"].upper()
 
 
 def test_run_query_with_limit(demo_layer):
@@ -176,9 +176,9 @@ def test_run_query_with_limit(demo_layer):
         limit=10,
     )
 
-    assert result.sql is not None
-    assert "LIMIT" in result.sql.upper()
-    assert "10" in result.sql
+    assert result["sql"] is not None
+    assert "LIMIT" in result["sql"].upper()
+    assert "10" in result["sql"]
 
 
 def test_run_query_dimensions_only(demo_layer):
@@ -187,9 +187,9 @@ def test_run_query_dimensions_only(demo_layer):
         dimensions=["orders.customer_name", "orders.order_date"],
     )
 
-    assert result.sql is not None
-    assert "customer_name" in result.sql
-    assert "order_date" in result.sql
+    assert result["sql"] is not None
+    assert "customer_name" in result["sql"]
+    assert "order_date" in result["sql"]
 
 
 def test_run_query_metrics_only(demo_layer):
@@ -198,6 +198,6 @@ def test_run_query_metrics_only(demo_layer):
         metrics=["orders.total_revenue", "orders.order_count"],
     )
 
-    assert result.sql is not None
-    assert "SUM" in result.sql.upper()
-    assert "COUNT" in result.sql.upper()
+    assert result["sql"] is not None
+    assert "SUM" in result["sql"].upper()
+    assert "COUNT" in result["sql"].upper()

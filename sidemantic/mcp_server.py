@@ -91,7 +91,7 @@ mcp = FastMCP("sidemantic")
 
 
 @mcp.tool()
-def list_models() -> list[ModelInfo]:
+def list_models() -> list[dict[str, Any]]:
     """List all available models in the semantic layer.
 
     Models are the core building blocks of the semantic layer. Each model represents
@@ -111,20 +111,20 @@ def list_models() -> list[ModelInfo]:
     models = []
     for model_name, model in layer.graph.models.items():
         models.append(
-            ModelInfo(
-                name=model_name,
-                table=model.table,
-                dimensions=[d.name for d in model.dimensions],
-                metrics=[m.name for m in model.metrics],
-                relationships=len(model.relationships),
-            )
+            {
+                "name": model_name,
+                "table": model.table,
+                "dimensions": [d.name for d in model.dimensions],
+                "metrics": [m.name for m in model.metrics],
+                "relationships": len(model.relationships),
+            }
         )
 
     return models
 
 
 @mcp.tool()
-def get_models(model_names: list[str]) -> list[ModelDetail]:
+def get_models(model_names: list[str]) -> list[dict[str, Any]]:
     """Get detailed information about one or more models.
 
     Returns comprehensive details about models including:
@@ -209,17 +209,19 @@ def get_models(model_names: list[str]) -> list[ModelDetail]:
                 }
             )
 
-        details.append(
-            ModelDetail(
-                name=model_name,
-                table=model.table,
-                dimensions=dims,
-                metrics=metrics,
-                relationships=rels,
-                source_format=getattr(model, "_source_format", None),
-                source_file=getattr(model, "_source_file", None),
-            )
-        )
+        detail = {
+            "name": model_name,
+            "table": model.table,
+            "dimensions": dims,
+            "metrics": metrics,
+            "relationships": rels,
+        }
+        if source_format := getattr(model, "_source_format", None):
+            detail["source_format"] = source_format
+        if source_file := getattr(model, "_source_file", None):
+            detail["source_file"] = source_file
+
+        details.append(detail)
 
     return details
 
@@ -231,7 +233,7 @@ def run_query(
     where: str | None = None,
     order_by: list[str] | None = None,
     limit: int | None = None,
-) -> QueryResult:
+) -> dict[str, Any]:
     """Run a query against the semantic layer.
 
     Sidemantic automatically generates SQL from semantic references and handles joins between models.
@@ -306,11 +308,11 @@ def run_query(
     columns = [desc[0] for desc in result.description]
     row_dicts = [dict(zip(columns, row)) for row in rows]
 
-    return QueryResult(
-        sql=sql,
-        rows=row_dicts,
-        row_count=len(row_dicts),
-    )
+    return {
+        "sql": sql,
+        "rows": row_dicts,
+        "row_count": len(row_dicts),
+    }
 
 
 @mcp.tool()
@@ -324,7 +326,7 @@ def create_chart(
     title: str | None = None,
     width: int = 600,
     height: int = 400,
-) -> ChartResult:
+) -> dict[str, Any]:
     """Generate a beautiful chart from a semantic layer query.
 
     This tool combines query execution with intelligent chart generation, producing
@@ -431,12 +433,12 @@ def create_chart(
     vega_spec = chart_to_vega(chart)
     png_base64 = chart_to_base64_png(chart)
 
-    return ChartResult(
-        sql=sql,
-        vega_spec=vega_spec,
-        png_base64=png_base64,
-        row_count=len(row_dicts),
-    )
+    return {
+        "sql": sql,
+        "vega_spec": vega_spec,
+        "png_base64": png_base64,
+        "row_count": len(row_dicts),
+    }
 
 
 def _generate_chart_title(dimensions: list[str], metrics: list[str]) -> str:

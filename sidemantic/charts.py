@@ -318,7 +318,6 @@ def _apply_theme(chart: Chart, title: str | None, width: int, height: int, color
         # Font configuration
         "font": "Inter, system-ui, -apple-system, sans-serif",
         "titleFont": "Inter, system-ui, -apple-system, sans-serif",
-        "labelFont": "Inter, system-ui, -apple-system, sans-serif",
         # Title styling
         "title": {
             "fontSize": 18,

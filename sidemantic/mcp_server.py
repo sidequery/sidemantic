@@ -200,14 +200,15 @@ def get_models(model_names: list[str]) -> list[dict[str, Any]]:
         # Get relationship details
         rels = []
         for rel in model.relationships:
-            rels.append(
-                {
-                    "name": rel.name,
-                    "to_model": rel.to_model,
-                    "type": rel.type,
-                    "sql_on": rel.sql_on,
-                }
-            )
+            rel_info = {
+                "name": rel.name,
+                "type": rel.type,
+            }
+            if rel.foreign_key:
+                rel_info["foreign_key"] = rel.foreign_key
+            if rel.primary_key:
+                rel_info["primary_key"] = rel.primary_key
+            rels.append(rel_info)
 
         detail = {
             "name": model_name,

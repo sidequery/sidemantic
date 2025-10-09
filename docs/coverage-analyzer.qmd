@@ -3,6 +3,7 @@ title: "Coverage Analyzer"
 ---
 
 Analyzes existing SQL queries to:
+
 1. Generate semantic layer model definitions
 2. Rewrite queries to use semantic layer syntax
 3. Measure coverage gaps
@@ -241,11 +242,13 @@ metrics:
 ```
 
 **What's extracted**:
+
 - Aggregation window functions: `SUM/AVG/COUNT/MIN/MAX` with `OVER()`
 - Rolling windows with `ROWS BETWEEN`
 - Period-to-date with `PARTITION BY DATE_TRUNC()`
 
 **What's ignored**:
+
 - Window-only functions: `ROW_NUMBER()`, `RANK()`, `LAG()`, `LEAD()`
 - Complex window calculations with operators
 
@@ -253,10 +256,13 @@ For complex calculations, base aggregations are still extracted - define derived
 
 ### Other Patterns
 
-- **CTEs**: Extracts from underlying tables, preserves structure in rewrites
-- **GROUP BY ordinals**: `GROUP BY 1, 2` resolved to columns
-- **Implicit joins**: `FROM a, b WHERE a.id = b.fk` extracts relationships
-- **Self-joins**: Generates single model
+**CTEs**: Extracts from underlying tables, preserves structure in rewrites
+
+**GROUP BY ordinals**: `GROUP BY 1, 2` resolved to columns
+
+**Implicit joins**: `FROM a, b WHERE a.id = b.fk` extracts relationships
+
+**Self-joins**: Generates single model
 
 ## CLI Usage
 
@@ -273,6 +279,7 @@ sidemantic coverage-analyzer report queries/ > coverage-report.txt
 ```
 
 Options:
+
 - `--pattern "*.sql"` - File pattern
 - `--output-dir` - Where to write models
 - `--rewrite` - Also generate rewritten queries
@@ -323,6 +330,7 @@ analyzer = CoverageAnalyzer(layer, connection=conn)
 ```
 
 Benefits:
+
 - Resolves ambiguous columns
 - Infers relationships from foreign keys
 - Detects primary keys
@@ -411,6 +419,7 @@ SELECT status, COUNT(*) FROM orders GROUP BY status
 ### Relationships Not Detected
 
 **Causes**:
+
 - Non-equi joins
 - Complex conditions
 - Multiple join keys
@@ -420,6 +429,7 @@ SELECT status, COUNT(*) FROM orders GROUP BY status
 ### Metric Names Don't Match
 
 Analyzer generates names from `agg_column`:
+
 - `SUM(amount)` → `sum_amount`
 - `COUNT(*)` → `count`
 

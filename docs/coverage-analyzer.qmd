@@ -150,7 +150,9 @@ metrics:
 ### Joins and Relationships
 
 ```sql
-SELECT c.region, COUNT(o.order_id) as order_count
+SELECT
+    c.region,
+    COUNT(o.order_id) as order_count
 FROM customers c
 JOIN orders o ON c.id = o.customer_id
 GROUP BY c.region
@@ -171,8 +173,14 @@ relationships:
 Resolves subquery aliases to underlying tables:
 
 ```sql
-SELECT sub.status, COUNT(*) as order_count
-FROM (SELECT status, amount FROM orders WHERE amount > 100) sub
+SELECT
+    sub.status,
+    COUNT(*) as order_count
+FROM (
+    SELECT status, amount
+    FROM orders
+    WHERE amount > 100
+) sub
 GROUP BY sub.status
 ```
 
@@ -184,7 +192,9 @@ Detects window functions and generates cumulative metric definitions.
 
 **Running totals**:
 ```sql
-SELECT order_date, SUM(amount) OVER (ORDER BY order_date) as running_total
+SELECT
+    order_date,
+    SUM(amount) OVER (ORDER BY order_date) as running_total
 FROM orders
 ```
 ```yaml
@@ -196,8 +206,12 @@ metrics:
 
 **Rolling windows**:
 ```sql
-SELECT order_date,
-    SUM(amount) OVER (ORDER BY order_date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) as rolling_7day
+SELECT
+    order_date,
+    SUM(amount) OVER (
+        ORDER BY order_date
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) as rolling_7day
 FROM orders
 ```
 ```yaml
@@ -210,8 +224,12 @@ metrics:
 
 **Period-to-date**:
 ```sql
-SELECT order_date,
-    SUM(amount) OVER (PARTITION BY DATE_TRUNC('month', order_date) ORDER BY order_date) as mtd_revenue
+SELECT
+    order_date,
+    SUM(amount) OVER (
+        PARTITION BY DATE_TRUNC('month', order_date)
+        ORDER BY order_date
+    ) as mtd_revenue
 FROM orders
 ```
 ```yaml
@@ -247,7 +265,8 @@ For complex calculations, base aggregations are still extracted - define derived
 sidemantic coverage-analyzer analyze queries/ --output-dir models/
 
 # Analyze specific query
-sidemantic coverage-analyzer analyze-query "SELECT status, COUNT(*) FROM orders GROUP BY status"
+sidemantic coverage-analyzer analyze-query \
+    "SELECT status, COUNT(*) FROM orders GROUP BY status"
 
 # Generate report
 sidemantic coverage-analyzer report queries/ > coverage-report.txt

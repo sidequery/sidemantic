@@ -1,0 +1,416 @@
+---
+title: "Window Functions & SQL Patterns"
+---
+
+# Window Functions & SQL Patterns
+
+This guide explains how common SQL patterns with window functions map to Sidemantic's semantic layer features.
+
+## Overview
+
+Window functions are powerful SQL constructs for calculations across rows. In a semantic layer, many window function patterns can be expressed as:
+
+- **Cumulative metrics** (running totals, year-to-date)
+- **Time comparisons** (year-over-year, month-over-month)
+- **Table calculations** (percent of total, ranking)
+
+## Pattern Mapping
+
+### 1. Percent of Total → Derived Metrics
+
+**SQL with Window Functions:**
+```sql
+SELECT
+    status,
+    COUNT(*) as order_count,
+    COUNT(*) * 100.0 / SUM(COUNT(*)) OVER() as pct_of_total
+FROM orders
+GROUP BY status
+```
+
+**Semantic Layer Approach:**
+```yaml
+models:
+  - name: orders
+    dimensions:
+      - name: status
+        sql: status
+        type: categorical
+    metrics:
+      - name: order_count
+        agg: count
+        sql: "*"
+      - name: pct_of_total
+        type: derived
+        sql: "order_count * 100.0 / SUM(order_count) OVER()"
+```
+
+```python
+# Query
+df = layer.query(
+    dimensions=["orders.status"],
+    metrics=["orders.order_count", "orders.pct_of_total"]
+)
+```
+
+### 2. Running Total → Cumulative Metrics
+
+**SQL with Window Functions:**
+```sql
+SELECT
+    order_date,
+    SUM(amount) as daily_revenue,
+    SUM(SUM(amount)) OVER (ORDER BY order_date) as cumulative_revenue
+FROM orders
+GROUP BY order_date
+```
+
+**Semantic Layer Approach:**
+```yaml
+models:
+  - name: orders
+    dimensions:
+      - name: order_date
+        sql: order_date
+        type: time
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: cumulative_revenue
+        type: cumulative
+        sql: revenue
+        window:
+          order_by: [order_date]
+```
+
+```python
+# Query
+df = layer.query(
+    dimensions=["orders.order_date__day"],
+    metrics=["orders.revenue", "orders.cumulative_revenue"]
+)
+```
+
+### 3. Year-over-Year Change → Time Comparison Metrics
+
+**SQL with Window Functions:**
+```sql
+SELECT
+    DATE_TRUNC('month', order_date) as month,
+    SUM(amount) as revenue,
+    LAG(SUM(amount), 12) OVER (ORDER BY DATE_TRUNC('month', order_date)) as revenue_last_year,
+    (SUM(amount) - LAG(SUM(amount), 12) OVER (...)) /
+        LAG(SUM(amount), 12) OVER (...) * 100 as yoy_pct_change
+FROM orders
+GROUP BY DATE_TRUNC('month', order_date)
+```
+
+**Semantic Layer Approach:**
+```yaml
+models:
+  - name: orders
+    dimensions:
+      - name: order_date
+        sql: order_date
+        type: time
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: revenue_yoy_change
+        type: offset
+        sql: revenue
+        offset: -1 year
+      - name: revenue_yoy_pct
+        type: derived
+        sql: "(revenue - revenue_yoy_change) / revenue_yoy_change * 100"
+```
+
+```python
+# Query with automatic time comparison
+df = layer.query(
+    dimensions=["orders.order_date__month"],
+    metrics=["orders.revenue", "orders.revenue_yoy_change", "orders.revenue_yoy_pct"]
+)
+```
+
+### 4. Ranking → Table Calculations
+
+**SQL with Window Functions:**
+```sql
+SELECT
+    customer_id,
+    amount,
+    ROW_NUMBER() OVER (PARTITION BY status ORDER BY amount DESC) as rank_in_status
+FROM orders
+```
+
+**Semantic Layer Approach:**
+
+Rankings are typically applied post-query as **table calculations**:
+
+```python
+# Query base data
+df = layer.query(
+    dimensions=["orders.customer_id", "orders.status"],
+    metrics=["orders.amount"]
+)
+
+# Apply ranking as table calculation
+from sidemantic.optimizations.table_calculations import apply_calculation
+
+df = apply_calculation(
+    df,
+    calculation={
+        "type": "rank",
+        "field": "amount",
+        "name": "rank_in_status",
+        "partition_by": ["status"],
+        "order_by": {"amount": "DESC"}
+    }
+)
+```
+
+Alternative: Use Python/Pandas after query:
+```python
+df = layer.query(
+    dimensions=["orders.customer_id", "orders.status"],
+    metrics=["orders.amount"]
+)
+
+# Apply ranking with pandas
+df["rank_in_status"] = (
+    df.groupby("status")["amount"]
+    .rank(method="first", ascending=False)
+)
+```
+
+### 5. Moving Average → Rolling Window Metrics
+
+**SQL with Window Functions:**
+```sql
+SELECT
+    order_date,
+    SUM(amount) as daily_revenue,
+    AVG(SUM(amount)) OVER (
+        ORDER BY order_date
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) as ma_7_day
+FROM orders
+GROUP BY order_date
+```
+
+**Semantic Layer Approach:**
+
+```yaml
+models:
+  - name: orders
+    dimensions:
+      - name: order_date
+        sql: order_date
+        type: time
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: revenue_ma_7d
+        type: rolling
+        sql: revenue
+        window:
+          size: 7
+          unit: days
+          order_by: [order_date]
+```
+
+```python
+# Query
+df = layer.query(
+    dimensions=["orders.order_date__day"],
+    metrics=["orders.revenue", "orders.revenue_ma_7d"]
+)
+```
+
+## Coverage Analyzer Behavior
+
+When you use the [coverage analyzer](/cli.html#coverage-analyzer) on queries with window functions:
+
+### What Gets Extracted
+
+✅ **Base aggregations** inside window functions:
+```sql
+SUM(COUNT(*)) OVER()
+-- Extracts: COUNT(*) as base metric
+```
+
+✅ **Dimensions** used in PARTITION BY:
+```sql
+PARTITION BY status
+-- Extracts: status as dimension
+```
+
+✅ **Tables** referenced in subqueries
+
+### What Gets Ignored
+
+❌ **Window functions themselves** - These are post-aggregation operations:
+```sql
+ROW_NUMBER() OVER (...)
+-- Not extracted as metric (correct - it's post-processing)
+```
+
+❌ **QUALIFY clauses** - Filters on window results
+
+### Example Analysis
+
+```python
+from sidemantic import SemanticLayer
+from sidemantic.core.coverage_analyzer import CoverageAnalyzer
+
+layer = SemanticLayer(auto_register=False)
+analyzer = CoverageAnalyzer(layer)
+
+queries = ["""
+    SELECT
+        status,
+        COUNT(*) as order_count,
+        COUNT(*) * 100.0 / SUM(COUNT(*)) OVER() as pct_of_total
+    FROM orders
+    GROUP BY status
+"""]
+
+report = analyzer.analyze_queries(queries)
+models = analyzer.generate_models(report)
+
+# Generated model includes:
+# - status dimension
+# - order_count metric (COUNT(*))
+# - Does NOT include the window function (correct)
+```
+
+## Best Practices
+
+### When to Use Window Functions in SQL
+
+Use raw SQL with window functions when:
+
+1. **Ad-hoc analysis** requiring complex windowing
+2. **Performance optimization** for specific queries
+3. **Edge cases** not yet supported by semantic layer
+
+### When to Use Semantic Layer Features
+
+Use semantic layer metrics when:
+
+1. **Reusable patterns** across multiple queries
+2. **Standardized calculations** (YoY, cumulative, etc.)
+3. **Governed metrics** requiring consistent definitions
+4. **Multi-tool support** (BI tools, notebooks, dashboards)
+
+### Hybrid Approach
+
+Combine both for complex scenarios:
+
+```python
+# 1. Query semantic layer for base metrics
+df = layer.query(
+    dimensions=["orders.order_date__day", "orders.status"],
+    metrics=["orders.revenue"]
+)
+
+# 2. Apply complex window functions in pandas
+df["revenue_rank"] = (
+    df.groupby("status")["revenue"]
+    .rank(method="min", ascending=False)
+)
+
+df["cumulative_pct"] = (
+    df.groupby("status")["revenue"]
+    .cumsum() / df.groupby("status")["revenue"].sum()
+)
+```
+
+## Common Patterns Reference
+
+| SQL Pattern | Semantic Layer Feature | When to Use Each |
+|------------|----------------------|-----------------|
+| `SUM(...) OVER()` | Derived metric with `SUM()` | SQL for one-off, semantic for reusable |
+| `SUM(...) OVER (ORDER BY ...)` | Cumulative metric | Semantic layer for standard cumulative |
+| `LAG(...) OVER (...)` | Offset/comparison metric | Semantic layer for time comparisons |
+| `ROW_NUMBER() OVER (...)` | Table calculation | Python/pandas for ranking |
+| `PERCENT_RANK() OVER (...)` | Table calculation | Python/pandas for percentiles |
+| `NTILE(...) OVER (...)` | Table calculation | Python/pandas for bucketing |
+
+## Migration Tips
+
+### From SQL to Semantic Layer
+
+1. **Identify base aggregations**:
+   ```sql
+   -- SQL: COUNT(*) inside window function
+   SUM(COUNT(*)) OVER()
+
+   -- Semantic: Define base metric
+   - name: order_count
+     agg: count
+   ```
+
+2. **Convert time windows**:
+   ```sql
+   -- SQL: LAG with 12 month offset
+   LAG(revenue, 12) OVER (ORDER BY month)
+
+   -- Semantic: Offset metric
+   - name: revenue_yoy
+     type: offset
+     offset: -1 year
+   ```
+
+3. **Simplify complex CTEs**:
+   ```sql
+   -- SQL: Multiple nested queries with window functions
+   WITH base AS (...), ranked AS (...)
+   SELECT * FROM ranked WHERE rank = 1
+
+   -- Semantic: Single query + filter
+   layer.query(...).filter(rank=1)
+   ```
+
+## Troubleshooting
+
+### Window Function Not Generating Metric
+
+**Issue**: Query with window function doesn't generate expected metrics
+
+**Solution**: Window functions are intentionally excluded. Extract the base aggregation:
+
+```python
+# Instead of expecting window function as metric
+# ❌ SUM(COUNT(*)) OVER()
+
+# Define base metric
+# ✅ COUNT(*) as order_count
+```
+
+### Subquery Not Resolving Tables
+
+**Issue**: Subquery with alias doesn't extract table name
+
+**Solution**: Ensure subquery contains single table, or use explicit table names:
+
+```sql
+-- ✅ Works: Single table in subquery
+SELECT sub.status
+FROM (SELECT status FROM orders) sub
+
+-- ❌ Doesn't resolve: Multiple tables
+SELECT sub.status
+FROM (SELECT o.status FROM orders o JOIN customers c ...) sub
+```
+
+## See Also
+
+- [Metrics Documentation](/metrics.html) - Define metrics
+- [Query API](/query.html) - Query semantic layer
+- [CLI Coverage Analyzer](/cli.html#coverage-analyzer) - Analyze existing queries
+- [Table Calculations](https://github.com/sidequery/sidemantic/blob/main/sidemantic/optimizations/table_calculations.py) - Post-query calculations

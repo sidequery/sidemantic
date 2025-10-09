@@ -39,8 +39,8 @@ website:
         menu:
           - text: "Overview"
             href: cli.qmd
-          - text: "Coverage Analyzer"
-            href: coverage-analyzer.qmd
+          - text: "Migrator"
+            href: migrator.qmd
           - text: "Workbench"
             href: workbench.qmd
           - text: "MCP Server"

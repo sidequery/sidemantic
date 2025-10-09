@@ -2,11 +2,13 @@
 title: "Coverage Analyzer"
 ---
 
-Analyzes existing SQL queries to:
+Migrates existing SQL queries to semantic layer by analyzing queries and generating model definitions.
 
-1. Generate semantic layer model definitions
+**Key features**:
+
+1. Generate model definitions from existing queries
 2. Rewrite queries to use semantic layer syntax
-3. Measure coverage gaps
+3. Measure what's missing from your semantic layer
 
 ## Quick Start
 
@@ -285,56 +287,6 @@ Options:
 - `--rewrite` - Also generate rewritten queries
 - `--verbose` - Show details
 
-## Python API
-
-### Coverage Metrics
-
-```python
-report = analyzer.analyze_queries(queries)
-
-print(f"Total: {report.total_queries}")
-print(f"Parseable: {report.parseable_queries}")
-print(f"Rewritable: {report.rewritable_queries}")
-print(f"Coverage: {report.coverage_percentage:.1f}%")
-
-# Missing components
-for model in report.missing_models:
-    print(f"Missing model: {model}")
-
-for model, dims in report.missing_dimensions.items():
-    for dim in dims:
-        print(f"Missing dimension: {model}.{dim}")
-```
-
-### Per-Query Analysis
-
-```python
-for analysis in report.query_analyses:
-    if not analysis.can_rewrite:
-        print(f"Missing models: {analysis.missing_models}")
-        print(f"Missing dimensions: {analysis.missing_dimensions}")
-        print(f"Missing metrics: {analysis.missing_metrics}")
-```
-
-### With Database Connection
-
-```python
-import duckdb
-
-conn = duckdb.connect(":memory:")
-conn.execute("CREATE TABLE orders (id INT, customer_id INT, amount DECIMAL)")
-conn.execute("CREATE TABLE customers (id INT, region VARCHAR)")
-
-# Uses information_schema for better inference
-analyzer = CoverageAnalyzer(layer, connection=conn)
-```
-
-Benefits:
-
-- Resolves ambiguous columns
-- Infers relationships from foreign keys
-- Detects primary keys
-
 ## Migration Workflow
 
 ### 1. Generate Models
@@ -438,21 +390,25 @@ Use aliases to control names:
 SELECT SUM(amount) as total_revenue FROM orders  -- Generates "total_revenue"
 ```
 
-## Best Practices
+## Python API
 
-1. Start with simple queries for baseline coverage
-2. Generate models to get 80% coverage quickly
-3. Refine incrementally
-4. Test old vs new queries in parallel
-5. Migrate one dashboard at a time
-
-### Maintain Coverage in CI
+Get coverage metrics from report:
 
 ```python
-def test_query_coverage():
-    analyzer = CoverageAnalyzer(layer)
-    report = analyzer.analyze_folder("queries/")
+report = analyzer.analyze_queries(queries)
 
-    assert report.coverage_percentage >= 90.0
-    assert report.parseable_queries == report.total_queries
+print(f"Coverage: {report.coverage_percentage:.1f}%")
+print(f"Missing models: {report.missing_models}")
+print(f"Missing dimensions: {report.missing_dimensions}")
 ```
+
+Provide database connection for better inference:
+
+```python
+import duckdb
+
+conn = duckdb.connect(":memory:")
+analyzer = CoverageAnalyzer(layer, connection=conn)
+```
+
+Benefits: Resolves ambiguous columns, infers relationships from foreign keys, detects primary keys.

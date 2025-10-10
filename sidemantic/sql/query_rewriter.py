@@ -270,26 +270,37 @@ class QueryRewriter:
 
             model_name, field_name = ref.split(".", 1)
 
-            # Check if it's a metric
-            metric_ref = f"{model_name}.{field_name}"
+            # Check if field_name includes time granularity suffix (e.g., order_date__day)
+            base_field_name = field_name
+            if "__" in field_name:
+                parts = field_name.rsplit("__", 1)
+                potential_gran = parts[1]
+                # Validate granularity
+                valid_grans = ["year", "quarter", "month", "week", "day", "hour", "minute", "second"]
+                if potential_gran in valid_grans:
+                    base_field_name = parts[0]
+
+            # Check if it's a metric (using base name without granularity)
+            metric_ref = f"{model_name}.{base_field_name}"
             if metric_ref in self.graph.metrics:
-                metrics.append(metric_ref)
+                metrics.append(f"{model_name}.{field_name}")  # Keep original field_name with granularity
                 continue
 
             # Check if it's a measure (should be accessed as metric)
             model = self.graph.get_model(model_name)
-            if any(m.name == field_name for m in model.metrics):
+            if any(m.name == base_field_name for m in model.metrics):
                 # Measure referenced directly - treat as implicit metric
-                metrics.append(metric_ref)
+                metrics.append(f"{model_name}.{field_name}")  # Keep original field_name
                 continue
 
             # Check if it's a dimension
-            if any(d.name == field_name for d in model.dimensions):
-                dimensions.append(metric_ref)
+            if any(d.name == base_field_name for d in model.dimensions):
+                # Keep the full ref including __granularity if present
+                dimensions.append(ref)
                 continue
 
             raise ValueError(
-                f"Field '{metric_ref}' not found. Must be a metric, measure, or dimension in model '{model_name}'"
+                f"Field '{model_name}.{base_field_name}' not found. Must be a metric, measure, or dimension in model '{model_name}'"
             )
 
         return metrics, dimensions, aliases
@@ -439,14 +450,14 @@ class QueryRewriter:
             column: Column expression
 
         Returns:
-            Reference like "orders.revenue" or None
+            Reference like "orders.revenue" or "orders.order_date__day" or None
         """
         if isinstance(column, exp.Column):
             table = column.table
             name = column.name
 
             if table:
-                # Explicit table.column
+                # Explicit table.column (may include __granularity suffix)
                 return f"{table}.{name}"
             else:
                 # Try to infer from single FROM table
@@ -463,6 +474,7 @@ class QueryRewriter:
                                 f"Use model.{name} for model-level metrics, or define '{name}' as a graph-level metric.\n\n"
                                 f"Example: SELECT orders.revenue, total_orders FROM metrics"
                             )
+                    # Column name may include __granularity suffix (e.g., order_date__day)
                     return f"{self.inferred_table}.{name}"
                 else:
                     raise ValueError(f"Column '{name}' must have table prefix (e.g., orders.{name})")

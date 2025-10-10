@@ -34,3 +34,12 @@ models:
     agg: avg
     sql: amount
     description: Average order value
+  pre_aggregations:
+  - name: day_order_date_status_2metrics
+    measures:
+    - order_count
+    - revenue
+    dimensions:
+    - status
+    time_dimension: order_date
+    granularity: day

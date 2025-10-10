@@ -322,6 +322,7 @@ def query(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
     ),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show generated SQL without executing"),
 ):
     """
     Execute a SQL query and output results as CSV.
@@ -332,6 +333,7 @@ def query(
       sidemantic query "SELECT * FROM orders" --models ./models
       sidemantic query "SELECT revenue FROM orders" --connection "postgres://localhost:5432/db"
       sidemantic query "SELECT revenue FROM orders" --db data.duckdb
+      sidemantic query "SELECT revenue FROM orders" --dry-run
     """
     if not models.exists():
         typer.echo(f"Error: Directory {models} does not exist", err=True)
@@ -369,6 +371,15 @@ def query(
         if not layer.graph.models:
             typer.echo("Error: No models found", err=True)
             raise typer.Exit(1)
+
+        # Dry run: show generated SQL without executing
+        if dry_run:
+            from sidemantic.sql.query_rewriter import QueryRewriter
+
+            rewriter = QueryRewriter(layer.graph, dialect=layer.adapter.dialect)
+            rewritten_sql = rewriter.rewrite(sql)
+            typer.echo(rewritten_sql)
+            return
 
         # Execute query
         result = layer.sql(sql)

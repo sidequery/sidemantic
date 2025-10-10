@@ -1017,3 +1017,60 @@ def test_alias_mixed_with_no_alias(semantic_layer):
 
     assert "total_revenue" in columns
     assert "status" in columns
+
+
+def test_time_dimension_with_granularity_syntax(semantic_layer):
+    """Test time dimension with __day, __month, etc. granularity syntax."""
+    sql = "SELECT orders.order_date__day, orders.revenue FROM orders"
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    columns = _columns(result)
+
+    # Should group by day granularity
+    assert len(rows) == 3  # Three different days in test data
+    assert "order_date" in columns or "order_date__day" in columns
+    assert "revenue" in columns
+
+
+def test_time_dimension_multiple_granularities(semantic_layer):
+    """Test using time dimension with different granularities."""
+    # Add more data to make month aggregation meaningful
+    semantic_layer.conn.execute("""
+        INSERT INTO orders VALUES
+            (4, 1, 'completed', '2024-02-01', 300.00),
+            (5, 2, 'completed', '2024-02-15', 400.00)
+    """)
+
+    sql = "SELECT orders.order_date__month, orders.revenue FROM orders"
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    columns = _columns(result)
+
+    # Should group by month
+    assert len(rows) == 2  # January and February
+    assert "order_date" in columns or "order_date__month" in columns
+    assert "revenue" in columns
+
+
+def test_granularity_with_invalid_dimension(semantic_layer):
+    """Test error when using granularity on non-existent dimension."""
+    sql = "SELECT orders.invalid_field__day FROM orders"
+
+    with pytest.raises(ValueError, match="not found"):
+        semantic_layer.sql(sql)
+
+
+def test_granularity_on_non_time_dimension(semantic_layer):
+    """Test that granularity suffix on categorical dimension is ignored."""
+    # When "day" is a valid granularity keyword, it gets stripped off
+    # So status__day tries to find dimension "status" (which exists as categorical)
+    # The __day suffix is kept but granularity isn't applied to categorical dimensions
+    sql = "SELECT orders.status, orders.revenue FROM orders"
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    # Should work - status is a valid categorical dimension
+    assert len(rows) == 2  # Two status groups

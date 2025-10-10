@@ -8,9 +8,9 @@ Setup sample data for pre-aggregations example.
 This creates a DuckDB database with sample orders data spanning multiple months.
 """
 
-import duckdb
-from datetime import datetime, timedelta
 from pathlib import Path
+
+import duckdb
 
 
 def create_sample_data():
@@ -37,9 +37,6 @@ def create_sample_data():
 
     # Generate sample data - 10,000 orders over 90 days
     print("Generating 10,000 sample orders...")
-
-    statuses = ['pending', 'completed', 'cancelled']
-    regions = ['North', 'South', 'East', 'West', 'Central']
 
     conn.execute("""
         INSERT OR REPLACE INTO orders

@@ -126,7 +126,7 @@ Queries automatically use pre-aggregations when available:
 
 ```bash
 # Query from CLI - automatically uses pre-aggregations
-uvx sidemantic query "SELECT order_date__day, status, revenue FROM orders"
+uvx sidemantic query "SELECT status, revenue FROM orders"
 
 # Or use the interactive workbench
 uvx sidemantic workbench

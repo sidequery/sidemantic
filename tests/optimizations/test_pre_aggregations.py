@@ -958,5 +958,229 @@ def test_generate_materialization_sql_with_duckdb():
     assert result[1] == 300.00  # 100 + 200
 
 
+def test_refresh_engine_mode_snowflake():
+    """Test engine mode refresh with Snowflake DYNAMIC TABLE."""
+
+    # Mock connection
+    class MockSnowflakeConnection:
+        def __init__(self):
+            self.executed_sql = []
+
+        def execute(self, sql):
+            self.executed_sql.append(sql)
+            return self
+
+    conn = MockSnowflakeConnection()
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        dimensions=["status"],
+        time_dimension="created_at",
+        granularity="day",
+        refresh_key=RefreshKey(every="1 hour"),
+    )
+
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="created_at", type="time", sql="created_at"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    source_sql = preagg.generate_materialization_sql(model)
+
+    result = preagg.refresh(
+        connection=conn,
+        source_sql=source_sql,
+        table_name="orders_preagg_daily_rollup",
+        mode="engine",
+        dialect="snowflake",
+    )
+
+    assert result.mode == "engine"
+    assert len(conn.executed_sql) == 1
+    assert "CREATE OR REPLACE DYNAMIC TABLE" in conn.executed_sql[0]
+    assert "TARGET_LAG = '1 HOUR'" in conn.executed_sql[0]
+    assert "orders_preagg_daily_rollup" in conn.executed_sql[0]
+
+
+def test_refresh_engine_mode_clickhouse():
+    """Test engine mode refresh with ClickHouse MATERIALIZED VIEW."""
+
+    class MockClickHouseConnection:
+        def __init__(self):
+            self.executed_sql = []
+
+        def execute(self, sql):
+            self.executed_sql.append(sql)
+            return self
+
+    conn = MockClickHouseConnection()
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        dimensions=["status"],
+        time_dimension="created_at",
+        granularity="day",
+    )
+
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="created_at", type="time", sql="created_at"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    source_sql = preagg.generate_materialization_sql(model)
+
+    result = preagg.refresh(
+        connection=conn,
+        source_sql=source_sql,
+        table_name="orders_preagg_daily_rollup",
+        mode="engine",
+        dialect="clickhouse",
+    )
+
+    assert result.mode == "engine"
+    assert len(conn.executed_sql) == 1
+    assert "CREATE MATERIALIZED VIEW" in conn.executed_sql[0]
+    assert "TO orders_preagg_daily_rollup_data" in conn.executed_sql[0]
+
+
+def test_refresh_engine_mode_bigquery():
+    """Test engine mode refresh with BigQuery MATERIALIZED VIEW."""
+
+    class MockBigQueryConnection:
+        def __init__(self):
+            self.executed_sql = []
+
+        def execute(self, sql):
+            self.executed_sql.append(sql)
+            return self
+
+    conn = MockBigQueryConnection()
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["revenue"],
+        dimensions=["status"],
+        time_dimension="created_at",
+        granularity="day",
+        refresh_key=RefreshKey(every="2 hours"),
+    )
+
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="created_at", type="time", sql="created_at"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    source_sql = preagg.generate_materialization_sql(model)
+
+    result = preagg.refresh(
+        connection=conn,
+        source_sql=source_sql,
+        table_name="orders_preagg_daily_rollup",
+        mode="engine",
+        dialect="bigquery",
+    )
+
+    assert result.mode == "engine"
+    assert len(conn.executed_sql) == 1
+    assert "CREATE MATERIALIZED VIEW" in conn.executed_sql[0]
+    assert "refresh_interval_minutes = 120" in conn.executed_sql[0]  # 2 hours
+
+
+def test_validate_sql_for_engine_rejects_window_functions():
+    """Test SQL validation rejects window functions for engine mode."""
+    preagg = PreAggregation(
+        name="rollup",
+        measures=["revenue"],
+        dimensions=["status"],
+    )
+
+    # SQL with window function
+    sql_with_window = """
+        SELECT
+            status,
+            SUM(revenue) as total_revenue,
+            ROW_NUMBER() OVER (PARTITION BY status ORDER BY revenue DESC) as rank
+        FROM orders
+        GROUP BY status
+    """
+
+    is_valid, error = preagg._validate_sql_for_engine(sql_with_window, "snowflake")
+    assert is_valid is False
+    assert "Window functions not supported" in error
+
+
+def test_validate_sql_for_engine_accepts_simple_aggregation():
+    """Test SQL validation accepts simple aggregations for engine mode."""
+    preagg = PreAggregation(
+        name="rollup",
+        measures=["revenue"],
+        dimensions=["status"],
+    )
+
+    simple_sql = """
+        SELECT
+            status,
+            SUM(revenue) as total_revenue
+        FROM orders
+        GROUP BY status
+    """
+
+    is_valid, error = preagg._validate_sql_for_engine(simple_sql, "snowflake")
+    assert is_valid is True
+    assert error is None
+
+
+def test_refresh_engine_mode_unsupported_dialect():
+    """Test engine mode raises error for unsupported dialect."""
+    conn = duckdb.connect(":memory:")
+
+    preagg = PreAggregation(
+        name="rollup",
+        measures=["revenue"],
+        dimensions=["status"],
+    )
+
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    )
+
+    source_sql = preagg.generate_materialization_sql(model)
+
+    with pytest.raises(ValueError, match="Unsupported dialect"):
+        preagg.refresh(
+            connection=conn,
+            source_sql=source_sql,
+            table_name="orders_preagg",
+            mode="engine",
+            dialect="mysql",  # Unsupported
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

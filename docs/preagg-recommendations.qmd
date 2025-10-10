@@ -47,9 +47,10 @@ sidemantic preagg refresh models/ --model orders --mode full
 
 **Refresh modes:**
 
-- `incremental` (default): Only update changed partitions
-- `full`: Drop and recreate entire table
-- `merge`: Upsert based on partition keys
+- `incremental` (default): Only update changed partitions (DuckDB only)
+- `full`: Drop and recreate entire table (DuckDB only)
+- `merge`: Upsert based on partition keys (DuckDB only)
+- `engine`: Use database-native materialized views (Snowflake, ClickHouse, BigQuery)
 
 **How it works:**
 
@@ -59,6 +60,27 @@ sidemantic preagg refresh models/ --model orders --mode full
 4. Executes queries to create/update tables
 
 For incremental refresh, reads the `time_dimension` column to find the max timestamp and only processes partitions after that timestamp (within `update_window`).
+
+**Engine mode examples:**
+
+```bash
+# Snowflake DYNAMIC TABLE
+sidemantic preagg refresh models/ \
+  --connection "snowflake://user:pass@account/db/schema" \
+  --mode engine
+
+# BigQuery MATERIALIZED VIEW
+sidemantic preagg refresh models/ \
+  --connection "bigquery://project/dataset" \
+  --mode engine
+
+# ClickHouse MATERIALIZED VIEW
+sidemantic preagg refresh models/ \
+  --connection "clickhouse://localhost/default" \
+  --mode engine
+```
+
+Engine mode creates database-native materialized views that refresh automatically according to the `refresh` configuration in your YAML. The database manages the refresh schedule, so no external orchestration is needed.
 
 See [Pre-Aggregations Guide](pre-aggregations.qmd#materialization-and-refresh) for detailed refresh documentation and scheduling examples.
 

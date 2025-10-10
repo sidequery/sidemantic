@@ -635,6 +635,10 @@ sidemantic preagg refresh models/ --db data.db --mode full
 
 # Merge mode - upsert based on partition keys
 sidemantic preagg refresh models/ --db data.db --mode merge
+
+# Engine mode - use database-native materialized views
+sidemantic preagg refresh models/ --connection "snowflake://..." --mode engine
+sidemantic preagg refresh models/ --connection "bigquery://project/dataset" --mode engine
 ```
 
 **Incremental mode:**
@@ -642,16 +646,28 @@ sidemantic preagg refresh models/ --db data.db --mode merge
 - Checks existing table to determine last refresh timestamp
 - Efficient for large tables with time-based partitions
 - Requires `partition_granularity` and `time_dimension`
+- Supported: DuckDB only
 
 **Full mode:**
 - Drops and recreates the entire table
 - Use when schema changes or data has significant updates
 - Slower but ensures complete accuracy
+- Supported: DuckDB only
 
 **Merge mode:**
 - Updates existing partitions and inserts new ones
 - Good for slowly-changing dimensions
 - Requires database support for MERGE/UPSERT
+- Supported: DuckDB only
+
+**Engine mode:**
+- Uses database-native materialized views
+- Snowflake: DYNAMIC TABLES with automatic refresh
+- ClickHouse: MATERIALIZED VIEWS
+- BigQuery: MATERIALIZED VIEWS with scheduled refresh
+- Database manages refresh automatically
+- Validates SQL compatibility (no window functions, etc.)
+- Supported: Snowflake, ClickHouse, BigQuery
 
 ### Selective Refresh
 

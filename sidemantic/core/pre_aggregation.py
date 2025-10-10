@@ -183,11 +183,12 @@ GROUP BY {group_by_str}"""
         connection: Any,
         source_sql: str,
         table_name: str,
-        mode: Literal["full", "incremental", "merge"] | None = None,
+        mode: Literal["full", "incremental", "merge", "engine"] | None = None,
         watermark_column: str | None = None,
         lookback: str | None = None,
         from_watermark: Any | None = None,
         to_watermark: Any | None = None,
+        dialect: str | None = None,
     ) -> "RefreshResult":
         """Refresh pre-aggregation (STATELESS).
 
@@ -323,6 +324,12 @@ GROUP BY {group_by_str}"""
                 raise ValueError("watermark_column required for merge refresh")
             rows_inserted, rows_updated, new_watermark = self._refresh_merge(
                 connection, source_sql, table_name, watermark_column, lookback, from_watermark, to_watermark
+            )
+        elif mode == "engine":
+            if not dialect:
+                raise ValueError("dialect required for engine refresh mode")
+            rows_inserted, rows_updated, new_watermark = self._refresh_engine(
+                connection, source_sql, table_name, dialect
             )
         else:
             raise ValueError(f"Invalid refresh mode: {mode}")
@@ -534,6 +541,146 @@ GROUP BY {group_by_str}"""
 
         return (-1, -1, new_watermark)
 
+    def _validate_sql_for_engine(self, source_sql: str, dialect: str) -> tuple[bool, str | None]:
+        """Validate SQL is compatible with database-native materialized views.
+
+        Args:
+            source_sql: SQL query to validate
+            dialect: Database dialect (snowflake, clickhouse, bigquery)
+
+        Returns:
+            (is_valid, error_message)
+        """
+        import sqlglot
+
+        # Parse SQL to check for unsupported features
+        try:
+            parsed = sqlglot.parse_one(source_sql, dialect=dialect)
+        except Exception as e:
+            return (False, f"Failed to parse SQL: {e}")
+
+        # Check for window functions (not supported in most materialized views)
+        for node in parsed.walk():
+            if isinstance(node, sqlglot.exp.Window):
+                return (False, "Window functions not supported in materialized views")
+
+        # Dialect-specific restrictions
+        if dialect == "snowflake":
+            # Snowflake DYNAMIC TABLES don't support certain features
+            for node in parsed.walk():
+                if isinstance(node, sqlglot.exp.Join):
+                    # Joins are supported but with restrictions
+                    pass  # Allow for now
+                if isinstance(node, sqlglot.exp.Subquery):
+                    # Subqueries in SELECT are restricted
+                    if node.parent and isinstance(node.parent, sqlglot.exp.Select):
+                        return (False, "Scalar subqueries not fully supported in Snowflake DYNAMIC TABLES")
+
+        elif dialect == "clickhouse":
+            # ClickHouse materialized views have specific restrictions
+            # They must be simple aggregations
+            pass  # Allow for now
+
+        elif dialect == "bigquery":
+            # BigQuery materialized views don't support certain features
+            for node in parsed.walk():
+                if isinstance(node, sqlglot.exp.Join):
+                    join_type = node.args.get("kind", "")
+                    if join_type and join_type.upper() not in ["INNER", "LEFT", "RIGHT", "FULL"]:
+                        return (False, f"BigQuery materialized views don't support {join_type} joins")
+
+        return (True, None)
+
+    def _refresh_engine(
+        self,
+        connection: Any,
+        source_sql: str,
+        table_name: str,
+        dialect: str,
+    ) -> tuple[int, int, Any | None]:
+        """Execute refresh using database-native materialized views.
+
+        Args:
+            connection: Database connection
+            source_sql: SQL query to materialize
+            table_name: Target table/view name
+            dialect: Database dialect (snowflake, clickhouse, bigquery)
+
+        Returns:
+            (rows_inserted, rows_updated, new_watermark)
+        """
+        # Validate SQL is compatible with engine
+        is_valid, error_msg = self._validate_sql_for_engine(source_sql, dialect)
+        if not is_valid:
+            raise ValueError(f"SQL not compatible with {dialect} materialized views: {error_msg}")
+
+        # Generate database-specific DDL
+        if dialect == "snowflake":
+            # Snowflake DYNAMIC TABLE
+            # Get refresh interval from config
+            refresh_interval = "1 HOUR"  # Default
+            if self.refresh_key and self.refresh_key.every:
+                # Convert "1 hour" to "1 HOUR"
+                refresh_interval = self.refresh_key.every.replace(" ", " ").upper()
+
+            ddl = f"""
+CREATE OR REPLACE DYNAMIC TABLE {table_name}
+TARGET_LAG = '{refresh_interval}'
+WAREHOUSE = 'COMPUTE_WH'
+AS
+{source_sql}
+            """.strip()
+
+        elif dialect == "clickhouse":
+            # ClickHouse MATERIALIZED VIEW
+            # Extract target table from view name
+            target_table = f"{table_name}_data"
+
+            ddl = f"""
+CREATE MATERIALIZED VIEW IF NOT EXISTS {table_name}
+TO {target_table}
+AS
+{source_sql}
+            """.strip()
+
+        elif dialect == "bigquery":
+            # BigQuery MATERIALIZED VIEW
+            # Get refresh interval from config
+            enable_refresh = "true"
+            refresh_interval_minutes = 60  # Default 1 hour
+
+            if self.refresh_key and self.refresh_key.every:
+                # Parse interval
+                parts = self.refresh_key.every.split()
+                if len(parts) == 2:
+                    value, unit = parts
+                    value = int(value)
+                    if "minute" in unit.lower():
+                        refresh_interval_minutes = value
+                    elif "hour" in unit.lower():
+                        refresh_interval_minutes = value * 60
+                    elif "day" in unit.lower():
+                        refresh_interval_minutes = value * 60 * 24
+
+            ddl = f"""
+CREATE MATERIALIZED VIEW IF NOT EXISTS {table_name}
+OPTIONS(
+  enable_refresh = {enable_refresh},
+  refresh_interval_minutes = {refresh_interval_minutes}
+)
+AS
+{source_sql}
+            """.strip()
+
+        else:
+            raise ValueError(f"Unsupported dialect for engine mode: {dialect}")
+
+        # Execute DDL
+        connection.execute(ddl)
+
+        # Engine mode: rows are managed by database, return -1
+        return (-1, -1, None)
+
 
 @dataclass
 class RefreshResult:
@@ -542,7 +689,7 @@ class RefreshResult:
     External orchestrators should store the new_watermark for the next refresh.
     """
 
-    mode: Literal["full", "incremental", "merge"]
+    mode: Literal["full", "incremental", "merge", "engine"]
     rows_inserted: int  # -1 if unknown
     rows_updated: int  # -1 if unknown
     new_watermark: Any | None  # Orchestrator stores this for next run

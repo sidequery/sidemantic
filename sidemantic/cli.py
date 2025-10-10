@@ -956,9 +956,16 @@ def refresh(
             # Create schema if it doesn't exist (DuckDB only)
             if preagg_sch:
                 conn.execute(f"CREATE SCHEMA IF NOT EXISTS {preagg_sch}")
+        elif mode == "engine":
+            # For engine mode, use the database adapter
+            temp_layer = SemanticLayer(connection=connection_str)
+            conn = temp_layer._adapter.raw_connection
         else:
             typer.echo(f"Error: Unsupported connection type: {connection_str}", err=True)
-            typer.echo("Currently only DuckDB is supported for refresh", err=True)
+            typer.echo(
+                "Currently only DuckDB is supported for manual refresh modes (full, incremental, merge)", err=True
+            )
+            typer.echo("Use --mode engine for Snowflake, ClickHouse, BigQuery materialized views", err=True)
             raise typer.Exit(1)
 
         # Find pre-aggregations to refresh
@@ -981,6 +988,20 @@ def refresh(
             raise typer.Exit(1)
 
         typer.echo(f"\nRefreshing {len(preaggs_to_refresh)} pre-aggregation(s)...\n", err=True)
+
+        # Get dialect from connection string for engine mode
+        dialect = None
+        if mode == "engine":
+            if "snowflake" in connection_str:
+                dialect = "snowflake"
+            elif "clickhouse" in connection_str:
+                dialect = "clickhouse"
+            elif "bigquery" in connection_str:
+                dialect = "bigquery"
+            else:
+                typer.echo(f"Error: Unsupported dialect for engine mode: {connection_str}", err=True)
+                typer.echo("Engine mode supports: snowflake, clickhouse, bigquery", err=True)
+                raise typer.Exit(1)
 
         # Refresh each pre-aggregation
         for model_name, model_obj, preagg_obj in preaggs_to_refresh:
@@ -1005,6 +1026,7 @@ def refresh(
                 table_name=table_name,
                 mode=mode,
                 watermark_column=watermark_column,
+                dialect=dialect,
             )
 
             # Print result

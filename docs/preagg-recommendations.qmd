@@ -27,6 +27,41 @@ sidemantic preagg apply models/ --connection "bigquery://project/dataset" --top 
 
 ## Commands
 
+### preagg refresh
+
+Materialize and refresh pre-aggregation tables in your database.
+
+```bash
+sidemantic preagg refresh models/ --db data.db
+sidemantic preagg refresh models/ --connection "postgres://localhost:5432/db"
+sidemantic preagg refresh models/ --model orders --mode full
+```
+
+**Options:**
+
+- `--model, -m TEXT`: Only refresh pre-aggregations for this model
+- `--preagg, -p TEXT`: Only refresh this specific pre-aggregation
+- `--mode TEXT`: Refresh mode: `full`, `incremental`, or `merge` (default: `incremental`)
+- `--connection TEXT`: Database connection string
+- `--db PATH`: DuckDB file (shorthand for duckdb:/// connection)
+
+**Refresh modes:**
+
+- `incremental` (default): Only update changed partitions
+- `full`: Drop and recreate entire table
+- `merge`: Upsert based on partition keys
+
+**How it works:**
+
+1. Discovers pre-aggregations from model YAML files
+2. Checks existing tables and current watermarks
+3. Generates materialization/refresh SQL
+4. Executes queries to create/update tables
+
+For incremental refresh, reads the `time_dimension` column to find the max timestamp and only processes partitions after that timestamp (within `update_window`).
+
+See [Pre-Aggregations Guide](pre-aggregations.qmd#materialization-and-refresh) for detailed refresh documentation and scheduling examples.
+
 ### preagg recommend
 
 Analyzes query patterns and shows detailed recommendations with benefit scores.
@@ -324,7 +359,7 @@ sidemantic preagg apply models/ \
   --top 5
 
 # 4. Refresh the new pre-aggregations
-sidemantic refresh models/ --connection "bigquery://prod-project/analytics"
+sidemantic preagg refresh models/ --connection "bigquery://prod-project/analytics"
 ```
 
 ### Development Testing
@@ -383,7 +418,7 @@ Recommendations based solely on query patterns, not actual query execution times
 After applying recommendations:
 
 1. **Review generated YAML**: Ensure pre-aggregations make sense for your data
-2. **Materialize tables**: Use `sidemantic refresh` to create physical tables
+2. **Materialize tables**: Use `sidemantic preagg refresh` to create physical tables
 3. **Enable routing**: Set `use_preaggregations=True` in your semantic layer
 4. **Monitor performance**: Compare query times before/after
 

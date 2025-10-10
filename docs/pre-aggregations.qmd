@@ -5,7 +5,7 @@ title: "Pre-Aggregations"
 Pre-aggregations are materialized rollup tables that store pre-computed aggregations for significant query performance improvements. The query engine can automatically route queries to matching pre-aggregations instead of scanning base tables. Pre-aggregations can be configured to refresh automatically on schedules or when source data changes.
 
 ::: {.callout-tip}
-## Automatic Pre-Aggregation Recommendations
+## Automatic Recommendations
 
 Sidemantic can automatically analyze your query history and recommend optimal pre-aggregations. This is unique to Sidemantic—no manual analysis of query patterns required.
 

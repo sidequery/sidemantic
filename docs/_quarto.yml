@@ -46,7 +46,7 @@ website:
             href: cli.qmd
           - text: "Migrator"
             href: migrator.qmd
-          - text: "Pre-Aggregation Recommendations"
+          - text: "Pre-Aggregations"
             href: preagg-recommendations.qmd
           - text: "Workbench"
             href: workbench.qmd

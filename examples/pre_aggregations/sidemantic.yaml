@@ -1,0 +1,11 @@
+models_dir: models
+
+connection:
+  type: duckdb
+  path: data/warehouse.db
+
+# Pre-aggregation configuration
+preagg_schema: preagg  # Store in 'preagg' schema
+
+# Note: Pre-aggregations are automatically used when querying via CLI
+# The schema above tells the system where to find/create pre-agg tables

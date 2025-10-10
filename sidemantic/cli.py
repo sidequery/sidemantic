@@ -935,6 +935,10 @@ def refresh(
 
             db_path = connection_str.replace("duckdb:///", "")
             conn = duckdb.connect(db_path)
+
+            # Create schema if it doesn't exist (DuckDB only)
+            if preagg_sch:
+                conn.execute(f"CREATE SCHEMA IF NOT EXISTS {preagg_sch}")
         else:
             typer.echo(f"Error: Unsupported connection type: {connection_str}", err=True)
             typer.echo("Currently only DuckDB is supported for refresh", err=True)

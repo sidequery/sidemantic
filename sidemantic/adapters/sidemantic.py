@@ -274,6 +274,34 @@ class SidemanticAdapter(BaseAdapter):
             _, sql_segments = parse_sql_definitions(model_def["sql_segments"])
             segments.extend(sql_segments)
 
+        # Parse pre-aggregations
+        from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey
+
+        pre_aggregations = []
+        for preagg_def in model_def.get("pre_aggregations", []):
+            # Parse refresh_key if present
+            refresh_key = None
+            if "refresh_key" in preagg_def:
+                refresh_key_def = preagg_def["refresh_key"]
+                if isinstance(refresh_key_def, dict):
+                    refresh_key = RefreshKey(
+                        every=refresh_key_def.get("every"),
+                        sql=refresh_key_def.get("sql"),
+                    )
+
+            preagg = PreAggregation(
+                name=preagg_def.get("name"),
+                measures=preagg_def.get("measures", []),
+                dimensions=preagg_def.get("dimensions", []),
+                time_dimension=preagg_def.get("time_dimension"),
+                granularity=preagg_def.get("granularity"),
+                refresh_key=refresh_key,
+                indexes=preagg_def.get("indexes"),
+                build_range_start=preagg_def.get("build_range_start"),
+                build_range_end=preagg_def.get("build_range_end"),
+            )
+            pre_aggregations.append(preagg)
+
         return Model(
             name=name,
             table=model_def.get("table"),
@@ -284,6 +312,7 @@ class SidemanticAdapter(BaseAdapter):
             dimensions=dimensions,
             metrics=measures,
             segments=segments,
+            pre_aggregations=pre_aggregations,
         )
 
     def _parse_metric(self, metric_def: dict) -> Metric | None:

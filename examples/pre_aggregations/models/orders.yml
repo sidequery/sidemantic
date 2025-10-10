@@ -1,0 +1,36 @@
+models:
+- name: orders
+  table: orders
+  description: E-commerce orders model
+  primary_key: order_id
+  dimensions:
+  - name: order_id
+    sql: order_id
+    type: categorical
+  - name: customer_id
+    sql: customer_id
+    type: categorical
+  - name: status
+    sql: status
+    type: categorical
+    description: Order status (pending, completed, cancelled)
+  - name: order_date
+    sql: order_date
+    type: time
+    granularity: day
+  - name: region
+    sql: region
+    type: categorical
+  metrics:
+  - name: revenue
+    agg: sum
+    sql: amount
+    description: Total order amount
+  - name: order_count
+    agg: count
+    sql: order_id
+    description: Number of orders
+  - name: avg_order_value
+    agg: avg
+    sql: amount
+    description: Average order value

@@ -1,11 +1,11 @@
-# Coverage Analysis Example
+# Migrator Example
 
-This example demonstrates how to bootstrap a semantic layer from raw SQL queries.
+This example demonstrates how to migrate from raw SQL queries to a semantic layer.
 
 ## Directory Structure
 
 ```
-coverage_analysis/
+migrator/
 ├── raw_queries/           # Raw SQL queries from your application
 │   ├── revenue_by_status.sql
 │   ├── customer_demographics.sql
@@ -25,10 +25,10 @@ coverage_analysis/
 Generate model definitions and rewritten queries from your raw SQL:
 
 ```bash
-cd examples/coverage_analysis
+cd examples/migrator
 
 # Generate models and rewritten queries
-uv run sidemantic coverage --queries raw_queries/ --generate-models output/
+uv run sidemantic migrator --queries raw_queries/ --generate-models output/
 ```
 
 This will create:
@@ -41,10 +41,10 @@ If you already have a semantic layer, analyze which queries can be rewritten:
 
 ```bash
 # Compare queries against existing semantic layer
-uv run sidemantic coverage models/ --queries raw_queries/
+uv run sidemantic migrator models/ --queries raw_queries/
 
 # Show detailed analysis for each query
-uv run sidemantic coverage models/ --queries raw_queries/ --verbose
+uv run sidemantic migrator models/ --queries raw_queries/ --verbose
 ```
 
 ## What Gets Generated

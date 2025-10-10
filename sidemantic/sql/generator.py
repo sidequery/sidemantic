@@ -1870,11 +1870,11 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 preagg_col = f"{dim_name}_{preagg.granularity}"
 
                 if gran == preagg.granularity:
-                    # Exact match - use as is
-                    select_exprs.append(f"{preagg_col} as {dim_name}")
+                    # Exact match - use as is with proper alias
+                    select_exprs.append(f"{preagg_col} as {dim_name}__{gran}")
                 else:
                     # Roll up to coarser granularity
-                    select_exprs.append(f"DATE_TRUNC('{gran}', {preagg_col}) as {dim_name}")
+                    select_exprs.append(f"DATE_TRUNC('{gran}', {preagg_col}) as {dim_name}__{gran}")
             else:
                 # Regular dimension - use as is
                 select_exprs.append(f"{dim_name}")

@@ -32,6 +32,7 @@ class SemanticLayer:
                 Supported URLs:
                 - duckdb:///:memory: (default)
                 - duckdb:///path/to/db.duckdb
+                - duckdb://md:database_name (MotherDuck)
                 - postgres://user:pass@host:port/dbname
                 - bigquery://project_id/dataset_id
                 - snowflake://user:password@account/database/schema
@@ -59,7 +60,12 @@ class SemanticLayer:
         elif isinstance(connection, str):
             self.connection_string = connection
 
-            if connection.startswith("duckdb://"):
+            if connection.startswith("duckdb://md:"):
+                from sidemantic.db.motherduck import MotherDuckAdapter
+
+                self.adapter = MotherDuckAdapter.from_url(connection)
+                self.dialect = dialect or "duckdb"
+            elif connection.startswith("duckdb://"):
                 from sidemantic.db.duckdb import DuckDBAdapter
 
                 self.adapter = DuckDBAdapter.from_url(connection)
@@ -97,7 +103,7 @@ class SemanticLayer:
             else:
                 raise ValueError(
                     f"Unsupported connection URL: {connection}. "
-                    "Supported: duckdb:///, postgres://, bigquery://, snowflake://, clickhouse://, databricks://, spark://, or BaseDatabaseAdapter instance"
+                    "Supported: duckdb:///, duckdb://md:, postgres://, bigquery://, snowflake://, clickhouse://, databricks://, spark://, or BaseDatabaseAdapter instance"
                 )
         else:
             raise TypeError(f"connection must be a string URL or BaseDatabaseAdapter instance, got {type(connection)}")

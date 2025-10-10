@@ -9,6 +9,7 @@ Sidemantic supports multiple database engines for executing semantic layer queri
 | Database | Production Ready | Notes |
 |----------|:----------------:|-------|
 | **DuckDB** | ✅ | Default, fully supported |
+| **MotherDuck** | ✅ | Cloud DuckDB, fully supported |
 | **PostgreSQL** | ✅ | Full feature support |
 | **BigQuery** | ✅ | Google Cloud Platform |
 | **Snowflake** | ✅ | Cloud data warehouse |
@@ -75,6 +76,46 @@ connection: duckdb:///data/warehouse.duckdb?access_mode=read_only
 sidemantic query models/ --connection "duckdb:///data.duckdb" \
   --sql "SELECT * FROM orders"
 ```
+
+### MotherDuck
+
+Cloud DuckDB with no additional installation required (uses DuckDB client).
+
+**Format:**
+```yaml
+connection: duckdb://md:database_name
+```
+
+**Example:**
+```yaml
+connection: duckdb://md:my_analytics_db
+```
+
+**Authentication:**
+
+Set your MotherDuck service token as an environment variable:
+```bash
+export MOTHERDUCK_TOKEN=your_service_token_here
+```
+
+Get your token from [motherduck.com](https://motherduck.com).
+
+**CLI example:**
+```bash
+export MOTHERDUCK_TOKEN=your_token
+sidemantic query models/ --connection "duckdb://md:my_db" \
+  --sql "SELECT * FROM orders"
+```
+
+**Features:**
+
+- Cloud-native DuckDB with data persistence
+- Share databases across teams
+- Access from anywhere
+- Same DuckDB SQL syntax and features
+- Automatic scaling
+
+**See also:** [MotherDuck example](https://github.com/sidequery/sidemantic/tree/main/examples/motherduck_example.py)
 
 ### PostgreSQL
 

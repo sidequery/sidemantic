@@ -31,4 +31,8 @@ def __getattr__(name):
         from sidemantic.db.databricks import DatabricksAdapter
 
         return DatabricksAdapter
+    if name == "MotherDuckAdapter":
+        from sidemantic.db.motherduck import MotherDuckAdapter
+
+        return MotherDuckAdapter
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

@@ -42,7 +42,7 @@ def create_sample_data():
     regions = ['North', 'South', 'East', 'West', 'Central']
 
     conn.execute("""
-        INSERT INTO orders
+        INSERT OR REPLACE INTO orders
         SELECT
             'ORD-' || LPAD(CAST(seq AS VARCHAR), 6, '0') as order_id,
             'CUST-' || LPAD(CAST((seq % 1000) AS VARCHAR), 4, '0') as customer_id,

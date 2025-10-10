@@ -87,6 +87,87 @@ class PreAggregation(BaseModel):
         """
         return f"{model_name}_preagg_{self.name}"
 
+    def generate_materialization_sql(self, model: Any) -> str:
+        """Generate SQL to materialize this pre-aggregation.
+
+        Args:
+            model: The Model object that owns this pre-aggregation
+
+        Returns:
+            SQL query to create/populate the pre-aggregation table
+
+        Example:
+            >>> preagg = PreAggregation(
+            ...     name="daily",
+            ...     measures=["count", "revenue"],
+            ...     dimensions=["status"],
+            ...     time_dimension="created_at",
+            ...     granularity="day"
+            ... )
+            >>> sql = preagg.generate_materialization_sql(model)
+            # Returns:
+            # SELECT
+            #   DATE_TRUNC('day', created_at) as created_at_day,
+            #   status,
+            #   COUNT(*) as count_raw,
+            #   SUM(amount) as revenue_raw
+            # FROM orders
+            # GROUP BY 1, 2
+        """
+        select_exprs = []
+        group_by_positions = []
+        pos = 1
+
+        # Add time dimension with granularity
+        if self.time_dimension and self.granularity:
+            time_dim = model.get_dimension(self.time_dimension)
+            if time_dim:
+                col_name = f"{self.time_dimension}_{self.granularity}"
+                select_exprs.append(f"DATE_TRUNC('{self.granularity}', {time_dim.sql_expr}) as {col_name}")
+                group_by_positions.append(str(pos))
+                pos += 1
+
+        # Add dimensions
+        if self.dimensions:
+            for dim_name in self.dimensions:
+                dim = model.get_dimension(dim_name)
+                if dim:
+                    select_exprs.append(f"{dim.sql_expr} as {dim_name}")
+                    group_by_positions.append(str(pos))
+                    pos += 1
+
+        # Add measures (aggregations)
+        if self.measures:
+            for measure_name in self.measures:
+                measure = model.get_metric(measure_name)
+                if measure:
+                    # Generate aggregation expression
+                    agg_type = measure.agg.upper()
+                    if agg_type == "COUNT" and not measure.sql:
+                        # COUNT(*) case
+                        select_exprs.append(f"COUNT(*) as {measure_name}_raw")
+                    elif agg_type == "COUNT_DISTINCT":
+                        select_exprs.append(f"COUNT(DISTINCT {measure.sql_expr}) as {measure_name}_raw")
+                    else:
+                        select_exprs.append(f"{agg_type}({measure.sql_expr}) as {measure_name}_raw")
+
+        # Build FROM clause
+        if model.sql:
+            from_clause = f"({model.sql}) AS t"
+        else:
+            from_clause = model.table
+
+        # Build SQL
+        select_str = ",\n  ".join(select_exprs)
+        group_by_str = ", ".join(group_by_positions)
+
+        sql = f"""SELECT
+  {select_str}
+FROM {from_clause}
+GROUP BY {group_by_str}"""
+
+        return sql
+
     def refresh(
         self,
         connection: Any,

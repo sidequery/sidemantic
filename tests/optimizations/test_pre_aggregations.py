@@ -809,5 +809,154 @@ def test_refresh_result_dataclass():
     assert result.duration_seconds == 1.23
 
 
+def test_generate_materialization_sql():
+    """Test generate_materialization_sql() method."""
+    model = Model(
+        name="orders",
+        table="public.orders",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="region", type="categorical", sql="region"),
+            Dimension(name="created_at", type="time", sql="created_at"),
+        ],
+        metrics=[
+            Metric(name="count", agg="count"),
+            Metric(name="revenue", agg="sum", sql="amount"),
+            Metric(name="unique_customers", agg="count_distinct", sql="customer_id"),
+        ],
+    )
+
+    # Test with time dimension and granularity
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["count", "revenue", "unique_customers"],
+        dimensions=["status", "region"],
+        time_dimension="created_at",
+        granularity="day",
+    )
+
+    sql = preagg.generate_materialization_sql(model)
+
+    # Verify SQL structure
+    assert "SELECT" in sql
+    assert "FROM public.orders" in sql
+    assert "GROUP BY" in sql
+
+    # Verify time dimension with granularity
+    assert "DATE_TRUNC('day', created_at) as created_at_day" in sql
+
+    # Verify dimensions
+    assert "status as status" in sql
+    assert "region as region" in sql
+
+    # Verify measures with _raw suffix
+    assert "COUNT(*) as count_raw" in sql
+    assert "SUM(amount) as revenue_raw" in sql
+    assert "COUNT(DISTINCT customer_id) as unique_customers_raw" in sql
+
+
+def test_generate_materialization_sql_no_time_dimension():
+    """Test generate_materialization_sql() without time dimension."""
+    model = Model(
+        name="products",
+        table="products",
+        dimensions=[
+            Dimension(name="category", type="categorical", sql="category"),
+            Dimension(name="brand", type="categorical", sql="brand"),
+        ],
+        metrics=[
+            Metric(name="avg_price", agg="avg", sql="price"),
+        ],
+    )
+
+    preagg = PreAggregation(
+        name="category_rollup",
+        measures=["avg_price"],
+        dimensions=["category", "brand"],
+    )
+
+    sql = preagg.generate_materialization_sql(model)
+
+    # Should not have DATE_TRUNC
+    assert "DATE_TRUNC" not in sql
+
+    # Should have dimensions and measures
+    assert "category as category" in sql
+    assert "brand as brand" in sql
+    assert "AVG(price) as avg_price_raw" in sql
+
+
+def test_generate_materialization_sql_with_duckdb():
+    """Test generated SQL actually works with DuckDB."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE orders (
+            order_id INTEGER,
+            customer_id INTEGER,
+            created_at TIMESTAMP,
+            status VARCHAR,
+            amount DECIMAL(10, 2)
+        )
+    """)
+
+    conn.execute("""
+        INSERT INTO orders VALUES
+            (1, 101, '2024-01-01 10:00:00', 'completed', 100.00),
+            (2, 102, '2024-01-01 11:00:00', 'completed', 200.00),
+            (3, 103, '2024-01-01 12:00:00', 'pending', 150.00),
+            (4, 104, '2024-01-02 10:00:00', 'completed', 300.00),
+            (5, 105, '2024-01-02 11:00:00', 'cancelled', 50.00),
+            (6, 106, '2024-01-03 10:00:00', 'completed', 400.00)
+    """)
+
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="created_at", type="time", sql="created_at"),
+        ],
+        metrics=[
+            Metric(name="count", agg="count"),
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    preagg = PreAggregation(
+        name="daily_rollup",
+        measures=["count", "revenue"],
+        dimensions=["status"],
+        time_dimension="created_at",
+        granularity="day",
+    )
+
+    # Generate SQL
+    source_sql = preagg.generate_materialization_sql(model)
+
+    # Execute it to create table
+    table_name = preagg.get_table_name("orders")
+    conn.execute(f"CREATE TABLE {table_name} AS {source_sql}")
+
+    # Verify results
+    rows = conn.execute(f"SELECT * FROM {table_name} ORDER BY created_at_day, status").fetchall()
+
+    # Should have 5 rows (3 days * statuses)
+    # Day 1: completed (2), pending (1)
+    # Day 2: completed (1), cancelled (1)
+    # Day 3: completed (1)
+    assert len(rows) == 5
+
+    # Check specific aggregation
+    result = conn.execute(f"""
+        SELECT count_raw, revenue_raw
+        FROM {table_name}
+        WHERE created_at_day = '2024-01-01' AND status = 'completed'
+    """).fetchone()
+
+    assert result[0] == 2  # 2 orders
+    assert result[1] == 300.00  # 100 + 200
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

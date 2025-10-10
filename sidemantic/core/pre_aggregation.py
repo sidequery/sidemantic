@@ -76,16 +76,26 @@ class PreAggregation(BaseModel):
     build_range_start: str | None = Field(None, description="SQL expression for start of data range to aggregate")
     build_range_end: str | None = Field(None, description="SQL expression for end of data range to aggregate")
 
-    def get_table_name(self, model_name: str) -> str:
+    def get_table_name(self, model_name: str, database: str | None = None, schema: str | None = None) -> str:
         """Generate the physical table name for this pre-aggregation.
 
         Args:
             model_name: Name of the base model
+            database: Optional database name (for cross-database queries)
+            schema: Optional schema name (for schema-qualified tables)
 
         Returns:
-            Table name in format: {model_name}_preagg_{preagg_name}
+            Qualified table name in format: [database.][schema.]{model_name}_preagg_{preagg_name}
         """
-        return f"{model_name}_preagg_{self.name}"
+        table_name = f"{model_name}_preagg_{self.name}"
+
+        # Build fully qualified name if database/schema provided
+        if schema:
+            table_name = f"{schema}.{table_name}"
+        if database:
+            table_name = f"{database}.{table_name}"
+
+        return table_name
 
     def generate_materialization_sql(self, model: Any) -> str:
         """Generate SQL to materialize this pre-aggregation.

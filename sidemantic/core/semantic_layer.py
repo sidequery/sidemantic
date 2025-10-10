@@ -22,6 +22,8 @@ class SemanticLayer:
         dialect: str | None = None,
         auto_register: bool = True,
         use_preaggregations: bool = False,
+        preagg_database: str | None = None,
+        preagg_schema: str | None = None,
     ):
         """Initialize semantic layer.
 
@@ -39,11 +41,15 @@ class SemanticLayer:
             dialect: SQL dialect for query generation (optional, inferred from adapter)
             auto_register: Set as current layer for auto-registration (default: True)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
+            preagg_database: Optional database name for pre-aggregation tables
+            preagg_schema: Optional schema name for pre-aggregation tables
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
         self.graph = SemanticGraph()
         self.use_preaggregations = use_preaggregations
+        self.preagg_database = preagg_database
+        self.preagg_schema = preagg_schema
 
         # Initialize adapter from connection string or use provided adapter
         if isinstance(connection, BaseDatabaseAdapter):
@@ -280,7 +286,12 @@ class SemanticLayer:
         # Determine if pre-aggregations should be used
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
-        generator = SQLGenerator(self.graph, dialect=dialect or self.dialect)
+        generator = SQLGenerator(
+            self.graph,
+            dialect=dialect or self.dialect,
+            preagg_database=self.preagg_database,
+            preagg_schema=self.preagg_schema,
+        )
 
         return generator.generate(
             metrics=metrics,

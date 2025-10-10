@@ -57,6 +57,8 @@ class SidemanticConfig(BaseModel):
         connection:
           type: duckdb
           path: data/warehouse.db
+        preagg_database: analytics
+        preagg_schema: preagg
         pg_server:
           port: 5433
           username: admin
@@ -69,6 +71,8 @@ class SidemanticConfig(BaseModel):
             "type": "duckdb",
             "path": "data/warehouse.db"
           },
+          "preagg_database": "analytics",
+          "preagg_schema": "preagg",
           "pg_server": {
             "port": 5433,
             "username": "admin",
@@ -81,6 +85,8 @@ class SidemanticConfig(BaseModel):
         default=".", description="Directory containing semantic layer files (defaults to current dir)"
     )
     connection: Connection | None = Field(default=None, description="Database connection configuration")
+    preagg_database: str | None = Field(default=None, description="Database for pre-aggregation tables (optional)")
+    preagg_schema: str | None = Field(default=None, description="Schema for pre-aggregation tables (optional)")
     pg_server: PostgresServerConfig = Field(
         default_factory=PostgresServerConfig, description="PostgreSQL server settings (ALPHA)"
     )
@@ -111,6 +117,8 @@ class SidemanticConfig(BaseModel):
         return SidemanticConfig(
             models_dir=str(models_path),
             connection=connection,
+            preagg_database=self.preagg_database,
+            preagg_schema=self.preagg_schema,
             pg_server=self.pg_server,
         )
 

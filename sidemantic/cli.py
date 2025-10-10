@@ -358,10 +358,12 @@ def query(
                     connection_str = f"duckdb:///{db_files[0].absolute()}"
 
         # Load semantic layer (only pass connection if not None)
+        preagg_db = _loaded_config.preagg_database if _loaded_config else None
+        preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
         if connection_str:
-            layer = SemanticLayer(connection=connection_str)
+            layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
         else:
-            layer = SemanticLayer()
+            layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
         load_from_directory(layer, str(models))
 
         if not layer.graph.models:
@@ -469,10 +471,12 @@ def serve(
     password_resolved = password or (_loaded_config.pg_server.password if _loaded_config else None)
 
     # Create semantic layer (only pass connection if not None, otherwise use default)
+    preagg_db = _loaded_config.preagg_database if _loaded_config else None
+    preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
     if connection_str:
-        layer = SemanticLayer(connection=connection_str)
+        layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
     else:
-        layer = SemanticLayer()
+        layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
 
     # Load models
     load_from_directory(layer, str(directory))
@@ -622,123 +626,6 @@ def workbench(
             run_workbench(directory)
 
 
-@app.command()
-def refresh(
-    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
-    model: str = typer.Option(None, "--model", "-m", help="Only refresh pre-aggregations for this model"),
-    preagg: str = typer.Option(None, "--preagg", "-p", help="Only refresh this specific pre-aggregation"),
-    mode: str = typer.Option("incremental", "--mode", help="Refresh mode: full, incremental, or merge"),
-    connection: str = typer.Option(
-        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
-    ),
-    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
-):
-    """
-    Refresh pre-aggregation tables.
-
-    Generates materialization SQL for pre-aggregations and executes refresh.
-    Stateless: watermarks derived from existing tables. Use cron/Airflow for scheduling.
-
-    Examples:
-      sidemantic refresh models/ --db data.db
-      sidemantic refresh models/ --model orders --mode full
-      sidemantic refresh models/ --connection "postgres://localhost:5432/db"
-    """
-    if not directory.exists():
-        typer.echo(f"Error: Directory {directory} does not exist", err=True)
-        raise typer.Exit(1)
-
-    try:
-        # Load semantic layer
-        layer = SemanticLayer()
-        load_from_directory(layer, str(directory))
-
-        if not layer.graph.models:
-            typer.echo("Error: No models found", err=True)
-            raise typer.Exit(1)
-
-        # Build connection string
-        connection_str = None
-        if connection:
-            connection_str = connection
-        elif db:
-            connection_str = f"duckdb:///{db.absolute()}"
-        elif _loaded_config and _loaded_config.connection:
-            connection_str = build_connection_string(_loaded_config)
-        else:
-            typer.echo("Error: No database connection specified. Use --db or --connection", err=True)
-            raise typer.Exit(1)
-
-        # Connect to database
-        if connection_str.startswith("duckdb://"):
-            import duckdb
-
-            db_path = connection_str.replace("duckdb:///", "")
-            conn = duckdb.connect(db_path)
-        else:
-            typer.echo(f"Error: Unsupported connection type: {connection_str}", err=True)
-            typer.echo("Currently only DuckDB is supported for refresh", err=True)
-            raise typer.Exit(1)
-
-        # Find pre-aggregations to refresh
-        preaggs_to_refresh = []
-
-        for model_name, model_obj in layer.graph.models.items():
-            # Filter by model if specified
-            if model and model_name != model:
-                continue
-
-            for preagg_obj in model_obj.pre_aggregations:
-                # Filter by preagg name if specified
-                if preagg and preagg_obj.name != preagg:
-                    continue
-
-                preaggs_to_refresh.append((model_name, model_obj, preagg_obj))
-
-        if not preaggs_to_refresh:
-            typer.echo("No pre-aggregations found to refresh", err=True)
-            raise typer.Exit(1)
-
-        typer.echo(f"\nRefreshing {len(preaggs_to_refresh)} pre-aggregation(s)...\n", err=True)
-
-        # Refresh each pre-aggregation
-        for model_name, model_obj, preagg_obj in preaggs_to_refresh:
-            table_name = preagg_obj.get_table_name(model_name)
-
-            # Generate materialization SQL
-            source_sql = preagg_obj.generate_materialization_sql(model_obj)
-
-            # Determine watermark column
-            watermark_column = None
-            if mode in ["incremental", "merge"] and preagg_obj.time_dimension and preagg_obj.granularity:
-                watermark_column = f"{preagg_obj.time_dimension}_{preagg_obj.granularity}"
-
-            # Refresh
-            typer.echo(f"Refreshing {model_name}.{preagg_obj.name} ({mode})...", err=True)
-            result = preagg_obj.refresh(
-                connection=conn,
-                source_sql=source_sql,
-                table_name=table_name,
-                mode=mode,
-                watermark_column=watermark_column,
-            )
-
-            # Print result
-            if result.rows_inserted >= 0:
-                typer.echo(f"  ✓ {table_name}: {result.rows_inserted} rows in {result.duration_seconds:.2f}s", err=True)
-            else:
-                typer.echo(f"  ✓ {table_name}: completed in {result.duration_seconds:.2f}s", err=True)
-
-        typer.echo("\nDone!", err=True)
-
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        import traceback
-
-        traceback.print_exc()
-        raise typer.Exit(1)
-
-
 # Pre-aggregation recommendation commands
 preagg_app = typer.Typer(help="Pre-aggregation recommendation and management")
 app.add_typer(preagg_app, name="preagg")
@@ -777,7 +664,9 @@ def preagg_recommend(
             connection_str = connection if connection else f"duckdb:///{db.absolute()}"
             from sidemantic import SemanticLayer
 
-            layer = SemanticLayer(connection=connection_str)
+            preagg_db = _loaded_config.preagg_database if _loaded_config else None
+            preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
+            layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
             adapter = layer._adapter
             typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
             recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
@@ -883,7 +772,9 @@ def preagg_apply(
             connection_str = connection if connection else f"duckdb:///{db.absolute()}"
             from sidemantic import SemanticLayer
 
-            layer = SemanticLayer(connection=connection_str)
+            preagg_db = _loaded_config.preagg_database if _loaded_config else None
+            preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
+            layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
             adapter = layer._adapter
             typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
             recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
@@ -980,6 +871,128 @@ def preagg_apply(
             typer.echo("Remove --dry-run to apply changes", err=True)
         else:
             typer.echo(f"\n✓ Added {updated_count} pre-aggregations to model files", err=True)
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        import traceback
+
+        traceback.print_exc()
+        raise typer.Exit(1)
+
+
+@preagg_app.command("refresh")
+def refresh(
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    model: str = typer.Option(None, "--model", "-m", help="Only refresh pre-aggregations for this model"),
+    preagg: str = typer.Option(None, "--preagg", "-p", help="Only refresh this specific pre-aggregation"),
+    mode: str = typer.Option("incremental", "--mode", help="Refresh mode: full, incremental, or merge"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+):
+    """
+    Refresh pre-aggregation tables.
+
+    Generates materialization SQL for pre-aggregations and executes refresh.
+    Stateless: watermarks derived from existing tables. Use cron/Airflow for scheduling.
+
+    Examples:
+      sidemantic preagg refresh models/ --db data.db
+      sidemantic preagg refresh models/ --model orders --mode full
+      sidemantic preagg refresh models/ --connection "postgres://localhost:5432/db"
+    """
+    if not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    try:
+        # Load semantic layer
+        preagg_db = _loaded_config.preagg_database if _loaded_config else None
+        preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
+        layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
+        load_from_directory(layer, str(directory))
+
+        if not layer.graph.models:
+            typer.echo("Error: No models found", err=True)
+            raise typer.Exit(1)
+
+        # Build connection string
+        connection_str = None
+        if connection:
+            connection_str = connection
+        elif db:
+            connection_str = f"duckdb:///{db.absolute()}"
+        elif _loaded_config and _loaded_config.connection:
+            connection_str = build_connection_string(_loaded_config)
+        else:
+            typer.echo("Error: No database connection specified. Use --db or --connection", err=True)
+            raise typer.Exit(1)
+
+        # Connect to database
+        if connection_str.startswith("duckdb://"):
+            import duckdb
+
+            db_path = connection_str.replace("duckdb:///", "")
+            conn = duckdb.connect(db_path)
+        else:
+            typer.echo(f"Error: Unsupported connection type: {connection_str}", err=True)
+            typer.echo("Currently only DuckDB is supported for refresh", err=True)
+            raise typer.Exit(1)
+
+        # Find pre-aggregations to refresh
+        preaggs_to_refresh = []
+
+        for model_name, model_obj in layer.graph.models.items():
+            # Filter by model if specified
+            if model and model_name != model:
+                continue
+
+            for preagg_obj in model_obj.pre_aggregations:
+                # Filter by preagg name if specified
+                if preagg and preagg_obj.name != preagg:
+                    continue
+
+                preaggs_to_refresh.append((model_name, model_obj, preagg_obj))
+
+        if not preaggs_to_refresh:
+            typer.echo("No pre-aggregations found to refresh", err=True)
+            raise typer.Exit(1)
+
+        typer.echo(f"\nRefreshing {len(preaggs_to_refresh)} pre-aggregation(s)...\n", err=True)
+
+        # Refresh each pre-aggregation
+        for model_name, model_obj, preagg_obj in preaggs_to_refresh:
+            # Get database/schema from config if available
+            database = _loaded_config.preagg_database if _loaded_config else None
+            schema = _loaded_config.preagg_schema if _loaded_config else None
+            table_name = preagg_obj.get_table_name(model_name, database=database, schema=schema)
+
+            # Generate materialization SQL
+            source_sql = preagg_obj.generate_materialization_sql(model_obj)
+
+            # Determine watermark column
+            watermark_column = None
+            if mode in ["incremental", "merge"] and preagg_obj.time_dimension and preagg_obj.granularity:
+                watermark_column = f"{preagg_obj.time_dimension}_{preagg_obj.granularity}"
+
+            # Refresh
+            typer.echo(f"Refreshing {model_name}.{preagg_obj.name} ({mode})...", err=True)
+            result = preagg_obj.refresh(
+                connection=conn,
+                source_sql=source_sql,
+                table_name=table_name,
+                mode=mode,
+                watermark_column=watermark_column,
+            )
+
+            # Print result
+            if result.rows_inserted >= 0:
+                typer.echo(f"  ✓ {table_name}: {result.rows_inserted} rows in {result.duration_seconds:.2f}s", err=True)
+            else:
+                typer.echo(f"  ✓ {table_name}: completed in {result.duration_seconds:.2f}s", err=True)
+
+        typer.echo("\nDone!", err=True)
 
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)

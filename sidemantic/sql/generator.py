@@ -11,15 +11,25 @@ from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 class SQLGenerator:
     """Generates SQL queries from semantic layer definitions using SQLGlot builder API."""
 
-    def __init__(self, graph: SemanticGraph, dialect: str = "duckdb"):
+    def __init__(
+        self,
+        graph: SemanticGraph,
+        dialect: str = "duckdb",
+        preagg_database: str | None = None,
+        preagg_schema: str | None = None,
+    ):
         """Initialize SQL generator.
 
         Args:
             graph: Semantic graph with models and metrics
             dialect: SQL dialect for generation (default: duckdb)
+            preagg_database: Optional database name for pre-aggregation tables
+            preagg_schema: Optional schema name for pre-aggregation tables
         """
         self.graph = graph
         self.dialect = dialect
+        self.preagg_database = preagg_database
+        self.preagg_schema = preagg_schema
 
     def generate_view(
         self,
@@ -1841,7 +1851,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
         Returns:
             SQL query string
         """
-        preagg_table = preagg.get_table_name(model.name)
+        preagg_table = preagg.get_table_name(model.name, database=self.preagg_database, schema=self.preagg_schema)
 
         # Build SELECT clause
         select_exprs = []

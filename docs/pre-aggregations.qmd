@@ -2,7 +2,7 @@
 title: "Pre-Aggregations"
 ---
 
-Pre-aggregations are materialized rollup tables that store pre-computed aggregations for significant query performance improvements. The query engine can automatically route queries to matching pre-aggregations instead of scanning base tables.
+Pre-aggregations are materialized rollup tables that store pre-computed aggregations for significant query performance improvements. The query engine can automatically route queries to matching pre-aggregations instead of scanning base tables. Pre-aggregations can be configured to refresh automatically on schedules or when source data changes.
 
 ::: {.callout-tip}
 ## Automatic Pre-Aggregation Recommendations
@@ -116,14 +116,13 @@ This creates a pre-aggregation that:
 
 #### Optional Fields
 
-| Field | Description | Default |
+| Field | Description | Example |
 |-------|-------------|---------|
-| `time_dimension` | Time-based dimension for temporal grouping | `null` |
-| `granularity` | Time aggregation level (`hour`, `day`, `week`, `month`, `quarter`, `year`) | `null` |
-| `partition_granularity` | Partition size for incremental refresh | `null` |
-| `refresh_key` | Refresh strategy configuration | `null` |
-| `scheduled_refresh` | Enable scheduled refresh | `true` |
-| `indexes` | Index definitions for performance | `[]` |
+| `time_dimension` | Time-based dimension for temporal grouping | `created_at` |
+| `granularity` | Time aggregation level | `day` |
+| `partition_granularity` | Partition size for incremental refresh | `month` |
+| `refresh` | Refresh strategy (see [Refresh Configuration](#refresh-configuration)) | See examples below |
+| `indexes` | Index definitions for performance | See [Indexes](#indexes) |
 
 ### Advanced Configuration
 
@@ -150,35 +149,100 @@ pre_aggregations:
 - Faster incremental updates
 - Reduced rebuild time
 
-#### Refresh Strategies
+#### Refresh Configuration
 
-Configure how pre-aggregations refresh:
+Pre-aggregations can be configured to refresh automatically using different strategies. The `refresh` field controls how and when the materialized table is updated.
 
 ##### Time-Based Refresh
 
+Refresh on a fixed schedule:
+
 ```yaml
-refresh:
-  every: "1 hour"  # or "30 minutes", "1 day", etc.
+pre_aggregations:
+  - name: hourly_refresh
+    measures: [count, revenue]
+    dimensions: [status, region]
+    time_dimension: created_at
+    granularity: day
+    refresh:
+      every: "1 hour"  # or "30 minutes", "1 day", "1 week", etc.
 ```
+
+**Common intervals:**
+- `"30 minutes"` - High-frequency dashboards
+- `"1 hour"` - Standard real-time analytics
+- `"1 day"` - Daily batch processing
+- `"1 week"` - Historical analysis
 
 ##### SQL-Triggered Refresh
 
-Refresh when source data changes:
+Refresh when source data changes by checking a SQL query result:
 
 ```yaml
-refresh:
-  sql: "SELECT MAX(updated_at) FROM orders"
+pre_aggregations:
+  - name: smart_refresh
+    measures: [count, revenue]
+    dimensions: [status, region]
+    time_dimension: created_at
+    granularity: day
+    refresh:
+      sql: "SELECT MAX(updated_at) FROM orders"
 ```
+
+The pre-aggregation refreshes when the SQL query returns a different value. Common patterns:
+- `SELECT MAX(updated_at) FROM table` - Detects new/updated rows
+- `SELECT COUNT(*) FROM table` - Detects row count changes
+- `SELECT MAX(id) FROM table` - Detects new inserts
 
 ##### Incremental Refresh
 
-Only update changed data:
+Only update changed partitions instead of rebuilding the entire table:
 
 ```yaml
-refresh:
-  every: "1 hour"
-  incremental: true
-  update_window: "7 day"  # Refresh last 7 days of partitions
+pre_aggregations:
+  - name: incremental_update
+    measures: [count, revenue]
+    dimensions: [status, region]
+    time_dimension: created_at
+    granularity: day
+    partition_granularity: month
+    refresh:
+      every: "1 hour"
+      incremental: true
+      update_window: "7 day"  # Only refresh last 7 days of partitions
+```
+
+**Configuration options:**
+- `incremental: true` - Enable incremental refresh
+- `update_window` - How far back to refresh (e.g., `"7 day"`, `"30 day"`)
+- Requires `partition_granularity` to be set
+
+**Benefits:**
+- Much faster refresh times (only rebuilds recent partitions)
+- Efficient for append-only data
+- Ideal for large historical datasets
+
+**When to use:**
+- Large pre-aggregations with millions+ rows
+- Time-series data with limited updates to historical data
+- Queries that mostly focus on recent data
+
+##### Combined Refresh Strategies
+
+Mix time-based and incremental refresh:
+
+```yaml
+pre_aggregations:
+  - name: combined_strategy
+    measures: [count, revenue]
+    dimensions: [status, region]
+    time_dimension: created_at
+    granularity: day
+    partition_granularity: month
+    refresh:
+      every: "1 hour"           # Check every hour
+      incremental: true         # Only update recent partitions
+      update_window: "30 day"   # Refresh last 30 days
 ```
 
 #### Indexes
@@ -534,74 +598,135 @@ pre_aggregations:
 
 **Alternative:** Use HyperLogLog approximations or store exact values.
 
-## Materialization
+## Materialization and Refresh
 
-::: {.callout-note}
-Sidemantic defines pre-aggregations but **does not automatically materialize** them. You must create the physical tables in your database.
-:::
+Sidemantic provides a CLI command to materialize and refresh pre-aggregation tables.
 
-### Manual Materialization
+### Basic Refresh
 
-Generate the table creation SQL:
+Refresh all pre-aggregations in your models:
 
+```bash
+# DuckDB
+sidemantic preagg refresh models/ --db data.db
+
+# PostgreSQL, BigQuery, Snowflake, etc.
+sidemantic preagg refresh models/ --connection "postgres://localhost:5432/db"
+sidemantic preagg refresh models/ --connection "bigquery://project/dataset"
+```
+
+The `refresh` command:
+- Generates materialization SQL for all pre-aggregations
+- Creates tables if they don't exist
+- Refreshes existing tables based on their `refresh` configuration
+- Stateless: derives watermarks from existing table data
+- Supports incremental, full, and merge refresh modes
+
+### Refresh Modes
+
+Control how pre-aggregations are refreshed:
+
+```bash
+# Incremental refresh (default) - only update changed partitions
+sidemantic preagg refresh models/ --db data.db --mode incremental
+
+# Full refresh - rebuild entire table
+sidemantic preagg refresh models/ --db data.db --mode full
+
+# Merge mode - upsert based on partition keys
+sidemantic preagg refresh models/ --db data.db --mode merge
+```
+
+**Incremental mode:**
+- Only refreshes partitions within the `update_window`
+- Checks existing table to determine last refresh timestamp
+- Efficient for large tables with time-based partitions
+- Requires `partition_granularity` and `time_dimension`
+
+**Full mode:**
+- Drops and recreates the entire table
+- Use when schema changes or data has significant updates
+- Slower but ensures complete accuracy
+
+**Merge mode:**
+- Updates existing partitions and inserts new ones
+- Good for slowly-changing dimensions
+- Requires database support for MERGE/UPSERT
+
+### Selective Refresh
+
+Refresh specific models or pre-aggregations:
+
+```bash
+# Only refresh pre-aggregations for the 'orders' model
+sidemantic preagg refresh models/ --db data.db --model orders
+
+# Only refresh a specific pre-aggregation
+sidemantic preagg refresh models/ --db data.db --model orders --preagg daily_rollup
+```
+
+### Scheduling Refreshes
+
+The `refresh` command is stateless and designed to run on a schedule:
+
+**Cron example:**
+```bash
+# Refresh every hour
+0 * * * * sidemantic preagg refresh /path/to/models --db /path/to/data.db
+```
+
+**Airflow example:**
 ```python
-from sidemantic import SemanticLayer
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from datetime import datetime, timedelta
 
-sl = SemanticLayer()
-# ... add models with pre_aggregations ...
+dag = DAG(
+    'refresh_preaggregations',
+    schedule_interval='@hourly',
+    start_date=datetime(2024, 1, 1),
+)
 
-# Get pre-aggregation
-model = sl.get_model("orders")
-preagg = model.get_pre_aggregation("daily_rollup")
-table_name = preagg.get_table_name("orders")
-# Returns: "orders_preagg_daily_rollup"
-
-# Generate materialization SQL
-sql = f"""
-CREATE TABLE {table_name} AS
-SELECT
-  DATE({preagg.time_dimension}) as {preagg.time_dimension}_{preagg.granularity},
-  {', '.join(preagg.dimensions)},
-  COUNT(*) as count_raw,
-  SUM(amount) as revenue_raw
-FROM orders
-GROUP BY 1, {', '.join([str(i+2) for i in range(len(preagg.dimensions))])}
-"""
-
-# Execute in your database
-db.execute(sql)
+refresh_task = BashOperator(
+    task_id='refresh_preaggs',
+    bash_command='sidemantic preagg refresh models/ --connection "postgres://host/db"',
+    dag=dag,
+)
 ```
 
-### Scheduled Refresh
+**GitHub Actions example:**
+```yaml
+name: Refresh Pre-Aggregations
+on:
+  schedule:
+    - cron: '0 * * * *'  # Every hour
 
-Use your database's scheduling tools:
-
-**DuckDB:**
-```sql
--- Manual refresh
-CREATE OR REPLACE TABLE orders_preagg_daily_rollup AS
-SELECT ... FROM orders GROUP BY ...
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install sidemantic
+      - run: sidemantic preagg refresh models/ --connection "${{ secrets.DB_CONNECTION }}"
 ```
 
-**Snowflake:**
-```sql
-CREATE DYNAMIC TABLE orders_preagg_daily_rollup
-TARGET_LAG = '1 hour'
-AS
-SELECT ... FROM orders GROUP BY ...
-```
+### How Refresh Works
 
-**Postgres (with cron):**
-```sql
--- Create materialized view
-CREATE MATERIALIZED VIEW orders_preagg_daily_rollup AS
-SELECT ... FROM orders GROUP BY ...;
+The refresh command:
 
--- Schedule refresh
-SELECT cron.schedule('refresh-orders-rollup', '0 * * * *',
-  $$REFRESH MATERIALIZED VIEW orders_preagg_daily_rollup$$
-);
-```
+1. **Discovers pre-aggregations** - Parses model YAML files and finds all pre-aggregations
+2. **Checks existing tables** - Queries database to see which tables exist and their current watermarks
+3. **Determines refresh strategy** - Based on `refresh` config and `--mode` flag
+4. **Generates SQL** - Creates materialization/refresh SQL appropriate for your database
+5. **Executes queries** - Runs the SQL to create/update tables
+
+For incremental refresh:
+- Reads `time_dimension` column from existing table to find max timestamp
+- Only processes partitions after that timestamp (within `update_window`)
+- Inserts new data into partitioned table
 
 ## Cube Format Import
 
@@ -658,53 +783,6 @@ model = graph.get_model("Orders")
 print(model.pre_aggregations)
 ```
 
-## Query Optimizations
-
-In addition to pre-aggregations, Sidemantic includes several automatic query optimizations:
-
-### Predicate Pushdown
-
-Filters are automatically pushed down into CTEs for better performance:
-
-```python
-# Query with filter
-sl.query(
-    metrics=['orders.revenue'],
-    dimensions=['orders.status'],
-    filters=['orders.region = 'US'']
-)
-```
-
-**Generated SQL:**
-```sql
-WITH orders_cte AS (
-  SELECT ...
-  FROM orders
-  WHERE region = 'US'  -- Filter pushed into CTE!
-)
-SELECT
-  status,
-  SUM(revenue_raw) as revenue
-FROM orders_cte
-GROUP BY 1
-```
-
-**Benefits:**
-- Reduces intermediate result size
-- Enables partition pruning at source
-- Faster joins with smaller CTEs
-- 5-10x speedup on filtered queries
-
-**How it works:**
-- Sidemantic parses filters with SQLGlot
-- Filters referencing one model get pushed into that model's CTE
-- Filters referencing multiple models stay in main query
-- Metric-level filters stay in main query (applied after aggregation)
-
-### Symmetric Aggregates
-
-Prevents double-counting when multiple one-to-many joins create fan-out. See [query optimization docs](#) for details.
-
 ## Summary
 
 **Key Takeaways:**
@@ -713,12 +791,12 @@ Prevents double-counting when multiple one-to-many joins create fan-out. See [qu
 2. **Disabled by default** - must enable with `use_preaggregations=True`
 3. **Automatic routing** - queries transparently use matching rollups
 4. **Define in YAML** - declarative configuration alongside models
-5. **You manage materialization** - Sidemantic routes, you build tables
+5. **Use CLI for refresh** - `sidemantic preagg refresh` handles materialization
 6. **Best for predictable patterns** - dashboard queries, time-series analytics
-7. **Predicate pushdown** - filters automatically pushed into CTEs (always enabled)
 
 **Next steps:**
+
 - Define pre-aggregations for your busiest queries
 - Enable routing: `SemanticLayer(use_preaggregations=True)`
-- Materialize tables in your database
+- Materialize and refresh tables: `sidemantic preagg refresh models/ --db data.db`
 - Monitor performance improvements

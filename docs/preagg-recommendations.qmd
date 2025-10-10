@@ -18,26 +18,23 @@ All queries must include `-- sidemantic:` instrumentation comments (automaticall
 ## Quick Start
 
 ```bash
-# 1. Analyze query history
-sidemantic preagg analyze --connection "bigquery://project/dataset"
-
-# 2. View recommendations
+# 1. View recommendations
 sidemantic preagg recommend --connection "bigquery://project/dataset"
 
-# 3. Apply top 5 to model files
+# 2. Apply top 5 to model files
 sidemantic preagg apply models/ --connection "bigquery://project/dataset" --top 5
 ```
 
 ## Commands
 
-### preagg analyze
+### preagg recommend
 
-Show summary statistics about query patterns.
+Analyzes query patterns and shows detailed recommendations with benefit scores.
 
 ```bash
-sidemantic preagg analyze --connection "bigquery://project/dataset"
-sidemantic preagg analyze --db data.db --days 30
-sidemantic preagg analyze --queries queries.sql
+sidemantic preagg recommend --connection "bigquery://project/dataset"
+sidemantic preagg recommend --db data.db --min-count 50 --top 10
+sidemantic preagg recommend --queries queries.sql --min-score 0.5
 ```
 
 **Output:**
@@ -51,22 +48,6 @@ sidemantic preagg analyze --queries queries.sql
     orders: 892 queries
     customers: 353 queries
 
-Run 'sidemantic preagg recommend' to see recommendations
-```
-
-### preagg recommend
-
-Show detailed recommendations with benefit scores.
-
-```bash
-sidemantic preagg recommend --connection "bigquery://project/dataset"
-sidemantic preagg recommend --db data.db --min-count 50 --top 10
-sidemantic preagg recommend --queries queries.sql --min-score 0.5
-```
-
-**Output:**
-
-```
 ================================================================================
 Pre-Aggregation Recommendations (found 8)
 ================================================================================
@@ -150,7 +131,7 @@ models:
 
 ## Options
 
-All three commands support:
+Both commands support:
 
 ### Data Sources
 
@@ -320,20 +301,14 @@ sidemantic preagg recommend --queries query_logs/
 ### Production Deployment
 
 ```bash
-# 1. Analyze 30 days of BigQuery history
-sidemantic preagg analyze \
-  --connection "bigquery://prod-project/analytics" \
-  --days 30 \
-  --min-count 100
-
-# 2. Review top 10 recommendations
+# 1. Review top 10 recommendations from 30 days of BigQuery history
 sidemantic preagg recommend \
   --connection "bigquery://prod-project/analytics" \
   --days 30 \
   --min-count 100 \
   --top 10
 
-# 3. Preview changes (dry run)
+# 2. Preview changes (dry run)
 sidemantic preagg apply models/ \
   --connection "bigquery://prod-project/analytics" \
   --days 30 \
@@ -341,14 +316,14 @@ sidemantic preagg apply models/ \
   --top 5 \
   --dry-run
 
-# 4. Apply for real
+# 3. Apply for real
 sidemantic preagg apply models/ \
   --connection "bigquery://prod-project/analytics" \
   --days 30 \
   --min-count 100 \
   --top 5
 
-# 5. Refresh the new pre-aggregations
+# 4. Refresh the new pre-aggregations
 sidemantic refresh models/ --connection "bigquery://prod-project/analytics"
 ```
 
@@ -376,9 +351,6 @@ sidemantic preagg apply models/ \
 bq query --format=prettyjson \
   "SELECT query FROM \`project.region-us.INFORMATION_SCHEMA.JOBS_BY_PROJECT\`
    WHERE query LIKE '%-- sidemantic:%'" > queries.sql
-
-# Analyze locally
-sidemantic preagg analyze --queries queries.sql
 
 # Generate recommendations
 sidemantic preagg recommend --queries queries.sql --min-count 20

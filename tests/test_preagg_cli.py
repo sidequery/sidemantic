@@ -1,45 +1,11 @@
 """Integration tests for pre-aggregation CLI commands."""
 
-import tempfile
-from pathlib import Path
-
 import pytest
 from typer.testing import CliRunner
 
 from sidemantic.cli import app
 
 runner = CliRunner()
-
-
-def test_preagg_analyze_with_queries_file(tmp_path):
-    """Test preagg analyze command with queries file."""
-    # Create a queries file with instrumented queries
-    queries_file = tmp_path / "queries.sql"
-    queries_file.write_text(
-        """
-        SELECT revenue, status FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
-
-        SELECT revenue, status FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
-
-        SELECT revenue, status FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
-
-        SELECT count, region FROM orders
-        -- sidemantic: models=orders metrics=orders.count dimensions=orders.region;
-
-        SELECT count, region FROM orders
-        -- sidemantic: models=orders metrics=orders.count dimensions=orders.region;
-        """
-    )
-
-    result = runner.invoke(app, ["preagg", "analyze", "--queries", str(queries_file), "--min-count", "2"])
-
-    assert result.exit_code == 0
-    assert "✓ Analyzed 5 queries" in result.stderr
-    assert "Found 2 unique patterns" in result.stderr
-    assert "2 patterns above threshold" in result.stderr
 
 
 def test_preagg_recommend_with_queries_file(tmp_path):
@@ -49,12 +15,17 @@ def test_preagg_recommend_with_queries_file(tmp_path):
         """
         SELECT revenue FROM orders
         -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
-        """ * 15  # 15 queries to exceed default min_count of 10
+        """
+        * 15  # 15 queries to exceed default min_count of 10
     )
 
     result = runner.invoke(app, ["preagg", "recommend", "--queries", str(queries_file)])
 
     assert result.exit_code == 0
+    # Check summary output
+    assert "✓ Analyzed 15 queries" in result.stderr
+    assert "Found 1 unique patterns" in result.stderr or "Found 1 unique pattern" in result.stderr
+    # Check detailed recommendations
     assert "Pre-Aggregation Recommendations" in result.stdout
     assert "Query Count: 15" in result.stdout
     assert "Model: orders" in result.stdout
@@ -109,7 +80,8 @@ models:
         """
         SELECT revenue FROM orders
         -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
-        """ * 15
+        """
+        * 15
     )
 
     result = runner.invoke(
@@ -158,7 +130,8 @@ models:
         """
         SELECT revenue FROM orders
         -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
-        """ * 15
+        """
+        * 15
     )
 
     result = runner.invoke(
@@ -175,14 +148,6 @@ models:
     assert "pre_aggregations:" in updated_content or "pre_aggregations" in updated_content
 
 
-def test_preagg_analyze_requires_source():
-    """Test that preagg analyze requires --queries, --connection, or --db."""
-    result = runner.invoke(app, ["preagg", "analyze"])
-
-    assert result.exit_code == 1
-    assert "Must specify --queries, --connection, or --db" in result.stderr
-
-
 def test_preagg_recommend_with_thresholds(tmp_path):
     """Test preagg recommend with custom thresholds."""
     queries_file = tmp_path / "queries.sql"
@@ -190,7 +155,8 @@ def test_preagg_recommend_with_thresholds(tmp_path):
         """
         SELECT revenue FROM orders
         -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;
-        """ * 5  # 5 queries
+        """
+        * 5  # 5 queries
     )
 
     # Should find recommendation with --min-count 5
@@ -233,11 +199,13 @@ models:
         """
         SELECT revenue FROM orders
         -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;
-        """ * 20 +
         """
+        * 20
+        + """
         SELECT count FROM orders
         -- sidemantic: models=orders metrics=orders.count dimensions=orders.region;
-        """ * 15
+        """
+        * 15
     )
 
     result = runner.invoke(

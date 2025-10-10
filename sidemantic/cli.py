@@ -744,86 +744,6 @@ preagg_app = typer.Typer(help="Pre-aggregation recommendation and management")
 app.add_typer(preagg_app, name="preagg")
 
 
-@preagg_app.command("analyze")
-def preagg_analyze(
-    queries: Path = typer.Option(None, "--queries", "-q", help="Path to file/folder with SQL queries"),
-    connection: str = typer.Option(None, "--connection", help="Database connection string to fetch query history"),
-    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
-    days_back: int = typer.Option(7, "--days", "-d", help="Days of query history to fetch (default: 7)"),
-    limit: int = typer.Option(1000, "--limit", "-l", help="Max queries to analyze (default: 1000)"),
-    min_count: int = typer.Option(10, "--min-count", help="Minimum query count for recommendation (default: 10)"),
-):
-    """
-    Analyze query patterns to recommend pre-aggregations.
-
-    Fetch query history from database or load from files to identify frequent patterns.
-
-    Examples:
-      sidemantic preagg analyze --connection "bigquery://project/dataset"
-      sidemantic preagg analyze --db data.db --days 30
-      sidemantic preagg analyze --queries queries.sql
-      sidemantic preagg analyze --queries queries_folder/
-    """
-    from sidemantic.core.preagg_recommender import PreAggregationRecommender
-
-    if not queries and not connection and not db:
-        typer.echo("Error: Must specify --queries, --connection, or --db", err=True)
-        raise typer.Exit(1)
-
-    try:
-        recommender = PreAggregationRecommender(min_query_count=min_count)
-
-        # Fetch from database connection
-        if connection or db:
-            # Build connection string
-            connection_str = connection if connection else f"duckdb:///{db.absolute()}"
-
-            # Create adapter
-            from sidemantic import SemanticLayer
-
-            layer = SemanticLayer(connection=connection_str)
-            adapter = layer._adapter
-
-            typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
-            recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
-
-        # Load from files
-        elif queries:
-            if not queries.exists():
-                typer.echo(f"Error: {queries} does not exist", err=True)
-                raise typer.Exit(1)
-
-            if queries.is_file():
-                typer.echo(f"Parsing queries from {queries}...", err=True)
-                recommender.parse_query_log_file(str(queries))
-            else:
-                # Load all .sql files from directory
-                sql_files = list(queries.glob("**/*.sql"))
-                typer.echo(f"Parsing {len(sql_files)} SQL files from {queries}...", err=True)
-                for sql_file in sql_files:
-                    recommender.parse_query_log_file(str(sql_file))
-
-        # Print summary
-        summary = recommender.get_summary()
-        typer.echo(f"\n✓ Analyzed {summary['total_queries']} queries", err=True)
-        typer.echo(f"  Found {summary['unique_patterns']} unique patterns", err=True)
-        typer.echo(f"  {summary['patterns_above_threshold']} patterns above threshold", err=True)
-
-        if summary["models"]:
-            typer.echo("\n  Models:", err=True)
-            for model_name, count in summary["models"].items():
-                typer.echo(f"    {model_name}: {count} queries", err=True)
-
-        typer.echo("\nRun 'sidemantic preagg recommend' to see recommendations", err=True)
-
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        import traceback
-
-        traceback.print_exc()
-        raise typer.Exit(1)
-
-
 @preagg_app.command("recommend")
 def preagg_recommend(
     queries: Path = typer.Option(None, "--queries", "-q", help="Path to file/folder with SQL queries"),
@@ -871,11 +791,22 @@ def preagg_recommend(
                 for sql_file in queries.glob("**/*.sql"):
                     recommender.parse_query_log_file(str(sql_file))
 
+        # Print summary
+        summary = recommender.get_summary()
+        typer.echo(f"\n✓ Analyzed {summary['total_queries']} queries", err=True)
+        typer.echo(f"  Found {summary['unique_patterns']} unique patterns", err=True)
+        typer.echo(f"  {summary['patterns_above_threshold']} patterns above threshold", err=True)
+
+        if summary["models"]:
+            typer.echo("\n  Models:", err=True)
+            for model_name, count in summary["models"].items():
+                typer.echo(f"    {model_name}: {count} queries", err=True)
+
         # Get recommendations
         recommendations = recommender.get_recommendations(top_n=top_n)
 
         if not recommendations:
-            typer.echo("No recommendations found above thresholds", err=True)
+            typer.echo("\nNo recommendations found above thresholds", err=True)
             typer.echo(
                 f"Try lowering --min-count (currently {min_count}) or --min-score (currently {min_score})", err=True
             )

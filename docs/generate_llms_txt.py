@@ -56,8 +56,8 @@ def extract_title_and_description(qmd_path: Path) -> tuple[str, str]:
                         continue
 
                     # Clean markdown formatting
-                    clean = re.sub(r'\*\*([^*]+)\*\*', r'\1', stripped)
-                    clean = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', clean)
+                    clean = re.sub(r"\*\*([^*]+)\*\*", r"\1", stripped)
+                    clean = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", clean)
                     lines.append(clean)
 
                     # Stop if we have enough text
@@ -68,10 +68,10 @@ def extract_title_and_description(qmd_path: Path) -> tuple[str, str]:
                 # Truncate at sentence boundary if too long
                 if len(description) > 200:
                     # Try to cut at last sentence
-                    sentences = re.split(r'[.!?]\s+', description)
+                    sentences = re.split(r"[.!?]\s+", description)
                     description = sentences[0]
-                    if not description.endswith(('.', '!', '?')):
-                        description += '.'
+                    if not description.endswith((".", "!", "?")):
+                        description += "."
 
                 return title, description
             except Exception:
@@ -101,14 +101,18 @@ def generate_llms_txt():
             lines.append("")
 
     # Add intro from index
-    lines.append("Sidemantic is a semantic layer that works with your existing data warehouse. Define metrics, dimensions, and relationships in YAML (or import from Cube, dbt, Looker, etc.), then query them using SQL or Python.")
+    lines.append(
+        "Sidemantic is a semantic layer that works with your existing data warehouse. Define metrics, dimensions, and relationships in YAML (or import from Cube, dbt, Looker, etc.), then query them using SQL or Python."
+    )
     lines.append("")
     lines.append("Key features:")
     lines.append("- **Governed calculations**: Define metrics once, query consistently everywhere")
     lines.append("- **Accurate by design**: Prevents join fan-out, incorrect aggregations, and double-counting")
     lines.append("- **Smart automation**: Automatic joins, dependency detection, multi-hop relationships")
     lines.append("- **Rich metric types**: Aggregations, ratios, time comparisons, funnels, cumulative metrics")
-    lines.append("- **Format compatibility**: Import from Cube, MetricFlow (dbt), LookML (Looker), Hex, Rill, Superset, Omni")
+    lines.append(
+        "- **Format compatibility**: Import from Cube, MetricFlow (dbt), LookML (Looker), Hex, Rill, Superset, Omni"
+    )
     lines.append("")
 
     # Process navbar structure

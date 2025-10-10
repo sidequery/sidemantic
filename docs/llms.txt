@@ -1,6 +1,6 @@
 # Sidemantic
 
-> SQL-first semantic layer that defines metrics once and queries them anywhere with SQL or Python
+> Define metrics once, query them anywhere with SQL or Python
 
 Sidemantic is a semantic layer that works with your existing data warehouse. Define metrics, dimensions, and relationships in YAML (or import from Cube, dbt, Looker, etc.), then query them using SQL or Python.
 
@@ -11,35 +11,40 @@ Key features:
 - **Rich metric types**: Aggregations, ratios, time comparisons, funnels, cumulative metrics
 - **Format compatibility**: Import from Cube, MetricFlow (dbt), LookML (Looker), Hex, Rill, Superset, Omni
 
+## Home
+
+- [Home](https://docs.sidemantic.com/index.html): Define metrics once, query them anywhere with SQL or Python
+
 ## Getting Started
 
-- [Home](https://docs.sidemantic.com/): Overview and quick examples
-- [Getting Started](https://docs.sidemantic.com/getting-started.html): Step-by-step tutorial for setting up your first semantic layer
-- [Adapters](https://docs.sidemantic.com/adapters.html): Import definitions from Cube, dbt, Looker, and other tools
+- [Getting Started](https://docs.sidemantic.com/getting-started.html): Try the interactive workbench with demo data (no installation required):
+
+## Adapters
+
+- [Adapters](https://docs.sidemantic.com/adapters.html): Sidemantic can import semantic models from other popular semantic layer formats, letting you use your existing metric definitions with Sidemantic's query engine and features.
 
 ## Core Concepts
 
-- [Configuration](https://docs.sidemantic.com/config.html): Configure database connections and project settings
-- [Connections](https://docs.sidemantic.com/connections.html): Connect to PostgreSQL, BigQuery, Snowflake, DuckDB, and more
-- [Models](https://docs.sidemantic.com/models.html): Define tables, dimensions, and their properties
-- [Metrics](https://docs.sidemantic.com/metrics.html): Create aggregations, ratios, derived metrics, and cumulative calculations
-- [Relationships](https://docs.sidemantic.com/relationships.html): Define joins between models for automatic multi-table queries
-- [Query](https://docs.sidemantic.com/query.html): Execute queries using SQL or Python API
+- [Configuration](https://docs.sidemantic.com/config.html): Sidemantic configuration is specified in YAML files and can be overridden via CLI flags.
+- [Connections](https://docs.sidemantic.com/connections.html): Sidemantic supports multiple database engines for executing semantic layer queries. Connection strings are specified in your YAML configuration files or via CLI flags.
+- [Models](https://docs.sidemantic.com/models.html): Models define your data sources and their structure.
+- [Metrics](https://docs.sidemantic.com/metrics.html): Metrics define how to aggregate and calculate measures. Sidemantic distinguishes between model-level metrics (aggregations) and graph-level metrics (formulas/references).
+- [Relationships](https://docs.sidemantic.com/relationships.html): Define relationships between models for automatic joining.
+- [Query](https://docs.sidemantic.com/query.html): Query the semantic layer using SQL syntax or the Python API.
 
-## CLI Tools
+## CLI
 
-- [CLI Overview](https://docs.sidemantic.com/cli.html): Command-line interface for working with semantic layers
-- [Migrator](https://docs.sidemantic.com/migrator.html): Analyze existing SQL queries and generate semantic layer definitions
-- [Workbench](https://docs.sidemantic.com/workbench.html): Interactive TUI for exploring models, writing SQL, and visualizing results
-- [MCP Server](https://docs.sidemantic.com/mcp-server.html): Model Context Protocol server for AI assistants
+- [Overview](https://docs.sidemantic.com/cli.html): The Sidemantic CLI provides tools for working with semantic layers from the terminal.
+- [Migrator](https://docs.sidemantic.com/migrator.html): Migrates existing SQL queries to semantic layer by analyzing queries and generating model definitions.
+- [Workbench](https://docs.sidemantic.com/workbench.html): The Sidemantic Workbench is an interactive terminal UI for exploring semantic layers, writing SQL queries, and visualizing results.
+- [MCP Server](https://docs.sidemantic.com/mcp-server.html): The Sidemantic MCP (Model Context Protocol) server enables AI assistants like Claude to query your semantic layer directly.
 
 ## Reference
 
-- [Python API](https://docs.sidemantic.com/python-api.html): Complete Python API reference
-- [YAML Format](https://docs.sidemantic.com/YAML_FORMAT.html): Complete YAML specification for defining semantic layers
-- [Examples](https://docs.sidemantic.com/examples.html): Sample use cases and patterns
+- [Python API](https://docs.sidemantic.com/python-api.html): Complete Python API reference.
+- [YAML Format](https://docs.sidemantic.com/YAML_FORMAT.html)
+- [Gotchas](https://docs.sidemantic.com/GOTCHAS.html)
 
-## Advanced Features
+## Examples
 
-- [Advanced Features](https://docs.sidemantic.com/advanced-features.html): Jinja templates, hierarchies, pre-aggregations, and more
-- [Pre-aggregations](https://docs.sidemantic.com/pre-aggregations.html): Speed up queries with materialized rollup tables
+- [Examples](https://docs.sidemantic.com/examples.html): Query with SQL:

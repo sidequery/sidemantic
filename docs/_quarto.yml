@@ -38,12 +38,16 @@ website:
             href: relationships.qmd
           - text: "Query"
             href: query.qmd
+          - text: "Pre-Aggregations"
+            href: pre-aggregations.qmd
       - text: "CLI"
         menu:
           - text: "Overview"
             href: cli.qmd
           - text: "Migrator"
             href: migrator.qmd
+          - text: "Pre-Aggregation Recommendations"
+            href: preagg-recommendations.qmd
           - text: "Workbench"
             href: workbench.qmd
           - text: "MCP Server"

@@ -4,6 +4,21 @@ title: "Pre-Aggregations"
 
 Pre-aggregations are materialized rollup tables that store pre-computed aggregations for significant query performance improvements. The query engine can automatically route queries to matching pre-aggregations instead of scanning base tables.
 
+::: {.callout-tip}
+## Automatic Pre-Aggregation Recommendations
+
+Sidemantic can automatically analyze your query history and recommend optimal pre-aggregations. This is unique to Sidemantic—no manual analysis of query patterns required.
+
+Fetch query history from BigQuery, Snowflake, Databricks, or ClickHouse and get instant recommendations with benefit scores:
+
+```bash
+sidemantic preagg recommend --connection "bigquery://project/dataset"
+sidemantic preagg apply models/ --connection "bigquery://project/dataset" --top 5
+```
+
+See the [Pre-Aggregation Recommendations](preagg-recommendations.qmd) guide for complete CLI documentation.
+:::
+
 ::: {.callout-important}
 ## Routing Disabled by Default
 Pre-aggregation routing is **disabled by default** and must be explicitly enabled. See [Enabling Routing](#enabling-routing) for details.

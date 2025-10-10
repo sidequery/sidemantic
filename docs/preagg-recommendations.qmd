@@ -1,0 +1,418 @@
+---
+title: "Pre-Aggregation Recommendations"
+---
+
+Sidemantic automatically analyzes your query history and recommends optimal pre-aggregations. This is unique to Sidemantic—no manual analysis of query patterns required.
+
+## Overview
+
+The pre-aggregation recommendation system:
+
+1. **Fetches query history** from BigQuery, Snowflake, Databricks, ClickHouse, or local files
+2. **Identifies patterns** in frequently-run queries (metrics + dimensions + granularities)
+3. **Scores recommendations** based on query count, reusability, and consolidation potential
+4. **Generates YAML** pre-aggregation definitions and writes them to model files
+
+All queries must include `-- sidemantic:` instrumentation comments (automatically added when compiling queries).
+
+## Quick Start
+
+```bash
+# 1. Analyze query history
+sidemantic preagg analyze --connection "bigquery://project/dataset"
+
+# 2. View recommendations
+sidemantic preagg recommend --connection "bigquery://project/dataset"
+
+# 3. Apply top 5 to model files
+sidemantic preagg apply models/ --connection "bigquery://project/dataset" --top 5
+```
+
+## Commands
+
+### preagg analyze
+
+Show summary statistics about query patterns.
+
+```bash
+sidemantic preagg analyze --connection "bigquery://project/dataset"
+sidemantic preagg analyze --db data.db --days 30
+sidemantic preagg analyze --queries queries.sql
+```
+
+**Output:**
+
+```
+✓ Analyzed 1,245 queries
+  Found 23 unique patterns
+  8 patterns above threshold
+
+  Models:
+    orders: 892 queries
+    customers: 353 queries
+
+Run 'sidemantic preagg recommend' to see recommendations
+```
+
+### preagg recommend
+
+Show detailed recommendations with benefit scores.
+
+```bash
+sidemantic preagg recommend --connection "bigquery://project/dataset"
+sidemantic preagg recommend --db data.db --min-count 50 --top 10
+sidemantic preagg recommend --queries queries.sql --min-score 0.5
+```
+
+**Output:**
+
+```
+================================================================================
+Pre-Aggregation Recommendations (found 8)
+================================================================================
+
+1. day_status_revenue
+   Model: orders
+   Query Count: 234
+   Benefit Score: 0.82
+   Metrics: orders.revenue
+   Dimensions: orders.status
+   Granularities: day
+
+2. region_2metrics
+   Model: orders
+   Query Count: 156
+   Benefit Score: 0.74
+   Metrics: orders.count, orders.revenue
+   Dimensions: orders.region
+
+3. day_segment_count
+   Model: customers
+   Query Count: 98
+   Benefit Score: 0.68
+   Metrics: customers.count
+   Dimensions: customers.segment
+   Granularities: day
+```
+
+### preagg apply
+
+Automatically add pre-aggregation definitions to model YAML files.
+
+```bash
+sidemantic preagg apply models/ --connection "bigquery://project/dataset"
+sidemantic preagg apply models/ --db data.db --top 5
+sidemantic preagg apply models/ --queries queries.sql --dry-run
+```
+
+**Options:**
+
+- `--top, -n INT`: Apply only top N recommendations
+- `--dry-run`: Preview changes without writing files
+
+**Output:**
+
+```
+Found 8 recommendations to apply
+
+  + orders.day_status_revenue (234 queries)
+  + orders.region_2metrics (156 queries)
+  + customers.day_segment_count (98 queries)
+
+✓ Added 3 pre-aggregations to model files
+```
+
+**Generated YAML:**
+
+```yaml
+models:
+  - name: orders
+    table: public.orders
+
+    dimensions:
+      - name: status
+        type: categorical
+      - name: created_at
+        type: time
+
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+
+    pre_aggregations:
+      - name: day_status_revenue
+        measures: [revenue]
+        dimensions: [status]
+        time_dimension: created_at
+        granularity: day
+```
+
+## Options
+
+All three commands support:
+
+### Data Sources
+
+**Database Connections:**
+
+```bash
+--connection TEXT   # Database connection string
+--db PATH          # DuckDB file (shorthand for duckdb:///path)
+```
+
+**Query Files:**
+
+```bash
+--queries, -q PATH  # SQL file or folder
+```
+
+One of `--connection`, `--db`, or `--queries` is required.
+
+### Query Filtering
+
+```bash
+--days, -d INT      # Days of history to fetch (default: 7)
+--limit, -l INT     # Max queries to analyze (default: 1000)
+```
+
+### Thresholds
+
+```bash
+--min-count INT     # Minimum query count (default: 10)
+--min-score FLOAT   # Minimum benefit score 0-1 (default: 0.3)
+```
+
+**Benefit Score Factors:**
+
+- **Query frequency**: More queries = higher score (log scale)
+- **Dimension count**: Fewer dimensions = higher score (more reusable)
+- **Metric count**: More metrics = higher score (better consolidation)
+
+**Threshold Guidance:**
+
+- **Production**: Use defaults (`--min-count 10 --min-score 0.3`)
+- **Testing**: Lower thresholds (`--min-count 1 --min-score 0.0`)
+- **High-traffic**: Raise thresholds (`--min-count 100 --min-score 0.5`)
+
+## Database Support
+
+### BigQuery
+
+Fetches from `INFORMATION_SCHEMA.JOBS_BY_PROJECT`:
+
+```bash
+sidemantic preagg recommend --connection "bigquery://project-id/dataset-id"
+```
+
+Requires viewer permissions on project.
+
+### Snowflake
+
+Fetches from `INFORMATION_SCHEMA.QUERY_HISTORY()`:
+
+```bash
+sidemantic preagg recommend \
+  --connection "snowflake://user:pass@account/database/schema"
+```
+
+Returns last 7 days (INFORMATION_SCHEMA limit). For longer history, use `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` (requires account admin).
+
+### Databricks
+
+Fetches from `system.query.history` (Unity Catalog):
+
+```bash
+sidemantic preagg recommend \
+  --connection "databricks://token@workspace.cloud.databricks.com/sql/1.0/warehouses/abc"
+```
+
+Requires Unity Catalog and appropriate permissions.
+
+### ClickHouse
+
+Fetches from `system.query_log`:
+
+```bash
+sidemantic preagg recommend \
+  --connection "clickhouse://localhost/default"
+```
+
+### DuckDB
+
+No built-in query history. Use file-based analysis:
+
+```bash
+sidemantic preagg recommend --queries query_logs/
+```
+
+## Query Instrumentation
+
+Only queries with `-- sidemantic:` comments are analyzed.
+
+**Example instrumented query:**
+
+```sql
+SELECT
+  status,
+  SUM(revenue_raw) as revenue
+FROM orders_cte
+GROUP BY 1
+-- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day
+```
+
+**Instrumentation is automatic** when you compile queries with sidemantic:
+
+```python
+from sidemantic import SemanticLayer
+
+sl = SemanticLayer(connection="bigquery://project/dataset")
+sql = sl.compile(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status", "orders.created_at__day"]
+)
+# Automatically includes: -- sidemantic: models=orders ...
+```
+
+**Non-instrumented queries are ignored:**
+
+- Raw SQL queries not from sidemantic
+- Queries without comments
+- Multi-model queries (joins between models)
+
+## File-Based Analysis
+
+Use `--queries` to analyze queries from files instead of database history.
+
+**Single file (semicolon-separated):**
+
+```sql
+-- queries.sql
+SELECT revenue FROM orders
+WHERE status = 'completed'
+-- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;
+
+SELECT count FROM customers
+WHERE segment = 'enterprise'
+-- sidemantic: models=customers metrics=customers.count dimensions=customers.segment;
+```
+
+```bash
+sidemantic preagg recommend --queries queries.sql
+```
+
+**Folder (recursive .sql search):**
+
+```
+query_logs/
+  2024-01/
+    queries.sql
+  2024-02/
+    queries.sql
+```
+
+```bash
+sidemantic preagg recommend --queries query_logs/
+```
+
+## Workflow Examples
+
+### Production Deployment
+
+```bash
+# 1. Analyze 30 days of BigQuery history
+sidemantic preagg analyze \
+  --connection "bigquery://prod-project/analytics" \
+  --days 30 \
+  --min-count 100
+
+# 2. Review top 10 recommendations
+sidemantic preagg recommend \
+  --connection "bigquery://prod-project/analytics" \
+  --days 30 \
+  --min-count 100 \
+  --top 10
+
+# 3. Preview changes (dry run)
+sidemantic preagg apply models/ \
+  --connection "bigquery://prod-project/analytics" \
+  --days 30 \
+  --min-count 100 \
+  --top 5 \
+  --dry-run
+
+# 4. Apply for real
+sidemantic preagg apply models/ \
+  --connection "bigquery://prod-project/analytics" \
+  --days 30 \
+  --min-count 100 \
+  --top 5
+
+# 5. Refresh the new pre-aggregations
+sidemantic refresh models/ --connection "bigquery://prod-project/analytics"
+```
+
+### Development Testing
+
+```bash
+# Lower thresholds for testing
+sidemantic preagg recommend \
+  --db dev.db \
+  --min-count 1 \
+  --min-score 0.0
+
+# Apply just 1 for testing
+sidemantic preagg apply models/ \
+  --db dev.db \
+  --min-count 1 \
+  --top 1 \
+  --dry-run
+```
+
+### File-Based Analysis
+
+```bash
+# Export query history from warehouse
+bq query --format=prettyjson \
+  "SELECT query FROM \`project.region-us.INFORMATION_SCHEMA.JOBS_BY_PROJECT\`
+   WHERE query LIKE '%-- sidemantic:%'" > queries.sql
+
+# Analyze locally
+sidemantic preagg analyze --queries queries.sql
+
+# Generate recommendations
+sidemantic preagg recommend --queries queries.sql --min-count 20
+
+# Apply to models
+sidemantic preagg apply models/ --queries queries.sql --top 10
+```
+
+## Limitations
+
+**Only single-model queries:**
+
+Multi-model queries (with joins) are ignored. Pre-aggregations only work for single-model queries.
+
+**Instrumentation required:**
+
+Only sidemantic-compiled queries are analyzed. Raw SQL queries without `-- sidemantic:` comments are skipped.
+
+**Database support:**
+
+- ✅ BigQuery, Snowflake, Databricks, ClickHouse: Built-in query history
+- ❌ PostgreSQL, DuckDB: No query history (use `--queries` with files)
+
+**Query patterns only:**
+
+Recommendations based solely on query patterns, not actual query execution times or data distribution.
+
+## Next Steps
+
+After applying recommendations:
+
+1. **Review generated YAML**: Ensure pre-aggregations make sense for your data
+2. **Materialize tables**: Use `sidemantic refresh` to create physical tables
+3. **Enable routing**: Set `use_preaggregations=True` in your semantic layer
+4. **Monitor performance**: Compare query times before/after
+
+See [Pre-Aggregations Guide](pre-aggregations.qmd) for detailed concepts and best practices.

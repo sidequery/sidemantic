@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Generate llms.txt for the Sidemantic documentation site.
+
+This script creates an llms.txt file that helps LLMs understand the documentation
+structure and content. Run this before building the Quarto site.
+"""
+
+from pathlib import Path
+
+
+def generate_llms_txt():
+    """Generate llms.txt with documentation structure."""
+
+    content = """# Sidemantic
+
+> SQL-first semantic layer that defines metrics once and queries them anywhere with SQL or Python
+
+Sidemantic is a semantic layer that works with your existing data warehouse. Define metrics, dimensions, and relationships in YAML (or import from Cube, dbt, Looker, etc.), then query them using SQL or Python.
+
+Key features:
+- **Governed calculations**: Define metrics once, query consistently everywhere
+- **Accurate by design**: Prevents join fan-out, incorrect aggregations, and double-counting
+- **Smart automation**: Automatic joins, dependency detection, multi-hop relationships
+- **Rich metric types**: Aggregations, ratios, time comparisons, funnels, cumulative metrics
+- **Format compatibility**: Import from Cube, MetricFlow (dbt), LookML (Looker), Hex, Rill, Superset, Omni
+
+## Getting Started
+
+- [Home](https://docs.sidemantic.com/): Overview and quick examples
+- [Getting Started](https://docs.sidemantic.com/getting-started.html): Step-by-step tutorial for setting up your first semantic layer
+- [Adapters](https://docs.sidemantic.com/adapters.html): Import definitions from Cube, dbt, Looker, and other tools
+
+## Core Concepts
+
+- [Configuration](https://docs.sidemantic.com/config.html): Configure database connections and project settings
+- [Connections](https://docs.sidemantic.com/connections.html): Connect to PostgreSQL, BigQuery, Snowflake, DuckDB, and more
+- [Models](https://docs.sidemantic.com/models.html): Define tables, dimensions, and their properties
+- [Metrics](https://docs.sidemantic.com/metrics.html): Create aggregations, ratios, derived metrics, and cumulative calculations
+- [Relationships](https://docs.sidemantic.com/relationships.html): Define joins between models for automatic multi-table queries
+- [Query](https://docs.sidemantic.com/query.html): Execute queries using SQL or Python API
+
+## CLI Tools
+
+- [CLI Overview](https://docs.sidemantic.com/cli.html): Command-line interface for working with semantic layers
+- [Migrator](https://docs.sidemantic.com/migrator.html): Analyze existing SQL queries and generate semantic layer definitions
+- [Workbench](https://docs.sidemantic.com/workbench.html): Interactive TUI for exploring models, writing SQL, and visualizing results
+- [MCP Server](https://docs.sidemantic.com/mcp-server.html): Model Context Protocol server for AI assistants
+
+## Reference
+
+- [Python API](https://docs.sidemantic.com/python-api.html): Complete Python API reference
+- [YAML Format](https://docs.sidemantic.com/YAML_FORMAT.html): Complete YAML specification for defining semantic layers
+- [Examples](https://docs.sidemantic.com/examples.html): Sample use cases and patterns
+
+## Advanced Features
+
+- [Advanced Features](https://docs.sidemantic.com/advanced-features.html): Jinja templates, hierarchies, pre-aggregations, and more
+- [Pre-aggregations](https://docs.sidemantic.com/pre-aggregations.html): Speed up queries with materialized rollup tables
+"""
+
+    output_path = Path(__file__).parent / "llms.txt"
+    output_path.write_text(content)
+    print(f"Generated {output_path}")
+
+
+if __name__ == "__main__":
+    generate_llms_txt()

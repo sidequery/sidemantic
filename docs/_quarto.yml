@@ -4,6 +4,9 @@ project:
   resources:
     - assets/**
     - CNAME
+    - llms.txt
+  pre-render:
+    - uv run python generate_llms_txt.py
 
 # Enable marimo extension for interactive cells with per-page pyproject
 filters:

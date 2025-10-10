@@ -85,6 +85,26 @@ class PreAggregationRecommender:
 
         self.parse_query_log(queries)
 
+    def fetch_and_parse_query_history(self, connection: Any, days_back: int = 7, limit: int = 1000) -> None:
+        """Fetch query history from database and parse for pre-aggregation patterns.
+
+        Args:
+            connection: Database adapter with get_query_history() method
+            days_back: Number of days of history to fetch (default: 7)
+            limit: Maximum number of queries to return (default: 1000)
+
+        Raises:
+            AttributeError: If adapter doesn't support get_query_history()
+        """
+        if not hasattr(connection, "get_query_history"):
+            raise AttributeError(
+                f"Database adapter {type(connection).__name__} does not support get_query_history(). "
+                "Supported adapters: BigQueryAdapter, SnowflakeAdapter, DatabricksAdapter, ClickHouseAdapter"
+            )
+
+        queries = connection.get_query_history(days_back=days_back, limit=limit)
+        self.parse_query_log(queries)
+
     def _extract_pattern(self, query: str) -> QueryPattern | None:
         """Extract query pattern from instrumented query.
 

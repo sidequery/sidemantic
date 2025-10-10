@@ -158,6 +158,32 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
         result = self.client.query(sql, parameters={"schema": schema, "table": table_name})
         return [{"column_name": row[0], "data_type": row[1]} for row in result.result_rows]
 
+    def get_query_history(self, days_back: int = 7, limit: int = 1000) -> list[str]:
+        """Fetch query history from ClickHouse.
+
+        Queries system.query_log to find queries with sidemantic instrumentation.
+
+        Args:
+            days_back: Number of days of history to fetch (default: 7)
+            limit: Maximum number of queries to return (default: 1000)
+
+        Returns:
+            List of SQL query strings containing '-- sidemantic:' comments
+        """
+        sql = f"""
+        SELECT query
+        FROM system.query_log
+        WHERE event_time >= now() - INTERVAL {days_back} DAY
+          AND query LIKE '%-- sidemantic:%'
+          AND type = 'QueryFinish'
+          AND exception = ''
+        ORDER BY event_time DESC
+        LIMIT {limit}
+        """
+
+        result = self.client.query(sql)
+        return [row[0] for row in result.result_rows if row[0]]
+
     def close(self) -> None:
         """Close the ClickHouse client."""
         self.client.close()

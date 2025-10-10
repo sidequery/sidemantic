@@ -160,6 +160,33 @@ class BigQueryAdapter(BaseDatabaseAdapter):
             )
         return columns
 
+    def get_query_history(self, days_back: int = 7, limit: int = 1000) -> list[str]:
+        """Fetch query history from BigQuery.
+
+        Queries INFORMATION_SCHEMA.JOBS_BY_PROJECT to find queries with sidemantic instrumentation.
+
+        Args:
+            days_back: Number of days of history to fetch (default: 7)
+            limit: Maximum number of queries to return (default: 1000)
+
+        Returns:
+            List of SQL query strings containing '-- sidemantic:' comments
+        """
+        sql = f"""
+        SELECT query
+        FROM `{self.project_id}.region-{self.client.location}.INFORMATION_SCHEMA.JOBS_BY_PROJECT`
+        WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days_back} DAY)
+          AND job_type = 'QUERY'
+          AND state = 'DONE'
+          AND query LIKE '%-- sidemantic:%'
+        ORDER BY creation_time DESC
+        LIMIT {limit}
+        """
+
+        result = self.execute(sql)
+        rows = result.fetchall()
+        return [row[0] for row in rows if row[0]]
+
     def close(self) -> None:
         """Close the BigQuery client."""
         self.client.close()

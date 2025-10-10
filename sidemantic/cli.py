@@ -739,5 +739,324 @@ def refresh(
         raise typer.Exit(1)
 
 
+# Pre-aggregation recommendation commands
+preagg_app = typer.Typer(help="Pre-aggregation recommendation and management")
+app.add_typer(preagg_app, name="preagg")
+
+
+@preagg_app.command("analyze")
+def preagg_analyze(
+    queries: Path = typer.Option(None, "--queries", "-q", help="Path to file/folder with SQL queries"),
+    connection: str = typer.Option(None, "--connection", help="Database connection string to fetch query history"),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    days_back: int = typer.Option(7, "--days", "-d", help="Days of query history to fetch (default: 7)"),
+    limit: int = typer.Option(1000, "--limit", "-l", help="Max queries to analyze (default: 1000)"),
+    min_count: int = typer.Option(10, "--min-count", help="Minimum query count for recommendation (default: 10)"),
+):
+    """
+    Analyze query patterns to recommend pre-aggregations.
+
+    Fetch query history from database or load from files to identify frequent patterns.
+
+    Examples:
+      sidemantic preagg analyze --connection "bigquery://project/dataset"
+      sidemantic preagg analyze --db data.db --days 30
+      sidemantic preagg analyze --queries queries.sql
+      sidemantic preagg analyze --queries queries_folder/
+    """
+    from sidemantic.core.preagg_recommender import PreAggregationRecommender
+
+    if not queries and not connection and not db:
+        typer.echo("Error: Must specify --queries, --connection, or --db", err=True)
+        raise typer.Exit(1)
+
+    try:
+        recommender = PreAggregationRecommender(min_query_count=min_count)
+
+        # Fetch from database connection
+        if connection or db:
+            # Build connection string
+            connection_str = connection if connection else f"duckdb:///{db.absolute()}"
+
+            # Create adapter
+            from sidemantic import SemanticLayer
+
+            layer = SemanticLayer(connection=connection_str)
+            adapter = layer._adapter
+
+            typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
+            recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
+
+        # Load from files
+        elif queries:
+            if not queries.exists():
+                typer.echo(f"Error: {queries} does not exist", err=True)
+                raise typer.Exit(1)
+
+            if queries.is_file():
+                typer.echo(f"Parsing queries from {queries}...", err=True)
+                recommender.parse_query_log_file(str(queries))
+            else:
+                # Load all .sql files from directory
+                sql_files = list(queries.glob("**/*.sql"))
+                typer.echo(f"Parsing {len(sql_files)} SQL files from {queries}...", err=True)
+                for sql_file in sql_files:
+                    recommender.parse_query_log_file(str(sql_file))
+
+        # Print summary
+        summary = recommender.get_summary()
+        typer.echo(f"\n✓ Analyzed {summary['total_queries']} queries", err=True)
+        typer.echo(f"  Found {summary['unique_patterns']} unique patterns", err=True)
+        typer.echo(f"  {summary['patterns_above_threshold']} patterns above threshold", err=True)
+
+        if summary["models"]:
+            typer.echo("\n  Models:", err=True)
+            for model_name, count in summary["models"].items():
+                typer.echo(f"    {model_name}: {count} queries", err=True)
+
+        typer.echo("\nRun 'sidemantic preagg recommend' to see recommendations", err=True)
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        import traceback
+
+        traceback.print_exc()
+        raise typer.Exit(1)
+
+
+@preagg_app.command("recommend")
+def preagg_recommend(
+    queries: Path = typer.Option(None, "--queries", "-q", help="Path to file/folder with SQL queries"),
+    connection: str = typer.Option(None, "--connection", help="Database connection string to fetch query history"),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    days_back: int = typer.Option(7, "--days", "-d", help="Days of query history to fetch (default: 7)"),
+    limit: int = typer.Option(1000, "--limit", "-l", help="Max queries to analyze (default: 1000)"),
+    min_count: int = typer.Option(10, "--min-count", help="Minimum query count for recommendation (default: 10)"),
+    min_score: float = typer.Option(0.3, "--min-score", help="Minimum benefit score (0-1, default: 0.3)"),
+    top_n: int = typer.Option(None, "--top", "-n", help="Show only top N recommendations"),
+):
+    """
+    Show pre-aggregation recommendations based on query patterns.
+
+    Examples:
+      sidemantic preagg recommend --connection "bigquery://project/dataset"
+      sidemantic preagg recommend --db data.db --min-count 50 --top 10
+      sidemantic preagg recommend --queries queries.sql --min-score 0.5
+    """
+    from sidemantic.core.preagg_recommender import PreAggregationRecommender
+
+    if not queries and not connection and not db:
+        typer.echo("Error: Must specify --queries, --connection, or --db", err=True)
+        raise typer.Exit(1)
+
+    try:
+        recommender = PreAggregationRecommender(min_query_count=min_count, min_benefit_score=min_score)
+
+        # Fetch/parse queries (same as analyze command)
+        if connection or db:
+            connection_str = connection if connection else f"duckdb:///{db.absolute()}"
+            from sidemantic import SemanticLayer
+
+            layer = SemanticLayer(connection=connection_str)
+            adapter = layer._adapter
+            typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
+            recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
+        elif queries:
+            if not queries.exists():
+                typer.echo(f"Error: {queries} does not exist", err=True)
+                raise typer.Exit(1)
+            if queries.is_file():
+                recommender.parse_query_log_file(str(queries))
+            else:
+                for sql_file in queries.glob("**/*.sql"):
+                    recommender.parse_query_log_file(str(sql_file))
+
+        # Get recommendations
+        recommendations = recommender.get_recommendations(top_n=top_n)
+
+        if not recommendations:
+            typer.echo("No recommendations found above thresholds", err=True)
+            typer.echo(
+                f"Try lowering --min-count (currently {min_count}) or --min-score (currently {min_score})", err=True
+            )
+            raise typer.Exit(0)
+
+        # Print recommendations
+        typer.echo(f"\n{'=' * 80}")
+        typer.echo(f"Pre-Aggregation Recommendations (found {len(recommendations)})")
+        typer.echo(f"{'=' * 80}\n")
+
+        for i, rec in enumerate(recommendations, 1):
+            typer.echo(f"{i}. {rec.suggested_name}")
+            typer.echo(f"   Model: {rec.pattern.model}")
+            typer.echo(f"   Query Count: {rec.query_count}")
+            typer.echo(f"   Benefit Score: {rec.estimated_benefit_score:.2f}")
+            typer.echo(f"   Metrics: {', '.join(sorted(rec.pattern.metrics))}")
+            typer.echo(
+                f"   Dimensions: {', '.join(sorted(rec.pattern.dimensions)) if rec.pattern.dimensions else '(none)'}"
+            )
+            if rec.pattern.granularities:
+                typer.echo(f"   Granularities: {', '.join(sorted(rec.pattern.granularities))}")
+            typer.echo()
+
+        typer.echo("Run 'sidemantic preagg apply' to add these to your models", err=True)
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        import traceback
+
+        traceback.print_exc()
+        raise typer.Exit(1)
+
+
+@preagg_app.command("apply")
+def preagg_apply(
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer YAML files"),
+    queries: Path = typer.Option(None, "--queries", "-q", help="Path to file/folder with SQL queries"),
+    connection: str = typer.Option(None, "--connection", help="Database connection string to fetch query history"),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    days_back: int = typer.Option(7, "--days", "-d", help="Days of query history to fetch (default: 7)"),
+    limit: int = typer.Option(1000, "--limit", "-l", help="Max queries to analyze (default: 1000)"),
+    min_count: int = typer.Option(10, "--min-count", help="Minimum query count for recommendation (default: 10)"),
+    min_score: float = typer.Option(0.3, "--min-score", help="Minimum benefit score (0-1, default: 0.3)"),
+    top_n: int = typer.Option(None, "--top", "-n", help="Apply only top N recommendations"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be added without writing files"),
+):
+    """
+    Apply pre-aggregation recommendations to model YAML files.
+
+    Analyzes query patterns and automatically adds pre-aggregation definitions to model YAML files.
+
+    Examples:
+      sidemantic preagg apply models/ --connection "bigquery://project/dataset"
+      sidemantic preagg apply models/ --db data.db --top 5
+      sidemantic preagg apply models/ --queries queries.sql --dry-run
+    """
+    import yaml
+
+    from sidemantic.core.preagg_recommender import PreAggregationRecommender
+
+    if not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    if not queries and not connection and not db:
+        typer.echo("Error: Must specify --queries, --connection, or --db", err=True)
+        raise typer.Exit(1)
+
+    try:
+        recommender = PreAggregationRecommender(min_query_count=min_count, min_benefit_score=min_score)
+
+        # Fetch/parse queries
+        if connection or db:
+            connection_str = connection if connection else f"duckdb:///{db.absolute()}"
+            from sidemantic import SemanticLayer
+
+            layer = SemanticLayer(connection=connection_str)
+            adapter = layer._adapter
+            typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
+            recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
+        elif queries:
+            if not queries.exists():
+                typer.echo(f"Error: {queries} does not exist", err=True)
+                raise typer.Exit(1)
+            if queries.is_file():
+                recommender.parse_query_log_file(str(queries))
+            else:
+                for sql_file in queries.glob("**/*.sql"):
+                    recommender.parse_query_log_file(str(sql_file))
+
+        # Get recommendations
+        recommendations = recommender.get_recommendations(top_n=top_n)
+
+        if not recommendations:
+            typer.echo("No recommendations found above thresholds", err=True)
+            raise typer.Exit(0)
+
+        typer.echo(f"\nFound {len(recommendations)} recommendations to apply\n", err=True)
+
+        # Group recommendations by model
+        by_model = {}
+        for rec in recommendations:
+            model_name = rec.pattern.model
+            if model_name not in by_model:
+                by_model[model_name] = []
+            by_model[model_name].append(rec)
+
+        # Find and update model YAML files
+        yaml_files = list(directory.glob("**/*.yml")) + list(directory.glob("**/*.yaml"))
+
+        updated_count = 0
+        for model_name, recs in by_model.items():
+            # Find YAML file for this model
+            model_file = None
+            for yaml_file in yaml_files:
+                with open(yaml_file) as f:
+                    data = yaml.safe_load(f)
+                    if not data:
+                        continue
+
+                    # Check if this file contains the model
+                    models = data.get("models", [])
+                    for model_def in models:
+                        if model_def.get("name") == model_name:
+                            model_file = yaml_file
+                            break
+                    if model_file:
+                        break
+
+            if not model_file:
+                typer.echo(f"Warning: Could not find YAML file for model '{model_name}'", err=True)
+                continue
+
+            # Load and update the YAML file
+            with open(model_file) as f:
+                data = yaml.safe_load(f)
+
+            # Find the model in the file
+            for model_def in data.get("models", []):
+                if model_def.get("name") == model_name:
+                    # Get existing pre_aggregations or create new list
+                    if "pre_aggregations" not in model_def:
+                        model_def["pre_aggregations"] = []
+
+                    # Add new pre-aggregations
+                    for rec in recs:
+                        preagg_def = recommender.generate_preagg_definition(rec)
+
+                        # Convert to dict for YAML
+                        preagg_dict = {"name": preagg_def.name, "measures": preagg_def.measures}
+
+                        if preagg_def.dimensions:
+                            preagg_dict["dimensions"] = preagg_def.dimensions
+                        if preagg_def.time_dimension:
+                            preagg_dict["time_dimension"] = preagg_def.time_dimension
+                        if preagg_def.granularity:
+                            preagg_dict["granularity"] = preagg_def.granularity
+
+                        model_def["pre_aggregations"].append(preagg_dict)
+
+                        typer.echo(f"  + {model_name}.{preagg_def.name} ({rec.query_count} queries)", err=True)
+                        updated_count += 1
+
+            # Write back to file (unless dry run)
+            if not dry_run:
+                with open(model_file, "w") as f:
+                    yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+        if dry_run:
+            typer.echo(f"\nDry run: Would add {updated_count} pre-aggregations", err=True)
+            typer.echo("Remove --dry-run to apply changes", err=True)
+        else:
+            typer.echo(f"\n✓ Added {updated_count} pre-aggregations to model files", err=True)
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        import traceback
+
+        traceback.print_exc()
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

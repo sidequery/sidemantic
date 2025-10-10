@@ -309,5 +309,82 @@ def test_end_to_end_with_semantic_layer(layer):
     assert preagg.granularity == "day"
 
 
+def test_fetch_and_parse_query_history():
+    """Test fetching query history from database adapter."""
+    recommender = PreAggregationRecommender(min_query_count=2)
+
+    # Create mock adapter with get_query_history method
+    class MockAdapter:
+        def get_query_history(self, days_back=7, limit=1000):
+            return [
+                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
+                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
+                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
+                "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region",
+                "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region",
+            ]
+
+    adapter = MockAdapter()
+
+    # Fetch and parse query history
+    recommender.fetch_and_parse_query_history(adapter, days_back=7, limit=100)
+
+    # Should have 2 unique patterns
+    assert len(recommender.patterns) == 2
+
+    # Pattern 1: revenue + status (count=3)
+    pattern1 = QueryPattern(
+        model="orders",
+        metrics=frozenset(["orders.revenue"]),
+        dimensions=frozenset(["orders.status"]),
+        granularities=frozenset(),
+    )
+    assert recommender.patterns[pattern1] == 3
+
+    # Pattern 2: count + region (count=2)
+    pattern2 = QueryPattern(
+        model="orders",
+        metrics=frozenset(["orders.count"]),
+        dimensions=frozenset(["orders.region"]),
+        granularities=frozenset(),
+    )
+    assert recommender.patterns[pattern2] == 2
+
+
+def test_fetch_and_parse_query_history_adapter_missing_method():
+    """Test that error is raised if adapter doesn't support get_query_history."""
+    recommender = PreAggregationRecommender()
+
+    # Create adapter without get_query_history method
+    class BadAdapter:
+        pass
+
+    adapter = BadAdapter()
+
+    # Should raise AttributeError
+    with pytest.raises(AttributeError, match="does not support get_query_history"):
+        recommender.fetch_and_parse_query_history(adapter)
+
+
+def test_fetch_and_parse_query_history_filters_non_instrumented():
+    """Test that only instrumented queries are parsed."""
+    recommender = PreAggregationRecommender(min_query_count=1)
+
+    class MockAdapter:
+        def get_query_history(self, days_back=7, limit=1000):
+            return [
+                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
+                "SELECT * FROM orders WHERE status = 'completed'",  # No instrumentation
+                "SELECT COUNT(*) FROM customers",  # No instrumentation
+                "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region",
+            ]
+
+    adapter = MockAdapter()
+    recommender.fetch_and_parse_query_history(adapter)
+
+    # Should only have 2 patterns (non-instrumented queries ignored)
+    assert len(recommender.patterns) == 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

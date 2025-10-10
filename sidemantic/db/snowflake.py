@@ -177,6 +177,33 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         rows = result.fetchall()
         return [{"column_name": row[0], "data_type": row[1]} for row in rows]
 
+    def get_query_history(self, days_back: int = 7, limit: int = 1000) -> list[str]:
+        """Fetch query history from Snowflake.
+
+        Queries INFORMATION_SCHEMA.QUERY_HISTORY to find queries with sidemantic instrumentation.
+
+        Args:
+            days_back: Number of days of history to fetch (default: 7, max: 7 for INFORMATION_SCHEMA)
+            limit: Maximum number of queries to return (default: 1000)
+
+        Returns:
+            List of SQL query strings containing '-- sidemantic:' comments
+        """
+        sql = f"""
+        SELECT query_text
+        FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(
+            END_TIME_RANGE_START => DATEADD('day', -{days_back}, CURRENT_TIMESTAMP())
+        ))
+        WHERE query_text LIKE '%-- sidemantic:%'
+          AND execution_status = 'SUCCESS'
+        ORDER BY start_time DESC
+        LIMIT {limit}
+        """
+
+        result = self.execute(sql)
+        rows = result.fetchall()
+        return [row[0] for row in rows if row[0]]
+
     def close(self) -> None:
         """Close the Snowflake connection."""
         self.conn.close()

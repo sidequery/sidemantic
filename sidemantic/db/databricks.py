@@ -153,6 +153,35 @@ class DatabricksAdapter(BaseDatabaseAdapter):
         rows = result.fetchall()
         return [{"column_name": row[0], "data_type": row[1]} for row in rows]
 
+    def get_query_history(self, days_back: int = 7, limit: int = 1000) -> list[str]:
+        """Fetch query history from Databricks.
+
+        Queries system.query.history (Unity Catalog) to find queries with sidemantic instrumentation.
+
+        Args:
+            days_back: Number of days of history to fetch (default: 7)
+            limit: Maximum number of queries to return (default: 1000)
+
+        Returns:
+            List of SQL query strings containing '-- sidemantic:' comments
+
+        Note:
+            Requires Unity Catalog and appropriate permissions to query system.query.history
+        """
+        sql = f"""
+        SELECT statement_text
+        FROM system.query.history
+        WHERE start_time >= CURRENT_TIMESTAMP() - INTERVAL {days_back} DAYS
+          AND statement_text LIKE '%-- sidemantic:%'
+          AND status = 'FINISHED'
+        ORDER BY start_time DESC
+        LIMIT {limit}
+        """
+
+        result = self.execute(sql)
+        rows = result.fetchall()
+        return [row[0] for row in rows if row[0]]
+
     def close(self) -> None:
         """Close the Databricks connection."""
         self.conn.close()

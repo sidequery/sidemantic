@@ -1,0 +1,57 @@
+connection:
+  type: duckdb
+  path: md:sidemantic_demo
+
+preagg_schema: preagg
+
+models:
+  - name: orders
+    table: sidemantic_demo.analytics.orders
+    primary_key: order_id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+      - name: order_date
+        type: time
+        granularity: day
+        sql: order_date
+    metrics:
+      - name: order_count
+        agg: count
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: avg_order_value
+        agg: avg
+        sql: amount
+      - name: completed_revenue
+        agg: sum
+        sql: amount
+        filters: ["status = 'completed'"]
+    pre_aggregations:
+      - name: daily_status
+        measures: [order_count, revenue]
+        dimensions: [status]
+        time_dimension: order_date
+        granularity: day
+      - name: monthly_summary
+        measures: [order_count, revenue, avg_order_value]
+        dimensions: [status]
+        time_dimension: order_date
+        granularity: month
+
+  - name: customers
+    table: sidemantic_demo.analytics.customers
+    primary_key: customer_id
+    dimensions:
+      - name: region
+        type: categorical
+        sql: region
+      - name: tier
+        type: categorical
+        sql: tier

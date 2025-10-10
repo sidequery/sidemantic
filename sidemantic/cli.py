@@ -15,7 +15,10 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 
-app = typer.Typer(help="Sidemantic: SQL-first semantic layer")
+app = typer.Typer(
+    help="Sidemantic: SQL-first semantic layer",
+    no_args_is_help=True,
+)
 
 # Global state for config (set in callback, used in commands)
 _loaded_config: SidemanticConfig | None = None
@@ -638,7 +641,10 @@ def workbench(
 
 
 # Pre-aggregation recommendation commands
-preagg_app = typer.Typer(help="Pre-aggregation recommendation and management")
+preagg_app = typer.Typer(
+    help="Pre-aggregation recommendation and management",
+    no_args_is_help=True,
+)
 app.add_typer(preagg_app, name="preagg")
 
 

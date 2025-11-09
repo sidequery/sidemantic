@@ -575,6 +575,46 @@ def validate(
 
 
 @app.command()
+def lsp(
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    tcp: bool = typer.Option(False, "--tcp", help="Use TCP instead of stdio (for debugging)"),
+):
+    """
+    Start SQL Language Server for IDE integration.
+
+    Provides autocomplete, hover information, and diagnostics for SQL queries
+    using the semantic layer via the Language Server Protocol (LSP).
+
+    Examples:
+      sidemantic lsp
+      sidemantic lsp ./models
+      sidemantic lsp --tcp  # for debugging
+
+    IDE Setup:
+      - VSCode: Install a generic LSP client and configure it to run 'sidemantic lsp'
+      - Neovim: Configure lspconfig to run 'sidemantic lsp' in your project directory
+    """
+    try:
+        from sidemantic.language_server import start_language_server
+    except ImportError:
+        typer.echo("Error: LSP support not installed", err=True)
+        typer.echo("Install with: uv pip install 'sidemantic[lsp]'", err=True)
+        raise typer.Exit(1)
+
+    if not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Starting Language Server for: {directory}", err=True)
+    if tcp:
+        typer.echo("Using TCP on localhost:5007", err=True)
+    else:
+        typer.echo("Using stdio (for IDE communication)", err=True)
+
+    start_language_server(config_path=str(directory), stdio=not tcp)
+
+
+@app.command()
 def workbench(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     demo: bool = typer.Option(False, "--demo", help="Launch with demo data (multi-format example)"),

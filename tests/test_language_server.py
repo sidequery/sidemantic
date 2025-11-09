@@ -103,3 +103,46 @@ def test_language_server_cli_import():
         assert start_language_server is not None
     except ImportError:
         pytest.skip("pygls not installed")
+
+
+def test_language_server_table_metadata(demo_models_dir):
+    """Test that table metadata is loaded from the database."""
+    from pygls.protocol import LanguageServerProtocol, default_converter
+
+    # Create a test table in the semantic layer's database
+    server = SidemanticLanguageServer(protocol_cls=LanguageServerProtocol, converter_factory=default_converter)
+    server.load_semantic_layer(demo_models_dir)
+
+    # Create a test table
+    if server.semantic_layer:
+        server.semantic_layer.conn.execute("""
+            CREATE TABLE IF NOT EXISTS test_table (
+                id INTEGER,
+                name VARCHAR,
+                created_at TIMESTAMP
+            )
+        """)
+
+        # Reload metadata
+        server._load_table_metadata()
+
+        # Check that table metadata was loaded
+        assert "test_table" in server.table_metadata
+        table_meta = server.table_metadata["test_table"]
+        assert table_meta.name == "test_table"
+        assert len(table_meta.columns) >= 3
+        assert "id" in table_meta.columns
+        assert "name" in table_meta.columns
+        assert "created_at" in table_meta.columns
+
+
+def test_table_metadata_class():
+    """Test the TableMetadata class."""
+    from sidemantic.language_server import TableMetadata
+
+    table = TableMetadata("users", "public", {"id": "INTEGER", "email": "VARCHAR"})
+    assert table.name == "users"
+    assert table.schema == "public"
+    assert len(table.columns) == 2
+    assert table.columns["id"] == "INTEGER"
+    assert table.columns["email"] == "VARCHAR"

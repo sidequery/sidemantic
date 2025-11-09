@@ -39,6 +39,15 @@ from sidemantic import SemanticLayer, load_from_directory
 logger = logging.getLogger(__name__)
 
 
+class TableMetadata:
+    """Metadata about a database table."""
+
+    def __init__(self, name: str, schema: str | None = None, columns: dict[str, str] | None = None):
+        self.name = name
+        self.schema = schema
+        self.columns = columns or {}  # column_name -> data_type
+
+
 class SidemanticLanguageServer(JsonRPCServer):
     """Language server for Sidemantic SQL queries."""
 
@@ -48,6 +57,7 @@ class SidemanticLanguageServer(JsonRPCServer):
         super().__init__(protocol_cls, converter_factory, max_workers)
         self.semantic_layer: SemanticLayer | None = None
         self.config_path: Path | None = None
+        self.table_metadata: dict[str, TableMetadata] = {}  # table_name -> TableMetadata
 
     def load_semantic_layer(self, config_path: str | Path) -> None:
         """Load semantic layer from configuration."""
@@ -56,9 +66,80 @@ class SidemanticLanguageServer(JsonRPCServer):
             self.semantic_layer = SemanticLayer()
             load_from_directory(self.semantic_layer, str(self.config_path))
             logger.info(f"Loaded semantic layer from {self.config_path}")
+
+            # Load table metadata from database
+            self._load_table_metadata()
         except Exception as e:
             logger.error(f"Failed to load semantic layer: {e}")
             self.semantic_layer = None
+
+    def _load_table_metadata(self) -> None:
+        """Introspect database to load table and column metadata."""
+        if not self.semantic_layer:
+            return
+
+        try:
+            conn = self.semantic_layer.conn
+            dialect = self.semantic_layer.dialect
+
+            if dialect == "duckdb":
+                # DuckDB: Get all tables and their columns
+                tables_query = """
+                    SELECT table_schema, table_name
+                    FROM information_schema.tables
+                    WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+                """
+                tables_result = conn.execute(tables_query).fetchall()
+
+                for schema, table_name in tables_result:
+                    # Get columns for this table
+                    columns_query = f"""
+                        SELECT column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_schema = '{schema}' AND table_name = '{table_name}'
+                        ORDER BY ordinal_position
+                    """
+                    columns_result = conn.execute(columns_query).fetchall()
+                    columns = {col_name: data_type for col_name, data_type in columns_result}
+
+                    # Store metadata
+                    full_name = f"{schema}.{table_name}" if schema != "main" else table_name
+                    self.table_metadata[table_name] = TableMetadata(table_name, schema, columns)
+                    if schema != "main":
+                        self.table_metadata[full_name] = TableMetadata(table_name, schema, columns)
+
+                logger.info(f"Loaded metadata for {len(self.table_metadata)} tables")
+
+            elif dialect in ["postgres", "postgresql"]:
+                # PostgreSQL
+                tables_query = """
+                    SELECT table_schema, table_name
+                    FROM information_schema.tables
+                    WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+                """
+                tables_result = conn.execute(tables_query).fetchall()
+
+                for schema, table_name in tables_result:
+                    columns_query = f"""
+                        SELECT column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_schema = '{schema}' AND table_name = '{table_name}'
+                        ORDER BY ordinal_position
+                    """
+                    columns_result = conn.execute(columns_query).fetchall()
+                    columns = {col_name: data_type for col_name, data_type in columns_result}
+
+                    full_name = f"{schema}.{table_name}"
+                    self.table_metadata[table_name] = TableMetadata(table_name, schema, columns)
+                    self.table_metadata[full_name] = TableMetadata(table_name, schema, columns)
+
+                logger.info(f"Loaded metadata for {len(self.table_metadata)} tables")
+
+            else:
+                logger.warning(f"Table metadata introspection not yet implemented for {dialect}")
+
+        except Exception as e:
+            logger.error(f"Failed to load table metadata: {e}")
 
 
 # Create the language server instance
@@ -192,6 +273,66 @@ async def completions(ls: SidemanticLanguageServer, params: CompletionParams) ->
                 )
             )
 
+    # Check if we're completing columns after a table reference (e.g., "table_name.")
+    table_prefix = None
+    if "." in before_cursor:
+        parts = before_cursor.split()
+        if parts:
+            last_token = parts[-1]
+            if "." in last_token:
+                table_prefix = last_token.rsplit(".", 1)[0]
+
+    # Add table metadata completions
+    if ls.table_metadata:
+        # Add table completions in FROM/JOIN context
+        if in_from_context:
+            for table_name, table_meta in ls.table_metadata.items():
+                if "." not in table_name:  # Only show simple names, not schema-qualified duplicates
+                    schema_info = f" (schema: {table_meta.schema})" if table_meta.schema else ""
+                    description = f"**Table**: `{table_name}`{schema_info}\n\n**Columns**: {len(table_meta.columns)}"
+
+                    items.append(
+                        CompletionItem(
+                            label=table_name,
+                            kind=CompletionItemKind.Class,
+                            detail=f"Database Table{schema_info}",
+                            documentation=MarkupContent(kind=MarkupKind.Markdown, value=description),
+                        )
+                    )
+
+        # Add column completions
+        if table_prefix and table_prefix in ls.table_metadata:
+            # User is typing "table_name." - suggest columns from that specific table
+            table_meta = ls.table_metadata[table_prefix]
+            for col_name, col_type in table_meta.columns.items():
+                description = f"**Column**: `{table_prefix}.{col_name}`\n\n**Type**: `{col_type}`"
+                items.append(
+                    CompletionItem(
+                        label=col_name,
+                        kind=CompletionItemKind.Field,
+                        detail=f"{col_type} (from {table_prefix})",
+                        documentation=MarkupContent(kind=MarkupKind.Markdown, value=description),
+                    )
+                )
+        else:
+            # General column suggestions (show all columns with their tables)
+            for table_name, table_meta in ls.table_metadata.items():
+                if "." not in table_name:  # Avoid duplicates from schema-qualified names
+                    for col_name, col_type in table_meta.columns.items():
+                        description = (
+                            f"**Column**: `{table_name}.{col_name}`\n\n"
+                            f"**Table**: {table_name}\n\n"
+                            f"**Type**: `{col_type}`"
+                        )
+                        items.append(
+                            CompletionItem(
+                                label=col_name,
+                                kind=CompletionItemKind.Field,
+                                detail=f"{col_type} (from {table_name})",
+                                documentation=MarkupContent(kind=MarkupKind.Markdown, value=description),
+                            )
+                        )
+
     # Add SQL keywords
     sql_keywords = [
         "SELECT",
@@ -309,6 +450,48 @@ async def hover(ls: SidemanticLanguageServer, params: HoverParams) -> Hover | No
                         end=Position(line=params.position.line, character=end),
                     ),
                 )
+
+    # Check if it's a table name
+    if word in ls.table_metadata:
+        table_meta = ls.table_metadata[word]
+        schema_info = f" (schema: {table_meta.schema})" if table_meta.schema else ""
+        content_parts = [f"# Table: {word}{schema_info}"]
+        content_parts.append(f"\n\n**Columns**: {len(table_meta.columns)}")
+
+        if table_meta.columns:
+            content_parts.append("\n\n**Column List**:")
+            for col_name, col_type in list(table_meta.columns.items())[:10]:  # Show first 10 columns
+                content_parts.append(f"\n- `{col_name}`: {col_type}")
+            if len(table_meta.columns) > 10:
+                content_parts.append(f"\n- ... and {len(table_meta.columns) - 10} more")
+
+        return Hover(
+            contents=MarkupContent(kind=MarkupKind.Markdown, value="".join(content_parts)),
+            range=Range(
+                start=Position(line=params.position.line, character=start),
+                end=Position(line=params.position.line, character=end),
+            ),
+        )
+
+    # Check if it's a column name (search all tables)
+    for table_name, table_meta in ls.table_metadata.items():
+        if "." not in table_name and word in table_meta.columns:  # Avoid schema-qualified duplicates
+            col_type = table_meta.columns[word]
+            content_parts = [
+                f"# Column: {word}",
+                f"\n\n**Table**: {table_name}",
+                f"\n\n**Type**: `{col_type}`",
+            ]
+            if table_meta.schema:
+                content_parts.append(f"\n\n**Schema**: {table_meta.schema}")
+
+            return Hover(
+                contents=MarkupContent(kind=MarkupKind.Markdown, value="".join(content_parts)),
+                range=Range(
+                    start=Position(line=params.position.line, character=start),
+                    end=Position(line=params.position.line, character=end),
+                ),
+            )
 
     return None
 

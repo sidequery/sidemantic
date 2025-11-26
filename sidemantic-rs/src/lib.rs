@@ -41,10 +41,10 @@ pub mod ffi;
 pub mod sql;
 
 // Re-export commonly used types
+pub use config::{load_from_directory, load_from_file, load_from_string};
 pub use core::{
     Aggregation, Dimension, DimensionType, JoinPath, JoinStep, Metric, MetricType, Model,
     Relationship, RelationshipType, Segment, SemanticGraph,
 };
-pub use config::{load_from_directory, load_from_file, load_from_string};
 pub use error::{Result, SidemanticError};
 pub use sql::{QueryRewriter, SemanticQuery, SqlGenerator};

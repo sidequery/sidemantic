@@ -91,7 +91,7 @@ fn extract_column_references(sql: &str) -> HashSet<String> {
     let mut refs = HashSet::new();
 
     // Wrap in SELECT to make it valid SQL
-    let wrapped = format!("SELECT {}", sql);
+    let wrapped = format!("SELECT {sql}");
 
     let dialect = GenericDialect {};
     let Ok(statements) = Parser::parse_sql(&dialect, &wrapped) else {
@@ -293,10 +293,10 @@ pub fn check_circular_dependencies(
     }
 
     for (name, _) in metrics {
-        if !visited.contains(*name) {
-            if has_cycle(name, &adj, &mut visited, &mut rec_stack) {
-                return Err(format!("Circular dependency detected involving metric '{}'", name));
-            }
+        if !visited.contains(*name) && has_cycle(name, &adj, &mut visited, &mut rec_stack) {
+            return Err(format!(
+                "Circular dependency detected involving metric '{name}'"
+            ));
         }
     }
 

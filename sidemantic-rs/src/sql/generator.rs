@@ -95,7 +95,9 @@ impl<'a> SqlGenerator<'a> {
             .map(|m| m.model.clone())
             .or_else(|| dimension_refs.first().map(|d| d.model.clone()))
             .ok_or_else(|| {
-                SidemanticError::Validation("Query must have at least one metric or dimension".into())
+                SidemanticError::Validation(
+                    "Query must have at least one metric or dimension".into(),
+                )
             })?;
 
         // Build join paths from base model to all other required models
@@ -110,7 +112,13 @@ impl<'a> SqlGenerator<'a> {
         // Add warning comment if fan-out risk detected
         if !fan_out_at_risk.is_empty() {
             sql.push_str("-- WARNING: Fan-out detected. Metrics from models [");
-            sql.push_str(&fan_out_at_risk.iter().cloned().collect::<Vec<_>>().join(", "));
+            sql.push_str(
+                &fan_out_at_risk
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
             sql.push_str("] may be inflated.\n");
             sql.push_str("-- Consider using symmetric aggregates or pre-aggregating.\n");
         }
@@ -126,7 +134,8 @@ impl<'a> SqlGenerator<'a> {
                 SidemanticError::model_not_found(&dim_ref.model, &available)
             })?;
             let dimension = model.get_dimension(&dim_ref.name).ok_or_else(|| {
-                let available: Vec<&str> = model.dimensions.iter().map(|d| d.name.as_str()).collect();
+                let available: Vec<&str> =
+                    model.dimensions.iter().map(|d| d.name.as_str()).collect();
                 SidemanticError::dimension_not_found(&dim_ref.model, &dim_ref.name, &available)
             })?;
 
@@ -164,7 +173,7 @@ impl<'a> SqlGenerator<'a> {
                     let denom = metric.denominator.as_deref().unwrap_or("1");
                     let num_sql = self.expand_derived_metric(num, &metric_ref.model)?;
                     let denom_sql = self.expand_derived_metric(denom, &metric_ref.model)?;
-                    format!("({}) / NULLIF({}, 0)", num_sql, denom_sql)
+                    format!("({num_sql}) / NULLIF({denom_sql}, 0)")
                 }
                 MetricType::Cumulative | MetricType::TimeComparison => {
                     // Complex metric types use to_sql which generates placeholder SQL
@@ -235,9 +244,8 @@ impl<'a> SqlGenerator<'a> {
 
         // GROUP BY clause (if we have aggregations)
         if !dimension_refs.is_empty() && !metric_refs.is_empty() {
-            let group_by_indices: Vec<String> = (1..=dimension_refs.len())
-                .map(|i| i.to_string())
-                .collect();
+            let group_by_indices: Vec<String> =
+                (1..=dimension_refs.len()).map(|i| i.to_string()).collect();
             sql.push_str(&format!("GROUP BY {}\n", group_by_indices.join(", ")));
         }
 
@@ -248,7 +256,7 @@ impl<'a> SqlGenerator<'a> {
 
         // LIMIT clause
         if let Some(limit) = query.limit {
-            sql.push_str(&format!("LIMIT {}\n", limit));
+            sql.push_str(&format!("LIMIT {limit}\n"));
         }
 
         Ok(sql.trim_end().to_string())
@@ -263,7 +271,7 @@ impl<'a> SqlGenerator<'a> {
 
             // Create alias: model_field or model_field__granularity
             let alias = if let Some(ref g) = granularity {
-                format!("{}__{}", name, g)
+                format!("{name}__{g}")
             } else {
                 name.clone()
             };
@@ -564,8 +572,7 @@ mod tests {
         // Should contain fan-out warning
         assert!(
             sql.contains("-- WARNING: Fan-out detected"),
-            "Expected fan-out warning in SQL: {}",
-            sql
+            "Expected fan-out warning in SQL: {sql}"
         );
     }
 }

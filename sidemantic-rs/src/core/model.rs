@@ -73,7 +73,7 @@ impl Dimension {
     pub fn sql_with_granularity(&self, granularity: Option<&str>) -> String {
         let base_sql = self.sql_expr();
         match granularity.or(self.granularity.as_deref()) {
-            Some(g) => format!("DATE_TRUNC('{}', {})", g, base_sql),
+            Some(g) => format!("DATE_TRUNC('{g}', {base_sql})"),
             None => base_sql.to_string(),
         }
     }
@@ -123,11 +123,11 @@ pub enum MetricType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ComparisonType {
-    Yoy,  // Year over year
-    Mom,  // Month over month
-    Wow,  // Week over week
-    Dod,  // Day over day
-    Qoq,  // Quarter over quarter
+    Yoy, // Year over year
+    Mom, // Month over month
+    Wow, // Week over week
+    Dod, // Day over day
+    Qoq, // Quarter over quarter
     PriorPeriod,
 }
 
@@ -350,7 +350,7 @@ impl Metric {
 
     /// Converts metric to SQL aggregation expression
     pub fn to_sql(&self, alias: Option<&str>) -> String {
-        let prefix = alias.map(|a| format!("{}.", a)).unwrap_or_default();
+        let prefix = alias.map(|a| format!("{a}.")).unwrap_or_default();
 
         match self.r#type {
             MetricType::Simple => {
@@ -359,11 +359,11 @@ impl Metric {
                 let full_expr = if sql_expr == "*" {
                     "*".to_string()
                 } else {
-                    format!("{}{}", prefix, sql_expr)
+                    format!("{prefix}{sql_expr}")
                 };
 
                 match agg {
-                    Aggregation::CountDistinct => format!("COUNT(DISTINCT {})", full_expr),
+                    Aggregation::CountDistinct => format!("COUNT(DISTINCT {full_expr})"),
                     _ => format!("{}({})", agg.as_sql(), full_expr),
                 }
             }
@@ -382,13 +382,13 @@ impl Metric {
                 let base = self.sql_expr();
                 if self.grain_to_date.is_some() {
                     // Period-to-date: SUM() with window reset at period boundary
-                    format!("SUM({}) /* cumulative, grain_to_date */", base)
+                    format!("SUM({base}) /* cumulative, grain_to_date */")
                 } else if let Some(window) = &self.window {
                     // Rolling window: SUM() OVER (ORDER BY time ROWS BETWEEN window AND CURRENT ROW)
-                    format!("SUM({}) /* cumulative, window: {} */", base, window)
+                    format!("SUM({base}) /* cumulative, window: {window} */")
                 } else {
                     // Simple running total
-                    format!("SUM({}) /* cumulative */", base)
+                    format!("SUM({base}) /* cumulative */")
                 }
             }
             MetricType::TimeComparison => {
@@ -397,7 +397,7 @@ impl Metric {
                 let comparison = self
                     .comparison_type
                     .as_ref()
-                    .map(|c| format!("{:?}", c).to_lowercase())
+                    .map(|c| format!("{c:?}").to_lowercase())
                     .unwrap_or_else(|| "prior_period".to_string());
                 let calc = self
                     .calculation
@@ -406,19 +406,15 @@ impl Metric {
 
                 match calc {
                     ComparisonCalculation::Difference => {
-                        format!("({} - LAG({}) OVER ()) /* {} */", base, base, comparison)
+                        format!("({base} - LAG({base}) OVER ()) /* {comparison} */")
                     }
                     ComparisonCalculation::PercentChange => {
                         format!(
-                            "(({} - LAG({}) OVER ()) / NULLIF(LAG({}) OVER (), 0)) /* {} */",
-                            base, base, base, comparison
+                            "(({base} - LAG({base}) OVER ()) / NULLIF(LAG({base}) OVER (), 0)) /* {comparison} */"
                         )
                     }
                     ComparisonCalculation::Ratio => {
-                        format!(
-                            "({} / NULLIF(LAG({}) OVER (), 0)) /* {} */",
-                            base, base, comparison
-                        )
+                        format!("({base} / NULLIF(LAG({base}) OVER (), 0)) /* {comparison} */")
                     }
                 }
             }
@@ -599,7 +595,7 @@ impl Model {
     /// Returns the table source (table name or SQL subquery)
     pub fn table_source(&self) -> String {
         if let Some(sql) = &self.sql {
-            format!("({})", sql)
+            format!("({sql})")
         } else {
             self.table_name().to_string()
         }

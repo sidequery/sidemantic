@@ -22,7 +22,7 @@ pub enum ConfigFormat {
 pub fn load_from_file(path: impl AsRef<Path>) -> Result<SemanticGraph> {
     let path = path.as_ref();
     let content = fs::read_to_string(path)
-        .map_err(|e| SidemanticError::Validation(format!("Failed to read file: {}", e)))?;
+        .map_err(|e| SidemanticError::Validation(format!("Failed to read file: {e}")))?;
 
     load_from_string(&content)
 }
@@ -107,12 +107,12 @@ fn parse_content(content: &str, format: ConfigFormat) -> Result<Vec<Model>> {
     match format {
         ConfigFormat::Sidemantic => {
             let config: SidemanticConfig = serde_yaml::from_str(content)
-                .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {}", e)))?;
+                .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {e}")))?;
             Ok(config.into_models())
         }
         ConfigFormat::Cube => {
             let config: CubeConfig = serde_yaml::from_str(content)
-                .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {}", e)))?;
+                .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {e}")))?;
             Ok(config.into_models())
         }
     }
@@ -142,7 +142,11 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
             let referenced = &dim_name[..dim_name.len() - 3];
 
             // Check if relationship already exists
-            if model.relationships.iter().any(|r| r.name.to_lowercase() == referenced) {
+            if model
+                .relationships
+                .iter()
+                .any(|r| r.name.to_lowercase() == referenced)
+            {
                 continue;
             }
 
@@ -154,7 +158,9 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
             ];
 
             for target in potential_targets {
-                if model_names.iter().any(|n| n.to_lowercase() == target) && target != model_name.to_lowercase() {
+                if model_names.iter().any(|n| n.to_lowercase() == target)
+                    && target != model_name.to_lowercase()
+                {
                     // Find the actual model name with correct casing
                     let actual_target = model_names
                         .iter()
@@ -208,11 +214,11 @@ fn walkdir(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut files = Vec::new();
 
     let entries = fs::read_dir(dir)
-        .map_err(|e| SidemanticError::Validation(format!("Failed to read directory: {}", e)))?;
+        .map_err(|e| SidemanticError::Validation(format!("Failed to read directory: {e}")))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|e| SidemanticError::Validation(format!("Failed to read entry: {}", e)))?;
+        let entry =
+            entry.map_err(|e| SidemanticError::Validation(format!("Failed to read entry: {e}")))?;
         let path = entry.path();
 
         if path.is_dir() {

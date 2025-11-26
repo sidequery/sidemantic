@@ -8,7 +8,9 @@ pub enum SidemanticError {
     #[error("Model not found: '{0}'. Available models: {1}")]
     ModelNotFound(String, String),
 
-    #[error("Dimension not found: '{dimension}' in model '{model}'. Available dimensions: {available}")]
+    #[error(
+        "Dimension not found: '{dimension}' in model '{model}'. Available dimensions: {available}"
+    )]
     DimensionNotFound {
         model: String,
         dimension: String,
@@ -30,7 +32,9 @@ pub enum SidemanticError {
     },
 
     // Join/relationship errors
-    #[error("No join path found between '{from}' and '{to}'. Check that a relationship is defined.")]
+    #[error(
+        "No join path found between '{from}' and '{to}'. Check that a relationship is defined."
+    )]
     NoJoinPath { from: String, to: String },
 
     #[error("Relationship not found: '{from}' -> '{to}'")]
@@ -80,7 +84,9 @@ pub enum SidemanticError {
     #[error("Invalid metric type: '{metric}' is a {metric_type} metric but was used as a simple aggregation")]
     InvalidMetricUsage { metric: String, metric_type: String },
 
-    #[error("Metric dependency not found: '{metric}' references '{dependency}' which does not exist")]
+    #[error(
+        "Metric dependency not found: '{metric}' references '{dependency}' which does not exist"
+    )]
     MetricDependencyNotFound { metric: String, dependency: String },
 }
 

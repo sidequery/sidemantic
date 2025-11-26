@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  python:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -44,3 +45,30 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -v --cov=sidemantic --cov-report=term-missing
+
+  rust:
+    name: Rust (sidemantic-rs)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidemantic-rs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sidemantic-rs
+
+      - name: Run cargo fmt check
+        run: cargo fmt --check
+
+      - name: Run cargo clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Run cargo test
+        run: cargo test

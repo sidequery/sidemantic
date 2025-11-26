@@ -63,12 +63,15 @@ impl JoinPath {
     }
 }
 
+/// Edge in the adjacency list: (target_model, fk, pk, relationship_type, custom_sql)
+type AdjacencyEdge = (String, String, String, RelationshipType, Option<String>);
+
 /// The semantic graph holds all models and their relationships
 #[derive(Debug, Default)]
 pub struct SemanticGraph {
     models: HashMap<String, Model>,
-    /// Adjacency list: model -> [(target_model, fk, pk, relationship_type, custom_sql)]
-    adjacency: HashMap<String, Vec<(String, String, String, RelationshipType, Option<String>)>>,
+    /// Adjacency list: model -> edges
+    adjacency: HashMap<String, Vec<AdjacencyEdge>>,
 }
 
 impl SemanticGraph {
@@ -83,8 +86,7 @@ impl SemanticGraph {
         // Validate model
         if model.table.is_none() && model.sql.is_none() {
             return Err(SidemanticError::Validation(format!(
-                "Model '{}' must have either 'table' or 'sql' defined",
-                name
+                "Model '{name}' must have either 'table' or 'sql' defined"
             )));
         }
 
@@ -136,16 +138,13 @@ impl SemanticGraph {
                         .replace("__TEMP__", "{to}")
                 });
 
-                self.adjacency
-                    .entry(rel.name.clone())
-                    .or_default()
-                    .push((
-                        model.name.clone(),
-                        rel.pk(),
-                        rel.fk(),
-                        reverse_type,
-                        reverse_sql,
-                    ));
+                self.adjacency.entry(rel.name.clone()).or_default().push((
+                    model.name.clone(),
+                    rel.pk(),
+                    rel.fk(),
+                    reverse_type,
+                    reverse_sql,
+                ));
             }
         }
     }

@@ -1,9 +1,9 @@
 //! Example usage of sidemantic-rs
 
+use sidemantic::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
 use sidemantic::{
     load_from_string, Dimension, Metric, Model, Relationship, Segment, SemanticGraph,
 };
-use sidemantic::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
 
 fn main() {
     println!("=== Sidemantic-rs Demo ===\n");
@@ -122,9 +122,18 @@ cubes:
 
     println!("Converted from Cube.js format:");
     println!("  Table: {:?}", model.table);
-    println!("  Dimensions: {:?}", model.dimensions.iter().map(|d| &d.name).collect::<Vec<_>>());
-    println!("  Metrics: {:?}", model.metrics.iter().map(|m| &m.name).collect::<Vec<_>>());
-    println!("  Segments: {:?}\n", model.segments.iter().map(|s| &s.name).collect::<Vec<_>>());
+    println!(
+        "  Dimensions: {:?}",
+        model.dimensions.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    println!(
+        "  Metrics: {:?}",
+        model.metrics.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
+    println!(
+        "  Segments: {:?}\n",
+        model.segments.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
 
     let generator = SqlGenerator::new(&graph);
     let query = SemanticQuery::new()
@@ -185,7 +194,7 @@ fn demo_query_rewriter() {
 
     let sql = "SELECT orders.revenue, orders.status FROM orders WHERE orders.status = 'pending'";
     println!("Original SQL:");
-    println!("  {}\n", sql);
+    println!("  {sql}\n");
     println!("Rewritten SQL:");
     println!("{}\n", rewriter.rewrite(sql).unwrap());
 }

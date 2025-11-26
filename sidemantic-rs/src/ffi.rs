@@ -1,6 +1,10 @@
 //! C FFI bindings for sidemantic-rs
 //!
 //! Exposes the query rewriter to C/C++ consumers like the DuckDB extension.
+//!
+//! Safety: These functions are `extern "C"` and expect valid C strings.
+//! Callers must ensure pointers are valid. Documented in header.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -41,7 +45,7 @@ pub extern "C" fn sidemantic_load_yaml(yaml: *const c_char) -> *mut c_char {
     let yaml_str = unsafe {
         match CStr::from_ptr(yaml).to_str() {
             Ok(s) => s,
-            Err(e) => return to_c_string(&format!("Error: invalid UTF-8: {}", e)),
+            Err(e) => return to_c_string(&format!("Error: invalid UTF-8: {e}")),
         }
     };
 
@@ -51,12 +55,12 @@ pub extern "C" fn sidemantic_load_yaml(yaml: *const c_char) -> *mut c_char {
             // Merge new models into existing graph
             for model in new_graph.models() {
                 if let Err(e) = graph.add_model(model.clone()) {
-                    return to_c_string(&format!("Error adding model: {}", e));
+                    return to_c_string(&format!("Error adding model: {e}"));
                 }
             }
             ptr::null_mut() // Success
         }
-        Err(e) => to_c_string(&format!("Error: {}", e)),
+        Err(e) => to_c_string(&format!("Error: {e}")),
     }
 }
 
@@ -73,7 +77,7 @@ pub extern "C" fn sidemantic_load_file(path: *const c_char) -> *mut c_char {
     let path_str = unsafe {
         match CStr::from_ptr(path).to_str() {
             Ok(s) => s,
-            Err(e) => return to_c_string(&format!("Error: invalid UTF-8: {}", e)),
+            Err(e) => return to_c_string(&format!("Error: invalid UTF-8: {e}")),
         }
     };
 
@@ -81,7 +85,7 @@ pub extern "C" fn sidemantic_load_file(path: *const c_char) -> *mut c_char {
 
     // Check if path exists
     if !path.exists() {
-        return to_c_string(&format!("Error: path does not exist: {}", path_str));
+        return to_c_string(&format!("Error: path does not exist: {path_str}"));
     }
 
     let result = if path.is_dir() {
@@ -96,12 +100,12 @@ pub extern "C" fn sidemantic_load_file(path: *const c_char) -> *mut c_char {
             // Merge new models into existing graph
             for model in new_graph.models() {
                 if let Err(e) = graph.add_model(model.clone()) {
-                    return to_c_string(&format!("Error adding model: {}", e));
+                    return to_c_string(&format!("Error adding model: {e}"));
                 }
             }
             ptr::null_mut() // Success
         }
-        Err(e) => to_c_string(&format!("Error: {}", e)),
+        Err(e) => to_c_string(&format!("Error: {e}")),
     }
 }
 
@@ -159,7 +163,7 @@ pub extern "C" fn sidemantic_rewrite(sql: *const c_char) -> SidemanticRewriteRes
             Err(e) => {
                 return SidemanticRewriteResult {
                     sql: ptr::null_mut(),
-                    error: to_c_string(&format!("Error: invalid UTF-8: {}", e)),
+                    error: to_c_string(&format!("Error: invalid UTF-8: {e}")),
                     was_rewritten: false,
                 }
             }
@@ -188,7 +192,7 @@ pub extern "C" fn sidemantic_rewrite(sql: *const c_char) -> SidemanticRewriteRes
         },
         Err(e) => SidemanticRewriteResult {
             sql: ptr::null_mut(),
-            error: to_c_string(&format!("Error: {}", e)),
+            error: to_c_string(&format!("Error: {e}")),
             was_rewritten: false,
         },
     }
@@ -227,12 +231,12 @@ fn query_references_models(sql: &str, graph: &SemanticGraph) -> bool {
         let model_lower = model.name.to_lowercase();
 
         // Check for FROM model or JOIN model patterns
-        if sql_lower.contains(&format!("from {}", model_lower))
-            || sql_lower.contains(&format!("from {} ", model_lower))
-            || sql_lower.contains(&format!("join {}", model_lower))
-            || sql_lower.contains(&format!("join {} ", model_lower))
+        if sql_lower.contains(&format!("from {model_lower}"))
+            || sql_lower.contains(&format!("from {model_lower} "))
+            || sql_lower.contains(&format!("join {model_lower}"))
+            || sql_lower.contains(&format!("join {model_lower} "))
             // Also check for model.column references
-            || sql_lower.contains(&format!("{}.", model_lower))
+            || sql_lower.contains(&format!("{model_lower}."))
         {
             return true;
         }

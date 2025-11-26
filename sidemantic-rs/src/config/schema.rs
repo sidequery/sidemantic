@@ -167,10 +167,22 @@ impl ModelConfig {
             table: self.table,
             sql: self.sql,
             primary_key: self.primary_key,
-            dimensions: self.dimensions.into_iter().map(|d| d.into_dimension()).collect(),
+            dimensions: self
+                .dimensions
+                .into_iter()
+                .map(|d| d.into_dimension())
+                .collect(),
             metrics: self.metrics.into_iter().map(|m| m.into_metric()).collect(),
-            relationships: self.relationships.into_iter().map(|r| r.into_relationship()).collect(),
-            segments: self.segments.into_iter().map(|s| s.into_segment()).collect(),
+            relationships: self
+                .relationships
+                .into_iter()
+                .map(|r| r.into_relationship())
+                .collect(),
+            segments: self
+                .segments
+                .into_iter()
+                .map(|s| s.into_segment())
+                .collect(),
             label: None,
             description: self.description,
         }
@@ -278,10 +290,18 @@ impl CubeDefinition {
             table: self.sql_table,
             sql: self.sql,
             primary_key,
-            dimensions: self.dimensions.into_iter().map(|d| d.into_dimension()).collect(),
+            dimensions: self
+                .dimensions
+                .into_iter()
+                .map(|d| d.into_dimension())
+                .collect(),
             metrics: self.measures.into_iter().map(|m| m.into_metric()).collect(),
             relationships: Vec::new(), // Cube.js uses joins differently
-            segments: self.segments.into_iter().map(|s| s.into_segment()).collect(),
+            segments: self
+                .segments
+                .into_iter()
+                .map(|s| s.into_segment())
+                .collect(),
             label: None,
             description: self.description,
         }
@@ -331,7 +351,11 @@ impl CubeMeasure {
         let sql = self.sql.map(|s| strip_cube_placeholder(&s));
 
         // Convert filters
-        let filters = self.filters.into_iter().map(|f| strip_cube_placeholder(&f.sql)).collect();
+        let filters = self
+            .filters
+            .into_iter()
+            .map(|f| strip_cube_placeholder(&f.sql))
+            .collect();
 
         Metric {
             name: self.name,
@@ -475,6 +499,9 @@ cubes:
     #[test]
     fn test_strip_cube_placeholder() {
         assert_eq!(strip_cube_placeholder("${CUBE}.status"), "status");
-        assert_eq!(strip_cube_placeholder("${CUBE}.amount > 100"), "amount > 100");
+        assert_eq!(
+            strip_cube_placeholder("${CUBE}.amount > 100"),
+            "amount > 100"
+        );
     }
 }

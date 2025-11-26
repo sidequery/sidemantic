@@ -232,11 +232,7 @@ impl<'a> QueryRewriter<'a> {
     }
 
     /// Rewrite a SELECT expression (could be metric or dimension)
-    fn rewrite_select_expr(
-        &self,
-        expr: Expr,
-        model_refs: &[(String, String)],
-    ) -> Result<Expr> {
+    fn rewrite_select_expr(&self, expr: Expr, model_refs: &[(String, String)]) -> Result<Expr> {
         match &expr {
             Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
                 let model_name = &parts[0].value;
@@ -404,9 +400,11 @@ impl<'a> QueryRewriter<'a> {
                                             .replace("{from}", &from_alias)
                                             .replace("{to}", &to_alias);
                                         let dialect = GenericDialect {};
-                                        let expr_sql = format!("SELECT 1 WHERE {}", condition_sql);
+                                        let expr_sql = format!("SELECT 1 WHERE {condition_sql}");
                                         if let Ok(stmts) = Parser::parse_sql(&dialect, &expr_sql) {
-                                            if let Some(Statement::Query(q)) = stmts.into_iter().next() {
+                                            if let Some(Statement::Query(q)) =
+                                                stmts.into_iter().next()
+                                            {
                                                 if let SetExpr::Select(s) = *q.body {
                                                     s.selection.unwrap_or_else(|| {
                                                         self.build_default_join_condition(
@@ -464,9 +462,9 @@ impl<'a> QueryRewriter<'a> {
                                             partitions: vec![],
                                             with_ordinality: false,
                                         },
-                                        join_operator: JoinOperator::LeftOuter(
-                                            JoinConstraint::On(join_condition),
-                                        ),
+                                        join_operator: JoinOperator::LeftOuter(JoinConstraint::On(
+                                            join_condition,
+                                        )),
                                         global: false,
                                     });
                                 }
@@ -612,9 +610,10 @@ impl<'a> QueryRewriter<'a> {
                 SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
                     if !self.is_aggregation(expr) {
                         // Use positional reference
-                        group_by_exprs.push(Expr::Value(
-                            sqlparser::ast::Value::Number((i + 1).to_string(), false).into(),
-                        ));
+                        group_by_exprs.push(Expr::Value(sqlparser::ast::Value::Number(
+                            (i + 1).to_string(),
+                            false,
+                        )));
                     }
                 }
                 _ => {}
@@ -700,13 +699,11 @@ mod tests {
         // Should have JOIN clause
         assert!(
             rewritten.to_uppercase().contains("JOIN"),
-            "Expected JOIN in: {}",
-            rewritten
+            "Expected JOIN in: {rewritten}"
         );
         assert!(
             rewritten.contains("customers"),
-            "Expected customers table in: {}",
-            rewritten
+            "Expected customers table in: {rewritten}"
         );
     }
 
@@ -722,13 +719,11 @@ mod tests {
         // Should have JOIN clause even though customers only in WHERE
         assert!(
             rewritten.to_uppercase().contains("JOIN"),
-            "Expected JOIN in: {}",
-            rewritten
+            "Expected JOIN in: {rewritten}"
         );
         assert!(
             rewritten.contains("customers"),
-            "Expected customers table in: {}",
-            rewritten
+            "Expected customers table in: {rewritten}"
         );
     }
 }

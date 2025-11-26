@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::core::{JoinPath, MetricType, SemanticGraph};
+use crate::core::{JoinPath, MetricType, SemanticGraph, TableCalculation};
 use crate::error::{Result, SidemanticError};
 
 /// A semantic query definition
@@ -13,6 +13,8 @@ pub struct SemanticQuery {
     pub filters: Vec<String>,
     /// Segment references (e.g., "orders.completed")
     pub segments: Vec<String>,
+    /// Table calculations (window functions)
+    pub table_calculations: Vec<TableCalculation>,
     pub order_by: Vec<String>,
     pub limit: Option<usize>,
 }
@@ -39,6 +41,11 @@ impl SemanticQuery {
 
     pub fn with_segments(mut self, segments: Vec<String>) -> Self {
         self.segments = segments;
+        self
+    }
+
+    pub fn with_table_calculations(mut self, calcs: Vec<TableCalculation>) -> Self {
+        self.table_calculations = calcs;
         self
     }
 
@@ -182,6 +189,12 @@ impl<'a> SqlGenerator<'a> {
             };
 
             select_parts.push(format!("  {} AS {}", sql_expr, metric_ref.alias));
+        }
+
+        // Add table calculations to SELECT
+        for calc in &query.table_calculations {
+            let calc_sql = calc.to_sql().map_err(SidemanticError::Validation)?;
+            select_parts.push(format!("  {} AS {}", calc_sql, calc.name));
         }
 
         sql.push_str(&select_parts.join(",\n"));
@@ -573,6 +586,43 @@ mod tests {
         assert!(
             sql.contains("-- WARNING: Fan-out detected"),
             "Expected fan-out warning in SQL: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_table_calculations() {
+        use crate::core::{TableCalcType, TableCalculation};
+
+        let graph = create_test_graph();
+        let generator = SqlGenerator::new(&graph);
+
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.revenue".into()])
+            .with_dimensions(vec!["orders.order_date".into()])
+            .with_table_calculations(vec![
+                TableCalculation::new("cumulative_revenue", TableCalcType::RunningTotal)
+                    .with_field("revenue")
+                    .with_order_by(vec!["order_date".into()]),
+                TableCalculation::new("pct_total", TableCalcType::PercentOfTotal)
+                    .with_field("revenue"),
+            ]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        // Should include running total window function
+        assert!(
+            sql.contains("SUM(revenue) OVER"),
+            "Expected running total: {sql}"
+        );
+        assert!(
+            sql.contains("ROWS UNBOUNDED PRECEDING"),
+            "Expected unbounded preceding: {sql}"
+        );
+
+        // Should include percent of total
+        assert!(
+            sql.contains("revenue * 100.0 / NULLIF(SUM(revenue) OVER"),
+            "Expected percent of total: {sql}"
         );
     }
 }

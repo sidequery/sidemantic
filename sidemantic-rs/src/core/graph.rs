@@ -13,6 +13,19 @@ pub struct JoinStep {
     pub from_key: String,
     pub to_key: String,
     pub relationship_type: RelationshipType,
+    /// Custom SQL join condition (overrides FK/PK join)
+    pub custom_condition: Option<String>,
+}
+
+impl JoinStep {
+    /// Check if this join step causes fan-out (row multiplication)
+    /// Fan-out occurs when joining from "one" side to "many" side
+    pub fn causes_fan_out(&self) -> bool {
+        matches!(
+            self.relationship_type,
+            RelationshipType::OneToMany | RelationshipType::ManyToMany
+        )
+    }
 }
 
 /// A complete join path between two models
@@ -25,14 +38,37 @@ impl JoinPath {
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
+
+    /// Check if any step in the path causes fan-out
+    pub fn has_fan_out(&self) -> bool {
+        self.steps.iter().any(|s| s.causes_fan_out())
+    }
+
+    /// Get all models that are on the "many" side of a fan-out join
+    /// These models' metrics need symmetric aggregate handling
+    pub fn fan_out_models(&self) -> Vec<&str> {
+        self.steps
+            .iter()
+            .filter(|s| s.causes_fan_out())
+            .map(|s| s.to_model.as_str())
+            .collect()
+    }
+
+    /// Get the first model where fan-out occurs (the boundary)
+    pub fn fan_out_boundary(&self) -> Option<&str> {
+        self.steps
+            .iter()
+            .find(|s| s.causes_fan_out())
+            .map(|s| s.to_model.as_str())
+    }
 }
 
 /// The semantic graph holds all models and their relationships
 #[derive(Debug, Default)]
 pub struct SemanticGraph {
     models: HashMap<String, Model>,
-    /// Adjacency list: model -> [(target_model, fk, pk, relationship_type)]
-    adjacency: HashMap<String, Vec<(String, String, String, RelationshipType)>>,
+    /// Adjacency list: model -> [(target_model, fk, pk, relationship_type, custom_sql)]
+    adjacency: HashMap<String, Vec<(String, String, String, RelationshipType, Option<String>)>>,
 }
 
 impl SemanticGraph {
@@ -80,6 +116,7 @@ impl SemanticGraph {
                     rel.fk(),
                     rel.pk(),
                     rel.r#type.clone(),
+                    rel.sql.clone(),
                 ));
             }
 
@@ -92,6 +129,13 @@ impl SemanticGraph {
                     RelationshipType::ManyToMany => RelationshipType::ManyToMany,
                 };
 
+                // For reverse edges, swap {from} and {to} in custom SQL
+                let reverse_sql = rel.sql.as_ref().map(|sql| {
+                    sql.replace("{from}", "__TEMP__")
+                        .replace("{to}", "{from}")
+                        .replace("__TEMP__", "{to}")
+                });
+
                 self.adjacency
                     .entry(rel.name.clone())
                     .or_default()
@@ -100,6 +144,7 @@ impl SemanticGraph {
                         rel.pk(),
                         rel.fk(),
                         reverse_type,
+                        reverse_sql,
                     ));
             }
         }
@@ -129,7 +174,7 @@ impl SemanticGraph {
 
         while let Some((current, path)) = queue.pop_front() {
             if let Some(edges) = self.adjacency.get(&current) {
-                for (target, fk, pk, rel_type) in edges {
+                for (target, fk, pk, rel_type, custom_sql) in edges {
                     if !visited.contains(target) {
                         let mut new_path = path.clone();
                         new_path.push(JoinStep {
@@ -138,6 +183,7 @@ impl SemanticGraph {
                             from_key: fk.clone(),
                             to_key: pk.clone(),
                             relationship_type: rel_type.clone(),
+                            custom_condition: custom_sql.clone(),
                         });
 
                         if target == to {
@@ -255,5 +301,50 @@ mod tests {
         assert_eq!(model, "orders");
         assert_eq!(field, "order_date");
         assert_eq!(gran.unwrap(), "month");
+    }
+
+    #[test]
+    fn test_fan_out_detection() {
+        let graph = create_test_graph();
+
+        // orders -> customers is many_to_one (no fan-out)
+        let path = graph.find_join_path("orders", "customers").unwrap();
+        assert!(!path.has_fan_out());
+        assert!(path.fan_out_models().is_empty());
+        assert!(path.fan_out_boundary().is_none());
+
+        // customers -> orders is one_to_many (causes fan-out)
+        let path = graph.find_join_path("customers", "orders").unwrap();
+        assert!(path.has_fan_out());
+        assert_eq!(path.fan_out_models(), vec!["orders"]);
+        assert_eq!(path.fan_out_boundary(), Some("orders"));
+    }
+
+    #[test]
+    fn test_custom_join_condition() {
+        let mut graph = SemanticGraph::new();
+
+        // Create models with custom join condition
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_relationship(
+                Relationship::many_to_one("customers")
+                    .with_condition("{from}.customer_id = {to}.id AND {to}.active = true"),
+            );
+
+        let customers = Model::new("customers", "id").with_table("customers");
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+
+        // Verify custom condition is preserved in join path
+        let path = graph.find_join_path("orders", "customers").unwrap();
+        assert_eq!(path.steps.len(), 1);
+        assert!(path.steps[0].custom_condition.is_some());
+        assert!(path.steps[0]
+            .custom_condition
+            .as_ref()
+            .unwrap()
+            .contains("{from}.customer_id = {to}.id"));
     }
 }

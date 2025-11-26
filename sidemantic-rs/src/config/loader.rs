@@ -170,6 +170,7 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
                             r#type: RelationshipType::ManyToOne,
                             foreign_key: Some(dim.name.clone()),
                             primary_key: Some("id".to_string()),
+                            sql: None,
                         },
                     ));
 
@@ -181,6 +182,7 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
                             r#type: RelationshipType::OneToMany,
                             foreign_key: Some(dim.name.clone()),
                             primary_key: Some("id".to_string()),
+                            sql: None,
                         },
                     ));
 

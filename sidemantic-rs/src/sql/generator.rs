@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::core::{MetricType, SemanticGraph};
+use crate::core::{JoinPath, MetricType, SemanticGraph};
 use crate::error::{Result, SidemanticError};
 
 /// A semantic query definition
@@ -101,8 +101,19 @@ impl<'a> SqlGenerator<'a> {
         // Build join paths from base model to all other required models
         let join_paths = self.build_join_paths(&base_model, &required_models)?;
 
+        // Detect fan-out risk for symmetric aggregate handling
+        let fan_out_at_risk = self.detect_fan_out_risk(&base_model, &join_paths);
+
         // Generate SQL
         let mut sql = String::new();
+
+        // Add warning comment if fan-out risk detected
+        if !fan_out_at_risk.is_empty() {
+            sql.push_str("-- WARNING: Fan-out detected. Metrics from models [");
+            sql.push_str(&fan_out_at_risk.iter().cloned().collect::<Vec<_>>().join(", "));
+            sql.push_str("] may be inflated.\n");
+            sql.push_str("-- Consider using symmetric aggregates or pre-aggregating.\n");
+        }
 
         // SELECT clause
         sql.push_str("SELECT\n");
@@ -186,14 +197,24 @@ impl<'a> SqlGenerator<'a> {
                 let from_alias = self.model_alias(&step.from_model);
                 let to_alias = self.model_alias(&step.to_model);
 
+                // Use custom condition if available, otherwise default FK/PK join
+                let join_condition = if let Some(custom) = &step.custom_condition {
+                    // Replace {from} and {to} placeholders with actual aliases
+                    custom
+                        .replace("{from}", &from_alias)
+                        .replace("{to}", &to_alias)
+                } else {
+                    format!(
+                        "{}.{} = {}.{}",
+                        from_alias, step.from_key, to_alias, step.to_key
+                    )
+                };
+
                 sql.push_str(&format!(
-                    "LEFT JOIN {} AS {} ON {}.{} = {}.{}\n",
+                    "LEFT JOIN {} AS {} ON {}\n",
                     target_model.table_source(),
                     to_alias,
-                    from_alias,
-                    step.from_key,
-                    to_alias,
-                    step.to_key
+                    join_condition
                 ));
             }
         }
@@ -363,6 +384,51 @@ impl<'a> SqlGenerator<'a> {
         Ok(expanded)
     }
 
+    /// Check if metrics from a model are at fan-out risk
+    /// Returns the set of models whose metrics will be inflated due to fan-out
+    fn detect_fan_out_risk(
+        &self,
+        base_model: &str,
+        join_paths: &HashMap<String, JoinPath>,
+    ) -> HashSet<String> {
+        let mut at_risk = HashSet::new();
+
+        // For each model we join to, check if the path has fan-out
+        for (model, path) in join_paths {
+            if path.has_fan_out() {
+                // All models BEFORE the fan-out boundary are at risk
+                // The base model's metrics can be inflated if we join to a "many" side
+                if let Some(boundary) = path.fan_out_boundary() {
+                    // If we're joining to a model that causes fan-out,
+                    // the base model's metrics are at risk
+                    if model != boundary {
+                        at_risk.insert(base_model.to_string());
+                    }
+                }
+            }
+        }
+
+        // Also check reverse: if the base model is a "many" side model
+        // and we're pulling metrics from a "one" side model
+        for (model, path) in join_paths {
+            if model == base_model {
+                continue;
+            }
+            // If the path TO this model has no fan-out, but the REVERSE would,
+            // then metrics from this model might be duplicated
+            // This is detected by checking if any step is one_to_many
+            for step in &path.steps {
+                if step.causes_fan_out() {
+                    // The TO model of this step's metrics would be duplicated
+                    // when viewed from the base model's grain
+                    at_risk.insert(step.from_model.clone());
+                }
+            }
+        }
+
+        at_risk
+    }
+
     /// Resolve segment references to SQL filter expressions
     fn resolve_segments(&self, segments: &[String]) -> Result<Vec<String>> {
         let mut filters = Vec::new();
@@ -464,5 +530,42 @@ mod tests {
         let sql = generator.generate(&query).unwrap();
 
         assert!(sql.contains("WHERE o.status = 'completed'"));
+    }
+
+    #[test]
+    fn test_fan_out_warning() {
+        // Create a graph where customers have metrics and we join to orders
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_relationship(Relationship::many_to_one("customers"));
+
+        let customers = Model::new("customers", "id")
+            .with_table("customers")
+            .with_dimension(Dimension::categorical("country"))
+            .with_metric(Metric::sum("total_credit", "credit_limit"));
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+
+        // Query customer metrics grouped by order status
+        // This causes fan-out: one customer can have many orders
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["customers.total_credit".into()])
+            .with_dimensions(vec!["orders.status".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        // Should contain fan-out warning
+        assert!(
+            sql.contains("-- WARNING: Fan-out detected"),
+            "Expected fan-out warning in SQL: {}",
+            sql
+        );
     }
 }

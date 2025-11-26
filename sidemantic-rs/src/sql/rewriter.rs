@@ -1,8 +1,11 @@
 //! Query rewriter: rewrites SQL using semantic layer definitions
 
+use std::collections::HashSet;
+
 use sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, GroupByExpr, Ident, ObjectName, Query, Select,
-    SelectItem, SetExpr, Statement, TableFactor, TableWithJoins,
+    Expr, FunctionArg, FunctionArgExpr, GroupByExpr, Ident, Join, JoinConstraint, JoinOperator,
+    ObjectName, Query, Select, SelectItem, SetExpr, Statement, TableAlias, TableFactor,
+    TableWithJoins,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -67,18 +70,41 @@ impl<'a> QueryRewriter<'a> {
 
     fn rewrite_select(&self, select: Select) -> Result<Select> {
         // Find semantic model references in FROM clause
-        let model_refs = self.find_model_references(&select.from);
+        let mut model_refs = self.find_model_references(&select.from);
 
         if model_refs.is_empty() {
             // No semantic models, return as-is
             return Ok(select);
         }
 
+        // Find all models referenced in the projection
+        let referenced_models = self.find_referenced_models(&select.projection);
+
+        // Find models that need to be joined (referenced but not in FROM)
+        let base_model = model_refs.first().map(|(m, _)| m.clone());
+        let models_in_from: HashSet<_> = model_refs.iter().map(|(m, _)| m.clone()).collect();
+        let models_to_join: Vec<_> = referenced_models
+            .iter()
+            .filter(|m| !models_in_from.contains(*m))
+            .cloned()
+            .collect();
+
+        // Add aliases for joined models
+        for model_name in &models_to_join {
+            let alias = model_name.chars().next().unwrap_or('t').to_string();
+            model_refs.push((model_name.clone(), alias));
+        }
+
         // Rewrite SELECT items
         let projection = self.rewrite_projection(&select.projection, &model_refs)?;
 
-        // Rewrite FROM clause
-        let from = self.rewrite_from(&select.from, &model_refs)?;
+        // Rewrite FROM clause with JOINs
+        let from = self.rewrite_from_with_joins(
+            &select.from,
+            &model_refs,
+            base_model.as_deref(),
+            &models_to_join,
+        )?;
 
         // Rewrite WHERE clause
         let selection = select
@@ -124,6 +150,54 @@ impl<'a> QueryRewriter<'a> {
         }
 
         refs
+    }
+
+    /// Find all models referenced in the SELECT projection
+    fn find_referenced_models(&self, projection: &[SelectItem]) -> HashSet<String> {
+        let mut models = HashSet::new();
+
+        for item in projection {
+            match item {
+                SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                    self.collect_model_refs_from_expr(expr, &mut models);
+                }
+                _ => {}
+            }
+        }
+
+        models
+    }
+
+    /// Recursively collect model references from an expression
+    fn collect_model_refs_from_expr(&self, expr: &Expr, models: &mut HashSet<String>) {
+        match expr {
+            Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+                let model_name = &parts[0].value;
+                if self.graph.get_model(model_name).is_some() {
+                    models.insert(model_name.clone());
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                self.collect_model_refs_from_expr(left, models);
+                self.collect_model_refs_from_expr(right, models);
+            }
+            Expr::UnaryOp { expr, .. } => {
+                self.collect_model_refs_from_expr(expr, models);
+            }
+            Expr::Nested(inner) => {
+                self.collect_model_refs_from_expr(inner, models);
+            }
+            Expr::Function(f) => {
+                if let sqlparser::ast::FunctionArguments::List(args) = &f.args {
+                    for arg in &args.args {
+                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) = arg {
+                            self.collect_model_refs_from_expr(e, models);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Rewrite SELECT projection items
@@ -278,11 +352,13 @@ impl<'a> QueryRewriter<'a> {
         }
     }
 
-    /// Rewrite FROM clause to use actual table names
-    fn rewrite_from(
+    /// Rewrite FROM clause with JOINs for cross-model references
+    fn rewrite_from_with_joins(
         &self,
         from: &[TableWithJoins],
-        _model_refs: &[(String, String)],
+        model_refs: &[(String, String)],
+        base_model: Option<&str>,
+        models_to_join: &[String],
     ) -> Result<Vec<TableWithJoins>> {
         let mut result = Vec::new();
 
@@ -291,6 +367,110 @@ impl<'a> QueryRewriter<'a> {
                 let table_name = name.0.first().map(|i| i.value.clone()).unwrap_or_default();
 
                 if let Some(model) = self.graph.get_model(&table_name) {
+                    // Build JOINs for models referenced but not in FROM
+                    let mut joins = table.joins.clone();
+
+                    if Some(table_name.as_str()) == base_model {
+                        for target_model_name in models_to_join {
+                            if let Ok(join_path) =
+                                self.graph.find_join_path(&table_name, target_model_name)
+                            {
+                                for step in &join_path.steps {
+                                    let target_model =
+                                        self.graph.get_model(&step.to_model).unwrap();
+
+                                    // Find the alias for this model
+                                    let to_alias = model_refs
+                                        .iter()
+                                        .find(|(m, _)| m == &step.to_model)
+                                        .map(|(_, a)| a.clone())
+                                        .unwrap_or_else(|| step.to_model.clone());
+
+                                    let from_alias = model_refs
+                                        .iter()
+                                        .find(|(m, _)| m == &step.from_model)
+                                        .map(|(_, a)| a.clone())
+                                        .unwrap_or_else(|| step.from_model.clone());
+
+                                    // Build JOIN condition
+                                    let join_condition = if let Some(custom) =
+                                        &step.custom_condition
+                                    {
+                                        // Parse custom condition
+                                        let condition_sql = custom
+                                            .replace("{from}", &from_alias)
+                                            .replace("{to}", &to_alias);
+                                        let dialect = GenericDialect {};
+                                        let expr_sql = format!("SELECT 1 WHERE {}", condition_sql);
+                                        if let Ok(stmts) = Parser::parse_sql(&dialect, &expr_sql) {
+                                            if let Some(Statement::Query(q)) = stmts.into_iter().next() {
+                                                if let SetExpr::Select(s) = *q.body {
+                                                    s.selection.unwrap_or_else(|| {
+                                                        self.build_default_join_condition(
+                                                            &from_alias,
+                                                            &step.from_key,
+                                                            &to_alias,
+                                                            &step.to_key,
+                                                        )
+                                                    })
+                                                } else {
+                                                    self.build_default_join_condition(
+                                                        &from_alias,
+                                                        &step.from_key,
+                                                        &to_alias,
+                                                        &step.to_key,
+                                                    )
+                                                }
+                                            } else {
+                                                self.build_default_join_condition(
+                                                    &from_alias,
+                                                    &step.from_key,
+                                                    &to_alias,
+                                                    &step.to_key,
+                                                )
+                                            }
+                                        } else {
+                                            self.build_default_join_condition(
+                                                &from_alias,
+                                                &step.from_key,
+                                                &to_alias,
+                                                &step.to_key,
+                                            )
+                                        }
+                                    } else {
+                                        self.build_default_join_condition(
+                                            &from_alias,
+                                            &step.from_key,
+                                            &to_alias,
+                                            &step.to_key,
+                                        )
+                                    };
+
+                                    joins.push(Join {
+                                        relation: TableFactor::Table {
+                                            name: ObjectName(vec![Ident::new(
+                                                target_model.table_name().to_string(),
+                                            )]),
+                                            alias: Some(TableAlias {
+                                                name: Ident::new(to_alias),
+                                                columns: vec![],
+                                            }),
+                                            args: None,
+                                            with_hints: vec![],
+                                            version: None,
+                                            partitions: vec![],
+                                            with_ordinality: false,
+                                        },
+                                        join_operator: JoinOperator::LeftOuter(
+                                            JoinConstraint::On(join_condition),
+                                        ),
+                                        global: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
                     let new_table = TableWithJoins {
                         relation: TableFactor::Table {
                             name: ObjectName(vec![Ident::new(model.table_name().to_string())]),
@@ -301,7 +481,7 @@ impl<'a> QueryRewriter<'a> {
                             partitions: vec![],
                             with_ordinality: false,
                         },
-                        joins: table.joins.clone(),
+                        joins,
                     };
                     result.push(new_table);
                 } else {
@@ -313,6 +493,27 @@ impl<'a> QueryRewriter<'a> {
         }
 
         Ok(result)
+    }
+
+    /// Build default JOIN condition (from.fk = to.pk)
+    fn build_default_join_condition(
+        &self,
+        from_alias: &str,
+        from_key: &str,
+        to_alias: &str,
+        to_key: &str,
+    ) -> Expr {
+        Expr::BinaryOp {
+            left: Box::new(Expr::CompoundIdentifier(vec![
+                Ident::new(from_alias.to_string()),
+                Ident::new(from_key.to_string()),
+            ])),
+            op: sqlparser::ast::BinaryOperator::Eq,
+            right: Box::new(Expr::CompoundIdentifier(vec![
+                Ident::new(to_alias.to_string()),
+                Ident::new(to_key.to_string()),
+            ])),
+        }
     }
 
     /// Rewrite general expressions
@@ -482,5 +683,27 @@ mod tests {
 
         assert!(rewritten.contains("WHERE"));
         assert!(rewritten.contains("status"));
+    }
+
+    #[test]
+    fn test_cross_model_join() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        // Query orders metric with customers dimension - should auto-join
+        let sql = "SELECT orders.revenue, customers.country FROM orders";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        // Should have JOIN clause
+        assert!(
+            rewritten.to_uppercase().contains("JOIN"),
+            "Expected JOIN in: {}",
+            rewritten
+        );
+        assert!(
+            rewritten.contains("customers"),
+            "Expected customers table in: {}",
+            rewritten
+        );
     }
 }

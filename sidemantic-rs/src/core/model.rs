@@ -453,6 +453,10 @@ pub struct Relationship {
     pub foreign_key: Option<String>,
     /// Primary key in related model (defaults to "id")
     pub primary_key: Option<String>,
+    /// Custom SQL join condition (overrides FK/PK)
+    /// Use {from} and {to} placeholders for table aliases
+    #[serde(default)]
+    pub sql: Option<String>,
 }
 
 impl Relationship {
@@ -462,6 +466,7 @@ impl Relationship {
             r#type: RelationshipType::ManyToOne,
             foreign_key: None,
             primary_key: None,
+            sql: None,
         }
     }
 
@@ -486,6 +491,14 @@ impl Relationship {
         self
     }
 
+    /// Set a custom SQL join condition (overrides FK/PK)
+    /// Use {from} and {to} placeholders for table aliases
+    /// Example: "{from}.date BETWEEN {to}.start_date AND {to}.end_date"
+    pub fn with_condition(mut self, sql: impl Into<String>) -> Self {
+        self.sql = Some(sql.into());
+        self
+    }
+
     /// Returns the foreign key column name
     pub fn fk(&self) -> String {
         self.foreign_key
@@ -496,6 +509,11 @@ impl Relationship {
     /// Returns the primary key column name in the related model
     pub fn pk(&self) -> String {
         self.primary_key.clone().unwrap_or_else(|| "id".to_string())
+    }
+
+    /// Returns the custom SQL condition if set
+    pub fn custom_condition(&self) -> Option<&str> {
+        self.sql.as_deref()
     }
 }
 

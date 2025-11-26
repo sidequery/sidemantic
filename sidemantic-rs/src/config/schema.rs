@@ -78,6 +78,8 @@ pub struct RelationshipConfig {
     pub rel_type: Option<String>,
     pub foreign_key: Option<String>,
     pub primary_key: Option<String>,
+    /// Custom SQL join condition using {from} and {to} placeholders
+    pub sql: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +243,7 @@ impl RelationshipConfig {
             r#type: rel_type,
             foreign_key: self.foreign_key,
             primary_key: self.primary_key,
+            sql: self.sql,
         }
     }
 }

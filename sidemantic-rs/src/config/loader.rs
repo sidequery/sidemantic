@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::core::{Model, Relationship, RelationshipType, SemanticGraph};
+use crate::core::{
+    resolve_model_inheritance, Model, Relationship, RelationshipType, SemanticGraph,
+};
 use crate::error::{Result, SidemanticError};
 
 use super::schema::{CubeConfig, SidemanticConfig};
@@ -30,10 +32,15 @@ pub fn load_from_file(path: impl AsRef<Path>) -> Result<SemanticGraph> {
 /// Load a semantic graph from a YAML string
 pub fn load_from_string(content: &str) -> Result<SemanticGraph> {
     let format = detect_format(content);
-    let models = parse_content(content, format)?;
+    let (models, extends_map) = parse_content_with_extends(content, format)?;
+
+    // Resolve inheritance
+    let models_map: HashMap<String, Model> =
+        models.into_iter().map(|m| (m.name.clone(), m)).collect();
+    let resolved_models = resolve_model_inheritance(models_map, &extends_map)?;
 
     let mut graph = SemanticGraph::new();
-    for model in models {
+    for model in resolved_models.into_values() {
         graph.add_model(model)?;
     }
 
@@ -104,16 +111,34 @@ fn detect_format(content: &str) -> ConfigFormat {
 
 /// Parse content based on detected format
 fn parse_content(content: &str, format: ConfigFormat) -> Result<Vec<Model>> {
+    let (models, _) = parse_content_with_extends(content, format)?;
+    Ok(models)
+}
+
+/// Parse content and return extends map for inheritance resolution
+fn parse_content_with_extends(
+    content: &str,
+    format: ConfigFormat,
+) -> Result<(Vec<Model>, HashMap<String, String>)> {
     match format {
         ConfigFormat::Sidemantic => {
             let config: SidemanticConfig = serde_yaml::from_str(content)
                 .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {e}")))?;
-            Ok(config.into_models())
+
+            // Extract extends map before converting to models
+            let extends_map: HashMap<String, String> = config
+                .models
+                .iter()
+                .filter_map(|m| m.extends.as_ref().map(|e| (m.name.clone(), e.clone())))
+                .collect();
+
+            Ok((config.into_models(), extends_map))
         }
         ConfigFormat::Cube => {
             let config: CubeConfig = serde_yaml::from_str(content)
                 .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {e}")))?;
-            Ok(config.into_models())
+            // Cube.js doesn't support extends in the same way
+            Ok((config.into_models(), HashMap::new()))
         }
     }
 }
@@ -314,5 +339,37 @@ cubes:
         // Check customers has reverse relationship
         let customers = models.get("customers").unwrap();
         assert!(customers.get_relationship("orders").is_some());
+    }
+
+    #[test]
+    fn test_model_inheritance() {
+        let yaml = r#"
+models:
+  - name: base_orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+
+  - name: us_orders
+    extends: base_orders
+    metrics:
+      - name: order_count
+        agg: count
+"#;
+
+        let graph = load_from_string(yaml).unwrap();
+
+        // us_orders should inherit from base_orders
+        let us_orders = graph.get_model("us_orders").unwrap();
+        assert_eq!(us_orders.table, Some("orders".to_string())); // inherited
+        assert!(us_orders.get_dimension("status").is_some()); // inherited
+        assert!(us_orders.get_metric("revenue").is_some()); // inherited
+        assert!(us_orders.get_metric("order_count").is_some()); // own
     }
 }

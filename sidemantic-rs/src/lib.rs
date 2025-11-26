@@ -43,8 +43,10 @@ pub mod sql;
 // Re-export commonly used types
 pub use config::{load_from_directory, load_from_file, load_from_string};
 pub use core::{
-    Aggregation, Dimension, DimensionType, JoinPath, JoinStep, Metric, MetricType, Model,
-    Relationship, RelationshipType, Segment, SemanticGraph, TableCalcType, TableCalculation,
+    build_symmetric_aggregate_sql, merge_model, resolve_model_inheritance, Aggregation, Dimension,
+    DimensionType, JoinPath, JoinStep, Metric, MetricType, Model, Relationship, RelationshipType,
+    RelativeDate, Segment, SemanticGraph, SqlDialect, SymmetricAggType, TableCalcType,
+    TableCalculation,
 };
 pub use error::{Result, SidemanticError};
 pub use sql::{QueryRewriter, SemanticQuery, SqlGenerator};

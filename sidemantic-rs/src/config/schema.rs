@@ -26,6 +26,8 @@ pub struct SidemanticConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub name: String,
+    /// Parent model to inherit from
+    pub extends: Option<String>,
     pub table: Option<String>,
     pub sql: Option<String>,
     #[serde(default = "default_primary_key")]

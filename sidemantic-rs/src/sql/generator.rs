@@ -2,7 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::core::{JoinPath, MetricType, SemanticGraph, TableCalculation};
+use crate::core::{
+    build_symmetric_aggregate_sql, JoinPath, MetricType, RelativeDate, SemanticGraph, SqlDialect,
+    SymmetricAggType, TableCalculation,
+};
 use crate::error::{Result, SidemanticError};
 
 /// A semantic query definition
@@ -116,19 +119,7 @@ impl<'a> SqlGenerator<'a> {
         // Generate SQL
         let mut sql = String::new();
 
-        // Add warning comment if fan-out risk detected
-        if !fan_out_at_risk.is_empty() {
-            sql.push_str("-- WARNING: Fan-out detected. Metrics from models [");
-            sql.push_str(
-                &fan_out_at_risk
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            sql.push_str("] may be inflated.\n");
-            sql.push_str("-- Consider using symmetric aggregates or pre-aggregating.\n");
-        }
+        // Note: fan_out_at_risk is used below to apply symmetric aggregates
 
         // SELECT clause
         sql.push_str("SELECT\n");
@@ -168,7 +159,45 @@ impl<'a> SqlGenerator<'a> {
             })?;
 
             let alias = self.model_alias(&metric_ref.model);
+            let use_symmetric = fan_out_at_risk.contains(&metric_ref.model);
+
             let sql_expr = match metric.r#type {
+                MetricType::Simple if use_symmetric => {
+                    // Use symmetric aggregate to prevent fan-out inflation
+                    use crate::core::Aggregation;
+                    match metric.agg {
+                        Some(Aggregation::Sum) => build_symmetric_aggregate_sql(
+                            metric.sql_expr(),
+                            &model.primary_key,
+                            SymmetricAggType::Sum,
+                            Some(&alias),
+                            SqlDialect::DuckDB,
+                        ),
+                        Some(Aggregation::Avg) => build_symmetric_aggregate_sql(
+                            metric.sql_expr(),
+                            &model.primary_key,
+                            SymmetricAggType::Avg,
+                            Some(&alias),
+                            SqlDialect::DuckDB,
+                        ),
+                        Some(Aggregation::Count) => build_symmetric_aggregate_sql(
+                            metric.sql_expr(),
+                            &model.primary_key,
+                            SymmetricAggType::Count,
+                            Some(&alias),
+                            SqlDialect::DuckDB,
+                        ),
+                        Some(Aggregation::CountDistinct) => build_symmetric_aggregate_sql(
+                            metric.sql_expr(),
+                            &model.primary_key,
+                            SymmetricAggType::CountDistinct,
+                            Some(&alias),
+                            SqlDialect::DuckDB,
+                        ),
+                        // Min/Max/None don't need symmetric aggregates
+                        _ => metric.to_sql(Some(&alias)),
+                    }
+                }
                 MetricType::Simple => metric.to_sql(Some(&alias)),
                 MetricType::Derived => {
                     // For derived metrics, we need to expand referenced metrics
@@ -380,7 +409,7 @@ impl<'a> SqlGenerator<'a> {
         Ok(result)
     }
 
-    /// Expand filter expressions, replacing model.field references
+    /// Expand filter expressions, replacing model.field references and relative dates
     fn expand_filters(&self, filters: &[String]) -> Result<Vec<String>> {
         let mut expanded = Vec::new();
 
@@ -399,10 +428,32 @@ impl<'a> SqlGenerator<'a> {
                 }
             }
 
+            // Expand relative date expressions in quoted strings
+            // e.g., "created_at >= 'last 7 days'" -> "created_at >= CURRENT_DATE - 7"
+            expanded_filter = self.expand_relative_dates(&expanded_filter);
+
             expanded.push(expanded_filter);
         }
 
         Ok(expanded)
+    }
+
+    /// Expand relative date expressions in a filter string
+    fn expand_relative_dates(&self, filter: &str) -> String {
+        let mut result = filter.to_string();
+
+        // Find quoted strings and try to parse as relative dates
+        let re = regex::Regex::new(r"'([^']+)'").unwrap();
+        for cap in re.captures_iter(filter) {
+            let quoted = &cap[0];
+            let inner = &cap[1];
+
+            if let Some(sql_date) = RelativeDate::parse(inner) {
+                result = result.replace(quoted, &sql_date);
+            }
+        }
+
+        result
     }
 
     /// Check if metrics from a model are at fan-out risk
@@ -582,10 +633,14 @@ mod tests {
 
         let sql = generator.generate(&query).unwrap();
 
-        // Should contain fan-out warning
+        // Should use symmetric aggregates for fan-out prevention
         assert!(
-            sql.contains("-- WARNING: Fan-out detected"),
-            "Expected fan-out warning in SQL: {sql}"
+            sql.contains("SUM(DISTINCT"),
+            "Expected symmetric aggregate in SQL: {sql}"
+        );
+        assert!(
+            sql.contains("HASH(c.id)"),
+            "Expected hash on primary key: {sql}"
         );
     }
 
@@ -623,6 +678,30 @@ mod tests {
         assert!(
             sql.contains("revenue * 100.0 / NULLIF(SUM(revenue) OVER"),
             "Expected percent of total: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_relative_date_filter() {
+        let graph = create_test_graph();
+        let generator = SqlGenerator::new(&graph);
+
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.revenue".into()])
+            .with_dimensions(vec!["orders.status".into()])
+            .with_filters(vec!["orders.order_date >= 'last 7 days'".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        // Relative date should be expanded to SQL
+        assert!(
+            sql.contains("CURRENT_DATE - 7"),
+            "Expected relative date expansion: {sql}"
+        );
+        // Should NOT contain the quoted string anymore
+        assert!(
+            !sql.contains("'last 7 days'"),
+            "Relative date should be expanded: {sql}"
         );
     }
 }

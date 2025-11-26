@@ -77,8 +77,11 @@ impl<'a> QueryRewriter<'a> {
             return Ok(select);
         }
 
-        // Find all models referenced in the projection
-        let referenced_models = self.find_referenced_models(&select.projection);
+        // Find all models referenced in projection AND WHERE clause
+        let mut referenced_models = self.find_referenced_models(&select.projection);
+        if let Some(ref selection) = select.selection {
+            self.collect_model_refs_from_expr(selection, &mut referenced_models);
+        }
 
         // Find models that need to be joined (referenced but not in FROM)
         let base_model = model_refs.first().map(|(m, _)| m.clone());
@@ -695,6 +698,28 @@ mod tests {
         let rewritten = rewriter.rewrite(sql).unwrap();
 
         // Should have JOIN clause
+        assert!(
+            rewritten.to_uppercase().contains("JOIN"),
+            "Expected JOIN in: {}",
+            rewritten
+        );
+        assert!(
+            rewritten.contains("customers"),
+            "Expected customers table in: {}",
+            rewritten
+        );
+    }
+
+    #[test]
+    fn test_cross_model_join_in_where() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        // Model referenced only in WHERE should still trigger JOIN
+        let sql = "SELECT orders.revenue FROM orders WHERE customers.country = 'US'";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        // Should have JOIN clause even though customers only in WHERE
         assert!(
             rewritten.to_uppercase().contains("JOIN"),
             "Expected JOIN in: {}",

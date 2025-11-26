@@ -6,7 +6,10 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 
 - **Semantic Models**: Define dimensions (grouping attributes) and metrics (aggregations) on tables
 - **Automatic Query Rewriting**: Use `SEMANTIC` keyword to automatically rewrite queries
-- **YAML Configuration**: Load model definitions from YAML
+- **Cross-Model JOINs**: Automatically generates JOINs when querying across related models
+- **Fan-out Detection**: Warns when joins may cause metric inflation
+- **Custom Join Conditions**: Support for complex join logic beyond FK/PK
+- **YAML Configuration**: Load model definitions from YAML files or strings
 - **Multiple Formats**: Supports native sidemantic and Cube.js YAML formats
 
 ## Installation
@@ -58,6 +61,43 @@ SEMANTIC SELECT orders.revenue, orders.status FROM orders;
 -- └────────────────────┴───────────┘
 ```
 
+## Cross-Model Queries
+
+Query metrics from one model grouped by dimensions from another. JOINs are generated automatically based on relationships.
+
+```sql
+-- Load models with relationships
+SELECT * FROM sidemantic_load('
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+    relationships:
+      - name: customers
+        type: many_to_one
+
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: country
+        type: categorical
+');
+
+-- Query order revenue by customer country (auto-JOIN)
+SEMANTIC SELECT orders.revenue, customers.country FROM orders;
+
+-- Automatically rewrites to:
+-- SELECT SUM(orders.amount), c.country
+-- FROM orders
+-- LEFT JOIN customers AS c ON orders.customers_id = c.id
+-- GROUP BY 2
+```
+
 ## Functions
 
 ### `sidemantic_load(yaml)`
@@ -65,6 +105,17 @@ Load semantic models from a YAML string.
 
 ```sql
 SELECT * FROM sidemantic_load('models: ...');
+```
+
+### `sidemantic_load_file(path)`
+Load semantic models from a YAML file or directory.
+
+```sql
+-- Load from a single file
+SELECT * FROM sidemantic_load_file('/path/to/models.yaml');
+
+-- Load all YAML files from a directory
+SELECT * FROM sidemantic_load_file('/path/to/models/');
 ```
 
 ### `sidemantic_models()`
@@ -124,7 +175,23 @@ models:
       - name: customers
         type: many_to_one
         foreign_key: customer_id
+
+      # Custom join condition (optional)
+      - name: promotions
+        type: many_to_one
+        sql: "{from}.promo_code = {to}.code AND {to}.active = true"
 ```
+
+### Relationship Types
+
+| Type | Description | Fan-out Risk |
+|------|-------------|--------------|
+| `many_to_one` | Many orders belong to one customer | No |
+| `one_to_many` | One customer has many orders | Yes |
+| `one_to_one` | One-to-one mapping | No |
+| `many_to_many` | Many-to-many (requires bridge table) | Yes |
+
+**Fan-out Warning**: When joining from "one" to "many" side, metrics from the "one" side may be inflated. The extension adds a SQL comment warning when this is detected.
 
 ### Cube.js Format (also supported)
 

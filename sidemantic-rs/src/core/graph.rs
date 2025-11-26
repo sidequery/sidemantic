@@ -112,10 +112,12 @@ impl SemanticGraph {
         }
 
         if !self.models.contains_key(from) {
-            return Err(SidemanticError::ModelNotFound(from.to_string()));
+            let available: Vec<&str> = self.models.keys().map(|s| s.as_str()).collect();
+            return Err(SidemanticError::model_not_found(from, &available));
         }
         if !self.models.contains_key(to) {
-            return Err(SidemanticError::ModelNotFound(to.to_string()));
+            let available: Vec<&str> = self.models.keys().map(|s| s.as_str()).collect();
+            return Err(SidemanticError::model_not_found(to, &available));
         }
 
         // BFS to find shortest path
@@ -159,10 +161,9 @@ impl SemanticGraph {
     pub fn parse_reference(&self, reference: &str) -> Result<(String, String, Option<String>)> {
         let parts: Vec<&str> = reference.split('.').collect();
         if parts.len() != 2 {
-            return Err(SidemanticError::InvalidReference(format!(
-                "Expected 'model.field' format, got '{}'",
-                reference
-            )));
+            return Err(SidemanticError::InvalidReference {
+                reference: reference.to_string(),
+            });
         }
 
         let model_name = parts[0];
@@ -178,7 +179,8 @@ impl SemanticGraph {
 
         // Verify model exists
         if !self.models.contains_key(model_name) {
-            return Err(SidemanticError::ModelNotFound(model_name.to_string()));
+            let available: Vec<&str> = self.models.keys().map(|s| s.as_str()).collect();
+            return Err(SidemanticError::model_not_found(model_name, &available));
         }
 
         Ok((model_name.to_string(), field_name, granularity))

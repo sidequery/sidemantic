@@ -54,6 +54,18 @@ pub fn extract_dependencies(metric: &Metric, graph: Option<&SemanticGraph>) -> H
         MetricType::Simple => {
             // Simple aggregations don't have metric dependencies
         }
+        MetricType::Cumulative => {
+            // Cumulative metrics depend on the base metric in sql field
+            if let Some(ref sql) = metric.sql {
+                deps.insert(sql.clone());
+            }
+        }
+        MetricType::TimeComparison => {
+            // Time comparison metrics depend on the base_metric
+            if let Some(ref base) = metric.base_metric {
+                deps.insert(base.clone());
+            }
+        }
     }
 
     deps
@@ -294,21 +306,12 @@ pub fn check_circular_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use crate::core::model::Aggregation;
 
     #[test]
     fn test_ratio_dependencies() {
-        let metric = Metric {
-            name: "profit_margin".to_string(),
-            r#type: MetricType::Ratio,
-            agg: None,
-            sql: None,
-            numerator: Some("profit".to_string()),
-            denominator: Some("revenue".to_string()),
-            filters: vec![],
-            label: None,
-            description: None,
-        };
+        let metric = Metric::ratio("profit_margin", "profit", "revenue");
 
         let deps = extract_dependencies(&metric, None);
         assert!(deps.contains("profit"));
@@ -317,17 +320,7 @@ mod tests {
 
     #[test]
     fn test_derived_simple_reference() {
-        let metric = Metric {
-            name: "total_revenue".to_string(),
-            r#type: MetricType::Derived,
-            agg: None,
-            sql: Some("orders.revenue".to_string()),
-            numerator: None,
-            denominator: None,
-            filters: vec![],
-            label: None,
-            description: None,
-        };
+        let metric = Metric::derived("total_revenue", "orders.revenue");
 
         let deps = extract_dependencies(&metric, None);
         assert!(deps.contains("orders.revenue"));
@@ -335,17 +328,7 @@ mod tests {
 
     #[test]
     fn test_derived_expression() {
-        let metric = Metric {
-            name: "avg_order_value".to_string(),
-            r#type: MetricType::Derived,
-            agg: None,
-            sql: Some("revenue / order_count".to_string()),
-            numerator: None,
-            denominator: None,
-            filters: vec![],
-            label: None,
-            description: None,
-        };
+        let metric = Metric::derived("avg_order_value", "revenue / order_count");
 
         let deps = extract_dependencies(&metric, None);
         assert!(deps.contains("revenue"));
@@ -354,17 +337,7 @@ mod tests {
 
     #[test]
     fn test_simple_aggregation_no_deps() {
-        let metric = Metric {
-            name: "revenue".to_string(),
-            r#type: MetricType::Simple,
-            agg: Some(Aggregation::Sum),
-            sql: Some("amount".to_string()),
-            numerator: None,
-            denominator: None,
-            filters: vec![],
-            label: None,
-            description: None,
-        };
+        let metric = Metric::sum("revenue", "amount");
 
         let deps = extract_dependencies(&metric, None);
         assert!(deps.is_empty());

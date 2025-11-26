@@ -14,6 +14,7 @@ extern "C" {
     };
 
     char *sidemantic_load_yaml(const char *yaml);
+    char *sidemantic_load_file(const char *path);
     void sidemantic_clear(void);
     bool sidemantic_is_model(const char *table_name);
     char *sidemantic_list_models(void);
@@ -63,6 +64,47 @@ static void SidemanticLoadFunction(ClientContext &context, TableFunctionInput &d
 
     output.SetCardinality(1);
     output.SetValue(0, 0, Value("Models loaded successfully"));
+}
+
+//=============================================================================
+// TABLE FUNCTION: sidemantic_load_file(path)
+//=============================================================================
+
+struct SidemanticLoadFileData : public TableFunctionData {
+    string file_path;
+    bool done = false;
+};
+
+static unique_ptr<FunctionData> SidemanticLoadFileBind(ClientContext &context,
+                                                        TableFunctionBindInput &input,
+                                                        vector<LogicalType> &return_types,
+                                                        vector<string> &names) {
+    auto result = make_uniq<SidemanticLoadFileData>();
+    result->file_path = input.inputs[0].GetValue<string>();
+
+    return_types.push_back(LogicalType::VARCHAR);
+    names.push_back("result");
+
+    return std::move(result);
+}
+
+static void SidemanticLoadFileFunction(ClientContext &context, TableFunctionInput &data_p,
+                                        DataChunk &output) {
+    auto &data = data_p.bind_data->CastNoConst<SidemanticLoadFileData>();
+    if (data.done) {
+        return;
+    }
+    data.done = true;
+
+    char *error = sidemantic_load_file(data.file_path.c_str());
+    if (error) {
+        string error_msg(error);
+        sidemantic_free(error);
+        throw InvalidInputException("Failed to load semantic models: %s", error_msg);
+    }
+
+    output.SetCardinality(1);
+    output.SetValue(0, 0, Value("Models loaded from: " + data.file_path));
 }
 
 //=============================================================================
@@ -273,6 +315,10 @@ static void LoadInternal(ExtensionLoader &loader) {
     TableFunction load_func("sidemantic_load", {LogicalType::VARCHAR},
                             SidemanticLoadFunction, SidemanticLoadBind);
     loader.RegisterFunction(load_func);
+
+    TableFunction load_file_func("sidemantic_load_file", {LogicalType::VARCHAR},
+                                  SidemanticLoadFileFunction, SidemanticLoadFileBind);
+    loader.RegisterFunction(load_file_func);
 
     TableFunction models_func("sidemantic_models", {},
                               SidemanticModelsFunction, SidemanticModelsBind);

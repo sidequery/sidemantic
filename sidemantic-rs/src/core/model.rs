@@ -115,6 +115,41 @@ pub enum MetricType {
     Simple,
     Derived,
     Ratio,
+    Cumulative,
+    TimeComparison,
+}
+
+/// Time comparison type
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComparisonType {
+    Yoy,  // Year over year
+    Mom,  // Month over month
+    Wow,  // Week over week
+    Dod,  // Day over day
+    Qoq,  // Quarter over quarter
+    PriorPeriod,
+}
+
+/// Time comparison calculation method
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonCalculation {
+    Difference,
+    #[default]
+    PercentChange,
+    Ratio,
+}
+
+/// Time grain for period-to-date calculations
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimeGrain {
+    Day,
+    Week,
+    Month,
+    Quarter,
+    Year,
 }
 
 /// A metric represents a business measure (aggregation)
@@ -138,6 +173,36 @@ pub struct Metric {
     pub label: Option<String>,
     /// Description
     pub description: Option<String>,
+
+    // Cumulative metric fields
+    /// Time window for cumulative (e.g., "7 days")
+    #[serde(default)]
+    pub window: Option<String>,
+    /// Grain for period-to-date (e.g., month for MTD)
+    #[serde(default)]
+    pub grain_to_date: Option<TimeGrain>,
+
+    // Time comparison fields
+    /// Base metric for time comparison
+    #[serde(default)]
+    pub base_metric: Option<String>,
+    /// Type of time comparison
+    #[serde(default)]
+    pub comparison_type: Option<ComparisonType>,
+    /// Custom time offset (e.g., "1 month")
+    #[serde(default)]
+    pub time_offset: Option<String>,
+    /// Comparison calculation method
+    #[serde(default)]
+    pub calculation: Option<ComparisonCalculation>,
+
+    // Display formatting
+    /// Default value when result is NULL
+    #[serde(default)]
+    pub fill_nulls_with: Option<serde_json::Value>,
+    /// Display format string (e.g., "$#,##0.00", "0.00%")
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 impl Metric {
@@ -152,6 +217,14 @@ impl Metric {
             filters: Vec::new(),
             label: None,
             description: None,
+            window: None,
+            grain_to_date: None,
+            base_metric: None,
+            comparison_type: None,
+            time_offset: None,
+            calculation: None,
+            fill_nulls_with: None,
+            format: None,
         }
     }
 
@@ -210,8 +283,63 @@ impl Metric {
         }
     }
 
+    /// Create a cumulative (running total) metric
+    pub fn cumulative(name: impl Into<String>, base_metric: impl Into<String>) -> Self {
+        Self {
+            r#type: MetricType::Cumulative,
+            agg: None,
+            sql: Some(base_metric.into()),
+            ..Self::new(name)
+        }
+    }
+
+    /// Create a period-to-date metric (MTD, YTD, etc.)
+    pub fn period_to_date(
+        name: impl Into<String>,
+        base_metric: impl Into<String>,
+        grain: TimeGrain,
+    ) -> Self {
+        Self {
+            r#type: MetricType::Cumulative,
+            agg: None,
+            sql: Some(base_metric.into()),
+            grain_to_date: Some(grain),
+            ..Self::new(name)
+        }
+    }
+
+    /// Create a time comparison metric (YoY, MoM, etc.)
+    pub fn time_comparison(
+        name: impl Into<String>,
+        base_metric: impl Into<String>,
+        comparison: ComparisonType,
+    ) -> Self {
+        Self {
+            r#type: MetricType::TimeComparison,
+            agg: None,
+            base_metric: Some(base_metric.into()),
+            comparison_type: Some(comparison),
+            ..Self::new(name)
+        }
+    }
+
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filters.push(filter.into());
+        self
+    }
+
+    pub fn with_format(mut self, format: impl Into<String>) -> Self {
+        self.format = Some(format.into());
+        self
+    }
+
+    pub fn with_fill_nulls(mut self, value: serde_json::Value) -> Self {
+        self.fill_nulls_with = Some(value);
+        self
+    }
+
+    pub fn with_calculation(mut self, calc: ComparisonCalculation) -> Self {
+        self.calculation = Some(calc);
         self
     }
 
@@ -248,7 +376,58 @@ impl Metric {
                     self.denominator.as_deref().unwrap_or("1")
                 )
             }
+            MetricType::Cumulative => {
+                // Cumulative metrics need window functions - this is a placeholder
+                // The actual implementation depends on time dimension context
+                let base = self.sql_expr();
+                if self.grain_to_date.is_some() {
+                    // Period-to-date: SUM() with window reset at period boundary
+                    format!("SUM({}) /* cumulative, grain_to_date */", base)
+                } else if let Some(window) = &self.window {
+                    // Rolling window: SUM() OVER (ORDER BY time ROWS BETWEEN window AND CURRENT ROW)
+                    format!("SUM({}) /* cumulative, window: {} */", base, window)
+                } else {
+                    // Simple running total
+                    format!("SUM({}) /* cumulative */", base)
+                }
+            }
+            MetricType::TimeComparison => {
+                // Time comparison metrics compare current vs prior period
+                let base = self.base_metric.as_deref().unwrap_or(&self.name);
+                let comparison = self
+                    .comparison_type
+                    .as_ref()
+                    .map(|c| format!("{:?}", c).to_lowercase())
+                    .unwrap_or_else(|| "prior_period".to_string());
+                let calc = self
+                    .calculation
+                    .as_ref()
+                    .unwrap_or(&ComparisonCalculation::PercentChange);
+
+                match calc {
+                    ComparisonCalculation::Difference => {
+                        format!("({} - LAG({}) OVER ()) /* {} */", base, base, comparison)
+                    }
+                    ComparisonCalculation::PercentChange => {
+                        format!(
+                            "(({} - LAG({}) OVER ()) / NULLIF(LAG({}) OVER (), 0)) /* {} */",
+                            base, base, base, comparison
+                        )
+                    }
+                    ComparisonCalculation::Ratio => {
+                        format!(
+                            "({} / NULLIF(LAG({}) OVER (), 0)) /* {} */",
+                            base, base, comparison
+                        )
+                    }
+                }
+            }
         }
+    }
+
+    /// Check if this is a simple aggregation (not a complex metric)
+    pub fn is_simple_aggregation(&self) -> bool {
+        self.r#type == MetricType::Simple && self.agg.is_some()
     }
 }
 

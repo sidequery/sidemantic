@@ -215,6 +215,14 @@ impl MetricConfig {
             filters: self.filters,
             label: self.label,
             description: self.description,
+            window: None,
+            grain_to_date: None,
+            base_metric: None,
+            comparison_type: None,
+            time_offset: None,
+            calculation: None,
+            fill_nulls_with: None,
+            format: None,
         }
     }
 }
@@ -332,6 +340,14 @@ impl CubeMeasure {
             filters,
             label: self.title,
             description: self.description,
+            window: None,
+            grain_to_date: None,
+            base_metric: None,
+            comparison_type: None,
+            time_offset: None,
+            calculation: None,
+            fill_nulls_with: None,
+            format: None,
         }
     }
 }

@@ -111,13 +111,12 @@ impl<'a> SqlGenerator<'a> {
         // Add dimensions to SELECT
         for dim_ref in &dimension_refs {
             let model = self.graph.get_model(&dim_ref.model).ok_or_else(|| {
-                SidemanticError::ModelNotFound(dim_ref.model.clone())
+                let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
+                SidemanticError::model_not_found(&dim_ref.model, &available)
             })?;
             let dimension = model.get_dimension(&dim_ref.name).ok_or_else(|| {
-                SidemanticError::DimensionNotFound {
-                    model: dim_ref.model.clone(),
-                    dimension: dim_ref.name.clone(),
-                }
+                let available: Vec<&str> = model.dimensions.iter().map(|d| d.name.as_str()).collect();
+                SidemanticError::dimension_not_found(&dim_ref.model, &dim_ref.name, &available)
             })?;
 
             let alias = self.model_alias(&dim_ref.model);
@@ -133,13 +132,12 @@ impl<'a> SqlGenerator<'a> {
         // Add metrics to SELECT
         for metric_ref in &metric_refs {
             let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
-                SidemanticError::ModelNotFound(metric_ref.model.clone())
+                let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
+                SidemanticError::model_not_found(&metric_ref.model, &available)
             })?;
             let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
-                SidemanticError::MetricNotFound {
-                    model: metric_ref.model.clone(),
-                    metric: metric_ref.name.clone(),
-                }
+                let available: Vec<&str> = model.metrics.iter().map(|m| m.name.as_str()).collect();
+                SidemanticError::metric_not_found(&metric_ref.model, &metric_ref.name, &available)
             })?;
 
             let alias = self.model_alias(&metric_ref.model);
@@ -156,6 +154,10 @@ impl<'a> SqlGenerator<'a> {
                     let num_sql = self.expand_derived_metric(num, &metric_ref.model)?;
                     let denom_sql = self.expand_derived_metric(denom, &metric_ref.model)?;
                     format!("({}) / NULLIF({}, 0)", num_sql, denom_sql)
+                }
+                MetricType::Cumulative | MetricType::TimeComparison => {
+                    // Complex metric types use to_sql which generates placeholder SQL
+                    metric.to_sql(Some(&alias))
                 }
             };
 
@@ -318,7 +320,8 @@ impl<'a> SqlGenerator<'a> {
         // Simple implementation: look for metric names and expand them
         // A more robust implementation would use sqlparser to parse the expression
         let model = self.graph.get_model(default_model).ok_or_else(|| {
-            SidemanticError::ModelNotFound(default_model.to_string())
+            let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
+            SidemanticError::model_not_found(default_model, &available)
         })?;
 
         let alias = self.model_alias(default_model);
@@ -369,14 +372,13 @@ impl<'a> SqlGenerator<'a> {
             let (model_name, segment_name, _) = self.graph.parse_reference(seg_ref)?;
 
             let model = self.graph.get_model(&model_name).ok_or_else(|| {
-                SidemanticError::ModelNotFound(model_name.clone())
+                let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
+                SidemanticError::model_not_found(&model_name, &available)
             })?;
 
             let segment = model.get_segment(&segment_name).ok_or_else(|| {
-                SidemanticError::Validation(format!(
-                    "Segment '{}' not found on model '{}'",
-                    segment_name, model_name
-                ))
+                let available: Vec<&str> = model.segments.iter().map(|s| s.name.as_str()).collect();
+                SidemanticError::segment_not_found(&model_name, &segment_name, &available)
             })?;
 
             // Get SQL with model alias replaced

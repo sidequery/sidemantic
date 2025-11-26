@@ -256,6 +256,25 @@ impl<'a> QueryRewriter<'a> {
                 // Fallback: return as identifier
                 Expr::Identifier(Ident::new(metric.name.clone()))
             }
+            MetricType::Cumulative | MetricType::TimeComparison => {
+                // Complex metric types require special handling with window functions
+                // For now, fall back to the metric's to_sql() output parsed as an expression
+                let dialect = GenericDialect {};
+                let sql = format!("SELECT {}", metric.to_sql(Some(alias)));
+                if let Ok(statements) = Parser::parse_sql(&dialect, &sql) {
+                    if let Some(Statement::Query(query)) = statements.into_iter().next() {
+                        if let SetExpr::Select(select) = *query.body {
+                            if let Some(SelectItem::UnnamedExpr(expr)) =
+                                select.projection.into_iter().next()
+                            {
+                                return expr;
+                            }
+                        }
+                    }
+                }
+                // Fallback: return as identifier
+                Expr::Identifier(Ident::new(metric.name.clone()))
+            }
         }
     }
 

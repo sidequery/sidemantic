@@ -4,12 +4,13 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::path::Path;
 use std::ptr;
 use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-use crate::config::load_from_string;
+use crate::config::{load_from_directory, load_from_file, load_from_string};
 use crate::core::SemanticGraph;
 use crate::sql::QueryRewriter;
 
@@ -45,6 +46,51 @@ pub extern "C" fn sidemantic_load_yaml(yaml: *const c_char) -> *mut c_char {
     };
 
     match load_from_string(yaml_str) {
+        Ok(new_graph) => {
+            let mut graph = SEMANTIC_GRAPH.lock().unwrap();
+            // Merge new models into existing graph
+            for model in new_graph.models() {
+                if let Err(e) = graph.add_model(model.clone()) {
+                    return to_c_string(&format!("Error adding model: {}", e));
+                }
+            }
+            ptr::null_mut() // Success
+        }
+        Err(e) => to_c_string(&format!("Error: {}", e)),
+    }
+}
+
+/// Load semantic models from a file or directory path
+///
+/// Returns null on success, error message on failure.
+/// Caller must free the returned string with `sidemantic_free`.
+#[no_mangle]
+pub extern "C" fn sidemantic_load_file(path: *const c_char) -> *mut c_char {
+    if path.is_null() {
+        return to_c_string("Error: null path pointer");
+    }
+
+    let path_str = unsafe {
+        match CStr::from_ptr(path).to_str() {
+            Ok(s) => s,
+            Err(e) => return to_c_string(&format!("Error: invalid UTF-8: {}", e)),
+        }
+    };
+
+    let path = Path::new(path_str);
+
+    // Check if path exists
+    if !path.exists() {
+        return to_c_string(&format!("Error: path does not exist: {}", path_str));
+    }
+
+    let result = if path.is_dir() {
+        load_from_directory(path)
+    } else {
+        load_from_file(path)
+    };
+
+    match result {
         Ok(new_graph) => {
             let mut graph = SEMANTIC_GRAPH.lock().unwrap();
             // Merge new models into existing graph

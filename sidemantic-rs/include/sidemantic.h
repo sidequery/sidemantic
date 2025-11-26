@@ -29,6 +29,15 @@ typedef struct {
 char *sidemantic_load_yaml(const char *yaml);
 
 /*
+ * Load semantic models from a file or directory path.
+ *
+ * If path is a directory, loads all .yaml/.yml files in it.
+ * Returns NULL on success, error message on failure.
+ * Caller must free the returned string with sidemantic_free().
+ */
+char *sidemantic_load_file(const char *path);
+
+/*
  * Clear all loaded semantic models.
  */
 void sidemantic_clear(void);

@@ -214,9 +214,9 @@ fn remove_model_from_file(path: &Path, model_name: &str) -> std::io::Result<()> 
     let content = fs::read_to_string(path)?;
     let mut result = String::new();
     let mut skip_until_next_model = false;
-    let model_pattern = format!("MODEL");
-    let name_pattern = format!("name {}", model_name);
-    let name_pattern_comma = format!("name {},", model_name);
+    let model_pattern = "MODEL".to_string();
+    let name_pattern = format!("name {model_name}");
+    let name_pattern_comma = format!("name {model_name},");
 
     for line in content.lines() {
         let line_trimmed = line.trim().to_uppercase();
@@ -240,7 +240,9 @@ fn remove_model_from_file(path: &Path, model_name: &str) -> std::io::Result<()> 
                 || line_trimmed.starts_with("--")
                 || line_trimmed.is_empty())
         {
-            if line_trimmed.starts_with("MODEL") && !line.to_lowercase().contains(&name_pattern.to_lowercase()) {
+            if line_trimmed.starts_with("MODEL")
+                && !line.to_lowercase().contains(&name_pattern.to_lowercase())
+            {
                 skip_until_next_model = false;
             } else if line_trimmed.is_empty() || line_trimmed.starts_with("--") {
                 // Skip empty lines and comments between removed statements
@@ -331,7 +333,8 @@ fn split_definitions(content: &str) -> Vec<&str> {
         let actual_pos = search_start + pos;
 
         // Check this is actually the start of a MODEL statement (not inside a word)
-        let is_start = actual_pos == 0 || !content.as_bytes()[actual_pos - 1].is_ascii_alphanumeric();
+        let is_start =
+            actual_pos == 0 || !content.as_bytes()[actual_pos - 1].is_ascii_alphanumeric();
         let is_followed_by_space = actual_pos + 5 < content.len()
             && (content.as_bytes()[actual_pos + 5] == b' '
                 || content.as_bytes()[actual_pos + 5] == b'('
@@ -397,7 +400,7 @@ pub extern "C" fn sidemantic_add_definition(
     let model_name = if let Some(explicit_model) = target_model_name {
         // Verify the model exists
         if graph.get_model(&explicit_model).is_none() {
-            return to_c_string(&format!("Error: model '{}' not found", explicit_model));
+            return to_c_string(&format!("Error: model '{explicit_model}' not found"));
         }
         explicit_model
     } else {
@@ -418,11 +421,11 @@ pub extern "C" fn sidemantic_add_definition(
     // Get the model to modify
     let model = match graph.get_model(&model_name) {
         Some(m) => m.clone(),
-        None => return to_c_string(&format!("Error: could not find model '{}'", model_name)),
+        None => return to_c_string(&format!("Error: could not find model '{model_name}'")),
     };
 
     // Parse the definition using a dummy model wrapper
-    let dummy_sql = format!("MODEL (name {}, table dummy);\n{}", model_name, adjusted_sql);
+    let dummy_sql = format!("MODEL (name {model_name}, table dummy);\n{adjusted_sql}");
     let parsed = match parse_sql_model(&dummy_sql) {
         Ok(m) => m,
         Err(e) => return to_c_string(&format!("Error parsing definition: {e}")),
@@ -489,11 +492,11 @@ fn extract_model_prefix(sql: &str) -> (Option<String>, String) {
             // Reconstruct as "KEYWORD (name field_name, ...)"
             let paren_content = &rest[paren_pos..];
             // Insert "name field_name, " at the start of parentheses content
-            let adjusted = if paren_content.starts_with('(') {
-                let inner = paren_content[1..].trim_start();
-                format!("{} (name {}, {}", keyword, field_name, inner)
+            let adjusted = if let Some(stripped) = paren_content.strip_prefix('(') {
+                let inner = stripped.trim_start();
+                format!("{keyword} (name {field_name}, {inner}")
             } else {
-                format!("{} {}", keyword, rest)
+                format!("{keyword} {rest}")
             };
 
             return (Some(model_name.to_string()), adjusted);

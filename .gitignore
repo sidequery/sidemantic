@@ -32,3 +32,4 @@ examples/*.db
 # Docker volumes
 docker-compose.override.yml
 Dockerfile.test
+sidemantic_definitions.sql

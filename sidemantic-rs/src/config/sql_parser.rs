@@ -229,10 +229,7 @@ fn simple_metric(input: &str) -> IResult<&str, Statement> {
     let (input, _) = multispace1(input)?;
 
     // Get metric name (may include model prefix like orders.revenue)
-    let (input, name) = recognize(pair(
-        identifier,
-        opt(pair(char('.'), identifier)),
-    ))(input)?;
+    let (input, name) = recognize(pair(identifier, opt(pair(char('.'), identifier))))(input)?;
 
     let (input, _) = multispace1(input)?;
     let (input, _) = tag_no_case("AS")(input)?;
@@ -254,10 +251,7 @@ fn simple_dimension(input: &str) -> IResult<&str, Statement> {
     let (input, _) = multispace1(input)?;
 
     // Get dimension name (may include model prefix)
-    let (input, name) = recognize(pair(
-        identifier,
-        opt(pair(char('.'), identifier)),
-    ))(input)?;
+    let (input, name) = recognize(pair(identifier, opt(pair(char('.'), identifier))))(input)?;
 
     let (input, _) = multispace1(input)?;
     let (input, _) = tag_no_case("AS")(input)?;
@@ -382,7 +376,7 @@ fn prefixed_metric(input: &str) -> IResult<&str, Statement> {
 
     // Add the name to props and include model prefix
     let mut props = props;
-    props.insert("name".to_string(), format!("{}.{}", model, name));
+    props.insert("name".to_string(), format!("{model}.{name}"));
     Ok((input, Statement::Metric(props)))
 }
 
@@ -403,7 +397,7 @@ fn prefixed_dimension(input: &str) -> IResult<&str, Statement> {
     let (input, _) = opt(char(';'))(input)?;
 
     let mut props = props;
-    props.insert("name".to_string(), format!("{}.{}", model, name));
+    props.insert("name".to_string(), format!("{model}.{name}"));
     Ok((input, Statement::Dimension(props)))
 }
 

@@ -7,6 +7,12 @@
 //! METRIC (name revenue, expression SUM(amount));
 //! SEGMENT (name active, sql status = 'active');
 //! ```
+//!
+//! Also supports simpler SQL-like syntax:
+//! ```sql
+//! METRIC revenue AS SUM(amount);
+//! DIMENSION status AS status;
+//! ```
 
 use std::collections::HashMap;
 
@@ -19,6 +25,10 @@ use nom::{
     sequence::{delimited, pair, tuple},
     IResult,
 };
+
+use sqlparser::ast::{Expr, FunctionArgExpr, SelectItem};
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
 
 use crate::core::{
     Aggregation, Dimension, DimensionType, Metric, MetricType, Model, Relationship,
@@ -208,12 +218,208 @@ fn definition<'a>(
     }
 }
 
-/// Parse any statement
+// ============================================================================
+// Simple AS-syntax parsers (METRIC name AS expr)
+// ============================================================================
+
+/// Parse simple METRIC: METRIC name AS expr
+fn simple_metric(input: &str) -> IResult<&str, Statement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag_no_case("METRIC")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    // Get metric name (may include model prefix like orders.revenue)
+    let (input, name) = recognize(pair(
+        identifier,
+        opt(pair(char('.'), identifier)),
+    ))(input)?;
+
+    let (input, _) = multispace1(input)?;
+    let (input, _) = tag_no_case("AS")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    // Get the expression (everything until semicolon or end)
+    let (input, expr) = take_while(|c| c != ';')(input)?;
+    let (input, _) = opt(char(';'))(input)?;
+
+    // Parse the expression using sqlparser to extract aggregation
+    let props = parse_metric_expression(name.trim(), expr.trim());
+    Ok((input, Statement::Metric(props)))
+}
+
+/// Parse simple DIMENSION: DIMENSION name AS expr
+fn simple_dimension(input: &str) -> IResult<&str, Statement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag_no_case("DIMENSION")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    // Get dimension name (may include model prefix)
+    let (input, name) = recognize(pair(
+        identifier,
+        opt(pair(char('.'), identifier)),
+    ))(input)?;
+
+    let (input, _) = multispace1(input)?;
+    let (input, _) = tag_no_case("AS")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    // Get the expression
+    let (input, expr) = take_while(|c| c != ';')(input)?;
+    let (input, _) = opt(char(';'))(input)?;
+
+    let mut props = HashMap::new();
+    props.insert("name".to_string(), name.trim().to_string());
+    props.insert("sql".to_string(), expr.trim().to_string());
+    // Try to infer type from expression
+    props.insert("type".to_string(), infer_dimension_type(expr.trim()));
+
+    Ok((input, Statement::Dimension(props)))
+}
+
+/// Parse metric expression to extract aggregation function
+fn parse_metric_expression(name: &str, expr: &str) -> HashMap<String, String> {
+    let mut props = HashMap::new();
+    props.insert("name".to_string(), name.to_string());
+
+    // Try to parse as SQL and extract aggregation
+    let sql = format!("SELECT {expr}");
+    let dialect = GenericDialect {};
+
+    if let Ok(statements) = Parser::parse_sql(&dialect, &sql) {
+        if let Some(sqlparser::ast::Statement::Query(query)) = statements.into_iter().next() {
+            if let sqlparser::ast::SetExpr::Select(select) = *query.body {
+                if let Some(SelectItem::UnnamedExpr(expr)) = select.projection.into_iter().next() {
+                    if let Some((agg, inner_expr)) = extract_aggregation(&expr) {
+                        props.insert("agg".to_string(), agg);
+                        if !inner_expr.is_empty() {
+                            props.insert("sql".to_string(), inner_expr);
+                        }
+                        return props;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to storing the whole expression as sql
+    props.insert("sql".to_string(), expr.to_string());
+    props
+}
+
+/// Extract aggregation function and inner expression from SQL AST
+fn extract_aggregation(expr: &Expr) -> Option<(String, String)> {
+    match expr {
+        Expr::Function(func) => {
+            let func_name = func.name.to_string().to_lowercase();
+            let agg = match func_name.as_str() {
+                "sum" => "sum",
+                "count" => "count",
+                "avg" | "average" => "avg",
+                "min" => "min",
+                "max" => "max",
+                "count_distinct" => "count_distinct",
+                _ => return None,
+            };
+
+            // Extract the inner expression from function arguments
+            let inner = match &func.args {
+                sqlparser::ast::FunctionArguments::None => String::new(),
+                sqlparser::ast::FunctionArguments::Subquery(_) => return None,
+                sqlparser::ast::FunctionArguments::List(arg_list) => {
+                    if arg_list.args.is_empty() {
+                        String::new()
+                    } else {
+                        match &arg_list.args[0] {
+                            sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
+                                e.to_string()
+                            }
+                            sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => {
+                                String::new() // COUNT(*)
+                            }
+                            sqlparser::ast::FunctionArg::Unnamed(
+                                FunctionArgExpr::QualifiedWildcard(_),
+                            ) => String::new(),
+                            _ => return None,
+                        }
+                    }
+                }
+            };
+
+            Some((agg.to_string(), inner))
+        }
+        _ => None,
+    }
+}
+
+/// Infer dimension type from expression
+fn infer_dimension_type(expr: &str) -> String {
+    let expr_lower = expr.to_lowercase();
+    if expr_lower.contains("date")
+        || expr_lower.contains("time")
+        || expr_lower.contains("timestamp")
+    {
+        "time".to_string()
+    } else {
+        "categorical".to_string()
+    }
+}
+
+/// Parse METRIC with model prefix: METRIC model.name (props)
+fn prefixed_metric(input: &str) -> IResult<&str, Statement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag_no_case("METRIC")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    // Must have model.name pattern
+    let (input, model) = identifier(input)?;
+    let (input, _) = char('.')(input)?;
+    let (input, name) = identifier(input)?;
+
+    let (input, _) = multispace0(input)?;
+    let (input, props) = delimited(char('('), property_list, char(')'))(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = opt(char(';'))(input)?;
+
+    // Add the name to props and include model prefix
+    let mut props = props;
+    props.insert("name".to_string(), format!("{}.{}", model, name));
+    Ok((input, Statement::Metric(props)))
+}
+
+/// Parse DIMENSION with model prefix: DIMENSION model.name (props)
+fn prefixed_dimension(input: &str) -> IResult<&str, Statement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag_no_case("DIMENSION")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    // Must have model.name pattern
+    let (input, model) = identifier(input)?;
+    let (input, _) = char('.')(input)?;
+    let (input, name) = identifier(input)?;
+
+    let (input, _) = multispace0(input)?;
+    let (input, props) = delimited(char('('), property_list, char(')'))(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = opt(char(';'))(input)?;
+
+    let mut props = props;
+    props.insert("name".to_string(), format!("{}.{}", model, name));
+    Ok((input, Statement::Dimension(props)))
+}
+
+/// Parse any statement (tries simple AS syntax first, then parenthesized)
 fn statement(input: &str) -> IResult<&str, Statement> {
     let (input, _) = multispace0(input)?;
 
     alt((
         map(definition("MODEL"), Statement::Model),
+        // Try simple AS syntax first for METRIC and DIMENSION
+        simple_metric,
+        simple_dimension,
+        // Try model.name (props) syntax
+        prefixed_metric,
+        prefixed_dimension,
+        // Fall back to simple parenthesized syntax
         map(definition("DIMENSION"), Statement::Dimension),
         map(definition("METRIC"), Statement::Metric),
         map(definition("SEGMENT"), Statement::Segment),
@@ -606,5 +812,57 @@ mod tests {
         let model = parse_sql_model(sql).unwrap();
         assert_eq!(model.name, "orders");
         assert_eq!(model.metrics.len(), 1);
+    }
+
+    #[test]
+    fn test_simple_metric_syntax() {
+        let sql = r#"
+            MODEL (name orders, table orders);
+            METRIC revenue AS SUM(amount);
+            METRIC order_count AS COUNT(*);
+        "#;
+
+        let model = parse_sql_model(sql).unwrap();
+        assert_eq!(model.metrics.len(), 2);
+
+        let revenue = model.get_metric("revenue").unwrap();
+        assert_eq!(revenue.agg, Some(Aggregation::Sum));
+        assert_eq!(revenue.sql, Some("amount".to_string()));
+
+        let count = model.get_metric("order_count").unwrap();
+        assert_eq!(count.agg, Some(Aggregation::Count));
+    }
+
+    #[test]
+    fn test_simple_dimension_syntax() {
+        let sql = r#"
+            MODEL (name orders, table orders);
+            DIMENSION status AS status;
+            DIMENSION order_date AS created_at;
+        "#;
+
+        let model = parse_sql_model(sql).unwrap();
+        assert_eq!(model.dimensions.len(), 2);
+
+        let status = model.get_dimension("status").unwrap();
+        assert_eq!(status.sql, Some("status".to_string()));
+
+        let order_date = model.get_dimension("order_date").unwrap();
+        assert_eq!(order_date.sql, Some("created_at".to_string()));
+    }
+
+    #[test]
+    fn test_mixed_syntax() {
+        let sql = r#"
+            MODEL (name orders, table orders);
+            METRIC revenue AS SUM(amount);
+            METRIC (name avg_value, agg avg, sql amount);
+            DIMENSION status AS status;
+            DIMENSION (name category, type categorical);
+        "#;
+
+        let model = parse_sql_model(sql).unwrap();
+        assert_eq!(model.metrics.len(), 2);
+        assert_eq!(model.dimensions.len(), 2);
     }
 }

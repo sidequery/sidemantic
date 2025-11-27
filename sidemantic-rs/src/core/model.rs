@@ -355,11 +355,16 @@ impl Metric {
         match self.r#type {
             MetricType::Simple => {
                 let agg = self.agg.as_ref().unwrap_or(&Aggregation::Sum);
-                let sql_expr = self.sql_expr();
-                let full_expr = if sql_expr == "*" {
+                // COUNT without explicit sql defaults to COUNT(*)
+                let full_expr = if *agg == Aggregation::Count && self.sql.is_none() {
                     "*".to_string()
                 } else {
-                    format!("{prefix}{sql_expr}")
+                    let sql_expr = self.sql_expr();
+                    if sql_expr == "*" {
+                        "*".to_string()
+                    } else {
+                        format!("{prefix}{sql_expr}")
+                    }
                 };
 
                 match agg {
@@ -642,6 +647,15 @@ mod tests {
         assert_eq!(metric.to_sql(Some("o")), "SUM(o.amount)");
 
         let metric = Metric::count("order_count");
+        assert_eq!(metric.to_sql(None), "COUNT(*)");
+
+        // COUNT without explicit sql (simulates parsed definition)
+        let metric = Metric {
+            name: "order_count".to_string(),
+            agg: Some(Aggregation::Count),
+            sql: None,
+            ..Metric::new("order_count")
+        };
         assert_eq!(metric.to_sql(None), "COUNT(*)");
 
         let metric = Metric::count_distinct("unique_customers", "customer_id");

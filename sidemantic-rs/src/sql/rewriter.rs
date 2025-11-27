@@ -271,11 +271,14 @@ impl<'a> QueryRewriter<'a> {
         match metric.r#type {
             MetricType::Simple => {
                 let agg = metric.agg.as_ref().unwrap();
-                let sql_expr = metric.sql_expr();
+                // COUNT without explicit sql defaults to COUNT(*)
+                let use_wildcard = metric.sql.as_deref() == Some("*")
+                    || (*agg == crate::core::Aggregation::Count && metric.sql.is_none());
 
-                let arg = if sql_expr == "*" {
+                let arg = if use_wildcard {
                     FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
                 } else {
+                    let sql_expr = metric.sql_expr();
                     FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(vec![
                         Ident::new(alias.to_string()),
                         Ident::new(sql_expr.to_string()),
@@ -724,6 +727,38 @@ mod tests {
         assert!(
             rewritten.contains("customers"),
             "Expected customers table in: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn test_count_without_sql() {
+        // Test COUNT metric without explicit sql (simulates parsed definition)
+        let mut graph = SemanticGraph::new();
+
+        // Create metric with sql: None (like what SQL parser produces)
+        let mut count_metric = Metric::new("order_count");
+        count_metric.agg = Some(crate::core::Aggregation::Count);
+        count_metric.sql = None; // Explicit None to simulate parsed metric
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_metric(count_metric);
+
+        graph.add_model(orders).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.order_count FROM orders";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        // Should be COUNT(*) not COUNT(order_count)
+        assert!(
+            rewritten.contains("COUNT(*)"),
+            "Expected COUNT(*) but got: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("order_count"),
+            "Should not contain order_count in COUNT: {rewritten}"
         );
     }
 }

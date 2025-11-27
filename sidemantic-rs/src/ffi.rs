@@ -7,19 +7,24 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::ffi::{CStr, CString};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::os::raw::c_char;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-use crate::config::{load_from_directory, load_from_file, load_from_string};
+use crate::config::{load_from_directory, load_from_file, load_from_string, parse_sql_model};
 use crate::core::SemanticGraph;
 use crate::sql::QueryRewriter;
 
 /// Global semantic graph state (thread-safe)
 static SEMANTIC_GRAPH: Lazy<Mutex<SemanticGraph>> = Lazy::new(|| Mutex::new(SemanticGraph::new()));
+
+/// Active model for METRIC/DIMENSION/SEGMENT additions (set by CREATE MODEL or USE)
+static ACTIVE_MODEL: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
 /// Result from rewrite operation
 #[repr(C)]
@@ -114,6 +119,431 @@ pub extern "C" fn sidemantic_load_file(path: *const c_char) -> *mut c_char {
 pub extern "C" fn sidemantic_clear() {
     let mut graph = SEMANTIC_GRAPH.lock().unwrap();
     *graph = SemanticGraph::new();
+}
+
+/// Define a semantic model from SQL definition format
+///
+/// Parses the definition, saves to file, and loads into current session.
+/// If `replace` is true, removes any existing model with the same name from the file.
+///
+/// Returns null on success, error message on failure.
+/// Caller must free the returned string with `sidemantic_free`.
+#[no_mangle]
+pub extern "C" fn sidemantic_define(
+    definition_sql: *const c_char,
+    db_path: *const c_char,
+    replace: bool,
+) -> *mut c_char {
+    if definition_sql.is_null() {
+        return to_c_string("Error: null definition_sql pointer");
+    }
+
+    let sql_str = unsafe {
+        match CStr::from_ptr(definition_sql).to_str() {
+            Ok(s) => s,
+            Err(e) => return to_c_string(&format!("Error: invalid UTF-8: {e}")),
+        }
+    };
+
+    // Parse the definition to validate and get model name
+    let model = match parse_sql_model(sql_str) {
+        Ok(m) => m,
+        Err(e) => return to_c_string(&format!("Error parsing definition: {e}")),
+    };
+
+    let model_name = model.name.clone();
+
+    // Determine the definitions file path
+    let definitions_path = get_definitions_path(db_path);
+
+    // Handle OR REPLACE: read existing file, remove model if exists
+    if replace {
+        if let Err(e) = remove_model_from_file(&definitions_path, &model_name) {
+            return to_c_string(&format!("Error removing existing model: {e}"));
+        }
+    }
+
+    // Append definition to file
+    if let Err(e) = append_definition_to_file(&definitions_path, sql_str) {
+        return to_c_string(&format!("Error writing to definitions file: {e}"));
+    }
+
+    // Load model into current session
+    let mut graph = SEMANTIC_GRAPH.lock().unwrap();
+    if let Err(e) = graph.add_model(model) {
+        return to_c_string(&format!("Error adding model to session: {e}"));
+    }
+
+    // Set this model as the active model for subsequent METRIC/DIMENSION additions
+    *ACTIVE_MODEL.lock().unwrap() = Some(model_name);
+
+    ptr::null_mut() // Success
+}
+
+/// Get the definitions file path based on database path
+fn get_definitions_path(db_path: *const c_char) -> PathBuf {
+    if db_path.is_null() {
+        // In-memory database: use current directory
+        return PathBuf::from("./sidemantic_definitions.sql");
+    }
+
+    let path_str = unsafe {
+        match CStr::from_ptr(db_path).to_str() {
+            Ok(s) => s,
+            Err(_) => return PathBuf::from("./sidemantic_definitions.sql"),
+        }
+    };
+
+    if path_str.is_empty() || path_str == ":memory:" {
+        return PathBuf::from("./sidemantic_definitions.sql");
+    }
+
+    // Replace .duckdb extension with .sidemantic.sql
+    let db_path = Path::new(path_str);
+    let stem = db_path.file_stem().unwrap_or_default();
+    let parent = db_path.parent().unwrap_or(Path::new("."));
+    parent.join(format!("{}.sidemantic.sql", stem.to_string_lossy()))
+}
+
+/// Remove a model definition from the file by name
+fn remove_model_from_file(path: &Path, model_name: &str) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(()); // Nothing to remove
+    }
+
+    let content = fs::read_to_string(path)?;
+    let mut result = String::new();
+    let mut skip_until_next_model = false;
+    let model_pattern = format!("MODEL");
+    let name_pattern = format!("name {}", model_name);
+    let name_pattern_comma = format!("name {},", model_name);
+
+    for line in content.lines() {
+        let line_trimmed = line.trim().to_uppercase();
+
+        // Check if this is a MODEL statement
+        if line_trimmed.starts_with(&model_pattern) {
+            // Check if this model has the name we're looking for
+            let line_lower = line.to_lowercase();
+            if line_lower.contains(&name_pattern.to_lowercase())
+                || line_lower.contains(&name_pattern_comma.to_lowercase())
+            {
+                skip_until_next_model = true;
+                continue;
+            }
+            skip_until_next_model = false;
+        }
+
+        // If we encounter another statement type, stop skipping
+        if skip_until_next_model
+            && (line_trimmed.starts_with("MODEL")
+                || line_trimmed.starts_with("--")
+                || line_trimmed.is_empty())
+        {
+            if line_trimmed.starts_with("MODEL") && !line.to_lowercase().contains(&name_pattern.to_lowercase()) {
+                skip_until_next_model = false;
+            } else if line_trimmed.is_empty() || line_trimmed.starts_with("--") {
+                // Skip empty lines and comments between removed statements
+                continue;
+            }
+        }
+
+        if !skip_until_next_model {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    fs::write(path, result.trim_end())?;
+    Ok(())
+}
+
+/// Append a definition to the file
+fn append_definition_to_file(path: &Path, definition: &str) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+
+    // Add newlines for separation if file is not empty
+    if path.exists() && fs::metadata(path)?.len() > 0 {
+        writeln!(file)?;
+        writeln!(file)?;
+    }
+
+    writeln!(file, "{}", definition.trim())?;
+    Ok(())
+}
+
+/// Load definitions from file if it exists (for auto-load on extension start)
+///
+/// Returns null on success (including when file doesn't exist), error message on failure.
+/// Caller must free the returned string with `sidemantic_free`.
+#[no_mangle]
+pub extern "C" fn sidemantic_autoload(db_path: *const c_char) -> *mut c_char {
+    let definitions_path = get_definitions_path(db_path);
+
+    if !definitions_path.exists() {
+        return ptr::null_mut(); // No file to load, success
+    }
+
+    // Read and parse the definitions file
+    let content = match fs::read_to_string(&definitions_path) {
+        Ok(c) => c,
+        Err(e) => return to_c_string(&format!("Error reading definitions file: {e}")),
+    };
+
+    if content.trim().is_empty() {
+        return ptr::null_mut(); // Empty file, success
+    }
+
+    // Parse each model definition in the file
+    // Split on MODEL keyword to handle multiple definitions
+    let mut graph = SEMANTIC_GRAPH.lock().unwrap();
+
+    for block in split_definitions(&content) {
+        if block.trim().is_empty() {
+            continue;
+        }
+        match parse_sql_model(block) {
+            Ok(model) => {
+                if let Err(e) = graph.add_model(model) {
+                    return to_c_string(&format!("Error loading model: {e}"));
+                }
+            }
+            Err(e) => {
+                // Log but don't fail on parse errors for individual models
+                eprintln!("Warning: failed to parse model definition: {e}");
+            }
+        }
+    }
+
+    ptr::null_mut() // Success
+}
+
+/// Split content into individual model definitions
+fn split_definitions(content: &str) -> Vec<&str> {
+    let mut definitions = Vec::new();
+    let mut start = 0;
+
+    // Find each MODEL keyword and split there
+    let content_upper = content.to_uppercase();
+    let mut search_start = 0;
+
+    while let Some(pos) = content_upper[search_start..].find("MODEL") {
+        let actual_pos = search_start + pos;
+
+        // Check this is actually the start of a MODEL statement (not inside a word)
+        let is_start = actual_pos == 0 || !content.as_bytes()[actual_pos - 1].is_ascii_alphanumeric();
+        let is_followed_by_space = actual_pos + 5 < content.len()
+            && (content.as_bytes()[actual_pos + 5] == b' '
+                || content.as_bytes()[actual_pos + 5] == b'('
+                || content.as_bytes()[actual_pos + 5] == b'\t'
+                || content.as_bytes()[actual_pos + 5] == b'\n');
+
+        if is_start && is_followed_by_space {
+            if start < actual_pos && start > 0 {
+                definitions.push(&content[start..actual_pos]);
+            }
+            start = actual_pos;
+        }
+
+        search_start = actual_pos + 1;
+    }
+
+    // Don't forget the last definition
+    if start < content.len() {
+        definitions.push(&content[start..]);
+    }
+
+    definitions
+}
+
+/// Add a metric/dimension/segment to the most recently created model
+///
+/// definition_sql: The definition in nom format (e.g., "METRIC (name revenue, agg sum, sql amount)")
+/// db_path: Path to database file for persistence (null for in-memory)
+///
+/// Supports two syntaxes:
+/// - `METRIC (name foo, ...)` - adds to active model
+/// - `METRIC model.foo (...)` - adds to specified model
+///
+/// Returns null on success, error message on failure.
+#[no_mangle]
+pub extern "C" fn sidemantic_add_definition(
+    definition_sql: *const c_char,
+    db_path: *const c_char,
+) -> *mut c_char {
+    use crate::config::parse_sql_model;
+
+    if definition_sql.is_null() {
+        return to_c_string("Error: null definition_sql pointer");
+    }
+
+    let sql_str = unsafe {
+        match CStr::from_ptr(definition_sql).to_str() {
+            Ok(s) => s,
+            Err(e) => return to_c_string(&format!("Error: invalid UTF-8: {e}")),
+        }
+    };
+
+    // Parse to determine what type it is and extract properties
+    let sql_trimmed = sql_str.trim();
+    let sql_upper = sql_trimmed.to_uppercase();
+
+    let mut graph = SEMANTIC_GRAPH.lock().unwrap();
+
+    // Check for model.name syntax: "METRIC model.name (...)" or "DIMENSION model.name (...)"
+    // Extract model name if present, otherwise use ACTIVE_MODEL
+    let (target_model_name, adjusted_sql) = extract_model_prefix(sql_trimmed);
+
+    let model_name = if let Some(explicit_model) = target_model_name {
+        // Verify the model exists
+        if graph.get_model(&explicit_model).is_none() {
+            return to_c_string(&format!("Error: model '{}' not found", explicit_model));
+        }
+        explicit_model
+    } else {
+        // Use ACTIVE_MODEL or fall back to last model
+        let active = ACTIVE_MODEL.lock().unwrap();
+        if let Some(ref name) = *active {
+            name.clone()
+        } else {
+            // Fall back to last model
+            let model_names: Vec<String> = graph.models().map(|m| m.name.clone()).collect();
+            if model_names.is_empty() {
+                return to_c_string("Error: no model defined yet. Create a model first with SEMANTIC CREATE MODEL, or use SEMANTIC USE <model>.");
+            }
+            model_names.last().unwrap().clone()
+        }
+    };
+
+    // Get the model to modify
+    let model = match graph.get_model(&model_name) {
+        Some(m) => m.clone(),
+        None => return to_c_string(&format!("Error: could not find model '{}'", model_name)),
+    };
+
+    // Parse the definition using a dummy model wrapper
+    let dummy_sql = format!("MODEL (name {}, table dummy);\n{}", model_name, adjusted_sql);
+    let parsed = match parse_sql_model(&dummy_sql) {
+        Ok(m) => m,
+        Err(e) => return to_c_string(&format!("Error parsing definition: {e}")),
+    };
+
+    // Extract what was added and update the model
+    let mut updated_model = model.clone();
+
+    if sql_upper.starts_with("METRIC") {
+        for metric in parsed.metrics {
+            updated_model.metrics.push(metric);
+        }
+    } else if sql_upper.starts_with("DIMENSION") {
+        for dim in parsed.dimensions {
+            updated_model.dimensions.push(dim);
+        }
+    } else if sql_upper.starts_with("SEGMENT") {
+        for seg in parsed.segments {
+            updated_model.segments.push(seg);
+        }
+    }
+
+    // add_model will overwrite since it uses HashMap::insert
+    if let Err(e) = graph.add_model(updated_model) {
+        return to_c_string(&format!("Error updating model: {e}"));
+    }
+
+    // Append to definitions file
+    let definitions_path = get_definitions_path(db_path);
+    if let Err(e) = append_definition_to_file(&definitions_path, sql_str) {
+        return to_c_string(&format!("Error writing to definitions file: {e}"));
+    }
+
+    ptr::null_mut() // Success
+}
+
+/// Extract model prefix from "METRIC model.name (...)" syntax
+/// Returns (Some(model), adjusted_sql) if prefix found, (None, original_sql) otherwise
+fn extract_model_prefix(sql: &str) -> (Option<String>, String) {
+    let sql_upper = sql.to_uppercase();
+
+    // Find the keyword (METRIC, DIMENSION, SEGMENT)
+    let keyword = if sql_upper.starts_with("METRIC") {
+        "METRIC"
+    } else if sql_upper.starts_with("DIMENSION") {
+        "DIMENSION"
+    } else if sql_upper.starts_with("SEGMENT") {
+        "SEGMENT"
+    } else {
+        return (None, sql.to_string());
+    };
+
+    // Get everything after the keyword
+    let rest = sql[keyword.len()..].trim_start();
+
+    // Check if it starts with a name followed by a dot (model.name syntax)
+    // Pattern: "model.name (" or "model.name("
+    if let Some(paren_pos) = rest.find('(') {
+        let before_paren = rest[..paren_pos].trim();
+        if let Some(dot_pos) = before_paren.find('.') {
+            let model_name = before_paren[..dot_pos].trim();
+            let field_name = before_paren[dot_pos + 1..].trim();
+
+            // Reconstruct as "KEYWORD (name field_name, ...)"
+            let paren_content = &rest[paren_pos..];
+            // Insert "name field_name, " at the start of parentheses content
+            let adjusted = if paren_content.starts_with('(') {
+                let inner = paren_content[1..].trim_start();
+                format!("{} (name {}, {}", keyword, field_name, inner)
+            } else {
+                format!("{} {}", keyword, rest)
+            };
+
+            return (Some(model_name.to_string()), adjusted);
+        }
+    }
+
+    (None, sql.to_string())
+}
+
+/// Set the active model for subsequent METRIC/DIMENSION/SEGMENT additions
+///
+/// Returns null on success, error message on failure.
+#[no_mangle]
+pub extern "C" fn sidemantic_use(model_name: *const c_char) -> *mut c_char {
+    if model_name.is_null() {
+        return to_c_string("Error: null model_name pointer");
+    }
+
+    let name_str = unsafe {
+        match CStr::from_ptr(model_name).to_str() {
+            Ok(s) => s,
+            Err(e) => return to_c_string(&format!("Error: invalid UTF-8: {e}")),
+        }
+    };
+
+    let name = name_str.trim();
+    if name.is_empty() {
+        return to_c_string("Error: model name cannot be empty");
+    }
+
+    // Verify the model exists
+    let graph = SEMANTIC_GRAPH.lock().unwrap();
+    if graph.get_model(name).is_none() {
+        let available: Vec<&str> = graph.models().map(|m| m.name.as_str()).collect();
+        return to_c_string(&format!(
+            "Error: model '{}' not found. Available models: {}",
+            name,
+            if available.is_empty() {
+                "(none)".to_string()
+            } else {
+                available.join(", ")
+            }
+        ));
+    }
+    drop(graph); // Release lock before acquiring ACTIVE_MODEL lock
+
+    // Set active model
+    *ACTIVE_MODEL.lock().unwrap() = Some(name.to_string());
+
+    ptr::null_mut() // Success
 }
 
 /// Check if a table name is a registered semantic model

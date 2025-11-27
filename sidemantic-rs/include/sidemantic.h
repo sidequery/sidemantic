@@ -43,6 +43,57 @@ char *sidemantic_load_file(const char *path);
 void sidemantic_clear(void);
 
 /*
+ * Define a semantic model from SQL definition format.
+ *
+ * Parses the definition, saves to file, and loads into current session.
+ * If `replace` is true, removes any existing model with the same name from the file.
+ *
+ * db_path: Path to the database file (NULL for in-memory).
+ *   - If db_path is "foo.duckdb", definitions are saved to "foo.sidemantic.sql"
+ *   - If db_path is NULL or ":memory:", definitions are saved to "./sidemantic_definitions.sql"
+ *
+ * Returns NULL on success, error message on failure.
+ * Caller must free the returned string with sidemantic_free().
+ */
+char *sidemantic_define(const char *definition_sql, const char *db_path, bool replace);
+
+/*
+ * Auto-load definitions from file if it exists.
+ *
+ * Called on extension load to restore previously saved definitions.
+ * Looks for the definitions file based on db_path (same logic as sidemantic_define).
+ *
+ * Returns NULL on success (including when file doesn't exist), error message on failure.
+ * Caller must free the returned string with sidemantic_free().
+ */
+char *sidemantic_autoload(const char *db_path);
+
+/*
+ * Add a metric/dimension/segment to a model.
+ *
+ * Supports two syntaxes:
+ *   - "METRIC (name foo, ...)" - adds to active model (set by CREATE MODEL or USE)
+ *   - "METRIC model.foo (...)" - adds to specified model explicitly
+ *
+ * definition_sql: The definition (e.g., "METRIC (name revenue, agg sum, sql amount)")
+ * db_path: Path to database file for persistence (NULL for in-memory)
+ *
+ * Returns NULL on success, error message on failure.
+ * Caller must free the returned string with sidemantic_free().
+ */
+char *sidemantic_add_definition(const char *definition_sql, const char *db_path);
+
+/*
+ * Set the active model for subsequent METRIC/DIMENSION/SEGMENT additions.
+ *
+ * model_name: Name of an existing model to use as the active model.
+ *
+ * Returns NULL on success, error message on failure.
+ * Caller must free the returned string with sidemantic_free().
+ */
+char *sidemantic_use(const char *model_name);
+
+/*
  * Check if a table name is a registered semantic model.
  */
 bool sidemantic_is_model(const char *table_name);

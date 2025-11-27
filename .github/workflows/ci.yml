@@ -82,9 +82,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Initialize DuckDB submodules
+      - name: Clone DuckDB dependencies
         working-directory: sidemantic-duckdb
-        run: git submodule update --init --recursive
+        run: |
+          # These are listed as submodules in .gitmodules but aren't tracked properly
+          # Clone them directly at the commits the extension was built against
+          rm -rf duckdb extension-ci-tools
+          git clone --depth 1 --branch v1.4.2 https://github.com/duckdb/duckdb.git duckdb
+          git clone --depth 1 --branch v1.4.2 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

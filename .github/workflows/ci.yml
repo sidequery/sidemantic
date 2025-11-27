@@ -72,3 +72,37 @@ jobs:
 
       - name: Run cargo test
         run: cargo test
+
+  duckdb-extension:
+    name: DuckDB Extension
+    runs-on: ubuntu-latest
+    env:
+      GEN: ninja
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sidemantic-rs
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build Rust library
+        working-directory: sidemantic-rs
+        run: cargo build --release
+
+      - name: Build DuckDB extension
+        working-directory: sidemantic-duckdb
+        run: make
+
+      - name: Run extension tests
+        working-directory: sidemantic-duckdb
+        run: make test

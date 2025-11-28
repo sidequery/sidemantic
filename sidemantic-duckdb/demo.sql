@@ -32,14 +32,14 @@ SEMANTIC CREATE MODEL orders (
 );
 
 -- ============================================
--- Add metrics and dimensions (simple AS syntax)
+-- Add metrics and dimensions (CREATE syntax)
 -- ============================================
-SEMANTIC METRIC revenue AS SUM(amount);
-SEMANTIC METRIC order_count AS COUNT(*);
-SEMANTIC METRIC avg_order_value AS AVG(amount);
+SEMANTIC CREATE METRIC revenue AS SUM(amount);
+SEMANTIC CREATE METRIC order_count AS COUNT(*);
+SEMANTIC CREATE METRIC avg_order_value AS AVG(amount);
 
-SEMANTIC DIMENSION status AS status;
-SEMANTIC DIMENSION order_date AS order_date;
+SEMANTIC CREATE DIMENSION status AS status;
+SEMANTIC CREATE DIMENSION order_date AS order_date;
 
 -- ============================================
 -- Query using semantic layer

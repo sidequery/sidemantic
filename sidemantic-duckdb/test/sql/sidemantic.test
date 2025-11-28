@@ -82,3 +82,21 @@ SELECT * FROM sidemantic_models();
 ----
 orders
 products
+
+# Test CREATE METRIC/DIMENSION syntax
+statement ok
+SEMANTIC CREATE MODEL test_model (name test_model, table orders, primary_key order_id);
+
+statement ok
+SEMANTIC CREATE METRIC test_sum AS SUM(amount);
+
+statement ok
+SEMANTIC CREATE DIMENSION test_dim AS status;
+
+# Verify test_model is loaded
+query I rowsort
+SELECT * FROM sidemantic_models();
+----
+orders
+products
+test_model

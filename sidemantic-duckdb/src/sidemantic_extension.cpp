@@ -252,73 +252,93 @@ static bool StartsWithKeyword(const std::string &str, const std::string &keyword
     return true;
 }
 
-// Check if query is a METRIC/DIMENSION/SEGMENT statement
+// Check if query is a CREATE [OR REPLACE] METRIC/DIMENSION/SEGMENT statement
 // Returns the statement type or empty string if not matched
-// Handles three syntaxes:
-//   1. "KEYWORD (...)" - parenthesized properties
-//   2. "KEYWORD model.name (...)" - explicit model prefix
-//   3. "KEYWORD name AS expr" - simple SQL-like syntax
-static std::string IsDefinitionStatement(const std::string &query, std::string &definition) {
+// Handles syntaxes like:
+//   - "CREATE METRIC name AS expr"
+//   - "CREATE OR REPLACE METRIC name AS expr"
+//   - "CREATE METRIC (...)"
+//   - "CREATE METRIC model.name AS expr"
+static std::string IsDefinitionStatement(const std::string &query, std::string &definition, bool &is_replace) {
     size_t pos = 0;
+    is_replace = false;
+
+    // Must start with CREATE
+    if (!StartsWithKeyword(query, "CREATE", pos)) {
+        return "";
+    }
+
+    std::string rest = query.substr(pos);
+
+    // Check for optional OR REPLACE
+    size_t or_pos = 0;
+    if (StartsWithKeyword(rest, "OR", or_pos)) {
+        rest = rest.substr(or_pos);
+        size_t replace_pos = 0;
+        if (StartsWithKeyword(rest, "REPLACE", replace_pos)) {
+            rest = rest.substr(replace_pos);
+            is_replace = true;
+        } else {
+            return ""; // "CREATE OR" without "REPLACE" is invalid
+        }
+    }
 
     // Helper to check for AS keyword (case-insensitive)
-    auto is_as_keyword = [](const std::string &s, size_t pos) -> bool {
-        if (pos + 2 > s.size()) return false;
-        return (s[pos] == 'A' || s[pos] == 'a') &&
-               (s[pos + 1] == 'S' || s[pos + 1] == 's') &&
-               (pos + 2 >= s.size() || std::isspace(s[pos + 2]));
+    auto is_as_keyword = [](const std::string &s, size_t p) -> bool {
+        if (p + 2 > s.size()) return false;
+        return (s[p] == 'A' || s[p] == 'a') &&
+               (s[p + 1] == 'S' || s[p + 1] == 's') &&
+               (p + 2 >= s.size() || std::isspace(s[p + 2]));
     };
 
     // Helper lambda to check for definition patterns after keyword
-    auto check_definition = [&is_as_keyword](const std::string &rest, const std::string &keyword, std::string &def) -> bool {
+    auto check_definition = [&is_as_keyword](const std::string &after_kw, const std::string &keyword, std::string &def) -> bool {
         size_t start = 0;
-        while (start < rest.size() && std::isspace(rest[start])) start++;
+        while (start < after_kw.size() && std::isspace(after_kw[start])) start++;
 
         // Case 1: Direct opening paren - "KEYWORD (..."
-        if (start < rest.size() && rest[start] == '(') {
-            def = keyword + " " + rest.substr(start);
+        if (start < after_kw.size() && after_kw[start] == '(') {
+            def = keyword + " " + after_kw.substr(start);
             return true;
         }
 
         // Read first identifier
         size_t name_start = start;
-        while (start < rest.size() && (std::isalnum(rest[start]) || rest[start] == '_')) start++;
+        while (start < after_kw.size() && (std::isalnum(after_kw[start]) || after_kw[start] == '_')) start++;
         if (start == name_start) {
             return false;
         }
-        std::string first_ident = rest.substr(name_start, start - name_start);
 
         // Skip whitespace
-        while (start < rest.size() && std::isspace(rest[start])) start++;
+        while (start < after_kw.size() && std::isspace(after_kw[start])) start++;
 
         // Case 2: Check for "AS" keyword - simple SQL syntax "KEYWORD name AS expr"
-        if (is_as_keyword(rest, start)) {
-            // Include the full definition (name AS expr) for Rust to parse
-            def = keyword + " " + rest.substr(name_start);
+        if (is_as_keyword(after_kw, start)) {
+            def = keyword + " " + after_kw.substr(name_start);
             return true;
         }
 
         // Case 3: Check for dot (model.name syntax)
-        if (start < rest.size() && rest[start] == '.') {
+        if (start < after_kw.size() && after_kw[start] == '.') {
             start++; // skip dot
             // Read second identifier (field name)
             size_t field_start = start;
-            while (start < rest.size() && (std::isalnum(rest[start]) || rest[start] == '_')) start++;
+            while (start < after_kw.size() && (std::isalnum(after_kw[start]) || after_kw[start] == '_')) start++;
             if (start == field_start) {
                 return false;
             }
             // Skip whitespace
-            while (start < rest.size() && std::isspace(rest[start])) start++;
+            while (start < after_kw.size() && std::isspace(after_kw[start])) start++;
 
             // Check for AS (model.name AS expr syntax)
-            if (is_as_keyword(rest, start)) {
-                def = keyword + " " + rest.substr(name_start);
+            if (is_as_keyword(after_kw, start)) {
+                def = keyword + " " + after_kw.substr(name_start);
                 return true;
             }
 
             // Check for paren (model.name (props) syntax)
-            if (start < rest.size() && rest[start] == '(') {
-                def = keyword + " " + rest.substr(name_start);
+            if (start < after_kw.size() && after_kw[start] == '(') {
+                def = keyword + " " + after_kw.substr(name_start);
                 return true;
             }
         }
@@ -327,25 +347,28 @@ static std::string IsDefinitionStatement(const std::string &query, std::string &
     };
 
     // Check for METRIC
-    if (StartsWithKeyword(query, "METRIC", pos)) {
-        std::string rest = query.substr(pos);
-        if (check_definition(rest, "METRIC", definition)) {
+    size_t metric_pos = 0;
+    if (StartsWithKeyword(rest, "METRIC", metric_pos)) {
+        std::string after_metric = rest.substr(metric_pos);
+        if (check_definition(after_metric, "METRIC", definition)) {
             return "METRIC";
         }
     }
 
     // Check for DIMENSION
-    if (StartsWithKeyword(query, "DIMENSION", pos)) {
-        std::string rest = query.substr(pos);
-        if (check_definition(rest, "DIMENSION", definition)) {
+    size_t dim_pos = 0;
+    if (StartsWithKeyword(rest, "DIMENSION", dim_pos)) {
+        std::string after_dim = rest.substr(dim_pos);
+        if (check_definition(after_dim, "DIMENSION", definition)) {
             return "DIMENSION";
         }
     }
 
     // Check for SEGMENT
-    if (StartsWithKeyword(query, "SEGMENT", pos)) {
-        std::string rest = query.substr(pos);
-        if (check_definition(rest, "SEGMENT", definition)) {
+    size_t seg_pos = 0;
+    if (StartsWithKeyword(rest, "SEGMENT", seg_pos)) {
+        std::string after_seg = rest.substr(seg_pos);
+        if (check_definition(after_seg, "SEGMENT", definition)) {
             return "SEGMENT";
         }
     }
@@ -485,11 +508,13 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
     }
 
 not_model_switch:
-    // Check if this is a METRIC/DIMENSION/SEGMENT statement
-    std::string def_type = IsDefinitionStatement(stripped_query, definition);
+    // Check if this is a CREATE [OR REPLACE] METRIC/DIMENSION/SEGMENT statement
+    bool is_replace = false;
+    std::string def_type = IsDefinitionStatement(stripped_query, definition, is_replace);
     if (!def_type.empty()) {
         const char *db_path_ptr = g_db_path.empty() ? nullptr : g_db_path.c_str();
 
+        // TODO: Pass is_replace flag to Rust when we implement replace logic
         char *error = sidemantic_add_definition(definition.c_str(), db_path_ptr);
         if (error) {
             string error_msg(error);
@@ -499,7 +524,8 @@ not_model_switch:
 
         // Return acknowledgment
         Parser parser;
-        parser.ParseQuery("SELECT '" + def_type + " added successfully' AS result");
+        std::string action = is_replace ? "replaced" : "created";
+        parser.ParseQuery("SELECT '" + def_type + " " + action + " successfully' AS result");
         auto statements = std::move(parser.statements);
 
         return ParserExtensionParseResult(

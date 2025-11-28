@@ -71,17 +71,20 @@ char *sidemantic_autoload(const char *db_path);
 /*
  * Add a metric/dimension/segment to a model.
  *
- * Supports two syntaxes:
- *   - "METRIC (name foo, ...)" - adds to active model (set by CREATE MODEL or USE)
- *   - "METRIC model.foo (...)" - adds to specified model explicitly
+ * Supports syntaxes:
+ *   - "METRIC (name foo, ...)" - adds to active model
+ *   - "METRIC model.foo (...)" - adds to specified model
+ *   - "METRIC foo AS SUM(x)" - adds to active model
+ *   - "METRIC model.foo AS SUM(x)" - adds to specified model
  *
- * definition_sql: The definition (e.g., "METRIC (name revenue, agg sum, sql amount)")
+ * definition_sql: The definition (e.g., "METRIC revenue AS SUM(amount)")
  * db_path: Path to database file for persistence (NULL for in-memory)
+ * is_replace: If true, replace existing metric/dimension with same name
  *
  * Returns NULL on success, error message on failure.
  * Caller must free the returned string with sidemantic_free().
  */
-char *sidemantic_add_definition(const char *definition_sql, const char *db_path);
+char *sidemantic_add_definition(const char *definition_sql, const char *db_path, bool is_replace);
 
 /*
  * Set the active model for subsequent METRIC/DIMENSION/SEGMENT additions.

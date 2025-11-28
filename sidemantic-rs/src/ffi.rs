@@ -363,16 +363,20 @@ fn split_definitions(content: &str) -> Vec<&str> {
 ///
 /// definition_sql: The definition in nom format (e.g., "METRIC (name revenue, agg sum, sql amount)")
 /// db_path: Path to database file for persistence (null for in-memory)
+/// is_replace: If true, replace existing metric/dimension/segment with the same name
 ///
-/// Supports two syntaxes:
+/// Supports syntaxes:
 /// - `METRIC (name foo, ...)` - adds to active model
 /// - `METRIC model.foo (...)` - adds to specified model
+/// - `METRIC foo AS SUM(x)` - adds to active model
+/// - `METRIC model.foo AS SUM(x)` - adds to specified model
 ///
 /// Returns null on success, error message on failure.
 #[no_mangle]
 pub extern "C" fn sidemantic_add_definition(
     definition_sql: *const c_char,
     db_path: *const c_char,
+    is_replace: bool,
 ) -> *mut c_char {
     use crate::config::parse_sql_model;
 
@@ -436,14 +440,26 @@ pub extern "C" fn sidemantic_add_definition(
 
     if sql_upper.starts_with("METRIC") {
         for metric in parsed.metrics {
+            if is_replace {
+                // Remove existing metric with same name
+                updated_model.metrics.retain(|m| m.name != metric.name);
+            }
             updated_model.metrics.push(metric);
         }
     } else if sql_upper.starts_with("DIMENSION") {
         for dim in parsed.dimensions {
+            if is_replace {
+                // Remove existing dimension with same name
+                updated_model.dimensions.retain(|d| d.name != dim.name);
+            }
             updated_model.dimensions.push(dim);
         }
     } else if sql_upper.starts_with("SEGMENT") {
         for seg in parsed.segments {
+            if is_replace {
+                // Remove existing segment with same name
+                updated_model.segments.retain(|s| s.name != seg.name);
+            }
             updated_model.segments.push(seg);
         }
     }
@@ -462,7 +478,7 @@ pub extern "C" fn sidemantic_add_definition(
     ptr::null_mut() // Success
 }
 
-/// Extract model prefix from "METRIC model.name (...)" syntax
+/// Extract model prefix from "METRIC model.name (...)" or "METRIC model.name AS expr" syntax
 /// Returns (Some(model), adjusted_sql) if prefix found, (None, original_sql) otherwise
 fn extract_model_prefix(sql: &str) -> (Option<String>, String) {
     let sql_upper = sql.to_uppercase();
@@ -481,24 +497,33 @@ fn extract_model_prefix(sql: &str) -> (Option<String>, String) {
     // Get everything after the keyword
     let rest = sql[keyword.len()..].trim_start();
 
-    // Check if it starts with a name followed by a dot (model.name syntax)
-    // Pattern: "model.name (" or "model.name("
-    if let Some(paren_pos) = rest.find('(') {
-        let before_paren = rest[..paren_pos].trim();
-        if let Some(dot_pos) = before_paren.find('.') {
-            let model_name = before_paren[..dot_pos].trim();
-            let field_name = before_paren[dot_pos + 1..].trim();
+    // Check for model.name pattern - could be followed by ( or AS
+    // Look for a dot in the first identifier
+    let first_space_or_paren = rest
+        .find(|c: char| c.is_whitespace() || c == '(')
+        .unwrap_or(rest.len());
+    let first_token = &rest[..first_space_or_paren];
 
-            // Reconstruct as "KEYWORD (name field_name, ...)"
-            let paren_content = &rest[paren_pos..];
-            // Insert "name field_name, " at the start of parentheses content
+    if let Some(dot_pos) = first_token.find('.') {
+        let model_name = first_token[..dot_pos].trim();
+        let field_name = first_token[dot_pos + 1..].trim();
+        let after_token = rest[first_space_or_paren..].trim_start();
+
+        // Check what follows: ( for paren syntax, or AS for simple syntax
+        if after_token.starts_with('(') {
+            // Paren syntax: "model.name (props...)"
+            let paren_content = after_token;
             let adjusted = if let Some(stripped) = paren_content.strip_prefix('(') {
                 let inner = stripped.trim_start();
                 format!("{keyword} (name {field_name}, {inner}")
             } else {
                 format!("{keyword} {rest}")
             };
-
+            return (Some(model_name.to_string()), adjusted);
+        } else if after_token.to_uppercase().starts_with("AS ") {
+            // AS syntax: "model.name AS expr"
+            let after_as = &after_token[2..].trim_start();
+            let adjusted = format!("{keyword} {field_name} AS {after_as}");
             return (Some(model_name.to_string()), adjusted);
         }
     }

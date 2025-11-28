@@ -23,7 +23,7 @@ extern "C" {
     void sidemantic_free_result(SidemanticRewriteResult result);
     char *sidemantic_define(const char *definition_sql, const char *db_path, bool replace);
     char *sidemantic_autoload(const char *db_path);
-    char *sidemantic_add_definition(const char *definition_sql, const char *db_path);
+    char *sidemantic_add_definition(const char *definition_sql, const char *db_path, bool is_replace);
     char *sidemantic_use(const char *model_name);
 }
 
@@ -514,8 +514,7 @@ not_model_switch:
     if (!def_type.empty()) {
         const char *db_path_ptr = g_db_path.empty() ? nullptr : g_db_path.c_str();
 
-        // TODO: Pass is_replace flag to Rust when we implement replace logic
-        char *error = sidemantic_add_definition(definition.c_str(), db_path_ptr);
+        char *error = sidemantic_add_definition(definition.c_str(), db_path_ptr, is_replace);
         if (error) {
             string error_msg(error);
             sidemantic_free(error);

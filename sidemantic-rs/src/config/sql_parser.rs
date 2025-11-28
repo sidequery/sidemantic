@@ -282,8 +282,10 @@ fn parse_metric_expression(name: &str, expr: &str) -> HashMap<String, String> {
     if let Ok(statements) = Parser::parse_sql(&dialect, &sql) {
         if let Some(sqlparser::ast::Statement::Query(query)) = statements.into_iter().next() {
             if let sqlparser::ast::SetExpr::Select(select) = *query.body {
-                if let Some(SelectItem::UnnamedExpr(expr)) = select.projection.into_iter().next() {
-                    if let Some((agg, inner_expr)) = extract_aggregation(&expr) {
+                if let Some(SelectItem::UnnamedExpr(parsed_expr)) =
+                    select.projection.into_iter().next()
+                {
+                    if let Some((agg, inner_expr)) = extract_aggregation(&parsed_expr) {
                         props.insert("agg".to_string(), agg);
                         if !inner_expr.is_empty() {
                             props.insert("sql".to_string(), inner_expr);
@@ -295,7 +297,9 @@ fn parse_metric_expression(name: &str, expr: &str) -> HashMap<String, String> {
         }
     }
 
-    // Fall back to storing the whole expression as sql
+    // Fall back to storing the whole expression as sql with "expression" type
+    // This allows complex expressions like SUM(amount) * 2
+    props.insert("agg".to_string(), "expression".to_string());
     props.insert("sql".to_string(), expr.to_string());
     props
 }
@@ -630,6 +634,7 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
             "avg" | "average" => Some(Aggregation::Avg),
             "min" => Some(Aggregation::Min),
             "max" => Some(Aggregation::Max),
+            "expression" => Some(Aggregation::Expression),
             _ => None,
         };
     }

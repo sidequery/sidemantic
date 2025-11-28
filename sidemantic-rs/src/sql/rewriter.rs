@@ -270,6 +270,25 @@ impl<'a> QueryRewriter<'a> {
     fn metric_to_expr(&self, metric: &crate::core::Metric, alias: &str) -> Expr {
         match metric.r#type {
             MetricType::Simple => {
+                // Handle Expression type: sql field contains the full expression
+                if let Some(crate::core::Aggregation::Expression) = &metric.agg {
+                    let dialect = GenericDialect {};
+                    let sql = format!("SELECT {}", metric.sql_expr());
+                    if let Ok(statements) = Parser::parse_sql(&dialect, &sql) {
+                        if let Some(Statement::Query(query)) = statements.into_iter().next() {
+                            if let SetExpr::Select(select) = *query.body {
+                                if let Some(SelectItem::UnnamedExpr(expr)) =
+                                    select.projection.into_iter().next()
+                                {
+                                    return expr;
+                                }
+                            }
+                        }
+                    }
+                    // Fallback: return as identifier
+                    return Expr::Identifier(Ident::new(metric.name.clone()));
+                }
+
                 let agg = metric.agg.as_ref().unwrap();
                 // COUNT without explicit sql defaults to COUNT(*)
                 let use_wildcard = metric.sql.as_deref() == Some("*")

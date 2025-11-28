@@ -91,6 +91,8 @@ pub enum Aggregation {
     Min,
     Max,
     Median,
+    /// Raw expression that already contains aggregation (e.g., SUM(amount) * 2)
+    Expression,
 }
 
 impl Aggregation {
@@ -103,6 +105,7 @@ impl Aggregation {
             Aggregation::Min => "MIN",
             Aggregation::Max => "MAX",
             Aggregation::Median => "MEDIAN",
+            Aggregation::Expression => "", // Not used - expression stored in sql field
         }
     }
 }

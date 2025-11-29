@@ -1,0 +1,99 @@
+#
+# This tests the extension-ci-tools works as expected
+#
+
+name: Test CI Tools
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  code-quality:
+    name: Code Quality
+    uses: ./.github/workflows/_extension_code_quality.yml
+    with:
+      extension_name: quack
+      override_repository: duckdb/extension-template
+      override_ref: main
+      duckdb_version: v1.4.2
+      override_ci_tools_repository: ${{ github.repository }}
+      ci_tools_version: ${{ github.sha }}
+      extra_toolchains: 'python3'
+
+  extension-template-capi:
+    name: Extension template (C API)
+    uses: ./.github/workflows/_extension_distribution.yml
+    with:
+      extension_name: capi_quack
+      override_repository: duckdb/extension-template-c
+      override_ref: main
+      duckdb_version: v1.4.2
+      override_ci_tools_repository: ${{ github.repository }}
+      ci_tools_version: ${{ github.sha }}
+      extra_toolchains: 'python3'
+      save_cache: ${{ github.event_name != 'pull_request' }}
+
+  extension-template-main:
+    name: Extension template
+    uses: ./.github/workflows/_extension_distribution.yml
+    needs:
+      - extension-template-capi
+      - code-quality
+    with:
+      extension_name: quack
+      override_repository: duckdb/extension-template
+      override_ref: main
+      duckdb_version: v1.4.2
+      override_ci_tools_repository: ${{ github.repository }}
+      ci_tools_version: ${{ github.sha }}
+      extra_toolchains: 'parser_tools;fortran;omp;go;python3;downgraded_aws_cli;'
+      save_cache: ${{ github.event_name != 'pull_request' }}
+      vcpkg_binary_sources: ${{ github.event_name == 'push' && vars.VCPKG_BINARY_SOURCES || '' }}
+      upload_all_extensions: true
+      extensions_test_selection: complete
+      extra_extension_config: |
+        duckdb_extension_load(json)
+        duckdb_extension_load(tpch)
+    secrets: inherit
+
+  extension-template-rust:
+    name: Extension template (Rust)
+    uses: ./.github/workflows/_extension_distribution.yml
+    needs:
+      - extension-template-capi
+      - code-quality
+    with:
+      extension_name: rusty_quack
+      override_repository: duckdb/extension-template-rs
+      override_ref: main
+      duckdb_version: v1.4.2
+      override_ci_tools_repository: ${{ github.repository }}
+      ci_tools_version: ${{ github.sha }}
+      extra_toolchains: 'rust;python3'
+      exclude_archs: 'windows_amd64_mingw;linux_amd64_musl;wasm_mvp;wasm_eh;wasm_threads' # TODO: remove once fixed upstream
+      save_cache: ${{ github.event_name != 'pull_request' }}
+
+  delta-extension-main:
+    name: Rust builds (using Delta extension)
+    uses: ./.github/workflows/_extension_distribution.yml
+    needs:
+      - extension-template-capi
+      - code-quality
+    with:
+      extension_name: delta
+      override_repository: duckdb/duckdb_delta
+      override_ref: main
+      override_ci_tools_repository: ${{ github.repository }}
+      ci_tools_version: ${{ github.sha }}
+      duckdb_version: v1.4.2
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;windows_amd64;linux_amd64_musl'
+      extra_toolchains: 'rust'
+      save_cache: ${{ github.event_name != 'pull_request' }}
+      vcpkg_binary_sources: ${{ github.event_name == 'push' && vars.VCPKG_BINARY_SOURCES || '' }}
+      reduced_ci_mode: enabled
+    secrets: inherit

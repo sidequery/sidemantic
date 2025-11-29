@@ -1,0 +1,102 @@
+# name: test/sql/sidemantic.test
+# description: Test sidemantic semantic layer extension
+# group: [sidemantic]
+
+require sidemantic
+
+# Test loading models
+statement ok
+SELECT * FROM sidemantic_load('
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+');
+
+# Test listing models
+query I
+SELECT * FROM sidemantic_models();
+----
+orders
+
+# Test manual rewrite function - should contain SUM
+query I
+SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders') LIKE '%SUM%';
+----
+true
+
+# Test manual rewrite function - should contain GROUP BY when dimension present
+query I
+SELECT sidemantic_rewrite_sql('SELECT orders.revenue, orders.status FROM orders') LIKE '%GROUP BY%';
+----
+true
+
+# Create test table
+statement ok
+CREATE TABLE orders (order_id INT, status VARCHAR, amount DECIMAL(10,2));
+
+statement ok
+INSERT INTO orders VALUES (1, 'completed', 100.00), (2, 'completed', 50.00), (3, 'pending', 75.00);
+
+# Test SEMANTIC keyword query - revenue by status
+query IR
+SEMANTIC SELECT orders.status, orders.revenue FROM orders ORDER BY orders.status;
+----
+completed	150.00
+pending	75.00
+
+# Test SEMANTIC keyword query - total revenue (no dimensions)
+query R
+SEMANTIC SELECT orders.revenue FROM orders;
+----
+225.00
+
+# Test loading Cube.js format
+statement ok
+SELECT * FROM sidemantic_load('
+cubes:
+  - name: products
+    sql_table: products
+    dimensions:
+      - name: category
+        sql: "${CUBE}.category"
+        type: string
+    measures:
+      - name: total_price
+        sql: "${CUBE}.price"
+        type: sum
+');
+
+# Verify both models are loaded
+query I rowsort
+SELECT * FROM sidemantic_models();
+----
+orders
+products
+
+# Test CREATE METRIC/DIMENSION syntax
+statement ok
+SEMANTIC CREATE MODEL test_model (name test_model, table orders, primary_key order_id);
+
+statement ok
+SEMANTIC CREATE METRIC test_sum AS SUM(amount);
+
+statement ok
+SEMANTIC CREATE DIMENSION test_dim AS status;
+
+# Verify test_model is loaded
+query I rowsort
+SELECT * FROM sidemantic_models();
+----
+orders
+products
+test_model

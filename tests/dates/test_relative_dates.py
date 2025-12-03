@@ -99,3 +99,26 @@ def test_whitespace_handling():
     """Test that extra whitespace is handled."""
     assert RelativeDateRange.parse("  last 7 days  ") == "CURRENT_DATE - 7"
     assert RelativeDateRange.parse("  this month  ") == "DATE_TRUNC('month', CURRENT_DATE)"
+
+
+def test_bigquery_dialect():
+    """Test BigQuery dialect generates correct DATE_TRUNC syntax."""
+    # BigQuery uses DATE_TRUNC(column, MONTH) not DATE_TRUNC('month', column)
+    assert RelativeDateRange.parse("this month", dialect="bigquery") == "DATE_TRUNC(CURRENT_DATE, MONTH)"
+    assert RelativeDateRange.parse("this week", dialect="bigquery") == "DATE_TRUNC(CURRENT_DATE, WEEK)"
+    assert RelativeDateRange.parse("this year", dialect="bigquery") == "DATE_TRUNC(CURRENT_DATE, YEAR)"
+    assert (
+        RelativeDateRange.parse("last month", dialect="bigquery")
+        == "DATE_TRUNC(CURRENT_DATE, MONTH) - INTERVAL '1 month'"
+    )
+
+    # Simple patterns don't use DATE_TRUNC, should be unchanged
+    assert RelativeDateRange.parse("last 7 days", dialect="bigquery") == "CURRENT_DATE - 7"
+    assert RelativeDateRange.parse("today", dialect="bigquery") == "CURRENT_DATE"
+
+
+def test_bigquery_to_range():
+    """Test BigQuery dialect in to_range method."""
+    result = RelativeDateRange.to_range("this month", "order_date", dialect="bigquery")
+    assert "DATE_TRUNC(CURRENT_DATE, MONTH)" in result
+    assert "DATE_TRUNC('month'" not in result

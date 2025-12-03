@@ -31,6 +31,29 @@ class SQLGenerator:
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
 
+    def _date_trunc(self, granularity: str, column_expr: str) -> str:
+        """Generate dialect-specific DATE_TRUNC expression.
+
+        Args:
+            granularity: Time granularity (hour, day, week, month, quarter, year)
+            column_expr: SQL column expression
+
+        Returns:
+            DATE_TRUNC SQL expression appropriate for the dialect
+        """
+        # Handle {model} placeholder or complex expressions - fall back to string
+        if "{" in column_expr or "(" in column_expr:
+            # BigQuery: DATE_TRUNC(col, MONTH), others: DATE_TRUNC('month', col)
+            if self.dialect == "bigquery":
+                return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
+            else:
+                return f"DATE_TRUNC('{granularity}', {column_expr})"
+
+        # Parse the column expression to handle table.column references
+        col = sqlglot.parse_one(column_expr, into=exp.Column, dialect=self.dialect)
+        date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
+        return date_trunc.sql(dialect=self.dialect)
+
     def generate_view(
         self,
         view_name: str,
@@ -124,11 +147,11 @@ class SQLGenerator:
                     # Convert relative date to SQL expression
                     if operator in [">=", ">"]:
                         # For >= or >, just use the start date
-                        sql_expr = RelativeDateRange.parse(value)
+                        sql_expr = RelativeDateRange.parse(value, self.dialect)
                         processed_filters.append(f"{column} {operator} {sql_expr}")
                     elif operator == "=":
                         # For =, use to_range to get proper range
-                        range_expr = RelativeDateRange.to_range(value, column.strip())
+                        range_expr = RelativeDateRange.to_range(value, column.strip(), self.dialect)
                         if range_expr:
                             processed_filters.append(range_expr)
                         else:
@@ -595,7 +618,7 @@ class SQLGenerator:
             if dimension.name in needed_dimensions and dimension.name not in columns_added:
                 # For time dimensions with granularity, apply DATE_TRUNC
                 if dimension.type == "time" and dimension.granularity:
-                    dim_sql = dimension.with_granularity(dimension.granularity)
+                    dim_sql = self._date_trunc(dimension.granularity, dimension.sql_expr)
                 else:
                     dim_sql = dimension.sql_expr
                 select_cols.append(f"{dim_sql} AS {dimension.name}")
@@ -614,7 +637,7 @@ class SQLGenerator:
 
             if gran and dimension.type == "time":
                 # Apply time granularity (in addition to base column)
-                dim_sql = dimension.with_granularity(gran)
+                dim_sql = self._date_trunc(gran, dimension.sql_expr)
                 alias = f"{dim_name}__{gran}"
                 if alias not in columns_added:
                     select_cols.append(f"{dim_sql} AS {alias}")
@@ -1532,18 +1555,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 # Grain-to-date: MTD, QTD, YTD
                 # Partition by the grain period and order within it
                 grain = metric.grain_to_date
-                if grain == "month":
-                    partition = f"DATE_TRUNC('month', {time_dim})"
-                elif grain == "quarter":
-                    partition = f"DATE_TRUNC('quarter', {time_dim})"
-                elif grain == "year":
-                    partition = f"DATE_TRUNC('year', {time_dim})"
-                elif grain == "week":
-                    partition = f"DATE_TRUNC('week', {time_dim})"
-                elif grain == "day":
-                    partition = f"DATE_TRUNC('day', {time_dim})"
-                else:
-                    partition = f"DATE_TRUNC('month', {time_dim})"  # Default to month
+                partition = self._date_trunc(grain, time_dim)
 
                 window_expr = f"SUM(base.{base_alias}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
             elif metric.window:
@@ -1874,7 +1886,8 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                     select_exprs.append(f"{preagg_col} as {dim_name}__{gran}")
                 else:
                     # Roll up to coarser granularity
-                    select_exprs.append(f"DATE_TRUNC('{gran}', {preagg_col}) as {dim_name}__{gran}")
+                    date_trunc_expr = self._date_trunc(gran, preagg_col)
+                    select_exprs.append(f"{date_trunc_expr} as {dim_name}__{gran}")
             else:
                 # Regular dimension - use as is
                 select_exprs.append(f"{dim_name}")

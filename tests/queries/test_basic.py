@@ -72,6 +72,73 @@ def test_time_dimension_granularity():
     assert "DATE_TRUNC('month', created_at)" in sql
 
 
+def test_time_dimension_bigquery_dialect(layer):
+    """Test that time dimensions generate correct BigQuery DATE_TRUNC syntax.
+
+    BigQuery requires: DATE_TRUNC(column, MONTH)
+    PostgreSQL/DuckDB use: DATE_TRUNC('month', column)
+    """
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", sql="created_at", granularity="day"),
+            Dimension(name="region", type="categorical"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    # Compile with BigQuery dialect
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.created_at__month"],
+        dialect="bigquery",
+    )
+
+    print("BigQuery SQL:")
+    print(sql)
+
+    # BigQuery syntax: DATE_TRUNC(column, MONTH) - no quotes around granularity
+    assert "DATE_TRUNC(created_at, MONTH)" in sql, f"Expected BigQuery DATE_TRUNC syntax. Got: {sql}"
+    # Should NOT have PostgreSQL syntax
+    assert "DATE_TRUNC('month'" not in sql, f"Should not have PostgreSQL syntax. Got: {sql}"
+
+
+def test_time_dimension_duckdb_dialect(layer):
+    """Test that time dimensions generate correct DuckDB DATE_TRUNC syntax."""
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", sql="created_at", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    # Compile with DuckDB dialect (default)
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.created_at__month"],
+        dialect="duckdb",
+    )
+
+    print("DuckDB SQL:")
+    print(sql)
+
+    # DuckDB syntax: DATE_TRUNC('month', column)
+    assert "DATE_TRUNC('month'" in sql or "DATE_TRUNC('MONTH'" in sql, f"Expected DuckDB DATE_TRUNC syntax. Got: {sql}"
+
+
 def test_measure_aggregation():
     """Test measure SQL generation."""
     measure = Metric(name="revenue", agg="sum", sql="order_amount")

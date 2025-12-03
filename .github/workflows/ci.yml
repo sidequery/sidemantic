@@ -46,8 +46,28 @@ jobs:
       - name: Run tests
         run: uv run pytest -v --cov=sidemantic --cov-report=term-missing
 
+  check-rust-changes:
+    name: Check Rust/DuckDB changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust_changed: ${{ steps.changes.outputs.rust }}
+      duckdb_changed: ${{ steps.changes.outputs.duckdb }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            rust:
+              - 'sidemantic-rs/**'
+            duckdb:
+              - 'sidemantic-duckdb/**'
+              - 'sidemantic-rs/**'
+
   rust:
     name: Rust (sidemantic-rs)
+    needs: check-rust-changes
+    if: needs.check-rust-changes.outputs.rust_changed == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -75,6 +95,8 @@ jobs:
 
   duckdb-extension:
     name: DuckDB Extension
+    needs: check-rust-changes
+    if: needs.check-rust-changes.outputs.duckdb_changed == 'true'
     runs-on: ubuntu-latest
     env:
       GEN: ninja

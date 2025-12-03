@@ -1571,10 +1571,12 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 if metric.sql:
                     base_metrics.append(metric.sql)
             elif metric and metric.type == "time_comparison":
+                # Validate required fields
+                if not metric.base_metric:
+                    raise ValueError(f"time_comparison metric '{m}' requires 'base_metric' field")
                 time_comparison_metrics.append(m)
                 # Add the base metric to base_metrics
-                if metric.base_metric:
-                    base_metrics.append(metric.base_metric)
+                base_metrics.append(metric.base_metric)
             elif metric and metric.type == "ratio" and metric.offset_window:
                 offset_ratio_metrics.append(m)
                 # Add numerator and denominator to base_metrics
@@ -1812,7 +1814,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             # Add time comparison metrics
             for m in time_comparison_metrics:
                 metric = self.graph.get_metric(m)
-                if not metric:
+                if not metric or not metric.base_metric:
                     continue
 
                 # Get base metric alias

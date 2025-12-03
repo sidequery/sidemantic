@@ -91,6 +91,29 @@ class Metric(BaseModel):
 
         return data
 
+    @model_validator(mode="after")
+    def validate_type_specific_fields(self):
+        """Validate that required fields are present for each metric type."""
+        if self.type == "time_comparison" and not self.base_metric:
+            raise ValueError("time_comparison metric requires 'base_metric' field")
+        if self.type == "ratio":
+            if not self.numerator:
+                raise ValueError("ratio metric requires 'numerator' field")
+            if not self.denominator:
+                raise ValueError("ratio metric requires 'denominator' field")
+        if self.type == "derived" and not self.sql:
+            raise ValueError("derived metric requires 'sql' field")
+        if self.type == "cumulative" and not self.sql:
+            raise ValueError("cumulative metric requires 'sql' field")
+        if self.type == "conversion":
+            if not self.entity:
+                raise ValueError("conversion metric requires 'entity' field")
+            if not self.base_event:
+                raise ValueError("conversion metric requires 'base_event' field")
+            if not self.conversion_event:
+                raise ValueError("conversion metric requires 'conversion_event' field")
+        return self
+
     # Metric type (if this is a complex metric, not just a simple aggregation)
     type: Literal["ratio", "derived", "cumulative", "time_comparison", "conversion"] | None = Field(
         None, description="Metric type for complex calculations"

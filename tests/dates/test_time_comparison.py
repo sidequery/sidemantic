@@ -123,3 +123,16 @@ def test_model_level_conversion_metric():
     # User 3: signup on 01-10, no purchase - NOT CONVERTED
     # Conversion rate: 1/3 = 0.333...
     assert abs(records[0]["signup_conversion"] - 0.333) < 0.01
+
+
+def test_time_comparison_missing_base_metric_error():
+    """Test that time_comparison metric without base_metric gives clear error at construction."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="time_comparison metric requires 'base_metric' field"):
+        Metric(
+            name="revenue_mom",
+            type="time_comparison",
+            comparison_type="mom",
+        )

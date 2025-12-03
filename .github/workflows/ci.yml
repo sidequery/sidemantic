@@ -46,6 +46,14 @@ jobs:
       - name: Run tests
         run: uv run pytest -v --cov=sidemantic --cov-report=term-missing
 
+      - name: Check JSON Schema is up to date
+        run: |
+          uv run python scripts/generate_schema.py
+          if ! git diff --exit-code sidemantic-schema.json docs/schema.json; then
+            echo "JSON Schema is out of date. Run 'uv run python scripts/generate_schema.py' and commit the changes."
+            exit 1
+          fi
+
   check-rust-changes:
     name: Check Rust/DuckDB changes
     runs-on: ubuntu-latest

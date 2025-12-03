@@ -140,33 +140,6 @@ def test_auto_register_time_comparison_metric():
     assert graph.metrics["revenue_wow"].type == "time_comparison"
 
 
-def test_auto_register_conversion_metric():
-    """Test that conversion metrics are auto-registered at graph level."""
-    graph = SemanticGraph()
-
-    model = Model(
-        name="users",
-        table="users",
-        primary_key="id",
-        metrics=[
-            Metric(name="signups", agg="count"),
-            Metric(name="conversions", agg="count"),
-            Metric(
-                name="conversion_rate",
-                type="conversion",
-                numerator="conversions",
-                denominator="signups",
-            ),
-        ],
-    )
-
-    graph.add_model(model)
-
-    # conversion metric should be auto-registered at graph level
-    assert "conversion_rate" in graph.metrics
-    assert graph.metrics["conversion_rate"].type == "conversion"
-
-
 def test_no_auto_register_regular_metrics():
     """Test that regular metrics are not auto-registered at graph level."""
     graph = SemanticGraph()

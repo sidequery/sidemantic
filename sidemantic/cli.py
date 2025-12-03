@@ -1045,5 +1045,33 @@ def refresh(
         raise typer.Exit(1)
 
 
+@app.command()
+def lsp():
+    """
+    Start the LSP server for Sidemantic SQL dialect (.sql definition files).
+
+    This provides editor support for the Sidemantic SQL syntax (MODEL, DIMENSION,
+    METRIC, RELATIONSHIP, SEGMENT statements). It does NOT provide general SQL
+    language support.
+
+    Features:
+    - Autocompletion for MODEL, DIMENSION, METRIC, RELATIONSHIP, SEGMENT
+    - Context-aware property suggestions (name, type, sql, agg, etc.)
+    - Validation errors from pydantic models
+    - Hover documentation for keywords and properties
+
+    Editor setup:
+
+    VS Code: Use a generic LSP client extension pointing to 'sidemantic lsp'
+    Neovim: Add custom server config to nvim-lspconfig
+
+    Examples:
+      sidemantic lsp  # Starts server on stdio
+    """
+    from sidemantic.lsp import main as lsp_main
+
+    lsp_main()
+
+
 if __name__ == "__main__":
     app()

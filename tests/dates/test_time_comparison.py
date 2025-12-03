@@ -123,3 +123,32 @@ def test_model_level_conversion_metric():
     # User 3: signup on 01-10, no purchase - NOT CONVERTED
     # Conversion rate: 1/3 = 0.333...
     assert abs(records[0]["signup_conversion"] - 0.333) < 0.01
+
+
+def test_time_comparison_missing_base_metric_error():
+    """Test that time_comparison metric without base_metric gives clear error."""
+    import pytest
+
+    sales = Model(
+        name="sales",
+        sql="SELECT 1 AS month, 100 AS revenue",
+        primary_key="month",
+        dimensions=[Dimension(name="month", sql="month", type="time")],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="revenue"),
+            # Missing base_metric
+            Metric(
+                name="revenue_mom",
+                type="time_comparison",
+                comparison_type="mom",
+            ),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+
+    generator = SQLGenerator(graph)
+
+    with pytest.raises(ValueError, match="requires 'base_metric' field"):
+        generator.generate(metrics=["revenue_mom"], dimensions=["sales.month"])

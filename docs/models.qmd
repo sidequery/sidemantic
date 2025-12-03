@@ -58,6 +58,8 @@ orders = Model(
 - **relationships**: Relationships to other models (see [Relationships](relationships.qmd))
 - **dimensions**: Attributes for grouping and filtering
 - **metrics**: Model-level aggregations
+- **default_time_dimension**: Default time dimension to auto-include in queries
+- **default_grain**: Default granularity for the time dimension (`hour`, `day`, `week`, `month`, `quarter`, `year`)
 
 ## Dimensions
 

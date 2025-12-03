@@ -249,8 +249,6 @@ class SidemanticAdapter(BaseAdapter):
                 value_format_name=measure_def.get("value_format_name"),
                 drill_fields=measure_def.get("drill_fields"),
                 non_additive_dimension=measure_def.get("non_additive_dimension"),
-                default_time_dimension=measure_def.get("default_time_dimension"),
-                default_grain=measure_def.get("default_grain"),
             )
             measures.append(measure)
 
@@ -313,6 +311,8 @@ class SidemanticAdapter(BaseAdapter):
             metrics=measures,
             segments=segments,
             pre_aggregations=pre_aggregations,
+            default_time_dimension=model_def.get("default_time_dimension"),
+            default_grain=model_def.get("default_grain"),
         )
 
     def _parse_metric(self, metric_def: dict) -> Metric | None:
@@ -424,11 +424,13 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["drill_fields"] = measure.drill_fields
                 if measure.non_additive_dimension:
                     measure_def["non_additive_dimension"] = measure.non_additive_dimension
-                if measure.default_time_dimension:
-                    measure_def["default_time_dimension"] = measure.default_time_dimension
-                if measure.default_grain:
-                    measure_def["default_grain"] = measure.default_grain
                 result["metrics"].append(measure_def)
+
+        # Export model-level default_time_dimension
+        if model.default_time_dimension:
+            result["default_time_dimension"] = model.default_time_dimension
+        if model.default_grain:
+            result["default_grain"] = model.default_grain
 
         # Export segments
         if model.segments:

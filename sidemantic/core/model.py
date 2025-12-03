@@ -1,5 +1,7 @@
 """Model definitions."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from sidemantic.core.dimension import Dimension
@@ -33,6 +35,14 @@ class Model(BaseModel):
     segments: list[Segment] = Field(default_factory=list, description="Segment (named filter) definitions")
     pre_aggregations: list[PreAggregation] = Field(
         default_factory=list, description="Pre-aggregation definitions for query optimization"
+    )
+
+    # Default time dimension for all metrics in this model
+    default_time_dimension: str | None = Field(
+        None, description="Default time dimension for metrics (auto-included in queries)"
+    )
+    default_grain: Literal["hour", "day", "week", "month", "quarter", "year"] | None = Field(
+        None, description="Default time granularity when using default_time_dimension"
     )
 
     def __init__(self, **data):

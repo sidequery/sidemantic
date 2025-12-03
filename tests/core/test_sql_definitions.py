@@ -61,9 +61,7 @@ def test_parse_metric_all_fields():
         format '$#,##0.00',
         filters status = 'completed',
         fill_nulls_with 0,
-        non_additive_dimension time,
-        default_time_dimension order_date,
-        default_grain day
+        non_additive_dimension time
     );
     """
 
@@ -79,8 +77,6 @@ def test_parse_metric_all_fields():
     assert metric.filters == ["status = 'completed'"]
     assert metric.fill_nulls_with == 0
     assert metric.non_additive_dimension == "time"
-    assert metric.default_time_dimension == "order_date"
-    assert metric.default_grain == "day"
 
 
 def test_parse_ratio_metric():

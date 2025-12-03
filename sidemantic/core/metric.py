@@ -144,12 +144,6 @@ class Metric(BaseModel):
         description="Dimension across which this metric cannot be summed (e.g., time for averages)",
     )
 
-    # Defaults
-    default_time_dimension: str | None = Field(None, description="Default time dimension for this metric")
-    default_grain: Literal["hour", "day", "week", "month", "quarter", "year"] | None = Field(
-        None, description="Default time granularity for this metric"
-    )
-
     def __hash__(self) -> int:
         return hash((self.name, self.agg, self.sql))
 

@@ -331,8 +331,6 @@ formatted_revenue = Metric(
     value_format_name="usd",
     drill_fields=["order_id", "customer_id", "order_date"],
     non_additive_dimension="customer_id",
-    default_time_dimension="order_date",
-    default_grain="day"
 )
 
 # With inheritance
@@ -386,8 +384,6 @@ extended_revenue = Metric(
 - **value_format_name**: Named format (e.g., `"usd"`, `"percent"`)
 - **drill_fields**: List of field names for drill-down
 - **non_additive_dimension**: Dimension this metric cannot be summed across
-- **default_time_dimension**: Default time dimension for this metric
-- **default_grain**: Default time granularity (`hour`, `day`, `week`, `month`, `quarter`, `year`)
 
 #### Inheritance
 

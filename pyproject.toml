@@ -65,6 +65,10 @@ spark = [
     "pure-sasl>=0.6.2",  # Pure Python SASL for PyHive (no C deps)
     "pyarrow>=14.0.0",  # For Arrow support
 ]
+lsp = [
+    "lsprotocol>=2025.0.0",
+    "pygls>=2.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]

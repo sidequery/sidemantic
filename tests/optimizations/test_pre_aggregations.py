@@ -445,7 +445,7 @@ def test_preagg_granularity_conversion(layer):
 
     # Should use pre-aggregation and convert granularity
     assert "orders_preagg_daily" in sql
-    assert "DATE_TRUNC('month'" in sql
+    assert "DATE_TRUNC('month'" in sql or "DATE_TRUNC('MONTH'" in sql
 
 
 def test_preagg_disabled_by_default(layer):

@@ -3,6 +3,14 @@
 import re
 
 
+def _date_trunc(granularity: str, column_expr: str, dialect: str) -> str:
+    """Generate dialect-specific DATE_TRUNC expression."""
+    if dialect == "bigquery":
+        return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
+    else:
+        return f"DATE_TRUNC('{granularity}', {column_expr})"
+
+
 class RelativeDateRange:
     """Helper for parsing and converting relative date expressions to SQL.
 
@@ -15,40 +23,41 @@ class RelativeDateRange:
     - "today", "yesterday", "tomorrow"
     """
 
-    PATTERNS = {
-        # Today/yesterday/tomorrow
+    # Patterns that don't need DATE_TRUNC
+    SIMPLE_PATTERNS = {
         r"^today$": lambda: "CURRENT_DATE",
         r"^yesterday$": lambda: "CURRENT_DATE - 1",
         r"^tomorrow$": lambda: "CURRENT_DATE + 1",
-        # Last N days/weeks/months/years
         r"^last (\d+) day(?:s)?$": lambda n: f"CURRENT_DATE - {n}",
         r"^last (\d+) week(?:s)?$": lambda n: f"CURRENT_DATE - {int(n) * 7}",
-        r"^last (\d+) month(?:s)?$": lambda n: f"DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '{n} months'",
-        r"^last (\d+) year(?:s)?$": lambda n: f"DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '{n} years'",
-        # This/last/next week
-        r"^this week$": lambda: "DATE_TRUNC('week', CURRENT_DATE)",
-        r"^last week$": lambda: "DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '1 week'",
-        r"^next week$": lambda: "DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '1 week'",
-        # This/last/next month
-        r"^this month$": lambda: "DATE_TRUNC('month', CURRENT_DATE)",
-        r"^last month$": lambda: "DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'",
-        r"^next month$": lambda: "DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'",
-        # This/last/next quarter
-        r"^this quarter$": lambda: "DATE_TRUNC('quarter', CURRENT_DATE)",
-        r"^last quarter$": lambda: "DATE_TRUNC('quarter', CURRENT_DATE) - INTERVAL '3 months'",
-        r"^next quarter$": lambda: "DATE_TRUNC('quarter', CURRENT_DATE) + INTERVAL '3 months'",
-        # This/last/next year
-        r"^this year$": lambda: "DATE_TRUNC('year', CURRENT_DATE)",
-        r"^last year$": lambda: "DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'",
-        r"^next year$": lambda: "DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'",
+    }
+
+    # Patterns that need DATE_TRUNC - return (granularity, template) tuples
+    # Template uses {trunc} as placeholder for the DATE_TRUNC expression
+    TRUNC_PATTERNS = {
+        r"^last (\d+) month(?:s)?$": ("month", lambda n: "{trunc} - INTERVAL '" + n + " months'"),
+        r"^last (\d+) year(?:s)?$": ("year", lambda n: "{trunc} - INTERVAL '" + n + " years'"),
+        r"^this week$": ("week", lambda: "{trunc}"),
+        r"^last week$": ("week", lambda: "{trunc} - INTERVAL '1 week'"),
+        r"^next week$": ("week", lambda: "{trunc} + INTERVAL '1 week'"),
+        r"^this month$": ("month", lambda: "{trunc}"),
+        r"^last month$": ("month", lambda: "{trunc} - INTERVAL '1 month'"),
+        r"^next month$": ("month", lambda: "{trunc} + INTERVAL '1 month'"),
+        r"^this quarter$": ("quarter", lambda: "{trunc}"),
+        r"^last quarter$": ("quarter", lambda: "{trunc} - INTERVAL '3 months'"),
+        r"^next quarter$": ("quarter", lambda: "{trunc} + INTERVAL '3 months'"),
+        r"^this year$": ("year", lambda: "{trunc}"),
+        r"^last year$": ("year", lambda: "{trunc} - INTERVAL '1 year'"),
+        r"^next year$": ("year", lambda: "{trunc} + INTERVAL '1 year'"),
     }
 
     @classmethod
-    def parse(cls, expr: str) -> str | None:
+    def parse(cls, expr: str, dialect: str = "duckdb") -> str | None:
         """Parse a relative date expression to SQL.
 
         Args:
             expr: Relative date expression (e.g., "last 7 days")
+            dialect: SQL dialect for DATE_TRUNC syntax (default: duckdb)
 
         Returns:
             SQL date expression or None if not recognized
@@ -61,24 +70,36 @@ class RelativeDateRange:
         """
         expr = expr.lower().strip()
 
-        for pattern, sql_func in cls.PATTERNS.items():
+        # Check simple patterns first
+        for pattern, sql_func in cls.SIMPLE_PATTERNS.items():
             match = re.match(pattern, expr)
             if match:
                 if match.groups():
-                    # Extract numeric argument
                     return sql_func(match.group(1))
                 else:
                     return sql_func()
 
+        # Check patterns that need DATE_TRUNC
+        for pattern, (granularity, template_func) in cls.TRUNC_PATTERNS.items():
+            match = re.match(pattern, expr)
+            if match:
+                trunc = _date_trunc(granularity, "CURRENT_DATE", dialect)
+                if match.groups():
+                    template = template_func(match.group(1))
+                else:
+                    template = template_func()
+                return template.replace("{trunc}", trunc)
+
         return None
 
     @classmethod
-    def to_range(cls, expr: str, column: str = "date_col") -> str | None:
+    def to_range(cls, expr: str, column: str = "date_col", dialect: str = "duckdb") -> str | None:
         """Convert relative date expression to a SQL range filter.
 
         Args:
             expr: Relative date expression
             column: Column name to filter on
+            dialect: SQL dialect for DATE_TRUNC syntax (default: duckdb)
 
         Returns:
             SQL WHERE clause expression or None if not recognized
@@ -93,13 +114,13 @@ class RelativeDateRange:
 
         # For "last N days/weeks" - use >= comparison
         if expr.startswith("last ") and any(unit in expr for unit in ["day", "week"]):
-            sql_expr = cls.parse(expr)
+            sql_expr = cls.parse(expr, dialect)
             if sql_expr:
                 return f"{column} >= {sql_expr}"
 
         # For "this/last month/quarter/year" - use range
         if any(word in expr for word in ["month", "quarter", "year"]) and expr.startswith(("this ", "last ", "next ")):
-            start_sql = cls.parse(expr)
+            start_sql = cls.parse(expr, dialect)
             if start_sql:
                 # Determine the interval to add for end date
                 if "month" in expr:
@@ -117,7 +138,7 @@ class RelativeDateRange:
 
         # For single day expressions
         if expr in ["today", "yesterday", "tomorrow"]:
-            sql_expr = cls.parse(expr)
+            sql_expr = cls.parse(expr, dialect)
             if sql_expr:
                 return f"{column} = {sql_expr}"
 

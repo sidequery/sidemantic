@@ -533,9 +533,8 @@ class OmniAdapter(BaseAdapter):
                 time_offset = metric.time_offset or self._comparison_type_to_offset(metric.comparison_type)
 
                 # Find the time dimension to apply the offset to
-                # Typically this would be the model's default time dimension
-                # For now, use a generic name - user may need to adjust
-                time_field = metric.default_time_dimension or "created_at"
+                # Use the model's default time dimension
+                time_field = model.default_time_dimension or "created_at"
 
                 measure_def["filters"] = {
                     time_field: {

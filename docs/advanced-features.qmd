@@ -254,15 +254,30 @@ metrics:
     non_additive_dimension: "date"  # Don't sum averages across time!
 ```
 
-### Default Dimensions
+### Default Time Dimension
 
-Specify default time dimension and granularity:
+Specify default time dimension and granularity at the model level. When querying metrics from this model without explicitly selecting a time dimension, the default will be auto-included:
 
 ```yaml
-metrics:
-  - name: daily_revenue
-    agg: sum
-    sql: amount
+models:
+  - name: orders
+    table: orders_table
     default_time_dimension: "order_date"
-    default_grain: "day"
+    default_grain: "month"
+    dimensions:
+      - name: order_date
+        type: time
+        granularity: day
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+```
+
+```python
+# Auto-includes orders.order_date__month
+layer.compile(metrics=["orders.revenue"])
+
+# Override with different granularity
+layer.compile(metrics=["orders.revenue"], dimensions=["orders.order_date__week"])
 ```

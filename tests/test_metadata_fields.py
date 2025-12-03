@@ -50,29 +50,41 @@ def test_metric_non_additive_dimension():
     assert distinct_metric.non_additive_dimension == "order_date"
 
 
-def test_metric_default_time_dimension_and_grain():
-    """Test default_time_dimension and default_grain on Metric."""
-    metric = Metric(
-        name="daily_revenue",
-        agg="sum",
-        sql="amount",
+def test_model_default_time_dimension_and_grain():
+    """Test default_time_dimension and default_grain on Model."""
+    model = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
         default_time_dimension="order_date",
         default_grain="day",
+        dimensions=[
+            Dimension(name="order_date", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
     )
 
-    assert metric.default_time_dimension == "order_date"
-    assert metric.default_grain == "day"
+    assert model.default_time_dimension == "order_date"
+    assert model.default_grain == "day"
 
-    # Monthly metric
-    monthly_metric = Metric(
-        name="monthly_revenue",
-        agg="sum",
-        sql="amount",
+    # Monthly model
+    monthly_model = Model(
+        name="monthly_orders",
+        table="orders_table",
+        primary_key="order_id",
         default_time_dimension="order_date",
         default_grain="month",
+        dimensions=[
+            Dimension(name="order_date", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
     )
 
-    assert monthly_metric.default_grain == "month"
+    assert monthly_model.default_grain == "month"
 
 
 def test_all_metadata_fields_together():
@@ -84,8 +96,6 @@ def test_all_metadata_fields_together():
         format="$#,##0.00",
         value_format_name="usd",
         drill_fields=["customer.name", "product.name"],
-        default_time_dimension="order_date",
-        default_grain="day",
         description="Total revenue from completed orders",
         label="Revenue (USD)",
     )
@@ -94,8 +104,6 @@ def test_all_metadata_fields_together():
     assert metric.format == "$#,##0.00"
     assert metric.value_format_name == "usd"
     assert metric.drill_fields == ["customer.name", "product.name"]
-    assert metric.default_time_dimension == "order_date"
-    assert metric.default_grain == "day"
     assert metric.description == "Total revenue from completed orders"
     assert metric.label == "Revenue (USD)"
 
@@ -106,9 +114,12 @@ def test_metadata_fields_in_model(layer):
         name="orders",
         table="orders_table",
         primary_key="order_id",
+        default_time_dimension="order_date",
+        default_grain="day",
         dimensions=[
             Dimension(name="status", type="categorical", label="Order Status"),
             Dimension(name="discount_pct", type="numeric", format="0.0%", value_format_name="percent"),
+            Dimension(name="order_date", type="time", granularity="day"),
         ],
         metrics=[
             Metric(
@@ -118,8 +129,6 @@ def test_metadata_fields_in_model(layer):
                 format="$#,##0.00",
                 value_format_name="usd",
                 drill_fields=["status", "customer_id"],
-                default_time_dimension="order_date",
-                default_grain="day",
             ),
             Metric(
                 name="avg_order_value",
@@ -139,7 +148,10 @@ def test_metadata_fields_in_model(layer):
     assert revenue is not None
     assert revenue.format == "$#,##0.00"
     assert revenue.drill_fields == ["status", "customer_id"]
-    assert revenue.default_grain == "day"
+
+    # Verify model-level defaults
+    assert orders.default_time_dimension == "order_date"
+    assert orders.default_grain == "day"
 
     avg_value = orders.get_metric("avg_order_value")
     assert avg_value is not None
@@ -160,22 +172,35 @@ def test_metadata_fields_optional():
     assert metric.value_format_name is None
     assert metric.drill_fields is None
     assert metric.non_additive_dimension is None
-    assert metric.default_time_dimension is None
-    assert metric.default_grain is None
 
     dimension = Dimension(name="status", type="categorical")
 
     assert dimension.format is None
     assert dimension.value_format_name is None
 
+    # Model-level defaults are also optional
+    model = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        metrics=[metric],
+    )
+    assert model.default_time_dimension is None
+    assert model.default_grain is None
+
 
 def test_default_grain_validation():
-    """Test default_grain accepts valid time granularities."""
+    """Test default_grain accepts valid time granularities on Model."""
     valid_grains = ["hour", "day", "week", "month", "quarter", "year"]
 
     for grain in valid_grains:
-        metric = Metric(name="revenue", agg="sum", sql="amount", default_grain=grain)
-        assert metric.default_grain == grain
+        model = Model(
+            name="orders",
+            table="orders_table",
+            primary_key="order_id",
+            default_grain=grain,
+        )
+        assert model.default_grain == grain
 
 
 def test_metadata_survives_query_compilation(layer):

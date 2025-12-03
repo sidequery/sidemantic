@@ -16,6 +16,8 @@ def test_metadata_roundtrip_sidemantic_adapter():
         table="orders_table",
         primary_key="order_id",
         description="Order data",
+        default_time_dimension="created_at",
+        default_grain="day",
         dimensions=[
             Dimension(
                 name="status",
@@ -44,8 +46,6 @@ def test_metadata_roundtrip_sidemantic_adapter():
                 format="$#,##0.00",
                 value_format_name="usd",
                 drill_fields=["status", "customer_id"],
-                default_time_dimension="created_at",
-                default_grain="day",
             ),
             Metric(
                 name="avg_order_value",
@@ -119,8 +119,10 @@ def test_metadata_roundtrip_sidemantic_adapter():
     assert revenue.format == "$#,##0.00"
     assert revenue.value_format_name == "usd"
     assert revenue.drill_fields == ["status", "customer_id"]
-    assert revenue.default_time_dimension == "created_at"
-    assert revenue.default_grain == "day"
+
+    # Verify model-level default_time_dimension
+    assert imported.default_time_dimension == "created_at"
+    assert imported.default_grain == "day"
 
     avg_value = imported.get_metric("avg_order_value")
     assert avg_value is not None
@@ -219,7 +221,10 @@ def test_empty_metadata_roundtrip():
     user_count = imported.get_metric("user_count")
     assert user_count.format is None
     assert user_count.drill_fields is None
-    assert user_count.default_grain is None
+
+    # default_time_dimension is now on model, not metric
+    assert imported.default_time_dimension is None
+    assert imported.default_grain is None
 
     status = imported.get_dimension("status")
     assert status.format is None

@@ -159,6 +159,11 @@ class MetricFlowAdapter(BaseAdapter):
         # Parse inheritance
         extends = meta.get("extends")
 
+        # Parse default time dimension (MetricFlow uses defaults.agg_time_dimension)
+        defaults = model_def.get("defaults", {})
+        default_time_dimension = defaults.get("agg_time_dimension")
+        default_grain = meta.get("default_grain")
+
         return Model(
             name=name,
             table=table,
@@ -169,6 +174,8 @@ class MetricFlowAdapter(BaseAdapter):
             metrics=measures,
             segments=segments,
             extends=extends,
+            default_time_dimension=default_time_dimension,
+            default_grain=default_grain,
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -258,8 +265,6 @@ class MetricFlowAdapter(BaseAdapter):
         format_str = meta.get("format")
         value_format_name = meta.get("value_format_name")
         drill_fields = meta.get("drill_fields")
-        default_time_dimension = meta.get("default_time_dimension")
-        default_grain = meta.get("default_grain")
 
         # Parse non_additive_dimension
         non_additive = measure_def.get("non_additive_dimension")
@@ -282,8 +287,6 @@ class MetricFlowAdapter(BaseAdapter):
             value_format_name=value_format_name,
             drill_fields=drill_fields,
             non_additive_dimension=non_additive_dimension,
-            default_time_dimension=default_time_dimension,
-            default_grain=default_grain,
         )
 
     def _parse_metric(self, metric_def: dict) -> Metric | None:
@@ -543,14 +546,15 @@ class MetricFlowAdapter(BaseAdapter):
                     measure_def["meta"]["drill_fields"] = measure.drill_fields
                 if measure.non_additive_dimension:
                     measure_def["non_additive_dimension"] = {"name": measure.non_additive_dimension}
-                if measure.default_time_dimension:
-                    measure_def["meta"] = measure_def.get("meta", {})
-                    measure_def["meta"]["default_time_dimension"] = measure.default_time_dimension
-                if measure.default_grain:
-                    measure_def["meta"] = measure_def.get("meta", {})
-                    measure_def["meta"]["default_grain"] = measure.default_grain
 
                 result["measures"].append(measure_def)
+
+        # Export model-level default_time_dimension
+        if model.default_time_dimension:
+            result["defaults"] = {"agg_time_dimension": model.default_time_dimension}
+            if model.default_grain:
+                result["meta"] = result.get("meta", {})
+                result["meta"]["default_grain"] = model.default_grain
 
         # Export segments (as meta since MetricFlow doesn't have native segment support)
         if model.segments:

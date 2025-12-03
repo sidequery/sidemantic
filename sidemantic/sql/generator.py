@@ -54,6 +54,56 @@ class SQLGenerator:
         date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
         return date_trunc.sql(dialect=self.dialect)
 
+    def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
+        """Auto-include default_time_dimension from models if not already present.
+
+        If a model has default_time_dimension set and no time dimension from that
+        model is already in the dimensions list, add it with the default_grain.
+
+        Args:
+            metrics: List of metric references
+            dimensions: List of dimension references
+
+        Returns:
+            Updated dimensions list with default time dimensions added
+        """
+        # Extract which models already have time dimensions in the query
+        models_with_time_dims = set()
+        for dim_ref in dimensions:
+            if "." in dim_ref:
+                model_name, dim_part = dim_ref.split(".", 1)
+                # Strip granularity suffix if present
+                dim_name = dim_part.split("__")[0]
+                model = self.graph.get_model(model_name)
+                if model:
+                    dim = model.get_dimension(dim_name)
+                    if dim and dim.type == "time":
+                        models_with_time_dims.add(model_name)
+
+        # Check each model referenced by metrics for default_time_dimension
+        added_dims = []
+        models_checked = set()
+        for metric_ref in metrics:
+            if "." in metric_ref:
+                model_name, _ = metric_ref.split(".")
+                if model_name in models_checked:
+                    continue
+                models_checked.add(model_name)
+
+                model = self.graph.get_model(model_name)
+                if model and model.default_time_dimension:
+                    # Only add if this model doesn't already have a time dimension
+                    if model_name not in models_with_time_dims:
+                        time_dim_ref = f"{model_name}.{model.default_time_dimension}"
+                        # Apply default_grain if specified
+                        if model.default_grain:
+                            time_dim_ref = f"{time_dim_ref}__{model.default_grain}"
+                        if time_dim_ref not in dimensions and time_dim_ref not in added_dims:
+                            added_dims.append(time_dim_ref)
+                        models_with_time_dims.add(model_name)
+
+        return dimensions + added_dims
+
     def generate_view(
         self,
         view_name: str,
@@ -114,11 +164,14 @@ class SQLGenerator:
             SQL query string
         """
         metrics = metrics or []
-        dimensions = dimensions or []
+        dimensions = list(dimensions) if dimensions else []
         filters = filters or []
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+
+        # Auto-include default_time_dimension from metrics if not already present
+        dimensions = self._apply_default_time_dimensions(metrics, dimensions)
 
         # Resolve segments to SQL filters
         segment_filters = self._resolve_segments(segments)

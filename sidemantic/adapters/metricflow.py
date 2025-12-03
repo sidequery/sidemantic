@@ -356,6 +356,12 @@ class MetricFlowAdapter(BaseAdapter):
         window = None
         grain_to_date = None
         if metric_type == "cumulative":
+            # Get the base measure reference
+            measure_def = type_params.get("measure", {})
+            if isinstance(measure_def, dict):
+                expr = measure_def.get("name")
+            else:
+                expr = measure_def
             # Window can be directly in type_params
             window = type_params.get("window")
             grain_to_date = type_params.get("grain_to_date")

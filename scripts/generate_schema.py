@@ -61,11 +61,11 @@ if __name__ == "__main__":
     # Write to root (for local development)
     output_path = root / "sidemantic-schema.json"
     with open(output_path, "w") as f:
-        json.dump(schema, f, indent=2)
+        json.dump(schema, f, indent=2, sort_keys=True)
     print(f"Generated {output_path}")
 
     # Also copy to docs for publishing to sidemantic.com/schema.json
     docs_path = root / "docs" / "schema.json"
     with open(docs_path, "w") as f:
-        json.dump(schema, f, indent=2)
+        json.dump(schema, f, indent=2, sort_keys=True)
     print(f"Generated {docs_path}")

@@ -556,7 +556,7 @@ This table shows which Sidemantic features are supported when importing from oth
 
 ## Database Support
 
-Sidemantic supports multiple production-ready databases:
+Sidemantic supports multiple databases:
 
 | Database | Status | Installation |
 |----------|:------:|--------------|

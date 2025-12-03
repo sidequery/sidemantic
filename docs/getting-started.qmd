@@ -212,21 +212,16 @@ metrics:
     window: "7 days"
 ```
 
-## Editor Autocomplete
+## Editor Autocomplete (YAML)
 
-Generate JSON Schema for IDE support:
-
-```bash
-uv run python -m sidemantic.schema
-```
-
-This creates `sidemantic-schema.json`. Add to your YAML:
+For YAML definitions, add this comment to get autocomplete in VS Code, IntelliJ, and other editors:
 
 ```yaml
-# yaml-language-server: $schema=./sidemantic-schema.json
+# yaml-language-server: $schema=https://sidemantic.com/schema.json
+models:
+  - name: orders
+    # ... autocomplete works here!
 ```
-
-Now get autocomplete in VS Code, IntelliJ, and other editors!
 
 ## Next Steps
 

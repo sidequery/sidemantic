@@ -159,3 +159,87 @@ def test_metric_filter_with_time_dimension(layer):
     # Should contain both filters
     assert "orders_cte.status = 'completed'" in sql
     assert "CURRENT_DATE - 30" in sql or "CURRENT_DATE-30" in sql  # SQLGlot might format differently
+
+
+def test_metric_filter_column_not_in_query_dimensions(layer):
+    """Test that metric filter columns are included in CTE even when not in query dimensions.
+
+    This is a regression test for the bug where filters like:
+        filters: ["state IN ('confirmed', 'completed')"]
+    would fail because the 'state' column wasn't added to the CTE SELECT list
+    when 'state' wasn't explicitly requested as a dimension in the query.
+    """
+    bookings = Model(
+        name="bookings",
+        table="wide_bookings",
+        primary_key="booking_id",
+        dimensions=[
+            Dimension(name="state", type="categorical"),
+            Dimension(name="region", type="categorical"),
+        ],
+        metrics=[
+            Metric(
+                name="gross_booking_value",
+                agg="sum",
+                sql="gross_booking_value",
+                filters=["{model}.state IN ('confirmed', 'completed', 'cancelled')"],
+            ),
+        ],
+    )
+
+    layer.add_model(bookings)
+
+    # Query the metric WITHOUT including 'state' in dimensions
+    # This should still work because the filter needs 'state' in the CTE
+    sql = layer.compile(metrics=["bookings.gross_booking_value"], dimensions=["bookings.region"])
+
+    print("Generated SQL:")
+    print(sql)
+
+    # The 'state' column must be in the CTE for the filter to work
+    # Check that state appears in the CTE SELECT (before FROM)
+    cte_match = sql.split("FROM")[0]  # Get the CTE SELECT part
+    assert "state" in cte_match, f"'state' column should be in CTE SELECT for filter to work. CTE: {cte_match}"
+
+    # The filter should be in the WHERE clause
+    assert (
+        "state IN ('confirmed', 'completed', 'cancelled')" in sql
+        or "state IN ('cancelled', 'completed', 'confirmed')" in sql
+    )  # Order might vary
+
+
+def test_metric_filter_multiple_columns_not_in_dimensions(layer):
+    """Test multiple filter columns are included in CTE when not in query dimensions."""
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical"),
+            Dimension(name="payment_method", type="categorical"),
+            Dimension(name="region", type="categorical"),
+        ],
+        metrics=[
+            Metric(
+                name="card_completed_revenue",
+                agg="sum",
+                sql="amount",
+                filters=[
+                    "{model}.status = 'completed'",
+                    "{model}.payment_method IN ('visa', 'mastercard')",
+                ],
+            ),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    # Query with only 'region' dimension - both status and payment_method need to be in CTE
+    sql = layer.compile(metrics=["orders.card_completed_revenue"], dimensions=["orders.region"])
+
+    print("Generated SQL:")
+    print(sql)
+
+    cte_match = sql.split("FROM")[0]
+    assert "status" in cte_match, f"'status' should be in CTE SELECT. CTE: {cte_match}"
+    assert "payment_method" in cte_match, f"'payment_method' should be in CTE SELECT. CTE: {cte_match}"

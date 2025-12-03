@@ -242,10 +242,14 @@ class SQLGenerator:
             except Exception:
                 pass
 
+        # Extract columns needed for metric-level filters (before building CTEs)
+        metric_filter_cols_by_model = self._extract_metric_filter_columns(metrics)
+
         # Build CTEs for all models with pushed-down filters
         cte_sqls = []
         for model_name in all_models:
             model_filters = pushdown_filters.get(model_name, [])
+            metric_filter_cols = metric_filter_cols_by_model.get(model_name)
             cte_sql = self._build_model_cte(
                 model_name,
                 parsed_dims,
@@ -253,6 +257,7 @@ class SQLGenerator:
                 model_filters if model_filters else None,
                 order_by=order_by,
                 all_models=all_models,
+                metric_filter_columns=metric_filter_cols,
             )
             cte_sqls.append(cte_sql)
 
@@ -472,12 +477,70 @@ class SQLGenerator:
 
         return pushdown_filters, main_query_filters
 
+    def _extract_metric_filter_columns(self, metrics: list[str]) -> dict[str, set[str]]:
+        """Extract columns referenced in metric-level filters.
+
+        Args:
+            metrics: List of metric references (e.g., ["orders.revenue", "bookings.gross_value"])
+
+        Returns:
+            Dict mapping model_name -> set of column names needed for metric filters
+        """
+        columns_by_model: dict[str, set[str]] = {}
+
+        for metric_ref in metrics:
+            if "." in metric_ref:
+                # model.measure format
+                model_name, measure_name = metric_ref.split(".")
+                model = self.graph.get_model(model_name)
+                if model:
+                    measure = model.get_metric(measure_name)
+                    if measure and measure.filters:
+                        if model_name not in columns_by_model:
+                            columns_by_model[model_name] = set()
+                        for f in measure.filters:
+                            # Replace {model} placeholder for parsing
+                            aliased_filter = f.replace("{model}", f"{model_name}_cte")
+                            try:
+                                parsed = sqlglot.parse_one(aliased_filter, dialect=self.dialect)
+                                for col in parsed.find_all(exp.Column):
+                                    if col.table and col.table.replace("_cte", "") == model_name:
+                                        columns_by_model[model_name].add(col.name)
+                            except Exception:
+                                pass
+            else:
+                # Just metric name - try graph-level metric
+                try:
+                    metric = self.graph.get_metric(metric_ref)
+                    if metric and metric.filters:
+                        deps = metric.get_dependencies(self.graph)
+                        for dep in deps:
+                            if "." in dep:
+                                dep_model_name = dep.split(".")[0]
+                                if dep_model_name not in columns_by_model:
+                                    columns_by_model[dep_model_name] = set()
+                                for f in metric.filters:
+                                    aliased_filter = f.replace("{model}", f"{dep_model_name}_cte")
+                                    try:
+                                        parsed = sqlglot.parse_one(aliased_filter, dialect=self.dialect)
+                                        for col in parsed.find_all(exp.Column):
+                                            if col.table and col.table.replace("_cte", "") == dep_model_name:
+                                                columns_by_model[dep_model_name].add(col.name)
+                                    except Exception:
+                                        pass
+                                break  # Only use first dependency's model
+                except KeyError:
+                    pass
+
+        return columns_by_model
+
     def _find_needed_dimensions(
         self,
         model_name: str,
         dimensions: list[tuple[str, str | None]],
         filters: list[str] | None,
         order_by: list[str] | None,
+        metric_filter_columns: set[str] | None = None,
     ) -> set[str]:
         """Find which dimensions from this model are actually needed.
 
@@ -486,6 +549,7 @@ class SQLGenerator:
             dimensions: Parsed dimension references from query
             filters: Filter expressions
             order_by: Order by fields
+            metric_filter_columns: Columns needed for metric-level filters
 
         Returns:
             Set of dimension names needed for this model
@@ -519,6 +583,10 @@ class SQLGenerator:
                     if model_part == model_name:
                         needed.add(dim_part)
 
+        # Columns needed for metric-level filters
+        if metric_filter_columns:
+            needed.update(metric_filter_columns)
+
         return needed
 
     def _build_model_cte(
@@ -529,6 +597,7 @@ class SQLGenerator:
         filters: list[str] | None = None,
         order_by: list[str] | None = None,
         all_models: set[str] | None = None,
+        metric_filter_columns: set[str] | None = None,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -539,6 +608,7 @@ class SQLGenerator:
             filters: Filters to push down into this CTE (optional)
             order_by: Order by fields (for determining needed dimensions)
             all_models: All models in query (for determining if joins needed)
+            metric_filter_columns: Columns needed for metric-level filters
 
         Returns:
             CTE SQL string
@@ -548,7 +618,9 @@ class SQLGenerator:
         needs_joins = len(all_models) > 1
 
         # Find which dimensions are actually needed
-        needed_dimensions = self._find_needed_dimensions(model_name, dimensions, filters, order_by)
+        needed_dimensions = self._find_needed_dimensions(
+            model_name, dimensions, filters, order_by, metric_filter_columns
+        )
 
         # Build SELECT columns
         select_cols = []

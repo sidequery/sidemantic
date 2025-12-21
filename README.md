@@ -44,8 +44,10 @@ rows = result.fetchall()
 ## Demos
 
 Colab:
-- [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg) SQL model definitions + DuckDB](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/sidemantic_sql_duckdb_demo.ipynb)
-- [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg) LookML multi-entity + DuckDB + chart](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/lookml_multi_entity_duckdb_demo.ipynb)
+| Demo | Open in Colab |
+|---|---|
+| SQL model definitions + DuckDB | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/sidemantic_sql_duckdb_demo.ipynb) |
+| LookML multi-entity + DuckDB + chart | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/lookml_multi_entity_duckdb_demo.ipynb) |
 
 Local notebooks:
 - `examples/sidemantic_sql_duckdb_demo.ipynb`

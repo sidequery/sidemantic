@@ -556,6 +556,45 @@
           "default": null,
           "description": "Time window for cumulative (e.g., '7 days')",
           "title": "Window"
+        },
+        "window_expression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Raw SQL expression for window function (e.g., 'AVG(total_bids) FILTER (WHERE active)')",
+          "title": "Window Expression"
+        },
+        "window_frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Window frame clause (e.g., 'RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW')",
+          "title": "Window Frame"
+        },
+        "window_order": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Window ORDER BY column (defaults to model's default_time_dimension)",
+          "title": "Window Order"
         }
       },
       "required": [
@@ -1347,6 +1386,45 @@
             "default": null,
             "description": "Time window for cumulative (e.g., '7 days')",
             "title": "Window"
+          },
+          "window_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Raw SQL expression for window function (e.g., 'AVG(total_bids) FILTER (WHERE active)')",
+            "title": "Window Expression"
+          },
+          "window_frame": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Window frame clause (e.g., 'RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW')",
+            "title": "Window Frame"
+          },
+          "window_order": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Window ORDER BY column (defaults to model's default_time_dimension)",
+            "title": "Window Order"
           }
         },
         "required": [
@@ -1917,6 +1995,45 @@
                 "default": null,
                 "description": "Time window for cumulative (e.g., '7 days')",
                 "title": "Window"
+              },
+              "window_expression": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Raw SQL expression for window function (e.g., 'AVG(total_bids) FILTER (WHERE active)')",
+                "title": "Window Expression"
+              },
+              "window_frame": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Window frame clause (e.g., 'RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW')",
+                "title": "Window Frame"
+              },
+              "window_order": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Window ORDER BY column (defaults to model's default_time_dimension)",
+                "title": "Window Order"
               }
             },
             "required": [

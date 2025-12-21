@@ -171,5 +171,182 @@ def test_cumulative_with_regular_metric(timeseries_db, layer):
     assert df["running_total"].iloc[2] == 450.00
 
 
+def test_rolling_average(timeseries_db, layer):
+    """Test rolling average using agg: avg with cumulative type."""
+    layer.conn = timeseries_db
+
+    # Define model
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
+        metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
+    )
+    layer.add_model(orders)
+
+    # Define 3-day rolling average using agg field
+    rolling_avg = Metric(
+        name="rolling_3day_avg",
+        type="cumulative",
+        agg="avg",
+        sql="orders.daily_revenue",
+        window="2 days",  # Current + 2 preceding = 3 days total
+    )
+    layer.add_metric(rolling_avg)
+
+    # Query
+    result = layer.query(
+        metrics=["orders.daily_revenue", "rolling_3day_avg"],
+        dimensions=["orders.order_date"],
+        order_by=["orders.order_date"],
+    )
+
+    df = result.df()
+    print("\nRolling Average Results:")
+    print(df)
+
+    # Verify rolling average
+    assert len(df) == 5
+    # Day 1: just 100 / 1 = 100
+    assert df["rolling_3day_avg"].iloc[0] == 100.00
+    # Day 2: (100 + 150) / 2 = 125
+    assert df["rolling_3day_avg"].iloc[1] == 125.00
+    # Day 3: (100 + 150 + 200) / 3 = 150
+    assert df["rolling_3day_avg"].iloc[2] == 150.00
+    # Day 4: (150 + 200 + 120) / 3 = 156.67 (drops day 1)
+    assert abs(df["rolling_3day_avg"].iloc[3] - 156.67) < 0.1
+    # Day 5: (200 + 120 + 180) / 3 = 166.67 (drops days 1-2)
+    assert abs(df["rolling_3day_avg"].iloc[4] - 166.67) < 0.1
+
+
+def test_rolling_average_parsed_from_sql(timeseries_db, layer):
+    """Test rolling average where AVG() is parsed from sql field."""
+    layer.conn = timeseries_db
+
+    # Define model
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
+        metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
+    )
+    layer.add_model(orders)
+
+    # Define rolling average with AVG() in sql - should be parsed to agg=avg
+    rolling_avg = Metric(
+        name="rolling_avg_parsed",
+        type="cumulative",
+        sql="AVG(orders.daily_revenue)",  # Should parse to agg=avg, sql=orders.daily_revenue
+        window="2 days",
+    )
+    layer.add_metric(rolling_avg)
+
+    # Verify the metric was parsed correctly
+    assert rolling_avg.agg == "avg"
+    assert rolling_avg.sql == "orders.daily_revenue"
+
+    # Query
+    result = layer.query(
+        metrics=["orders.daily_revenue", "rolling_avg_parsed"],
+        dimensions=["orders.order_date"],
+        order_by=["orders.order_date"],
+    )
+
+    df = result.df()
+    print("\nRolling Average (Parsed) Results:")
+    print(df)
+
+    # Verify results match explicit agg version
+    assert len(df) == 5
+    assert df["rolling_avg_parsed"].iloc[0] == 100.00
+    assert df["rolling_avg_parsed"].iloc[1] == 125.00
+
+
+def test_window_expression_passthrough(timeseries_db, layer):
+    """Test arbitrary window expression using window_expression field."""
+    layer.conn = timeseries_db
+
+    # Define model
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
+        metrics=[Metric(name="daily_revenue", agg="sum", sql="order_amount")],
+    )
+    layer.add_model(orders)
+
+    # Define metric with raw window expression
+    custom_window = Metric(
+        name="custom_window_metric",
+        type="cumulative",
+        window_expression="AVG(base.daily_revenue)",
+        window_frame="RANGE BETWEEN INTERVAL 2 DAY PRECEDING AND CURRENT ROW",
+        window_order="order_date",
+    )
+    layer.add_metric(custom_window)
+
+    # Query
+    result = layer.query(
+        metrics=["orders.daily_revenue", "custom_window_metric"],
+        dimensions=["orders.order_date"],
+        order_by=["orders.order_date"],
+    )
+
+    df = result.df()
+    print("\nWindow Expression Passthrough Results:")
+    print(df)
+
+    # Should produce same results as rolling average
+    assert len(df) == 5
+    assert df["custom_window_metric"].iloc[0] == 100.00
+
+
+def test_rolling_count(timeseries_db, layer):
+    """Test rolling count using agg: count."""
+    layer.conn = timeseries_db
+
+    # Define model with count metric
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_date", type="time", granularity="day", sql="order_date")],
+        metrics=[Metric(name="order_count", agg="count", sql="order_id")],
+    )
+    layer.add_model(orders)
+
+    # Define 3-day rolling count
+    rolling_count = Metric(
+        name="rolling_3day_count",
+        type="cumulative",
+        agg="count",
+        sql="orders.order_count",
+        window="2 days",
+    )
+    layer.add_metric(rolling_count)
+
+    # Query
+    result = layer.query(
+        metrics=["orders.order_count", "rolling_3day_count"],
+        dimensions=["orders.order_date"],
+        order_by=["orders.order_date"],
+    )
+
+    df = result.df()
+    print("\nRolling Count Results:")
+    print(df)
+
+    # Each day has 1 order, so rolling count should be 1, 2, 3, 3, 3
+    assert len(df) == 5
+    assert df["rolling_3day_count"].iloc[0] == 1
+    assert df["rolling_3day_count"].iloc[1] == 2
+    assert df["rolling_3day_count"].iloc[2] == 3
+    assert df["rolling_3day_count"].iloc[3] == 3
+    assert df["rolling_3day_count"].iloc[4] == 3
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

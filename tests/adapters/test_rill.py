@@ -89,5 +89,168 @@ def test_query_imported_rill_example():
     assert "GROUP BY" in sql.upper()
 
 
+def test_import_rill_with_window_function():
+    """Test importing Rill metrics view with window function definition."""
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    # Create a Rill YAML with window function
+    rill_yaml = {
+        "type": "metrics_view",
+        "name": "bids",  # Explicit name for the metrics view
+        "model": "bids_model",
+        "timeseries": "__time",
+        "smallest_time_grain": "hour",
+        "dimensions": [
+            {"name": "advertiser", "column": "advertiser_name"},
+        ],
+        "measures": [
+            {"name": "total_bids", "expression": "SUM(bid_cnt)"},
+            {
+                "name": "bids_7day_rolling_avg",
+                "expression": "AVG(total_bids)",
+                "requires": ["total_bids"],
+                "window": {
+                    "order": "__time",
+                    "frame": "RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW",
+                },
+            },
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(rill_yaml, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = RillAdapter()
+        graph = adapter.parse(temp_path)
+
+        assert "bids" in graph.models
+        model = graph.models["bids"]
+
+        # Verify window function metric was parsed
+        metric_names = [m.name for m in model.metrics]
+        assert "bids_7day_rolling_avg" in metric_names
+
+        # Find the window function metric
+        window_metric = next(m for m in model.metrics if m.name == "bids_7day_rolling_avg")
+
+        # Verify it was parsed as cumulative with window fields
+        assert window_metric.type == "cumulative"
+        assert window_metric.agg == "avg"
+        assert window_metric.window_order == "__time"
+        assert window_metric.window_frame == "RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW"
+    finally:
+        temp_path.unlink()
+
+
+def test_import_rill_format_preset():
+    """Test importing Rill metrics view with format_preset mapping."""
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    # Create a Rill YAML with format presets
+    rill_yaml = {
+        "type": "metrics_view",
+        "name": "sales",
+        "model": "sales_model",
+        "timeseries": "sale_date",
+        "dimensions": [
+            {"name": "region", "column": "region"},
+        ],
+        "measures": [
+            {"name": "revenue", "expression": "SUM(amount)", "format_preset": "currency_usd"},
+            {"name": "order_count", "expression": "COUNT(*)", "format_preset": "humanize"},
+            {"name": "conversion_rate", "expression": "SUM(conversions)/SUM(visits)", "format_preset": "percentage"},
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(rill_yaml, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = RillAdapter()
+        graph = adapter.parse(temp_path)
+
+        model = graph.models["sales"]
+
+        # Check format mapping
+        revenue = next(m for m in model.metrics if m.name == "revenue")
+        assert revenue.value_format_name == "usd"
+
+        order_count = next(m for m in model.metrics if m.name == "order_count")
+        assert order_count.value_format_name == "decimal_0"
+
+        conversion_rate = next(m for m in model.metrics if m.name == "conversion_rate")
+        assert conversion_rate.value_format_name == "percent"
+
+        # Check default_time_dimension was set
+        assert model.default_time_dimension == "sale_date"
+    finally:
+        temp_path.unlink()
+
+
+def test_export_rill_with_window_function():
+    """Test exporting Sidemantic model with window function to Rill format."""
+    import tempfile
+    from pathlib import Path
+
+    import yaml
+
+    from sidemantic import Dimension, Metric, Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    # Create model with window function metric
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        default_time_dimension="order_date",
+        default_grain="day",
+        dimensions=[
+            Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+            Dimension(name="status", type="categorical", sql="status"),
+        ],
+        metrics=[
+            Metric(name="daily_revenue", agg="sum", sql="amount"),
+            Metric(
+                name="rolling_avg_revenue",
+                type="cumulative",
+                agg="avg",
+                sql="daily_revenue",
+                window_order="order_date",
+                window_frame="RANGE BETWEEN INTERVAL 7 DAY PRECEDING AND CURRENT ROW",
+            ),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(model)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter = RillAdapter()
+        adapter.export(graph, tmpdir)
+
+        # Read exported file
+        output_file = Path(tmpdir) / "orders.yaml"
+        with open(output_file) as f:
+            exported = yaml.safe_load(f)
+
+        # Verify window function was exported
+        measures = exported.get("measures", [])
+        rolling_measure = next((m for m in measures if m["name"] == "rolling_avg_revenue"), None)
+
+        assert rolling_measure is not None
+        assert "window" in rolling_measure
+        assert rolling_measure["window"]["order"] == "order_date"
+        assert rolling_measure["window"]["frame"] == "RANGE BETWEEN INTERVAL 7 DAY PRECEDING AND CURRENT ROW"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

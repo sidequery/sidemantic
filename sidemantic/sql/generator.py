@@ -1637,7 +1637,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
         # Add cumulative metrics with window functions
         for m in cumulative_metrics:
             metric = self.graph.get_metric(m)
-            if not metric or not metric.sql:
+            if not metric or (not metric.sql and not metric.window_expression):
                 continue
 
             # Find the time dimension to order by
@@ -1656,9 +1656,22 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                                 time_dim = f"base.{dim_name}__{gran}"
                             break
 
+            # Allow window_order to override auto-detected time dimension
+            if metric.window_order:
+                time_dim = f"base.{metric.window_order}"
+
             if not time_dim:
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
 
+            # Option C: Raw window_expression passthrough
+            if metric.window_expression:
+                order_col = time_dim
+                frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+                window_expr = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame}) AS {m}"
+                select_exprs.append(window_expr)
+                continue
+
+            # Option A: Use agg + sql (supports AVG, COUNT, etc.)
             # Get base measure/metric to apply window function to
             base_ref = metric.sql
             if "." in base_ref:
@@ -1677,6 +1690,14 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                     # Fallback to the metric name itself
                     base_alias = base_ref
 
+            # Determine aggregation function (default to SUM for backwards compatibility)
+            agg_func = (metric.agg or "sum").upper()
+            if agg_func == "COUNT_DISTINCT":
+                agg_func = "COUNT"
+                base_col = f"DISTINCT base.{base_alias}"
+            else:
+                base_col = f"base.{base_alias}"
+
             # Build window function
             if metric.grain_to_date:
                 # Grain-to-date: MTD, QTD, YTD
@@ -1684,20 +1705,20 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 grain = metric.grain_to_date
                 partition = self._date_trunc(grain, time_dim)
 
-                window_expr = f"SUM(base.{base_alias}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
+                window_expr = f"{agg_func}({base_col}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
             elif metric.window:
                 # Parse window (e.g., "7 days")
                 window_parts = metric.window.split()
                 if len(window_parts) == 2:
                     num, unit = window_parts
                     # For date-based windows, use RANGE
-                    window_expr = f"SUM(base.{base_alias}) OVER (ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW) AS {m}"
+                    window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW) AS {m}"
                 else:
                     # Fallback to rows
-                    window_expr = f"SUM(base.{base_alias}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
+                    window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
             else:
                 # Running total (unbounded window)
-                window_expr = f"SUM(base.{base_alias}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
+                window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
 
             select_exprs.append(window_expr)
 

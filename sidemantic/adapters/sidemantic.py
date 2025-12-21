@@ -242,6 +242,7 @@ class SidemanticAdapter(BaseAdapter):
                 name=measure_def.get("name"),
                 agg=measure_def.get("agg"),
                 sql=measure_def.get("sql"),
+                type=measure_def.get("type"),
                 filters=measure_def.get("filters"),
                 description=measure_def.get("description"),
                 label=measure_def.get("label"),
@@ -249,6 +250,12 @@ class SidemanticAdapter(BaseAdapter):
                 value_format_name=measure_def.get("value_format_name"),
                 drill_fields=measure_def.get("drill_fields"),
                 non_additive_dimension=measure_def.get("non_additive_dimension"),
+                # Cumulative/window parameters
+                window=measure_def.get("window"),
+                grain_to_date=measure_def.get("grain_to_date"),
+                window_expression=measure_def.get("window_expression"),
+                window_frame=measure_def.get("window_frame"),
+                window_order=measure_def.get("window_order"),
             )
             measures.append(measure)
 
@@ -424,6 +431,19 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["drill_fields"] = measure.drill_fields
                 if measure.non_additive_dimension:
                     measure_def["non_additive_dimension"] = measure.non_additive_dimension
+                if measure.type:
+                    measure_def["type"] = measure.type
+                # Cumulative/window parameters
+                if measure.window:
+                    measure_def["window"] = measure.window
+                if measure.grain_to_date:
+                    measure_def["grain_to_date"] = measure.grain_to_date
+                if measure.window_expression:
+                    measure_def["window_expression"] = measure.window_expression
+                if measure.window_frame:
+                    measure_def["window_frame"] = measure.window_frame
+                if measure.window_order:
+                    measure_def["window_order"] = measure.window_order
                 result["metrics"].append(measure_def)
 
         # Export model-level default_time_dimension

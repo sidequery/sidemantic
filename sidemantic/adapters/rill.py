@@ -99,12 +99,21 @@ class RillAdapter:
             if metric:
                 metrics.append(metric)
 
+        # Set default_time_dimension from timeseries
+        default_time_dimension = None
+        default_grain = None
+        if timeseries_column:
+            default_time_dimension = timeseries_column
+            default_grain = self._map_time_grain(smallest_time_grain)
+
         return Model(
             name=model_name,
             description=description,
             table=table,
             dimensions=dimensions,
             metrics=metrics,
+            default_time_dimension=default_time_dimension,
+            default_grain=default_grain,
         )
 
     def _parse_dimension(
@@ -164,11 +173,27 @@ class RillAdapter:
         label = measure_def.get("display_name")  # Rill uses display_name, Sidemantic uses label
         description = measure_def.get("description")
         measure_type = measure_def.get("type", "simple")
+        format_preset = measure_def.get("format_preset")
+        value_format_name = self._map_format_preset(format_preset) if format_preset else None
 
-        # Determine metric type based on Rill's type
-        # "simple" = basic aggregation (None type), "derived" = calculation using other measures
+        # Check for window function definition (Rill's rolling window syntax)
+        window_def = measure_def.get("window")
+        window_order = None
+        window_frame = None
         metric_type = None
-        if measure_type == "derived" or measure_def.get("requires"):
+
+        if window_def:
+            # Rill window syntax:
+            # window:
+            #   order: "__time"
+            #   frame: RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW
+            metric_type = "cumulative"
+            if isinstance(window_def, dict):
+                window_order = window_def.get("order")
+                window_frame = window_def.get("frame")
+        elif measure_type == "derived" or measure_def.get("requires"):
+            # Determine metric type based on Rill's type
+            # "simple" = basic aggregation (None type), "derived" = calculation using other measures
             metric_type = "derived"
 
         # Use sqlglot to detect simple aggregations
@@ -212,6 +237,9 @@ class RillAdapter:
             agg=agg_type,
             sql=agg_sql if agg_type else expression,
             type=metric_type,
+            value_format_name=value_format_name,
+            window_order=window_order,
+            window_frame=window_frame,
         )
 
     def _map_time_grain(self, grain: str | None) -> str:
@@ -239,6 +267,50 @@ class RillAdapter:
         }
 
         return grain_mapping.get(grain, "day")
+
+    def _map_format_preset(self, preset: str | None) -> str | None:
+        """Map Rill format_preset to Sidemantic value_format_name.
+
+        Args:
+            preset: Rill format preset (humanize, currency_usd, percentage, etc.)
+
+        Returns:
+            Sidemantic value_format_name or None
+        """
+        if not preset:
+            return None
+
+        preset_mapping = {
+            "humanize": "decimal_0",
+            "currency_usd": "usd",
+            "currency_eur": "eur",
+            "percentage": "percent",
+            "interval_ms": "decimal_0",
+        }
+
+        return preset_mapping.get(preset, preset)
+
+    def _map_value_format_to_preset(self, value_format: str | None) -> str | None:
+        """Map Sidemantic value_format_name to Rill format_preset.
+
+        Args:
+            value_format: Sidemantic value_format_name
+
+        Returns:
+            Rill format_preset or None
+        """
+        if not value_format:
+            return None
+
+        format_mapping = {
+            "decimal_0": "humanize",
+            "decimal_2": "humanize",
+            "usd": "currency_usd",
+            "eur": "currency_eur",
+            "percent": "percentage",
+        }
+
+        return format_mapping.get(value_format, None)
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export a SemanticGraph to Rill metrics view YAML files.
@@ -351,9 +423,31 @@ class RillAdapter:
             if metric.description:
                 measure_def["description"] = metric.description
 
+            # Map value_format_name to format_preset
+            format_preset = self._map_value_format_to_preset(metric.value_format_name)
+            if format_preset:
+                measure_def["format_preset"] = format_preset
+
             # Map metric type to Rill measure type
             if metric.type == "derived":
                 measure_def["type"] = "derived"
+            elif metric.type == "cumulative":
+                # Export window function definition
+                if metric.window_frame or metric.window_order:
+                    window_def: dict[str, Any] = {}
+                    if metric.window_order:
+                        window_def["order"] = metric.window_order
+                    if metric.window_frame:
+                        window_def["frame"] = metric.window_frame
+                    elif metric.window:
+                        # Convert simple window to frame
+                        window_parts = metric.window.split()
+                        if len(window_parts) == 2:
+                            num, unit = window_parts
+                            window_def["frame"] = (
+                                f"RANGE BETWEEN INTERVAL {num} {unit.upper()} PRECEDING AND CURRENT ROW"
+                            )
+                    measure_def["window"] = window_def
             # else: default is "simple", no need to specify
 
             measures.append(measure_def)

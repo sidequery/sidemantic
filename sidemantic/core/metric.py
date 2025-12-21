@@ -69,8 +69,9 @@ class Metric(BaseModel):
             agg_val = data.get("agg")
             type_val = data.get("type")
 
-            # Only parse if sql is provided and agg is not, and this isn't a complex metric
-            if sql_val and not agg_val and not type_val:
+            # Parse if sql is provided and agg is not set
+            # Allow parsing for simple metrics (no type) OR cumulative metrics (to support AVG/COUNT windows)
+            if sql_val and not agg_val and (not type_val or type_val == "cumulative"):
                 # Match aggregation functions at the start: SUM(expr), COUNT(expr), etc.
                 agg_pattern = r"^\s*(SUM|COUNT|AVG|MIN|MAX|MEDIAN|COUNT_DISTINCT)\s*\((.*)\)\s*$"
                 match = re.match(agg_pattern, sql_val, re.IGNORECASE)
@@ -103,8 +104,8 @@ class Metric(BaseModel):
                 raise ValueError("ratio metric requires 'denominator' field")
         if self.type == "derived" and not self.sql:
             raise ValueError("derived metric requires 'sql' field")
-        if self.type == "cumulative" and not self.sql:
-            raise ValueError("cumulative metric requires 'sql' field")
+        if self.type == "cumulative" and not self.sql and not self.window_expression:
+            raise ValueError("cumulative metric requires 'sql' or 'window_expression' field")
         if self.type == "conversion":
             if not self.entity:
                 raise ValueError("conversion metric requires 'entity' field")
@@ -130,6 +131,18 @@ class Metric(BaseModel):
     window: str | None = Field(None, description="Time window for cumulative (e.g., '7 days')")
     grain_to_date: Literal["day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Grain for period-to-date (e.g., 'month' for MTD)"
+    )
+
+    # Advanced window function parameters (for arbitrary window expressions)
+    window_expression: str | None = Field(
+        None, description="Raw SQL expression for window function (e.g., 'AVG(total_bids) FILTER (WHERE active)')"
+    )
+    window_frame: str | None = Field(
+        None,
+        description="Window frame clause (e.g., 'RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW')",
+    )
+    window_order: str | None = Field(
+        None, description="Window ORDER BY column (defaults to model's default_time_dimension)"
     )
 
     # Time comparison parameters

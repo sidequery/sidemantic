@@ -154,8 +154,8 @@ def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
                 errors.append(f"Derived measure '{measure.name}' has circular dependency: {' -> '.join(circular_deps)}")
 
     elif measure.type == "cumulative":
-        if not measure.sql:
-            errors.append(f"Cumulative measure '{measure.name}' must have 'expr' defined")
+        if not measure.sql and not measure.window_expression:
+            errors.append(f"Cumulative measure '{measure.name}' must have 'sql' or 'window_expression' defined")
 
     return errors
 

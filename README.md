@@ -639,6 +639,10 @@ See `examples/` directory:
 - `cube/orders.yml` - Cube format example
 - `metricflow/semantic_models.yml` - MetricFlow format example
 
+Colab demos:
+- [SQL model definitions + DuckDB](https://colab.research.google.com/drive/1iCoHPrbCmGH382BPTaypIccwbRC4R1nW?usp=sharing)
+- [LookML multi-entity + DuckDB + chart](https://colab.research.google.com/drive/1fbQWi6xfWKQ9mW7lccgqlxjPXCPPNm2l?usp=sharing)
+
 ## Testing
 
 Run tests:

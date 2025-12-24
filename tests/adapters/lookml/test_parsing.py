@@ -1,8 +1,17 @@
-"""Tests for LookML adapter."""
+"""Tests for LookML adapter - parsing."""
 
+import shutil
+import tempfile
 from pathlib import Path
 
+import lkml
+import pytest
+
 from sidemantic.adapters.lookml import LookMLAdapter
+
+# =============================================================================
+# PARSING TESTS
+# =============================================================================
 
 
 def test_lookml_adapter_basic():
@@ -248,9 +257,6 @@ def test_lookml_adapter_explores():
     adapter = LookMLAdapter()
 
     # Create a temporary directory with just the files we need
-    import shutil
-    import tempfile
-
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
 
@@ -283,9 +289,6 @@ def test_lookml_adapter_explores_multi_join():
     adapter = LookMLAdapter()
 
     # Create a temporary directory with just the ecommerce files
-    import shutil
-    import tempfile
-
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
 
@@ -381,8 +384,6 @@ def test_lookml_adapter_export():
     graph = adapter.parse(Path("tests/fixtures/lookml/orders.lkml"))
 
     # Export to a temporary file
-    import tempfile
-
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
         output_path = f.name
 
@@ -831,11 +832,6 @@ def test_lookml_bq_thelook_user_facts():
 
 def test_lookml_period_over_period_import():
     """Test importing LookML period_over_period measures as time_comparison metrics."""
-    import tempfile
-    from pathlib import Path
-
-    import lkml
-
     # Create a test LookML file with period_over_period measures
     lookml_content = {
         "views": [
@@ -908,11 +904,6 @@ def test_lookml_period_over_period_import():
 
 def test_lookml_period_over_period_export():
     """Test exporting time_comparison metrics as LookML period_over_period measures."""
-    import tempfile
-    from pathlib import Path
-
-    import lkml
-
     from sidemantic.core.dimension import Dimension
     from sidemantic.core.metric import Metric
     from sidemantic.core.model import Model
@@ -989,3 +980,115 @@ def test_lookml_period_over_period_export():
         assert revenue_wow["based_on"] == "total_revenue"
         assert revenue_wow["period"] == "week"
         assert revenue_wow["kind"] == "difference"
+
+
+def test_import_real_lookml_example():
+    """Test importing a real LookML view file."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse("tests/fixtures/lookml/orders.lkml")
+
+    # Verify models loaded
+    assert "orders" in graph.models
+    assert "customers" in graph.models
+
+    orders = graph.models["orders"]
+
+    # Verify dimensions
+    dim_names = [d.name for d in orders.dimensions]
+    assert "id" in dim_names
+    assert "status" in dim_names
+    assert "customer_id" in dim_names
+
+    # Verify time dimensions were created from dimension_group
+    assert "created_date" in dim_names
+
+    # Verify primary key was detected
+    assert orders.primary_key == "id"
+
+    # Verify measures
+    measure_names = [m.name for m in orders.metrics]
+    assert "count" in measure_names
+    assert "revenue" in measure_names
+    assert "completed_revenue" in measure_names
+    assert "conversion_rate" in measure_names
+
+    # Verify segments (LookML filters) were imported
+    segment_names = [s.name for s in orders.segments]
+    assert "high_value" in segment_names
+    assert "completed" in segment_names
+
+    # Verify segment SQL was converted from ${TABLE} to {model}
+    high_value_segment = next(s for s in orders.segments if s.name == "high_value")
+    assert "{model}" in high_value_segment.sql
+    assert "${TABLE}" not in high_value_segment.sql
+
+    # Verify measure with filter was imported
+    completed_revenue = next(m for m in orders.metrics if m.name == "completed_revenue")
+    assert completed_revenue.filters is not None
+    assert len(completed_revenue.filters) > 0
+
+    # Verify derived metric (type=number) was detected
+    conversion_rate = next(m for m in orders.metrics if m.name == "conversion_rate")
+    assert conversion_rate.type == "derived"
+
+
+def test_import_lookml_derived_table():
+    """Test importing LookML view with derived table."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse("tests/fixtures/lookml/derived_tables.lkml")
+
+    # Verify model loaded
+    assert "customer_summary" in graph.models
+    summary = graph.models["customer_summary"]
+
+    # Verify derived table SQL was imported
+    assert summary.sql is not None
+    assert "SELECT" in summary.sql.upper()
+    assert "GROUP BY" in summary.sql.upper()
+
+    # Verify dimensions
+    dim_names = [d.name for d in summary.dimensions]
+    assert "customer_id" in dim_names
+    assert "order_count" in dim_names
+    assert "total_revenue" in dim_names
+
+    # Verify time dimension_group created time dimensions
+    assert "last_order_date" in dim_names
+
+    # Verify measures
+    measure_names = [m.name for m in summary.metrics]
+    assert "total_customers" in measure_names
+    assert "avg_orders_per_customer" in measure_names
+    assert "avg_customer_ltv" in measure_names
+
+
+def test_lookml_explore_parsing():
+    """Test parsing LookML explore files for relationships."""
+    adapter = LookMLAdapter()
+    # Parse just the orders example files (view + explore) to avoid duplicate models
+    # The explore file defines relationships between models
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        # Copy just the orders files
+        shutil.copy("tests/fixtures/lookml/orders.lkml", tmpdir_path / "orders.lkml")
+        shutil.copy("tests/fixtures/lookml/orders.explore.lkml", tmpdir_path / "orders.explore.lkml")
+
+        graph = adapter.parse(tmpdir_path)
+
+        # Verify orders model exists
+        assert "orders" in graph.models
+        orders = graph.models["orders"]
+
+        # Verify relationship was parsed from explore
+        assert len(orders.relationships) >= 1
+
+        # Verify relationship details
+        customer_rel = next((r for r in orders.relationships if r.name == "customers"), None)
+        assert customer_rel is not None
+        assert customer_rel.type == "many_to_one"
+        assert customer_rel.foreign_key == "customer_id"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -1,9 +1,7 @@
-"""Tests for Rill adapter parsing."""
+"""Tests for cross-format conversion with Rill adapter."""
 
 import tempfile
 from pathlib import Path
-
-import pytest
 
 from sidemantic.adapters.cube import CubeAdapter
 from sidemantic.adapters.lookml import LookMLAdapter
@@ -11,34 +9,6 @@ from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.omni import OmniAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.superset import SupersetAdapter
-
-
-def test_rill_to_sidemantic_to_rill_roundtrip():
-    """Test Rill roundtrip conversion."""
-    adapter = RillAdapter()
-
-    # Import original
-    graph1 = adapter.parse("tests/fixtures/rill/orders.yaml")
-
-    # Export
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_path = Path(tmpdir)
-        adapter.export(graph1, output_path)
-
-        # Import exported version
-        graph2 = adapter.parse(output_path / "orders.yaml")
-
-        # Verify models match
-        assert set(graph1.models.keys()) == set(graph2.models.keys())
-
-        orders1 = graph1.models["orders"]
-        orders2 = graph2.models["orders"]
-
-        # Verify dimensions count preserved
-        assert len(orders1.dimensions) == len(orders2.dimensions)
-
-        # Verify metrics count preserved
-        assert len(orders1.metrics) == len(orders2.metrics)
 
 
 def test_rill_to_cube_conversion():
@@ -164,33 +134,6 @@ def test_rill_to_lookml_conversion():
         temp_path.unlink(missing_ok=True)
 
 
-def test_roundtrip_real_rill_example():
-    """Test Rill example roundtrip using actual example files."""
-    adapter = RillAdapter()
-
-    # Import original
-    graph1 = adapter.parse("tests/fixtures/rill/orders.yaml")
-
-    # Export
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_path = Path(tmpdir)
-        adapter.export(graph1, output_path)
-
-        # Import exported version
-        graph2 = adapter.parse(output_path / "orders.yaml")
-
-        # Verify models match
-        assert set(graph1.models.keys()) == set(graph2.models.keys())
-
-        # Verify dimensions count preserved
-        orders1 = graph1.models["orders"]
-        orders2 = graph2.models["orders"]
-        assert len(orders1.dimensions) == len(orders2.dimensions)
-
-        # Verify metrics count preserved
-        assert len(orders1.metrics) == len(orders2.metrics)
-
-
 def test_superset_to_rill_conversion():
     """Test converting Superset dataset to Rill."""
     superset_adapter = SupersetAdapter()
@@ -223,7 +166,3 @@ def test_omni_to_rill_conversion():
 
         # Verify file created
         assert (output_path / "orders.yaml").exists()
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

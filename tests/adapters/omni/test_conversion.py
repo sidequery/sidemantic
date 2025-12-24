@@ -1,4 +1,4 @@
-"""Tests for Omni adapter parsing."""
+"""Tests for Omni adapter - cross-format conversion."""
 
 import tempfile
 from pathlib import Path
@@ -11,33 +11,6 @@ from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.omni import OmniAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.superset import SupersetAdapter
-
-
-def test_omni_to_sidemantic_to_omni_roundtrip():
-    """Test roundtrip: Omni → Sidemantic → Omni."""
-    adapter = OmniAdapter()
-
-    # Import original
-    graph1 = adapter.parse("tests/fixtures/omni/")
-
-    # Export
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_path = Path(tmpdir)
-        adapter.export(graph1, output_path)
-
-        # Import exported version
-        graph2 = adapter.parse(output_path)
-
-        # Verify models match
-        assert set(graph1.models.keys()) == set(graph2.models.keys())
-
-        # Verify dimensions preserved
-        orders1 = graph1.models["orders"]
-        orders2 = graph2.models["orders"]
-        assert len(orders1.dimensions) == len(orders2.dimensions)
-
-        # Verify metrics preserved
-        assert len(orders1.metrics) == len(orders2.metrics)
 
 
 def test_omni_to_cube_conversion():

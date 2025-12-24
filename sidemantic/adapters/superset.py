@@ -182,6 +182,21 @@ class SupersetAdapter(BaseAdapter):
 
         agg = type_mapping.get(metric_type_str)
 
+        # Extract inner expression if it's wrapped in an aggregation function
+        # e.g., "COUNT(*)" -> "*", "SUM(amount)" -> "amount"
+        sql = expression
+        if agg and expression:
+            import re
+
+            # Pattern to match AGG_FUNC(...) and extract the inner part
+            pattern = rf"^\s*{agg.upper()}\s*\(\s*(.*)\s*\)\s*$"
+            match = re.match(pattern, expression, re.IGNORECASE)
+            if match:
+                sql = match.group(1).strip()
+                # For COUNT(*), the inner is "*" - we store None for this case
+                if sql == "*":
+                    sql = None
+
         # If no standard aggregation, treat as derived metric
         metric_type = None
         if not agg and expression:
@@ -194,7 +209,7 @@ class SupersetAdapter(BaseAdapter):
             name=metric_name,
             type=metric_type,
             agg=agg,
-            sql=expression if expression else None,
+            sql=sql if sql else None,
             label=label,
             description=metric_def.get("description"),
         )

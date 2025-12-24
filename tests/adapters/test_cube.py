@@ -1,10 +1,29 @@
-"""Tests for Cube adapter."""
+"""Tests for Cube adapter - parsing, export, and roundtrip."""
 
+import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from sidemantic.adapters.cube import CubeAdapter
+from sidemantic.adapters.hex import HexAdapter
+from sidemantic.adapters.lookml import LookMLAdapter
+from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sidemantic.adapters.omni import OmniAdapter
+from sidemantic.adapters.rill import RillAdapter
+from sidemantic.adapters.sidemantic import SidemanticAdapter
+from sidemantic.adapters.superset import SupersetAdapter
+from tests.adapters.helpers import (
+    assert_dimension_equivalent,
+    assert_graph_equivalent,
+    assert_metric_equivalent,
+    assert_segment_equivalent,
+)
+
+# =============================================================================
+# PARSING TESTS
+# =============================================================================
 
 
 def test_cube_adapter():
@@ -44,6 +63,19 @@ def test_cube_adapter():
     completed_segment = next((s for s in orders.segments if s.name == "completed"), None)
     assert completed_segment is not None
 
+    # Verify segment SQL was converted from ${CUBE} to {model}
+    assert "{model}" in completed_segment.sql
+    assert "${CUBE}" not in completed_segment.sql
+
+    # Verify measure with filter was imported
+    completed_revenue = next(m for m in orders.metrics if m.name == "completed_revenue")
+    assert completed_revenue.filters is not None
+    assert len(completed_revenue.filters) > 0
+
+    # Verify ratio metric (calculated measure) was detected
+    conversion_rate = next(m for m in orders.metrics if m.name == "conversion_rate")
+    assert conversion_rate.type in ["ratio", "derived"]
+
 
 def test_cube_adapter_join_discovery():
     """Test that Cube adapter enables join discovery."""
@@ -53,8 +85,6 @@ def test_cube_adapter_join_discovery():
     # Check that relationships were imported
     orders = graph.get_model("orders")
     assert len(orders.relationships) > 0
-    # Note: The Cube example only has one model, so no actual join path can be tested
-    # but we verify that the relationship structure was imported correctly
 
 
 def test_cube_adapter_pre_aggregations():
@@ -65,9 +95,6 @@ def test_cube_adapter_pre_aggregations():
     orders = graph.get_model("orders")
     assert orders is not None
 
-    # Check pre-aggregations were parsed
-    # Note: Pre-aggregations are not stored as first-class objects in SemanticGraph
-    # but the adapter should handle them gracefully during parsing
     assert len(orders.dimensions) > 0
     assert len(orders.metrics) > 0
     assert len(orders.segments) == 2
@@ -111,7 +138,6 @@ def test_cube_adapter_multi_cube():
     count_metric = orders.get_metric("count")
     assert count_metric is not None
     if hasattr(count_metric, "drill_fields") and count_metric.drill_fields:
-        # Verify drill fields include cross-cube references
         assert any("customers" in str(field) for field in count_metric.drill_fields)
 
 
@@ -124,7 +150,6 @@ def test_cube_adapter_segments():
     orders = graph.get_model("orders")
     completed_segment = next((s for s in orders.segments if s.name == "completed"), None)
     assert completed_segment is not None
-    # Check that ${CUBE} was replaced with {model}
     assert "{model}" in completed_segment.sql or "orders" in completed_segment.sql.lower()
 
     # Test customers segments
@@ -146,10 +171,6 @@ def test_cube_adapter_drill_members():
     orders = graph.get_model("orders")
     count_metric = orders.get_metric("count")
     assert count_metric is not None
-
-    # Note: drill_members parsing is not yet implemented in Cube adapter
-    # This test will validate when the feature is added
-    # For now, we just verify the metric exists and has correct basic properties
     assert count_metric.name == "count"
     assert count_metric.agg == "count"
 
@@ -400,7 +421,7 @@ def test_cube_financial_analytics():
 
     is_recurring_dim = transactions.get_dimension("is_recurring")
     assert is_recurring_dim is not None
-    assert is_recurring_dim.type == "categorical"  # boolean maps to categorical
+    assert is_recurring_dim.type == "categorical"
 
     # Check transaction measures with filters
     credit_amount = transactions.get_metric("credit_amount")
@@ -748,6 +769,358 @@ def test_cube_adapter_cube_name_reference():
     assert high_value_segment is not None
     assert "{model}" in high_value_segment.sql
     assert "${custom_cube_ref}" not in high_value_segment.sql
+
+
+# =============================================================================
+# ROUNDTRIP TESTS
+# =============================================================================
+
+
+def test_cube_to_sidemantic_to_cube_roundtrip():
+    """Test that Cube -> Sidemantic -> Cube preserves structure."""
+    cube_adapter = CubeAdapter()
+    graph1 = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        cube_adapter.export(graph1, temp_path)
+        graph2 = cube_adapter.parse(temp_path)
+
+        # NOTE: check_relationships=False because Cube exporter doesn't export joins yet
+        # TODO: Fix CubeAdapter.export() to include joins section
+        assert_graph_equivalent(graph1, graph2, check_relationships=False)
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_roundtrip_dimension_properties():
+    """Test that dimension properties survive Cube roundtrip."""
+    adapter = CubeAdapter()
+    graph1 = adapter.parse("tests/fixtures/cube/orders.yml")
+    orders1 = graph1.models["orders"]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
+        orders2 = graph2.models["orders"]
+
+        for dim1 in orders1.dimensions:
+            dim2 = orders2.get_dimension(dim1.name)
+            assert dim2 is not None, f"Dimension {dim1.name} missing after roundtrip"
+            assert_dimension_equivalent(dim1, dim2)
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_roundtrip_metric_properties():
+    """Test that metric properties survive Cube roundtrip."""
+    adapter = CubeAdapter()
+    graph1 = adapter.parse("tests/fixtures/cube/orders.yml")
+    orders1 = graph1.models["orders"]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
+        orders2 = graph2.models["orders"]
+
+        for m1 in orders1.metrics:
+            m2 = orders2.get_metric(m1.name)
+            assert m2 is not None, f"Metric {m1.name} missing after roundtrip"
+            assert_metric_equivalent(m1, m2)
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_roundtrip_segment_properties():
+    """Test that segment properties survive Cube roundtrip."""
+    adapter = CubeAdapter()
+    graph1 = adapter.parse("tests/fixtures/cube/orders.yml")
+    orders1 = graph1.models["orders"]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
+        orders2 = graph2.models["orders"]
+
+        for seg1 in orders1.segments:
+            seg2 = orders2.get_segment(seg1.name)
+            assert seg2 is not None, f"Segment {seg1.name} missing after roundtrip"
+            assert_segment_equivalent(seg1, seg2)
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+# =============================================================================
+# CROSS-FORMAT CONVERSION TESTS
+# =============================================================================
+
+
+def test_cube_to_metricflow_conversion():
+    """Test converting Cube format to MetricFlow format."""
+    cube_adapter = CubeAdapter()
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+
+    mf_adapter = MetricFlowAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        mf_adapter.export(graph, temp_path)
+        graph2 = mf_adapter.parse(temp_path)
+
+        assert "orders" in graph2.models
+        orders = graph2.models["orders"]
+
+        dim_names = [d.name for d in orders.dimensions]
+        assert "status" in dim_names
+
+        measure_names = [m.name for m in orders.metrics]
+        assert "revenue" in measure_names
+
+        if orders.segments:
+            assert len(orders.segments) > 0
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_to_lookml_conversion():
+    """Test converting Cube format to LookML format."""
+    cube_adapter = CubeAdapter()
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+
+    lookml_adapter = LookMLAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        lookml_adapter.export(graph, temp_path)
+        graph2 = lookml_adapter.parse(temp_path)
+
+        assert "orders" in graph2.models
+        orders = graph2.models["orders"]
+
+        dim_names = [d.name for d in orders.dimensions]
+        assert "status" in dim_names
+
+        measure_names = [m.name for m in orders.metrics]
+        assert "revenue" in measure_names
+
+        if orders.segments:
+            assert len(orders.segments) > 0
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_to_hex_conversion():
+    """Test converting Cube format to Hex format."""
+    cube_adapter = CubeAdapter()
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+
+    hex_adapter = HexAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        hex_adapter.export(graph, temp_path)
+        graph2 = hex_adapter.parse(temp_path)
+
+        assert "orders" in graph2.models
+        orders = graph2.models["orders"]
+
+        dim_names = [d.name for d in orders.dimensions]
+        assert "status" in dim_names
+
+        measure_names = [m.name for m in orders.metrics]
+        assert "revenue" in measure_names
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_to_rill_conversion():
+    """Test converting Cube format to Rill format."""
+    cube_adapter = CubeAdapter()
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+
+    rill_adapter = RillAdapter()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        rill_adapter.export(graph, output_path)
+
+        graph2 = rill_adapter.parse(output_path / "orders.yaml")
+
+        assert "orders" in graph2.models
+        orders = graph2.models["orders"]
+
+        dim_names = [d.name for d in orders.dimensions]
+        assert "status" in dim_names
+
+        measure_names = [m.name for m in orders.metrics]
+        assert "revenue" in measure_names
+
+
+def test_cube_to_superset_conversion():
+    """Test converting Cube schema to Superset dataset."""
+    cube_adapter = CubeAdapter()
+    superset_adapter = SupersetAdapter()
+
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        superset_adapter.export(graph, output_path)
+
+        superset_graph = superset_adapter.parse(output_path / "orders.yaml")
+
+        assert "orders" in superset_graph.models
+
+
+def test_cube_to_omni_conversion():
+    """Test converting Cube schema to Omni view."""
+    cube_adapter = CubeAdapter()
+    omni_adapter = OmniAdapter()
+
+    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = Path(tmpdir)
+        omni_adapter.export(graph, output_path)
+
+        omni_graph = omni_adapter.parse(output_path)
+
+        assert "orders" in omni_graph.models
+
+
+# =============================================================================
+# SIDEMANTIC CONVERSION TESTS
+# =============================================================================
+
+
+def test_sidemantic_to_cube_export():
+    """Test export from Sidemantic to Cube format."""
+    # Load native format
+    native_adapter = SidemanticAdapter()
+    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
+
+    # Export to Cube
+    cube_adapter = CubeAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        cube_adapter.export(graph, temp_path)
+
+        # Verify file structure
+        with open(temp_path) as f:
+            data = yaml.safe_load(f)
+
+        assert "cubes" in data
+        assert len(data["cubes"]) == 2
+
+        # Verify orders cube
+        orders_cube = next(c for c in data["cubes"] if c["name"] == "orders")
+        assert orders_cube["sql_table"] == "public.orders"
+        assert "dimensions" in orders_cube
+        assert "measures" in orders_cube
+        # Note: joins only exported when foreign entity name matches target model name
+
+        # Verify round-trip (parse exported file)
+        graph2 = cube_adapter.parse(temp_path)
+        assert len(graph2.models) == 2
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_sidemantic_to_cube_roundtrip():
+    """Test Sidemantic -> Cube -> Sidemantic round-trip."""
+    # Load native
+    native_adapter = SidemanticAdapter()
+    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
+
+    # Export to Cube
+    cube_adapter = CubeAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        cube_path = Path(f.name)
+
+    try:
+        cube_adapter.export(graph, cube_path)
+
+        # Import from Cube
+        graph2 = cube_adapter.parse(cube_path)
+
+        # Verify structure preserved
+        assert set(graph2.models.keys()) == set(graph.models.keys())
+
+        # Verify measures preserved
+        orders1 = graph.models["orders"]
+        orders2 = graph2.models["orders"]
+        assert len(orders1.metrics) == len(orders2.metrics)
+
+    finally:
+        cube_path.unlink(missing_ok=True)
+
+
+# =============================================================================
+# QUERY TESTS
+# =============================================================================
+
+
+def test_query_imported_cube_example():
+    """Test that we can compile queries from imported Cube schema."""
+    from sidemantic import SemanticLayer
+
+    adapter = CubeAdapter()
+    graph = adapter.parse("tests/fixtures/cube/orders.yml")
+
+    layer = SemanticLayer()
+    layer.graph = graph
+
+    # Test basic metric query
+    sql = layer.compile(metrics=["orders.revenue"])
+    assert "SUM" in sql.upper()
+
+    # Test with dimension
+    sql = layer.compile(metrics=["orders.revenue", "orders.count"], dimensions=["orders.status"])
+    assert "GROUP BY" in sql.upper()
+    assert "status" in sql.lower()
+
+    # Test with segment
+    sql = layer.compile(metrics=["orders.revenue"], segments=["orders.completed"])
+    assert "WHERE" in sql.upper()
+    assert "status" in sql.lower()
+
+
+def test_query_with_time_dimension_cube():
+    """Test querying time dimensions from Cube import."""
+    from sidemantic import SemanticLayer
+
+    adapter = CubeAdapter()
+    graph = adapter.parse("tests/fixtures/cube/orders.yml")
+
+    layer = SemanticLayer()
+    layer.graph = graph
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.created_at"])
+    assert "created_at" in sql.lower()
+    assert "GROUP BY" in sql.upper()
 
 
 if __name__ == "__main__":

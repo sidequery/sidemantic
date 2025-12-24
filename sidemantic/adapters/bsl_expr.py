@@ -7,9 +7,11 @@ BSL uses Ibis-style expressions in string form:
 - _.column.nunique() -> count distinct
 - _.column.year() -> year extraction
 - _.nested.field -> nested struct access
+
+Uses Python's ast module for parsing since these are valid Python expressions.
 """
 
-import re
+import ast
 from dataclasses import dataclass
 
 
@@ -62,8 +64,26 @@ TIME_GRAIN_MAP = {
 GRANULARITY_TO_TIME_GRAIN = {v: k for k, v in TIME_GRAIN_MAP.items()}
 
 
+def _collect_attrs(node: ast.AST) -> list[str]:
+    """Collect attribute chain from AST node, returning list of attr names.
+
+    For `_.foo.bar.baz`, returns ['foo', 'bar', 'baz'].
+    """
+    attrs = []
+    while isinstance(node, ast.Attribute):
+        attrs.append(node.attr)
+        node = node.value
+    # Should end at Name('_')
+    if isinstance(node, ast.Name) and node.id == "_":
+        attrs.reverse()
+        return attrs
+    return []
+
+
 def parse_bsl_expr(expr: str) -> ParsedExpr:
     """Parse BSL expression like '_.column.sum()' into components.
+
+    Uses Python's ast module since BSL expressions are valid Python.
 
     Args:
         expr: BSL expression string
@@ -89,29 +109,40 @@ def parse_bsl_expr(expr: str) -> ParsedExpr:
         # Not a BSL expression, might be a calc measure reference
         return ParsedExpr(column=expr)
 
-    # Remove the leading "_."
-    rest = expr[2:]
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        # Fall back to treating as plain column reference
+        return ParsedExpr(column=expr[2:] if expr.startswith("_.") else expr)
 
-    # Check for _.count() - aggregation without column
-    if rest == "count()":
-        return ParsedExpr(aggregation="count")
+    node = tree.body
 
-    # Check for method call at the end: .method()
-    method_match = re.match(r"^(.+)\.(\w+)\(\)$", rest)
-    if method_match:
-        column_part = method_match.group(1)
-        method = method_match.group(2)
+    # Case 1: Method call like _.count() or _.column.sum()
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        method = node.func.attr
+        attrs = _collect_attrs(node.func.value)
 
-        if method in AGG_METHOD_MAP:
-            return ParsedExpr(column=column_part, aggregation=method)
-        elif method in DATE_METHODS:
-            return ParsedExpr(column=column_part, date_part=method)
-        else:
-            # Unknown method, treat as column reference
-            return ParsedExpr(column=rest)
+        # _.count() - no column, just aggregation
+        if not attrs and isinstance(node.func.value, ast.Name) and node.func.value.id == "_":
+            if method in AGG_METHOD_MAP:
+                return ParsedExpr(aggregation=method)
 
-    # No method call, just a column reference (possibly nested)
-    return ParsedExpr(column=rest)
+        # _.column.sum() or _.nested.field.sum()
+        if attrs:
+            column = ".".join(attrs)
+            if method in AGG_METHOD_MAP:
+                return ParsedExpr(column=column, aggregation=method)
+            elif method in DATE_METHODS:
+                return ParsedExpr(column=column, date_part=method)
+
+    # Case 2: Attribute access like _.column or _.nested.field
+    if isinstance(node, ast.Attribute):
+        attrs = _collect_attrs(node)
+        if attrs:
+            return ParsedExpr(column=".".join(attrs))
+
+    # Fallback
+    return ParsedExpr(column=expr[2:] if expr.startswith("_.") else expr)
 
 
 def bsl_to_sql(expr: str) -> tuple[str | None, str | None, str | None]:
@@ -198,13 +229,23 @@ def is_calc_measure_expr(expr: str) -> bool:
         >>> is_calc_measure_expr("_.amount.sum()")
         False
     """
-    # If it starts with _., it's a regular expression
-    if expr.strip().startswith("_."):
+    expr = expr.strip()
+
+    # If it starts with _., it's a regular BSL expression
+    if expr.startswith("_."):
         return False
 
-    # Check for operators that indicate a calc measure
-    operators = ["/", "+", "-", "*"]
-    return any(op in expr for op in operators)
+    # Try to parse as Python and check for binary operations
+    try:
+        tree = ast.parse(expr, mode="eval")
+        # Walk the tree looking for BinOp nodes (arithmetic operations)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp):
+                return True
+        return False
+    except SyntaxError:
+        # If it doesn't parse as Python, check for operators as fallback
+        return any(op in expr for op in ["/", "+", "-", "*"])
 
 
 def parse_calc_measure(expr: str) -> list[str]:
@@ -222,11 +263,7 @@ def parse_calc_measure(expr: str) -> list[str]:
         >>> parse_calc_measure("(total_sales - total_costs) / total_sales")
         ['total_sales', 'total_costs', 'total_sales']
     """
-    # Remove parentheses and split by operators
-    # Find all word tokens that could be measure names
-    tokens = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b", expr)
-
-    # Filter out SQL keywords and functions
+    # SQL keywords to filter out
     sql_keywords = {
         "NULLIF",
         "COALESCE",
@@ -245,4 +282,14 @@ def parse_calc_measure(expr: str) -> list[str]:
         "IIF",
     }
 
-    return [t for t in tokens if t.upper() not in sql_keywords]
+    try:
+        tree = ast.parse(expr, mode="eval")
+        # Collect all Name nodes (variable references)
+        names = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id.upper() not in sql_keywords:
+                names.append(node.id)
+        return names
+    except SyntaxError:
+        # Fallback: won't happen for valid calc measures, but be safe
+        return []

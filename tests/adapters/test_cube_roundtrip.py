@@ -12,6 +12,12 @@ from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.omni import OmniAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.superset import SupersetAdapter
+from tests.adapters.helpers import (
+    assert_dimension_equivalent,
+    assert_graph_equivalent,
+    assert_metric_equivalent,
+    assert_segment_equivalent,
+)
 
 
 def test_import_real_cube_example():
@@ -60,33 +66,22 @@ def test_cube_to_sidemantic_to_cube_roundtrip():
     """Test that Cube -> Sidemantic -> Cube preserves structure."""
     # Import from Cube
     cube_adapter = CubeAdapter()
-    graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+    graph1 = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 
     # Export back to Cube
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)
 
     try:
-        cube_adapter.export(graph, temp_path)
+        cube_adapter.export(graph1, temp_path)
 
         # Re-import and verify
         graph2 = cube_adapter.parse(temp_path)
 
-        # Verify model preserved
-        assert "orders" in graph2.models
-        orders = graph2.models["orders"]
-
-        # Verify key fields preserved
-        dim_names = [d.name for d in orders.dimensions]
-        assert "status" in dim_names
-
-        measure_names = [m.name for m in orders.metrics]
-        assert "revenue" in measure_names
-
-        # Verify segments preserved
-        segment_names = [s.name for s in orders.segments]
-        assert "high_value" in segment_names
-        assert "completed" in segment_names
+        # Verify semantic equivalence
+        # NOTE: check_relationships=False because Cube exporter doesn't export joins yet
+        # TODO: Fix CubeAdapter.export() to include joins section
+        assert_graph_equivalent(graph1, graph2, check_relationships=False)
 
     finally:
         temp_path.unlink(missing_ok=True)
@@ -193,21 +188,81 @@ def test_roundtrip_real_cube_example():
         # Import exported version
         graph2 = adapter.parse(temp_path)
 
-        # Verify models match
-        assert set(graph1.models.keys()) == set(graph2.models.keys())
+        # Verify semantic equivalence
+        # NOTE: check_relationships=False because Cube exporter doesn't export joins yet
+        assert_graph_equivalent(graph1, graph2, check_relationships=False)
 
-        # Verify dimensions count preserved
-        orders1 = graph1.models["orders"]
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_roundtrip_dimension_properties():
+    """Test that dimension properties survive Cube roundtrip."""
+    adapter = CubeAdapter()
+    graph1 = adapter.parse("tests/fixtures/cube/orders.yml")
+    orders1 = graph1.models["orders"]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
         orders2 = graph2.models["orders"]
-        assert len(orders1.dimensions) == len(orders2.dimensions)
 
-        # Verify metrics count preserved
-        assert len(orders1.metrics) == len(orders2.metrics)
+        # Verify each dimension property individually for better error messages
+        for dim1 in orders1.dimensions:
+            dim2 = orders2.get_dimension(dim1.name)
+            assert dim2 is not None, f"Dimension {dim1.name} missing after roundtrip"
+            assert_dimension_equivalent(dim1, dim2)
 
-        # Verify segments preserved
-        segment_names1 = {s.name for s in orders1.segments}
-        segment_names2 = {s.name for s in orders2.segments}
-        assert segment_names1 == segment_names2
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_roundtrip_metric_properties():
+    """Test that metric properties survive Cube roundtrip."""
+    adapter = CubeAdapter()
+    graph1 = adapter.parse("tests/fixtures/cube/orders.yml")
+    orders1 = graph1.models["orders"]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
+        orders2 = graph2.models["orders"]
+
+        # Verify each metric property individually
+        for m1 in orders1.metrics:
+            m2 = orders2.get_metric(m1.name)
+            assert m2 is not None, f"Metric {m1.name} missing after roundtrip"
+            assert_metric_equivalent(m1, m2)
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_roundtrip_segment_properties():
+    """Test that segment properties survive Cube roundtrip."""
+    adapter = CubeAdapter()
+    graph1 = adapter.parse("tests/fixtures/cube/orders.yml")
+    orders1 = graph1.models["orders"]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
+        orders2 = graph2.models["orders"]
+
+        # Verify each segment property individually
+        for seg1 in orders1.segments:
+            seg2 = orders2.get_segment(seg1.name)
+            assert seg2 is not None, f"Segment {seg1.name} missing after roundtrip"
+            assert_segment_equivalent(seg1, seg2)
 
     finally:
         temp_path.unlink(missing_ok=True)

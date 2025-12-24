@@ -2,7 +2,7 @@
 
 SQL-first semantic layer for consistent metrics across your data stack.
 
-Formats: Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni.  
+Formats: Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL.
 Databases: DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL.
 
 [Documentation](https://sidemantic.com) • [GitHub](https://github.com/sidequery/sidemantic)
@@ -57,7 +57,7 @@ Local notebooks:
 
 - SQL query interface with automatic rewriting
 - Automatic joins across models
-- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni)
+- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL)
 - SQLGlot-based SQL generation and transpilation
 - Pydantic validation and type safety
 - Pre-aggregations with automatic routing
@@ -70,7 +70,7 @@ Local notebooks:
 
 ### Formats
 Import from:
-Sidemantic (native), Cube, MetricFlow (dbt), LookML (Looker), Hex, Rill, Superset (Apache), Omni.
+Sidemantic (native), Cube, MetricFlow (dbt), LookML (Looker), Hex, Rill, Superset (Apache), Omni, BSL (Boring Semantic Layer).
 
 Adapter compatibility details: https://sidemantic.com
 
@@ -122,9 +122,7 @@ result = layer.query(
 See `examples/` directory:
 - `sql_query_example.py` - SQL query interface demonstration
 - `basic_example.py` - Core usage patterns
-- `sidemantic/orders.yml` - Native YAML example
-- `cube/orders.yml` - Cube format example
-- `metricflow/semantic_models.yml` - MetricFlow format example
+- `multi_format_demo/` - Same model in different formats (Cube, Hex, LookML, BSL)
 
 ## Testing
 

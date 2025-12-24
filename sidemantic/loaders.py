@@ -22,6 +22,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         >>> load_from_directory(layer, "semantic_models/")
         >>> # All models loaded and ready to query
     """
+    from sidemantic.adapters.bsl import BSLAdapter
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.hex import HexAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
@@ -61,6 +62,9 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = MetricFlowAdapter()
             elif "base_sql_table:" in content and "measures:" in content:
                 adapter = HexAdapter()
+            elif "_." in content and ("dimensions:" in content or "measures:" in content):
+                # BSL format uses _.column syntax for expressions
+                adapter = BSLAdapter()
 
         if adapter:
             try:

@@ -1,0 +1,29 @@
+# BSL fixture matching the Cube orders.yml for comparison testing
+
+orders:
+  table: public.orders
+  description: "Customer orders with revenue and status tracking"
+
+  dimensions:
+    id:
+      expr: _.id
+      is_entity: true
+    status:
+      expr: _.status
+      description: "Order status (pending, completed, cancelled)"
+    created_at:
+      expr: _.created_at
+      is_time_dimension: true
+      smallest_time_grain: "TIME_GRAIN_DAY"
+    customer_id: _.customer_id
+
+  measures:
+    count:
+      expr: _.count()
+      description: "Total number of orders"
+    revenue:
+      expr: _.amount.sum()
+      description: "Total revenue from orders"
+    avg_order_value:
+      expr: _.amount.mean()
+      description: "Average order value"

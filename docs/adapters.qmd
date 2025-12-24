@@ -16,30 +16,31 @@ Sidemantic can import semantic models from other popular semantic layer formats,
 | **Rill** | ✅ | No relationships, segments, or cross-model metrics; single-model only |
 | **Superset** (Apache) | ✅ | No relationships in datasets |
 | **Omni** | ✅ | Relationships in separate model file |
+| **BSL** (Boring Semantic Layer) | ✅ | Ibis-style expressions; supports roundtrip export |
 
 ## Feature Compatibility
 
 This table shows which Sidemantic features are supported when importing from other formats:
 
-| Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Superset | Omni | Notes |
-|---------|------------|------|------------|--------|-----|------|----------|------|-------|
-| **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
-| **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
-| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
-| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
-| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset: single-model only; Omni: in model file |
-| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
-| **Metric Filters** | ✅ | ✅ | ❌ | ✅ | ✅ | ⚠️ | ❌ | ✅ | Rill has basic support; Superset lacks filters |
-| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | Rill/Superset don't have native ratio metric type |
-| **Segments** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only Cube and LookML have native segment support |
-| **Cumulative Metrics** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Cube has rolling_window; MetricFlow has cumulative; others lack native support |
-| **Time Comparison** | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Only MetricFlow has native time comparison metrics |
-| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | LookML uses Liquid templating |
-| **Hierarchies** | ✅ | ⚠️ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | Cube/LookML/Omni: via drill_fields |
-| **Inheritance** | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | Only LookML has native extends support |
-| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | Label and description support varies by format |
-| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
-| **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| Feature | Sidemantic | Cube | MetricFlow | LookML | Hex | Rill | Superset | Omni | BSL | Notes |
+|---------|------------|------|------------|--------|-----|------|----------|------|-----|-------|
+| **Models** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support models/tables |
+| **Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support dimensions |
+| **Simple Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support sum, count, avg, min, max |
+| **Time Dimensions** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support time dimensions with granularity |
+| **Relationships** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | Rill/Superset: single-model only; Omni: in model file |
+| **Derived Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | All formats support calculated metrics |
+| **Metric Filters** | ✅ | ✅ | ❌ | ✅ | ✅ | ⚠️ | ❌ | ✅ | ❌ | Rill has basic support; Superset/BSL lack filters |
+| **Ratio Metrics** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | Rill/Superset/BSL don't have native ratio metric type |
+| **Segments** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Only Cube and LookML have native segment support |
+| **Cumulative Metrics** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Cube has rolling_window; MetricFlow has cumulative; others lack native support |
+| **Time Comparison** | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Only MetricFlow has native time comparison metrics |
+| **Jinja Templates** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | ❌ | LookML uses Liquid templating; BSL uses Ibis |
+| **Hierarchies** | ✅ | ⚠️ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ❌ | Cube/LookML/Omni: via drill_fields |
+| **Inheritance** | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Only LookML has native extends support |
+| **Metadata Fields** | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | ✅ | Label and description support varies by format |
+| **Parameters** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
+| **Ungrouped Queries** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Sidemantic-only feature |
 
 **Legend:**
 
@@ -203,6 +204,26 @@ layer = SemanticLayer(graph=graph)
 result = layer.sql("SELECT total_revenue FROM orders")
 ```
 
+### From BSL
+
+Read [Boring Semantic Layer](https://github.com/boringdata/boring-semantic-layer) models into Sidemantic:
+
+```python
+from sidemantic.adapters.bsl import BSLAdapter
+
+# Import from BSL YAML
+adapter = BSLAdapter()
+graph = adapter.parse("bsl/models/")  # Directory of YAML files
+
+# Query with Sidemantic
+from sidemantic import SemanticLayer
+layer = SemanticLayer(graph=graph)
+result = layer.sql("SELECT revenue FROM orders")
+
+# Export back to BSL (roundtrip supported)
+adapter.export(graph, "output/bsl_models.yml")
+```
+
 ## Import Mapping
 
 These sections describe how each format's concepts map to Sidemantic when importing.
@@ -285,6 +306,24 @@ These sections describe how each format's concepts map to Sidemantic when import
 - `${view.field}` references → simplified field references
 - Measure `filters` → metric filters
 - `relationships` (from model.yaml) → model relationships
+
+### BSL (Boring Semantic Layer)
+
+- Model keys (top-level YAML) → `models`
+- `table` → model `table`
+- `dimensions` → `dimensions`
+- `measures` → `metrics`
+- `joins` → `relationships`
+- `_.column` expression → `sql: "column"`
+- `_.column.sum()` → `agg: sum, sql: "column"`
+- `_.column.mean()` → `agg: avg, sql: "column"`
+- `_.column.nunique()` → `agg: count_distinct, sql: "column"`
+- `_.count()` → `agg: count`
+- `_.column.year()` → `EXTRACT(YEAR FROM column)`
+- `is_time_dimension: true` → `type: "time"`
+- `smallest_time_grain: "TIME_GRAIN_DAY"` → `granularity: "day"`
+- `is_entity: true` → primary key detection
+- Calc measures (referencing other measures) → derived metrics
 
 ## Validating Imports
 

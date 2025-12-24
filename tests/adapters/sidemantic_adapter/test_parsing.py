@@ -1,4 +1,4 @@
-"""Test Sidemantic native YAML adapter."""
+"""Test Sidemantic native YAML adapter parsing and export."""
 
 import tempfile
 from pathlib import Path

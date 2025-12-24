@@ -122,9 +122,7 @@ result = layer.query(
 See `examples/` directory:
 - `sql_query_example.py` - SQL query interface demonstration
 - `basic_example.py` - Core usage patterns
-- `sidemantic/orders.yml` - Native YAML example
-- `cube/orders.yml` - Cube format example
-- `metricflow/semantic_models.yml` - MetricFlow format example
+- `multi_format_demo/` - Same model in different formats (Cube, Hex, LookML, BSL)
 
 ## Testing
 

@@ -1,0 +1,26 @@
+# BSL (Boring Semantic Layer) format example
+# Uses Ibis-style expressions: _.column, _.column.sum(), etc.
+
+customers:
+  table: customers
+  description: Customer information and signup tracking (BSL format)
+
+  dimensions:
+    id:
+      expr: _.id
+      is_entity: true
+    name: _.name
+    email: _.email
+    region: _.region
+    signup_date:
+      expr: _.signup_date
+      is_time_dimension: true
+      smallest_time_grain: "TIME_GRAIN_DAY"
+
+  measures:
+    customer_count:
+      expr: _.count()
+      description: Total number of customers
+    unique_customers:
+      expr: _.id.nunique()
+      description: Unique customers per region

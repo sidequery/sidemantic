@@ -38,9 +38,18 @@ sidemantic workbench ./models
 # Try demo mode
 sidemantic workbench --demo
 
+# With database connection
+sidemantic workbench ./models --db data/warehouse.db
+
 # Run without installing (using uvx)
 uvx sidemantic workbench --demo
 ```
+
+Options:
+- `directory`: Directory containing semantic layer files (default: `.`)
+- `--demo`: Use demo data
+- `--connection`: Database connection string
+- `--db`: Path to DuckDB database file
 
 See [Workbench](workbench.qmd) for detailed guide.
 
@@ -49,19 +58,29 @@ See [Workbench](workbench.qmd) for detailed guide.
 Execute SQL queries and output results as CSV.
 
 ```bash
-# Query to stdout
-sidemantic query ./models \
-  --sql "SELECT orders.revenue, customers.region FROM orders"
+# Query to stdout (SQL is first positional argument)
+sidemantic query "SELECT orders.revenue, customers.region FROM orders"
+
+# With explicit models directory
+sidemantic query "SELECT * FROM orders" --models ./models
 
 # Save to file
-sidemantic query ./models \
-  --sql "SELECT * FROM orders" \
-  --output results.csv
+sidemantic query "SELECT * FROM orders" --output results.csv
+
+# Show generated SQL without executing
+sidemantic query "SELECT * FROM orders" --dry-run
+
+# With database connection
+sidemantic query "SELECT * FROM orders" --db data/warehouse.db
 ```
 
 Options:
-- `--sql`, `-q`: SQL query to execute (required)
+- SQL query (positional argument, required)
+- `--models`, `-m`: Directory containing semantic layer files (default: `.`)
 - `--output`, `-o`: Output file path (default: stdout)
+- `--connection`: Database connection string
+- `--db`: Path to DuckDB database file
+- `--dry-run`: Show generated SQL without executing
 
 ### `validate`
 
@@ -110,11 +129,13 @@ sidemantic serve --demo
 ```
 
 Options:
+- `directory`: Directory containing semantic layer files (default: `.`)
 - `--port`, `-p`: Port to listen on (default: 5433)
 - `--username`, `-u`: Username for authentication (optional)
 - `--password`: Password for authentication (optional)
 - `--demo`: Use demo data
-
+- `--connection`: Database connection string
+- `--db`: Path to DuckDB database file
 
 Connect with any PostgreSQL client:
 
@@ -171,6 +192,110 @@ Configure in Claude Desktop:
 }
 ```
 
+### `migrator`
+
+Generate model definitions from existing SQL queries or analyze query coverage.
+
+```bash
+# Generate models from SQL queries
+sidemantic migrator --queries queries/ --generate-models output/
+
+# Coverage analysis against existing models
+sidemantic migrator ./models --queries queries/ --verbose
+```
+
+Options:
+- `directory`: Directory containing semantic layer files (default: `.`)
+- `--queries`, `-q`: Path to file or folder containing SQL queries to analyze
+- `--verbose`, `-v`: Show detailed analysis for each query
+- `--generate-models`, `-g`: Generate model definitions from queries
+
+### `lsp`
+
+Start the Language Server Protocol (LSP) server for Sidemantic SQL dialect.
+
+```bash
+sidemantic lsp  # Starts server on stdio
+```
+
+The LSP server provides:
+- Autocompletion for MODEL, DIMENSION, METRIC, RELATIONSHIP, SEGMENT
+- Context-aware property suggestions
+- Validation errors from pydantic models
+- Hover documentation
+
+### `preagg`
+
+Pre-aggregation management commands.
+
+#### `preagg recommend`
+
+Show pre-aggregation recommendations based on query patterns.
+
+```bash
+# From database query history
+sidemantic preagg recommend --connection "bigquery://project/dataset"
+
+# From DuckDB with options
+sidemantic preagg recommend --db data.db --min-count 50 --top 10
+
+# From SQL query files
+sidemantic preagg recommend --queries queries.sql --min-score 0.5
+```
+
+Options:
+- `--queries`, `-q`: Path to file/folder with SQL queries
+- `--connection`: Database connection string to fetch query history
+- `--db`: Path to DuckDB database file
+- `--days`, `-d`: Days of query history to fetch (default: 7)
+- `--limit`, `-l`: Max queries to analyze (default: 1000)
+- `--min-count`: Minimum query count for recommendation (default: 10)
+- `--min-score`: Minimum benefit score 0-1 (default: 0.3)
+- `--top`, `-n`: Show only top N recommendations
+
+#### `preagg apply`
+
+Apply pre-aggregation recommendations to model YAML files.
+
+```bash
+sidemantic preagg apply ./models --connection "bigquery://project/dataset"
+sidemantic preagg apply ./models --db data.db --top 5
+sidemantic preagg apply ./models --queries queries.sql --dry-run
+```
+
+Options: Same as `recommend` plus:
+- `directory`: Directory containing semantic layer YAML files (default: `.`)
+- `--dry-run`: Show what would be added without writing files
+
+#### `preagg refresh`
+
+Refresh pre-aggregation tables.
+
+```bash
+sidemantic preagg refresh ./models --db data.db
+sidemantic preagg refresh ./models --model orders --mode full
+sidemantic preagg refresh ./models --connection "postgres://localhost:5432/db"
+```
+
+Options:
+- `directory`: Directory containing semantic layer files (default: `.`)
+- `--model`, `-m`: Only refresh pre-aggregations for this model
+- `--preagg`, `-p`: Only refresh this specific pre-aggregation
+- `--mode`: Refresh mode: `full`, `incremental`, or `merge` (default: incremental)
+- `--connection`: Database connection string
+- `--db`: Path to DuckDB database file
+
+## Configuration
+
+The CLI can use a configuration file for default settings:
+
+```bash
+# Specify config file
+sidemantic --config sidemantic.yaml <command>
+
+# Or auto-discover sidemantic.yaml/sidemantic.json in current directory
+```
+
 ## Shell Completion
 
 Install completion for your shell:
@@ -184,5 +309,5 @@ Supports bash, zsh, fish, and PowerShell.
 ## Next Steps
 
 - [Workbench](workbench.qmd) - Interactive TUI guide
-- [SQL Queries](sql-queries.qmd) - Query syntax reference
+- [Query](query.qmd) - Query syntax reference
 - [Python API](python-api.qmd) - Programmatic usage

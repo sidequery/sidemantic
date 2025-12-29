@@ -63,6 +63,23 @@ SQL: `LEFT JOIN invoice ON orders.order_id = invoice.order_id`
 
 **Meaning:** One order has one invoice.
 
+### many_to_many
+
+Many records in THIS model → many records in OTHER model through a junction table:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: products
+        type: many_to_many
+        foreign_key: order_product_id  # Column in junction table
+```
+
+**Meaning:** Many orders can have many products (through an order_items junction table).
+
 ## Bidirectional Relationships
 
 Define from both sides for flexibility:
@@ -124,8 +141,8 @@ layer.sql("""
 ## Relationship Properties
 
 - **name**: Name of the related model
-- **type**: `many_to_one`, `one_to_many`, or `one_to_one`
-- **foreign_key**: The foreign key column name
+- **type**: `many_to_one`, `one_to_many`, `one_to_one`, or `many_to_many`
+- **foreign_key**: The foreign key column name (defaults to `{name}_id` for many_to_one)
 - **primary_key**: (Optional) Primary key in related table (defaults to related model's primary_key)
 
 ## Python API

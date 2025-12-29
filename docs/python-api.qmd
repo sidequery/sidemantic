@@ -35,9 +35,9 @@ result = layer.query(
     segments=["orders.high_value"],  # Named filters
     order_by=["orders.revenue DESC"],
     limit=10,
-    offset=5,
     ungrouped=False,  # Set True for raw rows
-    parameters={"start_date": "2024-01-01"}
+    parameters={"start_date": "2024-01-01"},
+    use_preaggregations=True  # Use pre-aggregation tables if available
 )
 
 df = result.fetchdf()  # Get DataFrame
@@ -58,15 +58,6 @@ result = layer.sql("""
 df = result.fetchdf()
 ```
 
-With parameters:
-
-```python
-result = layer.sql(
-    "SELECT revenue FROM orders WHERE order_date >= {{ start_date }}",
-    parameters={"start_date": "2024-01-01"}
-)
-```
-
 #### compile()
 
 Generate SQL without executing:
@@ -77,8 +68,13 @@ sql = layer.compile(
     dimensions=["orders.status"],
     filters=["orders.status = 'completed'"],
     segments=["orders.completed"],
+    order_by=["orders.revenue DESC"],
+    limit=100,
+    offset=10,
+    dialect="postgres",  # Optional: override SQL dialect
     ungrouped=False,
-    parameters={"min_amount": 100}
+    parameters={"min_amount": 100},
+    use_preaggregations=True  # Use pre-aggregation tables if available
 )
 
 print(sql)
@@ -458,15 +454,19 @@ region_join = Relationship(
 ### Properties
 
 - **name**: Name of related model
-- **type**: `many_to_one`, `one_to_many`, or `one_to_one`
-- **foreign_key**: Foreign key column name
+- **type**: `many_to_one`, `one_to_many`, `one_to_one`, or `many_to_many`
+- **foreign_key**: Foreign key column name (defaults to `{name}_id` for many_to_one)
 - **primary_key**: Primary key in related model (default: "id")
 
-## Parameter
+> **Note**: `Measure` is available as a backwards-compatibility alias for `Metric`.
 
-Define query parameters:
+## Parameter (Deprecated)
+
+> **Warning**: Parameters are deprecated and will be removed in a future version.
+> Use Jinja templates directly for dynamic SQL generation instead.
 
 ```python
+# DEPRECATED - use Jinja templates instead
 from sidemantic import Parameter
 
 start_date = Parameter(
@@ -474,18 +474,16 @@ start_date = Parameter(
     type="date",
     default_value="2024-01-01"
 )
+```
 
-min_amount = Parameter(
-    name="min_amount",
-    type="number",
-    default_value=100
-)
+**Migration**: Use Jinja templates in your SQL expressions:
 
-region = Parameter(
-    name="region",
-    type="string",
-    default_value="US",
-    allowed_values=["US", "EU", "APAC"]
+```python
+# Instead of Parameter, use Jinja templates with the parameters dict:
+layer.compile(
+    metrics=["orders.revenue"],
+    filters=["orders.order_date >= '{{ start_date }}'"],
+    parameters={"start_date": "2024-01-01"}
 )
 ```
 

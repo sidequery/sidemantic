@@ -232,7 +232,7 @@ Drag the right edge of the sidebar to resize:
 
 ## Next Steps
 
-- [SQL Queries](sql-queries.qmd) - Complete query syntax reference
+- [Query](query.qmd) - Complete query syntax reference
 - [CLI](cli.qmd) - Other CLI commands
 - [Models](models.qmd) - Define your own models
 - [Metrics](metrics.qmd) - Create custom metrics

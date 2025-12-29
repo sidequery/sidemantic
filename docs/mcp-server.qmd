@@ -302,5 +302,5 @@ Verify the path to your models directory is correct and absolute:
 
 - [Models](models.qmd) - Define your semantic models
 - [Metrics](metrics.qmd) - Create metrics and measures
-- [SQL Queries](sql-queries.qmd) - Query syntax reference
+- [Query](query.qmd) - Query syntax reference
 - [Python API](python-api.qmd) - Programmatic usage

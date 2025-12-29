@@ -33,10 +33,13 @@ models:
     sql: string               # SQL query (or use table)
     primary_key: string       # Required - primary key column
     description: string       # Optional
+    extends: string           # Optional - parent model to inherit from
 
     dimensions: [...]         # Optional
     metrics: [...]            # Optional (model-level aggregations)
+    segments: [...]           # Optional (reusable named filters)
     relationships: [...]      # Optional
+    pre_aggregations: [...]   # Optional (materialized rollups)
 ```
 
 ## Dimensions
@@ -48,9 +51,13 @@ dimensions:
     sql: string               # SQL expression (defaults to name)
     description: string       # Optional
     label: string             # Optional
+    parent: string            # Optional - parent dimension for hierarchies
+    format: string            # Optional - display format (e.g., '$#,##0.00')
+    value_format_name: string # Optional - named format (e.g., 'usd', 'percent')
 
     # For time dimensions only
     granularity: hour|day|week|month|quarter|year
+    supported_granularities: [hour, day, week, ...]  # Optional - restrict available granularities
 ```
 
 ### Dimension Types
@@ -89,6 +96,21 @@ dimensions:
         WHEN amount > 100 THEN 'standard'
         ELSE 'basic'
       END
+
+  # Dimension hierarchy (for drill-down)
+  - name: country
+    type: categorical
+    sql: country_code
+
+  - name: state
+    type: categorical
+    sql: state_code
+    parent: country  # state rolls up to country
+
+  - name: city
+    type: categorical
+    sql: city_name
+    parent: state  # city rolls up to state
 ```
 
 ## Metrics (Model-Level)
@@ -105,6 +127,11 @@ metrics:
     filters: [string]         # Optional WHERE conditions
     description: string       # Optional
     fill_nulls_with: value    # Optional default for NULL
+    extends: string           # Optional - parent metric to inherit from
+    format: string            # Optional - display format (e.g., '$#,##0.00')
+    value_format_name: string # Optional - named format (e.g., 'usd', 'percent')
+    drill_fields: [string]    # Optional - fields for drill-down
+    non_additive_dimension: string  # Optional - dimension this metric cannot be summed across
 ```
 
 ### Examples
@@ -214,7 +241,7 @@ metrics:
   - name: yoy_revenue_growth
     type: time_comparison
     base_metric: total_revenue
-    comparison_type: yoy          # yoy, mom, wow, qoq
+    comparison_type: yoy          # yoy, mom, wow, dod, qoq, prior_period
     calculation: percent_change   # percent_change, difference, ratio
 ```
 
@@ -237,8 +264,8 @@ Relationships define how models join together. Use explicit relationship types i
 ```yaml
 relationships:
   - name: string              # Required - name of related model
-    type: many_to_one|one_to_many|one_to_one  # Required
-    foreign_key: string       # Required - FK column name
+    type: many_to_one|one_to_many|one_to_one|many_to_many  # Required
+    foreign_key: string       # Optional - FK column name (defaults to {name}_id for many_to_one)
     primary_key: string       # Optional - PK in related table (defaults to related model's primary_key)
 ```
 
@@ -247,6 +274,7 @@ relationships:
 - **many_to_one**: Many records in THIS table → one record in OTHER table (e.g., orders → customer)
 - **one_to_many**: One record in THIS table → many records in OTHER table (e.g., customer → orders)
 - **one_to_one**: One record in THIS table → one record in OTHER table (e.g., order → invoice)
+- **many_to_many**: Many records in THIS table → many records in OTHER table through a junction table (e.g., orders → products via order_items)
 
 ### Examples
 
@@ -278,7 +306,10 @@ models:
         foreign_key: order_id     # Column in invoice table
 ```
 
-## Parameters
+## Parameters (Deprecated)
+
+> **Warning**: Parameters are deprecated and will be removed in a future version.
+> Use Jinja templates directly for dynamic SQL generation instead.
 
 ```yaml
 parameters:
@@ -287,6 +318,16 @@ parameters:
     default_value: any        # Required
     allowed_values: [any]     # Optional - restrict to specific values
     description: string       # Optional
+```
+
+**Migration**: Use Jinja templates in your SQL expressions:
+
+```yaml
+# Instead of Parameters, use Jinja templates with the parameters dict in your queries:
+dimensions:
+  - name: filtered_status
+    type: categorical
+    sql: "CASE WHEN status = '{{ target_status }}' THEN 'match' ELSE 'other' END"
 ```
 
 ### Parameter Types
@@ -321,6 +362,112 @@ parameters:
   - name: include_cancelled
     type: yesno
     default_value: false
+```
+
+## Segments
+
+Segments are reusable named filters that can be applied to queries.
+
+```yaml
+models:
+  - name: orders
+    segments:
+      - name: string         # Required - unique segment name
+        sql: string          # Required - SQL WHERE clause expression
+        description: string  # Optional
+        public: boolean      # Optional - whether visible in API/UI (default: true)
+```
+
+### Examples
+
+```yaml
+segments:
+  - name: active_orders
+    sql: "status = 'active'"
+    description: "Orders that are currently active"
+    public: true
+
+  - name: high_value
+    sql: "amount > 1000"
+    description: "Orders with value over $1000"
+
+  - name: completed_us
+    sql: "status = 'completed' AND country = 'US'"
+    description: "Completed orders from the US"
+```
+
+Use `{model}` placeholder for model table reference in more complex segments:
+
+```yaml
+segments:
+  - name: recent_high_value
+    sql: "{model}.amount > 1000 AND {model}.created_at > CURRENT_DATE - INTERVAL 30 DAY"
+```
+
+## Pre-aggregations
+
+Pre-aggregations materialize rollup tables for query optimization.
+
+```yaml
+models:
+  - name: orders
+    pre_aggregations:
+      - name: string                    # Required - unique name
+        type: rollup|original_sql|rollup_join|lambda  # Required
+        measures: [string]              # Metrics to include
+        dimensions: [string]            # Dimensions to include
+        time_dimension: string          # Time dimension for partitioning
+        granularity: hour|day|week|month|quarter|year
+        partition_granularity: day|week|month|quarter|year  # Optional
+        refresh_key:                    # Optional - refresh configuration
+          every: string                 # Refresh interval (e.g., "1 hour")
+          sql: string                   # Custom refresh trigger SQL
+          incremental: boolean          # Enable incremental refresh
+          update_window: string         # Update window for incremental
+        indexes:                        # Optional - index configuration
+          - name: string
+            columns: [string]
+            type: regular|aggregate
+        build_range_start: string       # Optional - initial build start date
+        build_range_end: string         # Optional - initial build end date
+```
+
+### Examples
+
+```yaml
+pre_aggregations:
+  # Daily rollup with partitioning
+  - name: daily_revenue
+    type: rollup
+    measures: [revenue, order_count]
+    dimensions: [status, region]
+    time_dimension: order_date
+    granularity: day
+    partition_granularity: month
+
+  # With refresh configuration
+  - name: hourly_metrics
+    type: rollup
+    measures: [revenue]
+    dimensions: [status]
+    time_dimension: order_date
+    granularity: hour
+    refresh_key:
+      every: "1 hour"
+      incremental: true
+      update_window: "3 days"
+
+  # With indexes
+  - name: customer_rollup
+    type: rollup
+    measures: [revenue, order_count]
+    dimensions: [customer_id, region]
+    time_dimension: order_date
+    granularity: day
+    indexes:
+      - name: region_idx
+        columns: [region]
+        type: regular
 ```
 
 ## Complete Example

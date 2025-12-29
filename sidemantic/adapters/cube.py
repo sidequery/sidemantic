@@ -13,6 +13,37 @@ from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
+def _normalize_cube_sql(sql: str | None, cube_name: str | None = None) -> str | None:
+    """Normalize Cube.js SQL syntax to Sidemantic format.
+
+    Handles:
+    - ${CUBE} -> {model} placeholder
+    - ${cube_name} -> {model} placeholder
+    - {CUBE} -> {model} placeholder (variant without dollar sign)
+    - ${measure_ref} references are preserved as-is (for derived metrics)
+
+    Args:
+        sql: SQL expression string or None
+        cube_name: Name of the cube (used to replace ${cube_name} references)
+
+    Returns:
+        Normalized SQL string or None
+    """
+    if sql is None:
+        return None
+
+    # Replace ${CUBE} and {CUBE} variants with {model}
+    result = sql.replace("${CUBE}", "{model}")
+    result = result.replace("{CUBE}", "{model}")
+
+    # Replace ${cube_name} with {model} if cube_name is provided
+    if cube_name:
+        result = result.replace(f"${{{cube_name}}}", "{model}")
+        result = result.replace(f"{{{cube_name}}}", "{model}")
+
+    return result
+
+
 class CubeAdapter(BaseAdapter):
     """Adapter for importing/exporting Cube.js YAML semantic models.
 
@@ -61,7 +92,7 @@ class CubeAdapter(BaseAdapter):
             return
 
         # Cube YAML has "cubes" key with list of cube definitions
-        cubes = data.get("cubes", [])
+        cubes = data.get("cubes") or []
 
         for cube_def in cubes:
             model = self._parse_cube(cube_def)
@@ -89,8 +120,8 @@ class CubeAdapter(BaseAdapter):
         dimensions = []
         primary_key = "id"  # default
 
-        for dim_def in cube_def.get("dimensions", []):
-            dim = self._parse_dimension(dim_def)
+        for dim_def in cube_def.get("dimensions") or []:
+            dim = self._parse_dimension(dim_def, name)
             if dim:
                 dimensions.append(dim)
 
@@ -100,8 +131,8 @@ class CubeAdapter(BaseAdapter):
 
         # Parse measures
         measures = []
-        for measure_def in cube_def.get("measures", []):
-            measure = self._parse_measure(measure_def)
+        for measure_def in cube_def.get("measures") or []:
+            measure = self._parse_measure(measure_def, name)
             if measure:
                 measures.append(measure)
 
@@ -109,12 +140,12 @@ class CubeAdapter(BaseAdapter):
         from sidemantic.core.segment import Segment
 
         segments = []
-        for segment_def in cube_def.get("segments", []):
+        for segment_def in cube_def.get("segments") or []:
             segment_name = segment_def.get("name")
             segment_sql = segment_def.get("sql")
             if segment_name and segment_sql:
-                # Replace ${CUBE} with {model} placeholder
-                segment_sql = segment_sql.replace("${CUBE}", "{model}")
+                # Normalize ${CUBE}/{CUBE} to {model} placeholder
+                segment_sql = _normalize_cube_sql(segment_sql, name)
                 segments.append(
                     Segment(
                         name=segment_name,
@@ -125,16 +156,16 @@ class CubeAdapter(BaseAdapter):
 
         # Parse joins to create relationships
         relationships = []
-        for join_def in cube_def.get("joins", []):
+        for join_def in cube_def.get("joins") or []:
             join_name = join_def.get("name")
             if join_name:
                 # Get relationship type from join definition, default to many_to_one
                 rel_type = join_def.get("relationship", "many_to_one")
                 relationships.append(Relationship(name=join_name, type=rel_type, foreign_key=f"{join_name}_id"))
 
-        # Parse pre-aggregations
+        # Parse pre-aggregations (handle None from empty YAML section)
         pre_aggregations = []
-        for preagg_def in cube_def.get("pre_aggregations", []):
+        for preagg_def in cube_def.get("pre_aggregations") or []:
             preagg = self._parse_preaggregation(preagg_def, name)
             if preagg:
                 pre_aggregations.append(preagg)
@@ -152,11 +183,12 @@ class CubeAdapter(BaseAdapter):
             pre_aggregations=pre_aggregations,
         )
 
-    def _parse_dimension(self, dim_def: dict) -> Dimension | None:
+    def _parse_dimension(self, dim_def: dict, cube_name: str) -> Dimension | None:
         """Parse Cube dimension into Sidemantic dimension.
 
         Args:
             dim_def: Dimension definition dictionary
+            cube_name: Name of the parent cube (for SQL normalization)
 
         Returns:
             Dimension instance or None
@@ -182,20 +214,24 @@ class CubeAdapter(BaseAdapter):
         if dim_type == "time":
             granularity = "day"  # Default granularity
 
+        # Normalize SQL to replace ${CUBE}/{CUBE} with {model}
+        dim_sql = _normalize_cube_sql(dim_def.get("sql"), cube_name)
+
         return Dimension(
             name=name,
             type=sidemantic_type,
-            sql=dim_def.get("sql"),
+            sql=dim_sql,
             granularity=granularity,
             description=dim_def.get("description"),
             format=dim_def.get("format"),
         )
 
-    def _parse_measure(self, measure_def: dict) -> Metric | None:
+    def _parse_measure(self, measure_def: dict, cube_name: str) -> Metric | None:
         """Parse Cube measure into Sidemantic measure.
 
         Args:
             measure_def: Metric definition dictionary
+            cube_name: Name of the parent cube (for SQL normalization)
 
         Returns:
             Measure instance or None
@@ -220,13 +256,13 @@ class CubeAdapter(BaseAdapter):
 
         agg_type = type_mapping.get(measure_type, "count")
 
-        # Parse filters
+        # Parse filters and normalize ${CUBE}/{CUBE} references
         filters = []
-        for filter_def in measure_def.get("filters", []):
+        for filter_def in measure_def.get("filters") or []:
             if isinstance(filter_def, dict):
                 sql_filter = filter_def.get("sql")
                 if sql_filter:
-                    filters.append(sql_filter)
+                    filters.append(_normalize_cube_sql(sql_filter, cube_name))
 
         # Check for rolling_window (cumulative metric)
         rolling_window = measure_def.get("rolling_window")
@@ -242,11 +278,14 @@ class CubeAdapter(BaseAdapter):
             if sql_expr:
                 metric_type = "derived"
 
+        # Normalize SQL to replace ${CUBE}/{CUBE} with {model}
+        measure_sql = _normalize_cube_sql(measure_def.get("sql"), cube_name)
+
         return Metric(
             name=name,
             type=metric_type,
             agg=agg_type,
-            sql=measure_def.get("sql"),
+            sql=measure_sql,
             window=window,
             filters=filters if filters else None,
             description=measure_def.get("description"),
@@ -271,7 +310,7 @@ class CubeAdapter(BaseAdapter):
 
         # Extract measures - strip CUBE prefix if present
         measures = []
-        for measure_ref in preagg_def.get("measures", []):
+        for measure_ref in preagg_def.get("measures") or []:
             if isinstance(measure_ref, str):
                 # Remove CUBE. or {cube_name}. prefix
                 measure_name = measure_ref.replace("CUBE.", "").replace(f"{cube_name}.", "")
@@ -279,7 +318,7 @@ class CubeAdapter(BaseAdapter):
 
         # Extract dimensions - strip CUBE prefix if present
         dimensions = []
-        for dim_ref in preagg_def.get("dimensions", []):
+        for dim_ref in preagg_def.get("dimensions") or []:
             if isinstance(dim_ref, str):
                 # Remove CUBE. or {cube_name}. prefix
                 dim_name = dim_ref.replace("CUBE.", "").replace(f"{cube_name}.", "")
@@ -313,10 +352,10 @@ class CubeAdapter(BaseAdapter):
 
         # Parse indexes
         indexes = []
-        for index_def in preagg_def.get("indexes", []):
+        for index_def in preagg_def.get("indexes") or []:
             if isinstance(index_def, dict):
                 index_name = index_def.get("name", f"idx_{len(indexes)}")
-                index_columns = index_def.get("columns", [])
+                index_columns = index_def.get("columns") or []
 
                 # Strip CUBE prefix from column names
                 cleaned_columns = [col.replace("CUBE.", "").replace(f"{cube_name}.", "") for col in index_columns]

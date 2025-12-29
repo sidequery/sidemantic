@@ -1,0 +1,86 @@
+cubes:
+  # Test with empty pre_aggregations (GitHub issue: Cube generates models with empty pre-aggregation section)
+  - name: empty_sections
+    sql_table: public.orders
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: status
+        sql: status
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+    # Empty sections that should not cause errors
+    pre_aggregations:
+    segments:
+    joins:
+
+  # Test with {CUBE} syntax (without dollar sign) - variant syntax
+  - name: cube_syntax_variants
+    sql_table: public.products
+
+    dimensions:
+      - name: id
+        sql: "{CUBE}.id"
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: "{CUBE}.product_name"
+        type: string
+
+      - name: price
+        sql: ${CUBE}.price
+        type: number
+        description: "Test ${CUBE} syntax"
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_price
+        sql: "{CUBE}.price"
+        type: sum
+        description: "Total using {CUBE} syntax"
+
+      - name: filtered_count
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'active'"
+        description: "Filter with {CUBE} syntax"
+
+    segments:
+      - name: expensive
+        sql: "{CUBE}.price > 100"
+        description: "Segment with {CUBE} syntax"
+
+  # Test with cube name reference ${cube_name}
+  - name: custom_cube_ref
+    sql_table: public.items
+
+    dimensions:
+      - name: id
+        sql: "${custom_cube_ref}.id"
+        type: number
+        primary_key: true
+
+      - name: value
+        sql: "{custom_cube_ref}.value"
+        type: number
+        description: "Using cube name without dollar"
+
+    measures:
+      - name: total
+        sql: "${custom_cube_ref}.amount"
+        type: sum
+
+    segments:
+      - name: high_value
+        sql: "${custom_cube_ref}.value > 1000"

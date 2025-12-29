@@ -646,5 +646,109 @@ def test_cube_healthcare_patients():
     assert departments.table == "healthcare.departments"
 
 
+def test_cube_adapter_empty_sections():
+    """Test Cube adapter handles empty YAML sections gracefully.
+
+    GitHub issue: Cube generates models with empty pre-aggregation sections.
+    """
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("tests/fixtures/cube/edge_cases.yml"))
+
+    # Check that model with empty sections was parsed successfully
+    assert "empty_sections" in graph.models
+    empty_sections = graph.get_model("empty_sections")
+
+    # Verify empty sections didn't cause errors
+    assert empty_sections.pre_aggregations == []
+    assert empty_sections.segments == []
+    assert empty_sections.relationships == []
+
+    # Verify dimensions and measures were still parsed
+    assert len(empty_sections.dimensions) >= 2
+    assert len(empty_sections.metrics) >= 1
+
+
+def test_cube_adapter_cube_syntax_variants():
+    """Test Cube adapter handles {CUBE} syntax variants.
+
+    GitHub issue: {CUBE} syntax (without dollar sign) should also be handled.
+    """
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("tests/fixtures/cube/edge_cases.yml"))
+
+    # Check cube_syntax_variants model
+    assert "cube_syntax_variants" in graph.models
+    model = graph.get_model("cube_syntax_variants")
+
+    # Verify {CUBE} syntax (without dollar) was normalized to {model}
+    name_dim = model.get_dimension("name")
+    assert name_dim is not None
+    assert "{model}" in name_dim.sql
+    assert "{CUBE}" not in name_dim.sql
+
+    # Verify ${CUBE} syntax was normalized
+    price_dim = model.get_dimension("price")
+    assert price_dim is not None
+    assert "{model}" in price_dim.sql
+    assert "${CUBE}" not in price_dim.sql
+
+    # Verify measure SQL was normalized
+    total_price = model.get_metric("total_price")
+    assert total_price is not None
+    assert "{model}" in total_price.sql
+    assert "{CUBE}" not in total_price.sql
+
+    # Verify filter SQL was normalized
+    filtered_count = model.get_metric("filtered_count")
+    assert filtered_count is not None
+    assert filtered_count.filters is not None
+    assert len(filtered_count.filters) == 1
+    assert "{model}" in filtered_count.filters[0]
+    assert "{CUBE}" not in filtered_count.filters[0]
+
+    # Verify segment SQL was normalized
+    expensive_segment = next((s for s in model.segments if s.name == "expensive"), None)
+    assert expensive_segment is not None
+    assert "{model}" in expensive_segment.sql
+    assert "{CUBE}" not in expensive_segment.sql
+
+
+def test_cube_adapter_cube_name_reference():
+    """Test Cube adapter handles ${cube_name} and {cube_name} syntax.
+
+    GitHub issue: References to cube by name should also be normalized.
+    """
+    adapter = CubeAdapter()
+    graph = adapter.parse(Path("tests/fixtures/cube/edge_cases.yml"))
+
+    # Check custom_cube_ref model
+    assert "custom_cube_ref" in graph.models
+    model = graph.get_model("custom_cube_ref")
+
+    # Verify ${cube_name} syntax was normalized
+    id_dim = model.get_dimension("id")
+    assert id_dim is not None
+    assert "{model}" in id_dim.sql
+    assert "${custom_cube_ref}" not in id_dim.sql
+
+    # Verify {cube_name} syntax (without dollar) was normalized
+    value_dim = model.get_dimension("value")
+    assert value_dim is not None
+    assert "{model}" in value_dim.sql
+    assert "{custom_cube_ref}" not in value_dim.sql
+
+    # Verify measure SQL was normalized
+    total = model.get_metric("total")
+    assert total is not None
+    assert "{model}" in total.sql
+    assert "${custom_cube_ref}" not in total.sql
+
+    # Verify segment SQL was normalized
+    high_value_segment = next((s for s in model.segments if s.name == "high_value"), None)
+    assert high_value_segment is not None
+    assert "{model}" in high_value_segment.sql
+    assert "${custom_cube_ref}" not in high_value_segment.sql
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

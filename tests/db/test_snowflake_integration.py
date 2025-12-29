@@ -382,3 +382,129 @@ def test_semantic_layer_multiple_joins(snowflake_layer):
     assert results_dict[("Alice", "Widget")] == 100
     assert results_dict[("Alice", "Gadget")] == 150
     assert results_dict[("Bob", "Widget")] == 200
+
+
+def test_semantic_layer_catalog_qualified_table(snowflake_layer):
+    """Test that fully-qualified table names (catalog.schema.table) work correctly.
+
+    GitHub issue: User reported that catalog references in Cube models aren't working.
+    Snowflake uses three-part naming: database.schema.table (catalog=database in Snowflake).
+    """
+    # Create a table in a specific database and schema using fakesnow
+    # Note: In fakesnow, we create the database and schema first
+    snowflake_layer.adapter.execute("CREATE DATABASE IF NOT EXISTS my_catalog")
+    snowflake_layer.adapter.execute("CREATE SCHEMA IF NOT EXISTS my_catalog.my_schema")
+    snowflake_layer.adapter.execute("""
+        CREATE OR REPLACE TABLE my_catalog.my_schema.catalog_orders (
+            order_id INTEGER,
+            amount DECIMAL(10,2),
+            status VARCHAR(50)
+        )
+    """)
+    snowflake_layer.adapter.execute("""
+        INSERT INTO my_catalog.my_schema.catalog_orders VALUES
+        (1, 100.00, 'completed'),
+        (2, 200.00, 'pending'),
+        (3, 150.00, 'completed')
+    """)
+
+    # Define a model with fully-qualified table name (catalog.schema.table)
+    catalog_orders = Model(
+        name="catalog_orders",
+        table="my_catalog.my_schema.catalog_orders",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical"),
+        ],
+        metrics=[
+            Metric(name="total_revenue", agg="sum", sql="amount"),
+            Metric(name="order_count", agg="count", sql="order_id"),
+        ],
+    )
+    snowflake_layer.add_model(catalog_orders)
+
+    # Test that queries work with the fully-qualified table name
+    result = snowflake_layer.query(metrics=["catalog_orders.total_revenue"])
+    row = result.fetchone()
+    assert row[0] == 450.0  # 100 + 200 + 150
+
+    # Test with dimension grouping
+    result = snowflake_layer.query(metrics=["catalog_orders.total_revenue"], dimensions=["catalog_orders.status"])
+    rows = result.fetchall()
+    cols = [desc[0] for desc in result.description]
+    results_dict = {dict(zip(cols, row))["STATUS"]: dict(zip(cols, row))["TOTAL_REVENUE"] for row in rows}
+
+    assert results_dict["completed"] == 250.0  # 100 + 150
+    assert results_dict["pending"] == 200.0
+
+    # Verify the generated SQL contains the full catalog.schema.table reference
+    sql = snowflake_layer.compile(metrics=["catalog_orders.total_revenue"])
+    assert "my_catalog.my_schema.catalog_orders" in sql.lower()
+
+
+def test_semantic_layer_catalog_with_cube_import(snowflake_layer):
+    """Test that Cube models with catalog-qualified tables work after import.
+
+    This simulates importing a Cube model that references a catalog (database) in Snowflake.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from sidemantic.adapters.cube import CubeAdapter
+
+    # Create a Cube YAML file with catalog-qualified table
+    cube_yaml = """
+cubes:
+  - name: sf_orders
+    sql_table: my_database.my_schema.orders
+    description: Orders from Snowflake with catalog reference
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: status
+        sql: "${CUBE}.status"
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+      - name: revenue
+        sql: "${CUBE}.amount"
+        type: sum
+"""
+
+    # Write to temp file
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        f.write(cube_yaml)
+        temp_path = Path(f.name)
+
+    try:
+        # Parse with Cube adapter
+        adapter = CubeAdapter()
+        graph = adapter.parse(temp_path)
+
+        # Verify the model was parsed correctly
+        assert "sf_orders" in graph.models
+        sf_orders = graph.models["sf_orders"]
+
+        # Verify the table name preserves the catalog reference
+        assert sf_orders.table == "my_database.my_schema.orders"
+
+        # Verify ${CUBE} was normalized to {model} in dimensions
+        status_dim = sf_orders.get_dimension("status")
+        assert status_dim is not None
+        assert "{model}" in status_dim.sql
+        assert "${CUBE}" not in status_dim.sql
+
+        # Verify ${CUBE} was normalized in measures
+        revenue_metric = sf_orders.get_metric("revenue")
+        assert revenue_metric is not None
+        assert "{model}" in revenue_metric.sql
+
+    finally:
+        temp_path.unlink(missing_ok=True)

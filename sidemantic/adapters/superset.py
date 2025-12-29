@@ -80,7 +80,7 @@ class SupersetAdapter(BaseAdapter):
         primary_key = "id"  # default
         main_dttm_col = dataset.get("main_dttm_col")
 
-        for col_def in dataset.get("columns", []):
+        for col_def in dataset.get("columns") or []:
             dim = self._parse_column(col_def, main_dttm_col)
             if dim:
                 dimensions.append(dim)
@@ -91,7 +91,7 @@ class SupersetAdapter(BaseAdapter):
 
         # Parse metrics
         metrics = []
-        for metric_def in dataset.get("metrics", []):
+        for metric_def in dataset.get("metrics") or []:
             metric = self._parse_metric(metric_def)
             if metric:
                 metrics.append(metric)

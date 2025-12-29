@@ -75,7 +75,7 @@ class RillAdapter:
         timeseries_column = data.get("timeseries")
         smallest_time_grain = data.get("smallest_time_grain")
 
-        for dim_def in data.get("dimensions", []):
+        for dim_def in data.get("dimensions") or []:
             dimension = self._parse_dimension(dim_def, timeseries_column, smallest_time_grain)
             if dimension:
                 dimensions.append(dimension)
@@ -94,7 +94,7 @@ class RillAdapter:
 
         # Parse measures
         metrics: list[Metric] = []
-        for measure_def in data.get("measures", []):
+        for measure_def in data.get("measures") or []:
             metric = self._parse_measure(measure_def)
             if metric:
                 metrics.append(metric)

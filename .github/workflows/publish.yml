@@ -74,3 +74,11 @@ jobs:
           git tag -a "v${{ steps.version.outputs.new_version }}" -m "Release v${{ steps.version.outputs.new_version }}"
           git push origin main
           git push origin "v${{ steps.version.outputs.new_version }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.version.outputs.new_version }}" \
+            --title "v${{ steps.version.outputs.new_version }}" \
+            --generate-notes

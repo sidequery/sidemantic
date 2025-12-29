@@ -85,7 +85,7 @@ class HexAdapter(BaseAdapter):
         dimensions = []
         primary_key = "id"  # default
 
-        for dim_def in model_def.get("dimensions", []):
+        for dim_def in model_def.get("dimensions") or []:
             dim = self._parse_dimension(dim_def)
             if dim:
                 dimensions.append(dim)
@@ -96,14 +96,14 @@ class HexAdapter(BaseAdapter):
 
         # Parse measures
         measures = []
-        for measure_def in model_def.get("measures", []):
+        for measure_def in model_def.get("measures") or []:
             measure = self._parse_measure(measure_def)
             if measure:
                 measures.append(measure)
 
         # Parse relations
         relationships = []
-        for relation_def in model_def.get("relations", []):
+        for relation_def in model_def.get("relations") or []:
             relation = self._parse_relation(relation_def)
             if relation:
                 relationships.append(relation)
@@ -228,7 +228,7 @@ class HexAdapter(BaseAdapter):
 
         # Parse filters
         filters = []
-        filter_defs = measure_def.get("filters", [])
+        filter_defs = measure_def.get("filters") or []
         for filter_def in filter_defs:
             if isinstance(filter_def, dict):
                 # Inline dimension definition

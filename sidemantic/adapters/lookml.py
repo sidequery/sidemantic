@@ -68,7 +68,7 @@ class LookMLAdapter(BaseAdapter):
             return
 
         # Parse views
-        for view_def in parsed.get("views", []):
+        for view_def in parsed.get("views") or []:
             model = self._parse_view(view_def)
             if model:
                 graph.add_model(model)
@@ -89,7 +89,7 @@ class LookMLAdapter(BaseAdapter):
             return
 
         # Parse explores
-        for explore_def in parsed.get("explores", []):
+        for explore_def in parsed.get("explores") or []:
             self._parse_explore(explore_def, graph)
 
     def _parse_view(self, view_def: dict) -> Model | None:
@@ -118,7 +118,7 @@ class LookMLAdapter(BaseAdapter):
         dimensions = []
         primary_key = "id"  # default
 
-        for dim_def in view_def.get("dimensions", []):
+        for dim_def in view_def.get("dimensions") or []:
             dim = self._parse_dimension(dim_def)
             if dim:
                 dimensions.append(dim)
@@ -128,13 +128,13 @@ class LookMLAdapter(BaseAdapter):
                     primary_key = dim.name
 
         # Parse dimension_group (time dimensions)
-        for dim_group_def in view_def.get("dimension_groups", []):
+        for dim_group_def in view_def.get("dimension_groups") or []:
             dims = self._parse_dimension_group(dim_group_def)
             dimensions.extend(dims)
 
         # Parse measures
         measures = []
-        for measure_def in view_def.get("measures", []):
+        for measure_def in view_def.get("measures") or []:
             measure = self._parse_measure(measure_def)
             if measure:
                 measures.append(measure)
@@ -143,7 +143,7 @@ class LookMLAdapter(BaseAdapter):
         from sidemantic.core.segment import Segment
 
         segments = []
-        for segment_def in view_def.get("filters", []):
+        for segment_def in view_def.get("filters") or []:
             # LookML filters at view level can be used as segments
             segment_name = segment_def.get("name")
             segment_sql = segment_def.get("sql")
@@ -324,7 +324,7 @@ class LookMLAdapter(BaseAdapter):
 
         # Parse filters - lkml parses these as filters__all
         filters = []
-        filters_all = measure_def.get("filters__all", [])
+        filters_all = measure_def.get("filters__all") or []
         if filters_all:
             for filter_list in filters_all:
                 for filter_dict in filter_list:
@@ -374,7 +374,7 @@ class LookMLAdapter(BaseAdapter):
         base_model = graph.models[explore_name]
 
         # Parse joins
-        for join_def in explore_def.get("joins", []):
+        for join_def in explore_def.get("joins") or []:
             relationship = self._parse_join(join_def, explore_name)
             if relationship:
                 # Add relationship to the base model

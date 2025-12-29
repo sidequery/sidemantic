@@ -179,7 +179,7 @@ class OmniAdapter(BaseAdapter):
             sql = re.sub(r"\$\{[^.]+\.([^}]+)\}", r"\1", sql)
 
         # Handle timeframes for time dimensions
-        timeframes = dim_def.get("timeframes", [])
+        timeframes = dim_def.get("timeframes") or []
         granularity = None
         if dim_type == "time" and timeframes:
             # Map first timeframe to granularity
@@ -370,7 +370,7 @@ class OmniAdapter(BaseAdapter):
         if not model_def:
             return
 
-        relationships_list = model_def.get("relationships", [])
+        relationships_list = model_def.get("relationships") or []
 
         for rel_def in relationships_list:
             from_view = rel_def.get("join_from_view")

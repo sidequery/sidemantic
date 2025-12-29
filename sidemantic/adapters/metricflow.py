@@ -68,13 +68,13 @@ class MetricFlowAdapter(BaseAdapter):
             return
 
         # Parse semantic models
-        for model_def in data.get("semantic_models", []):
+        for model_def in data.get("semantic_models") or []:
             model = self._parse_semantic_model(model_def)
             if model:
                 graph.add_model(model)
 
         # Parse metrics
-        for metric_def in data.get("metrics", []):
+        for metric_def in data.get("metrics") or []:
             metric = self._parse_metric(metric_def)
             if metric:
                 graph.add_metric(metric)
@@ -113,7 +113,7 @@ class MetricFlowAdapter(BaseAdapter):
         primary_key = "id"  # default
         relationships = []
 
-        for entity_def in model_def.get("entities", []):
+        for entity_def in model_def.get("entities") or []:
             entity_type = entity_def.get("type", "primary")
             entity_name = entity_def.get("name")
             entity_expr = entity_def.get("expr", entity_name)
@@ -127,14 +127,14 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Parse dimensions
         dimensions = []
-        for dim_def in model_def.get("dimensions", []):
+        for dim_def in model_def.get("dimensions") or []:
             dim = self._parse_dimension(dim_def)
             if dim:
                 dimensions.append(dim)
 
         # Parse measures
         measures = []
-        for measure_def in model_def.get("measures", []):
+        for measure_def in model_def.get("measures") or []:
             measure = self._parse_measure(measure_def)
             if measure:
                 measures.append(measure)
@@ -144,7 +144,7 @@ class MetricFlowAdapter(BaseAdapter):
 
         segments = []
         meta = model_def.get("meta", {})
-        for segment_def in meta.get("segments", []):
+        for segment_def in meta.get("segments") or []:
             segment_name = segment_def.get("name")
             segment_sql = segment_def.get("sql")
             if segment_name and segment_sql:

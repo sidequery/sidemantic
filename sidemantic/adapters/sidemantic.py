@@ -150,13 +150,13 @@ class SidemanticAdapter(BaseAdapter):
             return graph
 
         # Parse models
-        for model_def in data.get("models", []):
+        for model_def in data.get("models") or []:
             model = self._parse_model(model_def)
             if model:
                 graph.add_model(model)
 
         # Parse metrics
-        for metric_def in data.get("metrics", []):
+        for metric_def in data.get("metrics") or []:
             metric = self._parse_metric(metric_def)
             if metric:
                 graph.add_metric(metric)
@@ -210,7 +210,7 @@ class SidemanticAdapter(BaseAdapter):
 
         # Parse joins
         joins = []
-        for relationship_def in model_def.get("relationships", []):
+        for relationship_def in model_def.get("relationships") or []:
             join = Relationship(
                 name=relationship_def.get("name"),
                 type=relationship_def.get("type"),
@@ -221,7 +221,7 @@ class SidemanticAdapter(BaseAdapter):
 
         # Parse dimensions
         dimensions = []
-        for dim_def in model_def.get("dimensions", []):
+        for dim_def in model_def.get("dimensions") or []:
             dimension = Dimension(
                 name=dim_def.get("name"),
                 type=dim_def.get("type"),
@@ -237,7 +237,7 @@ class SidemanticAdapter(BaseAdapter):
 
         # Parse measures/metrics (support both field names for backwards compatibility)
         measures = []
-        for measure_def in model_def.get("metrics", model_def.get("measures", [])):
+        for measure_def in model_def.get("metrics", model_def.get("measures") or []):
             measure = Metric(
                 name=measure_def.get("name"),
                 agg=measure_def.get("agg"),
@@ -261,7 +261,7 @@ class SidemanticAdapter(BaseAdapter):
 
         # Parse segments
         segments = []
-        for seg_def in model_def.get("segments", []):
+        for seg_def in model_def.get("segments") or []:
             segment = Segment(
                 name=seg_def.get("name"),
                 sql=seg_def.get("sql"),
@@ -283,7 +283,7 @@ class SidemanticAdapter(BaseAdapter):
         from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey
 
         pre_aggregations = []
-        for preagg_def in model_def.get("pre_aggregations", []):
+        for preagg_def in model_def.get("pre_aggregations") or []:
             # Parse refresh_key if present
             refresh_key = None
             if "refresh_key" in preagg_def:
@@ -296,8 +296,8 @@ class SidemanticAdapter(BaseAdapter):
 
             preagg = PreAggregation(
                 name=preagg_def.get("name"),
-                measures=preagg_def.get("measures", []),
-                dimensions=preagg_def.get("dimensions", []),
+                measures=preagg_def.get("measures") or [],
+                dimensions=preagg_def.get("dimensions") or [],
                 time_dimension=preagg_def.get("time_dimension"),
                 granularity=preagg_def.get("granularity"),
                 refresh_key=refresh_key,

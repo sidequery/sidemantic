@@ -1,8 +1,15 @@
-"""Tests for MetricFlow adapter."""
+"""Tests for MetricFlow adapter - parsing."""
 
 from pathlib import Path
 
+import pytest
+
 from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sidemantic.sql.generator import SQLGenerator
+
+# =============================================================================
+# PARSING TESTS
+# =============================================================================
 
 
 def test_metricflow_adapter():
@@ -75,8 +82,6 @@ def test_metricflow_adapter_join_discovery():
     assert customer_rel.type == "many_to_one"
 
     # Verify that queries can now build join paths
-    from sidemantic.sql.generator import SQLGenerator
-
     generator = SQLGenerator(graph)
 
     # This query should work now that relationships are resolved
@@ -781,3 +786,54 @@ def test_metricflow_saved_queries():
     assert "sales_transactions" in graph.metrics
     transactions = graph.get_metric("sales_transactions")
     assert transactions.sql == "sales_count"
+
+
+def test_import_real_metricflow_example():
+    """Test importing a real dbt MetricFlow schema file."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
+
+    # Verify models loaded
+    assert "orders" in graph.models
+    assert "customers" in graph.models
+
+    orders = graph.models["orders"]
+    customers = graph.models["customers"]
+
+    # Verify dimensions
+    order_dims = [d.name for d in orders.dimensions]
+    assert "order_date" in order_dims
+    assert "status" in order_dims
+
+    customer_dims = [d.name for d in customers.dimensions]
+    assert "region" in customer_dims
+    assert "tier" in customer_dims
+
+    # Verify measures
+    measure_names = [m.name for m in orders.metrics]
+    assert "order_count" in measure_names
+    assert "revenue" in measure_names
+    assert "avg_order_value" in measure_names
+
+    # Verify relationships were created from entities (resolved to model names)
+    rel_names = [r.name for r in orders.relationships]
+    assert "customers" in rel_names
+    customer_rel = next(r for r in orders.relationships if r.name == "customers")
+    assert customer_rel.type == "many_to_one"
+    assert customer_rel.foreign_key == "customer_id"
+
+    # Verify graph-level metrics
+    assert "total_revenue" in graph.metrics
+    assert "average_order_value" in graph.metrics
+
+    total_revenue = graph.metrics["total_revenue"]
+    assert total_revenue.type is None  # Simple metric maps to untyped
+
+    avg_order = graph.metrics["average_order_value"]
+    assert avg_order.type == "ratio"
+    assert avg_order.numerator == "revenue"
+    assert avg_order.denominator == "order_count"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -1,6 +1,9 @@
 """Tests for Rill adapter parsing."""
 
-import pytest
+import tempfile
+from pathlib import Path
+
+import yaml
 
 from sidemantic.adapters.rill import RillAdapter
 
@@ -70,32 +73,8 @@ def test_import_rill_with_table_reference():
     assert "region" in dim_names
 
 
-def test_query_imported_rill_example():
-    """Test that we can compile queries from imported Rill schema."""
-    from sidemantic import SemanticLayer
-
-    adapter = RillAdapter()
-    graph = adapter.parse("tests/fixtures/rill/orders.yaml")
-
-    layer = SemanticLayer()
-    layer.graph = graph
-
-    # Simple metric query
-    sql = layer.compile(metrics=["orders.total_orders"])
-    assert "COUNT" in sql.upper()
-
-    # Query with dimension
-    sql = layer.compile(metrics=["orders.total_revenue"], dimensions=["orders.status"])
-    assert "GROUP BY" in sql.upper()
-
-
 def test_import_rill_with_window_function():
     """Test importing Rill metrics view with window function definition."""
-    import tempfile
-    from pathlib import Path
-
-    import yaml
-
     # Create a Rill YAML with window function
     rill_yaml = {
         "type": "metrics_view",
@@ -149,11 +128,6 @@ def test_import_rill_with_window_function():
 
 def test_import_rill_format_preset():
     """Test importing Rill metrics view with format_preset mapping."""
-    import tempfile
-    from pathlib import Path
-
-    import yaml
-
     # Create a Rill YAML with format presets
     rill_yaml = {
         "type": "metrics_view",
@@ -198,11 +172,6 @@ def test_import_rill_format_preset():
 
 def test_export_rill_with_window_function():
     """Test exporting Sidemantic model with window function to Rill format."""
-    import tempfile
-    from pathlib import Path
-
-    import yaml
-
     from sidemantic import Dimension, Metric, Model
     from sidemantic.core.semantic_graph import SemanticGraph
 
@@ -250,7 +219,3 @@ def test_export_rill_with_window_function():
         assert "window" in rolling_measure
         assert rolling_measure["window"]["order"] == "order_date"
         assert rolling_measure["window"]["frame"] == "RANGE BETWEEN INTERVAL 7 DAY PRECEDING AND CURRENT ROW"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

@@ -1,8 +1,16 @@
-"""Tests for Omni adapter parsing."""
+"""Tests for Omni adapter - parsing."""
+
+import tempfile
+from pathlib import Path
 
 import pytest
+import yaml
 
 from sidemantic.adapters.omni import OmniAdapter
+from sidemantic.core.dimension import Dimension
+from sidemantic.core.metric import Metric
+from sidemantic.core.model import Model
+from sidemantic.core.semantic_graph import SemanticGraph
 
 
 def test_import_real_omni_example():
@@ -86,11 +94,6 @@ def test_import_omni_model_relationships():
 
 def test_omni_time_comparison_import():
     """Test importing Omni time comparison measures (date_offset_from_query)."""
-    import tempfile
-    from pathlib import Path
-
-    import yaml
-
     # Create a test Omni view with time comparison measure
     view_def = {
         "name": "sales",
@@ -153,16 +156,6 @@ def test_omni_time_comparison_import():
 
 def test_omni_time_comparison_export():
     """Test exporting time_comparison metrics to Omni format."""
-    import tempfile
-    from pathlib import Path
-
-    import yaml
-
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
-
     # Create a model with time_comparison metric
     sales = Model(
         name="sales",

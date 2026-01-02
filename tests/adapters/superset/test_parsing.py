@@ -1,8 +1,12 @@
-"""Tests for Superset adapter parsing."""
+"""Tests for Superset adapter - parsing."""
 
 import pytest
 
 from sidemantic.adapters.superset import SupersetAdapter
+
+# =============================================================================
+# PARSING TESTS
+# =============================================================================
 
 
 def test_import_real_superset_example():

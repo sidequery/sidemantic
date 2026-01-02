@@ -1,8 +1,6 @@
-"""Tests for Cube adapter."""
+"""Tests for Cube adapter - parsing."""
 
 from pathlib import Path
-
-import pytest
 
 from sidemantic.adapters.cube import CubeAdapter
 
@@ -44,6 +42,19 @@ def test_cube_adapter():
     completed_segment = next((s for s in orders.segments if s.name == "completed"), None)
     assert completed_segment is not None
 
+    # Verify segment SQL was converted from ${CUBE} to {model}
+    assert "{model}" in completed_segment.sql
+    assert "${CUBE}" not in completed_segment.sql
+
+    # Verify measure with filter was imported
+    completed_revenue = next(m for m in orders.metrics if m.name == "completed_revenue")
+    assert completed_revenue.filters is not None
+    assert len(completed_revenue.filters) > 0
+
+    # Verify ratio metric (calculated measure) was detected
+    conversion_rate = next(m for m in orders.metrics if m.name == "conversion_rate")
+    assert conversion_rate.type in ["ratio", "derived"]
+
 
 def test_cube_adapter_join_discovery():
     """Test that Cube adapter enables join discovery."""
@@ -53,8 +64,6 @@ def test_cube_adapter_join_discovery():
     # Check that relationships were imported
     orders = graph.get_model("orders")
     assert len(orders.relationships) > 0
-    # Note: The Cube example only has one model, so no actual join path can be tested
-    # but we verify that the relationship structure was imported correctly
 
 
 def test_cube_adapter_pre_aggregations():
@@ -65,9 +74,6 @@ def test_cube_adapter_pre_aggregations():
     orders = graph.get_model("orders")
     assert orders is not None
 
-    # Check pre-aggregations were parsed
-    # Note: Pre-aggregations are not stored as first-class objects in SemanticGraph
-    # but the adapter should handle them gracefully during parsing
     assert len(orders.dimensions) > 0
     assert len(orders.metrics) > 0
     assert len(orders.segments) == 2
@@ -111,7 +117,6 @@ def test_cube_adapter_multi_cube():
     count_metric = orders.get_metric("count")
     assert count_metric is not None
     if hasattr(count_metric, "drill_fields") and count_metric.drill_fields:
-        # Verify drill fields include cross-cube references
         assert any("customers" in str(field) for field in count_metric.drill_fields)
 
 
@@ -124,7 +129,6 @@ def test_cube_adapter_segments():
     orders = graph.get_model("orders")
     completed_segment = next((s for s in orders.segments if s.name == "completed"), None)
     assert completed_segment is not None
-    # Check that ${CUBE} was replaced with {model}
     assert "{model}" in completed_segment.sql or "orders" in completed_segment.sql.lower()
 
     # Test customers segments
@@ -146,10 +150,6 @@ def test_cube_adapter_drill_members():
     orders = graph.get_model("orders")
     count_metric = orders.get_metric("count")
     assert count_metric is not None
-
-    # Note: drill_members parsing is not yet implemented in Cube adapter
-    # This test will validate when the feature is added
-    # For now, we just verify the metric exists and has correct basic properties
     assert count_metric.name == "count"
     assert count_metric.agg == "count"
 
@@ -400,7 +400,7 @@ def test_cube_financial_analytics():
 
     is_recurring_dim = transactions.get_dimension("is_recurring")
     assert is_recurring_dim is not None
-    assert is_recurring_dim.type == "categorical"  # boolean maps to categorical
+    assert is_recurring_dim.type == "categorical"
 
     # Check transaction measures with filters
     credit_amount = transactions.get_metric("credit_amount")
@@ -748,7 +748,3 @@ def test_cube_adapter_cube_name_reference():
     assert high_value_segment is not None
     assert "{model}" in high_value_segment.sql
     assert "${custom_cube_ref}" not in high_value_segment.sql
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

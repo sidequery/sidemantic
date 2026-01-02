@@ -169,6 +169,8 @@ class SemanticLayer:
             if existing.model_dump() == model.model_dump():
                 return
 
+        self._normalize_model_table(model)
+
         errors = validate_model(model)
         if errors:
             raise ModelValidationError(
@@ -176,6 +178,66 @@ class SemanticLayer:
             )
 
         self.graph.add_model(model)
+
+    def _normalize_model_table(self, model: Model) -> None:
+        """Normalize model.table for the active dialect when needed."""
+        if not model.table or model.sql:
+            return
+
+        if self.dialect != "duckdb":
+            return
+
+        if not self._is_simple_table_reference(model.table):
+            return
+
+        normalized = self._normalize_duckdb_table_reference(model.table)
+        if normalized != model.table:
+            model.table = normalized
+
+    @staticmethod
+    def _is_simple_table_reference(table: str) -> bool:
+        """Return True if table looks like a plain table reference (not a subquery)."""
+        return not any(ch in table for ch in (" ", "\n", "\t", "(", ")"))
+
+    def _normalize_duckdb_table_reference(self, table: str) -> str:
+        """Drop unattached catalog qualifiers for DuckDB."""
+        import sqlglot
+        from sqlglot import exp
+
+        try:
+            parsed = sqlglot.parse_one(table, into=exp.Table, dialect="duckdb")
+        except Exception:
+            return table
+
+        catalog_expr = parsed.args.get("catalog")
+        if not catalog_expr:
+            return table
+
+        catalog = getattr(catalog_expr, "name", None) or getattr(catalog_expr, "this", None)
+        if not catalog:
+            return table
+
+        if catalog in self._duckdb_catalogs():
+            return table
+
+        parsed.set("catalog", None)
+        return parsed.sql(dialect="duckdb")
+
+    def _duckdb_catalogs(self) -> set[str]:
+        """Return attached DuckDB catalog names."""
+        try:
+            result = self.adapter.execute("PRAGMA database_list")
+            rows = result.fetchall()
+        except Exception:
+            return set()
+
+        catalogs = set()
+        for row in rows:
+            if len(row) >= 2:
+                catalogs.add(row[1])
+            elif row:
+                catalogs.add(row[0])
+        return catalogs
 
     def add_metric(self, measure: Metric) -> None:
         """Add a measure to the semantic layer.
@@ -442,7 +504,7 @@ class SemanticLayer:
         rewriter = QueryRewriter(self.graph, dialect=self.dialect)
         rewritten_sql = rewriter.rewrite(query)
 
-        return self.conn.execute(rewritten_sql)
+        return self.adapter.execute(rewritten_sql)
 
     def to_yaml(self, path: str | Path) -> None:
         """Export semantic layer to native YAML file.

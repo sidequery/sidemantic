@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DuckDBConnection(BaseModel):
@@ -33,6 +33,43 @@ class BigQueryConnection(BaseModel):
     location: str = Field(default="US", description="BigQuery location")
 
 
+class ClickHouseConnection(BaseModel):
+    """ClickHouse connection configuration."""
+
+    type: Literal["clickhouse"] = "clickhouse"
+    host: str = Field(..., description="ClickHouse host")
+    port: int = Field(default=8123, description="ClickHouse port")
+    database: str = Field(default="default", description="Database name")
+    username: str = Field(default="default", description="Username")
+    password: str | None = Field(default=None, description="Password (optional)")
+
+
+class SnowflakeConnection(BaseModel):
+    """Snowflake connection configuration."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: Literal["snowflake"] = "snowflake"
+    account: str = Field(..., description="Snowflake account identifier")
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
+    database: str | None = Field(default=None, description="Database name (optional)")
+    schema_name: str | None = Field(default=None, alias="schema", description="Schema name (optional)")
+    warehouse: str | None = Field(default=None, description="Warehouse name (optional)")
+    role: str | None = Field(default=None, description="Role name (optional)")
+
+
+class SparkConnection(BaseModel):
+    """Spark SQL connection configuration."""
+
+    type: Literal["spark"] = "spark"
+    host: str = Field(..., description="Spark host")
+    port: int = Field(default=10000, description="Spark port")
+    database: str = Field(default="default", description="Database name")
+    username: str | None = Field(default=None, description="Username (optional)")
+    password: str | None = Field(default=None, description="Password (optional)")
+
+
 class PostgresServerConfig(BaseModel):
     """PostgreSQL wire protocol server configuration (ALPHA).
 
@@ -44,7 +81,14 @@ class PostgresServerConfig(BaseModel):
     password: str | None = Field(default=None, description="Password for authentication (optional)")
 
 
-Connection = DuckDBConnection | PostgreSQLConnection | BigQueryConnection
+Connection = (
+    DuckDBConnection
+    | PostgreSQLConnection
+    | BigQueryConnection
+    | ClickHouseConnection
+    | SnowflakeConnection
+    | SparkConnection
+)
 
 
 class SidemanticConfig(BaseModel):
@@ -212,5 +256,37 @@ def build_connection_string(config: SidemanticConfig) -> str:
     elif isinstance(config.connection, BigQueryConnection):
         dataset_part = f"/{config.connection.dataset_id}" if config.connection.dataset_id else ""
         return f"bigquery://{config.connection.project_id}{dataset_part}"
+    elif isinstance(config.connection, ClickHouseConnection):
+        password_part = f":{config.connection.password}" if config.connection.password else ""
+        return (
+            f"clickhouse://{config.connection.username}{password_part}@"
+            f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
+        )
+    elif isinstance(config.connection, SnowflakeConnection):
+        path = ""
+        if config.connection.database:
+            path = f"/{config.connection.database}"
+            if config.connection.schema_name:
+                path = f"{path}/{config.connection.schema_name}"
+
+        params = []
+        if config.connection.warehouse:
+            params.append(f"warehouse={config.connection.warehouse}")
+        if config.connection.role:
+            params.append(f"role={config.connection.role}")
+        query = f"?{'&'.join(params)}" if params else ""
+
+        return (
+            f"snowflake://{config.connection.username}:{config.connection.password}"
+            f"@{config.connection.account}{path}{query}"
+        )
+    elif isinstance(config.connection, SparkConnection):
+        if config.connection.username:
+            password_part = f":{config.connection.password}" if config.connection.password else ""
+            return (
+                f"spark://{config.connection.username}{password_part}@"
+                f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
+            )
+        return f"spark://{config.connection.host}:{config.connection.port}/{config.connection.database}"
     else:
         raise ValueError(f"Unknown connection type: {type(config.connection)}")

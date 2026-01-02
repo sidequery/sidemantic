@@ -79,6 +79,11 @@ services:
     environment:
       POSTGRES_TEST: "1"
       POSTGRES_URL: "postgres://test:test@postgres:5432/sidemantic_test"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: "sidemantic_test"
+      POSTGRES_USER: "test"
+      POSTGRES_PASSWORD: "test"
       BIGQUERY_TEST: "1"
       BIGQUERY_EMULATOR_HOST: "bigquery:9050"
       BIGQUERY_PROJECT: "test-project"

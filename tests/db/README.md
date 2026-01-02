@@ -19,8 +19,10 @@ docker compose up test --build --abort-on-container-exit
 
 # Or run tests locally against dockerized Postgres
 docker compose up -d postgres
-POSTGRES_TEST=1 uv run --extra postgres pytest -m integration tests/db/test_postgres_integration.py -v
-POSTGRES_TEST=1 uv run --extra postgres pytest -m integration tests/db/test_postgres_cli_e2e.py -v
+POSTGRES_TEST=1 POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=sidemantic_test POSTGRES_USER=test POSTGRES_PASSWORD=test \
+  uv run --extra postgres pytest -m integration tests/db/test_postgres_integration.py -v
+POSTGRES_TEST=1 POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=sidemantic_test POSTGRES_USER=test POSTGRES_PASSWORD=test \
+  uv run --extra postgres pytest -m integration tests/db/test_postgres_cli_e2e.py -v
 ```
 
 **Manual setup:**
@@ -31,6 +33,11 @@ uv sync --extra postgres
 # Set up Postgres (adjust connection details as needed)
 export POSTGRES_TEST=1
 export POSTGRES_URL="postgres://test:test@localhost:5432/sidemantic_test"
+export POSTGRES_HOST="localhost"
+export POSTGRES_PORT="5432"
+export POSTGRES_DB="sidemantic_test"
+export POSTGRES_USER="test"
+export POSTGRES_PASSWORD="test"
 
 # Run integration tests only
 uv run pytest -m integration tests/db/test_postgres_integration.py -v

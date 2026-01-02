@@ -1,0 +1,85 @@
+{
+  "name": "sidemantic",
+  "displayName": "Sidemantic",
+  "description": "Language support for Sidemantic semantic layer definitions (SQL dialect and YAML)",
+  "version": "0.1.0",
+  "publisher": "sidequery",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sidequery/sidemantic"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "sidemantic",
+    "semantic layer",
+    "sql",
+    "yaml",
+    "metrics"
+  ],
+  "activationEvents": [
+    "onLanguage:sidemantic-sql",
+    "workspaceContains:**/*.sidemantic.yaml",
+    "workspaceContains:**/*.sidemantic.yml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "sidemantic-sql",
+        "aliases": ["Sidemantic SQL", "sidemantic"],
+        "extensions": [".sidemantic.sql"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sidemantic-sql",
+        "scopeName": "source.sidemantic-sql",
+        "path": "./syntaxes/sidemantic-sql.tmLanguage.json"
+      }
+    ],
+    "yamlValidation": [
+      {
+        "fileMatch": ["*.sidemantic.yaml", "*.sidemantic.yml", "sidemantic.yaml", "sidemantic.yml"],
+        "url": "https://sidemantic.com/schema.json"
+      }
+    ],
+    "configuration": {
+      "title": "Sidemantic",
+      "properties": {
+        "sidemantic.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Sidemantic language server for .sidemantic.sql files"
+        },
+        "sidemantic.lsp.path": {
+          "type": "string",
+          "default": "sidemantic",
+          "description": "Path to the sidemantic CLI executable"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0",
+    "@vscode/vsce": "^2.0.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  }
+}

@@ -43,7 +43,22 @@ jobs:
         env:
           POSTGRES_TEST: "1"
           POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
+          POSTGRES_HOST: "localhost"
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: "sidemantic_test"
+          POSTGRES_USER: "test"
+          POSTGRES_PASSWORD: "test"
         run: uv run pytest -m integration tests/db/test_postgres_integration.py -v
+
+      - name: Run PostgreSQL CLI e2e test
+        env:
+          POSTGRES_TEST: "1"
+          POSTGRES_HOST: "localhost"
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: "sidemantic_test"
+          POSTGRES_USER: "test"
+          POSTGRES_PASSWORD: "test"
+        run: uv run pytest -m integration tests/db/test_postgres_cli_e2e.py -v
 
   bigquery-integration:
     runs-on: ubuntu-latest

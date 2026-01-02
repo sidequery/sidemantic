@@ -19,7 +19,10 @@ docker compose up test --build --abort-on-container-exit
 
 # Or run tests locally against dockerized Postgres
 docker compose up -d postgres
-POSTGRES_TEST=1 uv run --extra postgres pytest -m integration tests/db/test_postgres_integration.py -v
+POSTGRES_TEST=1 POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=sidemantic_test POSTGRES_USER=test POSTGRES_PASSWORD=test \
+  uv run --extra postgres pytest -m integration tests/db/test_postgres_integration.py -v
+POSTGRES_TEST=1 POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=sidemantic_test POSTGRES_USER=test POSTGRES_PASSWORD=test \
+  uv run --extra postgres pytest -m integration tests/db/test_postgres_cli_e2e.py -v
 ```
 
 **Manual setup:**
@@ -30,9 +33,15 @@ uv sync --extra postgres
 # Set up Postgres (adjust connection details as needed)
 export POSTGRES_TEST=1
 export POSTGRES_URL="postgres://test:test@localhost:5432/sidemantic_test"
+export POSTGRES_HOST="localhost"
+export POSTGRES_PORT="5432"
+export POSTGRES_DB="sidemantic_test"
+export POSTGRES_USER="test"
+export POSTGRES_PASSWORD="test"
 
 # Run integration tests only
 uv run pytest -m integration tests/db/test_postgres_integration.py -v
+uv run pytest -m integration tests/db/test_postgres_cli_e2e.py -v
 ```
 
 ### BigQuery Integration Tests
@@ -47,6 +56,7 @@ docker compose up test --build --abort-on-container-exit
 # Or run tests locally against dockerized emulator
 docker compose up -d bigquery
 BIGQUERY_TEST=1 BIGQUERY_EMULATOR_HOST=localhost:9050 uv run --extra bigquery pytest -m integration tests/db/test_bigquery_integration.py -v
+BIGQUERY_TEST=1 BIGQUERY_EMULATOR_HOST=localhost:9050 uv run --extra bigquery pytest -m integration tests/db/test_bigquery_cli_e2e.py -v
 ```
 
 **Manual setup:**
@@ -62,15 +72,57 @@ export BIGQUERY_DATASET=test_dataset
 
 # Run integration tests only
 uv run pytest -m integration tests/db/test_bigquery_integration.py -v
+uv run pytest -m integration tests/db/test_bigquery_cli_e2e.py -v
 ```
 
 **Note:** Normal `pytest` runs will skip integration tests automatically. Use `-m integration` to run them explicitly.
+
+### ClickHouse Integration Tests
+
+ClickHouse tests use Docker and are marked with `@pytest.mark.integration`. They require the `clickhouse` extra dependencies.
+
+**Using Docker Compose (recommended):**
+```bash
+# Start ClickHouse and run integration tests
+docker compose up -d clickhouse
+CLICKHOUSE_TEST=1 uv run --extra clickhouse pytest -m integration tests/db/test_clickhouse_integration.py -v
+CLICKHOUSE_TEST=1 uv run --extra clickhouse pytest -m integration tests/db/test_clickhouse_cli_e2e.py -v
+```
+
+### Spark Integration Tests
+
+Spark tests use Docker and are marked with `@pytest.mark.integration`. They require the `spark` extra dependencies.
+
+**Using Docker Compose (recommended):**
+```bash
+# Start Spark and run integration tests
+docker compose up -d spark
+SPARK_TEST=1 uv run --extra spark pytest -m integration tests/db/test_spark_integration.py -v
+SPARK_TEST=1 uv run --extra spark pytest -m integration tests/db/test_spark_cli_e2e.py -v
+```
+
+### Snowflake Integration Tests (Emulator)
+
+Snowflake tests use `fakesnow` and are marked with `@pytest.mark.integration`.
+
+```bash
+SNOWFLAKE_TEST=1 uv run --extra snowflake pytest -m integration tests/db/test_snowflake_integration.py -v
+SNOWFLAKE_TEST=1 uv run --extra snowflake pytest -m integration tests/db/test_snowflake_cli_e2e.py -v
+```
 
 ## Test Coverage
 
 - **test_duckdb_adapter.py**: Tests for DuckDB adapter implementation
 - **test_postgres_adapter.py**: Basic Postgres adapter tests (import checks, no connection required)
 - **test_postgres_integration.py**: Full integration tests against real Postgres database (10 tests)
+- **test_postgres_cli_e2e.py**: CLI/config e2e against Postgres
 - **test_bigquery_adapter.py**: Basic BigQuery adapter tests (import checks, URL parsing)
 - **test_bigquery_integration.py**: Full integration tests against BigQuery emulator (10 tests)
+- **test_bigquery_cli_e2e.py**: CLI/config e2e against BigQuery emulator
+- **test_clickhouse_integration.py**: Full integration tests against ClickHouse docker
+- **test_clickhouse_cli_e2e.py**: CLI/config e2e against ClickHouse docker
+- **test_spark_integration.py**: Full integration tests against Spark docker
+- **test_spark_cli_e2e.py**: CLI/config e2e against Spark docker
+- **test_snowflake_integration.py**: Full integration tests using fakesnow
+- **test_snowflake_cli_e2e.py**: CLI/config e2e using fakesnow
 - **test_semantic_layer_adapters.py**: Tests for SemanticLayer integration with different adapters

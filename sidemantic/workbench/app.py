@@ -596,7 +596,7 @@ class SidequeryWorkbench(App):
             self.last_rendered_sql = rendered_sql
 
             # Execute the query
-            result = self.layer.conn.execute(rendered_sql)
+            result = self.layer.adapter.execute(rendered_sql)
 
             # Get column names and rows
             columns = [desc[0] for desc in result.description]

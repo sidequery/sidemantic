@@ -798,6 +798,10 @@ class SQLGenerator:
                 # For COUNT(*), use 1 instead of * to avoid invalid "* AS alias" syntax
                 if measure.agg == "count" and not measure.sql:
                     select_cols.append(f"1 AS {measure_name}_raw")
+                # For COUNT_DISTINCT without sql, use primary key (count distinct rows)
+                elif measure.agg == "count_distinct" and not measure.sql:
+                    pk = model.primary_key or "id"
+                    select_cols.append(f"{pk} AS {measure_name}_raw")
                 else:
                     select_cols.append(f"{measure.sql_expr} AS {measure_name}_raw")
 

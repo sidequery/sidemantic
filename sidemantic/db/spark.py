@@ -65,6 +65,7 @@ class SparkAdapter(BaseDatabaseAdapter):
         port: int = 10000,
         database: str = "default",
         username: str | None = None,
+        password: str | None = None,
         **kwargs,
     ):
         """Initialize Spark adapter.
@@ -74,6 +75,7 @@ class SparkAdapter(BaseDatabaseAdapter):
             port: Thrift server port (default: 10000)
             database: Database name (default: "default")
             username: Username (optional)
+            password: Password (optional)
             **kwargs: Additional arguments passed to pyhive.hive.connect
         """
         try:
@@ -93,6 +95,8 @@ class SparkAdapter(BaseDatabaseAdapter):
 
         if username:
             conn_params["username"] = username
+        if password:
+            conn_params["password"] = password
 
         # Merge with additional kwargs
         conn_params.update(kwargs)
@@ -178,6 +182,7 @@ class SparkAdapter(BaseDatabaseAdapter):
 
         # Parse username
         username = unquote(parsed.username) if parsed.username else None
+        password = unquote(parsed.password) if parsed.password else None
 
         # Parse query parameters
         params = {}
@@ -189,5 +194,6 @@ class SparkAdapter(BaseDatabaseAdapter):
             port=port,
             database=database,
             username=username,
+            password=password,
             **params,
         )

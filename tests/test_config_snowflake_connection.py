@@ -22,6 +22,5 @@ connection:
     connection = build_connection_string(config)
 
     assert (
-        connection
-        == "snowflake://analyst:secret@xy12345.us-east-1/ANALYTICS/PUBLIC?warehouse=COMPUTE_WH&role=ANALYST"
+        connection == "snowflake://analyst:secret@xy12345.us-east-1/ANALYTICS/PUBLIC?warehouse=COMPUTE_WH&role=ANALYST"
     )

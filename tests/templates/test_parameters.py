@@ -447,3 +447,45 @@ def test_parameter_interpolation_with_sql_injection():
     with pytest.raises(ValueError, match="must be alphanumeric"):
         param_set_bad = ParameterSet(params, {"table": "orders; DROP TABLE users; --"})
         param_set_bad.format("table")
+
+
+def test_query_method_accepts_parameters():
+    """Test that .query() method accepts parameters argument.
+
+    Bug: Documentation showed parameters argument but method didn't accept it.
+    Fix: Add parameters argument and forward to compile().
+    """
+    from sidemantic import Dimension, Metric, Model, SemanticLayer
+
+    layer = SemanticLayer()
+
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="region", type="categorical"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE orders_table (
+            order_id INTEGER,
+            region VARCHAR,
+            amount DECIMAL(10, 2)
+        )
+    """)
+    conn.execute("INSERT INTO orders_table VALUES (1, 'US', 100)")
+
+    layer.conn = conn
+    layer.add_model(orders)
+
+    # Should accept parameters argument without error
+    result = layer.query(metrics=["orders.revenue"], dimensions=["orders.region"], parameters={"test_param": "value"})
+
+    # Just verify it doesn't crash - parameters may not be used in this query
+    assert result is not None

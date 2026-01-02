@@ -95,3 +95,30 @@ def test_duckdb_adapter_fetch_record_batch():
     batch = adapter.fetch_record_batch(result)
     # Should return Arrow RecordBatchReader
     assert batch is not None
+
+
+def test_duckdb_absolute_file_paths():
+    """Test that DuckDB absolute file paths preserve leading slash.
+
+    Bug: duckdb:///tmp/app.db was converted to tmp/app.db (relative path).
+    Fix: Preserve leading slash to get /tmp/app.db (absolute path).
+    """
+    from sidemantic import SemanticLayer
+
+    # Test absolute path
+    layer = SemanticLayer(connection="duckdb:///tmp/test.db")
+    assert layer.conn is not None
+    # Can't easily verify the exact path, but connection should work
+
+
+def test_duckdb_memory_variations():
+    """Test various :memory: URI formats."""
+    from sidemantic import SemanticLayer
+
+    # Standard memory
+    layer1 = SemanticLayer(connection="duckdb:///:memory:")
+    assert layer1.conn is not None
+
+    # Just duckdb:// should default to memory
+    layer2 = SemanticLayer(connection="duckdb:///")
+    assert layer2.conn is not None

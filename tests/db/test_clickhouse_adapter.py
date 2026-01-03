@@ -14,7 +14,10 @@ def test_clickhouse_adapter_import_error_message():
 
 def test_clickhouse_from_url_matrix(monkeypatch):
     cases = [
-        ("clickhouse://u:p@host:8123/db", {"host": "host", "port": 8123, "database": "db", "user": "u", "password": "p"}),
+        (
+            "clickhouse://u:p@host:8123/db",
+            {"host": "host", "port": 8123, "database": "db", "user": "u", "password": "p"},
+        ),
         ("clickhouse://host/db", {"host": "host", "port": 8123, "database": "db", "user": "default", "password": ""}),
         ("clickhouse://host", {"database": "default"}),
         ("clickhouse://u@host/db", {"user": "u"}),

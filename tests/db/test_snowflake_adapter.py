@@ -52,7 +52,10 @@ def test_snowflake_adapter_import_error_message():
 
 def test_snowflake_from_url_matrix(monkeypatch):
     cases = [
-        ("snowflake://u:p@acct/db/schema", {"account": "acct", "user": "u", "password": "p", "database": "db", "schema": "schema"}),
+        (
+            "snowflake://u:p@acct/db/schema",
+            {"account": "acct", "user": "u", "password": "p", "database": "db", "schema": "schema"},
+        ),
         ("snowflake://u@acct/db", {"account": "acct", "user": "u", "database": "db", "schema": None}),
         ("snowflake://acct", {"account": "acct", "user": None, "password": None, "database": None, "schema": None}),
         ("snowflake://u:p@acct/db/schema?warehouse=WH", {"warehouse": "WH"}),

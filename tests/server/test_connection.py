@@ -52,14 +52,24 @@ def test_handle_system_queries():
     conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer)
     conn.send_reader = send_reader
 
-    assert conn._try_handle_system_query("SELECT * FROM information_schema.tables", "select * from information_schema.tables", lambda *_: None) is True
+    assert (
+        conn._try_handle_system_query(
+            "SELECT * FROM information_schema.tables", "select * from information_schema.tables", lambda *_: None
+        )
+        is True
+    )
 
     table = captured["reader"].read_all()
     rows = table.to_pylist()
     assert any(r["table_schema"] == "semantic_layer" for r in rows)
 
     captured.clear()
-    assert conn._try_handle_system_query("SELECT * FROM pg_catalog.pg_namespace", "select * from pg_catalog.pg_namespace", lambda *_: None) is True
+    assert (
+        conn._try_handle_system_query(
+            "SELECT * FROM pg_catalog.pg_namespace", "select * from pg_catalog.pg_namespace", lambda *_: None
+        )
+        is True
+    )
     assert isinstance(captured["reader"], pa.RecordBatchReader)
 
 

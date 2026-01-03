@@ -1669,17 +1669,59 @@ class SQLGenerator:
             has_inline_agg = any(agg in formula.upper() for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX("])
 
             if has_inline_agg:
-                # This is a SQL expression metric - use formula as-is
-                # Just replace {model} placeholder with the CTE alias
-                # We need to find which model this metric belongs to
-                # Look through all models to find this metric
-                for model_name, model in self.graph.models.items():
-                    if model.get_metric(metric.name):
-                        # Replace {model} with the CTE alias
-                        formula = formula.replace("{model}", f"{model_name}_cte")
-                        return formula
+                # This is a SQL expression metric with inline aggregations.
+                # We need to qualify bare column names to reference the CTE columns.
+                # Find which model this metric belongs to
+                metric_model_name = None
+                for m_name, m in self.graph.models.items():
+                    if m.get_metric(metric.name):
+                        metric_model_name = m_name
+                        break
 
-                # If we didn't find the model, return formula as-is
+                if metric_model_name:
+                    # Replace {model} placeholder with the CTE alias
+                    formula = formula.replace("{model}", f"{metric_model_name}_cte")
+
+                    # Get the model's columns - dimensions and metrics need different treatment
+                    model = self.graph.get_model(metric_model_name)
+
+                    # Dimensions are in CTE as {dim_name} (no _raw suffix)
+                    dimension_names = set()
+                    for dim in model.dimensions:
+                        dimension_names.add(dim.name)
+
+                    # Metrics/facts are in CTE as {metric_name}_raw
+                    metric_columns = {}  # column_name -> cte_column_name
+                    for m in model.metrics:
+                        if m.sql and not m.type:
+                            # For simple metrics with single-column sql, add to the dict
+                            # Skip complex expressions (containing operators or spaces)
+                            # Also skip if the sql column is a dimension (dimensions are in CTE without _raw)
+                            if " " not in m.sql and not any(op in m.sql for op in ["+", "-", "*", "/", "(", ")"]):
+                                if m.sql not in dimension_names:
+                                    metric_columns[m.sql] = f"{m.sql}_raw"
+                        metric_columns[m.name] = f"{m.name}_raw"
+
+                    import re
+
+                    # Process metrics first (with _raw suffix), then dimensions
+                    # Sort by length descending to avoid partial matches
+                    sorted_metric_cols = sorted(metric_columns.keys(), key=len, reverse=True)
+                    for col in sorted_metric_cols:
+                        cte_col = metric_columns[col]
+                        # Only replace if not already qualified
+                        pattern = r"(?<![.\w])\b" + re.escape(col) + r"\b(?!\.)"
+                        replacement = f"{metric_model_name}_cte.{cte_col}"
+                        formula = re.sub(pattern, replacement, formula)
+
+                    # Then qualify dimensions (no _raw suffix)
+                    sorted_dims = sorted(dimension_names, key=len, reverse=True)
+                    for dim in sorted_dims:
+                        # Only replace if not already qualified
+                        pattern = r"(?<![.\w])\b" + re.escape(dim) + r"\b(?!\.)"
+                        replacement = f"{metric_model_name}_cte.{dim}"
+                        formula = re.sub(pattern, replacement, formula)
+
                 return formula
 
             # Auto-detect dependencies from expression using graph for resolution

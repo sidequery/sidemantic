@@ -409,6 +409,16 @@ class TestDerivedMetrics:
         assert rows[0]["total_revenue"] is not None
         assert abs(rows[0]["total_revenue"] - 12240.95) < 0.1
 
+    def test_avg_order_value(self, layer):
+        """Test derived metric with multiple aggregations."""
+        result = layer.query(metrics=["orders.avg_order_value"])
+        rows = fetch_dicts(result)
+
+        # total_revenue / total_orders = 12240.95 / 8 = 1530.12
+        expected_avg = 12240.95 / 8
+        assert rows[0]["avg_order_value"] is not None
+        assert abs(rows[0]["avg_order_value"] - expected_avg) < 0.1
+
 
 class TestSegments:
     """Test segment (filter) functionality."""

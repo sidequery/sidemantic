@@ -877,6 +877,15 @@ class SQLGenerator:
         for metric_ref in metrics:
             collect_measures_from_metric(metric_ref)
 
+        # Also include measure columns referenced in metric_filter_columns (for derived metrics
+        # with inline SQL aggregations like "SUM(quantity * unit_price) / COUNT(DISTINCT order_id)")
+        if metric_filter_columns:
+            for col_name in metric_filter_columns:
+                # Check if this column is a measure (not a dimension)
+                measure = model.get_metric(col_name)
+                if measure and measure.agg and col_name not in measures_needed:
+                    measures_needed.add(col_name)
+
         for measure_name in measures_needed:
             measure = model.get_metric(measure_name)
             if measure:
@@ -1670,57 +1679,35 @@ class SQLGenerator:
 
             if has_inline_agg:
                 # This is a SQL expression metric with inline aggregations.
-                # We need to qualify bare column names to reference the CTE columns.
+                # Column references should already be qualified with {model} placeholder
+                # at parse time (e.g., by SnowflakeAdapter).
+                # We need to:
+                # 1. Replace {model} with the CTE alias
+                # 2. Replace measure column references with their _raw suffixed versions
+
                 # Find which model this metric belongs to
-                metric_model_name = None
-                for m_name, m in self.graph.models.items():
-                    if m.get_metric(metric.name):
-                        metric_model_name = m_name
-                        break
+                metric_model_name = model_context
+                if not metric_model_name:
+                    for m_name, m in self.graph.models.items():
+                        if m.get_metric(metric.name):
+                            metric_model_name = m_name
+                            break
 
                 if metric_model_name:
+                    cte_alias = f"{metric_model_name}_cte"
                     # Replace {model} placeholder with the CTE alias
-                    formula = formula.replace("{model}", f"{metric_model_name}_cte")
+                    formula = formula.replace("{model}", cte_alias)
 
-                    # Get the model's columns - dimensions and metrics need different treatment
-                    model = self.graph.get_model(metric_model_name)
-
-                    # Dimensions are in CTE as {dim_name} (no _raw suffix)
-                    dimension_names = set()
-                    for dim in model.dimensions:
-                        dimension_names.add(dim.name)
-
-                    # Metrics/facts are in CTE as {metric_name}_raw
-                    metric_columns = {}  # column_name -> cte_column_name
-                    for m in model.metrics:
-                        if m.sql and not m.type:
-                            # For simple metrics with single-column sql, add to the dict
-                            # Skip complex expressions (containing operators or spaces)
-                            # Also skip if the sql column is a dimension (dimensions are in CTE without _raw)
-                            if " " not in m.sql and not any(op in m.sql for op in ["+", "-", "*", "/", "(", ")"]):
-                                if m.sql not in dimension_names:
-                                    metric_columns[m.sql] = f"{m.sql}_raw"
-                        metric_columns[m.name] = f"{m.name}_raw"
-
-                    import re
-
-                    # Process metrics first (with _raw suffix), then dimensions
-                    # Sort by length descending to avoid partial matches
-                    sorted_metric_cols = sorted(metric_columns.keys(), key=len, reverse=True)
-                    for col in sorted_metric_cols:
-                        cte_col = metric_columns[col]
-                        # Only replace if not already qualified
-                        pattern = r"(?<![.\w])\b" + re.escape(col) + r"\b(?!\.)"
-                        replacement = f"{metric_model_name}_cte.{cte_col}"
-                        formula = re.sub(pattern, replacement, formula)
-
-                    # Then qualify dimensions (no _raw suffix)
-                    sorted_dims = sorted(dimension_names, key=len, reverse=True)
-                    for dim in sorted_dims:
-                        # Only replace if not already qualified
-                        pattern = r"(?<![.\w])\b" + re.escape(dim) + r"\b(?!\.)"
-                        replacement = f"{metric_model_name}_cte.{dim}"
-                        formula = re.sub(pattern, replacement, formula)
+                    # Replace measure columns with their _raw suffixed versions
+                    # For each measure in the model, check if it's referenced in the formula
+                    model_obj = self.graph.get_model(metric_model_name)
+                    if model_obj:
+                        for measure in model_obj.metrics:
+                            if measure.agg:  # Only process actual aggregation measures
+                                # Replace cte_alias.measure_name with cte_alias.measure_name_raw
+                                pattern = f"{cte_alias}.{measure.name}"
+                                replacement = f"{cte_alias}.{measure.name}_raw"
+                                formula = formula.replace(pattern, replacement)
 
                 return formula
 

@@ -1,5 +1,6 @@
 """Snowflake Cortex Semantic Model adapter for importing/exporting semantic models."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -11,6 +12,96 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
+
+# Common SQL keywords to skip when qualifying column names
+_SQL_KEYWORDS = {
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "IS",
+    "NULL",
+    "TRUE",
+    "FALSE",
+    "LIKE",
+    "BETWEEN",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "AS",
+    "FROM",
+    "WHERE",
+    "SELECT",
+    "SUM",
+    "COUNT",
+    "AVG",
+    "MIN",
+    "MAX",
+    "MEDIAN",
+    "DISTINCT",
+    "NULLIF",
+}
+
+
+def _qualify_columns(sql_expr: str) -> str:
+    """Add {model} qualifier to bare column names in SQL expression.
+
+    Snowflake semantic model expressions use bare column names (e.g., "status = 'delivered'").
+    Sidemantic requires {model} placeholder for column references.
+
+    Args:
+        sql_expr: SQL expression with bare column names
+
+    Returns:
+        SQL expression with {model}.column qualified references
+    """
+    if not sql_expr:
+        return sql_expr
+
+    # Skip if already has {model} references
+    if "{model}" in sql_expr:
+        return sql_expr
+
+    # First, protect string literals by replacing them with numeric placeholders
+    # Numbers can't be identifiers so they won't be matched by the pattern
+    string_literals = []
+
+    def save_string(match):
+        idx = len(string_literals)
+        string_literals.append(match.group(0))
+        # Use 0x prefix to make it look like a number, won't be matched as identifier
+        return f"0x{idx:08x}"
+
+    # Match single-quoted strings (handling escaped quotes)
+    protected_expr = re.sub(r"'(?:[^'\\]|\\.)*'", save_string, sql_expr)
+
+    # Pattern to match potential column names
+    # Uses word boundaries \b to match complete identifiers only
+    # Negative lookbehind for dot prevents matching already-qualified names
+    # We check for function calls (followed by parenthesis) in the replace function
+    pattern = r"(?<![.\w])\b([a-zA-Z_][a-zA-Z0-9_]*)\b"
+
+    def replace_column(match):
+        col = match.group(1)
+        # Skip if it's a SQL keyword or function name
+        if col.upper() in _SQL_KEYWORDS:
+            return col
+        # Check if this is followed by a parenthesis (function call)
+        end_pos = match.end()
+        remaining = protected_expr[end_pos:].lstrip()
+        if remaining.startswith("("):
+            return col
+        return "{model}." + col
+
+    result = re.sub(pattern, replace_column, protected_expr)
+
+    # Restore string literals
+    for i, literal in enumerate(string_literals):
+        result = result.replace(f"0x{i:08x}", literal)
+
+    return result
 
 
 class SnowflakeAdapter(BaseAdapter):
@@ -257,7 +348,6 @@ class SnowflakeAdapter(BaseAdapter):
 
         # Snowflake metrics contain full aggregate expressions like "SUM(amount)"
         # Check if this is a simple aggregation or complex expression
-        import re
 
         # Count how many aggregate function calls are in the expression
         agg_pattern = r"\b(SUM|COUNT|AVG|MIN|MAX|MEDIAN)\s*\("
@@ -288,11 +378,12 @@ class SnowflakeAdapter(BaseAdapter):
                 )
 
         # Complex expression (multiple aggregations or couldn't parse simple one)
-        # Mark as derived so the full SQL expression is preserved
+        # Mark as derived and qualify column references with {model} placeholder
+        qualified_expr = _qualify_columns(expr)
         return Metric(
             name=name,
             type="derived",
-            sql=expr,
+            sql=qualified_expr,
             description=metric_def.get("description"),
         )
 
@@ -314,53 +405,8 @@ class SnowflakeAdapter(BaseAdapter):
         if not name or not expr:
             return None
 
-        # Convert bare column references to {model}.column format
-        # This regex finds word characters that look like column names
-        # and aren't already qualified or part of strings/keywords
-        import re
-
-        def qualify_columns(sql_expr: str) -> str:
-            """Add {model} qualifier to bare column names in SQL expression."""
-            # Skip if already has {model} references
-            if "{model}" in sql_expr:
-                return sql_expr
-
-            # Common SQL keywords to skip
-            sql_keywords = {
-                "AND",
-                "OR",
-                "NOT",
-                "IN",
-                "IS",
-                "NULL",
-                "TRUE",
-                "FALSE",
-                "LIKE",
-                "BETWEEN",
-                "CASE",
-                "WHEN",
-                "THEN",
-                "ELSE",
-                "END",
-                "AS",
-                "FROM",
-                "WHERE",
-                "SELECT",
-            }
-
-            # Pattern to match potential column names (word at start of comparison)
-            # Matches: column = value, column IN (...), column IS NULL, etc.
-            pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b\s*(?=[=<>!]|(?:IS\s)|(?:IN\s)|(?:NOT\s)|(?:LIKE\s)|(?:BETWEEN\s))"
-
-            def replace_column(match):
-                col = match.group(1)
-                if col.upper() in sql_keywords:
-                    return col
-                return "{model}." + col
-
-            return re.sub(pattern, replace_column, sql_expr, flags=re.IGNORECASE)
-
-        qualified_expr = qualify_columns(expr)
+        # Qualify bare column references with {model} placeholder
+        qualified_expr = _qualify_columns(expr)
 
         return Segment(
             name=name,

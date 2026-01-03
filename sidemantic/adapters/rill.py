@@ -7,9 +7,7 @@ This adapter focuses on the Metrics View YAML which defines dimensions and measu
 from pathlib import Path
 from typing import Any
 
-import sqlglot
 import yaml
-from sqlglot import expressions as exp
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -203,46 +201,14 @@ class RillAdapter:
             # "simple" = basic aggregation (None type), "derived" = calculation using other measures
             metric_type = "derived"
 
-        # Use sqlglot to detect simple aggregations
-        agg_type = None
-        agg_sql = None
-        try:
-            parsed = sqlglot.parse_one(expression, read="duckdb")
-
-            # Check if this is a simple aggregation function
-            if isinstance(parsed, (exp.Sum, exp.Avg, exp.Count, exp.Min, exp.Max)):
-                # Map sqlglot aggregation types to Sidemantic agg types
-                if isinstance(parsed, exp.Sum):
-                    agg_type = "sum"
-                elif isinstance(parsed, exp.Avg):
-                    agg_type = "avg"
-                elif isinstance(parsed, exp.Count):
-                    if parsed.args.get("distinct"):
-                        agg_type = "count_distinct"
-                    else:
-                        agg_type = "count"
-                elif isinstance(parsed, exp.Min):
-                    agg_type = "min"
-                elif isinstance(parsed, exp.Max):
-                    agg_type = "max"
-
-                # Extract the aggregated column/expression
-                agg_arg = parsed.this
-                if agg_arg:
-                    agg_sql = agg_arg.sql(dialect="duckdb")
-                elif isinstance(parsed, exp.Count):
-                    # COUNT(*) case
-                    agg_sql = None
-        except Exception:
-            # If parsing fails, treat as custom SQL expression
-            pass
-
+        # Let the Metric class handle aggregation parsing via its model_validator.
+        # This properly handles complex expressions like SUM(x) / SUM(y) and
+        # COUNT(DISTINCT col) using sqlglot.
         return Metric(
             name=name,
             label=label,
             description=description,
-            agg=agg_type,
-            sql=agg_sql if agg_type else expression,
+            sql=expression,  # Pass full expression, Metric will parse aggregations
             type=metric_type,
             value_format_name=value_format_name,
             window_order=window_order,

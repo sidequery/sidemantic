@@ -7,7 +7,12 @@ from tests.utils import df_rows
 
 
 def test_metric_level_filter_basic(layer):
-    """Test basic metric-level filter."""
+    """Test basic metric-level filter.
+
+    Metric-level filters are applied using CASE WHEN expressions in the CTE,
+    which allows multiple filtered metrics to coexist in the same query
+    (each with their own filter condition).
+    """
     orders = Model(
         name="orders",
         table="orders_table",
@@ -36,9 +41,8 @@ def test_metric_level_filter_basic(layer):
     print("SQL with metric-level filter:")
     print(sql)
 
-    # Should contain the metric's filter
-    assert "orders_cte.status = 'completed'" in sql
-    assert "WHERE" in sql
+    # Should contain the metric's filter in a CASE WHEN expression
+    assert "CASE WHEN status = 'completed' THEN amount END" in sql
 
 
 def test_metric_level_multiple_filters(layer):
@@ -67,9 +71,8 @@ def test_metric_level_multiple_filters(layer):
 
     sql = layer.compile(metrics=["orders.high_value_completed_revenue"])
 
-    # Should contain both filters
-    assert "orders_cte.status = 'completed'" in sql
-    assert "orders_cte.amount > 100" in sql
+    # Should contain both filters combined in a CASE WHEN expression
+    assert "CASE WHEN status = 'completed' AND amount > 100 THEN amount END" in sql
 
 
 def test_metric_filters_combined_with_query_filters(layer):
@@ -97,14 +100,19 @@ def test_metric_filters_combined_with_query_filters(layer):
     # Add query-level filter on top of metric-level filter
     sql = layer.compile(metrics=["orders.completed_revenue"], filters=["orders_cte.region = 'US'"])
 
-    # Should contain both metric filter and query filter
-    # Note: query filter gets pushed down into CTE, metric filter stays in main query
-    assert "orders_cte.status = 'completed'" in sql  # Metric-level filter in main query
-    assert "region = 'US'" in sql  # Query filter pushed down into CTE
+    # Should contain metric filter in CASE WHEN and query filter in WHERE
+    assert "CASE WHEN status = 'completed' THEN amount END" in sql
+    assert "region = 'US'" in sql
 
 
 def test_mixed_filtered_and_unfiltered_metrics(layer):
-    """Test querying both filtered and unfiltered metrics together."""
+    """Test querying both filtered and unfiltered metrics together.
+
+    This is the key use case for CASE WHEN filtered measures:
+    - total_revenue: SUM(amount) - no filter, uses all rows
+    - completed_revenue: SUM(CASE WHEN status='completed' THEN amount END) - filtered
+    Both coexist in same query with different filtering behavior.
+    """
     orders = Model(
         name="orders",
         table="orders_table",
@@ -127,10 +135,9 @@ def test_mixed_filtered_and_unfiltered_metrics(layer):
 
     sql = layer.compile(metrics=["orders.total_revenue", "orders.completed_revenue"])
 
-    # Should have the completed filter for completed_revenue
-    # but total_revenue shouldn't be affected
-    assert "orders_cte.status = 'completed'" in sql
-    # Both metrics should be in the SELECT
+    # Should have filtered and unfiltered metrics coexisting
+    # completed_revenue uses CASE WHEN, total_revenue doesn't
+    assert "CASE WHEN status = 'completed' THEN amount END" in sql
     assert "total_revenue" in sql
     assert "completed_revenue" in sql
 
@@ -159,9 +166,8 @@ def test_metric_filter_with_time_dimension(layer):
 
     sql = layer.compile(metrics=["orders.recent_completed_revenue"], dimensions=["orders.created_at__month"])
 
-    # Should contain both filters
-    assert "orders_cte.status = 'completed'" in sql
-    assert "CURRENT_DATE - 30" in sql or "CURRENT_DATE-30" in sql  # SQLGlot might format differently
+    # Should contain both filters combined in CASE WHEN
+    assert "CASE WHEN status = 'completed' AND created_at >= CURRENT_DATE - 30 THEN amount END" in sql
 
 
 def test_metric_filter_column_not_in_query_dimensions(layer):
@@ -199,16 +205,13 @@ def test_metric_filter_column_not_in_query_dimensions(layer):
     print("Generated SQL:")
     print(sql)
 
-    # The 'state' column must be in the CTE for the filter to work
+    # The 'state' column must be in the CTE for the CASE WHEN filter to work
     # Check that state appears in the CTE SELECT (before FROM)
     cte_match = sql.split("FROM")[0]  # Get the CTE SELECT part
     assert "state" in cte_match, f"'state' column should be in CTE SELECT for filter to work. CTE: {cte_match}"
 
-    # The filter should be in the WHERE clause
-    assert (
-        "state IN ('confirmed', 'completed', 'cancelled')" in sql
-        or "state IN ('cancelled', 'completed', 'confirmed')" in sql
-    )  # Order might vary
+    # The filter should be in a CASE WHEN expression
+    assert "CASE WHEN state IN ('confirmed', 'completed', 'cancelled')" in sql
 
 
 def test_metric_filter_multiple_columns_not_in_dimensions(layer):
@@ -343,11 +346,12 @@ def test_mixed_filters_separate_where_and_having(layer):
     assert "revenue > 100" in sql
 
 
-def test_metric_level_filters_still_use_where(layer):
-    """Test that Metric.filters (row-level filters) still use WHERE clause.
+def test_metric_level_filters_use_case_when(layer):
+    """Test that Metric.filters use CASE WHEN for filtered aggregations.
 
-    Metric.filters are row-level filters that should filter before aggregation.
-    They're different from query-level filters on aggregated metrics.
+    Metric.filters are applied using CASE WHEN expressions in the CTE.
+    This allows multiple filtered metrics to coexist in the same query,
+    each with their own filter condition applied only to that metric.
     """
     layer = SemanticLayer()
 
@@ -367,9 +371,8 @@ def test_metric_level_filters_still_use_where(layer):
 
     sql = layer.compile(metrics=["orders.completed_revenue"], dimensions=["orders.region"])
 
-    # Metric-level filter should be in WHERE clause (applied to rows before aggregation)
-    assert "WHERE" in sql
-    assert "status = 'completed'" in sql
+    # Metric-level filter should be in CASE WHEN expression
+    assert "CASE WHEN status = 'completed' THEN amount END" in sql
 
 
 def test_having_filter_with_actual_data(layer):

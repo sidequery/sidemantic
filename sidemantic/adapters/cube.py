@@ -20,7 +20,9 @@ def _normalize_cube_sql(sql: str | None, cube_name: str | None = None) -> str | 
     - ${CUBE} -> {model} placeholder
     - ${cube_name} -> {model} placeholder
     - {CUBE} -> {model} placeholder (variant without dollar sign)
-    - ${measure_ref} references are preserved as-is (for derived metrics)
+
+    Note: ${measure_ref} references are handled separately in _parse_measure()
+    for derived metrics.
 
     Args:
         sql: SQL expression string or None
@@ -99,6 +101,38 @@ class CubeAdapter(BaseAdapter):
             if model:
                 graph.add_model(model)
 
+    def _extract_fk_from_join_sql(self, join_sql: str, relationship_type: str, join_name: str) -> str | None:
+        """Extract foreign key column from Cube join SQL.
+
+        Parses join SQL to extract the foreign key column name based on relationship type:
+        - many_to_one: Extract from ${CUBE}.column (e.g., "${CUBE}.company_id = ${companies.id}" -> "company_id")
+        - one_to_many: Extract from ${join_name.column} (e.g., "${CUBE}.id = ${project_assignments.project_id}" -> "project_id")
+
+        Args:
+            join_sql: Join SQL expression from Cube definition
+            relationship_type: Type of relationship (many_to_one or one_to_many)
+            join_name: Name of the joined model
+
+        Returns:
+            Foreign key column name, or None if parsing fails
+        """
+        import re
+
+        if relationship_type == "one_to_many":
+            # For one_to_many, extract from ${join_name.column}
+            # Example: "${CUBE}.id = ${project_assignments.project_id}" -> "project_id"
+            match = re.search(rf"\$\{{{re.escape(join_name)}\.(\w+)\}}", join_sql)
+            if match:
+                return match.group(1)
+        else:
+            # For many_to_one (default), extract from ${CUBE}.column
+            # Example: "${CUBE}.company_id = ${companies.id}" -> "company_id"
+            match = re.search(r"\$\{CUBE\}\.(\w+)", join_sql)
+            if match:
+                return match.group(1)
+
+        return None
+
     def _parse_cube(self, cube_def: dict) -> Model | None:
         """Parse a Cube definition into a Model.
 
@@ -161,7 +195,15 @@ class CubeAdapter(BaseAdapter):
             if join_name:
                 # Get relationship type from join definition, default to many_to_one
                 rel_type = join_def.get("relationship", "many_to_one")
-                relationships.append(Relationship(name=join_name, type=rel_type, foreign_key=f"{join_name}_id"))
+
+                # Extract foreign key from join SQL, fallback to convention
+                join_sql = join_def.get("sql", "")
+                fk_column = self._extract_fk_from_join_sql(join_sql, rel_type, join_name)
+                if not fk_column:
+                    # Fallback to conventional naming if parsing fails
+                    fk_column = f"{join_name}_id"
+
+                relationships.append(Relationship(name=join_name, type=rel_type, foreign_key=fk_column))
 
         # Parse pre-aggregations (handle None from empty YAML section)
         pre_aggregations = []
@@ -236,6 +278,8 @@ class CubeAdapter(BaseAdapter):
         Returns:
             Measure instance or None
         """
+        import re
+
         name = measure_def.get("name")
         if not name:
             return None
@@ -281,11 +325,55 @@ class CubeAdapter(BaseAdapter):
         # Normalize SQL to replace ${CUBE}/{CUBE} with {model}
         measure_sql = _normalize_cube_sql(measure_def.get("sql"), cube_name)
 
+        # Convert ${measure_name} references to model_name.measure_name format
+        # This is needed for derived metrics that reference other measures
+        numerator = None
+        denominator = None
+        if measure_sql and metric_type == "derived":
+            # Check if this is a simple ratio pattern: ${measure1} / ${measure2}
+            # This is a common pattern in Cube for ratio metrics
+            ratio_pattern = (
+                r"^\s*\$\{(\w+)\}(?:::[\w\s]+)?\s*/\s*(?:NULLIF\()?\$\{(\w+)\}(?:::[\w\s]+)?(?:,\s*0\))?\s*$"
+            )
+            ratio_match = re.match(ratio_pattern, measure_sql, re.IGNORECASE)
+
+            if ratio_match:
+                # This is a simple ratio - convert to ratio metric type
+                num_measure = ratio_match.group(1)
+                denom_measure = ratio_match.group(2)
+                metric_type = "ratio"
+                numerator = f"{cube_name}.{num_measure}"
+                denominator = f"{cube_name}.{denom_measure}"
+                measure_sql = None  # Ratio metrics don't use sql field
+            else:
+                # Check if SQL contains inline aggregations (COUNT, SUM, AVG, etc.)
+                # These are "SQL expression metrics" that already contain aggregation
+                has_inline_agg = any(agg in measure_sql.upper() for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX("])
+
+                if has_inline_agg:
+                    # This is a SQL expression metric with inline aggregations
+                    # Don't try to replace measure references - use SQL as-is
+                    # Set agg=None to signal this is a complete SQL expression
+                    agg_type = None
+                else:
+                    # Complex derived metric - replace measure references
+                    def replace_measure_ref(match):
+                        measure_ref = match.group(1)
+                        # Don't replace if it's already been normalized to {model}
+                        if measure_ref == "model":
+                            return "{model}"
+                        # Convert ${measure_name} to cube_name.measure_name
+                        return f"{cube_name}.{measure_ref}"
+
+                    measure_sql = re.sub(r"\$\{(\w+)\}", replace_measure_ref, measure_sql)
+
         return Metric(
             name=name,
             type=metric_type,
             agg=agg_type,
             sql=measure_sql,
+            numerator=numerator,
+            denominator=denominator,
             window=window,
             filters=filters if filters else None,
             description=measure_def.get("description"),
@@ -489,10 +577,15 @@ class CubeAdapter(BaseAdapter):
 
             # Handle different metric types
             if measure.type == "ratio":
-                # Ratio metrics become calculated measures
+                # Ratio metrics become calculated measures with ${measure} references
                 measure_def["type"] = "number"
                 if measure.numerator and measure.denominator:
-                    measure_def["sql"] = f"{measure.numerator} / NULLIF({measure.denominator}, 0)"
+                    # Convert model.measure to ${measure} format for Cube
+                    num_ref = measure.numerator.split(".")[-1] if "." in measure.numerator else measure.numerator
+                    denom_ref = (
+                        measure.denominator.split(".")[-1] if "." in measure.denominator else measure.denominator
+                    )
+                    measure_def["sql"] = f"${{{num_ref}}}::float / NULLIF(${{{denom_ref}}}, 0)"
             elif measure.type == "derived":
                 # Derived metrics become calculated measures
                 measure_def["type"] = "number"

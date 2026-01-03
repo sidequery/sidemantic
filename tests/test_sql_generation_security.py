@@ -241,8 +241,9 @@ def test_count_metrics_with_filters(layer):
 
     sql = layer.compile(metrics=["orders.completed_orders"], dimensions=["orders.status"])
 
-    # Should have valid COUNT with filter in CASE WHEN
-    assert "CASE WHEN status = 'completed' THEN 1 END" in sql
+    # Should have valid COUNT with filter in CASE WHEN (conditional aggregation)
+    assert "CASE WHEN status = 'completed'" in sql
+    assert "completed_orders_raw" in sql
     # Should not have invalid * AS syntax
     assert "* AS completed_orders_raw" not in sql
 

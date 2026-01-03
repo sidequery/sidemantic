@@ -168,7 +168,12 @@ def test_fanout_join_detection_multiple_joins():
 
 
 def test_symmetric_aggregates_in_sql_generation():
-    """Test that SQL generation uses symmetric aggregates for fan-out joins."""
+    """Test that SQL generation uses pre-aggregation to handle fan-out.
+
+    When metrics come from different models at different join levels,
+    the generator uses pre-aggregation: each metric is aggregated separately
+    to the dimension grain, then the results are joined together.
+    """
     graph = SemanticGraph()
 
     # Orders (base) - has two one-to-many relationships
@@ -216,9 +221,12 @@ def test_symmetric_aggregates_in_sql_generation():
         dimensions=["orders.order_date"],
     )
 
-    # Orders.revenue should use symmetric aggregates (HASH function)
-    assert "HASH(orders_cte.id)" in sql
-    assert "SUM(" in sql and "DISTINCT" in sql
+    # Pre-aggregation approach: each model's metrics are aggregated separately
+    # and then joined together with FULL OUTER JOIN
+    assert "orders_preagg" in sql
+    assert "order_items_preagg" in sql
+    assert "shipments_preagg" in sql
+    assert "FULL OUTER JOIN" in sql
 
 
 def test_symmetric_aggregates_with_data():

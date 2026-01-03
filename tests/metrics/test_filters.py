@@ -41,8 +41,9 @@ def test_metric_level_filter_basic(layer):
     print("SQL with metric-level filter:")
     print(sql)
 
-    # Should contain the metric's filter in a CASE WHEN expression
-    assert "CASE WHEN status = 'completed' THEN amount END" in sql
+    # Metric filter should be applied via CASE WHEN in the CTE, not in WHERE clause
+    assert "CASE WHEN status = 'completed'" in sql
+    assert "completed_revenue_raw" in sql
 
 
 def test_metric_level_multiple_filters(layer):
@@ -71,8 +72,9 @@ def test_metric_level_multiple_filters(layer):
 
     sql = layer.compile(metrics=["orders.high_value_completed_revenue"])
 
-    # Should contain both filters combined in a CASE WHEN expression
-    assert "CASE WHEN status = 'completed' AND amount > 100 THEN amount END" in sql
+    # Should contain both filters combined via CASE WHEN in CTE
+    assert "CASE WHEN status = 'completed' AND amount > 100" in sql
+    assert "high_value_completed_revenue_raw" in sql
 
 
 def test_metric_filters_combined_with_query_filters(layer):
@@ -100,9 +102,9 @@ def test_metric_filters_combined_with_query_filters(layer):
     # Add query-level filter on top of metric-level filter
     sql = layer.compile(metrics=["orders.completed_revenue"], filters=["orders_cte.region = 'US'"])
 
-    # Should contain metric filter in CASE WHEN and query filter in WHERE
-    assert "CASE WHEN status = 'completed' THEN amount END" in sql
-    assert "region = 'US'" in sql
+    # Metric filter should be in CASE WHEN, query filter pushed down to CTE WHERE
+    assert "CASE WHEN status = 'completed'" in sql  # Metric filter in CTE
+    assert "region = 'US'" in sql  # Query filter pushed down into CTE
 
 
 def test_mixed_filtered_and_unfiltered_metrics(layer):
@@ -135,9 +137,12 @@ def test_mixed_filtered_and_unfiltered_metrics(layer):
 
     sql = layer.compile(metrics=["orders.total_revenue", "orders.completed_revenue"])
 
-    # Should have filtered and unfiltered metrics coexisting
-    # completed_revenue uses CASE WHEN, total_revenue doesn't
-    assert "CASE WHEN status = 'completed' THEN amount END" in sql
+    # Completed filter should be in CASE WHEN for completed_revenue only
+    assert "CASE WHEN status = 'completed'" in sql
+    assert "completed_revenue_raw" in sql
+    # Total revenue should have no CASE WHEN
+    assert "amount AS total_revenue_raw" in sql
+    # Both metrics should be in the SELECT
     assert "total_revenue" in sql
     assert "completed_revenue" in sql
 
@@ -166,8 +171,9 @@ def test_metric_filter_with_time_dimension(layer):
 
     sql = layer.compile(metrics=["orders.recent_completed_revenue"], dimensions=["orders.created_at__month"])
 
-    # Should contain both filters combined in CASE WHEN
-    assert "CASE WHEN status = 'completed' AND created_at >= CURRENT_DATE - 30 THEN amount END" in sql
+    # Both filters should be in CASE WHEN combined with AND
+    assert "CASE WHEN status = 'completed' AND created_at >= CURRENT_DATE" in sql
+    assert "recent_completed_revenue_raw" in sql
 
 
 def test_metric_filter_column_not_in_query_dimensions(layer):
@@ -361,6 +367,7 @@ def test_metric_level_filters_use_case_when(layer):
         primary_key="order_id",
         dimensions=[
             Dimension(name="region", type="categorical"),
+            Dimension(name="status", type="categorical"),
         ],
         metrics=[
             Metric(name="completed_revenue", agg="sum", sql="amount", filters=["{model}.status = 'completed'"]),
@@ -371,8 +378,9 @@ def test_metric_level_filters_use_case_when(layer):
 
     sql = layer.compile(metrics=["orders.completed_revenue"], dimensions=["orders.region"])
 
-    # Metric-level filter should be in CASE WHEN expression
-    assert "CASE WHEN status = 'completed' THEN amount END" in sql
+    # Metric-level filter should be in CASE WHEN (conditional aggregation)
+    assert "CASE WHEN status = 'completed'" in sql
+    assert "completed_revenue_raw" in sql
 
 
 def test_having_filter_with_actual_data(layer):

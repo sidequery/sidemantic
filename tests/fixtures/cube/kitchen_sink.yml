@@ -1,0 +1,748 @@
+# Kitchen Sink Cube Test Fixture
+# Complex multi-entity data model designed to stress-test sidemantic's Cube adapter
+# and find holes in query generation logic.
+#
+# Entities:
+# - companies (top-level entity)
+# - departments (belongs_to company)
+# - employees (belongs_to department)
+# - projects (belongs_to company, has_many employees via project_assignments)
+# - project_assignments (join table: employee <-> project, with hours)
+# - timesheets (belongs_to employee, belongs_to project)
+# - expenses (belongs_to employee, optional project)
+# - invoices (belongs_to company, optional project)
+# - invoice_line_items (belongs_to invoice)
+
+cubes:
+  # ============================================================
+  # Companies - Top level entity
+  # ============================================================
+  - name: companies
+    sql_table: companies
+    description: Top-level company entities
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: industry
+        sql: industry
+        type: string
+
+      - name: founded_at
+        sql: founded_at
+        type: time
+
+      - name: is_active
+        sql: is_active
+        type: boolean
+
+      - name: employee_count
+        sql: employee_count
+        type: number
+        description: Denormalized employee count for testing numeric dimensions
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_employees
+        sql: employee_count
+        type: sum
+        description: Sum of denormalized employee counts
+
+      - name: avg_company_size
+        sql: employee_count
+        type: avg
+
+    segments:
+      - name: active_companies
+        sql: "${CUBE}.is_active = true"
+
+      - name: tech_companies
+        sql: "${CUBE}.industry = 'Technology'"
+
+      - name: large_companies
+        sql: "${CUBE}.employee_count >= 100"
+
+  # ============================================================
+  # Departments - belongs_to Company
+  # ============================================================
+  - name: departments
+    sql_table: departments
+    description: Departments within companies
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: company_id
+        sql: company_id
+        type: number
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: budget
+        sql: budget
+        type: number
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_budget
+        sql: budget
+        type: sum
+
+      - name: avg_budget
+        sql: budget
+        type: avg
+
+      - name: max_budget
+        sql: budget
+        type: max
+
+      - name: min_budget
+        sql: budget
+        type: min
+
+    segments:
+      - name: high_budget
+        sql: "${CUBE}.budget >= 1000000"
+
+    joins:
+      - name: companies
+        sql: "${CUBE}.company_id = ${companies.id}"
+        relationship: many_to_one
+
+  # ============================================================
+  # Employees - belongs_to Department (transitively to Company)
+  # ============================================================
+  - name: employees
+    sql_table: employees
+    description: Employee records
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: department_id
+        sql: department_id
+        type: number
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: email
+        sql: email
+        type: string
+
+      - name: title
+        sql: title
+        type: string
+
+      - name: salary
+        sql: salary
+        type: number
+
+      - name: hired_at
+        sql: hired_at
+        type: time
+
+      - name: is_manager
+        sql: is_manager
+        type: boolean
+
+      - name: manager_id
+        sql: manager_id
+        type: number
+        description: Self-referential FK for testing
+
+    measures:
+      - name: count
+        type: count
+
+      - name: headcount
+        type: count_distinct
+        sql: id
+        description: Distinct employee count
+
+      - name: total_salary
+        sql: salary
+        type: sum
+
+      - name: avg_salary
+        sql: salary
+        type: avg
+
+      - name: max_salary
+        sql: salary
+        type: max
+
+      - name: manager_count
+        type: count
+        filters:
+          - sql: "${CUBE}.is_manager = true"
+        description: Count of managers only
+
+      - name: non_manager_count
+        type: count
+        filters:
+          - sql: "${CUBE}.is_manager = false"
+
+    segments:
+      - name: managers
+        sql: "${CUBE}.is_manager = true"
+
+      - name: high_earners
+        sql: "${CUBE}.salary >= 150000"
+
+      - name: recent_hires
+        sql: "${CUBE}.hired_at >= CURRENT_DATE - INTERVAL '90 days'"
+
+    joins:
+      - name: departments
+        sql: "${CUBE}.department_id = ${departments.id}"
+        relationship: many_to_one
+
+  # ============================================================
+  # Projects - belongs_to Company, has_many Employees via Assignments
+  # ============================================================
+  - name: projects
+    sql_table: projects
+    description: Company projects
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: company_id
+        sql: company_id
+        type: number
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+        description: active, completed, cancelled
+
+      - name: budget
+        sql: budget
+        type: number
+
+      - name: start_date
+        sql: start_date
+        type: time
+
+      - name: end_date
+        sql: end_date
+        type: time
+
+      - name: priority
+        sql: priority
+        type: number
+        description: 1-5 priority level
+
+    measures:
+      - name: count
+        type: count
+
+      - name: active_count
+        type: count
+        filters:
+          - sql: "${CUBE}.status = 'active'"
+
+      - name: completed_count
+        type: count
+        filters:
+          - sql: "${CUBE}.status = 'completed'"
+
+      - name: total_budget
+        sql: budget
+        type: sum
+
+      - name: avg_budget
+        sql: budget
+        type: avg
+
+      - name: completion_rate
+        type: number
+        sql: "${completed_count}::float / NULLIF(${count}, 0)"
+        description: Derived metric - ratio of completed to total
+
+    segments:
+      - name: active
+        sql: "${CUBE}.status = 'active'"
+
+      - name: completed
+        sql: "${CUBE}.status = 'completed'"
+
+      - name: high_priority
+        sql: "${CUBE}.priority >= 4"
+
+      - name: big_budget
+        sql: "${CUBE}.budget >= 100000"
+
+    joins:
+      - name: companies
+        sql: "${CUBE}.company_id = ${companies.id}"
+        relationship: many_to_one
+
+      # One-to-many: project has many assignments
+      - name: project_assignments
+        sql: "${CUBE}.id = ${project_assignments.project_id}"
+        relationship: one_to_many
+
+  # ============================================================
+  # Project Assignments - Join table (Employee <-> Project)
+  # This is a CRITICAL edge case: join tables with their own metrics
+  # ============================================================
+  - name: project_assignments
+    sql_table: project_assignments
+    description: Many-to-many join between employees and projects
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: employee_id
+        sql: employee_id
+        type: number
+
+      - name: project_id
+        sql: project_id
+        type: number
+
+      - name: role
+        sql: role
+        type: string
+        description: lead, contributor, reviewer
+
+      - name: assigned_at
+        sql: assigned_at
+        type: time
+
+      - name: hours_allocated
+        sql: hours_allocated
+        type: number
+
+    measures:
+      - name: count
+        type: count
+        description: Number of assignments
+
+      - name: total_hours_allocated
+        sql: hours_allocated
+        type: sum
+
+      - name: avg_hours_allocated
+        sql: hours_allocated
+        type: avg
+
+      - name: lead_count
+        type: count
+        filters:
+          - sql: "${CUBE}.role = 'lead'"
+
+      - name: unique_employees
+        type: count_distinct
+        sql: employee_id
+
+      - name: unique_projects
+        type: count_distinct
+        sql: project_id
+
+    segments:
+      - name: leads_only
+        sql: "${CUBE}.role = 'lead'"
+
+      - name: high_allocation
+        sql: "${CUBE}.hours_allocated >= 40"
+
+    joins:
+      - name: employees
+        sql: "${CUBE}.employee_id = ${employees.id}"
+        relationship: many_to_one
+
+      - name: projects
+        sql: "${CUBE}.project_id = ${projects.id}"
+        relationship: many_to_one
+
+  # ============================================================
+  # Timesheets - belongs_to Employee, belongs_to Project
+  # Time-series data for cumulative/rolling window testing
+  # ============================================================
+  - name: timesheets
+    sql_table: timesheets
+    description: Employee time entries
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: employee_id
+        sql: employee_id
+        type: number
+
+      - name: project_id
+        sql: project_id
+        type: number
+
+      - name: work_date
+        sql: work_date
+        type: time
+
+      - name: hours
+        sql: hours
+        type: number
+
+      - name: description
+        sql: description
+        type: string
+
+      - name: is_billable
+        sql: is_billable
+        type: boolean
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_hours
+        sql: hours
+        type: sum
+
+      - name: billable_hours
+        sql: hours
+        type: sum
+        filters:
+          - sql: "${CUBE}.is_billable = true"
+
+      - name: non_billable_hours
+        sql: hours
+        type: sum
+        filters:
+          - sql: "${CUBE}.is_billable = false"
+
+      - name: avg_daily_hours
+        sql: hours
+        type: avg
+
+      - name: billable_ratio
+        type: number
+        sql: "${billable_hours}::float / NULLIF(${total_hours}, 0)"
+
+      # Rolling window measure (cumulative)
+      - name: cumulative_hours
+        sql: hours
+        type: sum
+        rolling_window:
+          trailing: unbounded
+
+    segments:
+      - name: billable
+        sql: "${CUBE}.is_billable = true"
+
+      - name: overtime
+        sql: "${CUBE}.hours > 8"
+
+    joins:
+      - name: employees
+        sql: "${CUBE}.employee_id = ${employees.id}"
+        relationship: many_to_one
+
+      - name: projects
+        sql: "${CUBE}.project_id = ${projects.id}"
+        relationship: many_to_one
+
+  # ============================================================
+  # Expenses - belongs_to Employee, optionally belongs_to Project
+  # Tests optional (nullable) foreign keys
+  # ============================================================
+  - name: expenses
+    sql_table: expenses
+    description: Employee expense reports
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: employee_id
+        sql: employee_id
+        type: number
+
+      - name: project_id
+        sql: project_id
+        type: number
+        description: Optional - can be NULL for general expenses
+
+      - name: category
+        sql: category
+        type: string
+        description: travel, meals, equipment, software
+
+      - name: amount
+        sql: amount
+        type: number
+
+      - name: submitted_at
+        sql: submitted_at
+        type: time
+
+      - name: approved_at
+        sql: approved_at
+        type: time
+        description: NULL if not yet approved
+
+      - name: status
+        sql: status
+        type: string
+        description: pending, approved, rejected
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_amount
+        sql: amount
+        type: sum
+
+      - name: approved_amount
+        sql: amount
+        type: sum
+        filters:
+          - sql: "${CUBE}.status = 'approved'"
+
+      - name: pending_amount
+        sql: amount
+        type: sum
+        filters:
+          - sql: "${CUBE}.status = 'pending'"
+
+      - name: avg_expense
+        sql: amount
+        type: avg
+
+      - name: max_expense
+        sql: amount
+        type: max
+
+      - name: approval_rate
+        type: number
+        sql: "COUNT(CASE WHEN ${CUBE}.status = 'approved' THEN 1 END)::float / NULLIF(COUNT(*), 0)"
+
+    segments:
+      - name: approved
+        sql: "${CUBE}.status = 'approved'"
+
+      - name: pending
+        sql: "${CUBE}.status = 'pending'"
+
+      - name: travel_expenses
+        sql: "${CUBE}.category = 'travel'"
+
+      - name: high_value
+        sql: "${CUBE}.amount >= 1000"
+
+      - name: project_related
+        sql: "${CUBE}.project_id IS NOT NULL"
+
+      - name: general_expenses
+        sql: "${CUBE}.project_id IS NULL"
+
+    joins:
+      - name: employees
+        sql: "${CUBE}.employee_id = ${employees.id}"
+        relationship: many_to_one
+
+      # Note: This is a nullable FK - project_id can be NULL
+      - name: projects
+        sql: "${CUBE}.project_id = ${projects.id}"
+        relationship: many_to_one
+
+  # ============================================================
+  # Invoices - belongs_to Company, optionally Project
+  # Tests multi-level aggregation scenarios
+  # ============================================================
+  - name: invoices
+    sql_table: invoices
+    description: Company invoices
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: company_id
+        sql: company_id
+        type: number
+
+      - name: project_id
+        sql: project_id
+        type: number
+        description: Optional project association
+
+      - name: invoice_number
+        sql: invoice_number
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+        description: draft, sent, paid, overdue
+
+      - name: issued_at
+        sql: issued_at
+        type: time
+
+      - name: due_at
+        sql: due_at
+        type: time
+
+      - name: paid_at
+        sql: paid_at
+        type: time
+
+      - name: total_amount
+        sql: total_amount
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_invoiced
+        sql: total_amount
+        type: sum
+
+      - name: paid_amount
+        sql: total_amount
+        type: sum
+        filters:
+          - sql: "${CUBE}.status = 'paid'"
+
+      - name: overdue_amount
+        sql: total_amount
+        type: sum
+        filters:
+          - sql: "${CUBE}.status = 'overdue'"
+
+      - name: avg_invoice
+        sql: total_amount
+        type: avg
+
+      - name: collection_rate
+        type: number
+        sql: "${paid_amount}::float / NULLIF(${total_invoiced}, 0)"
+
+    segments:
+      - name: paid
+        sql: "${CUBE}.status = 'paid'"
+
+      - name: overdue
+        sql: "${CUBE}.status = 'overdue'"
+
+      - name: draft
+        sql: "${CUBE}.status = 'draft'"
+
+    joins:
+      - name: companies
+        sql: "${CUBE}.company_id = ${companies.id}"
+        relationship: many_to_one
+
+      - name: projects
+        sql: "${CUBE}.project_id = ${projects.id}"
+        relationship: many_to_one
+
+      # One-to-many: invoice has many line items
+      - name: invoice_line_items
+        sql: "${CUBE}.id = ${invoice_line_items.invoice_id}"
+        relationship: one_to_many
+
+  # ============================================================
+  # Invoice Line Items - belongs_to Invoice
+  # Tests fan-out aggregation (symmetric aggregates)
+  # ============================================================
+  - name: invoice_line_items
+    sql_table: invoice_line_items
+    description: Line items on invoices
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: invoice_id
+        sql: invoice_id
+        type: number
+
+      - name: description
+        sql: description
+        type: string
+
+      - name: quantity
+        sql: quantity
+        type: number
+
+      - name: unit_price
+        sql: unit_price
+        type: number
+
+      - name: line_total
+        sql: line_total
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_line_value
+        sql: line_total
+        type: sum
+
+      - name: total_quantity
+        sql: quantity
+        type: sum
+
+      - name: avg_unit_price
+        sql: unit_price
+        type: avg
+
+      - name: avg_line_total
+        sql: line_total
+        type: avg
+
+    joins:
+      - name: invoices
+        sql: "${CUBE}.invoice_id = ${invoices.id}"
+        relationship: many_to_one

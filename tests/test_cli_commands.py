@@ -3,11 +3,9 @@
 from pathlib import Path
 
 import pytest
-
 from typer.testing import CliRunner
 
 from sidemantic.cli import app
-
 
 runner = CliRunner()
 

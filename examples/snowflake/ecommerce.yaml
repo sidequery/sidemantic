@@ -1,0 +1,199 @@
+# Snowflake Cortex Semantic Model - E-commerce Example
+# Based on Snowflake's semantic model specification
+
+name: ecommerce_semantic_model
+description: E-commerce data model for analyzing orders, customers, and products
+
+tables:
+  - name: orders
+    description: Customer orders with line items
+    base_table:
+      database: ANALYTICS
+      schema: ECOMMERCE
+      table: ORDERS
+    primary_key:
+      columns:
+        - order_id
+    dimensions:
+      - name: order_id
+        description: Unique order identifier
+        expr: order_id
+        data_type: NUMBER
+        unique: true
+      - name: status
+        description: Order status (pending, shipped, delivered, cancelled)
+        expr: status
+        data_type: TEXT
+      - name: channel
+        description: Sales channel (web, mobile, store)
+        expr: channel
+        data_type: TEXT
+    time_dimensions:
+      - name: order_date
+        description: Date when the order was placed
+        expr: order_date
+        data_type: TIMESTAMP
+      - name: shipped_date
+        description: Date when the order was shipped
+        expr: shipped_date
+        data_type: TIMESTAMP
+    facts:
+      - name: quantity
+        description: Number of items ordered
+        expr: quantity
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: unit_price
+        description: Price per unit
+        expr: unit_price
+        data_type: NUMBER
+        default_aggregation: avg
+      - name: discount_amount
+        description: Discount applied to order
+        expr: discount_amount
+        data_type: NUMBER
+        default_aggregation: sum
+    metrics:
+      - name: total_revenue
+        description: Total revenue from orders
+        expr: SUM(quantity * unit_price)
+      - name: total_orders
+        description: Count of orders
+        expr: COUNT(DISTINCT order_id)
+      - name: avg_order_value
+        description: Average order value
+        expr: SUM(quantity * unit_price) / COUNT(DISTINCT order_id)
+    filters:
+      - name: completed_orders
+        description: Orders that have been delivered
+        expr: status = 'delivered'
+      - name: web_orders
+        description: Orders placed through web channel
+        expr: channel = 'web'
+
+  - name: customers
+    description: Customer information
+    base_table:
+      database: ANALYTICS
+      schema: ECOMMERCE
+      table: CUSTOMERS
+    primary_key:
+      columns:
+        - customer_id
+    dimensions:
+      - name: customer_id
+        description: Unique customer identifier
+        expr: customer_id
+        data_type: NUMBER
+        unique: true
+      - name: customer_name
+        description: Customer full name
+        expr: customer_name
+        data_type: TEXT
+      - name: email
+        description: Customer email address
+        expr: email
+        data_type: TEXT
+      - name: country
+        description: Customer country
+        expr: country
+        data_type: TEXT
+      - name: segment
+        description: Customer segment (enterprise, small_business, consumer)
+        expr: segment
+        data_type: TEXT
+    time_dimensions:
+      - name: created_at
+        description: When the customer account was created
+        expr: created_at
+        data_type: TIMESTAMP
+    facts:
+      - name: lifetime_value
+        description: Customer lifetime value
+        expr: lifetime_value
+        data_type: NUMBER
+        default_aggregation: sum
+    metrics:
+      - name: total_customers
+        description: Count of customers
+        expr: COUNT(DISTINCT customer_id)
+      - name: avg_lifetime_value
+        description: Average customer lifetime value
+        expr: AVG(lifetime_value)
+    filters:
+      - name: enterprise_customers
+        description: Enterprise segment customers
+        expr: segment = 'enterprise'
+
+  - name: products
+    description: Product catalog
+    base_table:
+      database: ANALYTICS
+      schema: ECOMMERCE
+      table: PRODUCTS
+    primary_key:
+      columns:
+        - product_id
+    dimensions:
+      - name: product_id
+        description: Unique product identifier
+        expr: product_id
+        data_type: NUMBER
+        unique: true
+      - name: product_name
+        description: Product name
+        expr: product_name
+        data_type: TEXT
+      - name: category
+        description: Product category
+        expr: category
+        data_type: TEXT
+      - name: brand
+        description: Product brand
+        expr: brand
+        data_type: TEXT
+      - name: is_active
+        description: Whether the product is currently active
+        expr: is_active
+        data_type: BOOLEAN
+    facts:
+      - name: cost
+        description: Product cost
+        expr: cost
+        data_type: NUMBER
+        default_aggregation: avg
+      - name: list_price
+        description: Product list price
+        expr: list_price
+        data_type: NUMBER
+        default_aggregation: avg
+    metrics:
+      - name: total_products
+        description: Count of products
+        expr: COUNT(DISTINCT product_id)
+      - name: avg_margin
+        description: Average profit margin
+        expr: AVG((list_price - cost) / NULLIF(list_price, 0))
+    filters:
+      - name: active_products
+        description: Currently active products
+        expr: is_active = true
+
+relationships:
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: customer_id
+        right_column: customer_id
+    relationship_type: many_to_one
+    join_type: left_outer
+
+  - name: orders_to_products
+    left_table: orders
+    right_table: products
+    relationship_columns:
+      - left_column: product_id
+        right_column: product_id
+    relationship_type: many_to_one
+    join_type: left_outer

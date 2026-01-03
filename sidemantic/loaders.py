@@ -28,6 +28,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
+    from sidemantic.adapters.snowflake import SnowflakeAdapter
 
     directory = Path(directory)
     if not directory.exists():
@@ -62,6 +63,9 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = MetricFlowAdapter()
             elif "base_sql_table:" in content and "measures:" in content:
                 adapter = HexAdapter()
+            elif "tables:" in content and "base_table:" in content:
+                # Snowflake Cortex Semantic Model format
+                adapter = SnowflakeAdapter()
             elif "_." in content and ("dimensions:" in content or "measures:" in content):
                 # BSL format uses _.column syntax for expressions
                 adapter = BSLAdapter()

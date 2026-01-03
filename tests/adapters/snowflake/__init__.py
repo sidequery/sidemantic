@@ -1,0 +1,1 @@
+"""Snowflake adapter tests."""

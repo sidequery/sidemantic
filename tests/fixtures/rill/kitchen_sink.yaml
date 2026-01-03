@@ -1,0 +1,189 @@
+# Kitchen sink Rill metrics view based on real rill-examples patterns
+# Tests edge cases and complex expressions from:
+# - rill-311-ops (MEDIAN, COUNT DISTINCT CONCAT)
+# - rill-app-engagement (ratios with *1.0, count with space)
+# - rill-cost-monitoring (arithmetic expressions, margin calculations)
+# - rill-github-analytics (division ratios, count(*))
+# - rill-openrtb-prog-ads (complex nested arithmetic)
+
+type: metrics_view
+name: kitchen_sink
+display_name: Kitchen Sink Analytics
+description: Comprehensive test of Rill adapter edge cases
+model: kitchen_sink_model
+timeseries: event_time
+smallest_time_grain: hour
+default_time_range: P1W
+
+dimensions:
+  # Simple column reference
+  - name: status
+    display_name: Status
+    description: Current status
+    column: status
+
+  # Expression-based dimension (CASE)
+  - name: status_type
+    display_name: Status Type
+    expression: |
+      CASE
+        WHEN LOWER(status) IN ('open', 'new', 'in progress') THEN 'Active'
+        WHEN status IS NULL THEN 'Unknown'
+        ELSE 'Closed'
+      END
+
+  # Concatenation in dimension
+  - name: full_location
+    display_name: Full Location
+    expression: CONCAT(city, ', ', state)
+
+  # Boolean dimension
+  - name: is_merge_commit
+    display_name: Merge Commit
+    column: is_merge_commit
+    description: True if the commit is a merge commit
+
+  # Nested CASE expression
+  - name: size_bucket
+    display_name: Size Bucket
+    expression: |
+      CASE
+        WHEN amount < 100 THEN 'small'
+        WHEN amount < 1000 THEN 'medium'
+        WHEN amount < 10000 THEN 'large'
+        ELSE 'enterprise'
+      END
+
+measures:
+  # Simple COUNT(*)
+  - name: total_records
+    display_name: Total Records
+    expression: COUNT(*)
+    format_preset: humanize
+
+  # COUNT DISTINCT
+  - name: unique_users
+    display_name: Unique Users
+    expression: COUNT(DISTINCT user_id)
+    format_preset: humanize
+
+  # COUNT DISTINCT with CONCAT (from rill-311-ops)
+  - name: unique_locations
+    display_name: Unique Locations
+    expression: COUNT(DISTINCT CONCAT(latitude, longitude))
+    format_preset: humanize
+
+  # MEDIAN aggregation (from rill-311-ops)
+  - name: median_duration
+    display_name: Median Duration (Hours)
+    expression: MEDIAN(duration_hours)
+    format_preset: humanize
+
+  # Simple SUM
+  - name: total_revenue
+    display_name: Total Revenue
+    expression: SUM(revenue)
+    format_preset: currency_usd
+
+  # SUM with division constant (from rill-openrtb-prog-ads)
+  - name: ad_spend
+    display_name: Advertising Spend
+    expression: SUM(media_spend_usd)/1000
+    format_preset: currency_usd
+
+  # Ratio with *1.0 pattern (from rill-app-engagement)
+  - name: conversion_rate
+    display_name: Conversion Rate
+    expression: SUM(clicks)*1.0/SUM(views)*1.0
+    format_preset: percentage
+
+  # Simple ratio (from rill-github-analytics)
+  - name: deletion_pct
+    display_name: Deletion Percentage
+    expression: SUM(deletions) / SUM(changes)
+    format_preset: percentage
+
+  # Complex arithmetic (from rill-cost-monitoring)
+  - name: margin
+    display_name: Margin
+    expression: (SUM(revenue) - SUM(cost))/SUM(revenue)
+    format_preset: percentage
+
+  # Net calculation
+  - name: net_revenue
+    display_name: Net Revenue
+    expression: SUM(revenue) - SUM(cost)
+    format_preset: currency_usd
+
+  # Division in AVG context (from rill-openrtb-prog-ads)
+  - name: avg_bid_price
+    display_name: Average Bid Price
+    expression: SUM(bid_price_usd)*1.0/SUM(bid_cnt)/1000
+    format_preset: currency_usd
+
+  # Files per commit ratio (from rill-github-analytics)
+  - name: files_per_commit
+    display_name: Files per Commit
+    expression: COUNT(*) / COUNT(DISTINCT commit_hash)
+    format_preset: humanize
+
+  # Count with space before parenthesis (from rill-app-engagement)
+  - name: unique_visitors
+    display_name: Unique Visitors
+    expression: count (distinct visitor_id)
+    format_preset: humanize
+
+  # Completion rate with count distinct ratio
+  - name: completion_rate
+    display_name: Completion Rate
+    expression: count (distinct completed_id)*1.0/count (distinct started_id) *1.0
+    format_preset: percentage
+
+  # Derived measure referencing other measures
+  - name: revenue_per_user
+    display_name: Revenue per User
+    type: derived
+    expression: total_revenue / unique_users
+    format_preset: currency_usd
+    requires:
+      - total_revenue
+      - unique_users
+
+  # Window function / rolling average
+  - name: rolling_7day_revenue
+    display_name: 7-Day Rolling Revenue
+    expression: AVG(total_revenue)
+    requires:
+      - total_revenue
+    window:
+      order: event_time
+      frame: RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW
+
+  # MIN/MAX aggregations
+  - name: min_amount
+    display_name: Minimum Amount
+    expression: MIN(amount)
+    format_preset: currency_usd
+
+  - name: max_amount
+    display_name: Maximum Amount
+    expression: MAX(amount)
+    format_preset: currency_usd
+
+  # AVG aggregation
+  - name: avg_amount
+    display_name: Average Amount
+    expression: AVG(amount)
+    format_preset: currency_usd
+
+  # Conditional count (CASE in COUNT)
+  - name: completed_orders
+    display_name: Completed Orders
+    expression: COUNT(CASE WHEN status = 'completed' THEN 1 END)
+    format_preset: humanize
+
+  # SUM with CASE
+  - name: completed_revenue
+    display_name: Completed Revenue
+    expression: SUM(CASE WHEN status = 'completed' THEN revenue ELSE 0 END)
+    format_preset: currency_usd

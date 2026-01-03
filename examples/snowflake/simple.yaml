@@ -1,0 +1,45 @@
+# Simple Snowflake Cortex Semantic Model
+# Minimal example for testing basic parsing
+
+name: simple_model
+description: A simple semantic model for testing
+
+tables:
+  - name: sales
+    description: Sales transactions
+    base_table:
+      schema: public
+      table: sales
+    primary_key:
+      columns:
+        - id
+    dimensions:
+      - name: id
+        expr: id
+        data_type: NUMBER
+      - name: region
+        description: Sales region
+        expr: region
+        data_type: TEXT
+    time_dimensions:
+      - name: sale_date
+        description: Date of sale
+        expr: sale_date
+        data_type: TIMESTAMP
+    facts:
+      - name: amount
+        description: Sale amount
+        expr: amount
+        data_type: NUMBER
+        default_aggregation: sum
+      - name: quantity
+        expr: quantity
+        data_type: NUMBER
+        default_aggregation: sum
+    metrics:
+      - name: total_sales
+        description: Total sales amount
+        expr: SUM(amount)
+      - name: order_count
+        description: Number of orders
+        expr: COUNT(*)

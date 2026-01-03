@@ -877,6 +877,15 @@ class SQLGenerator:
         for metric_ref in metrics:
             collect_measures_from_metric(metric_ref)
 
+        # Also include measure columns referenced in metric_filter_columns (for derived metrics
+        # with inline SQL aggregations like "SUM(quantity * unit_price) / COUNT(DISTINCT order_id)")
+        if metric_filter_columns:
+            for col_name in metric_filter_columns:
+                # Check if this column is a measure (not a dimension)
+                measure = model.get_metric(col_name)
+                if measure and measure.agg and col_name not in measures_needed:
+                    measures_needed.add(col_name)
+
         for measure_name in measures_needed:
             measure = model.get_metric(measure_name)
             if measure:
@@ -1669,17 +1678,37 @@ class SQLGenerator:
             has_inline_agg = any(agg in formula.upper() for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX("])
 
             if has_inline_agg:
-                # This is a SQL expression metric - use formula as-is
-                # Just replace {model} placeholder with the CTE alias
-                # We need to find which model this metric belongs to
-                # Look through all models to find this metric
-                for model_name, model in self.graph.models.items():
-                    if model.get_metric(metric.name):
-                        # Replace {model} with the CTE alias
-                        formula = formula.replace("{model}", f"{model_name}_cte")
-                        return formula
+                # This is a SQL expression metric with inline aggregations.
+                # Column references should already be qualified with {model} placeholder
+                # at parse time (e.g., by SnowflakeAdapter).
+                # We need to:
+                # 1. Replace {model} with the CTE alias
+                # 2. Replace measure column references with their _raw suffixed versions
 
-                # If we didn't find the model, return formula as-is
+                # Find which model this metric belongs to
+                metric_model_name = model_context
+                if not metric_model_name:
+                    for m_name, m in self.graph.models.items():
+                        if m.get_metric(metric.name):
+                            metric_model_name = m_name
+                            break
+
+                if metric_model_name:
+                    cte_alias = f"{metric_model_name}_cte"
+                    # Replace {model} placeholder with the CTE alias
+                    formula = formula.replace("{model}", cte_alias)
+
+                    # Replace measure columns with their _raw suffixed versions
+                    # For each measure in the model, check if it's referenced in the formula
+                    model_obj = self.graph.get_model(metric_model_name)
+                    if model_obj:
+                        for measure in model_obj.metrics:
+                            if measure.agg:  # Only process actual aggregation measures
+                                # Replace cte_alias.measure_name with cte_alias.measure_name_raw
+                                pattern = f"{cte_alias}.{measure.name}"
+                                replacement = f"{cte_alias}.{measure.name}_raw"
+                                formula = formula.replace(pattern, replacement)
+
                 return formula
 
             # Auto-detect dependencies from expression using graph for resolution

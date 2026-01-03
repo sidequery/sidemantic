@@ -1,7 +1,43 @@
 """Base database adapter interface."""
 
+import re
 from abc import ABC, abstractmethod
 from typing import Any
+
+# Pattern for valid SQL identifiers: starts with letter or underscore,
+# followed by letters, digits, or underscores. Also allows dots for
+# qualified names (schema.table).
+_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
+
+
+def validate_identifier(value: str, name: str = "identifier") -> str:
+    """Validate that a value is a safe SQL identifier.
+
+    Prevents SQL injection by ensuring identifiers only contain safe characters.
+    Allows: letters, digits, underscores, and dots (for qualified names).
+    Must start with a letter or underscore.
+
+    Args:
+        value: The identifier value to validate
+        name: Human-readable name for error messages (e.g., "table name", "schema")
+
+    Returns:
+        The validated identifier (unchanged if valid)
+
+    Raises:
+        ValueError: If the identifier contains invalid characters
+    """
+    if not value:
+        raise ValueError(f"Invalid {name}: cannot be empty")
+
+    if not _IDENTIFIER_PATTERN.match(value):
+        raise ValueError(
+            f"Invalid {name}: '{value}'. "
+            f"Identifiers must start with a letter or underscore and contain only "
+            f"letters, digits, underscores, and dots."
+        )
+
+    return value
 
 
 class BaseDatabaseAdapter(ABC):

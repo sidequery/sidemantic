@@ -3,7 +3,7 @@
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
 
 class SnowflakeResult:
@@ -140,6 +140,8 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
     def get_tables(self) -> list[dict]:
         """List all tables in the database/schema."""
         if self.schema:
+            # Validate schema to prevent SQL injection
+            validate_identifier(self.schema, "schema")
             sql = f"""
                 SELECT table_name, table_schema as schema
                 FROM information_schema.tables
@@ -165,7 +167,12 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
         """Get column information for a table."""
+        # Validate identifiers to prevent SQL injection
+        validate_identifier(table_name, "table name")
         schema = schema or self.schema
+        if schema:
+            validate_identifier(schema, "schema")
+
         schema_filter = f"AND table_schema = '{schema}'" if schema else ""
 
         sql = f"""

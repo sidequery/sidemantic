@@ -3,7 +3,7 @@
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
 
 class SparkResult:
@@ -126,6 +126,8 @@ class SparkAdapter(BaseDatabaseAdapter):
 
     def get_tables(self) -> list[dict]:
         """List all tables in the database."""
+        # Validate database to prevent SQL injection
+        validate_identifier(self.database, "database")
         sql = f"SHOW TABLES IN {self.database}"
         result = self.execute(sql)
         rows = result.fetchall()
@@ -133,7 +135,12 @@ class SparkAdapter(BaseDatabaseAdapter):
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
         """Get column information for a table."""
+        # Validate identifiers to prevent SQL injection
+        validate_identifier(table_name, "table name")
         schema = schema or self.database
+        if schema:
+            validate_identifier(schema, "schema")
+
         table_ref = f"{schema}.{table_name}" if schema else table_name
 
         sql = f"DESCRIBE {table_ref}"

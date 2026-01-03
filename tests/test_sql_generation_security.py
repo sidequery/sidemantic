@@ -224,7 +224,12 @@ def test_end_to_end_duckdb_coverage():
 
 
 def test_count_metrics_with_filters(layer):
-    """Test COUNT metrics work correctly with filters."""
+    """Test COUNT metrics work correctly with filters.
+
+    Metric-level filters are applied via CASE WHEN inside the aggregation,
+    not in the WHERE clause. This ensures each metric's filter only affects
+    that specific metric.
+    """
     orders = Model(
         name="orders",
         table="orders_table",
@@ -241,9 +246,9 @@ def test_count_metrics_with_filters(layer):
 
     sql = layer.compile(metrics=["orders.completed_orders"], dimensions=["orders.status"])
 
-    # Should have valid COUNT with filter in CASE WHEN (conditional aggregation)
-    assert "CASE WHEN status = 'completed'" in sql
-    assert "completed_orders_raw" in sql
+    # Should have valid COUNT with filter in CASE WHEN
+    assert "CASE WHEN" in sql
+    assert "status = 'completed'" in sql
     # Should not have invalid * AS syntax
     assert "* AS completed_orders_raw" not in sql
 

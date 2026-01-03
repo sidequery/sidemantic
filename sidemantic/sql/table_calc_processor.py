@@ -141,6 +141,8 @@ class TableCalculationProcessor:
             return self._apply_row_number(calc, rows)
         elif calc.type == "moving_average":
             return self._apply_moving_average(calc, rows)
+        elif calc.type == "percentile":
+            return self._apply_percentile(calc, rows)
         else:
             raise ValueError(f"Unknown table calculation type: {calc.type}")
 
@@ -278,5 +280,50 @@ class TableCalculationProcessor:
 
             # Calculate average
             row[calc.name] = sum(window_values) / len(window_values) if window_values else 0
+
+        return rows
+
+    def _apply_percentile(self, calc: TableCalculation, rows: list[dict]) -> list[dict]:
+        """Calculate percentile of a field and add as constant column.
+
+        The percentile value (e.g., median for p=0.5) is calculated across all rows
+        and added as a constant to each row. This is useful for comparing individual
+        values against the distribution.
+        """
+        if not calc.field:
+            raise ValueError(f"percentile calculation {calc.name} missing field")
+        if calc.percentile is None:
+            raise ValueError(f"percentile calculation {calc.name} missing percentile value")
+        if not (0 <= calc.percentile <= 1):
+            raise ValueError(f"percentile value must be between 0 and 1, got {calc.percentile}")
+
+        # Collect all non-None values
+        values = [row.get(calc.field) for row in rows if row.get(calc.field) is not None]
+
+        if not values:
+            # No values to calculate percentile from
+            for row in rows:
+                row[calc.name] = None
+            return rows
+
+        # Sort values
+        sorted_values = sorted(values)
+        n = len(sorted_values)
+
+        # Calculate percentile using linear interpolation
+        # This matches numpy's default "linear" interpolation method
+        pos = calc.percentile * (n - 1)
+        lower_idx = int(pos)
+        upper_idx = min(lower_idx + 1, n - 1)
+        fraction = pos - lower_idx
+
+        if lower_idx == upper_idx:
+            percentile_value = sorted_values[lower_idx]
+        else:
+            percentile_value = sorted_values[lower_idx] * (1 - fraction) + sorted_values[upper_idx] * fraction
+
+        # Add percentile value to all rows
+        for row in rows:
+            row[calc.name] = percentile_value
 
         return rows

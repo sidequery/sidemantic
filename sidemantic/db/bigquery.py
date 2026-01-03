@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
 
 class BigQueryResult:
@@ -142,9 +142,13 @@ class BigQueryAdapter(BaseDatabaseAdapter):
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
         """Get column information for a table."""
+        # Validate identifiers for consistency and defense in depth
+        # (BigQuery API handles these, but validation catches bad input early)
+        validate_identifier(table_name, "table name")
         schema = schema or self.dataset_id
         if not schema:
             raise ValueError("schema (dataset_id) required for get_columns")
+        validate_identifier(schema, "schema")
 
         table_ref = self.client.dataset(schema).table(table_name)
         table = self.client.get_table(table_ref)

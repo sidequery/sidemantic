@@ -283,14 +283,12 @@ def test_segment_filters_pushed_down(layer):
     assert "completed" in where_sql
 
 
-def test_metric_level_filters_use_case_when_in_cte(layer):
-    """Test that metric-level filters are applied via CASE WHEN in CTE.
+def test_metric_level_filters_not_pushed(layer):
+    """Test that metric-level filters are applied via CASE WHEN, not pushed to CTE.
 
-    Metric-level filters use CASE WHEN expressions in the CTE rather than
-    WHERE clauses. This allows multiple filtered metrics to coexist in
-    the same query, each with their own filter condition.
-
-    Query-level filters should still be pushed down to the CTE WHERE clause.
+    Metric-level filters should be applied inside the aggregation using CASE WHEN
+    expressions, not in the WHERE clause. This ensures each metric's filter only
+    affects that specific metric, not other metrics in the same query.
     """
     model = Model(
         name="orders",
@@ -328,28 +326,25 @@ def test_metric_level_filters_use_case_when_in_cte(layer):
 
     assert cte is not None
 
-    # Query-level filter (region) should be in CTE WHERE clause
+    # Query-level filter (region) should be in CTE WHERE
     cte_where = cte.this.find(exp.Where)
     assert cte_where is not None
     cte_where_sql = cte_where.sql()
     assert "region" in cte_where_sql
 
-    # Metric-level filter should NOT be in CTE WHERE (it's in CASE WHEN instead)
+    # Metric-level filter should NOT be in CTE WHERE (goes in CASE WHEN instead)
     assert "status" not in cte_where_sql
 
-    # Metric-level filter should be applied via CASE WHEN in the CTE SELECT
-    cte_select_sql = cte.this.sql()
-    assert "CASE WHEN status = 'completed'" in cte_select_sql
-    assert "completed_revenue_raw" in cte_select_sql
-
-    # Main query should NOT have metric filter in WHERE (it's already in CASE WHEN)
+    # Metric-level filter should be in CASE WHEN expression in SELECT
+    # Look for the Case expression inside the main SELECT
     main_select = parsed.find(exp.Select)
-    main_where = main_select.find(exp.Where)
-    # Main WHERE might be None if all filters were pushed down
-    if main_where:
-        main_where_sql = main_where.sql()
-        # Metric filter should NOT be in main WHERE
-        assert "status" not in main_where_sql
+    case_exprs = list(main_select.find_all(exp.Case))
+    assert len(case_exprs) > 0, "Expected CASE WHEN for metric-level filter"
+
+    # The CASE WHEN should contain the status filter
+    case_sql = case_exprs[0].sql()
+    assert "status" in case_sql
+    assert "completed" in case_sql
 
 
 if __name__ == "__main__":

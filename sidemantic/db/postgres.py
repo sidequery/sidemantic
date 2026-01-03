@@ -3,7 +3,7 @@
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
 
 class PostgresResult:
@@ -131,6 +131,11 @@ class PostgreSQLAdapter(BaseDatabaseAdapter):
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
         """Get columns for a table."""
+        # Validate identifiers to prevent SQL injection
+        validate_identifier(table_name, "table name")
+        if schema:
+            validate_identifier(schema, "schema")
+
         schema_filter = f"AND table_schema = '{schema}'" if schema else ""
         result = self.execute(
             f"""

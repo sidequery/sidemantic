@@ -56,6 +56,20 @@ def extract_metric_dependencies(metric_obj, graph=None, model_context=None) -> s
             deps.add(metric_obj.sql)
             return deps
 
+        # Check if this is an expression metric with inline aggregations
+        # (e.g., SUM(x) / SUM(y), COUNT(DISTINCT col) * 1.0)
+        # These don't have measure dependencies - the aggregations are inline
+        try:
+            parsed = sqlglot.parse_one(metric_obj.sql)
+            # Check if the expression contains any aggregation functions
+            agg_types = (exp.Sum, exp.Avg, exp.Count, exp.Min, exp.Max, exp.Median)
+            has_inline_agg = any(parsed.find_all(*agg_types))
+            if has_inline_agg and not metric_obj.type:
+                # Expression metric with inline aggregations - no measure dependencies
+                return deps
+        except Exception:
+            pass
+
         # Extract column references from expression
         refs = extract_column_references(metric_obj.sql)
 

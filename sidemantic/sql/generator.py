@@ -1398,13 +1398,15 @@ class SQLGenerator:
                     # Complex metric types (derived, ratio) can be built inline
                     # Note: cumulative, time_comparison, conversion are handled via special query generators
                     # and won't appear in this code path
-                    if measure.type in ["derived", "ratio"]:
+                    # Also handle "expression metrics" - metrics with inline aggregations like SUM(x)/SUM(y)
+                    is_expression_metric = not measure.type and not measure.agg and measure.sql
+                    if measure.type in ["derived", "ratio"] or is_expression_metric:
                         # Use complex metric builder
                         metric_expr = self._build_metric_sql(measure, model_name)
                         metric_expr = self._wrap_with_fill_nulls(metric_expr, measure)
                         select_exprs.append(f"{metric_expr} AS {alias}")
                     elif not measure.agg:
-                        # Complex types that need special handling (shouldn't reach here normally)
+                        # Unknown metric type that needs special handling
                         raise ValueError(
                             f"Metric '{measure.name}' with type '{measure.type}' cannot be queried directly. "
                             f"Use generate() instead of _build_main_select() for this metric type."
@@ -1736,7 +1738,12 @@ class SQLGenerator:
 
             # Check if this is a SQL expression metric (has inline aggregations)
             # These metrics already contain complete SQL and shouldn't have dependencies replaced
-            has_inline_agg = any(agg in formula.upper() for agg in ["COUNT(", "SUM(", "AVG(", "MIN(", "MAX("])
+            try:
+                parsed = sqlglot.parse_one(formula, read=self.dialect)
+                agg_types = (exp.Sum, exp.Avg, exp.Count, exp.Min, exp.Max, exp.Median)
+                has_inline_agg = any(parsed.find_all(*agg_types))
+            except Exception:
+                has_inline_agg = False
 
             if has_inline_agg:
                 # This is a SQL expression metric with inline aggregations.
@@ -2009,7 +2016,12 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 cumulative_metrics.append(m)
                 # Add the base measure/metric to base_metrics
                 if metric.sql:
-                    base_metrics.append(metric.sql)
+                    base_ref = metric.sql
+                    # Qualify unqualified references with the model name
+                    if "." not in base_ref and "." in m:
+                        model_name = m.split(".")[0]
+                        base_ref = f"{model_name}.{base_ref}"
+                    base_metrics.append(base_ref)
             elif metric and metric.type == "time_comparison":
                 # Validate required fields
                 if not metric.base_metric:
@@ -2076,7 +2088,16 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
 
         # Add cumulative metrics with window functions
         for m in cumulative_metrics:
-            metric = self.graph.get_metric(m)
+            # Handle both qualified (model.measure) and unqualified references
+            if "." in m:
+                model_name, measure_name = m.split(".", 1)
+                model = self.graph.get_model(model_name)
+                metric = model.get_metric(measure_name) if model else None
+                # Use just the measure name as the alias (not model.measure)
+                metric_alias = measure_name
+            else:
+                metric = self.graph.get_metric(m)
+                metric_alias = m
             if not metric or (not metric.sql and not metric.window_expression):
                 continue
 
@@ -2107,7 +2128,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             if metric.window_expression:
                 order_col = time_dim
                 frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-                window_expr = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame}) AS {m}"
+                window_expr = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame}) AS {metric_alias}"
                 select_exprs.append(window_expr)
                 continue
 
@@ -2118,8 +2139,22 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 # It's a direct measure reference - extract just the measure name
                 base_alias = base_ref.split(".")[1]
             else:
-                # It's a metric reference - check if it exists and get its underlying measure
-                base_metric = self.graph.get_metric(base_ref)
+                # It's an unqualified reference - check model first, then graph-level
+                base_metric = None
+                # Get model name from the cumulative metric reference
+                cum_model_name = m.split(".")[0] if "." in m else None
+                if cum_model_name:
+                    cum_model = self.graph.get_model(cum_model_name)
+                    if cum_model:
+                        base_metric = cum_model.get_metric(base_ref)
+
+                # Fallback to graph-level metric
+                if not base_metric:
+                    try:
+                        base_metric = self.graph.get_metric(base_ref)
+                    except KeyError:
+                        pass
+
                 if base_metric and base_metric.sql:
                     # Use the underlying measure name
                     if "." in base_metric.sql:
@@ -2145,20 +2180,20 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 grain = metric.grain_to_date
                 partition = self._date_trunc(grain, time_dim)
 
-                window_expr = f"{agg_func}({base_col}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
+                window_expr = f"{agg_func}({base_col}) OVER (PARTITION BY {partition} ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {metric_alias}"
             elif metric.window:
                 # Parse window (e.g., "7 days")
                 window_parts = metric.window.split()
                 if len(window_parts) == 2:
                     num, unit = window_parts
                     # For date-based windows, use RANGE
-                    window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW) AS {m}"
+                    window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} RANGE BETWEEN INTERVAL '{num} {unit}' PRECEDING AND CURRENT ROW) AS {metric_alias}"
                 else:
                     # Fallback to rows
-                    window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
+                    window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {metric_alias}"
             else:
                 # Running total (unbounded window)
-                window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {m}"
+                window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {metric_alias}"
 
             select_exprs.append(window_expr)
 

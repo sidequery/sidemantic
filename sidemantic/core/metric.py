@@ -45,9 +45,11 @@ class Metric(BaseModel):
 
         1. Converts expr= to sql= for backwards compatibility
         2. Parses aggregation functions from SQL (e.g., SUM(amount) -> agg=sum, sql=amount)
-        """
-        import re
 
+        Uses sqlglot to properly parse expressions and handle nested parentheses.
+        Only extracts aggregation from SIMPLE expressions (single aggregation function).
+        Complex expressions like SUM(x) / SUM(y) are preserved as-is.
+        """
         if isinstance(data, dict):
             # Step 1: Handle expr alias
             expr_val = data.get("expr")
@@ -72,23 +74,61 @@ class Metric(BaseModel):
             # Parse if sql is provided and agg is not set
             # Allow parsing for simple metrics (no type) OR cumulative metrics (to support AVG/COUNT windows)
             if sql_val and not agg_val and (not type_val or type_val == "cumulative"):
-                # Match aggregation functions at the start: SUM(expr), COUNT(expr), etc.
-                agg_pattern = r"^\s*(SUM|COUNT|AVG|MIN|MAX|MEDIAN|COUNT_DISTINCT)\s*\((.*)\)\s*$"
-                match = re.match(agg_pattern, sql_val, re.IGNORECASE)
+                try:
+                    import sqlglot
+                    from sqlglot import expressions as exp
 
-                if match:
-                    agg_func = match.group(1).lower()
-                    inner_expr = match.group(2).strip()
+                    parsed = sqlglot.parse_one(sql_val, read="duckdb")
 
-                    # Extract DISTINCT for COUNT(DISTINCT col)
-                    if agg_func == "count":
-                        distinct_match = re.match(r"^\s*DISTINCT\s+(.+)$", inner_expr, re.IGNORECASE)
-                        if distinct_match:
+                    # Only extract if the TOP-LEVEL expression is a simple aggregation
+                    # This prevents breaking expressions like SUM(x) / SUM(y)
+                    agg_map = {
+                        exp.Sum: "sum",
+                        exp.Avg: "avg",
+                        exp.Min: "min",
+                        exp.Max: "max",
+                        exp.Median: "median",
+                    }
+
+                    agg_func = None
+                    inner_expr = None
+
+                    # Check for standard aggregations
+                    for agg_class, agg_name in agg_map.items():
+                        if isinstance(parsed, agg_class):
+                            agg_func = agg_name
+                            if parsed.this:
+                                inner_expr = parsed.this.sql(dialect="duckdb")
+                            break
+
+                    # Handle COUNT specially (need to detect DISTINCT)
+                    if isinstance(parsed, exp.Count):
+                        # Check if the argument is a Distinct expression
+                        if isinstance(parsed.this, exp.Distinct):
                             agg_func = "count_distinct"
-                            inner_expr = distinct_match.group(1).strip()
+                            # Extract all expressions from inside Distinct
+                            # e.g., COUNT(DISTINCT a, b) -> "a, b"
+                            if parsed.this.expressions:
+                                inner_expr = ", ".join(e.sql(dialect="duckdb") for e in parsed.this.expressions)
+                            else:
+                                inner_expr = parsed.this.sql(dialect="duckdb")
+                        else:
+                            agg_func = "count"
+                            if parsed.this:
+                                inner_expr = parsed.this.sql(dialect="duckdb")
+                            # COUNT(*) case - inner_expr stays None
 
-                    data["agg"] = agg_func
-                    data["sql"] = inner_expr
+                    if agg_func:
+                        data["agg"] = agg_func
+                        if inner_expr is not None:
+                            data["sql"] = inner_expr
+                        elif agg_func == "count":
+                            # COUNT(*) - leave sql as None or "*"
+                            data["sql"] = None
+
+                except Exception:
+                    # If sqlglot parsing fails, leave the expression as-is
+                    pass
 
         return data
 

@@ -126,6 +126,9 @@ prerelease = "if-necessary"
 
 [dependency-groups]
 dev = [
+    "lsprotocol>=2025.0.0",
     "marimo==0.16.5",
+    "pygls>=2.0.0",
     "pytest>=8.4.2",
+    "ruff>=0.14.0",
 ]

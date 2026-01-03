@@ -229,6 +229,23 @@ def test_lookml_adapter_advanced_measures():
     # Should have 2 filters (channel and sale_amount)
     assert len(online_large_sales.filters) == 2
 
+    # Test comparison operator filters (">1000", "<=100")
+    large_sales_count = sales.get_metric("large_sales_count")
+    assert large_sales_count is not None
+    assert large_sales_count.filters is not None
+    # Filter should be "sale_amount > 1000", NOT "sale_amount = '>1000'"
+    assert any("> 1000" in f for f in large_sales_count.filters), (
+        f"Expected '> 1000' in filters, got: {large_sales_count.filters}"
+    )
+
+    small_sales_count = sales.get_metric("small_sales_count")
+    assert small_sales_count is not None
+    assert small_sales_count.filters is not None
+    # Filter should be "sale_amount <= 100", NOT "sale_amount = '<=100'"
+    assert any("<= 100" in f for f in small_sales_count.filters), (
+        f"Expected '<= 100' in filters, got: {small_sales_count.filters}"
+    )
+
     # Test derived/ratio measures
     gross_profit = sales.get_metric("gross_profit")
     assert gross_profit is not None
@@ -318,13 +335,17 @@ def test_lookml_adapter_explores_multi_join():
         assert relationships_by_name["customers"].foreign_key == "customer_id"
 
         # Verify order_items relationship is one_to_many
+        # FK is order_id on order_items (the "many" side referencing orders)
         assert "order_items" in relationships_by_name
         assert relationships_by_name["order_items"].type == "one_to_many"
-        assert relationships_by_name["order_items"].foreign_key == "id"
+        assert relationships_by_name["order_items"].foreign_key == "order_id"
 
-        # Verify products relationship exists (through order_items)
-        assert "products" in relationships_by_name
-        assert relationships_by_name["products"].type == "many_to_one"
+        # Note: products is NOT a direct relationship from orders.
+        # In LookML it's defined as: ${order_items.product_id} = ${products.id}
+        # This is a multi-hop join (orders -> order_items -> products).
+        # Sidemantic correctly skips this and will compute the join path
+        # through intermediate models via the adjacency graph.
+        assert "products" not in relationships_by_name
 
         # Check customers explore
         customers = graph.get_model("customers")
@@ -447,8 +468,10 @@ def test_lookml_thelook_orders():
 
     order_profit_dim = orders.get_dimension("order_profit")
     assert order_profit_dim is not None
-    # Should reference other dimensions
-    assert "total_amount_of_order_usd" in order_profit_dim.sql or "total_cost_of_order" in order_profit_dim.sql
+    # Dimension references get resolved to their SQL - should contain the subqueries
+    # from total_amount_of_order_usd and total_cost_of_order
+    assert "SELECT SUM" in order_profit_dim.sql  # From total_amount_of_order_usd
+    assert "inventory_items" in order_profit_dim.sql  # From total_cost_of_order
 
     # Check yesno dimension
     is_first_purchase_dim = orders.get_dimension("is_first_purchase")

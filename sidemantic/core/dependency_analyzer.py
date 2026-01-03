@@ -22,7 +22,7 @@ def extract_column_references(sql_expr: str) -> set[str]:
     return columns
 
 
-def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
+def extract_metric_dependencies(metric_obj, graph=None, model_context=None) -> set[str]:
     """Auto-detect which measures/metrics a metric depends on.
 
     Parses SQL expressions to find referenced columns/metrics.
@@ -31,6 +31,7 @@ def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
     Args:
         metric_obj: Metric object
         graph: Optional SemanticGraph for resolving references
+        model_context: Optional model name to prefer when resolving ambiguous references
 
     Returns:
         Set of dependency names (measures or metrics in model.measure format).
@@ -75,7 +76,17 @@ def extract_metric_dependencies(metric_obj, graph=None) -> set[str]:
                     except KeyError:
                         pass
 
-                    # Search all models for this measure name
+                    # If we have model context, check that model first
+                    if not resolved and model_context:
+                        try:
+                            model = graph.get_model(model_context)
+                            if model and model.get_metric(ref):
+                                deps.add(f"{model_context}.{ref}")
+                                resolved = True
+                        except (KeyError, AttributeError):
+                            pass
+
+                    # Search all models for this measure name (fallback)
                     if not resolved:
                         for model_name, model in graph.models.items():
                             try:

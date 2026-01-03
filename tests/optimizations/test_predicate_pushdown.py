@@ -283,8 +283,15 @@ def test_segment_filters_pushed_down(layer):
     assert "completed" in where_sql
 
 
-def test_metric_level_filters_not_pushed(layer):
-    """Test that metric-level filters stay in main query, not pushed to CTE."""
+def test_metric_level_filters_use_case_when_in_cte(layer):
+    """Test that metric-level filters are applied via CASE WHEN in CTE.
+
+    Metric-level filters use CASE WHEN expressions in the CTE rather than
+    WHERE clauses. This allows multiple filtered metrics to coexist in
+    the same query, each with their own filter condition.
+
+    Query-level filters should still be pushed down to the CTE WHERE clause.
+    """
     model = Model(
         name="orders",
         table="orders_table",
@@ -321,24 +328,18 @@ def test_metric_level_filters_not_pushed(layer):
 
     assert cte is not None
 
-    # Query-level filter (region) should be in CTE
+    # Query-level filter (region) should be pushed to CTE WHERE
     cte_where = cte.this.find(exp.Where)
     assert cte_where is not None
     cte_where_sql = cte_where.sql()
     assert "region" in cte_where_sql
 
-    # Metric-level filter should NOT be in CTE (stays in main query)
+    # Metric-level filter should be in a CASE WHEN in the CTE SELECT, not WHERE
     assert "status" not in cte_where_sql
 
-    # Find main SELECT
-    main_select = parsed.find(exp.Select)
-    main_where = main_select.find(exp.Where)
-    assert main_where is not None
-    main_where_sql = main_where.sql()
-
-    # Metric-level filter should be in main query
-    assert "status" in main_where_sql
-    assert "completed" in main_where_sql
+    # Check that CASE WHEN is in the CTE for the metric filter
+    cte_sql = cte.this.sql()
+    assert "CASE WHEN status = 'completed' THEN amount END" in cte_sql
 
 
 if __name__ == "__main__":

@@ -738,6 +738,18 @@ class SQLGenerator:
                             select_cols.append(f"{fk} AS {fk}")
                             columns_added.add(fk)
 
+        # Determine table alias for {model} placeholder replacement
+        # In CTEs, we're selecting from the raw table (or subquery AS t)
+        model_table_alias = "t" if model.sql else ""
+
+        def replace_model_placeholder(sql_expr: str) -> str:
+            """Replace {model} placeholder with appropriate table reference."""
+            if model_table_alias:
+                return sql_expr.replace("{model}", model_table_alias)
+            else:
+                # No alias needed - just remove {model}.
+                return sql_expr.replace("{model}.", "")
+
         # Add only needed dimension columns
         for dimension in model.dimensions:
             if dimension.name in needed_dimensions and dimension.name not in columns_added:
@@ -746,6 +758,8 @@ class SQLGenerator:
                     dim_sql = self._date_trunc(dimension.granularity, dimension.sql_expr)
                 else:
                     dim_sql = dimension.sql_expr
+                # Replace {model} placeholder with actual table reference
+                dim_sql = replace_model_placeholder(dim_sql)
                 select_cols.append(f"{dim_sql} AS {dimension.name}")
                 columns_added.add(dimension.name)
 
@@ -762,7 +776,7 @@ class SQLGenerator:
 
             if gran and dimension.type == "time":
                 # Apply time granularity (in addition to base column)
-                dim_sql = self._date_trunc(gran, dimension.sql_expr)
+                dim_sql = self._date_trunc(gran, replace_model_placeholder(dimension.sql_expr))
                 alias = f"{dim_name}__{gran}"
                 if alias not in columns_added:
                     select_cols.append(f"{dim_sql} AS {alias}")
@@ -772,22 +786,61 @@ class SQLGenerator:
         # Collect all measures needed for metrics
         measures_needed = set()
 
-        def collect_measures_from_metric(metric_ref: str):
-            """Recursively collect measures needed from a metric."""
-            if "." in metric_ref and metric_ref.startswith(model_name + "."):
-                # Direct measure reference
-                measure_name = metric_ref.split(".")[1]
-                measures_needed.add(measure_name)
+        def collect_measures_from_metric(metric_ref: str, visited: set[str] | None = None):
+            """Recursively collect measures needed from a metric.
+
+            Handles:
+            - Direct measure references: model.measure
+            - Model-level derived measures that reference other measures
+            - Unqualified references that need to be resolved within model context
+            """
+            if visited is None:
+                visited = set()
+
+            # Avoid infinite recursion
+            if metric_ref in visited:
+                return
+            visited.add(metric_ref)
+
+            if "." in metric_ref:
+                # It's a qualified reference (model.measure)
+                ref_model_name, measure_name = metric_ref.split(".", 1)
+                if ref_model_name == model_name:
+                    # It's for this model - check if it's a derived measure
+                    measure = model.get_metric(measure_name)
+                    if measure:
+                        if measure.type == "derived" or (not measure.type and not measure.agg and measure.sql):
+                            # Derived measure - get its dependencies
+                            for dep in measure.get_dependencies(self.graph, ref_model_name):
+                                collect_measures_from_metric(dep, visited)
+                        elif measure.agg:
+                            # Simple aggregation measure - add it
+                            measures_needed.add(measure_name)
             else:
-                # It's a metric, need to resolve its dependencies
-                try:
-                    metric = self.graph.get_metric(metric_ref)
-                    if metric:
-                        # Use auto dependency detection with graph for resolution
-                        for dep in metric.get_dependencies(self.graph):
-                            collect_measures_from_metric(dep)
-                except KeyError:
-                    pass
+                # Unqualified reference - could be:
+                # 1. A graph-level metric
+                # 2. A measure on the current model
+
+                # First check if it's a measure on the current model
+                measure = model.get_metric(metric_ref)
+                if measure:
+                    if measure.type == "derived" or (not measure.type and not measure.agg and measure.sql):
+                        # Derived measure - get its dependencies
+                        for dep in measure.get_dependencies(self.graph, model_name):
+                            collect_measures_from_metric(dep, visited)
+                    elif measure.agg:
+                        # Simple aggregation measure - add it
+                        measures_needed.add(metric_ref)
+                else:
+                    # Try as graph-level metric
+                    try:
+                        metric = self.graph.get_metric(metric_ref)
+                        if metric:
+                            # Use auto dependency detection with graph for resolution
+                            for dep in metric.get_dependencies(self.graph, model_name):
+                                collect_measures_from_metric(dep, visited)
+                    except KeyError:
+                        pass
 
         for metric_ref in metrics:
             collect_measures_from_metric(metric_ref)
@@ -795,15 +848,34 @@ class SQLGenerator:
         for measure_name in measures_needed:
             measure = model.get_metric(measure_name)
             if measure:
-                # For COUNT(*), use 1 instead of * to avoid invalid "* AS alias" syntax
+                # Build the base SQL expression for the measure
                 if measure.agg == "count" and not measure.sql:
-                    select_cols.append(f"1 AS {measure_name}_raw")
-                # For COUNT_DISTINCT without sql, use primary key (count distinct rows)
+                    base_sql = "1"
                 elif measure.agg == "count_distinct" and not measure.sql:
                     pk = model.primary_key or "id"
-                    select_cols.append(f"{pk} AS {measure_name}_raw")
+                    base_sql = pk
                 else:
-                    select_cols.append(f"{measure.sql_expr} AS {measure_name}_raw")
+                    base_sql = replace_model_placeholder(measure.sql_expr)
+
+                # Apply measure filters if present (wrap in CASE WHEN)
+                if measure.filters:
+                    # Filters are SQL conditions like "{model}.field = 'value'"
+                    # Replace {model} placeholder and combine into CASE WHEN
+                    filter_conditions = []
+                    for filter_str in measure.filters:
+                        # Replace {model} with nothing since we're in the CTE selecting from raw table
+                        filter_sql = filter_str.replace("{model}.", "")
+                        filter_conditions.append(filter_sql)
+
+                    if filter_conditions:
+                        filter_sql = " AND ".join(filter_conditions)
+                        measure_sql = f"CASE WHEN {filter_sql} THEN {base_sql} END"
+                    else:
+                        measure_sql = base_sql
+                else:
+                    measure_sql = base_sql
+
+                select_cols.append(f"{measure_sql} AS {measure_name}_raw")
 
         # Build FROM clause
         if model.sql:
@@ -988,7 +1060,7 @@ class SQLGenerator:
                     # and won't appear in this code path
                     if measure.type in ["derived", "ratio"]:
                         # Use complex metric builder
-                        metric_expr = self._build_metric_sql(measure)
+                        metric_expr = self._build_metric_sql(measure, model_name)
                         metric_expr = self._wrap_with_fill_nulls(metric_expr, measure)
                         select_exprs.append(f"{metric_expr} AS {alias}")
                     elif not measure.agg:
@@ -1069,35 +1141,11 @@ class SQLGenerator:
                         query = query.join(right_table, on=join_cond, join_type=join_type)
                         joined_models.add(jp.to_model)
 
-        # Collect metric-level filters (these are row-level filters, go in WHERE)
+        # Note: Metric-level filters (Metric.filters) are applied in the CTE
+        # via CASE WHEN expressions, so they should NOT be added to WHERE clause.
+        # This allows filtered aggregations to work correctly when multiple
+        # filtered metrics are queried together.
         metric_filters = []
-        for metric_ref in metrics:
-            if "." in metric_ref:
-                # model.measure format
-                model_name, measure_name = metric_ref.split(".")
-                model = self.graph.get_model(model_name)
-                if model:
-                    measure = model.get_metric(measure_name)
-                    if measure and measure.filters:
-                        # Add metric-level filters with proper table alias
-                        for f in measure.filters:
-                            # Replace {model} placeholder with actual CTE alias
-                            aliased_filter = f.replace("{model}", f"{model_name}_cte")
-                            metric_filters.append(aliased_filter)
-            else:
-                # Just metric name
-                metric = self.graph.get_metric(metric_ref)
-                if metric and metric.filters:
-                    # Need to determine which model this metric references
-                    deps = metric.get_dependencies(self.graph)
-                    for dep in deps:
-                        if "." in dep:
-                            dep_model_name = dep.split(".")[0]
-                            # Add filters with proper alias
-                            for f in metric.filters:
-                                aliased_filter = f.replace("{model}", f"{dep_model_name}_cte")
-                                metric_filters.append(aliased_filter)
-                            break  # Only use first dependency's model for now
 
         # Separate filters into WHERE (dimension/row-level) and HAVING (metric/aggregation-level)
         # Query-level filters: check if they reference metrics (HAVING) or dimensions (WHERE)
@@ -1296,11 +1344,12 @@ class SQLGenerator:
             return f"COALESCE({sql_expr}, {fill_value})"
         return sql_expr
 
-    def _build_metric_sql(self, metric) -> str:
+    def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.
 
         Args:
             metric: Metric object
+            model_context: Optional model name for resolving ambiguous references
 
         Returns:
             SQL expression string
@@ -1340,7 +1389,7 @@ class SQLGenerator:
             formula = metric.sql
 
             # Auto-detect dependencies from expression using graph for resolution
-            dependencies = metric.get_dependencies(self.graph)
+            dependencies = metric.get_dependencies(self.graph, model_context)
 
             # Sort dependencies by length descending to avoid partial matches
             # (e.g., replace "gross_revenue" before "revenue")
@@ -1367,7 +1416,7 @@ class SQLGenerator:
                     try:
                         ref_metric = self.graph.get_metric(metric_name)
                         # Recursively build metric SQL
-                        metric_sql = self._build_metric_sql(ref_metric)
+                        metric_sql = self._build_metric_sql(ref_metric, model_context)
                     except KeyError:
                         raise ValueError(f"Metric {metric_name} not found")
 
@@ -1375,17 +1424,23 @@ class SQLGenerator:
                 # Use regex to only replace whole word matches
                 import re
 
-                # Escape special regex characters in metric_name except dots
-                pattern = re.escape(metric_name)
-                # Use word boundaries, but handle dots specially for model.measure format
+                # For qualified names (model.measure), also match unqualified version (measure)
                 if "." in metric_name:
-                    # For model.measure, we want exact matches
-                    pattern = r"\b" + pattern.replace(r"\.", r"\.") + r"\b"
+                    # Split into model and measure parts
+                    parts = metric_name.split(".")
+                    measure_only = parts[1]
+
+                    # First try to replace qualified form if present
+                    pattern = r"\b" + re.escape(metric_name).replace(r"\.", r"\.") + r"\b"
+                    formula = re.sub(pattern, f"({metric_sql})", formula)
+
+                    # Then also replace unqualified form (measure name only)
+                    pattern = r"\b" + re.escape(measure_only) + r"\b"
+                    formula = re.sub(pattern, f"({metric_sql})", formula)
                 else:
                     # For simple names, use word boundaries
-                    pattern = r"\b" + pattern + r"\b"
-
-                formula = re.sub(pattern, f"({metric_sql})", formula)
+                    pattern = r"\b" + re.escape(metric_name) + r"\b"
+                    formula = re.sub(pattern, f"({metric_sql})", formula)
 
             return formula
 

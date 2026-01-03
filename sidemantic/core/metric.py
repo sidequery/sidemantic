@@ -210,15 +210,16 @@ class Metric(BaseModel):
             return f"{agg_func} {self.sql_expr})"
         return f"{agg_func}({self.sql_expr})"
 
-    def get_dependencies(self, graph=None) -> set[str]:
+    def get_dependencies(self, graph=None, model_context=None) -> set[str]:
         """Auto-detect dependencies from SQL expressions.
 
         Uses semantic graph to resolve ambiguous references when available.
 
         Args:
             graph: Optional SemanticGraph for resolving measure/metric references
+            model_context: Optional model name to prefer when resolving ambiguous references
 
         Returns:
             Set of measure/metric names this depends on.
         """
-        return extract_metric_dependencies(self, graph)
+        return extract_metric_dependencies(self, graph, model_context)

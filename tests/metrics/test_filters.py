@@ -7,7 +7,12 @@ from tests.utils import df_rows
 
 
 def test_metric_level_filter_basic(layer):
-    """Test basic metric-level filter."""
+    """Test basic metric-level filter.
+
+    Metric-level filters are applied using CASE WHEN expressions in the CTE,
+    which allows multiple filtered metrics to coexist in the same query
+    (each with their own filter condition).
+    """
     orders = Model(
         name="orders",
         table="orders_table",
@@ -103,7 +108,13 @@ def test_metric_filters_combined_with_query_filters(layer):
 
 
 def test_mixed_filtered_and_unfiltered_metrics(layer):
-    """Test querying both filtered and unfiltered metrics together."""
+    """Test querying both filtered and unfiltered metrics together.
+
+    This is the key use case for CASE WHEN filtered measures:
+    - total_revenue: SUM(amount) - no filter, uses all rows
+    - completed_revenue: SUM(CASE WHEN status='completed' THEN amount END) - filtered
+    Both coexist in same query with different filtering behavior.
+    """
     orders = Model(
         name="orders",
         table="orders_table",
@@ -200,16 +211,13 @@ def test_metric_filter_column_not_in_query_dimensions(layer):
     print("Generated SQL:")
     print(sql)
 
-    # The 'state' column must be in the CTE for the filter to work
+    # The 'state' column must be in the CTE for the CASE WHEN filter to work
     # Check that state appears in the CTE SELECT (before FROM)
     cte_match = sql.split("FROM")[0]  # Get the CTE SELECT part
     assert "state" in cte_match, f"'state' column should be in CTE SELECT for filter to work. CTE: {cte_match}"
 
-    # The filter should be in the WHERE clause
-    assert (
-        "state IN ('confirmed', 'completed', 'cancelled')" in sql
-        or "state IN ('cancelled', 'completed', 'confirmed')" in sql
-    )  # Order might vary
+    # The filter should be in a CASE WHEN expression
+    assert "CASE WHEN state IN ('confirmed', 'completed', 'cancelled')" in sql
 
 
 def test_metric_filter_multiple_columns_not_in_dimensions(layer):
@@ -344,12 +352,12 @@ def test_mixed_filters_separate_where_and_having(layer):
     assert "revenue > 100" in sql
 
 
-def test_metric_level_filters_still_use_where(layer):
-    """Test that Metric.filters (row-level filters) are applied via CASE WHEN.
+def test_metric_level_filters_use_case_when(layer):
+    """Test that Metric.filters use CASE WHEN for filtered aggregations.
 
-    Metric.filters are row-level filters that should filter before aggregation.
-    They're implemented via conditional aggregation (CASE WHEN) to support
-    querying multiple filtered measures simultaneously without ANDing filters.
+    Metric.filters are applied using CASE WHEN expressions in the CTE.
+    This allows multiple filtered metrics to coexist in the same query,
+    each with their own filter condition applied only to that metric.
     """
     layer = SemanticLayer()
 

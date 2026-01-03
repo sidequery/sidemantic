@@ -2353,7 +2353,9 @@ spark = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "lsprotocol" },
     { name = "marimo" },
+    { name = "pygls" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -2404,7 +2406,9 @@ provides-extras = ["dev", "serve", "postgres", "bigquery", "snowflake", "clickho
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "lsprotocol", specifier = ">=2025.0.0" },
     { name = "marimo", specifier = "==0.16.5" },
+    { name = "pygls", specifier = ">=2.0.0" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "ruff", specifier = ">=0.14.0" },
 ]

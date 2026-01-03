@@ -283,8 +283,15 @@ def test_segment_filters_pushed_down(layer):
     assert "completed" in where_sql
 
 
-def test_metric_level_filters_not_pushed(layer):
-    """Test that metric-level filters stay in main query, not pushed to CTE."""
+def test_metric_level_filters_use_case_when_in_cte(layer):
+    """Test that metric-level filters are applied via CASE WHEN in CTE.
+
+    Metric-level filters use CASE WHEN expressions in the CTE rather than
+    WHERE clauses. This allows multiple filtered metrics to coexist in
+    the same query, each with their own filter condition.
+
+    Query-level filters should still be pushed down to the CTE WHERE clause.
+    """
     model = Model(
         name="orders",
         table="orders_table",

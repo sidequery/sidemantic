@@ -438,11 +438,25 @@ class LookMLAdapter(BaseAdapter):
                             # field: "value" -> {model}.field = 'value'
                             # Handle special LookML filter values:
                             # - "yes"/"no" for yesno dimensions -> true/false
+                            # - comparison operators: ">1000", "<=100", ">=5", "<10", "!=0"
                             # - numeric values like "5" -> numeric comparison
                             if value.lower() == "yes":
                                 filters.append(f"{{model}}.{field} = true")
                             elif value.lower() == "no":
                                 filters.append(f"{{model}}.{field} = false")
+                            elif match := re.match(r"^(>=|<=|!=|<>|>|<)(.+)$", value):
+                                # Comparison operator prefix: ">1000", "<=100", etc.
+                                operator, operand = match.groups()
+                                operand = operand.strip()
+                                # Normalize <> to !=
+                                if operator == "<>":
+                                    operator = "!="
+                                # Check if operand is numeric
+                                if operand.replace(".", "").replace("-", "").isdigit():
+                                    filters.append(f"{{model}}.{field} {operator} {operand}")
+                                else:
+                                    # String comparison with operator
+                                    filters.append(f"{{model}}.{field} {operator} '{operand}'")
                             elif value.replace(".", "").replace("-", "").isdigit():
                                 # Numeric value
                                 filters.append(f"{{model}}.{field} = {value}")

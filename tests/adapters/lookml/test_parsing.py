@@ -229,6 +229,23 @@ def test_lookml_adapter_advanced_measures():
     # Should have 2 filters (channel and sale_amount)
     assert len(online_large_sales.filters) == 2
 
+    # Test comparison operator filters (">1000", "<=100")
+    large_sales_count = sales.get_metric("large_sales_count")
+    assert large_sales_count is not None
+    assert large_sales_count.filters is not None
+    # Filter should be "sale_amount > 1000", NOT "sale_amount = '>1000'"
+    assert any("> 1000" in f for f in large_sales_count.filters), (
+        f"Expected '> 1000' in filters, got: {large_sales_count.filters}"
+    )
+
+    small_sales_count = sales.get_metric("small_sales_count")
+    assert small_sales_count is not None
+    assert small_sales_count.filters is not None
+    # Filter should be "sale_amount <= 100", NOT "sale_amount = '<=100'"
+    assert any("<= 100" in f for f in small_sales_count.filters), (
+        f"Expected '<= 100' in filters, got: {small_sales_count.filters}"
+    )
+
     # Test derived/ratio measures
     gross_profit = sales.get_metric("gross_profit")
     assert gross_profit is not None

@@ -1,15 +1,35 @@
 """Tests for ClickHouse adapter."""
 
+import builtins
+import sys
+
 import pytest
 
 from sidemantic.db.clickhouse import ClickHouseAdapter, ClickHouseResult
 
 
-def test_clickhouse_adapter_import_error_message():
-    try:
+def _block_import(monkeypatch, module_prefix: str) -> None:
+    for name in list(sys.modules):
+        if name == module_prefix or name.startswith(f"{module_prefix}."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == module_prefix or name.startswith(f"{module_prefix}."):
+            raise ImportError(f"Blocked import: {module_prefix}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def test_clickhouse_adapter_import_error_message(monkeypatch):
+    _block_import(monkeypatch, "clickhouse_connect")
+
+    with pytest.raises(ImportError) as exc:
         ClickHouseAdapter()
-    except ImportError as exc:
-        assert "clickhouse" in str(exc).lower()
+
+    assert "clickhouse" in str(exc.value).lower()
 
 
 def test_clickhouse_from_url_matrix(monkeypatch):

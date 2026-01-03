@@ -1,8 +1,26 @@
 """Tests for PostgreSQL adapter."""
 
+import builtins
+import sys
+
 import pytest
 
 from sidemantic.db.postgres import PostgreSQLAdapter, PostgresResult
+
+
+def _block_import(monkeypatch, module_prefix: str) -> None:
+    for name in list(sys.modules):
+        if name == module_prefix or name.startswith(f"{module_prefix}."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == module_prefix or name.startswith(f"{module_prefix}."):
+            raise ImportError(f"Blocked import: {module_prefix}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
 class _FakeCursor:
@@ -39,11 +57,13 @@ class _FakeConn:
         return self._cursor
 
 
-def test_postgres_adapter_import_error_message():
-    try:
+def test_postgres_adapter_import_error_message(monkeypatch):
+    _block_import(monkeypatch, "psycopg")
+
+    with pytest.raises(ImportError) as exc:
         PostgreSQLAdapter()
-    except ImportError as exc:
-        assert "psycopg" in str(exc).lower()
+
+    assert "psycopg" in str(exc.value).lower()
 
 
 def test_postgres_from_url_matrix(monkeypatch):

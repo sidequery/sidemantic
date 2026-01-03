@@ -570,6 +570,11 @@ class SQLGenerator:
     def _extract_metric_filter_columns(self, metrics: list[str]) -> dict[str, set[str]]:
         """Extract columns referenced in metric-level filters and SQL expressions.
 
+        Recursively extracts filter columns from:
+        - Direct measure references (model.measure)
+        - Graph-level metrics with filters
+        - Ratio/derived metrics that reference measures with filters
+
         Args:
             metrics: List of metric references (e.g., ["orders.revenue", "bookings.gross_value"])
 
@@ -578,63 +583,105 @@ class SQLGenerator:
         """
         columns_by_model: dict[str, set[str]] = {}
 
-        for metric_ref in metrics:
-            if "." in metric_ref:
-                # model.measure format
-                model_name, measure_name = metric_ref.split(".")
-                model = self.graph.get_model(model_name)
-                if model:
-                    measure = model.get_metric(measure_name)
-                    if measure:
-                        if model_name not in columns_by_model:
-                            columns_by_model[model_name] = set()
+        def add_filter_columns(model_name: str, filters: list[str]):
+            """Extract columns from filter expressions and add to columns_by_model."""
+            if model_name not in columns_by_model:
+                columns_by_model[model_name] = set()
+            for f in filters:
+                aliased_filter = f.replace("{model}", f"{model_name}_cte")
+                try:
+                    parsed = sqlglot.parse_one(aliased_filter, dialect=self.dialect)
+                    for col in parsed.find_all(exp.Column):
+                        if col.table and col.table.replace("_cte", "") == model_name:
+                            columns_by_model[model_name].add(col.name)
+                except Exception:
+                    pass
 
-                        # Extract columns from metric filters
-                        if measure.filters:
-                            for f in measure.filters:
-                                # Replace {model} placeholder for parsing
-                                aliased_filter = f.replace("{model}", f"{model_name}_cte")
-                                try:
-                                    parsed = sqlglot.parse_one(aliased_filter, dialect=self.dialect)
-                                    for col in parsed.find_all(exp.Column):
-                                        if col.table and col.table.replace("_cte", "") == model_name:
-                                            columns_by_model[model_name].add(col.name)
-                                except Exception:
-                                    pass
-
-                        # Extract columns from SQL expression metrics (derived metrics with inline SQL)
-                        if measure.type == "derived" and measure.sql and not measure.agg:
-                            # This is a SQL expression metric - extract column references
-                            # Replace {model} placeholder for parsing
+        def extract_from_measure_ref(metric_ref: str):
+            """Extract filter columns from a model.measure reference."""
+            if "." not in metric_ref:
+                return
+            model_name, measure_name = metric_ref.split(".")
+            model = self.graph.get_model(model_name)
+            if model:
+                measure = model.get_metric(measure_name)
+                if measure:
+                    # Check the measure's own filters
+                    if measure.filters:
+                        add_filter_columns(model_name, measure.filters)
+                    # If measure is a ratio/derived, recursively check dependencies
+                    if measure.type == "ratio":
+                        if measure.numerator:
+                            extract_from_measure_ref(measure.numerator)
+                        if measure.denominator:
+                            extract_from_measure_ref(measure.denominator)
+                    elif measure.type == "derived" or (not measure.type and not measure.agg and measure.sql):
+                        # For derived metrics, also extract columns from the SQL expression itself
+                        # This handles inline SQL like: COUNT(CASE WHEN {model}.status = 'approved' THEN 1 END)
+                        if measure.sql:
                             aliased_sql = measure.sql.replace("{model}", f"{model_name}_cte")
                             try:
                                 parsed = sqlglot.parse_one(aliased_sql, dialect=self.dialect)
                                 for col in parsed.find_all(exp.Column):
                                     if col.table and col.table.replace("_cte", "") == model_name:
+                                        if model_name not in columns_by_model:
+                                            columns_by_model[model_name] = set()
                                         columns_by_model[model_name].add(col.name)
                             except Exception:
                                 pass
-            else:
-                # Just metric name - try graph-level metric
-                try:
-                    metric = self.graph.get_metric(metric_ref)
-                    if metric and metric.filters:
-                        deps = metric.get_dependencies(self.graph)
+                        # Also check dependencies
+                        deps = measure.get_dependencies(self.graph, model_name)
                         for dep in deps:
                             if "." in dep:
-                                dep_model_name = dep.split(".")[0]
-                                if dep_model_name not in columns_by_model:
-                                    columns_by_model[dep_model_name] = set()
-                                for f in metric.filters:
-                                    aliased_filter = f.replace("{model}", f"{dep_model_name}_cte")
-                                    try:
-                                        parsed = sqlglot.parse_one(aliased_filter, dialect=self.dialect)
-                                        for col in parsed.find_all(exp.Column):
-                                            if col.table and col.table.replace("_cte", "") == dep_model_name:
-                                                columns_by_model[dep_model_name].add(col.name)
-                                    except Exception:
-                                        pass
-                                break  # Only use first dependency's model
+                                extract_from_measure_ref(dep)
+                            else:
+                                try:
+                                    dep_metric = self.graph.get_metric(dep)
+                                    extract_from_metric(dep_metric)
+                                except KeyError:
+                                    pass
+
+        def extract_from_metric(metric):
+            """Recursively extract filter columns from a metric and its dependencies."""
+            # Extract from the metric's own filters
+            if metric.filters:
+                deps = metric.get_dependencies(self.graph)
+                for dep in deps:
+                    if "." in dep:
+                        dep_model_name = dep.split(".")[0]
+                        add_filter_columns(dep_model_name, metric.filters)
+                        break
+
+            # For ratio metrics, check numerator and denominator
+            if metric.type == "ratio":
+                if metric.numerator:
+                    extract_from_measure_ref(metric.numerator)
+                if metric.denominator:
+                    extract_from_measure_ref(metric.denominator)
+
+            # For derived metrics, check all dependencies
+            elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+                deps = metric.get_dependencies(self.graph)
+                for dep in deps:
+                    if "." in dep:
+                        extract_from_measure_ref(dep)
+                    else:
+                        # Recursively check graph-level metric dependencies
+                        try:
+                            dep_metric = self.graph.get_metric(dep)
+                            extract_from_metric(dep_metric)
+                        except KeyError:
+                            pass
+
+        for metric_ref in metrics:
+            if "." in metric_ref:
+                # model.measure format - extract directly
+                extract_from_measure_ref(metric_ref)
+            else:
+                # Graph-level metric - recursively extract
+                try:
+                    metric = self.graph.get_metric(metric_ref)
+                    extract_from_metric(metric)
                 except KeyError:
                     pass
 
@@ -1382,13 +1429,9 @@ class SQLGenerator:
                                 dialect=self.dialect,
                             )
                         else:
-                            # Regular aggregation
-                            agg_func = measure.agg.upper()
-                            if agg_func == "COUNT_DISTINCT":
-                                agg_func = "COUNT(DISTINCT"
-                                agg_expr = f"{agg_func} {model_name}_cte.{measure_name}_raw)"
-                            else:
-                                agg_expr = f"{agg_func}({model_name}_cte.{measure_name}_raw)"
+                            # Use helper that applies metric-level filters via CASE WHEN
+                            # This ensures each metric's filter only affects that metric
+                            agg_expr = self._build_measure_aggregation_sql(model_name, measure)
 
                         select_exprs.append(f"{agg_expr} AS {alias}")
                 else:
@@ -1435,9 +1478,9 @@ class SQLGenerator:
                         joined_models.add(jp.to_model)
 
         # Separate filters into WHERE (dimension/row-level) and HAVING (metric/aggregation-level)
-        # NOTE: Metric-level filters (measure.filters) are NOT added here because they are
-        # already handled via CASE WHEN in the CTE (see _build_model_cte lines 822-841).
-        # Adding them to WHERE would incorrectly AND them together across different measures.
+        # Note: metric-level filters (Metric.filters) are applied via CASE WHEN inside each
+        # metric's aggregation, NOT in the WHERE clause. This ensures each metric's filter
+        # only affects that specific metric, not all metrics in the query.
         where_filters = []
         having_filters = []
 
@@ -1465,7 +1508,7 @@ class SQLGenerator:
             else:
                 where_filters.append(filter_expr)
 
-        # Add WHERE clause (dimension filters and metric-level row filters)
+        # Add WHERE clause (dimension filters only - metric-level filters are in CASE WHEN)
         if where_filters:
             # Parse filters to add table aliases and handle measure vs dimension columns
             for filter_expr in where_filters:
@@ -1629,6 +1672,34 @@ class SQLGenerator:
             return f"COALESCE({sql_expr}, {fill_value})"
         return sql_expr
 
+    def _build_measure_aggregation_sql(self, model_name: str, measure) -> str:
+        """Build SQL aggregation expression for a measure.
+
+        Note: Metric-level filters are already applied in the CTE via CASE WHEN
+        on the raw column (see _build_model_cte). The raw column will have NULL
+        for rows that don't match the filter. Therefore, we do NOT re-apply
+        filters here - we just aggregate the pre-filtered raw column.
+
+        This avoids the issue where re-applying filters on CTE columns could
+        reference transformed values (e.g., DATE_TRUNC'd time dimensions)
+        instead of the original raw values.
+
+        Args:
+            model_name: Name of the model containing the measure
+            measure: Metric object representing the measure
+
+        Returns:
+            SQL aggregation expression string
+        """
+        agg_func = measure.agg.upper()
+        raw_col = f"{model_name}_cte.{measure.name}_raw"
+
+        # Simple aggregation - filters are already applied in CTE's raw column
+        if agg_func == "COUNT_DISTINCT":
+            return f"COUNT(DISTINCT {raw_col})"
+        else:
+            return f"{agg_func}({raw_col})"
+
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.
 
@@ -1650,19 +1721,9 @@ class SQLGenerator:
             num_measure_obj = num_model_obj.get_metric(num_measure)
             denom_measure_obj = denom_model_obj.get_metric(denom_measure)
 
-            # Build numerator
-            num_agg = num_measure_obj.agg.upper()
-            if num_agg == "COUNT_DISTINCT":
-                num_expr = f"COUNT(DISTINCT {num_model}_cte.{num_measure}_raw)"
-            else:
-                num_expr = f"{num_agg}({num_model}_cte.{num_measure}_raw)"
-
-            # Build denominator
-            denom_agg = denom_measure_obj.agg.upper()
-            if denom_agg == "COUNT_DISTINCT":
-                denom_expr = f"COUNT(DISTINCT {denom_model}_cte.{denom_measure}_raw)"
-            else:
-                denom_expr = f"{denom_agg}({denom_model}_cte.{denom_measure}_raw)"
+            # Build numerator and denominator with metric-level filters applied
+            num_expr = self._build_measure_aggregation_sql(num_model, num_measure_obj)
+            denom_expr = self._build_measure_aggregation_sql(denom_model, denom_measure_obj)
 
             return f"({num_expr}) / NULLIF({denom_expr}, 0)"
 
@@ -1727,11 +1788,8 @@ class SQLGenerator:
                     measure = model.get_metric(measure_name)
 
                     if measure:
-                        agg_func = measure.agg.upper()
-                        if agg_func == "COUNT_DISTINCT":
-                            metric_sql = f"COUNT(DISTINCT {model_name}_cte.{measure_name}_raw)"
-                        else:
-                            metric_sql = f"{agg_func}({model_name}_cte.{measure_name}_raw)"
+                        # Use helper that applies metric-level filters
+                        metric_sql = self._build_measure_aggregation_sql(model_name, measure)
                     else:
                         raise ValueError(f"Measure {metric_name} not found")
                 else:

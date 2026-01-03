@@ -122,3 +122,54 @@ def test_duckdb_memory_variations():
     # Just duckdb:// should default to memory
     layer2 = SemanticLayer(connection="duckdb:///")
     assert layer2.conn is not None
+
+
+def test_duckdb_injection_attempt_in_table_name_is_rejected():
+    """Verify SQL injection attempts in table names are rejected."""
+    adapter = DuckDBAdapter()
+    adapter.execute("CREATE TABLE orders (id INT)")
+
+    table_name = "orders; DROP TABLE orders;--"
+    with pytest.raises(ValueError, match="Invalid table name"):
+        adapter.get_columns(table_name)
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["main; DROP SCHEMA x;--", "default; --", "analytics'); DROP TABLE t;--"],
+)
+def test_duckdb_injection_attempt_in_schema_is_rejected(schema):
+    """Verify SQL injection attempts in schema names are rejected."""
+    adapter = DuckDBAdapter()
+    adapter.execute("CREATE TABLE orders (id INT)")
+
+    with pytest.raises(ValueError, match="Invalid schema"):
+        adapter.get_columns("orders", schema=schema)
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    ["orders", "my_table", "Table123", "_private_table"],
+)
+def test_duckdb_valid_table_names_accepted(table_name):
+    """Verify valid table names are accepted."""
+    adapter = DuckDBAdapter()
+    adapter.execute(f"CREATE TABLE {table_name} (id INT)")
+
+    # Should not raise
+    columns = adapter.get_columns(table_name)
+    assert len(columns) >= 1
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["main"],  # DuckDB default schema
+)
+def test_duckdb_valid_schema_names_accepted(schema):
+    """Verify valid schema names are accepted."""
+    adapter = DuckDBAdapter()
+    adapter.execute("CREATE TABLE orders (id INT)")
+
+    # Should not raise
+    columns = adapter.get_columns("orders", schema=schema)
+    assert len(columns) >= 1

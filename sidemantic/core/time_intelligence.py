@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 TimeComparisonType = Literal[
     "yoy",  # Year over year
@@ -37,6 +37,23 @@ class TimeComparison(BaseModel):
         "percent_change", description="How to calculate the comparison"
     )
 
+    @field_validator("offset")
+    @classmethod
+    def validate_offset_not_zero(cls, v: int | None) -> int | None:
+        """Validate that offset is not zero.
+
+        Zero offset would mean comparing a period to itself, which doesn't
+        make practical sense for time comparisons. Users should explicitly
+        get an error rather than having their input silently changed.
+        """
+        if v == 0:
+            raise ValueError(
+                "offset cannot be 0. Time comparisons require a non-zero offset "
+                "to compare against a different time period. Use offset >= 1 for "
+                "past comparisons or offset <= -1 for future comparisons."
+            )
+        return v
+
     @property
     def offset_interval(self) -> tuple[int, str]:
         """Get the offset interval for this comparison.
@@ -44,7 +61,7 @@ class TimeComparison(BaseModel):
         Returns:
             (amount, unit) tuple for SQL INTERVAL
         """
-        if self.offset and self.offset_unit:
+        if self.offset is not None and self.offset_unit is not None:
             return (self.offset, self.offset_unit)
 
         # Default offsets for standard comparisons

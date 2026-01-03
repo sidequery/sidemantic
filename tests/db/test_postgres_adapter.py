@@ -161,24 +161,186 @@ def test_postgres_result_ordering_and_exhaustion():
     assert wrapper.fetchone() is None
 
 
-def test_postgres_injection_surface_in_get_columns():
+def test_postgres_injection_attempt_in_table_name_is_rejected():
+    """Verify SQL injection attempts in table names are rejected."""
     cursor = _FakeCursor()
     adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
     adapter.conn = _FakeConn(cursor)
 
     table_name = "orders; DROP TABLE users;--"
-    adapter.get_columns(table_name)
-    assert table_name in cursor.executed[0]
+    with pytest.raises(ValueError, match="Invalid table name"):
+        adapter.get_columns(table_name)
+
+    # Verify no SQL was executed
+    assert len(cursor.executed) == 0
 
 
 @pytest.mark.parametrize(
     "schema",
     ["public; DROP SCHEMA x;--", "default; --", "analytics'); DROP TABLE t;--"],
 )
-def test_schema_inputs_are_unsanitized(schema):
+def test_postgres_injection_attempt_in_schema_is_rejected(schema):
+    """Verify SQL injection attempts in schema names are rejected."""
     cursor = _FakeCursor()
     adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
     adapter.conn = _FakeConn(cursor)
 
+    with pytest.raises(ValueError, match="Invalid schema"):
+        adapter.get_columns("orders", schema=schema)
+
+    # Verify no SQL was executed
+    assert len(cursor.executed) == 0
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    [
+        "orders",
+        "my_table",
+        "Table123",
+        "_private_table",
+        "schema.table",
+        "my_schema.my_table",
+    ],
+)
+def test_postgres_valid_table_names_accepted(table_name):
+    """Verify valid table names are accepted."""
+    cursor = _FakeCursor(rows=[("id", "integer")])
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    adapter.conn = _FakeConn(cursor)
+
+    # Should not raise
+    adapter.get_columns(table_name)
+    assert len(cursor.executed) == 1
+    assert table_name in cursor.executed[0]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["public", "my_schema", "Schema123", "_private", "analytics"],
+)
+def test_postgres_valid_schema_names_accepted(schema):
+    """Verify valid schema names are accepted."""
+    cursor = _FakeCursor(rows=[("id", "integer")])
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    adapter.conn = _FakeConn(cursor)
+
+    # Should not raise
     adapter.get_columns("orders", schema=schema)
-    assert schema in cursor.executed[0]
+    assert len(cursor.executed) == 1
+    assert f"table_schema = '{schema}'" in cursor.executed[0]
+
+
+def test_postgres_dialect():
+    """Test dialect property returns postgres."""
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    assert adapter.dialect == "postgres"
+
+
+def test_postgres_raw_connection():
+    """Test raw_connection property returns the underlying connection."""
+    cursor = _FakeCursor()
+    fake_conn = _FakeConn(cursor)
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    adapter.conn = fake_conn
+
+    assert adapter.raw_connection is fake_conn
+
+
+def test_postgres_close():
+    """Test close method calls close on connection."""
+
+    class _FakeConnWithClose:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    fake_conn = _FakeConnWithClose()
+    adapter.conn = fake_conn
+
+    adapter.close()
+    assert fake_conn.closed is True
+
+
+def test_postgres_fetchone():
+    """Test fetchone method on adapter."""
+    cursor = _FakeCursor(rows=[(42, "test")])
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    adapter.conn = _FakeConn(cursor)
+
+    result = PostgresResult(cursor)
+    row = adapter.fetchone(result)
+    assert row == (42, "test")
+
+
+def test_postgres_result_fetchall():
+    """Test fetchall on PostgresResult."""
+    cursor = _FakeCursor(rows=[(1,), (2,), (3,)])
+    wrapper = PostgresResult(cursor)
+    rows = wrapper.fetchall()
+    assert rows == [(1,), (2,), (3,)]
+
+
+def test_postgres_result_description():
+    """Test description property on PostgresResult."""
+    description = [("id", "integer"), ("name", "varchar")]
+    cursor = _FakeCursor(description=description)
+    wrapper = PostgresResult(cursor)
+    assert wrapper.description == description
+
+
+def test_postgres_execute_returns_result():
+    """Test execute returns a PostgresResult wrapper."""
+    cursor = _FakeCursor(rows=[(1,)])
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    adapter.conn = _FakeConn(cursor)
+
+    result = adapter.execute("SELECT 1")
+    assert isinstance(result, PostgresResult)
+    assert "SELECT 1" in cursor.executed
+
+
+def test_postgres_fetch_record_batch():
+    """Test fetch_record_batch on adapter."""
+    pytest.importorskip("pyarrow")
+
+    description = [type("Desc", (), {"name": "id"})(), type("Desc", (), {"name": "name"})()]
+    cursor = _FakeCursor(rows=[(1, "a"), (2, "b")], description=description)
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    adapter.conn = _FakeConn(cursor)
+
+    result = PostgresResult(cursor)
+    reader = adapter.fetch_record_batch(result)
+    assert reader is not None
+
+
+def test_postgres_result_fetch_record_batch_empty():
+    """Test fetch_record_batch with empty result."""
+    pytest.importorskip("pyarrow")
+
+    description = [type("Desc", (), {"name": "id"})(), type("Desc", (), {"name": "name"})()]
+    cursor = _FakeCursor(rows=[], description=description)
+    wrapper = PostgresResult(cursor)
+    reader = wrapper.fetch_record_batch()
+    assert reader is not None
+
+
+def test_postgres_get_tables_multiple_schemas():
+    """Test get_tables returns tables from multiple schemas."""
+    rows = [
+        ("users", "public"),
+        ("orders", "public"),
+        ("logs", "analytics"),
+    ]
+    cursor = _FakeCursor(rows=rows)
+    adapter = PostgreSQLAdapter.__new__(PostgreSQLAdapter)
+    adapter.conn = _FakeConn(cursor)
+
+    tables = adapter.get_tables()
+    assert len(tables) == 3
+    schemas = {t["schema"] for t in tables}
+    assert "public" in schemas
+    assert "analytics" in schemas

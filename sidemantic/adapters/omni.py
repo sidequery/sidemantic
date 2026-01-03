@@ -110,7 +110,7 @@ class OmniAdapter(BaseAdapter):
         dimensions = []
         primary_key = "id"  # default
 
-        for dim_name, dim_def in view.get("dimensions", {}).items():
+        for dim_name, dim_def in (view.get("dimensions") or {}).items():
             if dim_def is None:
                 dim_def = {}
 
@@ -124,7 +124,7 @@ class OmniAdapter(BaseAdapter):
 
         # Parse measures
         metrics = []
-        for measure_name, measure_def in view.get("measures", {}).items():
+        for measure_name, measure_def in (view.get("measures") or {}).items():
             if measure_def is None:
                 measure_def = {}
 

@@ -28,8 +28,15 @@ class RillAdapter:
 
         Returns:
             SemanticGraph containing the parsed models
+
+        Raises:
+            FileNotFoundError: If the source path does not exist
         """
         source_path = Path(source)
+
+        # Check if path exists first - fail loudly on configuration errors
+        if not source_path.exists():
+            raise FileNotFoundError(f"Path does not exist: {source_path}")
 
         graph = SemanticGraph()
         if source_path.is_file():

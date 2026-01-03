@@ -4,7 +4,7 @@ from typing import Any
 
 import duckdb
 
-from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
 
 class DuckDBAdapter(BaseDatabaseAdapter):
@@ -51,7 +51,12 @@ class DuckDBAdapter(BaseDatabaseAdapter):
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
         """Get columns for a table."""
-        schema_filter = f"AND table_schema = '{schema}'" if schema else ""
+        # Validate identifiers to prevent SQL injection
+        validate_identifier(table_name, "table name")
+        if schema:
+            validate_identifier(schema, "schema")
+
+        schema_filter = f"AND schema_name = '{schema}'" if schema else ""
         result = self.conn.execute(
             f"""
             SELECT column_name, data_type

@@ -192,12 +192,68 @@ def test_databricks_fetch_record_batch_mixed_types():
     assert table.column(1).to_pylist() == ["x"]
 
 
-def test_databricks_injection_surface_in_get_columns():
+def test_databricks_injection_attempt_in_table_name_is_rejected():
+    """Verify SQL injection attempts in table names are rejected."""
     cursor = _FakeCursor()
     adapter = DatabricksAdapter.__new__(DatabricksAdapter)
     adapter.conn = _FakeConn(cursor)
     adapter.schema = "default"
 
     table_name = "orders; DROP TABLE users;--"
+    with pytest.raises(ValueError, match="Invalid table name"):
+        adapter.get_columns(table_name)
+
+    # Verify no SQL was executed
+    assert len(cursor.executed) == 0
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["default; DROP SCHEMA x;--", "analytics; --", "schema'); DROP TABLE t;--"],
+)
+def test_databricks_injection_attempt_in_schema_is_rejected(schema):
+    """Verify SQL injection attempts in schema names are rejected."""
+    cursor = _FakeCursor()
+    adapter = DatabricksAdapter.__new__(DatabricksAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None  # Force use of provided schema parameter
+
+    with pytest.raises(ValueError, match="Invalid schema"):
+        adapter.get_columns("orders", schema=schema)
+
+    # Verify no SQL was executed
+    assert len(cursor.executed) == 0
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    ["orders", "MY_TABLE", "Table123", "_private_table"],
+)
+def test_databricks_valid_table_names_accepted(table_name):
+    """Verify valid table names are accepted."""
+    cursor = _FakeCursor(rows=[("id", "int")])
+    adapter = DatabricksAdapter.__new__(DatabricksAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None
+
+    # Should not raise
     adapter.get_columns(table_name)
-    assert table_name in cursor.executed[0]
+    assert len(cursor.executed) == 1
+    assert f"DESCRIBE {table_name}" == cursor.executed[0]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["default", "my_schema", "Schema123", "_private", "analytics"],
+)
+def test_databricks_valid_schema_names_accepted(schema):
+    """Verify valid schema names are accepted."""
+    cursor = _FakeCursor(rows=[("id", "int")])
+    adapter = DatabricksAdapter.__new__(DatabricksAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None
+
+    # Should not raise
+    adapter.get_columns("orders", schema=schema)
+    assert len(cursor.executed) == 1
+    assert f"DESCRIBE {schema}.orders" == cursor.executed[0]

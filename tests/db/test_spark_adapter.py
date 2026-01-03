@@ -154,12 +154,68 @@ def test_spark_fetch_record_batch_mixed_types():
     assert table.column(0).to_pylist() == [1.5]
 
 
-def test_spark_injection_surface_in_get_columns():
+def test_spark_injection_attempt_in_table_name_is_rejected():
+    """Verify SQL injection attempts in table names are rejected."""
     cursor = _FakeCursor()
     adapter = SparkAdapter.__new__(SparkAdapter)
     adapter.conn = _FakeConn(cursor)
     adapter.database = "default"
 
     table_name = "orders; DROP TABLE users;--"
-    adapter.get_columns(table_name)
-    assert table_name in cursor.executed[0]
+    with pytest.raises(ValueError, match="Invalid table name"):
+        adapter.get_columns(table_name)
+
+    # Verify no SQL was executed
+    assert len(cursor.executed) == 0
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["default; DROP SCHEMA x;--", "analytics; --", "schema'); DROP TABLE t;--"],
+)
+def test_spark_injection_attempt_in_schema_is_rejected(schema):
+    """Verify SQL injection attempts in schema names are rejected."""
+    cursor = _FakeCursor()
+    adapter = SparkAdapter.__new__(SparkAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.database = "safe_default"  # Use a safe default database
+
+    with pytest.raises(ValueError, match="Invalid schema"):
+        adapter.get_columns("orders", schema=schema)
+
+    # Verify no SQL was executed
+    assert len(cursor.executed) == 0
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    ["orders", "MY_TABLE", "Table123", "_private_table"],
+)
+def test_spark_valid_table_names_accepted(table_name):
+    """Verify valid table names are accepted."""
+    cursor = _FakeCursor(rows=[("id", "int")])
+    adapter = SparkAdapter.__new__(SparkAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.database = "default"
+
+    # Should not raise
+    adapter.get_columns(table_name, schema="default")
+    assert len(cursor.executed) == 1
+    assert f"DESCRIBE default.{table_name}" == cursor.executed[0]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["default", "my_schema", "Schema123", "_private", "analytics"],
+)
+def test_spark_valid_schema_names_accepted(schema):
+    """Verify valid schema names are accepted."""
+    cursor = _FakeCursor(rows=[("id", "int")])
+    adapter = SparkAdapter.__new__(SparkAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.database = "default"
+
+    # Should not raise
+    adapter.get_columns("orders", schema=schema)
+    assert len(cursor.executed) == 1
+    assert f"DESCRIBE {schema}.orders" == cursor.executed[0]

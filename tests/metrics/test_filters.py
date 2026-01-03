@@ -9,9 +9,10 @@ from tests.utils import df_rows
 def test_metric_level_filter_basic(layer):
     """Test basic metric-level filter.
 
-    Metric-level filters are applied using CASE WHEN expressions in the CTE,
-    which allows multiple filtered metrics to coexist in the same query
-    (each with their own filter condition).
+    Metric-level filters are applied via CASE WHEN in the CTE on the raw column,
+    NOT in the WHERE clause or the outer aggregation. This ensures:
+    1. Each metric's filter only affects that specific metric
+    2. Filters are applied to raw columns, not transformed CTE columns
     """
     orders = Model(
         name="orders",
@@ -41,9 +42,10 @@ def test_metric_level_filter_basic(layer):
     print("SQL with metric-level filter:")
     print(sql)
 
-    # Metric filter should be applied via CASE WHEN in the CTE, not in WHERE clause
-    assert "CASE WHEN status = 'completed'" in sql
-    assert "completed_revenue_raw" in sql
+    # Filter should be in CTE's CASE WHEN on raw column, not in outer query
+    assert "CASE WHEN status = 'completed' THEN amount" in sql
+    # Outer query should just aggregate the pre-filtered raw column
+    assert "SUM(orders_cte.completed_revenue_raw)" in sql
 
 
 def test_metric_level_multiple_filters(layer):
@@ -353,11 +355,13 @@ def test_mixed_filters_separate_where_and_having(layer):
 
 
 def test_metric_level_filters_use_case_when(layer):
-    """Test that Metric.filters use CASE WHEN for filtered aggregations.
+    """Test that Metric.filters are applied via CASE WHEN inside aggregation.
 
-    Metric.filters are applied using CASE WHEN expressions in the CTE.
-    This allows multiple filtered metrics to coexist in the same query,
-    each with their own filter condition applied only to that metric.
+    Metric.filters are applied via CASE WHEN so each metric's filter only affects
+    that specific metric. This allows querying multiple metrics with different
+    filters in the same query without them interfering with each other.
+
+    Example: SUM(CASE WHEN status = 'completed' THEN amount END) AS completed_revenue
     """
     layer = SemanticLayer()
 
@@ -378,9 +382,11 @@ def test_metric_level_filters_use_case_when(layer):
 
     sql = layer.compile(metrics=["orders.completed_revenue"], dimensions=["orders.region"])
 
-    # Metric-level filter should be in CASE WHEN (conditional aggregation)
-    assert "CASE WHEN status = 'completed'" in sql
-    assert "completed_revenue_raw" in sql
+    # Metric-level filter should be inside CASE WHEN, not in WHERE clause
+    assert "CASE WHEN" in sql
+    assert "status = 'completed'" in sql
+    # Should NOT have a WHERE clause for this query (no query-level dimension filters)
+    assert "WHERE" not in sql
 
 
 def test_having_filter_with_actual_data(layer):

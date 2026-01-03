@@ -3,7 +3,7 @@
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
 
 class DatabricksResult:
@@ -133,8 +133,12 @@ class DatabricksAdapter(BaseDatabaseAdapter):
     def get_tables(self) -> list[dict]:
         """List all tables in the catalog/schema."""
         if self.schema:
+            # Validate schema to prevent SQL injection
+            validate_identifier(self.schema, "schema")
             sql = f"SHOW TABLES IN {self.schema}"
         elif self.catalog:
+            # Validate catalog to prevent SQL injection
+            validate_identifier(self.catalog, "catalog")
             sql = f"SHOW TABLES IN {self.catalog}"
         else:
             sql = "SHOW TABLES"
@@ -145,7 +149,12 @@ class DatabricksAdapter(BaseDatabaseAdapter):
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
         """Get column information for a table."""
+        # Validate identifiers to prevent SQL injection
+        validate_identifier(table_name, "table name")
         schema = schema or self.schema
+        if schema:
+            validate_identifier(schema, "schema")
+
         table_ref = f"{schema}.{table_name}" if schema else table_name
 
         sql = f"DESCRIBE {table_ref}"

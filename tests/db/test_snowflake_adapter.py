@@ -1,8 +1,26 @@
 """Tests for Snowflake adapter."""
 
+import builtins
+import sys
+
 import pytest
 
 from sidemantic.db.snowflake import SnowflakeAdapter, SnowflakeResult
+
+
+def _block_import(monkeypatch, module_prefix: str) -> None:
+    for name in list(sys.modules):
+        if name == module_prefix or name.startswith(f"{module_prefix}."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == module_prefix or name.startswith(f"{module_prefix}."):
+            raise ImportError(f"Blocked import: {module_prefix}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
 class _FakeCursor:
@@ -38,16 +56,13 @@ class _FakeConn:
         return self._cursor
 
 
-def test_snowflake_adapter_import_error_message():
-    import importlib.util
+def test_snowflake_adapter_import_error_message(monkeypatch):
+    _block_import(monkeypatch, "snowflake")
 
-    if importlib.util.find_spec("snowflake.connector") is not None:
-        pytest.skip("snowflake connector installed")
-
-    try:
+    with pytest.raises(ImportError) as exc:
         SnowflakeAdapter()
-    except ImportError as exc:
-        assert "snowflake" in str(exc).lower()
+
+    assert "snowflake" in str(exc.value).lower()
 
 
 def test_snowflake_from_url_matrix(monkeypatch):
@@ -164,12 +179,213 @@ def test_snowflake_fetch_record_batch_mixed_types():
     assert isinstance(table, pa.Table)
 
 
-def test_snowflake_injection_surface_in_get_columns():
+def test_snowflake_injection_attempt_in_table_name_is_rejected():
+    """Verify SQL injection attempts in table names are rejected."""
     cursor = _FakeCursor()
     adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
     adapter.conn = _FakeConn(cursor)
     adapter.schema = "PUBLIC"
 
     table_name = "orders; DROP TABLE users;--"
+    with pytest.raises(ValueError, match="Invalid table name"):
+        adapter.get_columns(table_name)
+
+    # Verify no SQL was executed
+    assert len(cursor.executed) == 0
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["PUBLIC; DROP SCHEMA x;--", "default; --", "ANALYTICS'); DROP TABLE t;--"],
+)
+def test_snowflake_injection_attempt_in_schema_is_rejected(schema):
+    """Verify SQL injection attempts in schema names are rejected."""
+    cursor = _FakeCursor()
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None  # Force use of provided schema parameter
+
+    with pytest.raises(ValueError, match="Invalid schema"):
+        adapter.get_columns("orders", schema=schema)
+
+    # Verify no SQL was executed
+    assert len(cursor.executed) == 0
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    [
+        "orders",
+        "MY_TABLE",
+        "Table123",
+        "_private_table",
+        "schema.table",
+        "MY_SCHEMA.MY_TABLE",
+    ],
+)
+def test_snowflake_valid_table_names_accepted(table_name):
+    """Verify valid table names are accepted."""
+    cursor = _FakeCursor(rows=[("id", "NUMBER")])
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None
+
+    # Should not raise
     adapter.get_columns(table_name)
+    assert len(cursor.executed) == 1
     assert table_name in cursor.executed[0]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    ["PUBLIC", "my_schema", "Schema123", "_PRIVATE", "ANALYTICS"],
+)
+def test_snowflake_valid_schema_names_accepted(schema):
+    """Verify valid schema names are accepted."""
+    cursor = _FakeCursor(rows=[("id", "NUMBER")])
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None
+
+    # Should not raise
+    adapter.get_columns("orders", schema=schema)
+    assert len(cursor.executed) == 1
+    assert f"table_schema = '{schema}'" in cursor.executed[0]
+
+
+def test_snowflake_dialect():
+    """Test dialect property returns snowflake."""
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    assert adapter.dialect == "snowflake"
+
+
+def test_snowflake_raw_connection():
+    """Test raw_connection property returns the underlying connection."""
+    cursor = _FakeCursor()
+    fake_conn = _FakeConn(cursor)
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = fake_conn
+
+    assert adapter.raw_connection is fake_conn
+
+
+def test_snowflake_close():
+    """Test close method calls close on connection."""
+
+    class _FakeConnWithClose:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    fake_conn = _FakeConnWithClose()
+    adapter.conn = fake_conn
+
+    adapter.close()
+    assert fake_conn.closed is True
+
+
+def test_snowflake_fetchone():
+    """Test fetchone method on adapter."""
+    cursor = _FakeCursor(rows=[(42, "test")])
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+
+    result = SnowflakeResult(cursor)
+    row = adapter.fetchone(result)
+    assert row == (42, "test")
+
+
+def test_snowflake_result_fetchall():
+    """Test fetchall on SnowflakeResult."""
+    cursor = _FakeCursor(rows=[(1,), (2,), (3,)])
+    wrapper = SnowflakeResult(cursor)
+    rows = wrapper.fetchall()
+    assert rows == [(1,), (2,), (3,)]
+
+
+def test_snowflake_execute_returns_result():
+    """Test execute returns a SnowflakeResult wrapper."""
+    cursor = _FakeCursor(rows=[(1,)])
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+
+    result = adapter.execute("SELECT 1")
+    assert isinstance(result, SnowflakeResult)
+    assert "SELECT 1" in cursor.executed
+
+
+def test_snowflake_get_tables_with_schema_filter():
+    """Test get_tables when schema is set filters to that schema."""
+    cursor = _FakeCursor(rows=[("orders", "PUBLIC")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = "PUBLIC"
+    adapter.database = "MYDB"
+
+    tables = adapter.get_tables()
+    assert tables == [{"table_name": "orders", "schema": "PUBLIC"}]
+    sql = cursor.executed[0]
+    assert "table_schema = 'PUBLIC'" in sql
+
+
+def test_snowflake_get_columns_with_explicit_schema():
+    """Test get_columns with explicitly provided schema overrides adapter schema."""
+    cursor = _FakeCursor(rows=[("id", "NUMBER")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = "DEFAULT_SCHEMA"
+
+    cols = adapter.get_columns("orders", schema="OVERRIDE_SCHEMA")
+    assert cols == [{"column_name": "id", "data_type": "NUMBER"}]
+    assert "table_schema = 'OVERRIDE_SCHEMA'" in cursor.executed[0]
+
+
+def test_snowflake_get_columns_no_schema():
+    """Test get_columns when no schema is set."""
+    cursor = _FakeCursor(rows=[("id", "NUMBER")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None
+
+    adapter.get_columns("orders")
+    # Should not have schema filter when schema is None
+    assert "table_schema" not in cursor.executed[0]
+
+
+def test_snowflake_fetch_record_batch_empty():
+    """Test fetch_record_batch with empty result."""
+    pytest.importorskip("pyarrow")
+
+    cursor = _FakeCursor(rows=[], description=[("a", None), ("b", None)])
+    reader = SnowflakeResult(cursor).fetch_record_batch()
+    table = reader.read_all()
+    assert len(table) == 0
+    assert table.num_columns == 2
+
+
+def test_snowflake_get_tables_multiple():
+    """Test get_tables returns multiple tables."""
+    rows = [
+        ("users", "PUBLIC"),
+        ("orders", "PUBLIC"),
+        ("logs", "ANALYTICS"),
+    ]
+    cursor = _FakeCursor(rows=rows)
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None
+    adapter.database = "MYDB"
+
+    tables = adapter.get_tables()
+    assert len(tables) == 3
+    table_names = {t["table_name"] for t in tables}
+    assert "users" in table_names
+    assert "orders" in table_names
+    assert "logs" in table_names

@@ -128,4 +128,5 @@ prerelease = "if-necessary"
 dev = [
     "marimo==0.16.5",
     "pytest>=8.4.2",
+    "ruff>=0.14.0",
 ]

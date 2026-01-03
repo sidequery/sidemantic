@@ -2355,6 +2355,7 @@ spark = [
 dev = [
     { name = "marimo" },
     { name = "pytest" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -2405,6 +2406,7 @@ provides-extras = ["dev", "serve", "postgres", "bigquery", "snowflake", "clickho
 dev = [
     { name = "marimo", specifier = "==0.16.5" },
     { name = "pytest", specifier = ">=8.4.2" },
+    { name = "ruff", specifier = ">=0.14.0" },
 ]
 
 [[package]]

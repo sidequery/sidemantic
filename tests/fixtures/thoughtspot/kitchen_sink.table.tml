@@ -1,0 +1,115 @@
+guid: "table-kitchen-sink"
+table:
+  name: sales
+  description: Full table example
+  db: ANALYTICS
+  schema: PUBLIC
+  db_table: sales
+  connection:
+    name: Warehouse
+  columns:
+    - name: id
+      db_column_name: id
+      data_type: INT64
+      properties:
+        column_type: ATTRIBUTE
+    - name: order_date
+      db_column_name: order_date
+      data_type: DATE
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: DAILY
+        format_pattern: "YYYY-MM-DD"
+    - name: order_week
+      db_column_name: order_date
+      data_type: DATE
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: WEEKLY
+    - name: order_hour
+      db_column_name: order_ts
+      data_type: TIMESTAMP
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: HOURLY
+    - name: order_month
+      db_column_name: order_date
+      data_type: DATE
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: MONTHLY
+    - name: order_quarter
+      db_column_name: order_date
+      data_type: DATE
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: QUARTERLY
+    - name: order_year
+      db_column_name: order_date
+      data_type: DATE
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: YEARLY
+    - name: is_active
+      db_column_name: is_active
+      data_type: BOOLEAN
+      properties:
+        column_type: ATTRIBUTE
+    - name: status
+      db_column_name: status
+      data_type: VARCHAR
+      custom_name: Order Status
+      description: Current order state
+      properties:
+        column_type: ATTRIBUTE
+    - name: gross_revenue
+      db_column_name: gross_revenue
+      data_type: DOUBLE
+      custom_name: Gross Revenue
+      description: Total revenue before discounts
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+        format_pattern: "$#,##0.00"
+    - name: avg_order_value
+      db_column_name: gross_revenue
+      data_type: DOUBLE
+      properties:
+        column_type: MEASURE
+        aggregation: AVERAGE
+    - name: min_order_value
+      db_column_name: gross_revenue
+      data_type: DOUBLE
+      properties:
+        column_type: MEASURE
+        aggregation: MIN
+    - name: max_order_value
+      db_column_name: gross_revenue
+      data_type: DOUBLE
+      properties:
+        column_type: MEASURE
+        aggregation: MAX
+    - name: median_order_value
+      db_column_name: gross_revenue
+      data_type: DOUBLE
+      properties:
+        column_type: MEASURE
+        aggregation: MEDIAN
+    - name: distinct_customers
+      db_column_name: customer_id
+      data_type: INT64
+      properties:
+        column_type: MEASURE
+        aggregation: COUNT_DISTINCT
+    - name: revenue_stddev
+      db_column_name: gross_revenue
+      data_type: DOUBLE
+      properties:
+        column_type: MEASURE
+        aggregation: STD_DEVIATION
+    - name: revenue_raw
+      db_column_name: gross_revenue
+      data_type: DOUBLE
+      properties:
+        column_type: MEASURE
+        aggregation: NONE

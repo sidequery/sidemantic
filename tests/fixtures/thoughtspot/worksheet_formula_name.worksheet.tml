@@ -1,0 +1,14 @@
+guid: "worksheet-formula-name"
+worksheet:
+  name: sales_formula_name
+  tables:
+    - name: sales
+  formulas:
+    - name: net_revenue
+      expr: "[sales::gross_revenue] - [sales::discount]"
+  worksheet_columns:
+    - name: net_revenue
+      formula_id: net_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

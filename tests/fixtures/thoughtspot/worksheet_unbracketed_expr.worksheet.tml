@@ -1,0 +1,27 @@
+guid: "worksheet-unbracketed"
+worksheet:
+  name: sales_unbracketed
+  tables:
+    - name: sales
+    - name: customers
+  joins:
+    - name: sales_customers
+      source: sales
+      destination: customers
+      type: LEFT_OUTER
+      on: "sales.customer_id = customers.id"
+      is_one_to_one: false
+  table_paths:
+    - id: sales_path
+      table: sales
+      join_path:
+        - {}
+  formulas:
+    - name: net_revenue
+      expr: "sales.gross_revenue - sales.discount"
+  worksheet_columns:
+    - name: net_revenue
+      formula_id: net_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

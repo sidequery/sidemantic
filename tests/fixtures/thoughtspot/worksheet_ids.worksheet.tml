@@ -1,0 +1,55 @@
+guid: "worksheet-ids"
+worksheet:
+  name: sales_ids
+  description: Uses table IDs and fqn
+  tables:
+    - id: sales_table
+      fqn: ANALYTICS.PUBLIC.sales
+    - id: customers_table
+      fqn: ANALYTICS.PUBLIC.customers
+  joins:
+    - name: sales_customers
+      source: sales_table
+      destination: customers_table
+      type: LEFT_OUTER
+      on: "[sales_table::customer_id] = [customers_table::id]"
+      is_one_to_one: false
+  table_paths:
+    - id: sales_path
+      table: sales_table
+      join_path:
+        - {}
+    - id: customers_path
+      table: customers_table
+      join_path:
+        - join:
+          - sales_customers
+  formulas:
+    - name: net_revenue
+      expr: "[sales_path::gross_revenue] - [sales_path::discount]"
+      id: net_revenue_formula
+  worksheet_columns:
+    - name: order_id
+      column_id: sales_path::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: customer_name
+      column_id: customers_path::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: order_date
+      column_id: sales_path::order_date
+      data_type: DATE
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: DAILY
+    - name: gross_revenue
+      column_id: sales_path::gross_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+    - name: net_revenue
+      formula_id: net_revenue_formula
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

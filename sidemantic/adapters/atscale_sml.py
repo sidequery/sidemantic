@@ -16,7 +16,6 @@ from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
-
 _TIME_UNIT_MAP = {
     "year": "year",
     "halfyear": "quarter",

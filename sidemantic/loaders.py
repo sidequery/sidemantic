@@ -22,13 +22,13 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         >>> load_from_directory(layer, "semantic_models/")
         >>> # All models loaded and ready to query
     """
+    from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
     from sidemantic.adapters.bsl import BSLAdapter
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.hex import HexAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.malloy import MalloyAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
-    from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
 

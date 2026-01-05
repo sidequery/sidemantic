@@ -1,7 +1,5 @@
 """Tests for AtScale SML adapter export."""
 
-from pathlib import Path
-
 import pytest
 import yaml
 

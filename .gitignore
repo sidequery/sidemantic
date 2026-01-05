@@ -33,3 +33,8 @@ examples/*.db
 docker-compose.override.yml
 Dockerfile.test
 sidemantic_definitions.sql
+
+# Node.js (for bun tests)
+node_modules/
+bun.lockb
+package.json

@@ -1,14 +1,6 @@
 # desc: Product catalog
 source: products is duckdb.table('data/products.parquet') extend {
 
-  except: name, category, subcategory, price
-
-  dimension:
-    name is name
-    category is category
-    subcategory is subcategory
-    price is price
-
   measure:
     # desc: Number of products
     product_count is count()
@@ -19,14 +11,6 @@ source: products is duckdb.table('data/products.parquet') extend {
 # desc: Customer master data
 source: customers is duckdb.table('data/customers.parquet') extend {
 
-  except: name, email, region, tier
-
-  dimension:
-    name is name
-    email is email
-    region is region
-    tier is tier
-
   measure:
     # desc: Total number of customers
     customer_count is count()
@@ -35,19 +19,12 @@ source: customers is duckdb.table('data/customers.parquet') extend {
 # desc: Customer orders with status and revenue tracking (LookML format)
 source: orders is duckdb.table('data/orders.parquet') extend {
 
-  except: customer_id, product_id, quantity, amount, status
-
   dimension:
-    customer_id is customer_id
-    product_id is product_id
-    quantity is quantity
-    amount is amount
-    status is status
-    created_time is created_at
-    created_date is created_at
-    created_week is created_at
-    created_month is created_at
-    created_year is created_at
+    created_time is created_at.hour
+    created_date is created_at.day
+    created_week is created_at.week
+    created_month is created_at.month
+    created_year is created_at.year
 
   measure:
     # desc: Total number of orders

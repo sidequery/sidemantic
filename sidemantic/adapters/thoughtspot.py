@@ -193,9 +193,7 @@ class ThoughtSpotAdapter(BaseAdapter):
         tml_files: list[Path] = []
         if source_path.is_dir():
             tml_files = (
-                list(source_path.rglob("*.tml"))
-                + list(source_path.rglob("*.yml"))
-                + list(source_path.rglob("*.yaml"))
+                list(source_path.rglob("*.tml")) + list(source_path.rglob("*.yml")) + list(source_path.rglob("*.yaml"))
             )
         else:
             tml_files = [source_path]
@@ -334,9 +332,7 @@ class ThoughtSpotAdapter(BaseAdapter):
 
         table_name_lookup = self._table_name_lookup(tables)
         table_path_lookup = {
-            tp.get("id"): table_name_lookup.get(tp.get("table"), tp.get("table"))
-            for tp in table_paths
-            if tp.get("id")
+            tp.get("id"): table_name_lookup.get(tp.get("table"), tp.get("table")) for tp in table_paths if tp.get("id")
         }
 
         sql, base_table = self._build_join_sql(tables, joins, table_path_lookup, table_name_lookup)

@@ -320,8 +320,6 @@ def test_import_thoughtspot_unbracketed_expr():
     assert "sales.gross_revenue" in (net_revenue.sql or "")
 
 
-
-
 # =============================================================================
 # DATA TYPE MAPPING TESTS
 # =============================================================================

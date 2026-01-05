@@ -2,7 +2,7 @@
 
 SQL-first semantic layer for consistent metrics across your data stack.
 
-- **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, Snowflake Cortex, Malloy
+- **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, Snowflake Cortex, Malloy, ThoughtSpot TML (YAML; mature, REST API export/import, OSI participant)
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL
 
 [Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF)
@@ -169,7 +169,7 @@ See `examples/` for more.
 
 - SQL query interface with automatic rewriting
 - Automatic joins across models
-- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL)
+- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, ThoughtSpot TML)
 - SQLGlot-based SQL generation and transpilation
 - Pydantic validation and type safety
 - Pre-aggregations with automatic routing
@@ -180,7 +180,7 @@ See `examples/` for more.
 
 ## Multi-Format Support
 
-Auto-detects: Sidemantic (SQL/YAML), Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL
+Auto-detects: Sidemantic (SQL/YAML), Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, ThoughtSpot TML
 
 ```bash
 sidemantic query "SELECT revenue FROM orders" --models ./my_models

@@ -2474,6 +2474,19 @@
             "title": "Segments",
             "type": "array"
           },
+          "source_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Remote data source URI (e.g., https://, s3://, gs://)",
+            "title": "Source Uri"
+          },
           "sql": {
             "anyOf": [
               {

@@ -10,7 +10,7 @@ This demonstrates:
 - Running queries against actual DuckDB data
 - Automatic metric aggregation and joins
 
-Run with: uv run examples/sql_syntax_example.py
+Run with: uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/sql/sql_syntax_example.py
 """
 
 from sidemantic.core.dimension import Dimension

@@ -43,15 +43,30 @@ rows = result.fetchall()
 
 ## Demos
 
-Colab:
+Run examples directly with `uv run` (no install required):
+
+```bash
+# SQL syntax demo - define models in Python, query with familiar SQL
+uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/sql/sql_syntax_example.py
+
+# Comprehensive demo - metrics, joins, SQL rewriting, views
+uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/advanced/comprehensive_demo.py
+
+# Symmetric aggregates - prevent double-counting in fan-out joins
+uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/features/symmetric_aggregates_example.py
+```
+
+Rill integration (requires Docker):
+```bash
+git clone https://github.com/sidequery/sidemantic && cd sidemantic
+uv run examples/rill_demo/run_demo.py
+```
+
+Notebooks:
 | Demo | Open in Colab |
 |---|---|
-| SQL model definitions + DuckDB | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/sidemantic_sql_duckdb_demo.ipynb) |
-| LookML multi-entity + DuckDB + chart | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/lookml_multi_entity_duckdb_demo.ipynb) |
-
-Local notebooks:
-- `examples/sidemantic_sql_duckdb_demo.ipynb`
-- `examples/lookml_multi_entity_duckdb_demo.ipynb`
+| SQL model definitions + DuckDB | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/notebooks/sidemantic_sql_duckdb_demo.ipynb) |
+| LookML multi-entity + DuckDB + chart | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/notebooks/lookml_multi_entity_duckdb_demo.ipynb) |
 
 ## Core Features
 
@@ -120,8 +135,14 @@ result = layer.query(
 ## Examples
 
 See `examples/` directory:
-- `sql_query_example.py` - SQL query interface demonstration
-- `basic_example.py` - Core usage patterns
+- `basic/` - Getting started examples
+- `sql/` - SQL query interface demonstrations
+- `yaml/` - YAML syntax examples
+- `features/` - Specific features (parameters, symmetric aggregates, multi-hop joins)
+- `advanced/` - Comprehensive demos
+- `integrations/` - Streamlit, charts, export adapters
+- `notebooks/` - Jupyter notebooks
+- `rill_demo/` - Export to Rill and run in Docker
 - `multi_format_demo/` - Same model in different formats (Cube, Hex, LookML, BSL)
 
 ## Testing

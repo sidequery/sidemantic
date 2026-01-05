@@ -75,6 +75,10 @@ class LookMLAdapter(BaseAdapter):
         for view_def in parsed.get("views") or []:
             model = self._parse_view(view_def)
             if model:
+                # For refinements (+view_name), skip if already exists
+                # In real Looker, multiple refinements would be merged
+                if model.name.startswith("+") and model.name in graph.models:
+                    continue
                 graph.add_model(model)
 
     def _parse_explores_from_file(self, file_path: Path, graph: SemanticGraph) -> None:
@@ -139,6 +143,108 @@ class LookMLAdapter(BaseAdapter):
 
         return resolved
 
+    def _convert_lookml_filter_to_sql(self, field: str, value: str) -> str:
+        """Convert a LookML filter value to SQL condition.
+
+        Handles LookML filter syntax:
+        - "value" -> field = 'value'
+        - "val1,val2,val3" -> field IN ('val1', 'val2', 'val3')
+        - "-value" -> field != 'value' (negation)
+        - "-val1,-val2" -> field NOT IN ('val1', 'val2')
+        - "yes"/"no" -> field = true/false (for yesno dimensions)
+        - ">100", ">=50", "<10", "<=5", "!=0" -> numeric comparisons
+        - "%pattern%" -> field LIKE '%pattern%' (wildcards)
+        - "NULL" -> field IS NULL
+        - "-NULL" -> field IS NOT NULL
+        - "EMPTY" -> field = ''
+        - "-EMPTY" -> field != ''
+
+        Args:
+            field: The field name
+            value: The LookML filter value
+
+        Returns:
+            SQL condition string
+        """
+        # Handle NULL special values
+        if value.upper() == "NULL":
+            return f"{{model}}.{field} IS NULL"
+        if value.upper() == "-NULL":
+            return f"{{model}}.{field} IS NOT NULL"
+
+        # Handle EMPTY special values
+        if value.upper() == "EMPTY":
+            return f"{{model}}.{field} = ''"
+        if value.upper() == "-EMPTY":
+            return f"{{model}}.{field} != ''"
+
+        # Handle yes/no boolean values
+        if value.lower() == "yes":
+            return f"{{model}}.{field} = true"
+        if value.lower() == "no":
+            return f"{{model}}.{field} = false"
+
+        # Check if this is a comma-separated list of values (OR condition)
+        # But be careful: ">100,<200" is two comparison operators, not a list
+        if "," in value:
+            parts = [p.strip() for p in value.split(",")]
+
+            # Check if all parts are negations (NOT IN)
+            if all(p.startswith("-") for p in parts):
+                # Remove the - prefix from each
+                clean_parts = [p[1:] for p in parts]
+                # Check if they're all simple strings (not operators)
+                if all(not re.match(r"^(>=|<=|!=|<>|>|<)", p) for p in clean_parts):
+                    quoted = ", ".join(f"'{p}'" for p in clean_parts)
+                    return f"{{model}}.{field} NOT IN ({quoted})"
+
+            # Check if all parts are simple values (no operators) -> IN clause
+            if all(not p.startswith("-") and not re.match(r"^(>=|<=|!=|<>|>|<)", p) for p in parts):
+                # Check if all parts are numeric
+                if all(p.replace(".", "").replace("-", "").isdigit() for p in parts):
+                    # Numeric IN clause (no quotes)
+                    return f"{{model}}.{field} IN ({', '.join(parts)})"
+                else:
+                    # String IN clause (with quotes)
+                    quoted = ", ".join(f"'{p}'" for p in parts)
+                    return f"{{model}}.{field} IN ({quoted})"
+
+            # Mixed operators - this is actually multiple filter conditions
+            # LookML doesn't really support this in a single filter value
+            # Fall through to single value handling (will be slightly wrong but safer)
+
+        # Handle negation prefix for single values
+        if value.startswith("-") and not re.match(r"^-(>=|<=|!=|<>|>|<|\d)", value):
+            negated_value = value[1:]
+            if negated_value.replace(".", "").replace("-", "").isdigit():
+                return f"{{model}}.{field} != {negated_value}"
+            else:
+                return f"{{model}}.{field} != '{negated_value}'"
+
+        # Handle comparison operators: ">1000", "<=100", ">=5", "<10", "!=0"
+        if match := re.match(r"^(>=|<=|!=|<>|>|<)(.+)$", value):
+            operator, operand = match.groups()
+            operand = operand.strip()
+            # Normalize <> to !=
+            if operator == "<>":
+                operator = "!="
+            # Check if operand is numeric
+            if operand.replace(".", "").replace("-", "").isdigit():
+                return f"{{model}}.{field} {operator} {operand}"
+            else:
+                return f"{{model}}.{field} {operator} '{operand}'"
+
+        # Handle wildcard patterns (LIKE)
+        if "%" in value or "_" in value:
+            return f"{{model}}.{field} LIKE '{value}'"
+
+        # Handle numeric values
+        if value.replace(".", "").replace("-", "").isdigit():
+            return f"{{model}}.{field} = {value}"
+
+        # Default: string equality
+        return f"{{model}}.{field} = '{value}'"
+
     def _parse_view(self, view_def: dict) -> Model | None:
         """Parse LookML view into Sidemantic model.
 
@@ -160,6 +266,9 @@ class LookMLAdapter(BaseAdapter):
         derived_table = view_def.get("derived_table")
         if derived_table:
             sql = derived_table.get("sql")
+            # Handle native derived tables with explore_source
+            if not sql and "explore_source" in derived_table:
+                sql = self._convert_explore_source_to_sql(derived_table)
 
         # First pass: build a lookup dict of dimension SQL expressions
         # This is used to resolve ${dimension_name} references
@@ -309,6 +418,11 @@ class LookMLAdapter(BaseAdapter):
             return []
 
         group_type = dim_group_def.get("type", "time")
+
+        # Handle duration type separately
+        if group_type == "duration":
+            return self._parse_duration_group(group_name, dim_group_def)
+
         if group_type != "time":
             return []
 
@@ -347,6 +461,113 @@ class LookMLAdapter(BaseAdapter):
                     type="time",
                     sql=base_sql,
                     granularity=granularity,
+                )
+            )
+
+        return dimensions
+
+    def _convert_explore_source_to_sql(self, derived_table: dict) -> str:
+        """Convert a native derived table (explore_source) to a SQL representation.
+
+        Native derived tables in LookML use explore_source to define the query
+        declaratively. We convert this to a SQL comment documenting the source,
+        since the actual SQL is generated by Looker at runtime.
+
+        Args:
+            derived_table: The derived_table definition containing explore_source
+
+        Returns:
+            A SQL comment describing the explore_source
+        """
+        explore_source = derived_table.get("explore_source")
+        if not explore_source:
+            return "-- Native derived table (explore_source)"
+
+        # explore_source can be a string (explore name) or a dict with config
+        if isinstance(explore_source, str):
+            explore_name = explore_source
+            columns = []
+            filters = []
+        else:
+            # It's a dict with explore name as key
+            # lkml parses it as: {"explore_name": {...config...}}
+            if isinstance(explore_source, dict):
+                explore_name = list(explore_source.keys())[0] if explore_source else "unknown"
+                config = explore_source.get(explore_name, {})
+                if isinstance(config, dict):
+                    columns = config.get("columns") or config.get("column") or []
+                    filters = config.get("filters") or config.get("filter") or []
+                else:
+                    columns = []
+                    filters = []
+            else:
+                explore_name = str(explore_source)
+                columns = []
+                filters = []
+
+        # Build a descriptive SQL comment
+        sql_parts = [f"-- Native Derived Table from explore: {explore_name}"]
+
+        if columns:
+            col_names = []
+            for col in columns if isinstance(columns, list) else [columns]:
+                if isinstance(col, dict):
+                    col_name = col.get("name") or col.get("column")
+                    if col_name:
+                        col_names.append(col_name)
+            if col_names:
+                sql_parts.append(f"-- Columns: {', '.join(col_names)}")
+
+        if filters:
+            sql_parts.append("-- Has filters applied")
+
+        sql_parts.append(f"SELECT * FROM {explore_name}")
+
+        return "\n".join(sql_parts)
+
+    def _parse_duration_group(self, group_name: str, dim_group_def: dict) -> list[Dimension]:
+        """Parse LookML dimension_group with type: duration.
+
+        Duration dimension groups calculate the difference between two timestamps
+        in various intervals (seconds, minutes, hours, days, weeks, months, years).
+
+        Args:
+            group_name: Name of the dimension group
+            dim_group_def: Dimension group definition
+
+        Returns:
+            List of duration dimensions
+        """
+        intervals = dim_group_def.get("intervals", ["day"])
+        sql_start = dim_group_def.get("sql_start", "")
+        sql_end = dim_group_def.get("sql_end", "")
+
+        if sql_start:
+            sql_start = sql_start.replace("${TABLE}", "{model}")
+        if sql_end:
+            sql_end = sql_end.replace("${TABLE}", "{model}")
+
+        # If no sql_start/sql_end, we can't create duration dimensions
+        if not sql_start or not sql_end:
+            return []
+
+        dimensions = []
+        for interval in intervals:
+            # Create a dimension for each interval
+            # The SQL calculates the difference between start and end
+            # Note: The exact SQL depends on the database dialect
+            dim_name = f"{group_name}_{interval}s" if interval != "second" else f"{group_name}_seconds"
+
+            # Generate appropriate SQL for duration calculation
+            # This uses a generic DATE_DIFF pattern that works in most SQL dialects
+            duration_sql = f"DATE_DIFF({sql_end}, {sql_start}, {interval.upper()})"
+
+            dimensions.append(
+                Dimension(
+                    name=dim_name,
+                    type="numeric",
+                    sql=duration_sql,
+                    description=f"Duration in {interval}s between start and end",
                 )
             )
 
@@ -412,7 +633,9 @@ class LookMLAdapter(BaseAdapter):
                 description=measure_def.get("description"),
             )
 
-        # Map LookML measure types
+        # Map LookML measure types to sidemantic aggregation types
+        # Only include types supported by Metric.agg: sum, count, count_distinct, avg, min, max, median
+        # Unsupported types (percentile, list, date, string, yesno) become derived measures
         type_mapping = {
             "count": "count",
             "count_distinct": "count_distinct",
@@ -420,49 +643,45 @@ class LookMLAdapter(BaseAdapter):
             "average": "avg",
             "min": "min",
             "max": "max",
-            "number": None,  # Calculated measures
+            "median": "median",
+            # Unsupported as agg, will be treated as derived:
+            "percentile": None,
+            "list": None,
+            "date": None,
+            "number": None,  # Calculated/derived measures
+            "string": None,  # String measures are derived
+            "yesno": None,  # Boolean measures are derived
         }
 
         agg_type = type_mapping.get(measure_type)
 
         # Parse filters - lkml parses these as filters__all
-        # Convert to SQL-style filters for compatibility with generator
+        # There are TWO different filter syntaxes in LookML:
+        # 1. Shorthand: filters: [status: "completed"]
+        #    -> lkml returns [[{'status': 'completed'}]]
+        # 2. Block syntax: filters: { field: x value: y }
+        #    -> lkml returns [{'field': 'flight_length', 'value': '>120'}]
+        # We need to handle both formats.
         filters = []
         filters_all = measure_def.get("filters__all") or []
         if filters_all:
-            for filter_list in filters_all:
-                for filter_dict in filter_list:
-                    if isinstance(filter_dict, dict):
-                        for field, value in filter_dict.items():
-                            # Convert LookML filter format to SQL condition
-                            # field: "value" -> {model}.field = 'value'
-                            # Handle special LookML filter values:
-                            # - "yes"/"no" for yesno dimensions -> true/false
-                            # - comparison operators: ">1000", "<=100", ">=5", "<10", "!=0"
-                            # - numeric values like "5" -> numeric comparison
-                            if value.lower() == "yes":
-                                filters.append(f"{{model}}.{field} = true")
-                            elif value.lower() == "no":
-                                filters.append(f"{{model}}.{field} = false")
-                            elif match := re.match(r"^(>=|<=|!=|<>|>|<)(.+)$", value):
-                                # Comparison operator prefix: ">1000", "<=100", etc.
-                                operator, operand = match.groups()
-                                operand = operand.strip()
-                                # Normalize <> to !=
-                                if operator == "<>":
-                                    operator = "!="
-                                # Check if operand is numeric
-                                if operand.replace(".", "").replace("-", "").isdigit():
-                                    filters.append(f"{{model}}.{field} {operator} {operand}")
-                                else:
-                                    # String comparison with operator
-                                    filters.append(f"{{model}}.{field} {operator} '{operand}'")
-                            elif value.replace(".", "").replace("-", "").isdigit():
-                                # Numeric value
-                                filters.append(f"{{model}}.{field} = {value}")
-                            else:
-                                # String value
-                                filters.append(f"{{model}}.{field} = '{value}'")
+            for item in filters_all:
+                if isinstance(item, list):
+                    # Format 1: Shorthand syntax - list of dicts with field:value pairs
+                    for filter_dict in item:
+                        if isinstance(filter_dict, dict):
+                            for field, value in filter_dict.items():
+                                filter_sql = self._convert_lookml_filter_to_sql(field, value)
+                                if filter_sql:
+                                    filters.append(filter_sql)
+                elif isinstance(item, dict):
+                    # Format 2: Block syntax - dict with 'field' and 'value' keys
+                    field = item.get("field")
+                    value = item.get("value")
+                    if field and value:
+                        filter_sql = self._convert_lookml_filter_to_sql(field, value)
+                        if filter_sql:
+                            filters.append(filter_sql)
 
         # Replace ${TABLE} and resolve ${dimension_ref} placeholders in SQL
         sql = measure_def.get("sql")
@@ -494,7 +713,13 @@ class LookMLAdapter(BaseAdapter):
         # Determine if this is a derived/ratio metric
         metric_type = None
         if measure_type == "number":
-            metric_type = "derived"
+            # type: number is a derived measure, but it requires SQL
+            # If no SQL, this is likely a placeholder in an abstract/template view
+            if sql:
+                metric_type = "derived"
+            else:
+                # Skip placeholder measures with no SQL
+                return None
         # If there's SQL but no explicit type, treat as derived measure
         elif sql and not has_explicit_type:
             metric_type = "derived"

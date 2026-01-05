@@ -162,7 +162,7 @@ def main():
     malloy_adapter.export(graph, malloy_file)
 
     # Add sample queries and dashboard
-    sample_queries = '''
+    sample_queries = """
 // ============================================================
 // Sample Queries - Click "Run" above any query to execute
 // ============================================================
@@ -224,7 +224,7 @@ run: orders -> {
     aggregate: total_revenue
   }
 }
-'''
+"""
     with open(malloy_file, "a") as f:
         f.write(sample_queries)
 

@@ -853,11 +853,7 @@ class MalloyAdapter(BaseAdapter):
         # Dimensions
         # Only include dimensions that are calculated (sql != name)
         # Columns that match their name are automatically available in Malloy
-        calculated_dims = [
-            dim
-            for dim in model.dimensions
-            if self._strip_model_prefix(dim.sql or dim.name) != dim.name
-        ]
+        calculated_dims = [dim for dim in model.dimensions if self._strip_model_prefix(dim.sql or dim.name) != dim.name]
         if calculated_dims:
             lines.append("")
             lines.append("  dimension:")

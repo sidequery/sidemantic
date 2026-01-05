@@ -1,6 +1,6 @@
 """Relationship definitions for semantic layer models."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,7 @@ class Relationship(BaseModel):
         default=None, description="Foreign key column (defaults to {name}_id for many_to_one)"
     )
     primary_key: str | None = Field(default=None, description="Primary key column in related model (defaults to id)")
+    metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     @property
     def sql_expr(self) -> str:

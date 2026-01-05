@@ -1,6 +1,6 @@
 """Dimension definitions."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -20,6 +20,7 @@ class Dimension(BaseModel):
     supported_granularities: list[str] | None = Field(None, description="Supported granularities for time dimensions")
     description: str | None = Field(None, description="Human-readable description")
     label: str | None = Field(None, description="Display label")
+    metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     # Display formatting
     format: str | None = Field(None, description="Display format string (e.g., '$#,##0.00', '0.00%')")

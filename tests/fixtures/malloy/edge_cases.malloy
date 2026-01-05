@@ -1,0 +1,155 @@
+// Edge Cases - Tests boundary conditions and unusual patterns
+
+// Minimal source - only required fields
+source: minimal is duckdb.table('data.parquet') extend {
+  primary_key: id
+  dimension: id is id
+  measure: count_all is count()
+}
+
+// Complex expressions in dimensions
+source: complex_expressions is duckdb.table('data.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    // Arithmetic expressions
+    profit_margin is (revenue - cost) / revenue * 100
+    // Nested CASE (pick/when)
+    priority_level is
+      pick 'Critical' when severity = 'critical'
+      pick 'High' when severity = 'high'
+      pick 'Medium' when severity = 'medium'
+      else 'Low'
+    // Simple comparisons
+    is_high_severity is severity = 'critical'
+
+  measure:
+    record_count is count()
+}
+
+// All aggregation types
+source: all_aggregations is duckdb.table('metrics.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    category is category
+    value is value
+
+  measure:
+    // Standard aggregations
+    count_all is count()
+    total_value is sum(value)
+    avg_value is avg(value)
+    min_value is min(value)
+    max_value is max(value)
+    unique_categories is count_distinct(category)
+    // Filtered aggregations
+    high_value_count is count() { where: value > 100 }
+    low_value_sum is sum(value) { where: value <= 10 }
+}
+
+// All join types
+source: join_target_a is duckdb.table('target_a.parquet') extend {
+  primary_key: id
+  dimension: id is id
+  dimension: name is name
+  measure: count_a is count()
+}
+
+source: join_target_b is duckdb.table('target_b.parquet') extend {
+  primary_key: id
+  dimension: id is id
+  dimension: name is name
+  measure: count_b is count()
+}
+
+source: join_target_c is duckdb.table('target_c.parquet') extend {
+  primary_key: id
+  dimension: id is id
+  dimension: name is name
+  measure: count_c is count()
+}
+
+source: all_join_types is duckdb.table('main.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    a_id is a_id
+    b_id is b_id
+
+  measure:
+    main_count is count()
+
+  // Many-to-one join (most common)
+  join_one: join_target_a with a_id
+
+  // One-to-many join
+  join_many: join_target_b with b_id
+
+  // Cross join
+  join_cross: join_target_c
+}
+
+// Empty-ish source (no dimensions or measures beyond PK)
+source: bare_minimum is duckdb.table('bare.parquet') extend {
+  primary_key: id
+}
+
+// Source with where clause (becomes segment)
+source: filtered_source is duckdb.table('data.parquet') extend {
+  primary_key: id
+
+  where: status = 'active'
+
+  dimension:
+    id is id
+    name is name
+    status is status
+
+  measure:
+    active_count is count()
+}
+
+// Multiple time granularities on same field
+source: time_granularities is duckdb.table('events.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    event_timestamp is event_timestamp
+    event_minute is DATE_TRUNC('minute', event_timestamp)
+    event_hour is DATE_TRUNC('hour', event_timestamp)
+    event_day is DATE_TRUNC('day', event_timestamp)
+    event_week is DATE_TRUNC('week', event_timestamp)
+    event_month is DATE_TRUNC('month', event_timestamp)
+    event_quarter is DATE_TRUNC('quarter', event_timestamp)
+    event_year is DATE_TRUNC('year', event_timestamp)
+
+  measure:
+    event_count is count()
+}
+
+// Boolean dimension variations
+source: boolean_patterns is duckdb.table('flags.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    // Direct boolean column
+    is_active is is_active
+    // Comparison operators
+    is_positive is value > 0
+    is_negative is value < 0
+    is_zero is value = 0
+    is_not_zero is value != 0
+    is_large is value >= 1000
+    is_small is value <= 10
+
+  measure:
+    total is count()
+    active_count is count() { where: is_active = true }
+    positive_count is count() { where: value > 0 }
+}

@@ -14,7 +14,7 @@ class Dimension(BaseModel):
     name: str = Field(..., description="Unique dimension name within model")
     type: Literal["categorical", "time", "boolean", "numeric"] = Field(..., description="Dimension type")
     sql: str | None = Field(None, description="SQL expression (defaults to name; accepts 'expr' as alias)")
-    granularity: Literal["hour", "day", "week", "month", "quarter", "year"] | None = Field(
+    granularity: Literal["second", "minute", "hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Base granularity for time dimensions"
     )
     supported_granularities: list[str] | None = Field(None, description="Supported granularities for time dimensions")
@@ -75,6 +75,8 @@ class Dimension(BaseModel):
 
         # Validate granularity
         supported = self.supported_granularities or [
+            "second",
+            "minute",
             "hour",
             "day",
             "week",

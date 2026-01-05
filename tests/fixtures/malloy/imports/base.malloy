@@ -1,0 +1,27 @@
+// Base models that other files import from
+source: customers is duckdb.table('customers.parquet') extend {
+  primary_key: customer_id
+
+  dimension:
+    customer_id is customer_id
+    email is email
+    name is name
+    region is region
+
+  measure:
+    customer_count is count()
+}
+
+source: products is duckdb.table('products.parquet') extend {
+  primary_key: product_id
+
+  dimension:
+    product_id is product_id
+    name is name
+    category is category
+    price is price
+
+  measure:
+    product_count is count()
+    avg_price is avg(price)
+}

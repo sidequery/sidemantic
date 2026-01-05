@@ -1,0 +1,18 @@
+// Aliased import - import customers as crm_customers
+import { customers is crm_customers } from 'base.malloy'
+
+source: sales is duckdb.table('sales.parquet') extend {
+  primary_key: sale_id
+
+  dimension:
+    sale_id is sale_id
+    customer_id is customer_id
+    amount is amount
+
+  measure:
+    sale_count is count()
+    total_sales is sum(amount)
+
+  // Reference the aliased import
+  join_one: crm_customers with customer_id
+}

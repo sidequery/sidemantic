@@ -1,0 +1,18 @@
+// Orders model that imports from base.malloy
+import 'base.malloy'
+
+source: orders is duckdb.table('orders.parquet') extend {
+  primary_key: order_id
+
+  dimension:
+    order_id is order_id
+    customer_id is customer_id
+    status is status
+    created_at is created_at
+
+  measure:
+    order_count is count()
+    revenue is sum(amount)
+
+  join_one: customers with customer_id
+}

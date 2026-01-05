@@ -1,0 +1,15 @@
+// Circular import test A -> B -> A
+import 'circular_b.malloy'
+
+source: model_a is duckdb.table('a.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    name is name
+
+  measure:
+    count_a is count()
+
+  join_one: model_b with b_id
+}

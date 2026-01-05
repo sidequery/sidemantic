@@ -1,0 +1,139 @@
+// Retail Analytics Domain Model
+// Tests comprehensive model definitions with all field types
+
+source: products is duckdb.table('products.parquet') extend {
+  primary_key: product_id
+
+  dimension:
+    product_id is product_id
+    sku is sku
+    name is name
+    category is category
+    subcategory is subcategory
+    brand is brand
+    supplier_id is supplier_id
+    unit_cost is unit_cost
+    unit_price is unit_price
+    is_active is is_active = true
+    created_at is created_at
+    created_date is created_at::date
+
+  measure:
+    product_count is count()
+    avg_unit_cost is avg(unit_cost)
+    avg_unit_price is avg(unit_price)
+    total_inventory_value is sum(unit_cost * quantity_on_hand)
+    active_products is count() { where: is_active = true }
+}
+
+source: customers is duckdb.table('customers.parquet') extend {
+  primary_key: customer_id
+
+  dimension:
+    customer_id is customer_id
+    email is email
+    first_name is first_name
+    last_name is last_name
+    full_name is first_name || ' ' || last_name
+    region is region
+    country is country
+    city is city
+    signup_date is signup_date
+    signup_month is DATE_TRUNC('month', signup_date)
+    signup_year is DATE_TRUNC('year', signup_date)
+    tier is tier
+    is_premium is tier = 'premium'
+    lifetime_value is lifetime_value
+    customer_segment is
+      pick 'VIP' when lifetime_value > 10000
+      pick 'High Value' when lifetime_value > 5000
+      pick 'Medium Value' when lifetime_value > 1000
+      else 'Standard'
+
+  measure:
+    customer_count is count()
+    unique_customers is count_distinct(customer_id)
+    avg_lifetime_value is avg(lifetime_value)
+    total_lifetime_value is sum(lifetime_value)
+    premium_customers is count() { where: tier = 'premium' }
+}
+
+source: orders is duckdb.table('orders.parquet') extend {
+  primary_key: order_id
+
+  dimension:
+    order_id is order_id
+    customer_id is customer_id
+    status is status
+    order_date is order_date
+    order_month is DATE_TRUNC('month', order_date)
+    order_quarter is DATE_TRUNC('quarter', order_date)
+    order_year is DATE_TRUNC('year', order_date)
+    shipping_method is shipping_method
+    is_express is shipping_method = 'express'
+    subtotal is subtotal
+    tax is tax
+    shipping_cost is shipping_cost
+    total is total
+    discount_amount is discount_amount
+    is_discounted is discount_amount > 0
+
+  measure:
+    order_count is count()
+    total_revenue is sum(total)
+    total_subtotal is sum(subtotal)
+    total_tax is sum(tax)
+    total_shipping is sum(shipping_cost)
+    total_discounts is sum(discount_amount)
+    avg_order_value is avg(total)
+    max_order_value is max(total)
+    min_order_value is min(total)
+    completed_orders is count() { where: status = 'completed' }
+    pending_orders is count() { where: status = 'pending' }
+    cancelled_orders is count() { where: status = 'cancelled' }
+
+  join_one: customers with customer_id
+}
+
+source: order_items is duckdb.table('order_items.parquet') extend {
+  primary_key: item_id
+
+  dimension:
+    item_id is item_id
+    order_id is order_id
+    product_id is product_id
+    quantity is quantity
+    unit_price is unit_price
+    discount_percent is discount_percent
+    line_total is quantity * unit_price * (1 - discount_percent / 100)
+
+  measure:
+    item_count is count()
+    total_quantity is sum(quantity)
+    total_line_value is sum(line_total)
+    avg_quantity_per_item is avg(quantity)
+    avg_discount_percent is avg(discount_percent)
+
+  join_one: orders with order_id
+  join_one: products with product_id
+}
+
+source: inventory is duckdb.table('inventory.parquet') extend {
+  primary_key: inventory_id
+
+  dimension:
+    inventory_id is inventory_id
+    product_id is product_id
+    warehouse_id is warehouse_id
+    quantity_on_hand is quantity_on_hand
+    reorder_point is reorder_point
+    is_low_stock is quantity_on_hand <= reorder_point
+    last_restocked is last_restocked
+
+  measure:
+    total_quantity is sum(quantity_on_hand)
+    low_stock_count is count() { where: quantity_on_hand <= reorder_point }
+    avg_quantity is avg(quantity_on_hand)
+
+  join_one: products with product_id
+}

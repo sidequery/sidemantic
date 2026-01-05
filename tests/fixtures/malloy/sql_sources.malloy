@@ -1,0 +1,69 @@
+// SQL-based sources test fixture
+
+# desc: SQL-based source with inline query
+source: active_users is duckdb.sql("""
+  SELECT
+    id,
+    email,
+    name,
+    created_at,
+    last_login_at
+  FROM users
+  WHERE status = 'active'
+    AND deleted_at IS NULL
+""") extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    email is email
+    name is name
+    created_at is created_at
+    last_login_at is last_login_at
+
+  measure:
+    user_count is count()
+    unique_users is count_distinct(id)
+}
+
+# desc: Simple table source for comparison
+source: all_users is duckdb.table('users.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    email is email
+    status is status
+
+  measure:
+    total_users is count()
+}
+
+# desc: SQL source with complex query
+source: user_summary is duckdb.sql("""
+  SELECT
+    u.id,
+    u.email,
+    u.name,
+    COUNT(o.id) as order_count,
+    SUM(o.total) as total_spent,
+    MAX(o.created_at) as last_order_at
+  FROM users u
+  LEFT JOIN orders o ON u.id = o.user_id
+  GROUP BY u.id, u.email, u.name
+""") extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    email is email
+    name is name
+    order_count is order_count
+    total_spent is total_spent
+    last_order_at is last_order_at
+
+  measure:
+    summary_count is count()
+    avg_orders is avg(order_count)
+    avg_spent is avg(total_spent)
+}

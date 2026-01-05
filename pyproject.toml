@@ -108,6 +108,9 @@ packages = ["sidemantic"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+exclude = [
+    "sidemantic/adapters/malloy_grammar",  # ANTLR-generated files
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
@@ -126,6 +129,7 @@ prerelease = "if-necessary"
 
 [dependency-groups]
 dev = [
+    "antlr4-python3-runtime>=4.13.2",
     "lsprotocol>=2025.0.0",
     "marimo==0.16.5",
     "pygls>=2.0.0",

@@ -396,24 +396,34 @@ class RillAdapter:
             yaml.dump(source_def, f, sort_keys=False, default_flow_style=False)
 
     def _export_model_sql(self, model: Model, models_dir: Path) -> None:
-        """Export a passthrough SQL model file.
+        """Export a SQL model file.
+
+        If the model has custom SQL defined, use it. Otherwise generate a
+        passthrough SELECT * FROM the appropriate source.
 
         Args:
             model: The model to export
             models_dir: Directory to write model files to
         """
-        # Determine the source to SELECT from
-        if model.source_uri:
-            # Reference the generated source
-            source_name = f"{model.name}_raw"
-        elif model.table:
-            # Reference the table directly
-            source_name = model.table
+        if model.sql:
+            # Use the model's custom SQL
+            sql = model.sql
+            if not sql.endswith("\n"):
+                sql += "\n"
         else:
-            # Default: assume a source with _raw suffix exists
-            source_name = f"{model.name}_raw"
+            # Generate passthrough SQL
+            # Determine the source to SELECT from
+            if model.source_uri:
+                # Reference the generated source
+                source_name = f"{model.name}_raw"
+            elif model.table:
+                # Reference the table directly
+                source_name = model.table
+            else:
+                # Default: assume a source with _raw suffix exists
+                source_name = f"{model.name}_raw"
 
-        sql = f"SELECT * FROM {source_name}\n"
+            sql = f"SELECT * FROM {source_name}\n"
 
         output_file = models_dir / f"{model.name}.sql"
         with open(output_file, "w") as f:

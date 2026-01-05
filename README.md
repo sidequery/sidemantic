@@ -1,6 +1,6 @@
 # Sidemantic
 
-SQL-first semantic layer for consistent metrics across your data stack.
+SQL-first semantic layer for consistent metrics across your data stack. Compatible with many other semantic model formats.
 
 - **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, Snowflake Cortex, Malloy
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL

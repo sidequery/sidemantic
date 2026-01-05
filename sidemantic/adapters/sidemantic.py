@@ -216,6 +216,7 @@ class SidemanticAdapter(BaseAdapter):
                 type=relationship_def.get("type"),
                 foreign_key=relationship_def.get("foreign_key"),
                 primary_key=relationship_def.get("primary_key"),
+                metadata=relationship_def.get("metadata"),
             )
             joins.append(join)
 
@@ -232,6 +233,7 @@ class SidemanticAdapter(BaseAdapter):
                 format=dim_def.get("format"),
                 value_format_name=dim_def.get("value_format_name"),
                 parent=dim_def.get("parent"),
+                metadata=dim_def.get("metadata"),
             )
             dimensions.append(dimension)
 
@@ -250,6 +252,7 @@ class SidemanticAdapter(BaseAdapter):
                 value_format_name=measure_def.get("value_format_name"),
                 drill_fields=measure_def.get("drill_fields"),
                 non_additive_dimension=measure_def.get("non_additive_dimension"),
+                metadata=measure_def.get("metadata"),
                 # Cumulative/window parameters
                 window=measure_def.get("window"),
                 grain_to_date=measure_def.get("grain_to_date"),
@@ -321,6 +324,7 @@ class SidemanticAdapter(BaseAdapter):
             pre_aggregations=pre_aggregations,
             default_time_dimension=model_def.get("default_time_dimension"),
             default_grain=model_def.get("default_grain"),
+            metadata=model_def.get("metadata"),
         )
 
     def _parse_metric(self, metric_def: dict) -> Metric | None:
@@ -343,6 +347,7 @@ class SidemanticAdapter(BaseAdapter):
             type=metric_type,
             description=metric_def.get("description"),
             label=metric_def.get("label"),
+            metadata=metric_def.get("metadata"),
             sql=metric_def.get("sql") or metric_def.get("measure"),
             numerator=metric_def.get("numerator"),
             denominator=metric_def.get("denominator"),
@@ -369,6 +374,8 @@ class SidemanticAdapter(BaseAdapter):
             result["source_uri"] = model.source_uri
         if model.description:
             result["description"] = model.description
+        if model.metadata:
+            result["metadata"] = model.metadata
 
         # Export joins
         if model.relationships:
@@ -378,6 +385,7 @@ class SidemanticAdapter(BaseAdapter):
                     "type": relationship.type,
                     **({"foreign_key": relationship.foreign_key} if relationship.foreign_key else {}),
                     **({"primary_key": relationship.primary_key} if relationship.primary_key else {}),
+                    **({"metadata": relationship.metadata} if relationship.metadata else {}),
                 }
                 for relationship in model.relationships
             ]
@@ -402,6 +410,8 @@ class SidemanticAdapter(BaseAdapter):
                     dim_def["description"] = dim.description
                 if dim.label:
                     dim_def["label"] = dim.label
+                if dim.metadata:
+                    dim_def["metadata"] = dim.metadata
                 if dim.format:
                     dim_def["format"] = dim.format
                 if dim.value_format_name:
@@ -426,6 +436,8 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["description"] = measure.description
                 if measure.label:
                     measure_def["label"] = measure.label
+                if measure.metadata:
+                    measure_def["metadata"] = measure.metadata
                 if measure.format:
                     measure_def["format"] = measure.format
                 if measure.value_format_name:
@@ -491,6 +503,8 @@ class SidemanticAdapter(BaseAdapter):
             result["description"] = measure.description
         if measure.label:
             result["label"] = measure.label
+        if measure.metadata:
+            result["metadata"] = measure.metadata
 
         # Type-specific fields
         if measure.numerator:

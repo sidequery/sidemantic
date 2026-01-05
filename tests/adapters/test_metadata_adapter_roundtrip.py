@@ -18,6 +18,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
         description="Order data",
         default_time_dimension="created_at",
         default_grain="day",
+        metadata={"source": "gooddata", "tags": ["core"]},
         dimensions=[
             Dimension(
                 name="status",
@@ -26,6 +27,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
                 label="Status",
                 format=None,
                 value_format_name=None,
+                metadata={"aliases": ["order_status"]},
             ),
             Dimension(
                 name="discount_rate",
@@ -34,6 +36,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
                 label="Discount %",
                 format="0.0%",
                 value_format_name="percent",
+                metadata={"unit": "percent"},
             ),
         ],
         metrics=[
@@ -46,6 +49,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
                 format="$#,##0.00",
                 value_format_name="usd",
                 drill_fields=["status", "customer_id"],
+                metadata={"currency": "USD"},
             ),
             Metric(
                 name="avg_order_value",
@@ -92,6 +96,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
     assert imported.name == "orders"
     assert imported.table == "orders_table"
     assert imported.description == "Order data"
+    assert imported.metadata == {"source": "gooddata", "tags": ["core"]}
 
     # Verify dimensions preserved
     assert len(imported.dimensions) == 2
@@ -101,11 +106,13 @@ def test_metadata_roundtrip_sidemantic_adapter():
     assert status_dim.type == "categorical"
     assert status_dim.description == "Order status"
     assert status_dim.label == "Status"
+    assert status_dim.metadata == {"aliases": ["order_status"]}
 
     discount_dim = imported.get_dimension("discount_rate")
     assert discount_dim is not None
     assert discount_dim.format == "0.0%"
     assert discount_dim.value_format_name == "percent"
+    assert discount_dim.metadata == {"unit": "percent"}
 
     # Verify metrics preserved with all metadata
     assert len(imported.metrics) == 2
@@ -119,6 +126,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
     assert revenue.format == "$#,##0.00"
     assert revenue.value_format_name == "usd"
     assert revenue.drill_fields == ["status", "customer_id"]
+    assert revenue.metadata == {"currency": "USD"}
 
     # Verify model-level default_time_dimension
     assert imported.default_time_dimension == "created_at"

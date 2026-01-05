@@ -1,6 +1,6 @@
 """Model definitions."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,7 @@ class Model(BaseModel):
     source_uri: str | None = Field(None, description="Remote data source URI (e.g., https://, s3://, gs://)")
     description: str | None = Field(None, description="Human-readable description")
     extends: str | None = Field(None, description="Parent model to inherit from")
+    metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     # Relationships
     relationships: list[Relationship] = Field(default_factory=list, description="Relationships to other models")

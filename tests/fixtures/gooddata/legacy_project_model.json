@@ -1,0 +1,76 @@
+{
+  "projectModel": {
+    "datasets": [
+      {
+        "dataset": {
+          "identifier": "dataset.orders",
+          "title": "Orders",
+          "anchor": {
+            "attribute": {
+              "identifier": "attr.orders.id",
+              "title": "Order Id",
+              "labels": [
+                "label.orders.id"
+              ]
+            }
+          },
+          "attributes": [
+            {
+              "attribute": {
+                "identifier": "attr.orders.status",
+                "title": "Status",
+                "labels": [
+                  "label.orders.status"
+                ]
+              }
+            }
+          ],
+          "facts": [
+            {
+              "fact": {
+                "identifier": "fact.orders.amount",
+                "title": "Amount",
+                "dataType": "NUMERIC"
+              }
+            }
+          ],
+          "labels": [
+            {
+              "label": {
+                "identifier": "label.orders.id",
+                "title": "Order Id",
+                "sourceColumn": "order_id",
+                "dataType": "NUMERIC"
+              }
+            },
+            {
+              "label": {
+                "identifier": "label.orders.status",
+                "title": "Status",
+                "sourceColumn": "status",
+                "dataType": "TEXT"
+              }
+            }
+          ],
+          "references": [
+            "dataset.customers",
+            "date"
+          ]
+        }
+      }
+    ],
+    "dateDimensions": [
+      {
+        "dateDimension": {
+          "identifier": "date",
+          "title": "Date",
+          "granularities": [
+            "day",
+            "month",
+            "year"
+          ]
+        }
+      }
+    ]
+  }
+}

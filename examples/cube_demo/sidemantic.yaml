@@ -1,0 +1,137 @@
+models:
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    description: Customer master data with 200 customers across regions and tiers
+    dimensions:
+      - name: customer_id
+        type: numeric
+        sql: customer_id
+        label: Customer ID
+      - name: name
+        sql: name
+        label: Customer Name
+      - name: email
+        sql: email
+        label: Email
+      - name: region
+        sql: region
+        label: Region
+      - name: tier
+        sql: tier
+        label: Customer Tier
+    metrics:
+      - name: customer_count
+        agg: count_distinct
+        sql: customer_id
+        label: Customers
+
+  - name: products
+    table: products
+    primary_key: product_id
+    description: Product catalog with 50 products across Electronics, Furniture, Software, and Office Supplies
+    dimensions:
+      - name: product_id
+        type: numeric
+        sql: product_id
+        label: Product ID
+      - name: name
+        sql: name
+        label: Product Name
+      - name: category
+        sql: category
+        label: Category
+      - name: subcategory
+        sql: subcategory
+        label: Subcategory
+      - name: price
+        type: numeric
+        sql: price
+        label: Unit Price
+    metrics:
+      - name: product_count
+        agg: count_distinct
+        sql: product_id
+        label: Products
+      - name: avg_price
+        agg: avg
+        sql: price
+        label: Average Price
+
+  - name: orders
+    table: orders
+    primary_key: order_id
+    description: 5000+ orders over 18 months with seasonal patterns and growth trends
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+      - name: products
+        type: many_to_one
+        foreign_key: product_id
+    dimensions:
+      - name: order_id
+        type: numeric
+        sql: order_id
+        label: Order ID
+      - name: order_date
+        type: time
+        sql: order_date
+        label: Order Date
+        granularity: day
+      - name: customer_id
+        type: numeric
+        sql: customer_id
+        label: Customer ID
+      - name: product_id
+        type: numeric
+        sql: product_id
+        label: Product ID
+      - name: quantity
+        type: numeric
+        sql: quantity
+        label: Quantity
+      - name: status
+        sql: status
+        label: Order Status
+      - name: payment_method
+        sql: payment_method
+        label: Payment Method
+    metrics:
+      - name: total_orders
+        agg: count
+        sql: order_id
+        label: Total Orders
+      - name: total_revenue
+        agg: sum
+        sql: amount
+        label: Total Revenue
+        value_format_name: usd
+      - name: total_quantity
+        agg: sum
+        sql: quantity
+        label: Total Quantity
+      - name: avg_order_value
+        sql: SUM(amount) / COUNT(DISTINCT order_id)
+        label: Average Order Value
+        value_format_name: usd
+      - name: unique_customers
+        agg: count_distinct
+        sql: customer_id
+        label: Unique Customers
+      - name: orders_completed
+        agg: count
+        sql: order_id
+        label: Completed Orders
+        filters:
+          - status = 'completed'
+      - name: orders_cancelled
+        agg: count
+        sql: order_id
+        label: Cancelled Orders
+        filters:
+          - status = 'cancelled'
+      - name: cancellation_rate
+        sql: SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END)::float / COUNT(*)
+        label: Cancellation Rate
+        value_format_name: percent

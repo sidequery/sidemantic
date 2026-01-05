@@ -548,6 +548,10 @@ class CubeAdapter(BaseAdapter):
             if dim.format:
                 dim_def["format"] = dim.format
 
+            # Mark primary key dimension
+            if model.primary_key and dim.name == model.primary_key:
+                dim_def["primary_key"] = True
+
             # Track hierarchies - collect all dimensions for drill_members
             if dim.parent or any(other.parent == dim.name for other in model.dimensions):
                 drill_members.append(dim.name)

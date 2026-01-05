@@ -449,7 +449,7 @@ class GoodDataAdapter(BaseAdapter):
             anchor_dim = self._parse_legacy_attribute(anchor_attr, label_map)
             if anchor_dim:
                 dimensions.append(anchor_dim)
-                primary_key = anchor_dim.name
+                primary_key = anchor_dim.sql or anchor_dim.name
 
         for attr_def in self._as_list(dataset_def.get("attributes")):
             attr = attr_def.get("attribute") if isinstance(attr_def, dict) and "attribute" in attr_def else attr_def

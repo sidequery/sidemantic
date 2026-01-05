@@ -69,7 +69,7 @@ def test_import_legacy_project_model():
     assert "date" in graph.models
 
     orders = graph.models["dataset.orders"]
-    assert orders.primary_key == "attr.orders.id"
+    assert orders.primary_key == "order_id"
 
     anchor_dim = orders.get_dimension("attr.orders.id")
     assert anchor_dim is not None

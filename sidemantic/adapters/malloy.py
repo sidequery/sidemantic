@@ -852,21 +852,17 @@ class MalloyAdapter(BaseAdapter):
 
         # Dimensions
         # Skip dimensions that match the primary key (Malloy auto-exposes the PK column).
-        # For passthrough dimensions (sql == name), Malloy requires excluding the base
-        # field before redefining, so we emit an `except:` list.
+        # Skip passthrough dimensions (sql == name) since Malloy auto-exposes underlying
+        # table columns. Only export dimensions with actual transformations.
         dims_to_export: list[tuple[Dimension, str]] = []
-        passthrough_dims: list[str] = []
         for dim in model.dimensions:
             if dim.name == model.primary_key:
                 continue
             sql = self._strip_model_prefix(dim.sql or dim.name).strip()
-            dims_to_export.append((dim, sql))
+            # Skip passthrough dimensions - Malloy auto-exposes table columns
             if sql == dim.name:
-                passthrough_dims.append(dim.name)
-
-        if passthrough_dims:
-            lines.append("")
-            lines.append(f"  except: {', '.join(passthrough_dims)}")
+                continue
+            dims_to_export.append((dim, sql))
 
         if dims_to_export:
             lines.append("")
@@ -874,7 +870,14 @@ class MalloyAdapter(BaseAdapter):
             for dim, sql in dims_to_export:
                 if dim.description:
                     lines.append(f"    # desc: {dim.description}")
-                lines.append(f"    {dim.name} is {sql}")
+                # For time dimensions with granularity, use Malloy's time truncation syntax
+                if dim.type == "time" and dim.granularity:
+                    # Map sidemantic granularity to Malloy time accessor
+                    # Malloy uses: .second, .minute, .hour, .day, .week, .month, .quarter, .year
+                    malloy_granularity = dim.granularity
+                    lines.append(f"    {dim.name} is {sql}.{malloy_granularity}")
+                else:
+                    lines.append(f"    {dim.name} is {sql}")
 
         # Measures
         if model.metrics:

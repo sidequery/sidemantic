@@ -491,7 +491,11 @@ def _collect_constants(documents: Iterable[_AmlDocument]) -> dict[str, AmlValue]
 
 def _collect_model_definitions(
     documents: Iterable[_AmlDocument],
-) -> tuple[dict[str, tuple[AmlBlock, _FileContext]], dict[str, tuple[AmlBlock, _FileContext]], dict[str, tuple[ObjectAssignment, _FileContext]]]:
+) -> tuple[
+    dict[str, tuple[AmlBlock, _FileContext]],
+    dict[str, tuple[AmlBlock, _FileContext]],
+    dict[str, tuple[ObjectAssignment, _FileContext]],
+]:
     model_blocks: dict[str, tuple[AmlBlock, _FileContext]] = {}
     partial_blocks: dict[str, tuple[AmlBlock, _FileContext]] = {}
     assignments: dict[str, tuple[ObjectAssignment, _FileContext]] = {}
@@ -716,6 +720,7 @@ def _parse_property(ctx) -> AmlProperty:
     key = _parse_identifier(ctx.identifier())
     value = _parse_expression(ctx.expression())
     return AmlProperty(key=key, value=value)
+
 
 def _parse_const_declaration(ctx) -> ConstDeclaration:
     name = _parse_identifier(ctx.identifier())

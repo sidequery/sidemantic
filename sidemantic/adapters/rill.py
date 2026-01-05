@@ -178,8 +178,12 @@ class RillAdapter:
         label = measure_def.get("display_name")  # Rill uses display_name, Sidemantic uses label
         description = measure_def.get("description")
         measure_type = measure_def.get("type", "simple")
+
+        # Parse formatting - prefer format_d3 over format_preset
+        format_d3 = measure_def.get("format_d3")
         format_preset = measure_def.get("format_preset")
-        value_format_name = self._map_format_preset(format_preset) if format_preset else None
+        format_str = format_d3  # Direct d3 format string
+        value_format_name = self._map_format_preset(format_preset) if format_preset and not format_d3 else None
 
         # Check for window function definition (Rill's rolling window syntax)
         window_def = measure_def.get("window")
@@ -210,6 +214,7 @@ class RillAdapter:
             description=description,
             sql=expression,  # Pass full expression, Metric will parse aggregations
             type=metric_type,
+            format=format_str,
             value_format_name=value_format_name,
             window_order=window_order,
             window_frame=window_frame,
@@ -523,10 +528,13 @@ class RillAdapter:
             if metric.description:
                 measure_def["description"] = metric.description
 
-            # Map value_format_name to format_preset
-            format_preset = self._map_value_format_to_preset(metric.value_format_name)
-            if format_preset:
-                measure_def["format_preset"] = format_preset
+            # Export formatting - prefer format (d3) over value_format_name (preset)
+            if metric.format:
+                measure_def["format_d3"] = metric.format
+            elif metric.value_format_name:
+                format_preset = self._map_value_format_to_preset(metric.value_format_name)
+                if format_preset:
+                    measure_def["format_preset"] = format_preset
 
             # Map metric type to Rill measure type
             if metric.type == "derived":

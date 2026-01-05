@@ -851,15 +851,29 @@ class MalloyAdapter(BaseAdapter):
             lines.append(f"  primary_key: {model.primary_key}")
 
         # Dimensions
-        # Skip dimensions that match the primary key (Malloy auto-exposes the PK column)
-        dims_to_export = [dim for dim in model.dimensions if dim.name != model.primary_key]
+        # Skip dimensions that match the primary key (Malloy auto-exposes the PK column).
+        # For passthrough dimensions (sql == name), Malloy requires excluding the base
+        # field before redefining, so we emit an `except:` list.
+        dims_to_export: list[tuple[Dimension, str]] = []
+        passthrough_dims: list[str] = []
+        for dim in model.dimensions:
+            if dim.name == model.primary_key:
+                continue
+            sql = self._strip_model_prefix(dim.sql or dim.name).strip()
+            dims_to_export.append((dim, sql))
+            if sql == dim.name:
+                passthrough_dims.append(dim.name)
+
+        if passthrough_dims:
+            lines.append("")
+            lines.append(f"  except: {', '.join(passthrough_dims)}")
+
         if dims_to_export:
             lines.append("")
             lines.append("  dimension:")
-            for dim in dims_to_export:
+            for dim, sql in dims_to_export:
                 if dim.description:
                     lines.append(f"    # desc: {dim.description}")
-                sql = self._strip_model_prefix(dim.sql or dim.name)
                 lines.append(f"    {dim.name} is {sql}")
 
         # Measures

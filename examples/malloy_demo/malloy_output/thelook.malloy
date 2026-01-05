@@ -1,6 +1,8 @@
 # desc: Product catalog
 source: products is duckdb.table('data/products.parquet') extend {
 
+  except: name, category, subcategory, price
+
   dimension:
     name is name
     category is category
@@ -17,6 +19,8 @@ source: products is duckdb.table('data/products.parquet') extend {
 # desc: Customer master data
 source: customers is duckdb.table('data/customers.parquet') extend {
 
+  except: name, email, region, tier
+
   dimension:
     name is name
     email is email
@@ -30,6 +34,8 @@ source: customers is duckdb.table('data/customers.parquet') extend {
 
 # desc: Customer orders with status and revenue tracking (LookML format)
 source: orders is duckdb.table('data/orders.parquet') extend {
+
+  except: customer_id, product_id, quantity, amount, status
 
   dimension:
     customer_id is customer_id

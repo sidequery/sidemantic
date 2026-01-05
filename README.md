@@ -163,6 +163,8 @@ git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
 uv run examples/rill_demo/run_demo.py
 ```
 
+See `examples/` for more.
+
 ## Core Features
 
 - SQL query interface with automatic rewriting
@@ -203,19 +205,6 @@ load_from_directory(layer, "my_models/")  # Auto-detects formats
 | ClickHouse | ✅ | `uv add sidemantic[clickhouse]` |
 | Databricks | ✅ | `uv add sidemantic[databricks]` |
 | Spark SQL | ✅ | `uv add sidemantic[spark]` |
-
-## Examples
-
-See `examples/` directory:
-- `basic/` - Getting started examples
-- `sql/` - SQL query interface demonstrations
-- `yaml/` - YAML syntax examples
-- `features/` - Specific features (parameters, symmetric aggregates, multi-hop joins)
-- `advanced/` - Comprehensive demos
-- `integrations/` - Streamlit, charts, export adapters
-- `notebooks/` - Jupyter notebooks
-- `rill_demo/` - Export to Rill and run in Docker
-- `multi_format_demo/` - Same model in different formats (Cube, Hex, LookML, BSL)
 
 ## Testing
 

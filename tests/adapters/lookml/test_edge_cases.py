@@ -718,6 +718,58 @@ def test_lookml_filter_wildcard():
     assert "A%" in a_region.filters[0]
 
 
+def test_lookml_filter_numeric_in_clause():
+    """Test parsing numeric comma-separated filter values as IN clause."""
+    import tempfile
+
+    lkml_content = """
+view: numeric_filter_test {
+  sql_table_name: orders ;;
+
+  dimension: order_id { type: number sql: ${TABLE}.order_id ;; }
+  dimension: price { type: number sql: ${TABLE}.price ;; }
+
+  measure: specific_orders {
+    type: count
+    filters: [order_id: "1,2,3"]
+  }
+
+  measure: specific_prices {
+    type: sum
+    sql: ${price} ;;
+    filters: [price: "10.5,20.0,30.99"]
+  }
+}
+"""
+    adapter = LookMLAdapter()
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
+        f.write(lkml_content)
+        f.flush()
+
+        graph = adapter.parse(Path(f.name))
+        model = graph.get_model("numeric_filter_test")
+
+        # Check integer IN clause
+        specific_orders = model.get_metric("specific_orders")
+        assert specific_orders is not None
+        assert specific_orders.filters is not None
+        filter_str = specific_orders.filters[0]
+        assert "IN" in filter_str.upper()
+        # Should be unquoted integers
+        assert "IN (1, 2, 3)" in filter_str
+
+        # Check decimal IN clause
+        specific_prices = model.get_metric("specific_prices")
+        assert specific_prices is not None
+        assert specific_prices.filters is not None
+        filter_str = specific_prices.filters[0]
+        assert "IN" in filter_str.upper()
+        # Should be unquoted decimals
+        assert "10.5" in filter_str
+        assert "20.0" in filter_str
+
+
 # =============================================================================
 # DURATION DIMENSION GROUP TESTS
 # =============================================================================

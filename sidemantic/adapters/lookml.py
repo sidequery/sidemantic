@@ -198,10 +198,14 @@ class LookMLAdapter(BaseAdapter):
                     quoted = ", ".join(f"'{p}'" for p in clean_parts)
                     return f"{{model}}.{field} NOT IN ({quoted})"
 
-            # Check if all parts are simple strings (IN clause)
+            # Check if all parts are simple values (no operators) -> IN clause
             if all(not p.startswith("-") and not re.match(r"^(>=|<=|!=|<>|>|<)", p) for p in parts):
-                # Check if all parts are non-numeric strings
-                if not all(p.replace(".", "").replace("-", "").isdigit() for p in parts):
+                # Check if all parts are numeric
+                if all(p.replace(".", "").replace("-", "").isdigit() for p in parts):
+                    # Numeric IN clause (no quotes)
+                    return f"{{model}}.{field} IN ({', '.join(parts)})"
+                else:
+                    # String IN clause (with quotes)
                     quoted = ", ".join(f"'{p}'" for p in parts)
                     return f"{{model}}.{field} IN ({quoted})"
 

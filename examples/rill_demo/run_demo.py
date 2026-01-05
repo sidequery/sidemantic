@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = ["sidemantic"]
+# ///
 """Rill Demo: Export sidemantic models to Rill and run in Docker.
 
 This demo:
@@ -10,6 +13,7 @@ Prerequisites:
 - Docker installed and running
 
 Usage:
+    git clone https://github.com/sidequery/sidemantic && cd sidemantic
     uv run examples/rill_demo/run_demo.py
 """
 

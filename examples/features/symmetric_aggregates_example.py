@@ -10,6 +10,8 @@
 
 Symmetric aggregates prevent double-counting when a query joins a base model
 to multiple "many" side tables, creating a fan-out effect.
+
+Run with: uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/features/symmetric_aggregates_example.py
 """
 
 import duckdb

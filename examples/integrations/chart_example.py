@@ -4,7 +4,7 @@
 # ///
 """Example demonstrating chart generation from semantic layer queries.
 
-Run with: uv run examples/chart_example.py
+Run with: uv run examples/integrations/chart_example.py
 """
 
 from pathlib import Path
@@ -42,7 +42,7 @@ def setup_demo_data(layer):
 
 def main():
     # Use the ecommerce example models
-    example_dir = Path(__file__).parent / "ecommerce_sql_yml" / "models"
+    example_dir = Path(__file__).parent.parent / "ecommerce_sql_yml" / "models"
 
     if not example_dir.exists():
         print(f"Error: Example models not found at {example_dir}")
@@ -54,7 +54,7 @@ def main():
     load_from_directory(layer, str(example_dir))
 
     # Setup demo data in the ecommerce DB
-    db_path = Path(__file__).parent / "ecommerce_sql_yml" / "data" / "ecommerce.db"
+    db_path = Path(__file__).parent.parent / "ecommerce_sql_yml" / "data" / "ecommerce.db"
     if not db_path.exists():
         print(f"Error: Database not found. Run: uv run {db_path.parent}/create_db.py")
         return

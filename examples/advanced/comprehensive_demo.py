@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = ["sidemantic", "duckdb"]
+# ///
 """Comprehensive demo of Sidemantic semantic layer features.
 
 This script demonstrates:
@@ -10,15 +13,8 @@ This script demonstrates:
 - Multiple metric types (simple, ratio, derived, cumulative)
 - View generation for reusable queries
 
-Run with: uv run examples/comprehensive_demo.py
+Run with: uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/advanced/comprehensive_demo.py
 """
-# /// script
-# dependencies = [
-#   "sidemantic",
-#   "duckdb",
-# ]
-# requires-python = ">=3.12"
-# ///
 
 import duckdb
 

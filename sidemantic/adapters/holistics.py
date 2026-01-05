@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-import re
-from typing import Iterable
 
 from antlr4 import CommonTokenStream, InputStream
 from antlr4.error.ErrorListener import ErrorListener
@@ -46,69 +46,69 @@ class Reference:
 @dataclass
 class FunctionCall:
     name: str
-    args: list["AmlValue"]
+    args: list[AmlValue]
 
 
 @dataclass
 class NamedArg:
     name: str
-    value: "AmlValue"
+    value: AmlValue
 
 
 @dataclass
 class TypedBlock:
     type_name: str
-    items: list["AmlItem"]
+    items: list[AmlItem]
 
 
 @dataclass
 class InlineBlock:
-    items: list["AmlItem"]
+    items: list[AmlItem]
 
 
 @dataclass
 class ExtendCall:
-    base: "AmlValue"
-    extensions: list["AmlValue"]
+    base: AmlValue
+    extensions: list[AmlValue]
 
 
 @dataclass
 class BinaryOp:
-    left: "AmlValue"
+    left: AmlValue
     op: str
-    right: "AmlValue"
+    right: AmlValue
 
 
 @dataclass
 class UnaryOp:
     op: str
-    operand: "AmlValue"
+    operand: AmlValue
 
 
 @dataclass
 class IfExpression:
-    condition: "AmlValue"
-    then_items: list["AmlItem"]
-    else_items: list["AmlItem"] | None
+    condition: AmlValue
+    then_items: list[AmlItem]
+    else_items: list[AmlItem] | None
 
 
 @dataclass
 class ConstDeclaration:
     name: str
-    value: "AmlValue"
+    value: AmlValue
 
 
 @dataclass
 class Assignment:
     name: str
-    value: "AmlValue"
+    value: AmlValue
 
 
 @dataclass
 class ObjectAssignment:
     kind: str
     name: str
-    value: "AmlValue"
+    value: AmlValue
 
 
 @dataclass
@@ -125,14 +125,14 @@ class UseStatement:
 
 @dataclass
 class ExpressionStatement:
-    value: "AmlValue"
+    value: AmlValue
 
 
 @dataclass
 class FuncParam:
     name: str
     type_options: list[str] | None
-    default: "AmlValue" | None
+    default: AmlValue | None
 
 
 @dataclass
@@ -140,20 +140,20 @@ class FuncDeclaration:
     name: str
     params: list[FuncParam]
     return_type: list[str] | None
-    body: list["AmlItem"]
+    body: list[AmlItem]
 
 
 @dataclass
 class AmlProperty:
     key: str
-    value: "AmlValue"
+    value: AmlValue
 
 
 @dataclass
 class AmlBlock:
     kind: str
     name: str | None
-    items: list["AmlItem"]
+    items: list[AmlItem]
 
 
 AmlItem = (
@@ -219,7 +219,7 @@ class _ParserErrorListener(ErrorListener):
     def __init__(self, file_path: Path):
         self.file_path = file_path
 
-    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):  # noqa: N802
+    def syntaxError(self, recognizer, offending_symbol, line, column, msg, e):  # noqa: N802
         location = f"{self.file_path}:{line}:{column}"
         raise ValueError(f"AML parse error at {location}: {msg}")
 

@@ -109,6 +109,7 @@ packages = ["sidemantic"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+force-exclude = true
 exclude = [
     "sidemantic/adapters/malloy_grammar",  # ANTLR-generated files
     "sidemantic/adapters/holistics_grammar",  # ANTLR-generated files

@@ -1,7 +1,6 @@
 """Tests for Holistics AML adapter - roundtrip."""
 
 import tempfile
-from pathlib import Path
 
 import pytest
 

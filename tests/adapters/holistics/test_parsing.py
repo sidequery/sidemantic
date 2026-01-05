@@ -12,7 +12,6 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
-
 # =============================================================================
 # BASIC PARSING TESTS
 # =============================================================================

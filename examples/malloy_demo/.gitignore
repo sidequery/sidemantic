@@ -1,2 +1,0 @@
-# Generated parquet data (regenerate with: uv run examples/malloy_demo/run_demo.py)
-*.parquet

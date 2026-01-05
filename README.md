@@ -5,7 +5,7 @@ SQL-first semantic layer for consistent metrics across your data stack.
 - **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL
 
-[Documentation](https://sidemantic.com) • [GitHub](https://github.com/sidequery/sidemantic) • [Discord](https://discord.com/invite/7MZ4UgSVvF)
+[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF)
 
 ## Quickstart
 
@@ -14,45 +14,118 @@ Install:
 uv add sidemantic
 ```
 
-Define your semantic layer (SQL shown; YAML and Python are also supported):
+Define models in SQL, YAML, or Python:
+
+<details>
+<summary><b>SQL</b> (orders.sql)</summary>
+
 ```sql
--- semantic_layer.sql
 MODEL (name orders, table orders, primary_key order_id);
-
-DIMENSION (name status, type categorical, sql status);
-DIMENSION (name order_date, type time, sql created_at, granularity day);
-
+DIMENSION (name status, type categorical);
+DIMENSION (name order_date, type time, granularity day);
 METRIC (name revenue, agg sum, sql amount);
 METRIC (name order_count, agg count);
 ```
+</details>
 
-Query with familiar SQL:
+<details>
+<summary><b>YAML</b> (orders.yml)</summary>
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+      - name: order_date
+        type: time
+        granularity: day
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+```
+</details>
+
+<details>
+<summary><b>Python</b> (programmatic)</summary>
+
 ```python
-from sidemantic import SemanticLayer
+from sidemantic import Model, Dimension, Metric
 
-layer = SemanticLayer.from_yaml("semantic_layer.sql", connection="duckdb:///data.duckdb")
+orders = Model(
+    name="orders",
+    table="orders",
+    primary_key="order_id",
+    dimensions=[
+        Dimension(name="status", type="categorical"),
+        Dimension(name="order_date", type="time", granularity="day"),
+    ],
+    metrics=[
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="order_count", agg="count"),
+    ]
+)
+```
+</details>
 
-result = layer.sql("""
-    select revenue, status
-    from orders
-    where status = 'completed'
-""")
+Query via CLI:
+```bash
+sidemantic query "SELECT revenue, status FROM orders" --db data.duckdb
+```
 
-rows = result.fetchall()
+Or Python API:
+```python
+from sidemantic import SemanticLayer, load_from_directory
+
+layer = SemanticLayer(connection="duckdb:///data.duckdb")
+load_from_directory(layer, "models/")
+result = layer.sql("SELECT revenue, status FROM orders")
+```
+
+## CLI
+
+```bash
+# Query
+sidemantic query "SELECT revenue FROM orders" --db data.duckdb
+
+# Interactive workbench (TUI with SQL editor + charts)
+sidemantic workbench models/ --db data.duckdb
+
+# PostgreSQL server (connect Tableau, DBeaver, etc.)
+sidemantic serve models/ --port 5433
+
+# Validate definitions
+sidemantic validate models/
+
+# Model info
+sidemantic info models/
+
+# Pre-aggregation recommendations
+sidemantic preagg recommend --db data.duckdb
+
+# Migrate SQL queries to semantic layer
+sidemantic migrator --queries legacy/ --generate-models output/
 ```
 
 ## Demos
 
-Run examples directly with `uv run` (no install required):
-
 ```bash
-# SQL syntax demo - define models in Python, query with familiar SQL
+# Interactive workbench with demo data
+uvx sidemantic workbench --demo
+
+# PostgreSQL server with demo data
+uvx sidemantic serve --demo --port 5433
+```
+
+Runnable scripts:
+```bash
 uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/sql/sql_syntax_example.py
-
-# Comprehensive demo - metrics, joins, SQL rewriting, views
 uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/advanced/comprehensive_demo.py
-
-# Symmetric aggregates - prevent double-counting in fan-out joins
 uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/features/symmetric_aggregates_example.py
 ```
 
@@ -81,56 +154,33 @@ Notebooks:
 - Jinja2 templating for dynamic SQL
 - PostgreSQL wire protocol server for BI tools
 
-## Formats and Databases
+## Multi-Format Support
 
-### Formats
-Import from:
-Sidemantic (native), Cube, MetricFlow (dbt), LookML (Looker), Hex, Rill, Superset (Apache), Omni, BSL (Boring Semantic Layer).
-
-Adapter compatibility details: https://sidemantic.com
-
-### Databases
-
-| Database | Status | Installation |
-|----------|:------:|--------------|
-| DuckDB | ✅ | built-in |
-| MotherDuck | ✅ | built-in |
-| PostgreSQL | ✅ | `pip install sidemantic[postgres]` |
-| BigQuery | ✅ | `pip install sidemantic[bigquery]` |
-| Snowflake | ✅ | `pip install sidemantic[snowflake]` |
-| ClickHouse | ✅ | `pip install sidemantic[clickhouse]` |
-| Databricks | ✅ | `pip install sidemantic[databricks]` |
-| Spark SQL | ✅ | `pip install sidemantic[spark]` |
-
-## CLI
+Auto-detects: Sidemantic (SQL/YAML), Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL
 
 ```bash
-# Interactive workbench
-uvx sidemantic workbench --demo
-
-# Run a query
-sidemantic query semantic_models/ --sql "select orders.revenue from orders"
-
-# PostgreSQL wire protocol server
-sidemantic serve semantic_models/ --port 5433
-
-# Validate definitions
-sidemantic validate semantic_models/
+sidemantic query "SELECT revenue FROM orders" --models ./my_models
 ```
-
-## Load From Multiple Formats
 
 ```python
 from sidemantic import SemanticLayer, load_from_directory
 
 layer = SemanticLayer(connection="duckdb:///data.duckdb")
-load_from_directory(layer, "semantic_models/")
-
-result = layer.query(
-    metrics=["orders.revenue"],
-    dimensions=["customers.region"]
-)
+load_from_directory(layer, "my_models/")  # Auto-detects formats
 ```
+
+## Databases
+
+| Database | Status | Installation |
+|----------|:------:|--------------|
+| DuckDB | ✅ | built-in |
+| MotherDuck | ✅ | built-in |
+| PostgreSQL | ✅ | `uv add sidemantic[postgres]` |
+| BigQuery | ✅ | `uv add sidemantic[bigquery]` |
+| Snowflake | ✅ | `uv add sidemantic[snowflake]` |
+| ClickHouse | ✅ | `uv add sidemantic[clickhouse]` |
+| Databricks | ✅ | `uv add sidemantic[databricks]` |
+| Spark SQL | ✅ | `uv add sidemantic[spark]` |
 
 ## Examples
 

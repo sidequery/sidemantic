@@ -261,6 +261,14 @@ def main():
     results = conn.execute("SELECT * FROM revenue_summary ORDER BY status").fetchall()
     print_results(results, "Querying the view")
 
+    # Create a promotions table to demonstrate joining views with regular tables
+    conn.execute("""
+        CREATE TABLE promotions AS
+        SELECT 'completed' AS status, 'Holiday Sale' AS promo_name
+        UNION ALL
+        SELECT 'pending', 'New Customer Discount'
+    """)
+
     # Join against the view
     join_sql = """
         SELECT

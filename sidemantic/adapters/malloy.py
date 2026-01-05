@@ -871,11 +871,17 @@ class MalloyAdapter(BaseAdapter):
                 if dim.description:
                     lines.append(f"    # desc: {dim.description}")
                 # For time dimensions with granularity, use Malloy's time truncation syntax
+                # But only if the SQL doesn't already contain a truncation function
                 if dim.type == "time" and dim.granularity:
-                    # Map sidemantic granularity to Malloy time accessor
-                    # Malloy uses: .second, .minute, .hour, .day, .week, .month, .quarter, .year
-                    malloy_granularity = dim.granularity
-                    lines.append(f"    {dim.name} is {sql}.{malloy_granularity}")
+                    sql_lower = sql.lower()
+                    already_has_truncation = (
+                        "date_trunc" in sql_lower or "::date" in sql_lower or sql_lower.endswith(f".{dim.granularity}")
+                    )
+                    if not already_has_truncation:
+                        # Append Malloy time accessor: .second, .minute, .hour, .day, .week, .month, .quarter, .year
+                        lines.append(f"    {dim.name} is {sql}.{dim.granularity}")
+                    else:
+                        lines.append(f"    {dim.name} is {sql}")
                 else:
                     lines.append(f"    {dim.name} is {sql}")
 

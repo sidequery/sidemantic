@@ -65,6 +65,20 @@
           "description": "Display label",
           "title": "Label"
         },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Adapter-specific metadata payload",
+          "title": "Metadata"
+        },
         "name": {
           "description": "Unique dimension name within model",
           "title": "Name",
@@ -442,6 +456,20 @@
           "default": null,
           "description": "Display label",
           "title": "Label"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Adapter-specific metadata payload",
+          "title": "Metadata"
         },
         "name": {
           "description": "Unique measure name",
@@ -925,6 +953,20 @@
           "description": "Foreign key column (defaults to {name}_id for many_to_one)",
           "title": "Foreign Key"
         },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Adapter-specific metadata payload",
+          "title": "Metadata"
+        },
         "name": {
           "description": "Name of the related model",
           "title": "Name",
@@ -1273,6 +1315,20 @@
             "description": "Display label",
             "title": "Label"
           },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Adapter-specific metadata payload",
+            "title": "Metadata"
+          },
           "name": {
             "description": "Unique measure name",
             "title": "Name",
@@ -1505,6 +1561,20 @@
                 "default": null,
                 "description": "Display label",
                 "title": "Label"
+              },
+              "metadata": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Adapter-specific metadata payload",
+                "title": "Metadata"
               },
               "name": {
                 "description": "Unique dimension name within model",
@@ -1883,6 +1953,20 @@
                 "default": null,
                 "description": "Display label",
                 "title": "Label"
+              },
+              "metadata": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Adapter-specific metadata payload",
+                "title": "Metadata"
               },
               "name": {
                 "description": "Unique measure name",
@@ -2287,6 +2371,20 @@
                 "description": "Foreign key column (defaults to {name}_id for many_to_one)",
                 "title": "Foreign Key"
               },
+              "metadata": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Adapter-specific metadata payload",
+                "title": "Metadata"
+              },
               "name": {
                 "description": "Name of the related model",
                 "title": "Name",
@@ -2434,6 +2532,20 @@
             "default": null,
             "description": "Parent model to inherit from",
             "title": "Extends"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Adapter-specific metadata payload",
+            "title": "Metadata"
           },
           "metrics": {
             "description": "Measure definitions",

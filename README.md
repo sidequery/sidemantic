@@ -80,9 +80,10 @@ sidemantic query "SELECT revenue, status FROM orders" --db data.duckdb
 
 Or Python API:
 ```python
-from sidemantic import SemanticLayer
+from sidemantic import SemanticLayer, load_from_directory
 
-layer = SemanticLayer.from_directory("models/", connection="duckdb:///data.duckdb")
+layer = SemanticLayer(connection="duckdb:///data.duckdb")
+load_from_directory(layer, "models/")
 result = layer.sql("SELECT revenue, status FROM orders")
 ```
 

@@ -2,15 +2,7 @@
 
 This demo converts LookML files into Malloy format and generates sample data for interactive exploration.
 
-## Try it in your browser
-
-Press `.` on this repo (or go to [github.dev](https://github.dev/sidequery/sidemantic)) to open in the web editor, then:
-
-1. Install the [Malloy VS Code extension](https://marketplace.visualstudio.com/items?itemName=malloydata.malloy-vscode)
-2. Open `examples/malloy_demo/malloy_output/thelook.malloy`
-3. Click "Run" on any query
-
-## Quick start (local)
+## Quick start
 
 ```bash
 git clone https://github.com/sidequery/sidemantic && cd sidemantic
@@ -41,9 +33,9 @@ malloy_demo/
 │   ├── products.lkml
 │   ├── customers.lkml
 │   └── orders.lkml
-└── malloy_output/       # Generated (gitignored)
+└── malloy_output/       # Generated
     ├── thelook.malloy   # Converted Malloy model with sample queries
-    └── data/*.parquet   # Sample data
+    └── data/*.parquet   # Sample data (gitignored, regenerate with run_demo.py)
 ```
 
 ## Generated Malloy features

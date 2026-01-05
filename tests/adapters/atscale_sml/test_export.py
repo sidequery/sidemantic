@@ -88,6 +88,35 @@ class TestAtScaleSMLExport:
         assert "relationships" in model_def
         assert model_def["relationships"][0]["to"]["dimension"] == "customers"
 
+    def test_export_relationship_level_uses_dimension(self, tmp_path):
+        orders = Model(
+            name="orders",
+            table="public.orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="order_id", type="numeric", sql="order_id")],
+            relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+        )
+
+        customers = Model(
+            name="customers",
+            table="public.customers",
+            primary_key="id",
+            dimensions=[Dimension(name="customer_id", type="numeric", sql="customer_id")],
+        )
+
+        graph = SemanticGraph()
+        graph.add_model(orders)
+        graph.add_model(customers)
+
+        adapter = AtScaleSMLAdapter()
+        adapter.export(graph, tmp_path)
+
+        with open(tmp_path / "models" / "orders.yml") as f:
+            model_def = yaml.safe_load(f)
+
+        level = model_def["relationships"][0]["to"]["level"]
+        assert level == "customer_id"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

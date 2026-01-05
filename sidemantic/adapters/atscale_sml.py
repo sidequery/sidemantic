@@ -1245,6 +1245,25 @@ class AtScaleSMLAdapter(BaseAdapter):
             "expression": metric.sql or metric.name,
         }
 
+    def _resolve_relationship_level(self, related_model: Model | None, rel: Relationship, join_column: str) -> str:
+        if not related_model:
+            return rel.primary_key or "id"
+
+        candidates = [rel.primary_key, related_model.primary_key, join_column]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            for dimension in related_model.dimensions:
+                if dimension.name == candidate:
+                    return dimension.name
+                if dimension.sql == candidate:
+                    return dimension.name
+
+        if related_model.dimensions:
+            return related_model.dimensions[0].name
+
+        return rel.primary_key or related_model.primary_key or "id"
+
     def _export_model(self, model: Model, models: dict[str, Model]) -> dict[str, Any]:
         model_def: dict[str, Any] = {
             "unique_name": model.name,
@@ -1257,13 +1276,13 @@ class AtScaleSMLAdapter(BaseAdapter):
             for rel in model.relationships:
                 join_column = rel.foreign_key or f"{rel.name}_id"
                 related_model = models.get(rel.name)
-                related_key = rel.primary_key or (related_model.primary_key if related_model else "id")
+                related_level = self._resolve_relationship_level(related_model, rel, join_column)
 
                 relationships.append(
                     {
                         "unique_name": f"{model.name}_{rel.name}",
                         "from": {"dataset": model.name, "join_columns": [join_column]},
-                        "to": {"dimension": rel.name, "level": related_key},
+                        "to": {"dimension": rel.name, "level": related_level},
                         "type": rel.type,
                     }
                 )

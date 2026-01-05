@@ -556,11 +556,10 @@ class MalloyModelVisitor(MalloyParserVisitor):
         # Determine metric type
         metric_type = None
         if agg is None and sql:
-            # Check if it's a ratio or derived
-            if "/" in sql and not any(agg in sql.lower() for agg in ["sum(", "count(", "avg("]):
-                metric_type = "ratio"
-            else:
-                metric_type = "derived"
+            # All non-aggregation expressions are derived metrics
+            # Ratio type requires numerator/denominator metric references which we can't
+            # reliably extract from arbitrary Malloy expressions
+            metric_type = "derived"
 
         self.current_metrics.append(
             Metric(

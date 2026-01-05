@@ -9,7 +9,6 @@ from sidemantic import SemanticLayer
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 from sidemantic.loaders import load_from_directory
 
-
 # =============================================================================
 # BASIC PARSING TESTS
 # =============================================================================

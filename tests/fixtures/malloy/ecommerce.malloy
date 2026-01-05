@@ -1,0 +1,68 @@
+// E-commerce example with multiple models
+source: orders is duckdb.table('orders.parquet') extend {
+  primary_key: order_id
+
+  dimension:
+    order_id is order_id
+    status is status
+    created_at is created_at
+    order_date is DATE_TRUNC('day', created_at)
+    order_month is DATE_TRUNC('month', created_at)
+
+  measure:
+    order_count is count()
+    revenue is sum(amount)
+    avg_order_value is avg(amount)
+    completed_orders is count() { where: status = 'completed' }
+
+  join_one: customers with customer_id
+  join_many: order_items on order_items.order_id = order_id
+}
+
+source: customers is duckdb.table('customers.parquet') extend {
+  primary_key: customer_id
+
+  dimension:
+    customer_id is customer_id
+    email is email
+    name is name
+    region is region
+    signup_date is created_at::date
+    is_premium is tier = 'premium'
+
+  measure:
+    customer_count is count()
+    unique_customers is count_distinct(customer_id)
+}
+
+source: order_items is duckdb.table('order_items.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    order_id is order_id
+    product_id is product_id
+    quantity is quantity
+    unit_price is unit_price
+
+  measure:
+    item_count is count()
+    total_quantity is sum(quantity)
+    line_total is sum(quantity * unit_price)
+
+  join_one: products with product_id
+}
+
+source: products is duckdb.table('products.parquet') extend {
+  primary_key: product_id
+
+  dimension:
+    product_id is product_id
+    name is name
+    category is category
+    price is price
+
+  measure:
+    product_count is count()
+    avg_price is avg(price)
+}

@@ -1,0 +1,166 @@
+// SaaS Metrics Domain Model
+// Tests subscription/event-based models with derived metrics
+
+source: users is duckdb.table('users.parquet') extend {
+  primary_key: user_id
+
+  dimension:
+    user_id is user_id
+    email is email
+    name is name
+    company_id is company_id
+    role is role
+    is_admin is role = 'admin'
+    created_at is created_at
+    created_date is created_at::date
+    created_month is DATE_TRUNC('month', created_at)
+    last_login_at is last_login_at
+    days_since_login is DATEDIFF('day', last_login_at, CURRENT_DATE)
+    is_active is days_since_login < 30
+    is_churned is days_since_login >= 90
+    user_status is
+      pick 'Active' when days_since_login < 30
+      pick 'At Risk' when days_since_login < 60
+      pick 'Dormant' when days_since_login < 90
+      else 'Churned'
+
+  measure:
+    user_count is count()
+    unique_users is count_distinct(user_id)
+    active_users is count() { where: days_since_login < 30 }
+    churned_users is count() { where: days_since_login >= 90 }
+    admin_count is count() { where: role = 'admin' }
+}
+
+source: companies is duckdb.table('companies.parquet') extend {
+  primary_key: company_id
+
+  dimension:
+    company_id is company_id
+    name is name
+    industry is industry
+    employee_count is employee_count
+    company_size is
+      pick 'Enterprise' when employee_count >= 1000
+      pick 'Mid-Market' when employee_count >= 100
+      pick 'SMB' when employee_count >= 10
+      else 'Startup'
+    country is country
+    region is region
+    signed_up_at is signed_up_at
+    signed_up_month is DATE_TRUNC('month', signed_up_at)
+
+  measure:
+    company_count is count()
+    total_employees is sum(employee_count)
+    avg_employee_count is avg(employee_count)
+    enterprise_companies is count() { where: employee_count >= 1000 }
+
+  join_many: users with company_id
+}
+
+source: subscriptions is duckdb.table('subscriptions.parquet') extend {
+  primary_key: subscription_id
+
+  dimension:
+    subscription_id is subscription_id
+    company_id is company_id
+    plan_id is plan_id
+    plan_name is plan_name
+    status is status
+    is_active is status = 'active'
+    is_trial is status = 'trial'
+    billing_cycle is billing_cycle
+    is_annual is billing_cycle = 'annual'
+    mrr is mrr
+    arr is mrr * 12
+    started_at is started_at
+    started_month is DATE_TRUNC('month', started_at)
+    cancelled_at is cancelled_at
+    trial_end_at is trial_end_at
+
+  measure:
+    subscription_count is count()
+    active_subscriptions is count() { where: status = 'active' }
+    trial_subscriptions is count() { where: status = 'trial' }
+    cancelled_subscriptions is count() { where: status = 'cancelled' }
+    total_mrr is sum(mrr)
+    total_arr is sum(mrr * 12)
+    avg_mrr is avg(mrr)
+    annual_subscriptions is count() { where: billing_cycle = 'annual' }
+    monthly_subscriptions is count() { where: billing_cycle = 'monthly' }
+
+  join_one: companies with company_id
+}
+
+source: events is duckdb.table('events.parquet') extend {
+  primary_key: event_id
+
+  dimension:
+    event_id is event_id
+    user_id is user_id
+    event_type is event_type
+    event_name is event_name
+    event_timestamp is event_timestamp
+    event_date is event_timestamp::date
+    event_hour is DATE_TRUNC('hour', event_timestamp)
+    event_day is DATE_TRUNC('day', event_timestamp)
+    event_week is DATE_TRUNC('week', event_timestamp)
+    event_month is DATE_TRUNC('month', event_timestamp)
+    page_url is page_url
+    referrer is referrer
+    device_type is device_type
+    is_mobile is device_type = 'mobile'
+    browser is browser
+    os is os
+    session_id is session_id
+    properties is properties
+
+  measure:
+    event_count is count()
+    unique_sessions is count_distinct(session_id)
+    unique_users is count_distinct(user_id)
+    page_views is count() { where: event_type = 'page_view' }
+    clicks is count() { where: event_type = 'click' }
+    signups is count() { where: event_name = 'signup' }
+    logins is count() { where: event_name = 'login' }
+    mobile_events is count() { where: device_type = 'mobile' }
+    desktop_events is count() { where: device_type = 'desktop' }
+
+  join_one: users with user_id
+}
+
+source: invoices is duckdb.table('invoices.parquet') extend {
+  primary_key: invoice_id
+
+  dimension:
+    invoice_id is invoice_id
+    subscription_id is subscription_id
+    company_id is company_id
+    status is status
+    is_paid is status = 'paid'
+    is_overdue is status = 'overdue'
+    amount is amount
+    tax is tax
+    total is amount + tax
+    invoice_date is invoice_date
+    invoice_month is DATE_TRUNC('month', invoice_date)
+    due_date is due_date
+    paid_at is paid_at
+    days_to_pay is DATEDIFF('day', invoice_date, paid_at)
+    payment_method is payment_method
+
+  measure:
+    invoice_count is count()
+    total_invoiced is sum(total)
+    total_revenue is sum(total) { where: status = 'paid' }
+    outstanding_amount is sum(total) { where: status != 'paid' }
+    overdue_amount is sum(total) { where: status = 'overdue' }
+    avg_invoice_amount is avg(total)
+    avg_days_to_pay is avg(days_to_pay)
+    paid_invoices is count() { where: status = 'paid' }
+    overdue_invoices is count() { where: status = 'overdue' }
+
+  join_one: subscriptions with subscription_id
+  join_one: companies with company_id
+}

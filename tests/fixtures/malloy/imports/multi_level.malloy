@@ -1,0 +1,18 @@
+// Multi-level import: imports orders.malloy which imports base.malloy
+import 'orders.malloy'
+
+source: order_analytics is duckdb.table('order_analytics.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id
+    order_id is order_id
+    metric_name is metric_name
+    metric_value is metric_value
+
+  measure:
+    record_count is count()
+    total_value is sum(metric_value)
+
+  join_one: orders with order_id
+}

@@ -26,6 +26,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.hex import HexAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
+    from sidemantic.adapters.malloy import MalloyAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
@@ -48,6 +49,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
         if suffix == ".lkml":
             adapter = LookMLAdapter()
+        elif suffix == ".malloy":
+            adapter = MalloyAdapter()
         elif suffix == ".sql":
             # Sidemantic SQL files (pure SQL or with YAML frontmatter)
             adapter = SidemanticAdapter()

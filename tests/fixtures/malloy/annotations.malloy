@@ -1,0 +1,46 @@
+// Annotations test fixture
+// In Malloy: # annotations are for tags/metadata on fields
+
+# desc: Customer data from CRM system
+source: customers is duckdb.table('customers.parquet') extend {
+  primary_key: customer_id
+
+  dimension:
+    customer_id is customer_id
+    # desc: Customer email address
+    email is email
+    # desc: Full name of the customer
+    name is name
+    # desc: Geographic region for sales territory
+    region is region
+
+  measure:
+    # desc: Total number of customers
+    customer_count is count()
+    # desc: Number of customers with email addresses
+    customers_with_email is count() { where: email IS NOT NULL }
+}
+
+# desc: Order transactions
+source: orders is duckdb.table('orders.parquet') extend {
+  primary_key: order_id
+
+  dimension:
+    order_id is order_id
+    customer_id is customer_id
+    # desc: Date the order was placed
+    order_date is order_date
+    # desc: Order status (pending, completed, cancelled)
+    status is status
+    total is total
+
+  measure:
+    # desc: Total number of orders
+    order_count is count()
+    # desc: Sum of all order totals
+    total_revenue is sum(total)
+    # desc: Average order value
+    avg_order_value is avg(total)
+
+  join_one: customers with customer_id
+}

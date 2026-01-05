@@ -1,0 +1,49 @@
+// Basic Malloy source with dimensions, measures, and joins
+source: flights is duckdb.table('flights.parquet') extend {
+  primary_key: id
+
+  dimension:
+    carrier is carrier
+    origin is origin
+    destination is destination
+    flight_date is dep_time::date
+    is_delayed is dep_delay > 15
+    distance_tier is
+      pick 'Short' when distance < 500
+      pick 'Medium' when distance < 1000
+      else 'Long'
+
+  measure:
+    flight_count is count()
+    total_distance is sum(distance)
+    avg_delay is avg(dep_delay)
+    delayed_flights is count() { where: dep_delay > 15 }
+
+  join_one: carriers with carrier
+  join_one: origin_airport is airports with origin
+  join_one: dest_airport is airports with destination
+}
+
+source: carriers is duckdb.table('carriers.parquet') extend {
+  primary_key: code
+
+  dimension:
+    code is code
+    name is name
+
+  measure:
+    carrier_count is count()
+}
+
+source: airports is duckdb.table('airports.parquet') extend {
+  primary_key: code
+
+  dimension:
+    code is code
+    city is city
+    state is state
+    country is country
+
+  measure:
+    airport_count is count()
+}

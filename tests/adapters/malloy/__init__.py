@@ -1,0 +1,1 @@
+# Malloy adapter tests

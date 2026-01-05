@@ -1,0 +1,15 @@
+// Named import - only import customers, not products
+import { customers } from 'base.malloy'
+
+source: customer_orders is duckdb.table('orders.parquet') extend {
+  primary_key: order_id
+
+  dimension:
+    order_id is order_id
+    customer_id is customer_id
+
+  measure:
+    order_count is count()
+
+  join_one: customers with customer_id
+}

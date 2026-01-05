@@ -209,8 +209,7 @@ class GoodDataAdapter(BaseAdapter):
                 "description": dataset_def.get("description"),
                 "tags": dataset_def.get("tags"),
                 "data_source_id": dataset_def.get("dataSourceId") or dataset_def.get("data_source_id"),
-                "data_source_table_id": dataset_def.get("dataSourceTableId")
-                or dataset_def.get("data_source_table_id"),
+                "data_source_table_id": dataset_def.get("dataSourceTableId") or dataset_def.get("data_source_table_id"),
                 "table_path": dataset_def.get("tablePath") or dataset_def.get("table_path"),
                 "grain": grain_ids,
                 "extra": self._extract_extra(dataset_def, self._cloud_dataset_keys()),
@@ -383,8 +382,7 @@ class GoodDataAdapter(BaseAdapter):
                 "description": date_def.get("description"),
                 "tags": date_def.get("tags"),
                 "data_source_id": date_def.get("dataSourceId") or date_def.get("data_source_id"),
-                "data_source_table_id": date_def.get("dataSourceTableId")
-                or date_def.get("data_source_table_id"),
+                "data_source_table_id": date_def.get("dataSourceTableId") or date_def.get("data_source_table_id"),
                 "table_path": date_def.get("tablePath") or date_def.get("table_path"),
                 "granularities": granularities,
                 "granularitiesFormatting": date_def.get("granularitiesFormatting")

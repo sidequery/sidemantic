@@ -114,32 +114,17 @@ sidemantic migrator --queries legacy/ --generate-models output/
 
 ## Demos
 
-```bash
-# Interactive workbench with demo data
-uvx sidemantic workbench --demo
-
-# PostgreSQL server with demo data
-uvx sidemantic serve --demo --port 5433
-```
-
-Runnable scripts:
-```bash
-uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/sql/sql_syntax_example.py
-uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/advanced/comprehensive_demo.py
-uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/features/symmetric_aggregates_example.py
-```
-
-Rill integration (requires Docker):
-```bash
-git clone https://github.com/sidequery/sidemantic && cd sidemantic
-uv run examples/rill_demo/run_demo.py
-```
-
-Notebooks:
-| Demo | Open in Colab |
-|---|---|
-| SQL model definitions + DuckDB | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/notebooks/sidemantic_sql_duckdb_demo.ipynb) |
-| LookML multi-entity + DuckDB + chart | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/notebooks/lookml_multi_entity_duckdb_demo.ipynb) |
+| Demo | Command |
+|------|---------|
+| Interactive workbench | `uvx sidemantic workbench --demo` |
+| PostgreSQL server | `uvx sidemantic serve --demo --port 5433` |
+| SQL syntax example | `uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/sql/sql_syntax_example.py` |
+| Comprehensive demo | `uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/advanced/comprehensive_demo.py` |
+| Symmetric aggregates | `uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/features/symmetric_aggregates_example.py` |
+| Rill Developer (Docker) | `git clone ... && uv run examples/rill_demo/run_demo.py` |
+| Cube Playground (Docker) | `git clone ... && uv run examples/cube_demo/run_demo.py` |
+| SQL + DuckDB notebook | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/notebooks/sidemantic_sql_duckdb_demo.ipynb) |
+| LookML multi-entity notebook | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/notebooks/lookml_multi_entity_duckdb_demo.ipynb) |
 
 ## Core Features
 

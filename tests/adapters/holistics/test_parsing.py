@@ -377,7 +377,8 @@ Dataset sample {
         from: r(orphan.parent_id)
         to: r(parent.id)
       }
-    }
+    },
+    rel(extra_child.parent_id > parent.id, true)
   ]
 }
 
@@ -396,6 +397,12 @@ Model child {
 Model orphan {
   type: 'table'
   table_name: 'orphan'
+  dimension parent_id { type: 'number' }
+}
+
+Model extra_child {
+  type: 'table'
+  table_name: 'extra_child'
   dimension parent_id { type: 'number' }
 }
 """
@@ -422,6 +429,10 @@ Model orphan {
         assert rel_to_parent.foreign_key == "parent_id"
 
         assert all(r.name != "parent" for r in orphan.relationships)
+
+        extra_child = graph.models["extra_child"]
+        extra_rel = next(r for r in extra_child.relationships if r.name == "parent")
+        assert extra_rel.type == "many_to_one"
     finally:
         temp_path.unlink()
 

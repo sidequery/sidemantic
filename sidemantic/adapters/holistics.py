@@ -1264,6 +1264,8 @@ def _parse_relationship_function(
     if func_name == "rel":
         rel_expr = None
         active = _extract_active_flag(func.args)
+        if func.args and not isinstance(func.args[0], NamedArg):
+            rel_expr = func.args[0]
         for arg in func.args:
             if isinstance(arg, NamedArg) and arg.name == "rel_expr":
                 rel_expr = arg.value
@@ -1824,8 +1826,6 @@ def _export_measure(metric: Metric, primary_key: str) -> list[str]:
         aggregation_type = _map_agg_to_aml(metric.agg)
         if metric.sql:
             definition = metric.sql
-        elif metric.agg == "count":
-            definition = primary_key
     elif metric.sql:
         aggregation_type = "custom"
         definition = metric.sql

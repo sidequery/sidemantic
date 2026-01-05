@@ -851,13 +851,12 @@ class MalloyAdapter(BaseAdapter):
             lines.append(f"  primary_key: {model.primary_key}")
 
         # Dimensions
-        # Only include dimensions that are calculated (sql != name)
-        # Columns that match their name are automatically available in Malloy
-        calculated_dims = [dim for dim in model.dimensions if self._strip_model_prefix(dim.sql or dim.name) != dim.name]
-        if calculated_dims:
+        # Skip dimensions that match the primary key (Malloy auto-exposes the PK column)
+        dims_to_export = [dim for dim in model.dimensions if dim.name != model.primary_key]
+        if dims_to_export:
             lines.append("")
             lines.append("  dimension:")
-            for dim in calculated_dims:
+            for dim in dims_to_export:
                 if dim.description:
                     lines.append(f"    # desc: {dim.description}")
                 sql = self._strip_model_prefix(dim.sql or dim.name)

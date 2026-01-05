@@ -4,7 +4,7 @@
 This demo:
 1. Loads a sidemantic YAML definition
 2. Exports to a complete Rill project (sources, models, metrics_views)
-3. Runs Rill Developer in Docker to visualize the dashboard
+3. Builds and runs Rill Developer in Docker
 
 Prerequisites:
 - Docker installed and running
@@ -22,6 +22,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+IMAGE_NAME = "sidemantic-rill-demo"
+
 
 def main():
     demo_dir = Path(__file__).parent
@@ -33,7 +35,7 @@ def main():
     print("=" * 60)
 
     # Step 1: Load sidemantic YAML
-    print("\n[1/4] Loading sidemantic.yaml...")
+    print("\n[1/5] Loading sidemantic.yaml...")
     from sidemantic.adapters.sidemantic import SidemanticAdapter
 
     adapter = SidemanticAdapter()
@@ -43,7 +45,7 @@ def main():
         print(f"      - {model_name}: {len(model.dimensions)} dimensions, {len(model.metrics)} metrics")
 
     # Step 2: Export to Rill
-    print("\n[2/4] Exporting to Rill project...")
+    print("\n[2/5] Exporting to Rill project...")
     from sidemantic.adapters.rill import RillAdapter
 
     # Clean previous output
@@ -61,7 +63,7 @@ def main():
             print(f"      - {rel_path}")
 
     # Step 3: Check Docker
-    print("\n[3/4] Checking Docker...")
+    print("\n[3/5] Checking Docker...")
     try:
         result = subprocess.run(
             ["docker", "info"],
@@ -80,9 +82,20 @@ def main():
         print("      ERROR: Docker timed out. Please ensure Docker is running.")
         sys.exit(1)
 
-    # Step 4: Run Rill in Docker (fresh install via rill.sh)
-    print("\n[4/4] Starting Rill Developer in Docker...")
-    print("      Installing latest Rill in container...")
+    # Step 4: Build Docker image
+    print(f"\n[4/5] Building Docker image '{IMAGE_NAME}'...")
+    result = subprocess.run(
+        ["docker", "build", "-t", IMAGE_NAME, str(demo_dir)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"      ERROR: Failed to build Docker image:\n{result.stderr}")
+        sys.exit(1)
+    print("      Image built successfully")
+
+    # Step 5: Run Rill in Docker
+    print("\n[5/5] Starting Rill Developer in Docker...")
     print("      Port: http://localhost:9009")
     print()
     print("=" * 60)
@@ -91,31 +104,17 @@ def main():
     print("=" * 60)
     print()
 
-    # Use Ubuntu container, install Rill fresh, then run it
-    # This ensures we get the latest version instead of stale Docker Hub image
     try:
         subprocess.run(
             [
                 "docker",
                 "run",
                 "--rm",
-                "-it",
                 "-p",
                 "9009:9009",
                 "-v",
                 f"{rill_project_dir.absolute()}:/project",
-                "-w",
-                "/project",
-                "ubuntu:22.04",
-                "bash",
-                "-c",
-                "apt-get update -qq && apt-get install -qq -y curl unzip git > /dev/null 2>&1 && "
-                "ARCH=$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/') && "
-                "VERSION=$(curl -sL https://cdn.rilldata.com/rill/latest.txt) && "
-                "curl -sL https://cdn.rilldata.com/rill/${VERSION}/rill_linux_${ARCH}.zip -o /tmp/rill.zip && "
-                "unzip -q /tmp/rill.zip -d /usr/local/bin && "
-                "chmod +x /usr/local/bin/rill && "
-                "rill start --no-open",
+                IMAGE_NAME,
             ],
         )
     except KeyboardInterrupt:

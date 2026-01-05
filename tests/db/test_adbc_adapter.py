@@ -379,3 +379,21 @@ def test_adbc_url_parsing():
     assert params["account"][0] == "myaccount"
     assert params["database"][0] == "mydb"
     assert params["warehouse"][0] == "mywh"
+
+
+def test_adbc_url_path_based_uri():
+    """Test adbc:// URL with URI as path (adbc://driver/uri format)."""
+    from sidemantic.db.adbc import ADBCAdapter
+
+    # Test path-based URI with SQLite
+    adapter = ADBCAdapter.from_url("adbc://sqlite/:memory:")
+    assert adapter.dialect == "sqlite"
+    result = adapter.execute("SELECT 99 as value")
+    assert result.fetchone()[0] == 99
+    adapter.close()
+
+    # Verify the format works for connection
+    driver_for_url = "sqlite" if SQLITE_DRIVER_NAME == "sqlite" else SQLITE_DRIVER_NAME
+    adapter2 = ADBCAdapter.from_url(f"adbc://{driver_for_url}/:memory:")
+    assert adapter2.dialect == "sqlite"
+    adapter2.close()

@@ -310,11 +310,13 @@ class ADBCAdapter(BaseDatabaseAdapter):
 
         1. adbc:// scheme (recommended for YAML configs):
            - adbc://driver_name - for drivers that don't need a URI
-           - adbc://driver_name?uri=<uri> - with database URI as query param
+           - adbc://driver_name/connection_uri - with URI as path
+           - adbc://driver_name?uri=<uri> - with URI as query param
            - adbc://driver_name?param1=value1&param2=value2 - with db_kwargs
 
            Examples:
            - adbc://sqlite
+           - adbc://postgresql/postgresql://localhost/mydb
            - adbc://postgresql?uri=postgresql://localhost/mydb
            - adbc://snowflake?account=myaccount&database=mydb
 
@@ -345,8 +347,14 @@ class ADBCAdapter(BaseDatabaseAdapter):
             # Parse query parameters
             params = parse_qs(parsed.query)
 
-            # Extract uri if provided
+            # Extract uri: prefer query param, then fall back to path
+            # Supports both: adbc://driver?uri=... and adbc://driver/uri
             uri = params.pop("uri", [None])[0]
+            if uri is None and parsed.path:
+                # Path after driver name becomes URI (e.g., adbc://postgresql/postgresql://host/db)
+                path_uri = parsed.path.lstrip("/")
+                if path_uri:
+                    uri = path_uri
 
             # SQLite defaults to :memory: if no uri specified
             if driver == "sqlite" and uri is None:

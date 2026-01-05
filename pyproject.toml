@@ -6,6 +6,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
+    "antlr4-python3-runtime>=4.13.2",
     "sqlglot>=25.0.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
@@ -110,6 +111,7 @@ line-length = 120
 target-version = "py311"
 exclude = [
     "sidemantic/adapters/malloy_grammar",  # ANTLR-generated files
+    "sidemantic/adapters/holistics_grammar",  # ANTLR-generated files
 ]
 
 [tool.ruff.lint]

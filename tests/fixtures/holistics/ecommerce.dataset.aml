@@ -1,0 +1,17 @@
+Dataset ecommerce {
+  models: [users, orders, accounts]
+
+  relationships: [
+    RelationshipConfig {
+      active: true
+      rel: Relationship {
+        type: 'many_to_one'
+        from: r(orders.user_id)
+        to: r(users.id)
+      }
+    },
+    relationship(users_accounts, true),
+    rel(rel_expr: users.id - accounts.user_id, active: true),
+    rel(rel_expr: orders.user_id > users.id, active: false)
+  ]
+}

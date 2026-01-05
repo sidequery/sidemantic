@@ -1,0 +1,140 @@
+Model kitchen_orders {
+  type: 'table'
+  label: 'Kitchen Orders'
+  description: 'Orders table for kitchen sink'
+  owner: 'data@company.com'
+  data_source_name: 'demo'
+  table_name: 'public.orders'
+
+  dimension order_id {
+    label: order_label
+    type: 'number'
+    primary_key: true
+    format: '#,##0'
+    definition: @sql {{ #SOURCE.order_id }};;
+  }
+
+  dimension customer_id {
+    type: 'number'
+    definition: @sql {{ #SOURCE.customer_id }};;
+  }
+
+  dimension product_id {
+    type: 'number'
+    definition: @sql {{ #SOURCE.product_id }};;
+  }
+
+  dimension status {
+    type: 'text'
+  }
+
+  dimension is_priority {
+    type: 'truefalse'
+    hidden: true
+  }
+
+  dimension order_date {
+    type: 'date'
+    definition: @sql {{ order_date }};;
+  }
+
+  dimension created_at {
+    type: 'datetime'
+    definition: @sql {{ created_at }};;
+  }
+
+  dimension net_amount {
+    type: 'number'
+    definition: net_amount_sql
+  }
+
+  measure order_count {
+    type: 'number'
+    definition: @sql {{ order_id }};;
+    aggregation_type: 'count'
+  }
+
+  measure order_count_aql {
+    type: 'number'
+    definition: @aql order_id | count();;
+    aggregation_type: 'custom'
+  }
+
+  measure distinct_customers {
+    type: 'number'
+    definition: @sql {{ customer_id }};;
+    aggregation_type: 'count distinct'
+  }
+
+  measure revenue_sum {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'sum'
+  }
+
+  measure revenue_avg {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'avg'
+  }
+
+  measure revenue_min {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'min'
+  }
+
+  measure revenue_max {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'max'
+  }
+
+  measure revenue_median {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'median'
+  }
+
+  measure revenue_stdev {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'stdev'
+  }
+
+  measure revenue_stdevp {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'stdevp'
+  }
+
+  measure revenue_var {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'var'
+  }
+
+  measure revenue_varp {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'varp'
+  }
+
+  measure aov {
+    type: 'number'
+    definition: @sql {{ revenue_sum }} / NULLIF({{ order_count }}, 0);;
+    aggregation_type: 'custom'
+    format: money_format
+  }
+
+  measure revenue_per_order_aql {
+    type: 'number'
+    definition: @aql sum(amount) / count(order_id);;
+    aggregation_type: 'custom'
+  }
+
+  dimension today {
+    type: 'date'
+    definition: @aql @today;;
+  }
+}

@@ -1,0 +1,118 @@
+# desc: Product catalog
+source: products is duckdb.table('data/products.parquet') extend {
+
+  dimension:
+    name is name
+    category is category
+    subcategory is subcategory
+    price is price
+
+  measure:
+    # desc: Number of products
+    product_count is count()
+    # desc: Average product price
+    avg_price is avg(price)
+}
+
+# desc: Customer master data
+source: customers is duckdb.table('data/customers.parquet') extend {
+
+  dimension:
+    name is name
+    email is email
+    region is region
+    tier is tier
+
+  measure:
+    # desc: Total number of customers
+    customer_count is count()
+}
+
+# desc: Customer orders with status and revenue tracking (LookML format)
+source: orders is duckdb.table('data/orders.parquet') extend {
+
+  dimension:
+    customer_id is customer_id
+    product_id is product_id
+    quantity is quantity
+    amount is amount
+    status is status
+    created_time is created_at
+    created_date is created_at
+    created_week is created_at
+    created_month is created_at
+    created_year is created_at
+
+  measure:
+    # desc: Total number of orders
+    order_count is count()
+    # desc: Total revenue from all orders
+    total_revenue is sum(amount)
+    # desc: Revenue from completed orders only
+    completed_revenue is sum(amount) { where: status = 'completed' }
+    # desc: Average order value
+    avg_order_value is avg(amount)
+    total_quantity is sum(quantity)
+}
+
+// ============================================================
+// Sample Queries - Click "Run" above any query to execute
+// ============================================================
+
+// Orders by status
+run: orders -> {
+  group_by: status
+  aggregate: order_count
+}
+
+// Revenue by month
+# bar_chart
+run: orders -> {
+  group_by: created_month
+  aggregate: total_revenue
+}
+
+// Top 10 orders by revenue
+run: orders -> {
+  group_by: id, status
+  aggregate: total_revenue
+  order_by: total_revenue desc
+  limit: 10
+}
+
+// Customers by region
+# bar_chart
+run: customers -> {
+  group_by: region
+  aggregate: customer_count
+}
+
+// Products by category
+# bar_chart
+run: products -> {
+  group_by: category
+  aggregate: product_count
+}
+
+// ============================================================
+// Dashboard Example - Shows multiple visualizations together
+// ============================================================
+
+# dashboard
+run: orders -> {
+  aggregate:
+    order_count
+    total_revenue
+
+  # bar_chart
+  nest: by_status is {
+    group_by: status
+    aggregate: order_count
+  }
+
+  # bar_chart
+  nest: by_month is {
+    group_by: created_month
+    aggregate: total_revenue
+  }
+}

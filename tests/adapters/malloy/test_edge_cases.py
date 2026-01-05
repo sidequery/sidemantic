@@ -196,8 +196,11 @@ class TestExportRoundtrip:
                 model1 = graph1.get_model(model_name)
                 model2 = graph2.get_model(model_name)
 
-                # Compare dimension count
-                assert len(model2.dimensions) == len(model1.dimensions), f"Dimension count mismatch for {model_name}"
+                # Compare dimension count (excluding primary key dimensions which are skipped in export)
+                # Malloy auto-exposes the primary key column, so we don't export `id is id` patterns
+                dims1_excl_pk = [d for d in model1.dimensions if d.name != model1.primary_key]
+                dims2_excl_pk = [d for d in model2.dimensions if d.name != model2.primary_key]
+                assert len(dims2_excl_pk) == len(dims1_excl_pk), f"Dimension count mismatch for {model_name}"
 
                 # Compare metric count
                 assert len(model2.metrics) == len(model1.metrics), f"Metric count mismatch for {model_name}"

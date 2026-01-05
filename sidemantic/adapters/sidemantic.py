@@ -224,7 +224,7 @@ class SidemanticAdapter(BaseAdapter):
         for dim_def in model_def.get("dimensions") or []:
             dimension = Dimension(
                 name=dim_def.get("name"),
-                type=dim_def.get("type"),
+                type=dim_def.get("type", "categorical"),  # Default to categorical
                 sql=dim_def.get("sql"),
                 granularity=dim_def.get("granularity"),
                 description=dim_def.get("description"),
@@ -311,6 +311,7 @@ class SidemanticAdapter(BaseAdapter):
             name=name,
             table=model_def.get("table"),
             sql=model_def.get("sql"),
+            source_uri=model_def.get("source_uri"),
             description=model_def.get("description"),
             primary_key=model_def.get("primary_key", "id"),
             relationships=joins,
@@ -364,6 +365,8 @@ class SidemanticAdapter(BaseAdapter):
             result["table"] = model.table
         if model.sql:
             result["sql"] = model.sql
+        if model.source_uri:
+            result["source_uri"] = model.source_uri
         if model.description:
             result["description"] = model.description
 

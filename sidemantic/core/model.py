@@ -21,6 +21,7 @@ class Model(BaseModel):
     name: str = Field(..., description="Unique model name")
     table: str | None = Field(None, description="Physical table name (schema.table)")
     sql: str | None = Field(None, description="SQL expression for derived tables")
+    source_uri: str | None = Field(None, description="Remote data source URI (e.g., https://, s3://, gs://)")
     description: str | None = Field(None, description="Human-readable description")
     extends: str | None = Field(None, description="Parent model to inherit from")
 

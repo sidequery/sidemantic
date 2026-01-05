@@ -285,14 +285,28 @@ class RillAdapter:
 
         return format_mapping.get(value_format, None)
 
-    def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
-        """Export a SemanticGraph to Rill metrics view YAML files.
+    def export(
+        self,
+        graph: SemanticGraph,
+        output_path: str | Path,
+        project_name: str | None = None,
+        full_project: bool = False,
+    ) -> None:
+        """Export a SemanticGraph to Rill YAML files.
 
-        Creates one metrics view YAML file per model.
+        By default, generates only metrics_view YAML files (one per model).
+        Set full_project=True to generate a complete Rill project including:
+        - rill.yaml (project config)
+        - sources/*.yaml (for models with source_uri)
+        - models/*.sql (passthrough SQL)
+        - metrics_views/*.yaml (metrics and dimensions)
 
         Args:
             graph: The semantic graph to export
-            output_path: Directory to write the YAML files to
+            output_path: Directory to write the Rill files to
+            project_name: Optional project name for rill.yaml (only used with full_project=True)
+            full_project: If True, generate full project structure. If False (default),
+                         only generate metrics_view files directly in output_path.
         """
         output_dir = Path(output_path)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -302,8 +316,108 @@ class RillAdapter:
 
         resolved_models = resolve_model_inheritance(graph.models)
 
-        for model in resolved_models.values():
-            self._export_model(model, output_dir, graph)
+        if full_project:
+            # Generate rill.yaml
+            self._export_project_config(output_dir, project_name)
+
+            # Create subdirectories
+            sources_dir = output_dir / "sources"
+            models_dir = output_dir / "models"
+            metrics_views_dir = output_dir / "metrics_views"
+
+            sources_dir.mkdir(exist_ok=True)
+            models_dir.mkdir(exist_ok=True)
+            metrics_views_dir.mkdir(exist_ok=True)
+
+            for model in resolved_models.values():
+                # Generate source file if model has source_uri
+                if model.source_uri:
+                    self._export_source(model, sources_dir)
+
+                # Generate model SQL file (passthrough)
+                self._export_model_sql(model, models_dir)
+
+                # Generate metrics_view YAML
+                self._export_model(model, metrics_views_dir, graph)
+        else:
+            # Legacy behavior: only export metrics_views to output_path
+            for model in resolved_models.values():
+                self._export_model(model, output_dir, graph)
+
+    def _export_project_config(self, output_dir: Path, project_name: str | None) -> None:
+        """Export rill.yaml project configuration.
+
+        Args:
+            output_dir: Directory to write the file to
+            project_name: Optional project name
+        """
+        config: dict[str, Any] = {}
+
+        if project_name:
+            config["name"] = project_name
+
+        output_file = output_dir / "rill.yaml"
+        with open(output_file, "w") as f:
+            yaml.dump(config, f, sort_keys=False, default_flow_style=False)
+
+    def _export_source(self, model: Model, sources_dir: Path) -> None:
+        """Export a source YAML file for a model with source_uri.
+
+        Args:
+            model: The model with source_uri
+            sources_dir: Directory to write source files to
+        """
+        if not model.source_uri:
+            return
+
+        # Determine source type from URI scheme
+        uri = model.source_uri
+        if uri.startswith("s3://"):
+            source_type = "s3"
+        elif uri.startswith("gs://"):
+            source_type = "gcs"
+        elif uri.startswith("http://") or uri.startswith("https://"):
+            source_type = "https"
+        else:
+            source_type = "local"
+
+        source_def: dict[str, Any] = {
+            "type": source_type,
+        }
+
+        if source_type == "local":
+            source_def["path"] = uri
+        else:
+            source_def["uri"] = uri
+
+        source_name = f"{model.name}_raw"
+        output_file = sources_dir / f"{source_name}.yaml"
+        with open(output_file, "w") as f:
+            yaml.dump(source_def, f, sort_keys=False, default_flow_style=False)
+
+    def _export_model_sql(self, model: Model, models_dir: Path) -> None:
+        """Export a passthrough SQL model file.
+
+        Args:
+            model: The model to export
+            models_dir: Directory to write model files to
+        """
+        # Determine the source to SELECT from
+        if model.source_uri:
+            # Reference the generated source
+            source_name = f"{model.name}_raw"
+        elif model.table:
+            # Reference the table directly
+            source_name = model.table
+        else:
+            # Default: assume a source with _raw suffix exists
+            source_name = f"{model.name}_raw"
+
+        sql = f"SELECT * FROM {source_name}\n"
+
+        output_file = models_dir / f"{model.name}.sql"
+        with open(output_file, "w") as f:
+            f.write(sql)
 
     def _export_model(self, model: Model, output_dir: Path, graph: SemanticGraph) -> None:
         """Export a single Model to a Rill metrics view YAML file.
@@ -322,16 +436,19 @@ class RillAdapter:
         if model.description:
             metrics_view["description"] = model.description
 
-        # Set the model reference (could be a table or model name)
-        if model.table:
+        # Set the model reference
+        # When source_uri is set, we generate models/{name}.sql, so reference that
+        if model.source_uri:
+            metrics_view["model"] = model.name
+        elif model.table:
             # If it looks like a model reference (no dots/schemas), use model field
             if "." not in model.table:
                 metrics_view["model"] = model.table
             else:
                 metrics_view["table"] = model.table
         else:
-            # Default to model name + _model
-            metrics_view["model"] = f"{model.name}_model"
+            # Default to model name (assumes models/{name}.sql exists)
+            metrics_view["model"] = model.name
 
         # Export dimensions
         dimensions = []

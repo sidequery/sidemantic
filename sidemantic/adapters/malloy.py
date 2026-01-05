@@ -808,6 +808,20 @@ class MalloyAdapter(BaseAdapter):
         with open(output_path, "w") as f:
             f.write("\n".join(lines))
 
+    def _strip_model_prefix(self, sql: str) -> str:
+        """Strip {model}. prefix from SQL expression.
+
+        Malloy doesn't need table qualifiers for column references within a source,
+        so we remove the {model}. placeholder that sidemantic uses internally.
+
+        Args:
+            sql: SQL expression that may contain {model}. prefixes
+
+        Returns:
+            SQL expression with {model}. prefixes removed
+        """
+        return sql.replace("{model}.", "")
+
     def _export_source(self, model: Model) -> list[str]:
         """Export a model to Malloy source definition.
 
@@ -837,13 +851,20 @@ class MalloyAdapter(BaseAdapter):
             lines.append(f"  primary_key: {model.primary_key}")
 
         # Dimensions
-        if model.dimensions:
+        # Only include dimensions that are calculated (sql != name)
+        # Columns that match their name are automatically available in Malloy
+        calculated_dims = [
+            dim
+            for dim in model.dimensions
+            if self._strip_model_prefix(dim.sql or dim.name) != dim.name
+        ]
+        if calculated_dims:
             lines.append("")
             lines.append("  dimension:")
-            for dim in model.dimensions:
+            for dim in calculated_dims:
                 if dim.description:
                     lines.append(f"    # desc: {dim.description}")
-                sql = dim.sql or dim.name
+                sql = self._strip_model_prefix(dim.sql or dim.name)
                 lines.append(f"    {dim.name} is {sql}")
 
         # Measures
@@ -881,13 +902,15 @@ class MalloyAdapter(BaseAdapter):
         # Simple aggregation
         if metric.agg:
             if metric.sql:
-                expr = f"{metric.agg}({metric.sql})"
+                sql = self._strip_model_prefix(metric.sql)
+                expr = f"{metric.agg}({sql})"
             else:
                 expr = f"{metric.agg}()"
 
             # Add filter if present
             if metric.filters:
-                filter_str = ", ".join(metric.filters)
+                filters = [self._strip_model_prefix(f) for f in metric.filters]
+                filter_str = ", ".join(filters)
                 expr = f"{expr} {{ where: {filter_str} }}"
 
             return expr
@@ -898,6 +921,6 @@ class MalloyAdapter(BaseAdapter):
 
         # Fallback to sql
         if metric.sql:
-            return metric.sql
+            return self._strip_model_prefix(metric.sql)
 
         return "count()"

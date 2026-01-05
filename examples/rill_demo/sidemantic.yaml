@@ -1,0 +1,83 @@
+models:
+  - name: bids
+    source_uri: https://storage.googleapis.com/rilldata-public/bids_data.parquet
+    default_time_dimension: __time
+    default_grain: hour
+    dimensions:
+      - name: __time
+        type: time
+        sql: __time
+        label: Time
+        granularity: hour
+      - name: adomain
+        sql: adomain
+        label: Adomain
+      - name: advertiser_name
+        sql: advertiser_name
+        label: Advertiser Name
+      - name: app_or_site
+        sql: app_or_site
+        label: App or Site
+      - name: device_os
+        sql: device_os
+        label: Device OS
+      - name: device_type
+        sql: device_type
+        label: Device Type
+      - name: campaign_name
+        sql: campaign_name
+        label: Campaign Name
+      - name: pub_name
+        sql: pub_name
+        label: Publisher Name
+      - name: creative_type
+        sql: creative_type
+        label: Creative Type
+      - name: auction_type
+        sql: auction_type
+        label: Auction Type
+    metrics:
+      - name: ad_spend
+        sql: SUM(media_spend_usd)/1000
+        label: Advertising Spend
+        value_format_name: usd
+      - name: bids
+        agg: sum
+        sql: bid_cnt
+        label: Bids
+      - name: impressions
+        agg: sum
+        sql: imp_cnt
+        label: Impressions
+      - name: win_rate
+        sql: SUM(imp_cnt)*1.0/SUM(bid_cnt)
+        label: Win Rate
+        value_format_name: percent
+      - name: clicks
+        agg: sum
+        sql: click_reg_cnt
+        label: Clicks
+      - name: ctr
+        sql: SUM(click_reg_cnt)*1.0/SUM(imp_cnt)
+        label: CTR
+        value_format_name: percent
+      - name: avg_bid_price
+        sql: SUM(bid_price_usd)*1.0/SUM(bid_cnt)/1000
+        label: Avg Bid Price
+        value_format_name: usd
+      - name: ecpm
+        sql: SUM(media_spend_usd)*1.0/1000/SUM(imp_cnt)
+        label: eCPM
+        value_format_name: usd
+      - name: video_starts
+        agg: sum
+        sql: video_start_cnt
+        label: Video Starts
+      - name: video_completes
+        agg: sum
+        sql: video_complete_cnt
+        label: Video Completes
+      - name: video_completion_rate
+        sql: SUM(video_complete_cnt)*1.0/SUM(video_start_cnt)
+        label: Video Completion Rate
+        value_format_name: percent

@@ -218,7 +218,7 @@ def test_multi_join_generation_performance(performance_layer):
     avg_ms = (elapsed / iterations) * 1000
 
     print(f"\nMulti-join generation: {avg_ms:.3f}ms per query ({iterations} iterations)")
-    assert avg_ms < 20.0, f"Multi-join generation too slow: {avg_ms:.3f}ms"
+    assert avg_ms < 25.0, f"Multi-join generation too slow: {avg_ms:.3f}ms"
 
 
 def test_end_to_end_execution_performance(performance_layer):

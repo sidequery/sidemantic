@@ -1,0 +1,6 @@
+unique_name: sales_stddev
+object_type: metric
+label: Sales Stddev
+calculation_method: stddev_pop
+dataset: fact_sales
+column: amount

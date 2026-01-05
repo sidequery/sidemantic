@@ -2,7 +2,7 @@
 
 SQL-first semantic layer for consistent metrics across your data stack.
 
-- **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, Snowflake Cortex, Malloy
+- **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, Snowflake Cortex, Malloy, AtScale SML
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL
 
 [Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF)
@@ -180,7 +180,7 @@ See `examples/` for more.
 
 ## Multi-Format Support
 
-Auto-detects: Sidemantic (SQL/YAML), Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL
+Auto-detects: Sidemantic (SQL/YAML), Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, AtScale SML
 
 ```bash
 sidemantic query "SELECT revenue FROM orders" --models ./my_models

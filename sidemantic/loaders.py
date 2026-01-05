@@ -28,6 +28,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.malloy import MalloyAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
+    from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
 
@@ -37,6 +38,67 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
     # Collect all models first (so we can infer relationships after)
     all_models = {}
+
+    # Check for SML repository (catalog.yml/atscale.yml or object_type files)
+    sml_catalog = None
+    for catalog_name in ("catalog.yml", "catalog.yaml", "atscale.yml", "atscale.yaml"):
+        candidate = directory / catalog_name
+        if candidate.exists():
+            sml_catalog = candidate
+            break
+
+    if sml_catalog and sml_catalog.exists():
+        catalog_text = sml_catalog.read_text()
+        if "object_type" in catalog_text and "catalog" in catalog_text:
+            adapter = AtScaleSMLAdapter()
+            graph = adapter.parse(str(directory))
+            adapter_name = adapter.__class__.__name__.replace("Adapter", "")
+            for model in graph.models.values():
+                if not hasattr(model, "_source_format"):
+                    model._source_format = adapter_name
+                if not hasattr(model, "_source_file"):
+                    model._source_file = str(directory)
+            all_models.update(graph.models)
+            _infer_relationships(all_models)
+            for model in all_models.values():
+                if model.name not in layer.graph.models:
+                    layer.add_model(model)
+            layer.graph.build_adjacency()
+            return
+
+    for sml_file in list(directory.rglob("*.yml")) + list(directory.rglob("*.yaml")):
+        try:
+            content = sml_file.read_text()
+        except Exception:
+            continue
+        if "object_type" in content and "unique_name" in content:
+            if any(
+                token in content
+                for token in (
+                    "object_type: dataset",
+                    "object_type: dimension",
+                    "object_type: metric",
+                    "object_type: metric_calc",
+                    "object_type: model",
+                    "object_type: composite_model",
+                    "object_type: connection",
+                )
+            ):
+                adapter = AtScaleSMLAdapter()
+                graph = adapter.parse(str(directory))
+                adapter_name = adapter.__class__.__name__.replace("Adapter", "")
+                for model in graph.models.values():
+                    if not hasattr(model, "_source_format"):
+                        model._source_format = adapter_name
+                    if not hasattr(model, "_source_file"):
+                        model._source_file = str(directory)
+                all_models.update(graph.models)
+                _infer_relationships(all_models)
+                for model in all_models.values():
+                    if model.name not in layer.graph.models:
+                        layer.add_model(model)
+                layer.graph.build_adjacency()
+                return
 
     # Find and parse all files
     for file_path in directory.rglob("*"):

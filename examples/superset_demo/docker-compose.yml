@@ -1,0 +1,27 @@
+services:
+  superset:
+    build: .
+    environment:
+      SUPERSET_SECRET_KEY: superset-demo-secret-key-change-in-production
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./superset_config.py:/app/pythonpath/superset_config.py
+      - ./superset_datasets:/app/superset_datasets
+      - superset_data:/app/superset_home
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+    command: >
+      bash -c "
+        superset db upgrade &&
+        superset fab create-admin --username admin --firstname Admin --lastname User --email admin@example.com --password admin || true &&
+        superset init &&
+        superset run -h 0.0.0.0 -p 8088 --with-threads --reload
+      "
+
+volumes:
+  superset_data:

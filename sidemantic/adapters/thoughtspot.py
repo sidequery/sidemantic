@@ -523,7 +523,7 @@ class ThoughtSpotAdapter(BaseAdapter):
         for clause in clauses[1:]:
             sql += f"\n{clause}"
 
-        return sql, None
+        return sql, base_table
 
     def _parse_join_relationships(
         self,
@@ -769,7 +769,17 @@ class ThoughtSpotAdapter(BaseAdapter):
             tables.append({"name": rel.name})
             join_name = f"{base_table}_{rel.name}"
             join_type = "LEFT_OUTER" if rel.type in {"many_to_one", "one_to_one"} else "OUTER"
-            on_expr = f"[{base_table}::{rel.sql_expr}] = [{rel.name}::{rel.related_key}]"
+            if rel.type in {"one_to_many", "one_to_one"}:
+                left_table = rel.name
+                left_key = rel.sql_expr
+                right_table = base_table
+                right_key = model.primary_key
+            else:
+                left_table = base_table
+                left_key = rel.sql_expr
+                right_table = rel.name
+                right_key = rel.related_key
+            on_expr = f"[{left_table}::{left_key}] = [{right_table}::{right_key}]"
             joins.append(
                 {
                     "name": join_name,

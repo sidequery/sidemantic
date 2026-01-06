@@ -943,6 +943,45 @@
           "description": "Primary key column in related model (defaults to id)",
           "title": "Primary Key"
         },
+        "related_foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key in junction model pointing to related model",
+          "title": "Related Foreign Key"
+        },
+        "through": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Junction model for many_to_many relationships",
+          "title": "Through"
+        },
+        "through_foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key in junction model pointing to this model",
+          "title": "Through Foreign Key"
+        },
         "type": {
           "description": "Type of relationship",
           "enum": [
@@ -2304,6 +2343,45 @@
                 "default": null,
                 "description": "Primary key column in related model (defaults to id)",
                 "title": "Primary Key"
+              },
+              "related_foreign_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key in junction model pointing to related model",
+                "title": "Related Foreign Key"
+              },
+              "through": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Junction model for many_to_many relationships",
+                "title": "Through"
+              },
+              "through_foreign_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key in junction model pointing to this model",
+                "title": "Through Foreign Key"
               },
               "type": {
                 "description": "Type of relationship",

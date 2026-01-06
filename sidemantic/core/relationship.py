@@ -23,6 +23,13 @@ class Relationship(BaseModel):
         default=None, description="Foreign key column (defaults to {name}_id for many_to_one)"
     )
     primary_key: str | None = Field(default=None, description="Primary key column in related model (defaults to id)")
+    through: str | None = Field(default=None, description="Junction model for many_to_many relationships")
+    through_foreign_key: str | None = Field(
+        default=None, description="Foreign key in junction model pointing to this model"
+    )
+    related_foreign_key: str | None = Field(
+        default=None, description="Foreign key in junction model pointing to related model"
+    )
 
     @property
     def sql_expr(self) -> str:
@@ -42,3 +49,9 @@ class Relationship(BaseModel):
         if self.primary_key:
             return self.primary_key
         return "id"
+
+    def junction_keys(self) -> tuple[str | None, str | None]:
+        """Get junction keys for many_to_many relationships."""
+        if self.type != "many_to_many":
+            return None, None
+        return self.through_foreign_key or self.foreign_key, self.related_foreign_key

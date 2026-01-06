@@ -1,5 +1,8 @@
 """Tests for DuckDB adapter."""
 
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from sidemantic.db.duckdb import DuckDBAdapter
@@ -47,6 +50,19 @@ def test_duckdb_adapter_from_url_variations():
         adapter = DuckDBAdapter.from_url(url)
         result = adapter.execute("SELECT 1")
         assert result.fetchone()[0] == 1
+
+
+def test_duckdb_adapter_from_url_read_only():
+    """Test read_only query parameter in DuckDB URL."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.duckdb"
+        writer = DuckDBAdapter(str(db_path))
+        writer.execute("CREATE TABLE test (id INT)")
+        writer.close()
+
+        adapter = DuckDBAdapter.from_url(f"duckdb:///{db_path}?read_only=true")
+        with pytest.raises(Exception):
+            adapter.execute("CREATE TABLE blocked (id INT)")
 
 
 def test_duckdb_adapter_get_tables():

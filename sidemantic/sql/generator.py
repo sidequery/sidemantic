@@ -815,6 +815,18 @@ class SQLGenerator:
                             select_cols.append(f"{fk} AS {fk}")
                             columns_added.add(fk)
 
+            for other_model_name, other_model in self.graph.models.items():
+                if other_model_name not in all_models:
+                    continue
+                for other_join in other_model.relationships:
+                    if other_join.type != "many_to_many" or other_join.through != model_name:
+                        continue
+                    junction_self_fk, junction_related_fk = other_join.junction_keys()
+                    for fk in (junction_self_fk, junction_related_fk):
+                        if fk and fk not in columns_added:
+                            select_cols.append(f"{fk} AS {fk}")
+                            columns_added.add(fk)
+
         # Determine table alias for {model} placeholder replacement
         # In CTEs, we're selecting from the raw table (or subquery AS t)
         model_table_alias = "t" if model.sql else ""

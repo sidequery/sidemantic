@@ -38,6 +38,46 @@ def test_parse_native_yaml():
     assert graph.metrics["revenue_per_order"].type == "derived"
 
 
+def test_parse_time_comparison_and_conversion_fields(tmp_path):
+    """Test parsing time_comparison and conversion metric fields from YAML."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "metrics.yml"
+    yaml_path.write_text(
+        """
+metrics:
+  - name: revenue_yoy
+    type: time_comparison
+    base_metric: total_revenue
+    comparison_type: yoy
+    calculation: percent_change
+    time_offset: "1 year"
+
+  - name: signup_conversion
+    type: conversion
+    entity: user_id
+    base_event: "event = 'signup'"
+    conversion_event: "event = 'purchase'"
+    conversion_window: "7 days"
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+
+    revenue_yoy = graph.metrics["revenue_yoy"]
+    assert revenue_yoy.type == "time_comparison"
+    assert revenue_yoy.base_metric == "total_revenue"
+    assert revenue_yoy.comparison_type == "yoy"
+    assert revenue_yoy.calculation == "percent_change"
+    assert revenue_yoy.time_offset == "1 year"
+
+    signup_conversion = graph.metrics["signup_conversion"]
+    assert signup_conversion.type == "conversion"
+    assert signup_conversion.entity == "user_id"
+    assert signup_conversion.base_event == "event = 'signup'"
+    assert signup_conversion.conversion_event == "event = 'purchase'"
+    assert signup_conversion.conversion_window == "7 days"
+
+
 def test_export_native_yaml():
     """Test exporting to native Sidemantic YAML."""
     # Load example

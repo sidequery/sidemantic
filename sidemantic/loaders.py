@@ -28,8 +28,11 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.malloy import MalloyAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
+    from sidemantic.adapters.omni import OmniAdapter
+    from sidemantic.adapters.rill import RillAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
+    from sidemantic.adapters.superset import SupersetAdapter
 
     directory = Path(directory)
     if not directory.exists():
@@ -72,6 +75,16 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
             elif "_." in content and ("dimensions:" in content or "measures:" in content):
                 # BSL format uses _.column syntax for expressions
                 adapter = BSLAdapter()
+            elif "type: metrics_view" in content:
+                adapter = RillAdapter()
+            elif "table_name:" in content and "columns:" in content and "metrics:" in content:
+                adapter = SupersetAdapter()
+            elif (
+                "measures:" in content
+                and "dimensions:" in content
+                and ("table_name:" in content or "table:" in content or "schema:" in content)
+            ):
+                adapter = OmniAdapter()
 
         if adapter:
             try:

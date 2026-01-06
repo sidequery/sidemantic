@@ -216,6 +216,9 @@ class SidemanticAdapter(BaseAdapter):
                 type=relationship_def.get("type"),
                 foreign_key=relationship_def.get("foreign_key"),
                 primary_key=relationship_def.get("primary_key"),
+                through=relationship_def.get("through"),
+                through_foreign_key=relationship_def.get("through_foreign_key"),
+                related_foreign_key=relationship_def.get("related_foreign_key"),
             )
             joins.append(join)
 
@@ -250,6 +253,15 @@ class SidemanticAdapter(BaseAdapter):
                 value_format_name=measure_def.get("value_format_name"),
                 drill_fields=measure_def.get("drill_fields"),
                 non_additive_dimension=measure_def.get("non_additive_dimension"),
+                base_metric=measure_def.get("base_metric"),
+                comparison_type=measure_def.get("comparison_type"),
+                time_offset=measure_def.get("time_offset"),
+                calculation=measure_def.get("calculation"),
+                entity=measure_def.get("entity"),
+                base_event=measure_def.get("base_event"),
+                conversion_event=measure_def.get("conversion_event"),
+                conversion_window=measure_def.get("conversion_window"),
+                offset_window=measure_def.get("offset_window"),
                 # Cumulative/window parameters
                 window=measure_def.get("window"),
                 grain_to_date=measure_def.get("grain_to_date"),
@@ -346,6 +358,15 @@ class SidemanticAdapter(BaseAdapter):
             sql=metric_def.get("sql") or metric_def.get("measure"),
             numerator=metric_def.get("numerator"),
             denominator=metric_def.get("denominator"),
+            base_metric=metric_def.get("base_metric"),
+            comparison_type=metric_def.get("comparison_type"),
+            time_offset=metric_def.get("time_offset"),
+            calculation=metric_def.get("calculation"),
+            entity=metric_def.get("entity"),
+            base_event=metric_def.get("base_event"),
+            conversion_event=metric_def.get("conversion_event"),
+            conversion_window=metric_def.get("conversion_window"),
+            offset_window=metric_def.get("offset_window"),
             window=metric_def.get("window"),
             filters=metric_def.get("filters"),
         )
@@ -378,6 +399,17 @@ class SidemanticAdapter(BaseAdapter):
                     "type": relationship.type,
                     **({"foreign_key": relationship.foreign_key} if relationship.foreign_key else {}),
                     **({"primary_key": relationship.primary_key} if relationship.primary_key else {}),
+                    **({"through": relationship.through} if relationship.through else {}),
+                    **(
+                        {"through_foreign_key": relationship.through_foreign_key}
+                        if relationship.through_foreign_key
+                        else {}
+                    ),
+                    **(
+                        {"related_foreign_key": relationship.related_foreign_key}
+                        if relationship.related_foreign_key
+                        else {}
+                    ),
                 }
                 for relationship in model.relationships
             ]
@@ -436,6 +468,24 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["non_additive_dimension"] = measure.non_additive_dimension
                 if measure.type:
                     measure_def["type"] = measure.type
+                if measure.base_metric:
+                    measure_def["base_metric"] = measure.base_metric
+                if measure.comparison_type:
+                    measure_def["comparison_type"] = measure.comparison_type
+                if measure.time_offset:
+                    measure_def["time_offset"] = measure.time_offset
+                if measure.calculation:
+                    measure_def["calculation"] = measure.calculation
+                if measure.entity:
+                    measure_def["entity"] = measure.entity
+                if measure.base_event:
+                    measure_def["base_event"] = measure.base_event
+                if measure.conversion_event:
+                    measure_def["conversion_event"] = measure.conversion_event
+                if measure.conversion_window:
+                    measure_def["conversion_window"] = measure.conversion_window
+                if measure.offset_window:
+                    measure_def["offset_window"] = measure.offset_window
                 # Cumulative/window parameters
                 if measure.window:
                     measure_def["window"] = measure.window
@@ -497,6 +547,24 @@ class SidemanticAdapter(BaseAdapter):
             result["numerator"] = measure.numerator
         if measure.denominator:
             result["denominator"] = measure.denominator
+        if measure.base_metric:
+            result["base_metric"] = measure.base_metric
+        if measure.comparison_type:
+            result["comparison_type"] = measure.comparison_type
+        if measure.time_offset:
+            result["time_offset"] = measure.time_offset
+        if measure.calculation:
+            result["calculation"] = measure.calculation
+        if measure.entity:
+            result["entity"] = measure.entity
+        if measure.base_event:
+            result["base_event"] = measure.base_event
+        if measure.conversion_event:
+            result["conversion_event"] = measure.conversion_event
+        if measure.conversion_window:
+            result["conversion_window"] = measure.conversion_window
+        if measure.offset_window:
+            result["offset_window"] = measure.offset_window
         if measure.sql:
             result["sql"] = measure.sql
             # Auto-detect and export dependencies for derived measures

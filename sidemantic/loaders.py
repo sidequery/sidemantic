@@ -79,8 +79,10 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = RillAdapter()
             elif "table_name:" in content and "columns:" in content and "metrics:" in content:
                 adapter = SupersetAdapter()
-            elif "measures:" in content and "dimensions:" in content and (
-                "table_name:" in content or "table:" in content or "schema:" in content
+            elif (
+                "measures:" in content
+                and "dimensions:" in content
+                and ("table_name:" in content or "table:" in content or "schema:" in content)
             ):
                 adapter = OmniAdapter()
 

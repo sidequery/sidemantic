@@ -10,17 +10,11 @@ def test_many_to_many_join_path(layer):
     conn = duckdb.connect(":memory:")
     conn.execute("CREATE TABLE orders (order_id INTEGER, amount DECIMAL(10, 2))")
     conn.execute("CREATE TABLE products (product_id INTEGER, name VARCHAR)")
-    conn.execute("CREATE TABLE order_items (order_id INTEGER, product_id INTEGER)")
+    conn.execute("CREATE TABLE order_items (id INTEGER, order_id INTEGER, product_id INTEGER)")
 
-    conn.execute(
-        "INSERT INTO orders VALUES (1, 100.00), (2, 200.00)"
-    )
-    conn.execute(
-        "INSERT INTO products VALUES (10, 'Widget'), (20, 'Gadget')"
-    )
-    conn.execute(
-        "INSERT INTO order_items VALUES (1, 10), (1, 20), (2, 20)"
-    )
+    conn.execute("INSERT INTO orders VALUES (1, 100.00), (2, 200.00)")
+    conn.execute("INSERT INTO products VALUES (10, 'Widget'), (20, 'Gadget')")
+    conn.execute("INSERT INTO order_items VALUES (1, 1, 10), (2, 1, 20), (3, 2, 20)")
 
     layer.conn = conn
 
@@ -50,11 +44,7 @@ def test_many_to_many_join_path(layer):
     order_items = Model(
         name="order_items",
         table="order_items",
-        primary_key="order_id",
-        dimensions=[
-            Dimension(name="order_id", type="numeric"),
-            Dimension(name="product_id", type="numeric"),
-        ],
+        primary_key="id",
     )
 
     layer.add_model(orders)
@@ -73,3 +63,11 @@ def test_many_to_many_join_path(layer):
     assert "order_items_cte" in sql
     assert "products_cte" in sql
     assert sql.count("LEFT JOIN") == 2
+    assert (
+        "orders_cte.order_id = order_items_cte.order_id" in sql
+        or "order_items_cte.order_id = orders_cte.order_id" in sql
+    )
+    assert (
+        "order_items_cte.product_id = products_cte.product_id" in sql
+        or "products_cte.product_id = order_items_cte.product_id" in sql
+    )

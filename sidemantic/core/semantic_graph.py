@@ -32,7 +32,9 @@ class SemanticGraph:
         self.metrics: dict[str, Metric] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
-        self._adjacency: dict[str, list[tuple[str, str, str]]] = {}  # model -> [(join_key, target_model, rel_type)]
+        self._adjacency: dict[
+            str, list[tuple[str, str, str, str]]
+        ] = {}  # model -> [(to_model, from_key, to_key, rel_type)]
 
     def add_model(self, model: Model) -> None:
         """Add a model to the graph.
@@ -182,10 +184,10 @@ class SemanticGraph:
             self._adjacency = {}
         self._adjacency.clear()
 
-        def add_edge(from_model: str, to_model: str, join_key: str, relationship_type: str) -> None:
+        def add_edge(from_model: str, to_model: str, from_key: str, to_key: str, relationship_type: str) -> None:
             if from_model not in self._adjacency:
                 self._adjacency[from_model] = []
-            self._adjacency[from_model].append((join_key, to_model, relationship_type))
+            self._adjacency[from_model].append((to_model, from_key, to_key, relationship_type))
 
         def invert_relationship(relationship_type: str) -> str:
             if relationship_type == "many_to_one":
@@ -208,9 +210,8 @@ class SemanticGraph:
                             continue
                         local_key = model.primary_key
                         remote_key = relationship.foreign_key
-                        join_key = f"{local_key}={remote_key}"
-                        add_edge(model_name, related_model, join_key, "one_to_many")
-                        add_edge(related_model, model_name, join_key, "many_to_one")
+                        add_edge(model_name, related_model, local_key, remote_key, "one_to_many")
+                        add_edge(related_model, model_name, remote_key, local_key, "many_to_one")
                         continue
 
                     junction_self_fk, junction_related_fk = relationship.junction_keys()
@@ -220,13 +221,11 @@ class SemanticGraph:
                     base_pk = model.primary_key
                     related_pk = relationship.primary_key or self.models[related_model].primary_key
 
-                    join_key_base = f"{base_pk}={junction_self_fk}"
-                    add_edge(model_name, junction_model, join_key_base, "one_to_many")
-                    add_edge(junction_model, model_name, join_key_base, "many_to_one")
+                    add_edge(model_name, junction_model, base_pk, junction_self_fk, "one_to_many")
+                    add_edge(junction_model, model_name, junction_self_fk, base_pk, "many_to_one")
 
-                    join_key_related = f"{junction_related_fk}={related_pk}"
-                    add_edge(junction_model, related_model, join_key_related, "many_to_one")
-                    add_edge(related_model, junction_model, join_key_related, "one_to_many")
+                    add_edge(junction_model, related_model, junction_related_fk, related_pk, "many_to_one")
+                    add_edge(related_model, junction_model, related_pk, junction_related_fk, "one_to_many")
                     continue
 
                 # Get the join key names
@@ -243,11 +242,8 @@ class SemanticGraph:
                     local_key = model.primary_key  # Use model's primary key
                     remote_key = relationship.foreign_key or relationship.sql_expr  # customer_id (in orders)
 
-                # Use a join_key that combines both keys for clarity
-                join_key = f"{local_key}={remote_key}"
-
-                add_edge(model_name, related_model, join_key, relationship.type)
-                add_edge(related_model, model_name, join_key, invert_relationship(relationship.type))
+                add_edge(model_name, related_model, local_key, remote_key, relationship.type)
+                add_edge(related_model, model_name, remote_key, local_key, invert_relationship(relationship.type))
 
     def find_relationship_path(self, from_model: str, to_model: str) -> list[JoinPath]:
         """Find join path between two models using BFS.
@@ -280,107 +276,13 @@ class SemanticGraph:
             if current not in self._adjacency:
                 continue
 
-            for join_key, next_model, relationship_type in self._adjacency[current]:
+            for next_model, from_key, to_key, relationship_type in self._adjacency[current]:
                 if next_model in visited:
                     continue
 
                 visited.add(next_model)
-
-                # Parse join key: "key1=key2"
-                # The edge was added bidirectionally, so we need to figure out which key belongs to which model
-                key1, key2 = join_key.split("=")
-
-                # Determine which key belongs to current model and which to next model
-                # Check the actual models to see which has which column
-                current_model_obj = self.models[current]
-                next_model_obj = self.models[next_model]
-
-                # Check if current model defines key1 or key2
-                # A model "has" a key if:
-                # 1. It's the primary_key
-                # 2. It's a foreign key in a many_to_one join
-                # 3. Another model has one_to_many/one_to_one pointing here with that foreign key
-
-                def model_has_key(model_obj, key):
-                    if model_obj.primary_key == key:
-                        return True
-                    if any(dimension.name == key for dimension in model_obj.dimensions):
-                        return True
-                    if any(j.sql_expr == key for j in model_obj.relationships):
-                        return True
-                    # Check if another model points here with one_to_many/one_to_one
-                    for other_model in self.models.values():
-                        for j in other_model.relationships:
-                            if (
-                                j.name == model_obj.name
-                                and j.type in ("one_to_one", "one_to_many")
-                                and j.sql_expr == key
-                            ):
-                                return True
-                    return False
-
-                current_has_key1 = model_has_key(current_model_obj, key1)
-                current_has_key2 = model_has_key(current_model_obj, key2)
-
-                if current_has_key1 and not current_has_key2:
-                    # Only key1 is in current
-                    from_entity = key1
-                    to_entity = key2
-                elif current_has_key2 and not current_has_key1:
-                    # Only key2 is in current
-                    from_entity = key2
-                    to_entity = key1
-                elif current_has_key1 and current_has_key2:
-                    # Both keys are in current model - need to figure out which goes where
-                    # Check if current model has a many_to_one join - if so, use the FK
-                    many_to_one_fk = None
-                    for j in current_model_obj.relationships:
-                        if j.type == "many_to_one" and j.name == next_model:
-                            many_to_one_fk = j.sql_expr
-                            break
-
-                    if many_to_one_fk:
-                        # Current has many_to_one: use FK as from_entity
-                        if key1 == many_to_one_fk:
-                            from_entity = key1
-                            to_entity = key2
-                        else:
-                            from_entity = key2
-                            to_entity = key1
-                    else:
-                        # No many_to_one - could be one_to_many OR we're the child of a one_to_many
-                        # If another model has one_to_many pointing to us, we have the FK
-                        # Check if next_model has one_to_many pointing to current
-                        next_one_to_many_fk = None
-                        for j in next_model_obj.relationships:
-                            if j.type in ("one_to_one", "one_to_many") and j.name == current:
-                                next_one_to_many_fk = j.sql_expr
-                                break
-
-                        if next_one_to_many_fk:
-                            # Next model has one_to_many to current, so current has the FK
-                            if key1 == next_one_to_many_fk:
-                                from_entity = key1
-                                to_entity = key2
-                            else:
-                                from_entity = key2
-                                to_entity = key1
-                        else:
-                            # Current has one_to_many to next, so use PK
-                            if current_model_obj.primary_key == key1:
-                                from_entity = key1
-                                to_entity = key2
-                            elif current_model_obj.primary_key == key2:
-                                from_entity = key2
-                                to_entity = key1
-                            else:
-                                from_entity = key1
-                                to_entity = key2
-                else:
-                    # Neither found (shouldn't happen)
-                    from_entity = key1
-                    to_entity = key2
-
+                from_entity = from_key
+                to_entity = to_key
                 relationship = relationship_type
 
                 new_path = path + [

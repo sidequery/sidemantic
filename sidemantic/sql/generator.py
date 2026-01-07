@@ -54,6 +54,19 @@ class SQLGenerator:
         date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
         return date_trunc.sql(dialect=self.dialect)
 
+    def _quote_alias(self, name: str) -> str:
+        """Quote an identifier for use as a SQL alias.
+
+        Handles names with dots or other special characters by quoting them.
+
+        Args:
+            name: The identifier name (e.g., "auctions.bid_request_cnt_wow")
+
+        Returns:
+            Properly quoted identifier for the dialect (e.g., '"auctions.bid_request_cnt_wow"')
+        """
+        return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+
     def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
         """Auto-include default_time_dimension from models if not already present.
 
@@ -90,7 +103,12 @@ class SQLGenerator:
                     continue
                 models_checked.add(model_name)
 
-                model = self.graph.get_model(model_name)
+                # Try to get model - may not exist if this is a graph-level metric
+                # with a dotted name (not model.measure format)
+                try:
+                    model = self.graph.get_model(model_name)
+                except KeyError:
+                    model = None
                 if model and model.default_time_dimension:
                     # Only add if this model doesn't already have a time dimension
                     if model_name not in models_with_time_dims:
@@ -225,9 +243,18 @@ class SQLGenerator:
             if "." in m:
                 # model.measure format
                 model_name, measure_name = m.split(".")
-                model = self.graph.get_model(model_name)
-                if model:
-                    metric = model.get_metric(measure_name)
+                try:
+                    model = self.graph.get_model(model_name)
+                    if model:
+                        metric = model.get_metric(measure_name)
+                except KeyError:
+                    pass
+                # Fall back to graph-level metric with dotted name
+                if not metric:
+                    try:
+                        metric = self.graph.get_metric(m)
+                    except KeyError:
+                        pass
             else:
                 # Just metric name - try graph-level metric
                 try:
@@ -2019,9 +2046,18 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             else:
                 # model.measure format - check if it's a metric on the model
                 model_name, measure_name = m.split(".", 1)
-                model = self.graph.get_model(model_name)
-                if model:
-                    metric = model.get_metric(measure_name)
+                try:
+                    model = self.graph.get_model(model_name)
+                    if model:
+                        metric = model.get_metric(measure_name)
+                except KeyError:
+                    pass
+                # Fall back to graph-level metric with dotted name
+                if not metric:
+                    try:
+                        metric = self.graph.get_metric(m)
+                    except KeyError:
+                        pass
 
             # Classify metric by type
             if metric and metric.type == "cumulative":
@@ -2106,10 +2142,12 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 model = self.graph.get_model(model_name)
                 metric = model.get_metric(measure_name) if model else None
                 # Use just the measure name as the alias (not model.measure)
-                metric_alias = measure_name
+                # Quote to handle any special characters
+                metric_alias = self._quote_alias(measure_name)
             else:
                 metric = self.graph.get_metric(m)
-                metric_alias = m
+                # Quote to handle dotted metric names
+                metric_alias = self._quote_alias(m)
             if not metric or (not metric.sql and not metric.window_expression):
                 continue
 
@@ -2274,8 +2312,11 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 # Calculate LAG offset
                 lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
 
-                # Add LAG for base metric
-                lag_selects.append(f"LAG(base.{base_alias}, {lag_offset}) OVER (ORDER BY {time_dim}) AS {m}_prev_value")
+                # Add LAG for base metric (quote alias to handle dotted names)
+                prev_value_alias = self._quote_alias(f"{m}_prev_value")
+                lag_selects.append(
+                    f"LAG(base.{base_alias}, {lag_offset}) OVER (ORDER BY {time_dim}) AS {prev_value_alias}"
+                )
 
             # Add LAG expressions for each offset ratio metric
             for m in offset_ratio_metrics:
@@ -2305,7 +2346,9 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 denom_alias = metric.denominator.split(".")[1] if "." in metric.denominator else metric.denominator
 
                 # Add LAG for denominator - reference base.denom_alias since it's from inner query
-                lag_selects.append(f"LAG(base.{denom_alias}) OVER (ORDER BY {time_dim}) AS {m}_prev_denom")
+                # Quote alias to handle dotted names
+                prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
+                lag_selects.append(f"LAG(base.{denom_alias}) OVER (ORDER BY {time_dim}) AS {prev_denom_alias}")
 
             # Build intermediate CTE - inner_query already has all the columns we need
             # We need to add "base." prefix since we're wrapping inner_query in a FROM (inner_query) AS base
@@ -2332,14 +2375,18 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 else:
                     base_alias = base_ref
 
+                # Quote aliases to handle dotted metric names
+                prev_value_col = self._quote_alias(f"{m}_prev_value")
+                final_alias = self._quote_alias(m)
+
                 # Build calculation based on calculation type
                 calc_type = metric.calculation or "percent_change"
                 if calc_type == "difference":
-                    expr = f"({base_alias} - {m}_prev_value) AS {m}"
+                    expr = f"({base_alias} - {prev_value_col}) AS {final_alias}"
                 elif calc_type == "percent_change":
-                    expr = f"(({base_alias} - {m}_prev_value) / NULLIF({m}_prev_value, 0) * 100) AS {m}"
+                    expr = f"(({base_alias} - {prev_value_col}) / NULLIF({prev_value_col}, 0) * 100) AS {final_alias}"
                 elif calc_type == "ratio":
-                    expr = f"({base_alias} / NULLIF({m}_prev_value, 0)) AS {m}"
+                    expr = f"({base_alias} / NULLIF({prev_value_col}, 0)) AS {final_alias}"
                 else:
                     raise ValueError(f"Unknown calculation type: {calc_type}")
 
@@ -2353,8 +2400,12 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
 
                 num_alias = metric.numerator.split(".")[1] if "." in metric.numerator else metric.numerator
 
+                # Quote aliases to handle dotted metric names
+                prev_denom_col = self._quote_alias(f"{m}_prev_denom")
+                final_alias = self._quote_alias(m)
+
                 # Calculate ratio using the lagged value
-                offset_expr = f"{num_alias} / NULLIF({m}_prev_denom, 0) AS {m}"
+                offset_expr = f"{num_alias} / NULLIF({prev_denom_col}, 0) AS {final_alias}"
                 final_selects.append(offset_expr)
 
             # Build final query

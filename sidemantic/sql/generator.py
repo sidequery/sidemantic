@@ -439,6 +439,19 @@ class SQLGenerator:
         Raises:
             ValueError: If segment not found
         """
+        def qualify_unaliased_columns(filter_sql: str, model_alias: str) -> str:
+            """Qualify unaliased columns in segment filters with model alias."""
+            try:
+                parsed = sqlglot.parse_one(filter_sql, dialect=self.dialect)
+            except Exception:
+                return filter_sql
+
+            for col in parsed.find_all(exp.Column):
+                if not col.table:
+                    col.set("table", model_alias)
+
+            return parsed.sql(dialect=self.dialect)
+
         filters = []
         for seg_ref in segments:
             # Parse model.segment format
@@ -457,6 +470,7 @@ class SQLGenerator:
             # Get SQL expression with model alias replaced
             # Use model_cte as the alias (consistent with CTE naming)
             filter_sql = segment.get_sql(f"{model_name}_cte")
+            filter_sql = qualify_unaliased_columns(filter_sql, f"{model_name}_cte")
             filters.append(filter_sql)
 
         return filters

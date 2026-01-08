@@ -3,7 +3,8 @@
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model
+from sidemantic import Dimension, Metric, Model, Segment
+from sidemantic.sql.generator import SQLGenerator
 
 
 def test_single_model_filter_pushdown(layer):
@@ -281,6 +282,42 @@ def test_segment_filters_pushed_down(layer):
     where_sql = where_clause.sql()
     assert "status" in where_sql
     assert "completed" in where_sql
+
+
+def test_segment_filter_skips_subquery_columns(layer):
+    """Test that segment filter qualification does not touch subquery columns."""
+    model = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="id",
+        metrics=[
+            Metric(name="count", agg="count"),
+        ],
+        segments=[
+            Segment(name="in_other", sql="id in (select id from other_table where flag = 'y')"),
+        ],
+    )
+
+    layer.add_model(model)
+
+    generator = SQLGenerator(layer.graph)
+    filters = generator._resolve_segments(["orders.in_other"])
+    assert len(filters) == 1
+
+    filter_sql = filters[0]
+    parsed = sqlglot.parse_one(filter_sql)
+
+    assert any(col.table == "orders_cte" for col in parsed.find_all(exp.Column))
+
+    subquery = None
+    for subquery_def in parsed.find_all(exp.Subquery):
+        subquery = subquery_def
+        break
+
+    assert subquery is not None
+
+    for col in subquery.find_all(exp.Column):
+        assert not col.table
 
 
 def test_metric_level_filters_not_pushed(layer):

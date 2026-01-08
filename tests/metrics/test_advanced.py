@@ -402,6 +402,66 @@ def test_mom_difference():
     assert rows[3][2] == 60  # Apr
 
 
+def test_dotted_metric_name_alias():
+    """Test that dotted metric names generate valid SQL aliases.
+
+    This is a regression test for the bug where graph-level metric names
+    with dots would create invalid SQL aliases in DuckDB:
+    - Invalid: `AS auctions.bid_request_cnt_wow`
+    - Valid: `AS "auctions.bid_request_cnt_wow"`
+
+    We use a graph-level metric with a dotted name (not model.measure format).
+    """
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT '2024-01-01'::DATE AS sale_date, 100 AS revenue
+            UNION ALL SELECT '2024-01-08'::DATE, 150
+            UNION ALL SELECT '2024-01-15'::DATE, 120
+            UNION ALL SELECT '2024-01-22'::DATE, 180
+        """,
+        primary_key="sale_date",
+        dimensions=[Dimension(name="sale_date", sql="sale_date", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+
+    # Create a graph-level metric with a dotted name (but NOT model.measure format)
+    # This simulates the auctions.bid_request_cnt_wow scenario
+    revenue_wow = Metric(
+        name="auctions.bid_request_cnt_wow",  # Dotted metric name
+        type="time_comparison",
+        base_metric="sales.revenue",
+        comparison_type="wow",
+        calculation="percent_change",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(revenue_wow)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(
+        metrics=["auctions.bid_request_cnt_wow"],  # Reference by full name
+        dimensions=["sales.sale_date__week"],
+    )
+
+    print("\nDotted Metric Name SQL:")
+    print(sql)
+
+    # Key assertion: the SQL should be executable (no syntax error from dotted alias)
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    print("Results:", rows)
+
+    # Verify the metric works correctly
+    # Week 1: NULL (no prior)
+    # Week 2: (150-100)/100 * 100 = 50%
+    assert rows[0][2] is None  # Week 1 (no prior)
+    assert abs(rows[1][2] - 50.0) < 0.1  # Week 2
+
+
 def test_wow_ratio():
     """Test week-over-week ratio metric with weekly granularity."""
     sales = Model(

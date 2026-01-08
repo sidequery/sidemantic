@@ -70,6 +70,34 @@ class SparkConnection(BaseModel):
     password: str | None = Field(default=None, description="Password (optional)")
 
 
+class ADBCConnection(BaseModel):
+    """ADBC (Arrow Database Connectivity) connection configuration.
+
+    Uses dbc-installed drivers for efficient Arrow-native database access.
+    Pass driver-specific parameters directly - they're passed through as-is.
+
+    Prerequisites:
+        pip install adbc-driver-manager
+        dbc install <driver>  # e.g., dbc install snowflake
+
+    Example (Snowflake with key-pair auth):
+        connection:
+          type: adbc
+          driver: snowflake
+          adbc.snowflake.sql.account: ORG-ACCOUNT
+          adbc.snowflake.sql.db: MY_DATABASE
+          adbc.snowflake.sql.warehouse: COMPUTE_WH
+          adbc.snowflake.sql.auth_type: auth_jwt
+          adbc.snowflake.sql.client_option.jwt_private_key: key.p8
+          username: service_user
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["adbc"] = "adbc"
+    driver: str = Field(..., description="ADBC driver name (e.g., snowflake, postgresql, bigquery)")
+
+
 class PostgresServerConfig(BaseModel):
     """PostgreSQL wire protocol server configuration (ALPHA).
 
@@ -88,6 +116,7 @@ Connection = (
     | ClickHouseConnection
     | SnowflakeConnection
     | SparkConnection
+    | ADBCConnection
 )
 
 
@@ -150,7 +179,7 @@ class SidemanticConfig(BaseModel):
         if not models_path.is_absolute():
             models_path = (base / models_path).resolve()
 
-        # Resolve connection paths if DuckDB
+        # Resolve connection paths
         connection = self.connection
         if connection and isinstance(connection, DuckDBConnection) and connection.path != ":memory:":
             db_p = Path(connection.path)
@@ -288,5 +317,16 @@ def build_connection_string(config: SidemanticConfig) -> str:
                 f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
             )
         return f"spark://{config.connection.host}:{config.connection.port}/{config.connection.database}"
+    elif isinstance(config.connection, ADBCConnection):
+        from urllib.parse import quote
+
+        conn = config.connection
+        # Pass through all fields except type and driver
+        params = []
+        for key, value in conn.model_dump(exclude={"type", "driver"}, exclude_none=True).items():
+            params.append(f"{quote(key, safe='')}={quote(str(value), safe='')}")
+
+        query = "&".join(params)
+        return f"adbc://{conn.driver}?{query}" if query else f"adbc://{conn.driver}"
     else:
         raise ValueError(f"Unknown connection type: {type(config.connection)}")

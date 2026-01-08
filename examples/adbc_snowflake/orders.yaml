@@ -1,0 +1,41 @@
+cubes:
+  - name: orders
+    sql_table: demo.orders
+    description: E-commerce orders
+
+    dimensions:
+      - name: order_id
+        sql: order_id
+        type: number
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: number
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: region
+        sql: region
+        type: string
+
+      - name: order_date
+        sql: order_date
+        type: time
+
+    measures:
+      - name: total_orders
+        type: count
+        description: Total number of orders
+
+      - name: total_revenue
+        type: sum
+        sql: amount
+        description: Total revenue from orders
+
+      - name: avg_order_value
+        type: avg
+        sql: amount
+        description: Average order value

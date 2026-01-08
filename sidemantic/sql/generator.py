@@ -439,6 +439,7 @@ class SQLGenerator:
         Raises:
             ValueError: If segment not found
         """
+
         def qualify_unaliased_columns(filter_sql: str, model_alias: str) -> str:
             """Qualify unaliased columns in segment filters with model alias."""
             try:

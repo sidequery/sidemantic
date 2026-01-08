@@ -5,7 +5,7 @@ SQL-first semantic layer for consistent metrics across your data stack. Compatib
 - **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, Snowflake Cortex, Malloy
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL
 
-[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF)
+[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB download)
 
 ## Quickstart
 

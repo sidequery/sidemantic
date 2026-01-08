@@ -447,9 +447,22 @@ class SQLGenerator:
             except Exception:
                 return filter_sql
 
-            for col in parsed.find_all(exp.Column):
-                if not col.table:
-                    col.set("table", model_alias)
+            def visit(node: exp.Expression) -> None:
+                if isinstance(node, exp.Subquery):
+                    return
+
+                if isinstance(node, exp.Column) and not node.table:
+                    node.set("table", model_alias)
+
+                for arg in node.args.values():
+                    if isinstance(arg, exp.Expression):
+                        visit(arg)
+                    elif isinstance(arg, list):
+                        for item in arg:
+                            if isinstance(item, exp.Expression):
+                                visit(item)
+
+            visit(parsed)
 
             return parsed.sql(dialect=self.dialect)
 

@@ -26,7 +26,6 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.hex import HexAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
-    from sidemantic.adapters.malloy import MalloyAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.omni import OmniAdapter
     from sidemantic.adapters.rill import RillAdapter
@@ -53,6 +52,16 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         if suffix == ".lkml":
             adapter = LookMLAdapter()
         elif suffix == ".malloy":
+            try:
+                from sidemantic.adapters.malloy import MalloyAdapter
+            except ModuleNotFoundError as exc:
+                if exc.name == "antlr4":
+                    print(
+                        "Warning: Malloy support requires antlr4-python3-runtime. "
+                        "Install with `uv add \"sidemantic[malloy]\"`."
+                    )
+                    continue
+                raise
             adapter = MalloyAdapter()
         elif suffix == ".sql":
             # Sidemantic SQL files (pure SQL or with YAML frontmatter)

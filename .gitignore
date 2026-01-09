@@ -21,9 +21,16 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+.wrangler/
 
 # Local example DBs
 examples/*.db
+examples/.ipynb_checkpoints/
+examples/juv.tmp*.py
+
+# Local parquet files (large demo data)
+/le_places.parquet
+/categories.parquet
 
 # Package installers
 *.pkg
@@ -38,3 +45,5 @@ sidemantic_definitions.sql
 node_modules/
 bun.lockb
 package.json
+!js/package.json
+!js/bun.lock

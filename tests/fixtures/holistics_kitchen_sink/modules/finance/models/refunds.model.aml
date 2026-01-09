@@ -1,0 +1,19 @@
+Model refunds {
+  type: 'table'
+  table_name: 'public.refunds'
+
+  dimension refund_id {
+    type: 'number'
+    primary_key: true
+  }
+
+  dimension order_id {
+    type: 'number'
+  }
+
+  measure refund_count {
+    type: 'number'
+    definition: @sql {{ refund_id }};;
+    aggregation_type: 'count'
+  }
+}

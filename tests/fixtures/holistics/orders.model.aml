@@ -1,0 +1,43 @@
+Model orders {
+  type: 'table'
+  table_name: 'public.orders'
+
+  dimension id {
+    type: 'number'
+    primary_key: true
+  }
+
+  dimension user_id {
+    type: 'number'
+    definition: @sql {{ #SOURCE.user_id }};;
+  }
+
+  dimension status {
+    type: 'text'
+  }
+
+  measure order_count {
+    type: 'number'
+    definition: @sql {{ id }};;
+    aggregation_type: 'count'
+  }
+
+  measure revenue {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'sum'
+    format: '$#,##0.00'
+  }
+
+  measure amount_stdev {
+    type: 'number'
+    definition: @sql {{ amount }};;
+    aggregation_type: 'stdev'
+  }
+
+  measure aov {
+    type: 'number'
+    definition: @sql {{ revenue }} / NULLIF({{ order_count }}, 0);;
+    aggregation_type: 'custom'
+  }
+}

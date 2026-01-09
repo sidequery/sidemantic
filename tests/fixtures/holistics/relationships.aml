@@ -1,0 +1,11 @@
+Relationship orders_users {
+  type: 'many_to_one'
+  from: r(orders.user_id)
+  to: r(users.id)
+}
+
+Relationship users_accounts {
+  type: 'one_to_one'
+  from: r(users.id)
+  to: r(accounts.user_id)
+}

@@ -2335,6 +2335,7 @@ version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "altair" },
+    { name = "antlr4-python3-runtime" },
     { name = "duckdb" },
     { name = "inflect" },
     { name = "jinja2" },
@@ -2413,6 +2414,7 @@ dev = [
 requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'adbc'", specifier = ">=1.0.0" },
     { name = "altair", specifier = ">=5.0.0" },
+    { name = "antlr4-python3-runtime", specifier = ">=4.13.2" },
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.6.0" },
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=2.0.0" },
     { name = "duckdb", specifier = ">=1.0.0" },

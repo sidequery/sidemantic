@@ -1,0 +1,13 @@
+Model accounts {
+  type: 'table'
+  table_name: 'public.accounts'
+
+  dimension user_id {
+    type: 'number'
+    primary_key: true
+  }
+
+  dimension plan {
+    type: 'text'
+  }
+}

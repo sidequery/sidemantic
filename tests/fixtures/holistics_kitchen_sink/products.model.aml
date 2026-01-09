@@ -1,0 +1,17 @@
+Model kitchen_products {
+  type: 'table'
+  label: 'Kitchen Products'
+  description: 'Products table for kitchen sink'
+  data_source_name: 'demo'
+  table_name: 'public.products'
+
+  dimension product_id {
+    type: 'number'
+    primary_key: true
+    definition: @sql {{ product_id }};;
+  }
+
+  dimension name {
+    type: 'text'
+  }
+}

@@ -1,0 +1,23 @@
+Model kitchen_customers {
+  type: 'table'
+  label: 'Kitchen Customers'
+  description: 'Customers table for kitchen sink'
+  data_source_name: 'demo'
+  table_name: 'public.customers'
+
+  dimension customer_id {
+    type: 'number'
+    primary_key: true
+    definition: @sql {{ customer_id }};;
+  }
+
+  dimension name {
+    type: 'text'
+    definition: @sql {{ name }};;
+  }
+
+  dimension signup_date {
+    type: 'date'
+    definition: @sql {{ signup_date }};;
+  }
+}

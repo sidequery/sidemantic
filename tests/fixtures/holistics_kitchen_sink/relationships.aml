@@ -1,0 +1,23 @@
+Relationship orders_customers {
+  type: 'many_to_one'
+  from: FieldRef {
+    model: 'kitchen_orders'
+    field: 'customer_id'
+  }
+  to: FieldRef {
+    model: 'kitchen_customers'
+    field: 'customer_id'
+  }
+}
+
+Relationship orders_products {
+  type: 'many_to_one'
+  from: r(kitchen_orders.product_id)
+  to: r(kitchen_products.product_id)
+}
+
+Relationship customer_summary {
+  type: 'one_to_one'
+  from: r(kitchen_customers.customer_id)
+  to: r(kitchen_order_summary.customer_id)
+}

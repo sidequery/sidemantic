@@ -7,6 +7,10 @@ SQL-first semantic layer for consistent metrics across your data stack. Compatib
 
 [Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB download)
 
+## Should I use Sidemantic
+
+As you might notice, Sidemantic is a very ambitious and young semantic layer project. You will likely encounter some rough patches, especially with the more exotic features like converting between semantic model formats. Issue reports are much appreciated if you try out Sidemantic and hit a snag 🫡
+
 ## Quickstart
 
 Install:

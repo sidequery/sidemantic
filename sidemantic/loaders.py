@@ -58,7 +58,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 if exc.name == "antlr4":
                     print(
                         "Warning: Malloy support requires antlr4-python3-runtime. "
-                        "Install with `uv add \"sidemantic[malloy]\"`."
+                        'Install with `uv add "sidemantic[malloy]"`.'
                     )
                     continue
                 raise

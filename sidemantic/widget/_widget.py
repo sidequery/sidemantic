@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import pathlib
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import anywidget
@@ -308,13 +309,8 @@ class MetricsExplorer(anywidget.AnyWidget):
                 min_date = result[0]
                 max_date = result[1]
 
-                # Convert to ISO strings
-                if hasattr(min_date, "isoformat"):
-                    min_date = min_date.isoformat()[:10]
-                    max_date = max_date.isoformat()[:10]
-                else:
-                    min_date = str(min_date)[:10]
-                    max_date = str(max_date)[:10]
+                min_date = self._stringify_time_value(min_date)
+                max_date = self._stringify_time_value(max_date)
 
                 self.date_range = [min_date, max_date]
         except Exception as e:
@@ -363,16 +359,10 @@ class MetricsExplorer(anywidget.AnyWidget):
         # Date range filter
         if self.brush_selection and len(self.brush_selection) == 2:
             start, end = self.brush_selection
-            filter_exprs.append(
-                f"{self._model_name}.{self._time_dimension} >= '{start}' AND "
-                f"{self._model_name}.{self._time_dimension} <= '{end}'"
-            )
+            filter_exprs.append(self._format_time_range_filter(start, end))
         elif self.date_range and len(self.date_range) == 2:
             start, end = self.date_range
-            filter_exprs.append(
-                f"{self._model_name}.{self._time_dimension} >= '{start}' AND "
-                f"{self._model_name}.{self._time_dimension} <= '{end}'"
-            )
+            filter_exprs.append(self._format_time_range_filter(start, end))
 
         # Dimension filters
         for dim_key, values in self.filters.items():
@@ -380,12 +370,48 @@ class MetricsExplorer(anywidget.AnyWidget):
                 continue
             if values:
                 if len(values) == 1:
-                    filter_exprs.append(f"{self._model_name}.{dim_key} = '{values[0]}'")
+                    value = self._escape_sql_literal(str(values[0]))
+                    filter_exprs.append(f"{self._model_name}.{dim_key} = '{value}'")
                 else:
-                    clauses = " OR ".join(f"{self._model_name}.{dim_key} = '{v}'" for v in values)
+                    clauses = " OR ".join(
+                        f"{self._model_name}.{dim_key} = '{self._escape_sql_literal(str(v))}'" for v in values
+                    )
                     filter_exprs.append(f"({clauses})")
 
         return filter_exprs
+
+    def _stringify_time_value(self, value) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat(sep=" ")
+        if isinstance(value, date):
+            return value.isoformat()
+        return str(value)
+
+    def _is_date_only(self, value: str) -> bool:
+        return len(value) == 10 and value[4] == "-" and value[7] == "-"
+
+    def _format_time_range_filter(self, start, end) -> str:
+        start_str = self._stringify_time_value(start)
+        end_str = self._stringify_time_value(end)
+
+        start_literal = self._escape_sql_literal(start_str)
+        end_literal = self._escape_sql_literal(end_str)
+
+        if self._is_date_only(end_str):
+            end_exclusive = (date.fromisoformat(end_str) + timedelta(days=1)).isoformat()
+            end_literal = self._escape_sql_literal(end_exclusive)
+            return (
+                f"{self._model_name}.{self._time_dimension} >= '{start_literal}' AND "
+                f"{self._model_name}.{self._time_dimension} < '{end_literal}'"
+            )
+
+        return (
+            f"{self._model_name}.{self._time_dimension} >= '{start_literal}' AND "
+            f"{self._model_name}.{self._time_dimension} <= '{end_literal}'"
+        )
+
+    def _escape_sql_literal(self, value: str) -> str:
+        return value.replace("'", "''")
 
     def _refresh_all(self):
         """Refresh all data (metrics and dimensions)."""

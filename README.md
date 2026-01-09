@@ -25,6 +25,12 @@ uv add "sidemantic[widget]" jupyterlab
 uv run jupyter lab
 ```
 
+Marimo (uv):
+```bash
+uv add "sidemantic[widget]" marimo
+uv run marimo edit
+```
+
 ```python
 import duckdb
 from sidemantic.widget import MetricsExplorer

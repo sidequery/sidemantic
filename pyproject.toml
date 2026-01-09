@@ -73,6 +73,13 @@ lsp = [
     "lsprotocol>=2025.0.0",
     "pygls>=2.0.0",
 ]
+malloy = [
+    "antlr4-python3-runtime>=4.13.2",
+]
+widget = [
+    "anywidget>=0.9.0",
+    "pyarrow>=14.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -108,6 +115,8 @@ packages = ["sidemantic"]
 "examples/multi_format_demo/hex" = "sidemantic/examples/multi_format_demo/hex"
 "examples/multi_format_demo/lookml" = "sidemantic/examples/multi_format_demo/lookml"
 "examples/multi_format_demo/demo_data.py" = "sidemantic/examples/multi_format_demo/demo_data.py"
+"sidemantic/widget/static/widget.js" = "sidemantic/widget/static/widget.js"
+"sidemantic/widget/static/widget.css" = "sidemantic/widget/static/widget.css"
 
 [tool.ruff]
 line-length = 120
@@ -134,8 +143,12 @@ prerelease = "if-necessary"
 [dependency-groups]
 dev = [
     "antlr4-python3-runtime>=4.13.2",
+    "jupyterlab>=4.5.1",
     "lsprotocol>=2025.0.0",
     "marimo==0.16.5",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<3",
+    "polars>=1.36.1",
     "pygls>=2.0.0",
     "pytest>=8.4.2",
     "ruff>=0.14.0",

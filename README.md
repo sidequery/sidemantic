@@ -22,6 +22,32 @@ Install:
 uv add sidemantic
 ```
 
+Malloy support (uv):
+```bash
+uv add "sidemantic[malloy]"
+```
+
+Notebook widget (uv):
+```bash
+uv add "sidemantic[widget]" jupyterlab
+uv run jupyter lab
+```
+
+Marimo (uv):
+```bash
+uv add "sidemantic[widget]" marimo
+uv run marimo edit
+```
+
+```python
+import duckdb
+from sidemantic.widget import MetricsExplorer
+
+conn = duckdb.connect(":memory:")
+conn.execute("create table t as select 1 as value, 'a' as category, date '2024-01-01' as d")
+MetricsExplorer(conn.table("t"), time_dimension="d")
+```
+
 Define models in SQL, YAML, or Python:
 
 <details>

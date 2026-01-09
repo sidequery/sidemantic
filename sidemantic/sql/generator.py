@@ -162,6 +162,7 @@ class SQLGenerator:
         ungrouped: bool = False,
         use_preaggregations: bool = False,
         aliases: dict[str, str] | None = None,
+        skip_default_time_dimensions: bool = False,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -177,6 +178,7 @@ class SQLGenerator:
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
             aliases: Custom aliases for fields (dict mapping field reference to alias)
+            skip_default_time_dimensions: If True, don't auto-include default_time_dimension
 
         Returns:
             SQL query string
@@ -189,7 +191,8 @@ class SQLGenerator:
         aliases = aliases or {}
 
         # Auto-include default_time_dimension from metrics if not already present
-        dimensions = self._apply_default_time_dimensions(metrics, dimensions)
+        if not skip_default_time_dimensions:
+            dimensions = self._apply_default_time_dimensions(metrics, dimensions)
 
         # Resolve segments to SQL filters
         segment_filters = self._resolve_segments(segments)

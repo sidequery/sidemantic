@@ -228,12 +228,13 @@ def _(fsq_enabled, fsq_preagg_url, http_error_cls, mo, url_error_cls, urllib_req
 
 @app.cell
 def _(datetime_cls, fsq_enabled, mo, target_path):
-    if target_path.exists():
-        _size_mb = target_path.stat().st_size / 1_000_000
-        _updated = datetime_cls.fromtimestamp(target_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-        mo.md(f"Pre-agg DB status: local file found ({_size_mb:.1f} MB, mtime {_updated})")
-    else:
-        mo.md("Pre-agg DB status: local file not found")
+    if fsq_enabled and target_path is not None:
+        if target_path.exists():
+            _size_mb = target_path.stat().st_size / 1_000_000
+            _updated = datetime_cls.fromtimestamp(target_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            mo.md(f"Pre-agg DB status: local file found ({_size_mb:.1f} MB, mtime {_updated})")
+        else:
+            mo.md("Pre-agg DB status: local file not found")
     return
 
 
@@ -306,12 +307,13 @@ def _(
 @app.cell
 def _(fsq_enabled, fsq_preagg_url, mo, target_path):
     fsq_source = None
-    if target_path.exists():
-        mo.md(f"Using local pre-agg DB: `{target_path}`")
-        fsq_source = str(target_path)
-    else:
-        mo.md(f"Using remote pre-agg DB: `{fsq_preagg_url}`")
-        fsq_source = fsq_preagg_url
+    if fsq_enabled and target_path is not None:
+        if target_path.exists():
+            mo.md(f"Using local pre-agg DB: `{target_path}`")
+            fsq_source = str(target_path)
+        else:
+            mo.md(f"Using remote pre-agg DB: `{fsq_preagg_url}`")
+            fsq_source = fsq_preagg_url
     return (fsq_source,)
 
 

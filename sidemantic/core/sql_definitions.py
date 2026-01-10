@@ -1,5 +1,6 @@
 """Parse SQL-based metric and segment definitions."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -10,6 +11,8 @@ from sidemantic.core.dialect import (
     DimensionDef,
     MetricDef,
     ModelDef,
+    ParameterDef,
+    PreAggregationDef,
     PropertyEQ,
     RelationshipDef,
     SegmentDef,
@@ -18,62 +21,182 @@ from sidemantic.core.dialect import (
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.parameter import Parameter
+from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 
 
-def parse_sql_definitions(sql: str) -> tuple[list[Metric], list[Segment]]:
-    """Parse SQL string containing METRIC() and SEGMENT() definitions.
+def _split_top_level(text: str, delimiter: str = ",") -> list[str]:
+    items = []
+    depth = 0
+    in_quote = None
+    escape = False
+    buf = []
 
-    Args:
-        sql: SQL string with definitions
+    for char in text:
+        if in_quote:
+            buf.append(char)
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                escape = True
+                continue
+            if char == in_quote:
+                in_quote = None
+            continue
 
-    Returns:
-        Tuple of (metrics, segments)
-    """
-    metrics = []
-    segments = []
+        if char in ("'", '"'):
+            in_quote = char
+            buf.append(char)
+            continue
 
-    try:
-        statements = parse(sql)
-    except Exception:
-        # If parsing fails, return empty lists
-        return metrics, segments
+        if char in ("[", "{"):
+            depth += 1
+        elif char in ("]", "}"):
+            depth = max(depth - 1, 0)
 
-    for stmt in statements:
-        if isinstance(stmt, MetricDef):
-            metric = _parse_metric_def(stmt)
-            if metric:
-                metrics.append(metric)
-        elif isinstance(stmt, SegmentDef):
-            segment = _parse_segment_def(stmt)
-            if segment:
-                segments.append(segment)
+        if char == delimiter and depth == 0:
+            item = "".join(buf).strip()
+            if item:
+                items.append(item)
+            buf = []
+            continue
 
-    return metrics, segments
+        buf.append(char)
+
+    trailing = "".join(buf).strip()
+    if trailing:
+        items.append(trailing)
+
+    return items
 
 
-def parse_sql_model(sql: str) -> Model | None:
-    """Parse SQL string containing a complete model definition.
+def _split_key_value(text: str) -> tuple[str, str]:
+    depth = 0
+    in_quote = None
 
-    Expects MODEL(), DIMENSION(), RELATIONSHIP(), METRIC(), and SEGMENT() statements.
+    for idx, char in enumerate(text):
+        if in_quote:
+            if char == in_quote:
+                in_quote = None
+            continue
 
-    Args:
-        sql: SQL string with model definition
+        if char in ("'", '"'):
+            in_quote = char
+            continue
 
-    Returns:
-        Model instance or None
-    """
-    model_def = None
-    dimensions = []
-    relationships = []
-    metrics = []
-    segments = []
+        if depth == 0 and char in ("[", "{") and idx > 0:
+            return text[:idx].strip(), text[idx:].strip()
 
-    try:
-        statements = parse(sql)
-    except Exception:
+        if char in ("[", "{"):
+            depth += 1
+            continue
+
+        if char in ("]", "}"):
+            depth = max(depth - 1, 0)
+            continue
+
+        if depth == 0 and char in (":", "="):
+            return text[:idx].strip(), text[idx + 1 :].strip()
+
+        if depth == 0 and char.isspace():
+            return text[:idx].strip(), text[idx:].strip()
+
+    return text.strip(), ""
+
+
+def _parse_scalar_literal(value: str) -> object:
+    if not value:
+        return ""
+
+    if value[0] in ("'", '"') and value[-1] == value[0]:
+        inner = value[1:-1]
+        if value[0] == "'":
+            inner = inner.replace("''", "'")
+        return inner
+
+    lowered = value.lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    if lowered in ("null", "none"):
         return None
+
+    if re.match(r"^[+-]?\d+$", value):
+        return int(value)
+    if re.match(r"^[+-]?\d+\.\d+$", value):
+        return float(value)
+
+    return value
+
+
+def _parse_list_literal(value: str) -> list[object]:
+    items = _split_top_level(value)
+    return [_parse_literal(item) for item in items if item]
+
+
+def _parse_object_literal(value: str) -> dict[str, object]:
+    pairs = _split_top_level(value)
+    obj: dict[str, object] = {}
+
+    for pair in pairs:
+        if not pair:
+            continue
+        key, raw_value = _split_key_value(pair)
+        if not key:
+            continue
+        parsed_key = _parse_scalar_literal(key)
+        key_str = str(parsed_key)
+        if raw_value:
+            obj[key_str] = _parse_literal(raw_value)
+        else:
+            obj[key_str] = True
+
+    return obj
+
+
+def _parse_literal(value: str) -> object:
+    raw = value.strip()
+    if not raw:
+        return ""
+
+    if raw.startswith("[") and raw.endswith("]"):
+        return _parse_list_literal(raw[1:-1].strip())
+    if raw.startswith("{") and raw.endswith("}"):
+        return _parse_object_literal(raw[1:-1].strip())
+
+    return _parse_scalar_literal(raw)
+
+
+def _normalize_list(value: object | None) -> list[object] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _parse_sql_statements(
+    sql: str,
+) -> tuple[
+    Model | None,
+    list[Dimension],
+    list[Relationship],
+    list[Metric],
+    list[Segment],
+    list[Parameter],
+    list[PreAggregation],
+]:
+    model_def = None
+    dimensions: list[Dimension] = []
+    relationships: list[Relationship] = []
+    metrics: list[Metric] = []
+    segments: list[Segment] = []
+    parameters: list[Parameter] = []
+    pre_aggregations: list[PreAggregation] = []
+
+    statements = parse(sql)
 
     for stmt in statements:
         if isinstance(stmt, ModelDef):
@@ -94,6 +217,67 @@ def parse_sql_model(sql: str) -> Model | None:
             segment = _parse_segment_def(stmt)
             if segment:
                 segments.append(segment)
+        elif isinstance(stmt, ParameterDef):
+            parameter = _parse_parameter_def(stmt)
+            if parameter:
+                parameters.append(parameter)
+        elif isinstance(stmt, PreAggregationDef):
+            preagg = _parse_pre_aggregation_def(stmt)
+            if preagg:
+                pre_aggregations.append(preagg)
+
+    return model_def, dimensions, relationships, metrics, segments, parameters, pre_aggregations
+
+
+def parse_sql_definitions(sql: str) -> tuple[list[Metric], list[Segment]]:
+    """Parse SQL string containing METRIC() and SEGMENT() definitions.
+
+    Args:
+        sql: SQL string with definitions
+
+    Returns:
+        Tuple of (metrics, segments)
+    """
+    try:
+        metrics, segments, _ = parse_sql_graph_definitions(sql)
+    except Exception:
+        return [], []
+
+    return metrics, segments
+
+
+def parse_sql_graph_definitions(sql: str) -> tuple[list[Metric], list[Segment], list[Parameter]]:
+    """Parse SQL string containing graph-level definitions.
+
+    Args:
+        sql: SQL string with definitions
+
+    Returns:
+        Tuple of (metrics, segments, parameters)
+    """
+    try:
+        _, _, _, metrics, segments, parameters, _ = _parse_sql_statements(sql)
+    except Exception:
+        return [], [], []
+
+    return metrics, segments, parameters
+
+
+def parse_sql_model(sql: str) -> Model | None:
+    """Parse SQL string containing a complete model definition.
+
+    Expects MODEL(), DIMENSION(), RELATIONSHIP(), METRIC(), and SEGMENT() statements.
+
+    Args:
+        sql: SQL string with model definition
+
+    Returns:
+        Model instance or None
+    """
+    try:
+        model_def, dimensions, relationships, metrics, segments, _, pre_aggregations = _parse_sql_statements(sql)
+    except Exception:
+        return None
 
     if not model_def:
         return None
@@ -107,8 +291,47 @@ def parse_sql_model(sql: str) -> Model | None:
         model_def.metrics.extend(metrics)
     if segments:
         model_def.segments.extend(segments)
+    if pre_aggregations:
+        model_def.pre_aggregations.extend(pre_aggregations)
 
     return model_def
+
+
+def parse_sql_file_with_frontmatter_extended(
+    path: Path,
+) -> tuple[dict, list[Metric], list[Segment], list[Parameter], list[PreAggregation]]:
+    """Parse .sql file with YAML frontmatter and SQL definitions.
+
+    Args:
+        path: Path to .sql file
+
+    Returns:
+        Tuple of (frontmatter_dict, metrics, segments, parameters, pre_aggregations)
+    """
+    with open(path) as f:
+        content = f.read()
+
+    frontmatter = {}
+    sql_body = content
+
+    if content.strip().startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            frontmatter_text = parts[1].strip()
+            sql_body = parts[2].strip()
+
+            if frontmatter_text:
+                frontmatter = yaml.safe_load(frontmatter_text) or {}
+
+    metrics, segments, parameters = parse_sql_graph_definitions(sql_body)
+
+    pre_aggregations: list[PreAggregation] = []
+    try:
+        _, _, _, _, _, _, pre_aggregations = _parse_sql_statements(sql_body)
+    except Exception:
+        pre_aggregations = []
+
+    return frontmatter, metrics, segments, parameters, pre_aggregations
 
 
 def parse_sql_file_with_frontmatter(path: Path) -> tuple[dict, list[Metric], list[Segment]]:
@@ -132,23 +355,7 @@ def parse_sql_file_with_frontmatter(path: Path) -> tuple[dict, list[Metric], lis
     Returns:
         Tuple of (frontmatter_dict, metrics, segments)
     """
-    with open(path) as f:
-        content = f.read()
-
-    frontmatter = {}
-    sql_body = content
-
-    # Check for YAML frontmatter (between --- markers)
-    if content.strip().startswith("---"):
-        parts = content.split("---", 2)
-        if len(parts) >= 3:
-            frontmatter_text = parts[1].strip()
-            sql_body = parts[2].strip()
-
-            if frontmatter_text:
-                frontmatter = yaml.safe_load(frontmatter_text) or {}
-
-    metrics, segments = parse_sql_definitions(sql_body)
+    frontmatter, metrics, segments, _, _ = parse_sql_file_with_frontmatter_extended(path)
     return frontmatter, metrics, segments
 
 
@@ -288,32 +495,83 @@ def _parse_metric_def(metric_def: MetricDef) -> Metric | None:
         if field_name not in metric_fields:
             continue
 
-        # Type conversions for specific fields
         if field_name in ("filters", "drill_fields"):
-            # Convert to list if string
-            if isinstance(value, str):
-                if value.strip().startswith("["):
-                    try:
-                        import ast
-
-                        metric_data[field_name] = ast.literal_eval(value)
-                    except (ValueError, SyntaxError):
-                        metric_data[field_name] = [value]
-                else:
-                    metric_data[field_name] = [value]
-            else:
-                metric_data[field_name] = value
-        elif field_name == "fill_nulls_with":
-            # Try to convert to number
-            try:
-                metric_data[field_name] = float(value) if "." in str(value) else int(value)
-            except (ValueError, TypeError):
-                metric_data[field_name] = value
+            metric_data[field_name] = _normalize_list(value)
         else:
-            # Default: use value as-is
             metric_data[field_name] = value
 
     return Metric(**metric_data)
+
+
+def _parse_parameter_def(parameter_def: ParameterDef) -> Parameter | None:
+    """Convert ParameterDef expression to Parameter instance."""
+    props = _extract_properties(parameter_def)
+
+    name = props.get("name")
+    if not name:
+        return None
+
+    parameter_fields = set(Parameter.model_fields.keys())
+    parameter_data = {}
+
+    for prop_name, value in props.items():
+        field_name = PROPERTY_ALIASES.get(prop_name, prop_name)
+        if field_name not in parameter_fields:
+            continue
+        if field_name == "allowed_values":
+            parameter_data[field_name] = _normalize_list(value)
+        else:
+            parameter_data[field_name] = value
+
+    if "name" not in parameter_data or "type" not in parameter_data:
+        return None
+
+    return Parameter(**parameter_data)
+
+
+def _parse_pre_aggregation_def(preagg_def: PreAggregationDef) -> PreAggregation | None:
+    """Convert PreAggregationDef expression to PreAggregation instance."""
+    props = _extract_properties(preagg_def)
+
+    name = props.get("name")
+    if not name:
+        return None
+
+    preagg_fields = set(PreAggregation.model_fields.keys())
+    preagg_data: dict[str, object] = {}
+
+    for prop_name, value in props.items():
+        field_name = PROPERTY_ALIASES.get(prop_name, prop_name)
+        if field_name not in preagg_fields:
+            continue
+
+        if field_name in ("measures", "dimensions"):
+            preagg_data[field_name] = _normalize_list(value)
+        elif field_name == "indexes":
+            indexes = _normalize_list(value) or []
+            parsed_indexes = []
+            for idx in indexes:
+                if isinstance(idx, Index):
+                    parsed_indexes.append(idx)
+                elif isinstance(idx, dict):
+                    parsed_indexes.append(Index(**idx))
+                else:
+                    parsed_indexes.append(Index(name=str(idx), columns=[str(idx)]))
+            preagg_data[field_name] = parsed_indexes
+        elif field_name == "refresh_key":
+            if isinstance(value, RefreshKey):
+                preagg_data[field_name] = value
+            elif isinstance(value, dict):
+                preagg_data[field_name] = RefreshKey(**value)
+            else:
+                preagg_data[field_name] = None
+        else:
+            preagg_data[field_name] = value
+
+    if "name" not in preagg_data:
+        return None
+
+    return PreAggregation(**preagg_data)
 
 
 def _parse_segment_def(segment_def: SegmentDef) -> Segment | None:
@@ -358,8 +616,8 @@ def _parse_segment_def(segment_def: SegmentDef) -> Segment | None:
     return Segment(**segment_data)
 
 
-def _extract_properties(definition: MetricDef | SegmentDef) -> dict[str, str]:
-    """Extract property assignments from METRIC/SEGMENT definition.
+def _extract_properties(definition: exp.Expression) -> dict[str, object]:
+    """Extract property assignments from SQL definitions.
 
     Args:
         definition: MetricDef or SegmentDef expression
@@ -381,13 +639,9 @@ def _extract_properties(definition: MetricDef | SegmentDef) -> dict[str, str]:
                 # For complex expressions, use SQL representation
                 value = value_expr.sql(dialect="duckdb")
 
-            # Strip surrounding quotes for simple string values
-            # but preserve them within SQL expressions
             if isinstance(value, str):
-                # Only strip outer quotes if the entire value is quoted
-                if value.startswith("'") and value.endswith("'") and value.count("'") == 2:
-                    value = value[1:-1]
-
-            props[key] = value
+                props[key] = _parse_literal(value)
+            else:
+                props[key] = value
 
     return props

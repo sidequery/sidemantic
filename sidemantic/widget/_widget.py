@@ -179,7 +179,18 @@ class MetricsExplorer(anywidget.AnyWidget):
         # Create SQLGenerator once (reused for all queries)
         from sidemantic.sql.generator import SQLGenerator
 
-        self._generator = SQLGenerator(self._graph, dialect="duckdb")
+        preagg_database = None
+        preagg_schema = None
+        if self._layer is not None:
+            preagg_database = getattr(self._layer, "preagg_database", None)
+            preagg_schema = getattr(self._layer, "preagg_schema", None)
+
+        self._generator = SQLGenerator(
+            self._graph,
+            dialect="duckdb",
+            preagg_database=preagg_database,
+            preagg_schema=preagg_schema,
+        )
 
         # Set up observers with specific handlers
         self.observe(self._on_filters_change, names=["filters"])
@@ -366,6 +377,37 @@ class MetricsExplorer(anywidget.AnyWidget):
 
                 self.date_range = [min_date, max_date]
         except Exception as e:
+            # Fall back to a pre-aggregation table when the base table doesn't exist.
+            if self._use_preaggregations:
+                model = self._graph.get_model(self._model_name)
+                if model and model.pre_aggregations:
+                    preagg = next(
+                        (p for p in model.pre_aggregations if p.time_dimension and p.granularity),
+                        None,
+                    )
+                    if preagg:
+                        preagg_db = None
+                        preagg_schema = None
+                        if self._layer is not None:
+                            preagg_db = getattr(self._layer, "preagg_database", None)
+                            preagg_schema = getattr(self._layer, "preagg_schema", None)
+                        table_name = preagg.get_table_name(
+                            model.name,
+                            database=preagg_db,
+                            schema=preagg_schema,
+                        )
+                        time_col = f"{preagg.time_dimension}_{preagg.granularity}"
+                        try:
+                            result = self._execute(
+                                f'SELECT MIN("{time_col}") as min_date, MAX("{time_col}") as max_date FROM {table_name}'
+                            ).fetchone()
+                            if result and result[0] and result[1]:
+                                min_date = self._stringify_time_value(result[0])
+                                max_date = self._stringify_time_value(result[1])
+                                self.date_range = [min_date, max_date]
+                                return
+                        except Exception:
+                            pass
             self._metric_error = f"Failed to compute date range: {e}"
 
     def _on_filters_change(self, change):
@@ -432,7 +474,13 @@ class MetricsExplorer(anywidget.AnyWidget):
 
         return filter_exprs
 
-    def _record_query_intent(self, metrics: list[str], dimensions: list[str], granularity: str | None) -> None:
+    def _record_query_intent(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        granularity: str | None,
+        filters: list[str] | None = None,
+    ) -> None:
         if not self._auto_preaggregations or not self._auto_preagg_recommender:
             return
         if not self._graph:
@@ -442,18 +490,29 @@ class MetricsExplorer(anywidget.AnyWidget):
         if not model:
             return
 
-        metric_names = []
+        metric_names: list[str] = []
+        count_metric_name: str | None = None
         for metric_ref in metrics:
             metric_name = metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
             metric = model.get_metric(metric_name)
             if not metric or not metric.agg:
                 continue
-            if metric.agg.lower() not in ("sum", "count", "min", "max"):
+            agg = metric.agg.lower()
+            if agg not in ("sum", "count", "min", "max", "avg"):
                 continue
             metric_names.append(metric_name)
+            if agg == "count":
+                count_metric_name = metric_name
 
         if not metric_names:
             return
+
+        # Ensure AVG metrics can be derived by including a count measure.
+        if any(model.get_metric(name).agg == "avg" for name in metric_names):
+            if not count_metric_name:
+                count_metric_name = self._find_count_metric_name(model, metric_names)
+            if count_metric_name and count_metric_name not in metric_names:
+                metric_names.append(count_metric_name)
 
         dim_names = []
         for dim_ref in dimensions:
@@ -463,6 +522,14 @@ class MetricsExplorer(anywidget.AnyWidget):
             if self._time_dimension and dim_name == self._time_dimension:
                 continue
             dim_names.append(dim_name)
+
+        if filters:
+            filter_dims = self._extract_filter_columns(filters)
+            for dim_name in filter_dims:
+                if self._time_dimension and dim_name == self._time_dimension:
+                    continue
+                if dim_name not in dim_names:
+                    dim_names.append(dim_name)
 
         from sidemantic.core.preagg_recommender import QueryPattern
 
@@ -484,13 +551,20 @@ class MetricsExplorer(anywidget.AnyWidget):
         if benefit_score < self._auto_preagg_min_score:
             return
 
-        self._materialize_preagg(model, metric_names, dim_names)
+        self._materialize_preagg(model, metric_names, dim_names, granularity)
 
-    def _materialize_preagg(self, model, metric_names: list[str], dim_names: list[str]) -> None:
+    def _materialize_preagg(
+        self,
+        model,
+        metric_names: list[str],
+        dim_names: list[str],
+        granularity: str | None,
+    ) -> None:
         from sidemantic.core.pre_aggregation import PreAggregation
 
         time_dimension = self._time_dimension
-        granularity = "day" if time_dimension else None
+        if time_dimension and not granularity:
+            granularity = "day"
 
         name_parts = []
         if granularity:
@@ -569,6 +643,36 @@ class MetricsExplorer(anywidget.AnyWidget):
 
     def _escape_sql_literal(self, value: str) -> str:
         return value.replace("'", "''")
+
+    def _find_count_metric_name(self, model, metric_names: list[str]) -> str | None:
+        """Pick a count metric to support AVG rollups."""
+        for name in metric_names:
+            if name.startswith("avg_"):
+                candidate = f"count_{name[4:]}"
+                if model.get_metric(candidate):
+                    return candidate
+            if "_avg" in name:
+                candidate = name.replace("_avg", "_count")
+                if model.get_metric(candidate):
+                    return candidate
+        if model.get_metric("count"):
+            return "count"
+        for metric in model.metrics or []:
+            if metric.agg == "count":
+                return metric.name
+        return None
+
+    def _extract_filter_columns(self, filters: list[str]) -> list[str]:
+        """Extract column names referenced in filter expressions."""
+        import re
+
+        columns: list[str] = []
+        for filter_expr in filters:
+            matches = re.findall(r"(?:\\w+\\.)?(\\w+)\\s*[=<>!]", filter_expr)
+            for col in matches:
+                if col not in columns:
+                    columns.append(col)
+        return columns
 
     def _execute(self, sql: str):
         """Execute SQL through adapter when layer is available, otherwise raw connection.
@@ -660,7 +764,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                         pass
                     totals[metric_ref.split(".")[-1]] = value
             self.metric_totals = totals
-            self._record_query_intent(metric_refs, [time_dim_ref], grain)
+            self._record_query_intent(metric_refs, [time_dim_ref], grain, filters)
         except Exception as e:
             self._metric_error = f"Metric query failed: {e}"
         if sync_status:
@@ -703,7 +807,12 @@ class MetricsExplorer(anywidget.AnyWidget):
                 result = self._execute_arrow(sql)
                 dimension_data[dim_key] = _table_to_ipc(result, decimal_mode="string")
                 self.dimension_data = dict(dimension_data)
-                self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
+                self._record_query_intent(
+                    [selected_metric_ref],
+                    [dim_ref],
+                    self.time_grain or "day",
+                    filters,
+                )
             except Exception as e:
                 self._dimension_error = f"Dimension query failed for {dim_key}: {e}"
             if sync_status:
@@ -737,7 +846,12 @@ class MetricsExplorer(anywidget.AnyWidget):
                 result = self._execute_arrow(sql)
                 dimension_data[dim_key] = _table_to_ipc(result, decimal_mode="string")
                 self.dimension_data = dict(dimension_data)
-                self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
+                self._record_query_intent(
+                    [selected_metric_ref],
+                    [dim_ref],
+                    self.time_grain or "day",
+                    filters,
+                )
             except Exception as e:
                 self._dimension_error = f"Dimension query failed for {dim_key}: {e}"
 

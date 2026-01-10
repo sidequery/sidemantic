@@ -1,4 +1,27 @@
-# Sidemantic Project Guidelines
+# Sidemantic
+
+Universal SQL-first semantic layer in Python. Imports from Cube/LookML/dbt/Hex/Rill/Malloy, queries against DuckDB/Postgres/BigQuery/Snowflake/etc.
+
+## Codebase Structure
+
+**Main Python package:** `sidemantic/`
+- `core/` - SemanticLayer, Model, Dimension, Metric, SemanticGraph
+- `adapters/` - Format parsers (Cube, LookML, MetricFlow, Hex, Rill, Malloy, etc.)
+- `db/` - Database adapters
+- `sql/` - SQL generation and query rewriting
+- `widget/`, `server/`, `workbench/`, `mcp_server.py` - Optional features with lazy imports
+
+**Separate experimental implementations (not the main codebase):**
+- `sidemantic-rs/` - Rust rewrite (WIP)
+- `sidemantic-duckdb/` - DuckDB extension wrapping sidemantic-rs
+
+These don't share code with Python. CI runs them only when their dirs change.
+
+## Version Management
+
+Update BOTH when releasing:
+- `pyproject.toml`: `version = "X.Y.Z"`
+- `sidemantic/__init__.py`: `__version__ = "X.Y.Z"`
 
 ## CRITICAL: Before Every Commit
 

@@ -16,14 +16,16 @@ if TYPE_CHECKING:
     from sidemantic.sql.generator import SQLGenerator
 
 
-def _table_to_ipc(table) -> bytes:
-    """Serialize Arrow table to IPC format."""
+def _table_to_ipc(table) -> str:
+    """Serialize Arrow table to IPC format (base64 for widget transport)."""
+    import base64
+
     import pyarrow as pa
 
     sink = io.BytesIO()
     with pa.ipc.new_file(sink, table.schema) as writer:
         writer.write_table(table)
-    return sink.getvalue()
+    return base64.b64encode(sink.getvalue()).decode("ascii")
 
 
 class MetricsExplorer(anywidget.AnyWidget):
@@ -71,8 +73,8 @@ class MetricsExplorer(anywidget.AnyWidget):
     active_dimension = traitlets.Unicode("").tag(sync=True)
 
     # Data (Python → JS, as Arrow IPC bytes)
-    metric_series_data = traitlets.Bytes(b"").tag(sync=True)
-    dimension_data = traitlets.Dict({}).tag(sync=True)  # {dim_key: arrow_ipc_bytes}
+    metric_series_data = traitlets.Unicode("").tag(sync=True)
+    dimension_data = traitlets.Dict({}).tag(sync=True)  # {dim_key: base64 arrow ipc}
     metric_totals = traitlets.Dict({}).tag(sync=True)
 
     # Status
@@ -560,7 +562,7 @@ class MetricsExplorer(anywidget.AnyWidget):
             return
 
         # Clear existing data to show skeletons while loading
-        self.metric_series_data = b""
+        self.metric_series_data = ""
         self.metric_totals = {}
 
         filters = self._build_filters()
@@ -609,7 +611,7 @@ class MetricsExplorer(anywidget.AnyWidget):
         for dim in self.dimensions_config:
             dim_key = dim["key"]
             if dim_key not in dimension_data:
-                dimension_data[dim_key] = b""
+                dimension_data[dim_key] = ""
 
         if self.active_dimension:
             dim_config = next((d for d in self.dimensions_config if d["key"] == self.active_dimension), None)
@@ -642,7 +644,7 @@ class MetricsExplorer(anywidget.AnyWidget):
 
         # Full refresh: show skeletons until each panel completes
         preserve_dim = self._last_active_dimension
-        dimension_data = {d["key"]: b"" for d in self.dimensions_config}
+        dimension_data = {d["key"]: "" for d in self.dimensions_config}
         if preserve_dim and preserve_dim in existing:
             dimension_data[preserve_dim] = existing[preserve_dim]
         self.dimension_data = dimension_data

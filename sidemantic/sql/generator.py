@@ -1788,7 +1788,9 @@ class SQLGenerator:
         # Simple aggregation - filters are already applied in CTE's raw column
         if agg_func == "COUNT_DISTINCT":
             return f"COUNT(DISTINCT {raw_col})"
-        if agg_func == "COUNT" and (not measure.sql or measure.sql == "*"):
+        if agg_func == "COUNT":
+            if measure.filters or (measure.sql and measure.sql != "*"):
+                return f"COUNT({raw_col})"
             return "COUNT(*)"
         return f"{agg_func}({raw_col})"
 

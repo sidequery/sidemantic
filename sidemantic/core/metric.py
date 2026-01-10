@@ -115,7 +115,12 @@ class Metric(BaseModel):
                         else:
                             agg_func = "count"
                             if parsed.this:
-                                inner_expr = parsed.this.sql(dialect="duckdb")
+                                if isinstance(parsed.this, exp.Star):
+                                    inner_expr = None
+                                else:
+                                    inner_expr = parsed.this.sql(dialect="duckdb")
+                                    if inner_expr == "*":
+                                        inner_expr = None
                             # COUNT(*) case - inner_expr stays None
 
                     if agg_func:

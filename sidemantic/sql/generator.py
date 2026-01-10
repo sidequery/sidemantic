@@ -1026,7 +1026,7 @@ class SQLGenerator:
             measure = model.get_metric(measure_name)
             if measure:
                 # Build the base SQL expression for the measure
-                if measure.agg == "count" and not measure.sql:
+                if measure.agg == "count" and (not measure.sql or measure.sql == "*"):
                     base_sql = "1"
                 elif measure.agg == "count_distinct" and not measure.sql:
                     pk = model.primary_key or "id"
@@ -1788,8 +1788,9 @@ class SQLGenerator:
         # Simple aggregation - filters are already applied in CTE's raw column
         if agg_func == "COUNT_DISTINCT":
             return f"COUNT(DISTINCT {raw_col})"
-        else:
-            return f"{agg_func}({raw_col})"
+        if agg_func == "COUNT" and (not measure.sql or measure.sql == "*"):
+            return "COUNT(*)"
+        return f"{agg_func}({raw_col})"
 
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.

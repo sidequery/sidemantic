@@ -137,6 +137,8 @@ class MetricsExplorer(anywidget.AnyWidget):
         self._auto_preagg_max = auto_preagg_max
         self._auto_preagg_materialized: set[str] = set()
         self._auto_preagg_recommender = None
+        self._metric_error = ""
+        self._dimension_error = ""
 
         if layer is not None:
             # Mode 2: Use existing SemanticLayer
@@ -341,7 +343,7 @@ class MetricsExplorer(anywidget.AnyWidget):
 
                 self.date_range = [min_date, max_date]
         except Exception as e:
-            self.error = f"Failed to compute date range: {e}"
+            self._metric_error = f"Failed to compute date range: {e}"
 
     def _on_filters_change(self, change):
         """Handle dimension filter changes - refresh all."""
@@ -506,7 +508,7 @@ class MetricsExplorer(anywidget.AnyWidget):
             source_sql = preagg.generate_materialization_sql(model)
             self._conn.execute(f"CREATE OR REPLACE TABLE {table_name} AS {source_sql}")
         except Exception as e:
-            self.error = f"Auto pre-aggregation failed: {e}"
+            self._metric_error = f"Auto pre-aggregation failed: {e}"
             return
 
         model.pre_aggregations.append(preagg)
@@ -545,25 +547,30 @@ class MetricsExplorer(anywidget.AnyWidget):
     def _escape_sql_literal(self, value: str) -> str:
         return value.replace("'", "''")
 
+    def _sync_status(self) -> None:
+        error = self._metric_error or self._dimension_error
+        self.error = error
+        self.status = "error" if error else "ready"
+
     def _refresh_all(self):
         """Refresh all data (metrics and dimensions)."""
         self.status = "loading"
-        try:
-            self._refresh_metrics()
-            self._refresh_dimensions()
-            self.status = "ready"
-        except Exception as e:
-            self.error = str(e)
-            self.status = "error"
+        self._refresh_metrics(sync_status=False)
+        self._refresh_dimensions(sync_status=False)
+        self._sync_status()
 
-    def _refresh_metrics(self):
+    def _refresh_metrics(self, *, sync_status: bool = True):
         """Refresh metric series data."""
         if not self._time_dimension:
+            self._metric_error = "No time dimension available for metrics."
+            if sync_status:
+                self._sync_status()
             return
 
         # Clear existing data to show skeletons while loading
         self.metric_series_data = ""
         self.metric_totals = {}
+        self._metric_error = ""
 
         filters = self._build_filters()
 
@@ -580,6 +587,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                 order_by=[time_dim_ref],
                 limit=500,
                 use_preaggregations=self._use_preaggregations,
+                skip_default_time_dimensions=True,
             )
             result = self._conn.execute(sql).arrow()
             self.metric_series_data = _table_to_ipc(result)
@@ -599,11 +607,14 @@ class MetricsExplorer(anywidget.AnyWidget):
             self.metric_totals = totals
             self._record_query_intent(metric_refs, [time_dim_ref], grain)
         except Exception as e:
-            self.error = f"Metric query failed: {e}"
+            self._metric_error = f"Metric query failed: {e}"
+        if sync_status:
+            self._sync_status()
 
-    def _refresh_dimensions(self):
+    def _refresh_dimensions(self, *, sync_status: bool = True):
         """Refresh dimension leaderboard data."""
         selected_metric_ref = f"{self._model_name}.{self.selected_metric}"
+        self._dimension_error = ""
 
         # Preserve existing data so panels stay interactive while refreshing
         existing = self.dimension_data or {}
@@ -639,7 +650,9 @@ class MetricsExplorer(anywidget.AnyWidget):
                 self.dimension_data = dict(dimension_data)
                 self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
             except Exception as e:
-                self.error = f"Dimension query failed for {dim_key}: {e}"
+                self._dimension_error = f"Dimension query failed for {dim_key}: {e}"
+            if sync_status:
+                self._sync_status()
             return
 
         # Full refresh: show skeletons until each panel completes
@@ -671,7 +684,9 @@ class MetricsExplorer(anywidget.AnyWidget):
                 self.dimension_data = dict(dimension_data)
                 self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
             except Exception as e:
-                self.error = f"Dimension query failed for {dim_key}: {e}"
+                self._dimension_error = f"Dimension query failed for {dim_key}: {e}"
 
         self.dimension_data = dimension_data
         self._last_active_dimension = None
+        if sync_status:
+            self._sync_status()

@@ -194,6 +194,7 @@
   margin: 0;
   font-size: 12px;
   font-weight: 600;
+  color: var(--text);
 }
 
 .metric-value {
@@ -270,6 +271,7 @@
   margin: 0 0 8px;
   font-size: 11px;
   font-weight: 600;
+  color: var(--text);
 }
 
 .dim-row {
@@ -304,6 +306,7 @@
 .dim-row span {
   position: relative;
   z-index: 1;
+  color: var(--text);
 }
 
 .dim-value {

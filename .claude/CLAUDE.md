@@ -43,6 +43,8 @@ uv run ruff format . --exclude docs/_extensions --exclude sidemantic-duckdb/exte
 
 This is NON-NEGOTIABLE. You MUST run these BEFORE every commit.
 
+**PRs:** Do not include test commands in PR bodies unless explicitly requested.
+
 **Why this matters:**
 - CI runs these exact commands and will fail if they don't pass
 - You keep pushing broken code because you don't run these locally

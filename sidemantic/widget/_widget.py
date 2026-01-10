@@ -88,6 +88,10 @@ class MetricsExplorer(anywidget.AnyWidget):
         dimensions: list[str] | None = None,
         time_dimension: str | None = None,
         max_dimension_cardinality: int | None = None,
+        auto_preaggregations: bool = False,
+        auto_preagg_min_count: int = 3,
+        auto_preagg_min_score: float = 0.2,
+        auto_preagg_max: int = 5,
         **kwargs,
     ):
         """Initialize MetricsExplorer widget.
@@ -99,6 +103,10 @@ class MetricsExplorer(anywidget.AnyWidget):
             dimensions: List of dimension references (e.g., ["orders.region"])
             time_dimension: Override the time dimension for sparklines
             max_dimension_cardinality: Skip dimensions with cardinality above this
+            auto_preaggregations: If True, auto-materialize preaggregations from widget query intents
+            auto_preagg_min_count: Min query count before auto-materializing a preaggregation
+            auto_preagg_min_score: Min benefit score required to auto-materialize
+            auto_preagg_max: Max auto-materialized preaggregations per widget instance
         """
         super().__init__(**kwargs)
 
@@ -121,6 +129,12 @@ class MetricsExplorer(anywidget.AnyWidget):
         self._dimensions: list[str] = dimensions or []
         self._pending_refresh: str | None = None  # Track pending refresh type
         self._last_active_dimension: str | None = None
+        self._auto_preaggregations = auto_preaggregations
+        self._auto_preagg_min_count = auto_preagg_min_count
+        self._auto_preagg_min_score = auto_preagg_min_score
+        self._auto_preagg_max = auto_preagg_max
+        self._auto_preagg_materialized: set[str] = set()
+        self._auto_preagg_recommender = None
 
         if layer is not None:
             # Mode 2: Use existing SemanticLayer
@@ -148,6 +162,17 @@ class MetricsExplorer(anywidget.AnyWidget):
         self.observe(self._on_comparison_change, names=["comparison_mode"])
         self.observe(self._on_time_grain_change, names=["time_grain"])
         self.observe(self._on_active_dimension_change, names=["active_dimension"])
+
+        if self._auto_preaggregations and not self._use_preaggregations:
+            self._use_preaggregations = True
+
+        if self._auto_preaggregations:
+            from sidemantic.core.preagg_recommender import PreAggregationRecommender
+
+            self._auto_preagg_recommender = PreAggregationRecommender(
+                min_query_count=self._auto_preagg_min_count,
+                min_benefit_score=self._auto_preagg_min_score,
+            )
 
         # Initial data load
         self._refresh_all()
@@ -380,6 +405,111 @@ class MetricsExplorer(anywidget.AnyWidget):
 
         return filter_exprs
 
+    def _record_query_intent(self, metrics: list[str], dimensions: list[str], granularity: str | None) -> None:
+        if not self._auto_preaggregations or not self._auto_preagg_recommender:
+            return
+        if not self._graph:
+            return
+
+        model = self._graph.get_model(self._model_name)
+        if not model:
+            return
+
+        metric_names = []
+        for metric_ref in metrics:
+            metric_name = metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
+            metric = model.get_metric(metric_name)
+            if not metric or not metric.agg:
+                continue
+            if metric.agg.lower() not in ("sum", "count", "min", "max"):
+                continue
+            metric_names.append(metric_name)
+
+        if not metric_names:
+            return
+
+        dim_names = []
+        for dim_ref in dimensions:
+            dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
+            if "__" in dim_name:
+                dim_name = dim_name.rsplit("__", 1)[0]
+            if self._time_dimension and dim_name == self._time_dimension:
+                continue
+            dim_names.append(dim_name)
+
+        from sidemantic.core.preagg_recommender import QueryPattern
+
+        pattern = QueryPattern(
+            model=self._model_name,
+            metrics=frozenset(metric_names),
+            dimensions=frozenset(dim_names),
+            granularities=frozenset([granularity] if granularity else []),
+        )
+        self._auto_preagg_recommender.patterns[pattern] += 1
+        count = self._auto_preagg_recommender.patterns[pattern]
+
+        if count < self._auto_preagg_min_count:
+            return
+        if len(self._auto_preagg_materialized) >= self._auto_preagg_max:
+            return
+
+        benefit_score = self._auto_preagg_recommender._calculate_benefit_score(pattern, count)
+        if benefit_score < self._auto_preagg_min_score:
+            return
+
+        self._materialize_preagg(model, metric_names, dim_names)
+
+    def _materialize_preagg(self, model, metric_names: list[str], dim_names: list[str]) -> None:
+        from sidemantic.core.pre_aggregation import PreAggregation
+
+        time_dimension = self._time_dimension
+        granularity = "day" if time_dimension else None
+
+        name_parts = []
+        if granularity:
+            name_parts.append(granularity)
+        if dim_names:
+            name_parts.append("_".join(dim_names[:2]))
+        if len(metric_names) == 1:
+            name_parts.append(metric_names[0])
+        else:
+            name_parts.append(f"{len(metric_names)}metrics")
+
+        name = "auto_" + "_".join(name_parts) if name_parts else "auto_rollup"
+        if name in self._auto_preagg_materialized:
+            return
+        if any(preagg.name == name for preagg in (model.pre_aggregations or [])):
+            return
+
+        preagg = PreAggregation(
+            name=name,
+            type="rollup",
+            measures=metric_names,
+            dimensions=dim_names,
+            time_dimension=time_dimension,
+            granularity=granularity,
+        )
+
+        try:
+            preagg_db = self._layer.preagg_database if self._layer else None
+            preagg_schema = self._layer.preagg_schema if self._layer else None
+
+            if preagg_schema:
+                try:
+                    self._conn.execute(f"CREATE SCHEMA IF NOT EXISTS {preagg_schema}")
+                except Exception:
+                    pass
+
+            table_name = preagg.get_table_name(model.name, database=preagg_db, schema=preagg_schema)
+            source_sql = preagg.generate_materialization_sql(model)
+            self._conn.execute(f"CREATE OR REPLACE TABLE {table_name} AS {source_sql}")
+        except Exception as e:
+            self.error = f"Auto pre-aggregation failed: {e}"
+            return
+
+        model.pre_aggregations.append(preagg)
+        self._auto_preagg_materialized.add(name)
+
     def _stringify_time_value(self, value) -> str:
         if isinstance(value, datetime):
             return value.isoformat(sep=" ")
@@ -465,6 +595,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                 for i, metric_ref in enumerate(metric_refs):
                     totals[metric_ref.split(".")[-1]] = totals_row[i]
             self.metric_totals = totals
+            self._record_query_intent(metric_refs, [time_dim_ref], grain)
         except Exception as e:
             self.error = f"Metric query failed: {e}"
 
@@ -504,6 +635,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                 result = self._conn.execute(sql).arrow()
                 dimension_data[dim_key] = _table_to_ipc(result)
                 self.dimension_data = dict(dimension_data)
+                self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
             except Exception as e:
                 self.error = f"Dimension query failed for {dim_key}: {e}"
             return
@@ -535,6 +667,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                 result = self._conn.execute(sql).arrow()
                 dimension_data[dim_key] = _table_to_ipc(result)
                 self.dimension_data = dict(dimension_data)
+                self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
             except Exception as e:
                 self.error = f"Dimension query failed for {dim_key}: {e}"
 

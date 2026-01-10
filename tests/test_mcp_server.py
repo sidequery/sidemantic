@@ -47,8 +47,8 @@ models:
     # Initialize the layer
     layer = initialize_layer(str(tmpdir_path), db_path=":memory:")
 
-    # Create the table with some test data
-    layer.conn.execute("""
+    # Create the table with some test data using adapter interface
+    layer.adapter.execute("""
         CREATE TABLE orders_table (
             id INTEGER,
             order_id VARCHAR,
@@ -57,7 +57,7 @@ models:
             amount DECIMAL
         )
     """)
-    layer.conn.execute("""
+    layer.adapter.execute("""
         INSERT INTO orders_table VALUES
             (1, '1', 'Alice', '2024-01-01', 100),
             (2, '2', 'Bob', '2024-01-02', 200),

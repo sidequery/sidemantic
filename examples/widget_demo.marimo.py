@@ -163,7 +163,7 @@ def _(
 @app.cell
 def _(mo):
     show_fsq = mo.ui.checkbox(
-        label="Enable Foursquare demo (downloads a large DuckDB file, optional)",
+        label="Enable Foursquare demo",
         value=False,
     )
     show_fsq
@@ -175,9 +175,7 @@ def _(mo, show_fsq):
     fsq_ok = show_fsq.value
     mo.stop(
         not fsq_ok,
-        mo.md(
-            "Foursquare demo is disabled. Enable it above to show this section (and optionally download a large file)."
-        ),
+        mo.md("Foursquare demo is disabled."),
     )
     mo.md(
         """
@@ -193,25 +191,29 @@ This section demonstrates using an existing pre-aggregated database over HTTP. I
 
 
 @app.cell
-def _(fsq_ok):
+def _(fsq_ok, mo):
+    mo.stop(not fsq_ok)
     fsq_preagg_url = "https://sampledata.sidequery.dev/sidemantic/foursquare_preagg.db"
     return (fsq_preagg_url,)
 
 
 @app.cell
-def _(examples_dir, fsq_ok):
+def _(examples_dir, fsq_ok, mo):
+    mo.stop(not fsq_ok)
     target_path = examples_dir / "foursquare_preagg.db"
     return (target_path,)
 
 
 @app.cell
 def _(
+    fsq_ok,
     fsq_preagg_url,
     http_error_cls,
     mo,
     url_error_cls,
     urllib_request,
 ):
+    mo.stop(not fsq_ok)
     size_mb = None
     try:
         _req = urllib_request.Request(fsq_preagg_url, method="HEAD")
@@ -230,7 +232,8 @@ def _(
 
 
 @app.cell
-def _(datetime_cls, mo, target_path):
+def _(datetime_cls, fsq_ok, mo, target_path):
+    mo.stop(not fsq_ok)
     if target_path.exists():
         _size_mb = target_path.stat().st_size / 1_000_000
         _updated = datetime_cls.fromtimestamp(target_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
@@ -241,7 +244,8 @@ def _(datetime_cls, mo, target_path):
 
 
 @app.cell
-def _(mo, target_path):
+def _(fsq_ok, mo, target_path):
+    mo.stop(not fsq_ok)
     label = (
         "Re-download Foursquare pre-agg DB (overwrite)" if target_path.exists() else "Download Foursquare pre-agg DB"
     )
@@ -255,12 +259,14 @@ def _(
     datetime_cls,
     download,
     fsq_preagg_url,
+    fsq_ok,
     http_error_cls,
     mo,
     target_path,
     url_error_cls,
     urllib_request,
 ):
+    mo.stop(not fsq_ok)
     if download.value:
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -302,7 +308,8 @@ def _(
 
 
 @app.cell
-def _(fsq_preagg_url, mo, target_path):
+def _(fsq_ok, fsq_preagg_url, mo, target_path):
+    mo.stop(not fsq_ok)
     fsq_source = None
     if target_path.exists():
         mo.md(f"Using local pre-agg DB: `{target_path}`")
@@ -314,7 +321,8 @@ def _(fsq_preagg_url, mo, target_path):
 
 
 @app.cell
-def _(duckdb_adapter_cls, fsq_source, mo):
+def _(duckdb_adapter_cls, fsq_ok, fsq_source, mo):
+    mo.stop(not fsq_ok)
     adapter_fsq_preagg = duckdb_adapter_cls(":memory:")
     try:
         adapter_fsq_preagg.conn.execute("load httpfs")
@@ -330,12 +338,15 @@ def _(duckdb_adapter_cls, fsq_source, mo):
 def _(
     adapter_fsq_preagg,
     dimension_cls,
+    fsq_ok,
     metric_cls,
     metrics_explorer_cls,
     model_cls,
+    mo,
     preaggregation_cls,
     semantic_layer_cls,
 ):
+    mo.stop(not fsq_ok)
     places_model_preagg = model_cls(
         name="places",
         table="places",

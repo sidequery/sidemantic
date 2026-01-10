@@ -50,7 +50,7 @@ def build_auto_model(
     set_current_layer(None)
 
     dimensions = []
-    metrics = [Metric(name="row_count", sql="count(*)")]
+    metrics = [Metric(name="row_count", agg="count")]
     time_dimension_name = None
 
     for field in schema:
@@ -98,13 +98,15 @@ def build_auto_model(
             metrics.append(
                 Metric(
                     name=f"sum_{col_name}",
-                    sql=f"sum({col_name})",
+                    agg="sum",
+                    sql=col_name,
                 )
             )
             metrics.append(
                 Metric(
                     name=f"avg_{col_name}",
-                    sql=f"avg({col_name})",
+                    agg="avg",
+                    sql=col_name,
                 )
             )
 

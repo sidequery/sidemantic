@@ -12,11 +12,30 @@ import { tableFromIPC } from "apache-arrow";
 // ============================================================================
 
 function formatNumber(value, format = "number") {
-  if (value == null || !Number.isFinite(value)) return "—";
-  if (format === "currency") {
-    return `$${Number(value).toFixed(2)}`;
+  if (value == null) return "—";
+  if (typeof value === "bigint") {
+    return value.toLocaleString("en-US");
   }
-  return Number(value).toLocaleString();
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^-?\d+$/.test(trimmed)) {
+      try {
+        return BigInt(trimmed).toLocaleString("en-US");
+      } catch {}
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return "—";
+    if (format === "currency") {
+      return `$${parsed.toFixed(2)}`;
+    }
+    return parsed.toLocaleString();
+  }
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "—";
+  if (format === "currency") {
+    return `$${numericValue.toFixed(2)}`;
+  }
+  return numericValue.toLocaleString();
 }
 
 function formatDate(date) {

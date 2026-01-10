@@ -22,6 +22,15 @@ def _table_to_ipc(table) -> str:
 
     import pyarrow as pa
 
+    if any(pa.types.is_decimal(field.type) for field in table.schema):
+        fields = []
+        for field in table.schema:
+            if pa.types.is_decimal(field.type):
+                fields.append(pa.field(field.name, pa.float64()))
+            else:
+                fields.append(field)
+        table = table.cast(pa.schema(fields), safe=False)
+
     sink = io.BytesIO()
     with pa.ipc.new_file(sink, table.schema) as writer:
         writer.write_table(table)
@@ -603,7 +612,15 @@ class MetricsExplorer(anywidget.AnyWidget):
             totals = {}
             if totals_row:
                 for i, metric_ref in enumerate(metric_refs):
-                    totals[metric_ref.split(".")[-1]] = totals_row[i]
+                    value = totals_row[i]
+                    try:
+                        from decimal import Decimal
+
+                        if isinstance(value, Decimal):
+                            value = float(value)
+                    except Exception:
+                        pass
+                    totals[metric_ref.split(".")[-1]] = value
             self.metric_totals = totals
             self._record_query_intent(metric_refs, [time_dim_ref], grain)
         except Exception as e:

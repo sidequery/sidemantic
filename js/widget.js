@@ -12,11 +12,20 @@ import { tableFromIPC } from "apache-arrow";
 // ============================================================================
 
 function formatNumber(value, format = "number") {
-  if (value == null || !Number.isFinite(value)) return "—";
-  if (format === "currency") {
-    return `$${Number(value).toFixed(2)}`;
+  if (value == null) return "—";
+  let numericValue;
+  if (typeof value === "number") {
+    numericValue = value;
+  } else if (typeof value === "bigint") {
+    numericValue = Number(value);
+  } else {
+    numericValue = Number(value);
   }
-  return Number(value).toLocaleString();
+  if (!Number.isFinite(numericValue)) return "—";
+  if (format === "currency") {
+    return `$${numericValue.toFixed(2)}`;
+  }
+  return numericValue.toLocaleString();
 }
 
 function formatDate(date) {

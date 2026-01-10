@@ -12,11 +12,30 @@ import { tableFromIPC } from "apache-arrow";
 // ============================================================================
 
 function formatNumber(value, format = "number") {
-  if (value == null || !Number.isFinite(value)) return "—";
-  if (format === "currency") {
-    return `$${Number(value).toFixed(2)}`;
+  if (value == null) return "—";
+  if (typeof value === "bigint") {
+    return value.toLocaleString("en-US");
   }
-  return Number(value).toLocaleString();
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^-?\d+$/.test(trimmed)) {
+      try {
+        return BigInt(trimmed).toLocaleString("en-US");
+      } catch {}
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return "—";
+    if (format === "currency") {
+      return `$${parsed.toFixed(2)}`;
+    }
+    return parsed.toLocaleString();
+  }
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "—";
+  if (format === "currency") {
+    return `$${numericValue.toFixed(2)}`;
+  }
+  return numericValue.toLocaleString();
 }
 
 function formatDate(date) {
@@ -41,21 +60,51 @@ function formatDate(date) {
   return String(date).slice(0, 10);
 }
 
-function formatShortDate(dateStr) {
-  const date = new Date(dateStr + "T00:00:00Z");
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+function parseDateValue(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === "number" || typeof value === "bigint") {
+    const ms = typeof value === "bigint" ? Number(value) : value;
+    if (ms > 1e12) return new Date(ms);
+    if (ms > 1e9) return new Date(ms * 1000);
+    return new Date(ms * 86400000);
+  }
+  if (typeof value === "string") {
+    const match = value.match(/^\d{4}-\d{2}-\d{2}/);
+    if (match) return new Date(`${match[0]}T00:00:00Z`);
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+function formatDateLabel(date, options) {
+  return date.toLocaleDateString("en-US", { timeZone: "UTC", ...options });
+}
+
+function formatShortDate(dateValue) {
+  const date = parseDateValue(dateValue);
+  if (!date || Number.isNaN(date.getTime())) return formatDate(dateValue);
+  return formatDateLabel(date, { month: "short", day: "numeric" });
 }
 
 function formatRangeShort(start, end) {
-  const startDate = new Date(start + "T00:00:00Z");
-  const endDate = new Date(end + "T00:00:00Z");
+  const startDate = parseDateValue(start);
+  const endDate = parseDateValue(end);
+  if (!startDate || !endDate) {
+    const startLabel = formatDate(start);
+    const endLabel = formatDate(end);
+    if (!startLabel && !endLabel) return "";
+    if (startLabel && endLabel) return `${startLabel} – ${endLabel}`;
+    return startLabel || endLabel;
+  }
   const sameYear = startDate.getFullYear() === endDate.getFullYear();
-  const startLabel = startDate.toLocaleDateString("en-US", {
+  const startLabel = formatDateLabel(startDate, {
     month: "short",
     day: "numeric",
     year: sameYear ? undefined : "numeric",
   });
-  const endLabel = endDate.toLocaleDateString("en-US", {
+  const endLabel = formatDateLabel(endDate, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -79,8 +128,9 @@ function formatComparison(value) {
 
 function daysBetween(start, end) {
   const msPerDay = 24 * 60 * 60 * 1000;
-  const startDate = new Date(start + "T00:00:00Z");
-  const endDate = new Date(end + "T00:00:00Z");
+  const startDate = parseDateValue(start);
+  const endDate = parseDateValue(end);
+  if (!startDate || !endDate) return 1;
   return Math.max(1, Math.round((endDate - startDate) / msPerDay) + 1);
 }
 
@@ -88,13 +138,24 @@ function daysBetween(start, end) {
 // Arrow IPC Parsing Helper
 // ============================================================================
 
-function parseArrowIPC(dataRaw) {
-  if (!dataRaw || (dataRaw.byteLength !== undefined && dataRaw.byteLength === 0)) {
-    return null;
+function base64ToUint8(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
   }
+  return bytes;
+}
+
+function parseArrowIPC(dataRaw) {
+  if (!dataRaw) return null;
+  if (typeof dataRaw === "string" && dataRaw.length === 0) return null;
+  if (dataRaw.byteLength !== undefined && dataRaw.byteLength === 0) return null;
 
   let data;
-  if (dataRaw instanceof DataView) {
+  if (typeof dataRaw === "string") {
+    data = base64ToUint8(dataRaw);
+  } else if (dataRaw instanceof DataView) {
     data = new Uint8Array(
       dataRaw.buffer.slice(
         dataRaw.byteOffset,
@@ -569,6 +630,9 @@ function render({ model, el }) {
     const metricsConfig = model.get("metrics_config") || [];
     const selectedMetric = model.get("selected_metric") || "";
     const dateRange = model.get("date_range") || [];
+    const brushSelection = model.get("brush_selection") || [];
+    const activeRange =
+      brushSelection && brushSelection.length === 2 ? brushSelection : dateRange;
     const metricTotals = model.get("metric_totals") || {};
     const metricSeriesDataRaw = model.get("metric_series_data");
 
@@ -610,7 +674,7 @@ function render({ model, el }) {
           metricConfig,
           series,
           total,
-          dateRange,
+          activeRange,
           selectedMetric,
           dates,
           null, // onHover
@@ -644,7 +708,12 @@ function render({ model, el }) {
       const ipcDataView = dimensionData[dimConfig.key];
 
       // Show skeleton while loading
-      if (!ipcDataView || ipcDataView.byteLength === 0) {
+      if (
+        !ipcDataView ||
+        (typeof ipcDataView === "string"
+          ? ipcDataView.length === 0
+          : ipcDataView.byteLength === 0)
+      ) {
         dimensionsGridEl.appendChild(renderDimensionSkeleton(dimConfig.label));
         return;
       }

@@ -2,6 +2,8 @@
 
 import pytest
 
+pytest.importorskip("mcp")  # Skip if mcp extra not installed
+
 from sidemantic import mcp_server
 
 

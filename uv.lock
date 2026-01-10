@@ -3222,23 +3222,17 @@ wheels = [
 
 [[package]]
 name = "sidemantic"
-version = "0.5.3"
+version = "0.5.6"
 source = { editable = "." }
 dependencies = [
-    { name = "altair" },
     { name = "duckdb" },
     { name = "inflect" },
     { name = "jinja2" },
     { name = "lkml" },
-    { name = "mcp", extra = ["cli"] },
-    { name = "plotext" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlglot" },
-    { name = "textual", extra = ["syntax"] },
-    { name = "textual-plotext" },
     { name = "typer" },
-    { name = "vl-convert-python" },
 ]
 
 [package.optional-dependencies]
@@ -3246,9 +3240,26 @@ adbc = [
     { name = "adbc-driver-manager" },
     { name = "pyarrow" },
 ]
+all-databases = [
+    { name = "adbc-driver-manager" },
+    { name = "clickhouse-connect" },
+    { name = "databricks-sql-connector" },
+    { name = "google-cloud-bigquery" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pure-sasl" },
+    { name = "pyarrow" },
+    { name = "pyhive" },
+    { name = "snowflake-connector-python" },
+    { name = "thrift" },
+    { name = "thrift-sasl" },
+]
 bigquery = [
     { name = "google-cloud-bigquery" },
     { name = "pyarrow" },
+]
+charts = [
+    { name = "altair" },
+    { name = "vl-convert-python" },
 ]
 clickhouse = [
     { name = "clickhouse-connect" },
@@ -3266,12 +3277,28 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+full = [
+    { name = "altair" },
+    { name = "antlr4-python3-runtime" },
+    { name = "anywidget" },
+    { name = "lsprotocol" },
+    { name = "mcp", extra = ["cli"] },
+    { name = "plotext" },
+    { name = "pyarrow" },
+    { name = "pygls" },
+    { name = "textual", extra = ["syntax"] },
+    { name = "textual-plotext" },
+    { name = "vl-convert-python" },
+]
 lsp = [
     { name = "lsprotocol" },
     { name = "pygls" },
 ]
 malloy = [
     { name = "antlr4-python3-runtime" },
+]
+mcp = [
+    { name = "mcp", extra = ["cli"] },
 ]
 postgres = [
     { name = "psycopg", extra = ["binary"] },
@@ -3296,6 +3323,11 @@ widget = [
     { name = "anywidget" },
     { name = "pyarrow" },
 ]
+workbench = [
+    { name = "plotext" },
+    { name = "textual", extra = ["syntax"] },
+    { name = "textual-plotext" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -3314,7 +3346,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'adbc'", specifier = ">=1.0.0" },
-    { name = "altair", specifier = ">=5.0.0" },
+    { name = "altair", marker = "extra == 'charts'", specifier = ">=5.0.0" },
     { name = "antlr4-python3-runtime", marker = "extra == 'malloy'", specifier = ">=4.13.2" },
     { name = "anywidget", marker = "extra == 'widget'", specifier = ">=0.9.0" },
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.6.0" },
@@ -3326,10 +3358,10 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "lkml", specifier = ">=1.3.7" },
     { name = "lsprotocol", marker = "extra == 'lsp'", specifier = ">=2025.0.0" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.16.0" },
+    { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.16.0" },
     { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.26,<3" },
     { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.2,<3" },
-    { name = "plotext", specifier = ">=5.3.2" },
+    { name = "plotext", marker = "extra == 'workbench'", specifier = ">=5.3.2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.0.0" },
     { name = "pure-sasl", marker = "extra == 'spark'", specifier = ">=0.6.2" },
     { name = "pyarrow", marker = "extra == 'adbc'", specifier = ">=14.0.0" },
@@ -3349,16 +3381,18 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "riffq", marker = "extra == 'serve'", specifier = ">=0.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
+    { name = "sidemantic", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
+    { name = "sidemantic", extras = ["workbench", "mcp", "charts", "lsp", "malloy", "widget"], marker = "extra == 'full'" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0.0" },
     { name = "sqlglot", specifier = ">=25.0.0" },
-    { name = "textual", extras = ["syntax"], specifier = ">=1.0.0" },
-    { name = "textual-plotext", specifier = ">=1.0.1" },
+    { name = "textual", extras = ["syntax"], marker = "extra == 'workbench'", specifier = ">=1.0.0" },
+    { name = "textual-plotext", marker = "extra == 'workbench'", specifier = ">=1.0.1" },
     { name = "thrift", marker = "extra == 'spark'", specifier = ">=0.16.0" },
     { name = "thrift-sasl", marker = "extra == 'spark'", specifier = ">=0.4.3" },
     { name = "typer", specifier = ">=0.9.0" },
-    { name = "vl-convert-python", specifier = ">=1.0.0" },
+    { name = "vl-convert-python", marker = "extra == 'charts'", specifier = ">=1.0.0" },
 ]
-provides-extras = ["dev", "serve", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "malloy", "widget"]
+provides-extras = ["dev", "workbench", "mcp", "charts", "serve", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "malloy", "widget", "all-databases", "full"]
 
 [package.metadata.requires-dev]
 dev = [

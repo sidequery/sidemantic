@@ -356,7 +356,7 @@ class MetricsExplorer(anywidget.AnyWidget):
 
         try:
             query = f'SELECT MIN("{self._time_dimension}") as min_date, MAX("{self._time_dimension}") as max_date FROM "{self._table_name}"'
-            result = self._conn.execute(query).fetchone()
+            result = self._execute(query).fetchone()
             if result and result[0] and result[1]:
                 min_date = result[0]
                 max_date = result[1]
@@ -523,13 +523,13 @@ class MetricsExplorer(anywidget.AnyWidget):
 
             if preagg_schema:
                 try:
-                    self._conn.execute(f"CREATE SCHEMA IF NOT EXISTS {preagg_schema}")
+                    self._execute(f"CREATE SCHEMA IF NOT EXISTS {preagg_schema}")
                 except Exception:
                     pass
 
             table_name = preagg.get_table_name(model.name, database=preagg_db, schema=preagg_schema)
             source_sql = preagg.generate_materialization_sql(model)
-            self._conn.execute(f"CREATE OR REPLACE TABLE {table_name} AS {source_sql}")
+            self._execute(f"CREATE OR REPLACE TABLE {table_name} AS {source_sql}")
         except Exception as e:
             self._metric_error = f"Auto pre-aggregation failed: {e}"
             return
@@ -569,6 +569,30 @@ class MetricsExplorer(anywidget.AnyWidget):
 
     def _escape_sql_literal(self, value: str) -> str:
         return value.replace("'", "''")
+
+    def _execute(self, sql: str):
+        """Execute SQL through adapter when layer is available, otherwise raw connection.
+
+        Uses layer.adapter.execute() when in Semantic Layer mode, which ensures
+        queries go through the adapter interface for consistent behavior across
+        database backends.
+        """
+        if self._layer is not None:
+            return self._layer.adapter.execute(sql)
+        return self._conn.execute(sql)
+
+    def _execute_arrow(self, sql: str):
+        """Execute SQL and return result as PyArrow Table.
+
+        Uses adapter.execute().fetch_record_batch() in Semantic Layer mode for
+        cross-adapter compatibility (works with Snowflake, Databricks, ClickHouse, etc.).
+        Falls back to raw DuckDB .arrow() in DataFrame mode.
+        """
+        if self._layer is not None:
+            result = self._layer.adapter.execute(sql)
+            reader = result.fetch_record_batch()
+            return reader.read_all()
+        return self._conn.execute(sql).arrow()
 
     def _sync_status(self) -> None:
         error = self._metric_error or self._dimension_error
@@ -612,7 +636,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                 use_preaggregations=self._use_preaggregations,
                 skip_default_time_dimensions=True,
             )
-            result = self._conn.execute(sql).arrow()
+            result = self._execute_arrow(sql)
             self.metric_series_data = _table_to_ipc(result, decimal_mode="float")
 
             totals_sql = self._generator.generate(
@@ -622,7 +646,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                 skip_default_time_dimensions=True,
                 use_preaggregations=self._use_preaggregations,
             )
-            totals_row = self._conn.execute(totals_sql).fetchone()
+            totals_row = self._execute(totals_sql).fetchone()
             totals = {}
             if totals_row:
                 for i, metric_ref in enumerate(metric_refs):
@@ -676,7 +700,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                     skip_default_time_dimensions=True,
                     use_preaggregations=self._use_preaggregations,
                 )
-                result = self._conn.execute(sql).arrow()
+                result = self._execute_arrow(sql)
                 dimension_data[dim_key] = _table_to_ipc(result, decimal_mode="string")
                 self.dimension_data = dict(dimension_data)
                 self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
@@ -710,7 +734,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                     skip_default_time_dimensions=True,
                     use_preaggregations=self._use_preaggregations,
                 )
-                result = self._conn.execute(sql).arrow()
+                result = self._execute_arrow(sql)
                 dimension_data[dim_key] = _table_to_ipc(result, decimal_mode="string")
                 self.dimension_data = dict(dimension_data)
                 self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")

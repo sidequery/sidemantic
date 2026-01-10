@@ -48,7 +48,7 @@ def test_start_server_registers_tables(monkeypatch):
     monkeypatch.setattr("riffq.RiffqServer", FakeServer)
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
-    layer.conn.execute("CREATE TABLE source_table (id INTEGER, status VARCHAR)")
+    layer.adapter.execute("CREATE TABLE source_table (id INTEGER, status VARCHAR)")
     layer.add_model(
         Model(
             name="orders",

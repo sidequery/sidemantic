@@ -359,8 +359,8 @@ def run_query(
         limit=limit,
     )
 
-    # Execute query
-    result = layer.conn.execute(sql)
+    # Execute query via adapter (works with all database backends)
+    result = layer.adapter.execute(sql)
 
     # Convert to list of dicts with JSON-compatible values
     rows = result.fetchall()
@@ -467,7 +467,7 @@ def create_chart(
         limit=limit,
     )
 
-    result = layer.conn.execute(sql)
+    result = layer.adapter.execute(sql)
     rows = result.fetchall()
     columns = [desc[0] for desc in result.description]
     row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]

@@ -9,17 +9,33 @@ from sidemantic.db.base import BaseDatabaseAdapter
 class ClickHouseResult:
     """Wrapper for ClickHouse query result to match DuckDB result API."""
 
-    def __init__(self, result):
+    def __init__(self, result, arrow_table=None):
         """Initialize ClickHouse result wrapper.
 
         Args:
-            result: ClickHouse query result from clickhouse-connect
+            result: ClickHouse query result from clickhouse-connect (can be None if arrow_table provided)
+            arrow_table: Pre-fetched Arrow table from query_arrow() (optional)
         """
         self._result = result
+        self._arrow_table = arrow_table
         self._row_index = 0
+
+        # Extract column names from either source
+        if arrow_table is not None:
+            self._column_names = list(arrow_table.column_names)
+        else:
+            self._column_names = result.column_names
 
     def fetchone(self) -> tuple | None:
         """Fetch one row from the result."""
+        if self._arrow_table is not None:
+            # Convert from Arrow on demand
+            if self._row_index >= self._arrow_table.num_rows:
+                return None
+            row = tuple(self._arrow_table.column(col)[self._row_index].as_py() for col in self._column_names)
+            self._row_index += 1
+            return row
+
         if self._row_index >= self._result.row_count:
             return None
         row = self._result.result_rows[self._row_index]
@@ -28,30 +44,44 @@ class ClickHouseResult:
 
     def fetchall(self) -> list[tuple]:
         """Fetch all remaining rows."""
+        if self._arrow_table is not None:
+            remaining = self._arrow_table.slice(self._row_index)
+            self._row_index = self._arrow_table.num_rows
+            # Convert Arrow to list of tuples
+            data = remaining.to_pydict()
+            return [tuple(data[col][i] for col in self._column_names) for i in range(remaining.num_rows)]
+
         remaining = self._result.result_rows[self._row_index :]
         self._row_index = self._result.row_count
         return remaining
 
     def fetch_record_batch(self) -> Any:
-        """Convert result to PyArrow RecordBatchReader."""
+        """Convert result to PyArrow RecordBatchReader.
+
+        Uses native Arrow data when available for better performance.
+        """
         import pyarrow as pa
 
-        # Convert ClickHouse result to Arrow
+        if self._arrow_table is not None:
+            # Already have Arrow table from query_arrow()
+            if self._arrow_table.num_rows == 0:
+                return pa.RecordBatchReader.from_batches(self._arrow_table.schema, [])
+            return pa.RecordBatchReader.from_batches(self._arrow_table.schema, self._arrow_table.to_batches())
+
+        # Fallback: convert from row-based result
         rows = self._result.result_rows
         if not rows:
-            # Empty result
-            schema = pa.schema([(name, pa.string()) for name in self._result.column_names])
+            schema = pa.schema([(name, pa.string()) for name in self._column_names])
             return pa.RecordBatchReader.from_batches(schema, [])
 
-        # Build Arrow table from rows
-        columns = {name: [row[i] for row in rows] for i, name in enumerate(self._result.column_names)}
+        columns = {name: [row[i] for row in rows] for i, name in enumerate(self._column_names)}
         table = pa.table(columns)
         return pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
 
     @property
     def description(self):
         """Get column descriptions."""
-        return [(name, None) for name in self._result.column_names]
+        return [(name, None) for name in self._column_names]
 
 
 class ClickHouseAdapter(BaseDatabaseAdapter):
@@ -110,21 +140,44 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
         self.database = database
 
     def execute(self, sql: str) -> ClickHouseResult:
-        """Execute SQL query."""
-        result = self.client.query(sql)
-        return ClickHouseResult(result)
+        """Execute SQL query.
+
+        Uses native Arrow format when available for better performance.
+        Falls back to standard row-based query if Arrow fetch fails.
+        """
+        # Try native Arrow fetching first (clickhouse-connect supports query_arrow)
+        try:
+            arrow_table = self.client.query_arrow(sql)
+            return ClickHouseResult(result=None, arrow_table=arrow_table)
+        except Exception:
+            # Fallback to standard row-based query
+            result = self.client.query(sql)
+            return ClickHouseResult(result)
 
     def executemany(self, sql: str, params: list) -> ClickHouseResult:
         """Execute SQL with multiple parameter sets.
 
         Note: ClickHouse doesn't have native executemany, so we run queries sequentially.
+        Uses native Arrow format when available for better performance.
         """
         results = []
         for param_set in params:
-            result = self.client.query(sql, parameters=param_set)
-            results.append(ClickHouseResult(result))
+            # Try native Arrow fetching first
+            try:
+                arrow_table = self.client.query_arrow(sql, parameters=param_set)
+                results.append(ClickHouseResult(result=None, arrow_table=arrow_table))
+            except Exception:
+                result = self.client.query(sql, parameters=param_set)
+                results.append(ClickHouseResult(result))
         # Return last result for compatibility
-        return results[-1] if results else ClickHouseResult(self.client.query("SELECT 1"))
+        if not results:
+            # Empty params list - return a dummy result
+            try:
+                arrow_table = self.client.query_arrow("SELECT 1")
+                return ClickHouseResult(result=None, arrow_table=arrow_table)
+            except Exception:
+                return ClickHouseResult(self.client.query("SELECT 1"))
+        return results[-1]
 
     def fetchone(self, result: ClickHouseResult) -> tuple | None:
         """Fetch one row from result."""

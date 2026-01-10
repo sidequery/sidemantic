@@ -296,12 +296,12 @@ def mcp_serve(
                 create_sql = demo_conn.execute(
                     f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'"
                 ).fetchone()[0]
-                layer.conn.execute(create_sql)
+                layer.adapter.execute(create_sql)
 
                 # Insert data if there are rows
                 if rows:
                     placeholders = ", ".join(["?" for _ in columns])
-                    layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+                    layer.adapter.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
         typer.echo(f"Starting MCP server for: {directory}", err=True)
         if db_path and db_path != ":memory:":

@@ -45,7 +45,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # Check for DML commands first (before multi-statement check)
             # These are often PostgreSQL session config and should just succeed
             if sql_lower.startswith(("set ", "update ", "insert ", "delete ")):
-                result = self.layer.conn.execute("SELECT 1 as ok WHERE FALSE")
+                result = self.layer.adapter.execute("SELECT 1 as ok WHERE FALSE")
                 reader = result.fetch_record_batch()
                 self.send_reader(reader, callback)
                 return
@@ -63,7 +63,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
             rendered_sql = rewriter.rewrite(sql, strict=False)
 
             # Execute the query
-            result = self.layer.conn.execute(rendered_sql)
+            result = self.layer.adapter.execute(rendered_sql)
 
             # Convert to Arrow record batch
             reader = result.fetch_record_batch()
@@ -80,14 +80,14 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
         # pg_get_keywords() - return DuckDB keywords instead
         if "pg_get_keywords" in sql_lower and ";" not in sql:
-            result = self.layer.conn.execute("SELECT keyword_name as word, 'U' as catcode FROM duckdb_keywords()")
+            result = self.layer.adapter.execute("SELECT keyword_name as word, 'U' as catcode FROM duckdb_keywords()")
             reader = result.fetch_record_batch()
             self.send_reader(reader, callback)
             return True
 
         # pg_my_temp_schema() - return NULL (DuckDB doesn't have temp schemas the same way)
         if "pg_my_temp_schema" in sql_lower:
-            result = self.layer.conn.execute("SELECT NULL::INTEGER as oid")
+            result = self.layer.adapter.execute("SELECT NULL::INTEGER as oid")
             reader = result.fetch_record_batch()
             self.send_reader(reader, callback)
             return True
@@ -108,14 +108,14 @@ class SemanticLayerConnection(riffq.BaseConnection):
             SELECT schema, table_name, 'BASE TABLE' as table_type
             FROM (VALUES {", ".join(schemas_tables)}) AS t(schema, table_name)
             """
-            result = self.layer.conn.execute(union_sql)
+            result = self.layer.adapter.execute(union_sql)
             reader = result.fetch_record_batch()
             self.send_reader(reader, callback)
             return True
 
         # pg_settings - PostgreSQL settings view
         if "pg_settings" in sql_lower:
-            result = self.layer.conn.execute(
+            result = self.layer.adapter.execute(
                 "SELECT name, setting, NULL as source FROM (SELECT NULL as name, NULL as setting) WHERE FALSE"
             )
             reader = result.fetch_record_batch()
@@ -126,7 +126,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
         if "pg_catalog." in sql_lower:
             # pg_namespace - schemas
             if "pg_namespace" in sql_lower:
-                result = self.layer.conn.execute(
+                result = self.layer.adapter.execute(
                     "SELECT oid, schema_name as nspname, true as is_on_search_path, comment "
                     "FROM duckdb_schemas() "
                     "WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
@@ -137,7 +137,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
             # pg_class - tables and views
             elif "pg_class" in sql_lower:
-                result = self.layer.conn.execute(
+                result = self.layer.adapter.execute(
                     "SELECT table_name as relname, schema_name as relnamespace "
                     "FROM duckdb_tables() "
                     "WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
@@ -148,7 +148,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
             # Other pg_catalog queries - return empty result
             else:
-                result = self.layer.conn.execute("SELECT NULL WHERE FALSE")
+                result = self.layer.adapter.execute("SELECT NULL WHERE FALSE")
                 reader = result.fetch_record_batch()
                 self.send_reader(reader, callback)
                 return True
@@ -156,7 +156,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
         # obj_description() - not supported, return NULL
         if "obj_description" in sql_lower:
             rendered_sql = sql.replace("obj_description(oid, 'pg_namespace')", "NULL")
-            result = self.layer.conn.execute(rendered_sql)
+            result = self.layer.adapter.execute(rendered_sql)
             reader = result.fetch_record_batch()
             self.send_reader(reader, callback)
             return True

@@ -58,6 +58,19 @@ class PostgreSQLAdapter(BaseDatabaseAdapter):
     """PostgreSQL database adapter.
 
     Uses psycopg3 for connection management.
+
+    Note:
+        psycopg3 does not have native Arrow support, so fetch_record_batch()
+        materializes rows to Python and then converts to Arrow. For better
+        performance with large datasets, consider using the ADBC adapter
+        with the PostgreSQL driver::
+
+            from sidemantic.db.adbc import ADBCAdapter
+            adapter = ADBCAdapter("postgresql", uri="postgresql://localhost/mydb")
+
+        Or use the connection URL: ``adbc://postgresql/postgresql://localhost/mydb``
+
+        ADBC provides native Arrow support with zero-copy data transfer.
     """
 
     def __init__(

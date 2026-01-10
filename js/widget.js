@@ -41,21 +41,51 @@ function formatDate(date) {
   return String(date).slice(0, 10);
 }
 
-function formatShortDate(dateStr) {
-  const date = new Date(dateStr + "T00:00:00Z");
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+function parseDateValue(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === "number" || typeof value === "bigint") {
+    const ms = typeof value === "bigint" ? Number(value) : value;
+    if (ms > 1e12) return new Date(ms);
+    if (ms > 1e9) return new Date(ms * 1000);
+    return new Date(ms * 86400000);
+  }
+  if (typeof value === "string") {
+    const match = value.match(/^\d{4}-\d{2}-\d{2}/);
+    if (match) return new Date(`${match[0]}T00:00:00Z`);
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+function formatDateLabel(date, options) {
+  return date.toLocaleDateString("en-US", { timeZone: "UTC", ...options });
+}
+
+function formatShortDate(dateValue) {
+  const date = parseDateValue(dateValue);
+  if (!date || Number.isNaN(date.getTime())) return formatDate(dateValue);
+  return formatDateLabel(date, { month: "short", day: "numeric" });
 }
 
 function formatRangeShort(start, end) {
-  const startDate = new Date(start + "T00:00:00Z");
-  const endDate = new Date(end + "T00:00:00Z");
+  const startDate = parseDateValue(start);
+  const endDate = parseDateValue(end);
+  if (!startDate || !endDate) {
+    const startLabel = formatDate(start);
+    const endLabel = formatDate(end);
+    if (!startLabel && !endLabel) return "";
+    if (startLabel && endLabel) return `${startLabel} – ${endLabel}`;
+    return startLabel || endLabel;
+  }
   const sameYear = startDate.getFullYear() === endDate.getFullYear();
-  const startLabel = startDate.toLocaleDateString("en-US", {
+  const startLabel = formatDateLabel(startDate, {
     month: "short",
     day: "numeric",
     year: sameYear ? undefined : "numeric",
   });
-  const endLabel = endDate.toLocaleDateString("en-US", {
+  const endLabel = formatDateLabel(endDate, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -79,8 +109,9 @@ function formatComparison(value) {
 
 function daysBetween(start, end) {
   const msPerDay = 24 * 60 * 60 * 1000;
-  const startDate = new Date(start + "T00:00:00Z");
-  const endDate = new Date(end + "T00:00:00Z");
+  const startDate = parseDateValue(start);
+  const endDate = parseDateValue(end);
+  if (!startDate || !endDate) return 1;
   return Math.max(1, Math.round((endDate - startDate) / msPerDay) + 1);
 }
 
@@ -580,6 +611,9 @@ function render({ model, el }) {
     const metricsConfig = model.get("metrics_config") || [];
     const selectedMetric = model.get("selected_metric") || "";
     const dateRange = model.get("date_range") || [];
+    const brushSelection = model.get("brush_selection") || [];
+    const activeRange =
+      brushSelection && brushSelection.length === 2 ? brushSelection : dateRange;
     const metricTotals = model.get("metric_totals") || {};
     const metricSeriesDataRaw = model.get("metric_series_data");
 
@@ -621,7 +655,7 @@ function render({ model, el }) {
           metricConfig,
           series,
           total,
-          dateRange,
+          activeRange,
           selectedMetric,
           dates,
           null, // onHover

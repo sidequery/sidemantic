@@ -1,5 +1,6 @@
 """Validation and error handling for semantic layer."""
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -30,6 +31,18 @@ class ModelValidationError(ValidationError):
     """Raised when model validation fails."""
 
     pass
+
+
+def _sql_has_aggregation(sql: str) -> bool:
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        parsed = sqlglot.parse_one(sql, read="duckdb")
+        agg_classes = (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max, exp.Median)
+        return any(parsed.find_all(*agg_classes))
+    except Exception:
+        return bool(re.search(r"\b(sum|count|avg|min|max|median)\s*\(", sql, re.IGNORECASE))
 
 
 def validate_model(model: "Model") -> list[str]:
@@ -70,6 +83,10 @@ def validate_model(model: "Model") -> list[str]:
         if measure.type in ["derived", "ratio", "cumulative", "time_comparison", "conversion"]:
             continue
 
+        if measure.agg in ["sum", "count", "count_distinct", "avg", "min", "max", "median"]:
+            continue
+        if measure.agg is None and measure.sql and _sql_has_aggregation(measure.sql):
+            continue
         if measure.agg not in ["sum", "count", "count_distinct", "avg", "min", "max", "median"]:
             errors.append(
                 f"Model '{model.name}': measure '{measure.name}' has invalid aggregation '{measure.agg}'. "

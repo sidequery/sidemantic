@@ -289,6 +289,7 @@ class TestMCPServerAdapterIntegration:
 
     def test_mcp_run_query_uses_adapter(self):
         """Test that run_query goes through adapter for execution."""
+        pytest.importorskip("mcp")
         import tempfile
         from pathlib import Path
 
@@ -386,6 +387,7 @@ class TestWorkbenchAdapterIntegration:
 
     def test_workbench_command_wiring(self, tmp_path, monkeypatch):
         """Test that workbench command is wired correctly."""
+        pytest.importorskip("textual")
         from typer.testing import CliRunner
 
         from sidemantic.cli import app

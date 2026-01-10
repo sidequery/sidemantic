@@ -3222,7 +3222,7 @@ wheels = [
 
 [[package]]
 name = "sidemantic"
-version = "0.5.4"
+version = "0.5.5"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },

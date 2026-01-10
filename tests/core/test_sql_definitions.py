@@ -7,7 +7,12 @@ import pytest
 
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.core.sql_definitions import parse_sql_definitions, parse_sql_file_with_frontmatter
+from sidemantic.core.sql_definitions import (
+    parse_sql_definitions,
+    parse_sql_file_with_frontmatter,
+    parse_sql_graph_definitions,
+    parse_sql_model,
+)
 
 
 def test_parse_simple_metric():
@@ -213,6 +218,85 @@ def test_parse_multiple_definitions():
     assert metrics[0].name == "revenue"
     assert metrics[1].name == "order_count"
     assert segments[0].name == "completed"
+
+
+def test_parse_list_literals():
+    """Test parsing list literals in SQL definitions."""
+    sql = """
+    METRIC (
+        name revenue,
+        agg sum,
+        sql amount,
+        filters ['status = completed', 'status = pending'],
+        drill_fields [order_id, status]
+    );
+    """
+
+    metrics, _ = parse_sql_definitions(sql)
+
+    metric = metrics[0]
+    assert metric.filters == ["status = completed", "status = pending"]
+    assert metric.drill_fields == ["order_id", "status"]
+
+
+def test_parse_sql_parameter_definitions():
+    """Test parsing PARAMETER definitions in SQL."""
+    sql = """
+    PARAMETER (
+        name region,
+        type string,
+        allowed_values [us, eu],
+        default_value 'us'
+    );
+    """
+
+    _, _, parameters = parse_sql_graph_definitions(sql)
+
+    assert len(parameters) == 1
+    param = parameters[0]
+    assert param.name == "region"
+    assert param.type == "string"
+    assert param.allowed_values == ["us", "eu"]
+    assert param.default_value == "us"
+
+
+def test_parse_pre_aggregation_definition():
+    """Test parsing PRE_AGGREGATION definition in SQL."""
+    sql = """
+    MODEL (name orders, table orders);
+
+    PRE_AGGREGATION (
+        name daily_rollup,
+        measures [order_count, revenue],
+        dimensions [status],
+        time_dimension order_date,
+        granularity day,
+        partition_granularity month,
+        scheduled_refresh false,
+        refresh_key { every '1 hour', incremental true, update_window '7 day' },
+        indexes [{ name idx_status, columns [status], type regular }]
+    );
+    """
+
+    model = parse_sql_model(sql)
+
+    assert model is not None
+    assert len(model.pre_aggregations) == 1
+    preagg = model.pre_aggregations[0]
+    assert preagg.name == "daily_rollup"
+    assert preagg.measures == ["order_count", "revenue"]
+    assert preagg.dimensions == ["status"]
+    assert preagg.time_dimension == "order_date"
+    assert preagg.granularity == "day"
+    assert preagg.partition_granularity == "month"
+    assert preagg.scheduled_refresh is False
+    assert preagg.refresh_key is not None
+    assert preagg.refresh_key.every == "1 hour"
+    assert preagg.refresh_key.incremental is True
+    assert preagg.refresh_key.update_window == "7 day"
+    assert preagg.indexes is not None
+    assert preagg.indexes[0].name == "idx_status"
+    assert preagg.indexes[0].columns == ["status"]
 
 
 def test_parse_sql_file_with_frontmatter():
@@ -423,6 +507,32 @@ sql_metrics: |
         assert len(graph.metrics) == 1
         assert "total_revenue" in graph.metrics
 
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_yaml_parameters():
+    """Test parsing parameters from YAML."""
+    yaml_content = """
+parameters:
+  - name: region
+    type: string
+    allowed_values: [us, eu]
+    default_value: us
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        f.write(yaml_content)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = SidemanticAdapter()
+        graph = adapter.parse(temp_path)
+
+        assert "region" in graph.parameters
+        param = graph.parameters["region"]
+        assert param.allowed_values == ["us", "eu"]
+        assert param.default_value == "us"
     finally:
         temp_path.unlink(missing_ok=True)
 

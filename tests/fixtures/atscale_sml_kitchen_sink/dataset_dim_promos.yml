@@ -1,0 +1,9 @@
+unique_name: dim_promos
+object_type: dataset
+connection_id: core_connection
+table: promos
+columns:
+  - name: promo_id
+    data_type: int
+  - name: promo_name
+    data_type: string

@@ -1,0 +1,13 @@
+unique_name: dim_dates
+object_type: dataset
+connection_id: core_connection
+sql: select * from analytics.dates
+columns:
+  - name: date_key
+    data_type: date
+  - name: calendar_year
+    data_type: int
+  - name: calendar_month
+    data_type: int
+  - name: calendar_day
+    data_type: int

@@ -1,0 +1,38 @@
+unique_name: order_date_dim
+object_type: dimension
+label: Order Date
+type: time
+level_attributes:
+  - unique_name: order_year
+    dataset: dim_dates
+    name_column: calendar_year
+    key_columns:
+      - calendar_year
+    time_unit: year
+  - unique_name: order_month
+    dataset: dim_dates
+    name_column: calendar_month
+    key_columns:
+      - calendar_month
+    time_unit: month
+  - unique_name: order_date
+    dataset: dim_dates
+    name_column: date_key
+    key_columns:
+      - date_key
+    time_unit: day
+hierarchies:
+  - unique_name: order_date_hierarchy
+    levels:
+      - unique_name: order_year
+      - unique_name: order_month
+      - unique_name: order_date
+relationships:
+  - unique_name: fact_orders_order_date
+    from:
+      dataset: fact_orders
+      join_columns:
+        - order_date
+    to:
+      dimension: order_date_dim
+      level: order_date

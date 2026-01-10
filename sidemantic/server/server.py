@@ -68,9 +68,11 @@ def start_server(
 
     for schema_name, table_name in tbls:
         server._server.register_schema("sidemantic", schema_name)
-        cols_info = layer.adapter.execute(
+        # Use parameterized query to handle names with special characters (e.g., quotes)
+        cols_info = layer.adapter.raw_connection.execute(
             "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
-            f"WHERE table_schema='{schema_name}' AND table_name='{table_name}'"
+            "WHERE table_schema = ? AND table_name = ?",
+            [schema_name, table_name],
         ).fetchall()
         columns = []
         for col_name, data_type, is_nullable in cols_info:

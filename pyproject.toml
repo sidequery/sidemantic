@@ -6,7 +6,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
-    "sqlglot>=25.0.0",
+    "sqlglot==27.12.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
     "jinja2>=3.1.0",

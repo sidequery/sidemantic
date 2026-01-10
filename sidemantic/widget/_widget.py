@@ -357,8 +357,8 @@ class MetricsExplorer(anywidget.AnyWidget):
         self._refresh_all()
 
     def _on_brush_change(self, change):
-        """Handle brush selection changes - only refresh dimensions (sparklines stay the same)."""
-        self._refresh_dimensions()
+        """Handle brush selection changes - refresh all data to apply date filter."""
+        self._refresh_all()
 
     def _on_metric_change(self, change):
         """Handle selected metric change - refresh dimension leaderboards."""

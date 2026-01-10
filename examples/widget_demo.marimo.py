@@ -181,7 +181,7 @@ def _(mo, show_fsq):
         """
 ## Foursquare Places: remote pre-agg DuckDB
 
-Warning: the Foursquare pre-agg DuckDB is large (multi‑GB) and is not required for the widget demo above.
+Warning: the Foursquare pre-agg DuckDB is large (multi‑GB) and is not required for the widget demo below.
 
 This section demonstrates using an existing pre-aggregated database over HTTP. It does **not** demonstrate
 `auto_preaggregations=True` generating pre-aggregations for you.

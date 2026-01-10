@@ -88,13 +88,24 @@ function daysBetween(start, end) {
 // Arrow IPC Parsing Helper
 // ============================================================================
 
-function parseArrowIPC(dataRaw) {
-  if (!dataRaw || (dataRaw.byteLength !== undefined && dataRaw.byteLength === 0)) {
-    return null;
+function base64ToUint8(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
   }
+  return bytes;
+}
+
+function parseArrowIPC(dataRaw) {
+  if (!dataRaw) return null;
+  if (typeof dataRaw === "string" && dataRaw.length === 0) return null;
+  if (dataRaw.byteLength !== undefined && dataRaw.byteLength === 0) return null;
 
   let data;
-  if (dataRaw instanceof DataView) {
+  if (typeof dataRaw === "string") {
+    data = base64ToUint8(dataRaw);
+  } else if (dataRaw instanceof DataView) {
     data = new Uint8Array(
       dataRaw.buffer.slice(
         dataRaw.byteOffset,
@@ -644,7 +655,12 @@ function render({ model, el }) {
       const ipcDataView = dimensionData[dimConfig.key];
 
       // Show skeleton while loading
-      if (!ipcDataView || ipcDataView.byteLength === 0) {
+      if (
+        !ipcDataView ||
+        (typeof ipcDataView === "string"
+          ? ipcDataView.length === 0
+          : ipcDataView.byteLength === 0)
+      ) {
         dimensionsGridEl.appendChild(renderDimensionSkeleton(dimConfig.label));
         return;
       }

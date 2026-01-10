@@ -1,6 +1,6 @@
 """Dimension definitions."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -52,6 +52,9 @@ class Dimension(BaseModel):
             data.pop("expr", None)
 
         return data
+
+    def __init__(self, **data: Any):
+        super().__init__(**data)
 
     def __hash__(self) -> int:
         return hash((self.name, self.type, self.sql))

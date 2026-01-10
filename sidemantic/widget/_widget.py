@@ -16,14 +16,16 @@ if TYPE_CHECKING:
     from sidemantic.sql.generator import SQLGenerator
 
 
-def _table_to_ipc(table) -> bytes:
-    """Serialize Arrow table to IPC format."""
+def _table_to_ipc(table) -> str:
+    """Serialize Arrow table to IPC format (base64 for widget transport)."""
+    import base64
+
     import pyarrow as pa
 
     sink = io.BytesIO()
     with pa.ipc.new_file(sink, table.schema) as writer:
         writer.write_table(table)
-    return sink.getvalue()
+    return base64.b64encode(sink.getvalue()).decode("ascii")
 
 
 class MetricsExplorer(anywidget.AnyWidget):
@@ -71,8 +73,8 @@ class MetricsExplorer(anywidget.AnyWidget):
     active_dimension = traitlets.Unicode("").tag(sync=True)
 
     # Data (Python → JS, as Arrow IPC bytes)
-    metric_series_data = traitlets.Bytes(b"").tag(sync=True)
-    dimension_data = traitlets.Dict({}).tag(sync=True)  # {dim_key: arrow_ipc_bytes}
+    metric_series_data = traitlets.Unicode("").tag(sync=True)
+    dimension_data = traitlets.Dict({}).tag(sync=True)  # {dim_key: base64 arrow ipc}
     metric_totals = traitlets.Dict({}).tag(sync=True)
 
     # Status
@@ -135,6 +137,8 @@ class MetricsExplorer(anywidget.AnyWidget):
         self._auto_preagg_max = auto_preagg_max
         self._auto_preagg_materialized: set[str] = set()
         self._auto_preagg_recommender = None
+        self._metric_error = ""
+        self._dimension_error = ""
 
         if layer is not None:
             # Mode 2: Use existing SemanticLayer
@@ -339,7 +343,7 @@ class MetricsExplorer(anywidget.AnyWidget):
 
                 self.date_range = [min_date, max_date]
         except Exception as e:
-            self.error = f"Failed to compute date range: {e}"
+            self._metric_error = f"Failed to compute date range: {e}"
 
     def _on_filters_change(self, change):
         """Handle dimension filter changes - refresh all."""
@@ -504,7 +508,7 @@ class MetricsExplorer(anywidget.AnyWidget):
             source_sql = preagg.generate_materialization_sql(model)
             self._conn.execute(f"CREATE OR REPLACE TABLE {table_name} AS {source_sql}")
         except Exception as e:
-            self.error = f"Auto pre-aggregation failed: {e}"
+            self._metric_error = f"Auto pre-aggregation failed: {e}"
             return
 
         model.pre_aggregations.append(preagg)
@@ -543,25 +547,30 @@ class MetricsExplorer(anywidget.AnyWidget):
     def _escape_sql_literal(self, value: str) -> str:
         return value.replace("'", "''")
 
+    def _sync_status(self) -> None:
+        error = self._metric_error or self._dimension_error
+        self.error = error
+        self.status = "error" if error else "ready"
+
     def _refresh_all(self):
         """Refresh all data (metrics and dimensions)."""
         self.status = "loading"
-        try:
-            self._refresh_metrics()
-            self._refresh_dimensions()
-            self.status = "ready"
-        except Exception as e:
-            self.error = str(e)
-            self.status = "error"
+        self._refresh_metrics(sync_status=False)
+        self._refresh_dimensions(sync_status=False)
+        self._sync_status()
 
-    def _refresh_metrics(self):
+    def _refresh_metrics(self, *, sync_status: bool = True):
         """Refresh metric series data."""
         if not self._time_dimension:
+            self._metric_error = "No time dimension available for metrics."
+            if sync_status:
+                self._sync_status()
             return
 
         # Clear existing data to show skeletons while loading
-        self.metric_series_data = b""
+        self.metric_series_data = ""
         self.metric_totals = {}
+        self._metric_error = ""
 
         filters = self._build_filters()
 
@@ -578,6 +587,7 @@ class MetricsExplorer(anywidget.AnyWidget):
                 order_by=[time_dim_ref],
                 limit=500,
                 use_preaggregations=self._use_preaggregations,
+                skip_default_time_dimensions=True,
             )
             result = self._conn.execute(sql).arrow()
             self.metric_series_data = _table_to_ipc(result)
@@ -597,11 +607,14 @@ class MetricsExplorer(anywidget.AnyWidget):
             self.metric_totals = totals
             self._record_query_intent(metric_refs, [time_dim_ref], grain)
         except Exception as e:
-            self.error = f"Metric query failed: {e}"
+            self._metric_error = f"Metric query failed: {e}"
+        if sync_status:
+            self._sync_status()
 
-    def _refresh_dimensions(self):
+    def _refresh_dimensions(self, *, sync_status: bool = True):
         """Refresh dimension leaderboard data."""
         selected_metric_ref = f"{self._model_name}.{self.selected_metric}"
+        self._dimension_error = ""
 
         # Preserve existing data so panels stay interactive while refreshing
         existing = self.dimension_data or {}
@@ -609,7 +622,7 @@ class MetricsExplorer(anywidget.AnyWidget):
         for dim in self.dimensions_config:
             dim_key = dim["key"]
             if dim_key not in dimension_data:
-                dimension_data[dim_key] = b""
+                dimension_data[dim_key] = ""
 
         if self.active_dimension:
             dim_config = next((d for d in self.dimensions_config if d["key"] == self.active_dimension), None)
@@ -637,12 +650,14 @@ class MetricsExplorer(anywidget.AnyWidget):
                 self.dimension_data = dict(dimension_data)
                 self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
             except Exception as e:
-                self.error = f"Dimension query failed for {dim_key}: {e}"
+                self._dimension_error = f"Dimension query failed for {dim_key}: {e}"
+            if sync_status:
+                self._sync_status()
             return
 
         # Full refresh: show skeletons until each panel completes
         preserve_dim = self._last_active_dimension
-        dimension_data = {d["key"]: b"" for d in self.dimensions_config}
+        dimension_data = {d["key"]: "" for d in self.dimensions_config}
         if preserve_dim and preserve_dim in existing:
             dimension_data[preserve_dim] = existing[preserve_dim]
         self.dimension_data = dimension_data
@@ -669,7 +684,9 @@ class MetricsExplorer(anywidget.AnyWidget):
                 self.dimension_data = dict(dimension_data)
                 self._record_query_intent([selected_metric_ref], [dim_ref], self.time_grain or "day")
             except Exception as e:
-                self.error = f"Dimension query failed for {dim_key}: {e}"
+                self._dimension_error = f"Dimension query failed for {dim_key}: {e}"
 
         self.dimension_data = dimension_data
         self._last_active_dimension = None
+        if sync_status:
+            self._sync_status()

@@ -652,6 +652,8 @@ class SQLGenerator:
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table.replace("_cte", "") == model_name:
                             columns_by_model[model_name].add(col.name)
+                        elif not col.table:
+                            columns_by_model[model_name].add(col.name)
                 except Exception:
                     pass
 
@@ -682,6 +684,10 @@ class SQLGenerator:
                                 parsed = sqlglot.parse_one(aliased_sql, dialect=self.dialect)
                                 for col in parsed.find_all(exp.Column):
                                     if col.table and col.table.replace("_cte", "") == model_name:
+                                        if model_name not in columns_by_model:
+                                            columns_by_model[model_name] = set()
+                                        columns_by_model[model_name].add(col.name)
+                                    elif not col.table:
                                         if model_name not in columns_by_model:
                                             columns_by_model[model_name] = set()
                                         columns_by_model[model_name].add(col.name)
@@ -928,6 +934,19 @@ class SQLGenerator:
                 if alias not in columns_added:
                     select_cols.append(f"{dim_sql} AS {alias}")
                     columns_added.add(alias)
+
+        # Add raw columns referenced by inline aggregate SQL (if they are not dimensions/measures)
+        if metric_filter_columns:
+            for col_name in metric_filter_columns:
+                if col_name in columns_added:
+                    continue
+                if model.get_dimension(col_name):
+                    continue
+                if model.get_metric(col_name):
+                    continue
+                raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
+                select_cols.append(f"{raw_expr} AS {col_name}")
+                columns_added.add(col_name)
 
         # Add measure columns (raw, not aggregated in CTE)
         # Collect all measures needed for metrics

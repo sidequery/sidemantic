@@ -121,6 +121,41 @@ class Metric(BaseModel):
                                     inner_expr = parsed.this.sql(dialect="duckdb")
                             # COUNT(*) case - inner_expr is "*"
 
+                    # Handle generic function nodes (e.g., Anonymous) that still represent aggregations.
+                    if not agg_func and isinstance(parsed, exp.Func):
+                        func_name = (parsed.name or "").lower()
+                        func_map = {
+                            "sum": "sum",
+                            "avg": "avg",
+                            "min": "min",
+                            "max": "max",
+                            "median": "median",
+                            "count": "count",
+                        }
+                        if func_name in func_map:
+                            agg_func = func_map[func_name]
+                            arg_expr = parsed.this
+                            if arg_expr is None and parsed.expressions:
+                                if len(parsed.expressions) == 1:
+                                    arg_expr = parsed.expressions[0]
+                                else:
+                                    arg_expr = exp.Tuple(expressions=list(parsed.expressions))
+
+                            if func_name == "count":
+                                if isinstance(arg_expr, exp.Distinct):
+                                    agg_func = "count_distinct"
+                                    if arg_expr.expressions:
+                                        inner_expr = ", ".join(e.sql(dialect="duckdb") for e in arg_expr.expressions)
+                                    else:
+                                        inner_expr = arg_expr.sql(dialect="duckdb")
+                                elif arg_expr is None or isinstance(arg_expr, exp.Star):
+                                    inner_expr = "*"
+                                else:
+                                    inner_expr = arg_expr.sql(dialect="duckdb")
+                            else:
+                                if arg_expr is not None:
+                                    inner_expr = arg_expr.sql(dialect="duckdb")
+
                     if agg_func:
                         data["agg"] = agg_func
                         if inner_expr is not None:

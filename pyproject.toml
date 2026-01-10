@@ -14,12 +14,6 @@ dependencies = [
     "duckdb>=1.0.0",
     "inflect>=7.0.0,<7.2.0",  # PYODIDE: <7.2 required - inflect 7.2+ needs typing-extensions>=4.13 but Pyodide has 4.11.0
     "typer>=0.9.0",
-    "textual[syntax]>=1.0.0",
-    "plotext>=5.3.2",
-    "textual-plotext>=1.0.1",
-    "mcp[cli]>=1.16.0",
-    "altair>=5.0.0",
-    "vl-convert-python>=1.0.0",
 ]
 
 [project.scripts]
@@ -33,6 +27,18 @@ dev = [
     "pandas>=2.2,<3",
     "numpy>=1.26,<3",
     "fakesnow>=0.9.0",  # For Snowflake integration tests
+]
+workbench = [
+    "textual[syntax]>=1.0.0",
+    "plotext>=5.3.2",
+    "textual-plotext>=1.0.1",
+]
+mcp = [
+    "mcp[cli]>=1.16.0",
+]
+charts = [
+    "altair>=5.0.0",
+    "vl-convert-python>=1.0.0",
 ]
 serve = [
     "riffq>=0.1.0",
@@ -79,6 +85,13 @@ malloy = [
 widget = [
     "anywidget>=0.9.0",
     "pyarrow>=14.0.0",
+]
+# Convenience bundles
+all-databases = [
+    "sidemantic[postgres,bigquery,snowflake,clickhouse,databricks,spark,adbc]",
+]
+full = [
+    "sidemantic[workbench,mcp,charts,lsp,malloy,widget]",
 ]
 
 [build-system]

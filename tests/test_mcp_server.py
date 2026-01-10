@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("mcp")  # Skip if mcp extra not installed
+
 from sidemantic.mcp_server import create_chart, get_models, initialize_layer, list_models, run_query
 
 

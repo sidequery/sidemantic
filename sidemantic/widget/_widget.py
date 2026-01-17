@@ -696,7 +696,11 @@ class MetricsExplorer(anywidget.AnyWidget):
             result = self._layer.adapter.execute(sql)
             reader = result.fetch_record_batch()
             return reader.read_all()
-        return self._conn.execute(sql).arrow()
+        # DuckDB's .arrow() may return RecordBatchReader in some environments
+        reader = self._conn.execute(sql).arrow()
+        if hasattr(reader, "read_all"):
+            return reader.read_all()
+        return reader
 
     def _sync_status(self) -> None:
         error = self._metric_error or self._dimension_error

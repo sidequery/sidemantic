@@ -1,0 +1,6 @@
+unique_name: demo_repo
+object_type: catalog
+label: Demo Repo
+version: 1.0
+aggressive_agg_promotion: false
+build_speculative_aggs: false

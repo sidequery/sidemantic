@@ -1,0 +1,6 @@
+unique_name: order_count
+object_type: metric
+label: Order Count
+calculation_method: count non-null
+dataset: fact_sales
+column: sale_id

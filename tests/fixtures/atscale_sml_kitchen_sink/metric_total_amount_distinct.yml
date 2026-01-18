@@ -1,0 +1,5 @@
+unique_name: total_amount_distinct
+object_type: metric
+calculation_method: sum distinct
+dataset: fact_orders
+column: total_amount

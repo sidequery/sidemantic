@@ -1,0 +1,5 @@
+unique_name: avg_order_value
+object_type: metric_calc
+label: Avg Order Value
+expression: "[Measures].[total_sales] / [Measures].[order_count]"
+format: standard

@@ -1,0 +1,56 @@
+unique_name: sales_model
+object_type: model
+label: Sales Model
+
+relationships:
+  - unique_name: sales_customer
+    from:
+      dataset: fact_sales
+      join_columns:
+        - customer_id
+    to:
+      dimension: customer_dimension
+      level: customer_id
+
+  - unique_name: sales_order_date
+    from:
+      dataset: fact_sales
+      join_columns:
+        - sale_date
+    to:
+      dimension: order_date_dimension
+      level: order_date
+
+dimensions:
+  - customer_dimension
+  - order_date_dimension
+  - region_dimension
+
+metrics:
+  - unique_name: total_sales
+  - unique_name: order_count
+  - unique_name: sales_stddev
+  - unique_name: sales_median
+  - unique_name: avg_order_value
+
+aggregates:
+  - unique_name: sales_rollup
+    label: Sales Rollup
+    metrics:
+      - total_sales
+      - order_count
+    attributes:
+      - name: customer_id
+        dimension: customer_dimension
+      - name: order_date
+        dimension: order_date_dimension
+
+drillthroughs:
+  - unique_name: Customer Details
+    metrics:
+      - total_sales
+    attributes:
+      - name: customer_name
+        dimension: customer_dimension
+      - name: region_name
+        dimension: region_dimension

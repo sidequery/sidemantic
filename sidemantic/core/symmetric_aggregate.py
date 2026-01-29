@@ -3,7 +3,7 @@
 Symmetric aggregates prevent double-counting when joins create multiple rows
 for a single entity (fan-out). This is achieved using:
 
-    SUM(DISTINCT HASH(pk) * 1e15 + value) - SUM(DISTINCT HASH(pk) * 1e15)
+    SUM(DISTINCT HASH(pk) * 1e12 + value) - SUM(DISTINCT HASH(pk) * 1e12)
 
 This ensures each row from the left side is counted exactly once, even when
 the join creates duplicates.
@@ -15,7 +15,7 @@ from typing import Literal
 def build_symmetric_aggregate_sql(
     measure_expr: str,
     primary_key: str,
-    agg_type: Literal["sum", "avg", "count", "count_distinct"],
+    agg_type: Literal["sum", "avg", "count", "count_distinct", "min", "max", "median"],
     model_alias: str | None = None,
     dialect: str = "duckdb",
 ) -> str:
@@ -33,54 +33,55 @@ def build_symmetric_aggregate_sql(
 
     Examples:
         >>> build_symmetric_aggregate_sql("amount", "order_id", "sum")
-        '(SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 20)) + amount) - SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 20))))'
+        '(SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 40)) + amount) - SUM(DISTINCT (HASH(order_id)::HUGEINT * (1::HUGEINT << 40))))'
 
         >>> build_symmetric_aggregate_sql("amount", "order_id", "avg", "orders_cte")
-        '(SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 20)) + orders_cte.amount) - SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 20)))) / NULLIF(COUNT(DISTINCT orders_cte.order_id), 0)'
+        '(SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)) + orders_cte.amount) - SUM(DISTINCT (HASH(orders_cte.order_id)::HUGEINT * (1::HUGEINT << 40)))) / NULLIF(COUNT(DISTINCT orders_cte.order_id), 0)'
     """
     # Add table prefix if provided
     pk_col = f"{model_alias}.{primary_key}" if model_alias else primary_key
     measure_col = f"{model_alias}.{measure_expr}" if model_alias else measure_expr
 
-    # Dialect-specific hash and multiplier functions
+    # Dialect-specific hash and multiplier functions.
+    # The multiplier must be larger than any possible measure value so that
+    # HASH(pk) * multiplier + value produces a unique value per (pk, value) pair.
+    # Using high-precision numeric types avoids integer overflow.
     if dialect == "bigquery":
 
         def hash_func(col):
             return f"FARM_FINGERPRINT(CAST({col} AS STRING))"
 
-        multiplier = "1048576"  # 2^20 as literal
+        multiplier = "1000000000000"  # 1e12: safely above typical measure values
     elif dialect in ("postgres", "postgresql"):
-        # Use hashtext which returns int4, then cast to bigint and multiply
-        # Use smaller multiplier (2^10 = 1024) to avoid overflow
+        # Cast to numeric (arbitrary precision) to avoid bigint overflow
         def hash_func(col):
-            return f"hashtext({col}::text)::bigint"
+            return f"hashtext({col}::text)::numeric"
 
-        multiplier = "1024"  # 2^10 as literal (smaller to avoid overflow)
+        multiplier = "1000000000000"  # 1e12
     elif dialect == "snowflake":
-        # Snowflake HASH returns very large 64-bit integers
-        # Use modulo to constrain range, then very small multiplier to avoid overflow
+        # NUMBER(38,0) supports up to 38 digits, plenty of headroom
         def hash_func(col):
-            return f"(HASH({col}) % 1000000000)"  # Modulo to constrain range
+            return f"HASH({col})::NUMBER(38, 0)"
 
-        multiplier = "100"  # Very small multiplier to avoid overflow
+        multiplier = "1000000000000"  # 1e12
     elif dialect == "clickhouse":
         # ClickHouse halfMD5 returns UInt64
         def hash_func(col):
             return f"halfMD5(CAST({col} AS String))"
 
-        multiplier = "1048576"  # 2^20 as literal
+        multiplier = "1000000000000"  # 1e12
     elif dialect in ("databricks", "spark"):
         # Databricks/Spark SQL xxhash64 returns bigint
         def hash_func(col):
             return f"xxhash64(CAST({col} AS STRING))"
 
-        multiplier = "1048576"  # 2^20 as literal
+        multiplier = "1000000000000"  # 1e12
     else:  # duckdb
 
         def hash_func(col):
             return f"HASH({col})::HUGEINT"
 
-        multiplier = "(1::HUGEINT << 20)"
+        multiplier = "(1::HUGEINT << 40)"  # ~1e12 in HUGEINT space
 
     if agg_type == "sum":
         # SUM(DISTINCT HASH(pk) * multiplier + value) - SUM(DISTINCT HASH(pk) * multiplier)
@@ -105,6 +106,17 @@ def build_symmetric_aggregate_sql(
     elif agg_type == "count_distinct":
         # Count distinct on the measure itself - no symmetric aggregate needed
         return f"COUNT(DISTINCT {measure_col})"
+
+    elif agg_type in ("min", "max"):
+        # MIN/MAX are idempotent to fan-out: duplicated rows don't change the result
+        agg_func = agg_type.upper()
+        return f"{agg_func}({measure_col})"
+
+    elif agg_type == "median":
+        raise ValueError(
+            "Symmetric aggregates do not support MEDIAN. "
+            "Use pre-aggregation or restructure the query to avoid fan-out joins."
+        )
 
     else:
         raise ValueError(f"Unsupported aggregation type for symmetric aggregates: {agg_type}")

@@ -297,7 +297,7 @@ class SQLGenerator:
                 metrics=metrics,
                 dimensions=dimensions,
                 filters=filters,
-                segments=segments,
+                segments=None,  # Already resolved into filters above
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
@@ -571,6 +571,11 @@ class SQLGenerator:
     ) -> tuple[dict[str, list[str]], list[str]]:
         """Classify filters into those that can be pushed down vs those that must stay in main query.
 
+        Compound AND expressions are split into individual conjuncts first so that
+        ``orders.status = 'active' AND items.category = 'A'`` gets decomposed into
+        two single-model filters that can each be pushed down, rather than being kept
+        as an un-pushable cross-model filter.
+
         Args:
             filters: List of filter expressions
             all_models: Set of all model names in the query
@@ -583,7 +588,18 @@ class SQLGenerator:
         pushdown_filters = {model: [] for model in all_models}
         main_query_filters = []
 
+        # Flatten compound AND expressions into individual conjuncts so each
+        # part can be classified independently.
+        flat_parts: list[str] = []
         for filter_expr in filters:
+            try:
+                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                conjuncts = list(parsed.flatten() if isinstance(parsed, exp.And) else [parsed])
+                flat_parts.extend(c.sql(dialect=self.dialect) for c in conjuncts)
+            except Exception:
+                flat_parts.append(filter_expr)
+
+        for filter_expr in flat_parts:
             # Parse filter expression with SQLGlot
             try:
                 parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
@@ -1121,11 +1137,13 @@ class SQLGenerator:
         for other_model in other_models:
             try:
                 join_path = self.graph.find_relationship_path(base_model_name, other_model)
-                # Check if first hop is one-to-many
-                if join_path and join_path[0].relationship == "one_to_many":
+                if not join_path:
+                    continue
+                # Check all hops: any one_to_many in the path creates fan-out
+                has_fanout = any(hop.relationship == "one_to_many" for hop in join_path)
+                if has_fanout:
                     one_to_many_count += 1
-                elif join_path and join_path[0].relationship == "many_to_one":
-                    # Track models with many-to-one from base perspective
+                elif join_path[0].relationship == "many_to_one":
                     many_to_one_models.append(other_model)
             except (ValueError, KeyError):
                 pass
@@ -1251,12 +1269,13 @@ class SQLGenerator:
                 metrics_by_model[model_name].append(metric_ref)
 
         if len(metrics_by_model) < 2:
-            # Shouldn't happen, but fall back to regular generation
+            # Shouldn't happen, but fall back to regular generation.
+            # Segments already resolved into filters by caller, pass None.
             return self.generate(
                 metrics=metrics,
                 dimensions=dimensions,
                 filters=filters,
-                segments=segments,
+                segments=None,
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
@@ -1267,6 +1286,12 @@ class SQLGenerator:
         segment_filters = self._resolve_segments(segments or [])
         all_filters = (filters or []) + segment_filters
 
+        # Partition filters by model so sub-queries only get relevant filters.
+        # Cross-model filters (referencing models outside the sub-query) would
+        # produce invalid SQL referencing CTEs that don't exist.
+        all_model_names = set(metrics_by_model.keys())
+        pushdown_by_model, shared_filters = self._classify_filters_for_pushdown(all_filters, all_model_names)
+
         # Generate a pre-aggregated CTE for each metric model
         preagg_ctes = []
         cte_names = []
@@ -1275,13 +1300,16 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             cte_names.append(cte_name)
 
+            # Only pass filters relevant to this model's sub-query
+            model_filters = pushdown_by_model.get(model_name, [])
+
             # Generate sub-query for this model's metrics at the dimension grain
             # We call generate() recursively but it won't trigger pre-aggregation
             # again because each sub-query has metrics from only one model
             sub_query = self.generate(
                 metrics=model_metrics,
                 dimensions=dimensions,
-                filters=all_filters,
+                filters=model_filters,
                 segments=None,  # Already resolved
                 order_by=None,
                 limit=None,
@@ -1347,12 +1375,10 @@ class SQLGenerator:
                 for dim_ref, gran in parsed_dims:
                     dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
                     col_name = f"{dim_name}__{gran}" if gran else dim_name
-                    # Use COALESCE to handle NULLs in join condition
-                    # Actually for FULL OUTER JOIN, we need to compare the actual columns
-                    # and handle NULLs with IS NOT DISTINCT FROM or COALESCE-based comparison
-                    join_conditions.append(
-                        f"COALESCE({cte_names[0]}.{col_name}, '') = COALESCE({cte_name}.{col_name}, '')"
-                    )
+                    # NULL-safe equality that works for all column types
+                    lhs = exp.Column(this=col_name, table=cte_names[0])
+                    rhs = exp.Column(this=col_name, table=cte_name)
+                    join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self.dialect))
 
                 join_clause = " AND ".join(join_conditions)
                 join_clauses.append(f"FULL OUTER JOIN {cte_name} ON {join_clause}")
@@ -1362,6 +1388,32 @@ class SQLGenerator:
         from_str = from_clause + "\n" + "\n".join(join_clauses)
 
         final_query = f"SELECT\n  {select_str}\nFROM {from_str}"
+
+        # Apply shared filters (cross-model or metric-level) on the outer query.
+        # Rewrite table references from model/model_cte to model_preagg using
+        # sqlglot AST rewriting so we don't accidentally mangle column names
+        # that happen to contain a model name as a substring.
+        if shared_filters:
+            preagg_table_map = {}
+            for model_name in metrics_by_model:
+                preagg_table_map[model_name] = f"{model_name}_preagg"
+                preagg_table_map[f"{model_name}_cte"] = f"{model_name}_preagg"
+
+            rewritten = []
+            for f in shared_filters:
+                try:
+                    parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                    for col in parsed.find_all(exp.Column):
+                        if col.table and col.table in preagg_table_map:
+                            col.set("table", exp.to_identifier(preagg_table_map[col.table]))
+                    rewritten.append(parsed.sql(dialect=self.dialect))
+                except Exception:
+                    # Parsing failed, fall back to the raw filter expression.
+                    # This is best-effort: the filter may reference CTE names
+                    # that don't exist on the outer query, but that will surface
+                    # as a clear SQL error rather than silently dropping the filter.
+                    rewritten.append(f)
+            final_query += f"\nWHERE {' AND '.join(rewritten)}"
 
         # Add ORDER BY
         if order_by:
@@ -2045,33 +2097,94 @@ class SQLGenerator:
         else:
             from_clause = model.table
 
+        # Resolve dimension columns for GROUP BY support.
+        # Each entry is (alias, sql_expr) where sql_expr uses the dimension's
+        # actual SQL expression and applies DATE_TRUNC for time granularity.
+        dim_entries: list[tuple[str, str]] = []
+        for dim_ref in dimensions:
+            dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
+            # Parse granularity suffix (e.g., "event_date__month")
+            if "__" in dim_name:
+                base_dim, gran = dim_name.rsplit("__", 1)
+            else:
+                base_dim, gran = dim_name, None
+            dim_obj = model.get_dimension(base_dim)
+            if not dim_obj:
+                continue
+            sql_col = dim_obj.sql_expr
+            if gran and dim_obj.type == "time":
+                sql_col = self._date_trunc(gran, sql_col)
+                alias = f"{base_dim}__{gran}"
+            else:
+                alias = base_dim
+            dim_entries.append((alias, sql_col))
+
+        dim_aliases = [alias for alias, _ in dim_entries]
+
+        # Build extra SELECT columns for dimensions
+        extra_base_cols = ""
+        extra_conv_cols = ""
+        extra_conversions_cols = ""
+        if dim_entries:
+            base_col_list = ",\n    ".join(f"{sql_col} AS {alias}" for alias, sql_col in dim_entries)
+            extra_base_cols = f",\n    {base_col_list}"
+            extra_conv_cols = extra_base_cols
+            conv_col_list = ",\n    ".join(f"base.{alias}" for alias in dim_aliases)
+            extra_conversions_cols = f",\n    {conv_col_list}"
+
+        # Build LEFT JOIN condition (entity + dimensions)
+        join_on_parts = ["base_events.entity = conversions.entity"]
+        for alias in dim_aliases:
+            join_on_parts.append(f"base_events.{alias} IS NOT DISTINCT FROM conversions.{alias}")
+        join_condition = "\n  AND ".join(join_on_parts)
+
+        # Build final SELECT, GROUP BY, ORDER BY, LIMIT
+        dim_select = ""
+        group_by = ""
+        if dim_aliases:
+            dim_select_list = ",\n  ".join(f"base_events.{alias} AS {alias}" for alias in dim_aliases)
+            dim_select = f"  {dim_select_list},\n"
+            group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
+
+        order_clause = ""
+        if order_by:
+            order_fields = []
+            for field in order_by:
+                field_name = field.split(".", 1)[1] if "." in field else field
+                order_fields.append(field_name)
+            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"\nLIMIT {limit}"
+
         sql = f"""
 WITH base_events AS (
   SELECT
     {metric.entity} AS entity,
-    {timestamp_dim} AS event_time
+    {timestamp_dim} AS event_time{extra_base_cols}
   FROM {from_clause}
   WHERE {event_type_dim} = '{metric.base_event}'
 ),
 conversion_events AS (
   SELECT
     {metric.entity} AS entity,
-    {timestamp_dim} AS event_time
+    {timestamp_dim} AS event_time{extra_conv_cols}
   FROM {from_clause}
   WHERE {event_type_dim} = '{metric.conversion_event}'
 ),
 conversions AS (
   SELECT DISTINCT
-    base.entity
+    base.entity{extra_conversions_cols}
   FROM base_events base
   JOIN conversion_events conv
     ON base.entity = conv.entity
     AND conv.event_time BETWEEN base.event_time AND base.event_time + INTERVAL '{window_num} {window_unit}'
 )
 SELECT
-  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {metric.name}
+{dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {metric.name}
 FROM base_events
-LEFT JOIN conversions ON base_events.entity = conversions.entity
+LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 """
 
         return sql.strip()

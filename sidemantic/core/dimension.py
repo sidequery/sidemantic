@@ -28,6 +28,9 @@ class Dimension(BaseModel):
     # Hierarchy
     parent: str | None = Field(None, description="Parent dimension for hierarchies (e.g., 'state' parent is 'country')")
 
+    # Arbitrary metadata (ai_context, custom_extensions, etc.)
+    meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
+
     @model_validator(mode="before")
     @classmethod
     def handle_expr_alias(cls, data):

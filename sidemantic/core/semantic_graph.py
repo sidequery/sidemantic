@@ -15,9 +15,20 @@ class JoinPath:
 
     from_model: str
     to_model: str
-    from_entity: str
-    to_entity: str
+    from_columns: list[str]  # Foreign key column(s) in from_model
+    to_columns: list[str]  # Primary/unique key column(s) in to_model
     relationship: str  # many_to_one, one_to_many, one_to_one
+
+    # Backwards compatibility properties (return first column)
+    @property
+    def from_entity(self) -> str:
+        """Get first foreign key column (backwards compatibility)."""
+        return self.from_columns[0] if self.from_columns else ""
+
+    @property
+    def to_entity(self) -> str:
+        """Get first primary key column (backwards compatibility)."""
+        return self.to_columns[0] if self.to_columns else ""
 
 
 class SemanticGraph:
@@ -33,8 +44,8 @@ class SemanticGraph:
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
         self._adjacency: dict[
-            str, list[tuple[str, str, str, str]]
-        ] = {}  # model -> [(to_model, from_key, to_key, rel_type)]
+            str, list[tuple[str, list[str], list[str], str]]
+        ] = {}  # model -> [(to_model, from_keys, to_keys, rel_type)]
 
     def add_model(self, model: Model) -> None:
         """Add a model to the graph.
@@ -184,10 +195,12 @@ class SemanticGraph:
             self._adjacency = {}
         self._adjacency.clear()
 
-        def add_edge(from_model: str, to_model: str, from_key: str, to_key: str, relationship_type: str) -> None:
+        def add_edge(
+            from_model: str, to_model: str, from_keys: list[str], to_keys: list[str], relationship_type: str
+        ) -> None:
             if from_model not in self._adjacency:
                 self._adjacency[from_model] = []
-            self._adjacency[from_model].append((to_model, from_key, to_key, relationship_type))
+            self._adjacency[from_model].append((to_model, from_keys, to_keys, relationship_type))
 
         def invert_relationship(relationship_type: str) -> str:
             if relationship_type == "many_to_one":
@@ -208,42 +221,48 @@ class SemanticGraph:
                     if not junction_model or junction_model not in self.models:
                         if not relationship.foreign_key:
                             continue
-                        local_key = model.primary_key
-                        remote_key = relationship.foreign_key
-                        add_edge(model_name, related_model, local_key, remote_key, "one_to_many")
-                        add_edge(related_model, model_name, remote_key, local_key, "many_to_one")
+                        local_keys = model.primary_key_columns
+                        remote_keys = relationship.foreign_key_columns
+                        add_edge(model_name, related_model, local_keys, remote_keys, "one_to_many")
+                        add_edge(related_model, model_name, remote_keys, local_keys, "many_to_one")
                         continue
 
                     junction_self_fk, junction_related_fk = relationship.junction_keys()
                     if not junction_self_fk or not junction_related_fk:
                         continue
 
-                    base_pk = model.primary_key
-                    related_pk = relationship.primary_key or self.models[related_model].primary_key
+                    base_pk = model.primary_key_columns
+                    related_pk = (
+                        relationship.primary_key_columns
+                        if relationship.primary_key
+                        else self.models[related_model].primary_key_columns
+                    )
 
-                    add_edge(model_name, junction_model, base_pk, junction_self_fk, "one_to_many")
-                    add_edge(junction_model, model_name, junction_self_fk, base_pk, "many_to_one")
+                    add_edge(model_name, junction_model, base_pk, [junction_self_fk], "one_to_many")
+                    add_edge(junction_model, model_name, [junction_self_fk], base_pk, "many_to_one")
 
-                    add_edge(junction_model, related_model, junction_related_fk, related_pk, "many_to_one")
-                    add_edge(related_model, junction_model, related_pk, junction_related_fk, "one_to_many")
+                    add_edge(junction_model, related_model, [junction_related_fk], related_pk, "many_to_one")
+                    add_edge(related_model, junction_model, related_pk, [junction_related_fk], "one_to_many")
                     continue
 
                 # Get the join key names
                 if relationship.type == "many_to_one":
                     # This model has foreign key pointing to related model
                     # Example: orders many_to_one customers (orders.customer_id -> customers.id)
-                    local_key = relationship.sql_expr  # customer_id (in orders)
-                    remote_key = (
-                        relationship.primary_key or self.models[related_model].primary_key
+                    local_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
+                    remote_keys = (
+                        relationship.primary_key_columns
+                        if relationship.primary_key
+                        else self.models[related_model].primary_key_columns
                     )  # Use related model's primary key
                 else:
                     # one_to_one or one_to_many: related model has foreign key pointing here
                     # Example: customers one_to_many orders (customers.id <- orders.customer_id)
-                    local_key = model.primary_key  # Use model's primary key
-                    remote_key = relationship.foreign_key or relationship.sql_expr  # customer_id (in orders)
+                    local_keys = model.primary_key_columns  # Use model's primary key
+                    remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
 
-                add_edge(model_name, related_model, local_key, remote_key, relationship.type)
-                add_edge(related_model, model_name, remote_key, local_key, invert_relationship(relationship.type))
+                add_edge(model_name, related_model, local_keys, remote_keys, relationship.type)
+                add_edge(related_model, model_name, remote_keys, local_keys, invert_relationship(relationship.type))
 
     def find_relationship_path(self, from_model: str, to_model: str) -> list[JoinPath]:
         """Find join path between two models using BFS.
@@ -276,22 +295,19 @@ class SemanticGraph:
             if current not in self._adjacency:
                 continue
 
-            for next_model, from_key, to_key, relationship_type in self._adjacency[current]:
+            for next_model, from_keys, to_keys, relationship_type in self._adjacency[current]:
                 if next_model in visited:
                     continue
 
                 visited.add(next_model)
-                from_entity = from_key
-                to_entity = to_key
-                relationship = relationship_type
 
                 new_path = path + [
                     JoinPath(
                         from_model=current,
                         to_model=next_model,
-                        from_entity=from_entity,
-                        to_entity=to_entity,
-                        relationship=relationship,
+                        from_columns=from_keys,
+                        to_columns=to_keys,
+                        relationship=relationship_type,
                     )
                 ]
 

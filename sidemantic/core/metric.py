@@ -1,6 +1,6 @@
 """Measure definitions - unified metric/measure abstraction."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -257,6 +257,9 @@ class Metric(BaseModel):
         None,
         description="Dimension across which this metric cannot be summed (e.g., time for averages)",
     )
+
+    # Arbitrary metadata (ai_context, custom_extensions, etc.)
+    meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
 
     def __hash__(self) -> int:
         return hash((self.name, self.agg, self.sql))

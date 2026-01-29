@@ -1,0 +1,20 @@
+unique_name: fact_orders
+object_type: dataset
+label: fact_orders
+connection_id: core_connection
+table: orders
+columns:
+  - name: order_id
+    data_type: int
+  - name: customer_id
+    data_type: int
+  - name: promo_id
+    data_type: int
+  - name: order_date
+    data_type: date
+  - name: order_ts
+    data_type: datetime
+  - name: status_code
+    data_type: string
+  - name: total_amount
+    data_type: "decimal(12,2)"

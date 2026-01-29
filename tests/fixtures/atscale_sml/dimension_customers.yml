@@ -1,0 +1,40 @@
+unique_name: customer_dimension
+object_type: dimension
+label: Customers
+type: standard
+
+hierarchies:
+  - unique_name: customer_hierarchy
+    levels:
+      - unique_name: customer_id
+        metrics:
+          - unique_name: customer_count
+            label: Customer Count
+            dataset: dim_customers
+            column: customer_id
+            calculation_method: count distinct
+      - unique_name: customer_name
+
+relationships:
+  - unique_name: customer_region
+    from:
+      dataset: dim_customers
+      join_columns:
+        - region_id
+    to:
+      dimension: region_dimension
+      level: region_id
+
+level_attributes:
+  - unique_name: customer_id
+    label: Customer ID
+    dataset: dim_customers
+    name_column: customer_id
+    key_columns:
+      - customer_id
+  - unique_name: customer_name
+    label: Customer Name
+    dataset: dim_customers
+    name_column: customer_name
+    key_columns:
+      - customer_id

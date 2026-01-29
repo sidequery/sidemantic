@@ -1,0 +1,6 @@
+unique_name: demo_connection
+object_type: connection
+label: Demo Connection
+as_connection: demo
+database: analytics
+schema: public

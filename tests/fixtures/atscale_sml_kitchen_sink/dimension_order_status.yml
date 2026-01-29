@@ -1,0 +1,14 @@
+unique_name: order_status_dim
+object_type: dimension
+label: Order Status
+level_attributes:
+  - unique_name: order_status
+    shared_degenerate_columns:
+      - dataset: fact_orders
+        name_column: status_code
+        key_columns:
+          - status_code
+      - dataset: fact_returns
+        name_column: status_code
+        key_columns:
+          - status_code

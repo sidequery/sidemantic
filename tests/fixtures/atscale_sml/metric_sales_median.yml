@@ -1,0 +1,7 @@
+unique_name: sales_median
+object_type: metric
+label: Sales Median
+calculation_method: percentile
+named_quantiles: median
+dataset: fact_sales
+column: amount

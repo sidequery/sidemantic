@@ -1,0 +1,4 @@
+unique_name: core_connection
+object_type: connection
+database: warehouse
+schema: analytics

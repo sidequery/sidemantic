@@ -1,0 +1,16 @@
+unique_name: fact_sales
+object_type: dataset
+label: Fact Sales
+connection_id: demo_connection
+table: sales
+columns:
+  - name: sale_id
+    data_type: int
+  - name: customer_id
+    data_type: int
+  - name: sale_date
+    data_type: date
+  - name: amount
+    data_type: decimal(10,2)
+  - name: is_refund
+    data_type: boolean

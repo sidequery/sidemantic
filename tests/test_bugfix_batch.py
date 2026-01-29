@@ -268,6 +268,34 @@ class TestSharedFiltersOnOuterQuery:
         conn.close()
         assert len(rows) >= 1
 
+    def test_compound_and_filter_decomposed_into_pushdowns(self):
+        """A compound filter like 'orders.amount > 50 AND items.qty > 2' should
+        be split into two single-model filters, each pushed into its sub-query,
+        rather than kept as an un-pushable shared filter."""
+        graph = self._build_graph()
+        gen = SQLGenerator(graph)
+
+        # This compound filter references two models but each conjunct only
+        # references one. After decomposition, both should be pushed down.
+        sql = gen.generate(
+            metrics=["orders.revenue", "items.total_qty"],
+            dimensions=["orders.order_date"],
+            filters=["orders_cte.amount > 50 AND items_cte.qty > 2"],
+        )
+
+        conn = duckdb.connect(":memory:")
+        rows = fetch_dicts(conn.execute(sql))
+        conn.close()
+
+        # orders with amount > 50: id=1 (100), id=2 (200)
+        # items with qty > 2: id=1 (qty=5), id=2 (qty=3), id=3 (qty=10)
+        # After both filters: date 2024-01-01 has revenue=300, qty=5+3+10=18
+        # (item id=4 qty=2 excluded, order id=3 amount=50 excluded)
+        assert len(rows) >= 1
+        for r in rows:
+            if r.get("revenue"):
+                assert r["revenue"] == 300
+
 
 # ==========================================================================
 # Fix 6: Duplicate segment resolution (segments=None after resolve)
@@ -567,6 +595,105 @@ class TestConversionMetricDimensions:
         # Without dimension in JOIN, EU would incorrectly get credit from user 1's purchase
         assert abs(by_region["US"] - 1.0) < 0.01
         assert abs(by_region["EU"] - 0.0) < 0.01
+
+    def test_conversion_with_time_granularity(self):
+        """Conversion sliced by event_date__month should apply DATE_TRUNC."""
+        events = Model(
+            name="events",
+            sql="""
+                SELECT * FROM (VALUES
+                    (1, 'signup', '2024-01-05'::DATE),
+                    (1, 'purchase', '2024-01-10'::DATE),
+                    (2, 'signup', '2024-02-01'::DATE)
+                ) AS t(user_id, event_type, event_date)
+            """,
+            primary_key="user_id",
+            dimensions=[
+                Dimension(name="user_id", sql="user_id", type="categorical"),
+                Dimension(name="event_type", sql="event_type", type="categorical"),
+                Dimension(name="event_date", sql="event_date", type="time"),
+            ],
+            metrics=[],
+        )
+
+        conv = Metric(
+            name="conv",
+            type="conversion",
+            entity="user_id",
+            base_event="signup",
+            conversion_event="purchase",
+            conversion_window="30 days",
+        )
+
+        graph = SemanticGraph()
+        graph.add_model(events)
+        graph.add_metric(conv)
+
+        gen = SQLGenerator(graph)
+        sql = gen.generate(metrics=["conv"], dimensions=["events.event_date__month"])
+
+        # Should use DATE_TRUNC to compute the alias, not treat "event_date__month" as a raw column
+        upper = sql.upper()
+        assert "DATE_TRUNC" in upper
+        # The alias event_date__month should appear, derived from DATE_TRUNC
+        assert "AS event_date__month" in sql
+
+        conn = duckdb.connect(":memory:")
+        rows = fetch_dicts(conn.execute(sql))
+        conn.close()
+
+        # Jan: user 1 signed up and purchased -> 1.0
+        # Feb: user 2 signed up, no purchase -> 0.0
+        assert len(rows) == 2
+
+    def test_conversion_with_derived_dimension_sql(self):
+        """Conversion dimension should use dim.sql_expr, not just dim.name."""
+        events = Model(
+            name="events",
+            sql="""
+                SELECT * FROM (VALUES
+                    (1, 'signup', '2024-01-01'::DATE, 'us-east'),
+                    (1, 'purchase', '2024-01-03'::DATE, 'us-east'),
+                    (2, 'signup', '2024-01-01'::DATE, 'eu-west')
+                ) AS t(user_id, event_type, event_date, server_region)
+            """,
+            primary_key="user_id",
+            dimensions=[
+                Dimension(name="user_id", sql="user_id", type="categorical"),
+                Dimension(name="event_type", sql="event_type", type="categorical"),
+                Dimension(name="event_date", sql="event_date", type="time"),
+                # Dimension name differs from column name
+                Dimension(name="region", sql="server_region", type="categorical"),
+            ],
+            metrics=[],
+        )
+
+        conv = Metric(
+            name="conv",
+            type="conversion",
+            entity="user_id",
+            base_event="signup",
+            conversion_event="purchase",
+            conversion_window="7 days",
+        )
+
+        graph = SemanticGraph()
+        graph.add_model(events)
+        graph.add_metric(conv)
+
+        gen = SQLGenerator(graph)
+        sql = gen.generate(metrics=["conv"], dimensions=["events.region"])
+
+        # SQL should reference server_region (the sql_expr), not just "region"
+        assert "server_region" in sql
+
+        conn = duckdb.connect(":memory:")
+        rows = fetch_dicts(conn.execute(sql))
+        conn.close()
+
+        by_region = {r["region"]: r["conv"] for r in rows}
+        assert abs(by_region["us-east"] - 1.0) < 0.01
+        assert abs(by_region["eu-west"] - 0.0) < 0.01
 
 
 # ==========================================================================

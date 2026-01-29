@@ -571,6 +571,11 @@ class SQLGenerator:
     ) -> tuple[dict[str, list[str]], list[str]]:
         """Classify filters into those that can be pushed down vs those that must stay in main query.
 
+        Compound AND expressions are split into individual conjuncts first so that
+        ``orders.status = 'active' AND items.category = 'A'`` gets decomposed into
+        two single-model filters that can each be pushed down, rather than being kept
+        as an un-pushable cross-model filter.
+
         Args:
             filters: List of filter expressions
             all_models: Set of all model names in the query
@@ -583,7 +588,18 @@ class SQLGenerator:
         pushdown_filters = {model: [] for model in all_models}
         main_query_filters = []
 
+        # Flatten compound AND expressions into individual conjuncts so each
+        # part can be classified independently.
+        flat_parts: list[str] = []
         for filter_expr in filters:
+            try:
+                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                conjuncts = list(parsed.flatten() if isinstance(parsed, exp.And) else [parsed])
+                flat_parts.extend(c.sql(dialect=self.dialect) for c in conjuncts)
+            except Exception:
+                flat_parts.append(filter_expr)
+
+        for filter_expr in flat_parts:
             # Parse filter expression with SQLGlot
             try:
                 parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
@@ -2081,40 +2097,54 @@ class SQLGenerator:
         else:
             from_clause = model.table
 
-        # Resolve dimension columns for GROUP BY support
-        dim_cols = []
+        # Resolve dimension columns for GROUP BY support.
+        # Each entry is (alias, sql_expr) where sql_expr uses the dimension's
+        # actual SQL expression and applies DATE_TRUNC for time granularity.
+        dim_entries: list[tuple[str, str]] = []
         for dim_ref in dimensions:
             dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
-            # Strip granularity suffix for raw column lookup
-            base_dim = dim_name.split("__")[0]
+            # Parse granularity suffix (e.g., "event_date__month")
+            if "__" in dim_name:
+                base_dim, gran = dim_name.rsplit("__", 1)
+            else:
+                base_dim, gran = dim_name, None
             dim_obj = model.get_dimension(base_dim)
-            if dim_obj:
-                dim_cols.append(dim_name)
+            if not dim_obj:
+                continue
+            sql_col = dim_obj.sql_expr
+            if gran and dim_obj.type == "time":
+                sql_col = self._date_trunc(gran, sql_col)
+                alias = f"{base_dim}__{gran}"
+            else:
+                alias = base_dim
+            dim_entries.append((alias, sql_col))
+
+        dim_aliases = [alias for alias, _ in dim_entries]
 
         # Build extra SELECT columns for dimensions
         extra_base_cols = ""
         extra_conv_cols = ""
         extra_conversions_cols = ""
-        if dim_cols:
-            base_col_list = ",\n    ".join(f"{c} AS {c}" for c in dim_cols)
+        if dim_entries:
+            base_col_list = ",\n    ".join(f"{sql_col} AS {alias}" for alias, sql_col in dim_entries)
             extra_base_cols = f",\n    {base_col_list}"
             extra_conv_cols = extra_base_cols
-            conv_col_list = ",\n    ".join(f"base.{c}" for c in dim_cols)
+            conv_col_list = ",\n    ".join(f"base.{alias}" for alias in dim_aliases)
             extra_conversions_cols = f",\n    {conv_col_list}"
 
         # Build LEFT JOIN condition (entity + dimensions)
         join_on_parts = ["base_events.entity = conversions.entity"]
-        for c in dim_cols:
-            join_on_parts.append(f"base_events.{c} IS NOT DISTINCT FROM conversions.{c}")
+        for alias in dim_aliases:
+            join_on_parts.append(f"base_events.{alias} IS NOT DISTINCT FROM conversions.{alias}")
         join_condition = "\n  AND ".join(join_on_parts)
 
         # Build final SELECT, GROUP BY, ORDER BY, LIMIT
         dim_select = ""
         group_by = ""
-        if dim_cols:
-            dim_select_list = ",\n  ".join(f"base_events.{c} AS {c}" for c in dim_cols)
+        if dim_aliases:
+            dim_select_list = ",\n  ".join(f"base_events.{alias} AS {alias}" for alias in dim_aliases)
             dim_select = f"  {dim_select_list},\n"
-            group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_cols)))
+            group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
 
         order_clause = ""
         if order_by:

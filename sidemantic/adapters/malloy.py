@@ -8,10 +8,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from antlr4 import CommonTokenStream, InputStream
-
 from sidemantic.adapters.base import BaseAdapter
-from sidemantic.adapters.malloy_grammar import MalloyLexer, MalloyParser, MalloyParserVisitor
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -19,8 +16,19 @@ from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 
+try:
+    from antlr4 import CommonTokenStream, InputStream
 
-class MalloyModelVisitor(MalloyParserVisitor):
+    from sidemantic.adapters.malloy_grammar import MalloyLexer, MalloyParser, MalloyParserVisitor
+
+    _ANTLR4_AVAILABLE = True
+except ImportError:
+    _ANTLR4_AVAILABLE = False
+    MalloyParserVisitor = object  # type: ignore[assignment,misc]
+    MalloyParser = None  # type: ignore[assignment]
+
+
+class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
     """Visitor that extracts semantic model information from Malloy AST."""
 
     def __init__(self):
@@ -679,7 +687,14 @@ class MalloyAdapter(BaseAdapter):
 
         Returns:
             Semantic graph with imported models
+
+        Raises:
+            ImportError: If antlr4-python3-runtime is not installed
         """
+        if not _ANTLR4_AVAILABLE:
+            raise ImportError(
+                'Malloy support requires antlr4-python3-runtime. Install with: pip install "sidemantic[malloy]"'
+            )
         graph = SemanticGraph()
         source_path = Path(source)
 

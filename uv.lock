@@ -3226,9 +3226,7 @@ version = "0.5.11"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
-    { name = "inflect" },
     { name = "jinja2" },
-    { name = "lkml" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlglot" },
@@ -3270,7 +3268,10 @@ databricks = [
     { name = "pyarrow" },
 ]
 dev = [
+    { name = "antlr4-python3-runtime" },
     { name = "fakesnow" },
+    { name = "inflect" },
+    { name = "lkml" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pytest" },
@@ -3281,6 +3282,8 @@ full = [
     { name = "altair" },
     { name = "antlr4-python3-runtime" },
     { name = "anywidget" },
+    { name = "inflect" },
+    { name = "lkml" },
     { name = "lsprotocol" },
     { name = "mcp", extra = ["cli"] },
     { name = "plotext" },
@@ -3289,6 +3292,9 @@ full = [
     { name = "textual", extra = ["syntax"] },
     { name = "textual-plotext" },
     { name = "vl-convert-python" },
+]
+lookml = [
+    { name = "lkml" },
 ]
 lsp = [
     { name = "lsprotocol" },
@@ -3299,6 +3305,9 @@ malloy = [
 ]
 mcp = [
     { name = "mcp", extra = ["cli"] },
+]
+metricflow = [
+    { name = "inflect" },
 ]
 postgres = [
     { name = "psycopg", extra = ["binary"] },
@@ -3332,7 +3341,9 @@ workbench = [
 [package.dev-dependencies]
 dev = [
     { name = "antlr4-python3-runtime" },
+    { name = "inflect" },
     { name = "jupyterlab" },
+    { name = "lkml" },
     { name = "lsprotocol" },
     { name = "marimo" },
     { name = "numpy" },
@@ -3347,6 +3358,7 @@ dev = [
 requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'adbc'", specifier = ">=1.0.0" },
     { name = "altair", marker = "extra == 'charts'", specifier = ">=5.0.0" },
+    { name = "antlr4-python3-runtime", marker = "extra == 'dev'", specifier = ">=4.13.2" },
     { name = "antlr4-python3-runtime", marker = "extra == 'malloy'", specifier = ">=4.13.2" },
     { name = "anywidget", marker = "extra == 'widget'", specifier = ">=0.9.0" },
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.6.0" },
@@ -3354,9 +3366,11 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.0.0" },
     { name = "fakesnow", marker = "extra == 'dev'", specifier = ">=0.9.0" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.0.0" },
-    { name = "inflect", specifier = ">=7.0.0,<7.2.0" },
+    { name = "inflect", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "inflect", marker = "extra == 'metricflow'", specifier = ">=7.0.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
-    { name = "lkml", specifier = ">=1.3.7" },
+    { name = "lkml", marker = "extra == 'dev'", specifier = ">=1.3.7" },
+    { name = "lkml", marker = "extra == 'lookml'", specifier = ">=1.3.7" },
     { name = "lsprotocol", marker = "extra == 'lsp'", specifier = ">=2025.0.0" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.16.0" },
     { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.26,<3" },
@@ -3382,7 +3396,7 @@ requires-dist = [
     { name = "riffq", marker = "extra == 'serve'", specifier = ">=0.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "sidemantic", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
-    { name = "sidemantic", extras = ["workbench", "mcp", "charts", "lsp", "malloy", "widget"], marker = "extra == 'full'" },
+    { name = "sidemantic", extras = ["workbench", "mcp", "charts", "lsp", "lookml", "malloy", "metricflow", "widget"], marker = "extra == 'full'" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0.0" },
     { name = "sqlglot", specifier = "==27.12.0" },
     { name = "textual", extras = ["syntax"], marker = "extra == 'workbench'", specifier = ">=1.0.0" },
@@ -3392,12 +3406,14 @@ requires-dist = [
     { name = "typer", specifier = ">=0.9.0" },
     { name = "vl-convert-python", marker = "extra == 'charts'", specifier = ">=1.0.0" },
 ]
-provides-extras = ["dev", "workbench", "mcp", "charts", "serve", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "malloy", "widget", "all-databases", "full"]
+provides-extras = ["dev", "workbench", "mcp", "charts", "serve", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "lookml", "malloy", "metricflow", "widget", "all-databases", "full"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "antlr4-python3-runtime", specifier = ">=4.13.2" },
+    { name = "inflect", specifier = ">=7.0.0" },
     { name = "jupyterlab", specifier = ">=4.5.1" },
+    { name = "lkml", specifier = ">=1.3.7" },
     { name = "lsprotocol", specifier = ">=2025.0.0" },
     { name = "marimo", specifier = "==0.16.5" },
     { name = "numpy", specifier = ">=1.26,<3" },

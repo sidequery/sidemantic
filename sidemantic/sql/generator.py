@@ -845,22 +845,24 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
-        # Include this model's primary key (always needed for joins/grouping)
-        if model.primary_key and model.primary_key not in columns_added:
-            select_cols.append(f"{model.primary_key} AS {model.primary_key}")
-            columns_added.add(model.primary_key)
+        # Include this model's primary key columns (always needed for joins/grouping)
+        for pk_col in model.primary_key_columns:
+            if pk_col not in columns_added:
+                select_cols.append(f"{pk_col} AS {pk_col}")
+                columns_added.add(pk_col)
 
         # Include foreign keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
             if relationship.type == "many_to_one":
-                fk = relationship.sql_expr
-                # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
-                should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
-                if should_include and fk not in columns_added:
-                    select_cols.append(f"{fk} AS {fk}")
-                    columns_added.add(fk)
-                    # Mark FK as "needed" so it's not duplicated as a dimension
-                    needed_dimensions.discard(fk)
+                # Handle multi-column foreign keys
+                for fk in relationship.foreign_key_columns:
+                    # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
+                    should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
+                    if should_include and fk not in columns_added:
+                        select_cols.append(f"{fk} AS {fk}")
+                        columns_added.add(fk)
+                        # Mark FK as "needed" so it's not duplicated as a dimension
+                        needed_dimensions.discard(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_joins:
@@ -1029,8 +1031,12 @@ class SQLGenerator:
                 if measure.agg == "count" and (not measure.sql or measure.sql == "*"):
                     base_sql = "1"
                 elif measure.agg == "count_distinct" and not measure.sql:
-                    pk = model.primary_key or "id"
-                    base_sql = pk
+                    pk_cols = model.primary_key_columns
+                    if len(pk_cols) == 1:
+                        base_sql = pk_cols[0]
+                    else:
+                        # For composite keys, concatenate columns for uniqueness
+                        base_sql = "CONCAT(" + ", '|', ".join(f"CAST({c} AS VARCHAR)" for c in pk_cols) + ")"
                 else:
                     base_sql = replace_model_placeholder(measure.sql_expr)
 
@@ -1510,7 +1516,12 @@ class SQLGenerator:
                             # Use symmetric aggregates to prevent double-counting
                             # Get primary key for this model
                             model_obj = self.graph.get_model(model_name)
-                            pk = model_obj.primary_key or "id"
+                            pk_cols = model_obj.primary_key_columns
+                            # For composite keys, concatenate columns for hashing
+                            if len(pk_cols) == 1:
+                                pk = pk_cols[0]
+                            else:
+                                pk = "CONCAT(" + ", '|', ".join(f"CAST({c} AS VARCHAR)" for c in pk_cols) + ")"
 
                             agg_expr = build_symmetric_aggregate_sql(
                                 measure_expr=f"{measure_name}_raw",
@@ -1561,7 +1572,11 @@ class SQLGenerator:
 
                         left_table = jp.from_model + "_cte"
                         right_table = jp.to_model + "_cte"
-                        join_cond = f"{left_table}.{jp.from_entity} = {right_table}.{jp.to_entity}"
+                        # Build join condition for single or multi-column keys
+                        join_conditions = [
+                            f"{left_table}.{fk} = {right_table}.{pk}" for fk, pk in zip(jp.from_columns, jp.to_columns)
+                        ]
+                        join_cond = " AND ".join(join_conditions)
 
                         # Use INNER JOIN if this model has filters applied, otherwise LEFT JOIN
                         join_type = "inner" if jp.to_model in models_with_filters else "left"

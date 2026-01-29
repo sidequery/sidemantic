@@ -55,6 +55,12 @@ class TestCountDistinctWithoutSql:
         assert result == [{"count": 5}]
 
     def test_composite_pk(self, con):
+        # Add a row where sk_location_id=1 appears with a second zipcode.
+        # Without both keys in the CONCAT, COUNT(DISTINCT sk_location_id)
+        # would return 5 instead of the correct 6.
+        con.execute("""
+            INSERT INTO dim_location VALUES (1, '7090', 'Braine', 'BE')
+        """)
         layer = _make_layer(
             Model(
                 name="location",
@@ -70,7 +76,7 @@ class TestCountDistinctWithoutSql:
         sql = layer.compile(metrics=["location.count"])
         assert "CONCAT(" in sql
         result = fetch_dicts(con.execute(sql))
-        assert result == [{"count": 5}]
+        assert result == [{"count": 6}]
 
     def test_explicit_sql_overrides_pk(self, con):
         layer = _make_layer(

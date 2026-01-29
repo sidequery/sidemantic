@@ -1572,6 +1572,12 @@ class SQLGenerator:
 
                         left_table = jp.from_model + "_cte"
                         right_table = jp.to_model + "_cte"
+                        # Validate column counts match for composite keys
+                        if len(jp.from_columns) != len(jp.to_columns):
+                            raise ValueError(
+                                f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
+                                f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
+                            )
                         # Build join condition for single or multi-column keys
                         join_conditions = [
                             f"{left_table}.{fk} = {right_table}.{pk}" for fk, pk in zip(jp.from_columns, jp.to_columns)

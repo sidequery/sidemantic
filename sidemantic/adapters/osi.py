@@ -444,7 +444,7 @@ class OSIAdapter(BaseAdapter):
         relationships = []
         for model in models.values():
             for rel in model.relationships:
-                rel_def = self._export_relationship(model.name, rel)
+                rel_def = self._export_relationship(model.name, rel, models)
                 if rel_def:
                     relationships.append(rel_def)
         if relationships:
@@ -545,12 +545,15 @@ class OSIAdapter(BaseAdapter):
 
         return field
 
-    def _export_relationship(self, from_model: str, rel: Relationship) -> dict[str, Any] | None:
+    def _export_relationship(
+        self, from_model: str, rel: Relationship, models: dict[str, Model]
+    ) -> dict[str, Any] | None:
         """Export relationship to OSI relationship definition.
 
         Args:
             from_model: Name of the model containing the relationship
             rel: Relationship to export
+            models: Resolved models dict, used to look up the related model's actual PK
 
         Returns:
             OSI relationship definition dictionary or None
@@ -558,12 +561,19 @@ class OSIAdapter(BaseAdapter):
         if rel.type != "many_to_one":
             return None  # OSI only supports many-to-one style relationships
 
+        # Use the related model's actual primary key when rel.primary_key is unset
+        if rel.primary_key is None:
+            related_model = models.get(rel.name)
+            to_columns = related_model.primary_key_columns if related_model else ["id"]
+        else:
+            to_columns = rel.primary_key_columns
+
         return {
             "name": f"{from_model}_to_{rel.name}",
             "from": from_model,
             "to": rel.name,
             "from_columns": rel.foreign_key_columns,
-            "to_columns": rel.primary_key_columns,
+            "to_columns": to_columns,
         }
 
     def _export_metric(

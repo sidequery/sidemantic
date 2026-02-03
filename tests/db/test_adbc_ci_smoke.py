@@ -104,6 +104,19 @@ def adbc_layer() -> SemanticLayer:
             last_exc = exc
             continue
         layer = SemanticLayer(connection=adapter)
+        try:
+            probe = layer.adapter.execute("SELECT 1 as x")
+            row = probe.fetchone()
+            if row != (1,):
+                raise RuntimeError(f"Unexpected probe result: {row!r}")
+        except Exception as exc:
+            last_exc = exc
+            try:
+                adapter.close()
+            except Exception:
+                pass
+            continue
+
         yield layer
         try:
             adapter.close()

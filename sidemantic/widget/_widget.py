@@ -51,6 +51,83 @@ def _table_to_ipc(table, *, decimal_mode: str = "float") -> str:
     return base64.b64encode(sink.getvalue()).decode("ascii")
 
 
+def _table_to_ipc_bytes(table, *, decimal_mode: str = "float") -> bytes:
+    """Serialize Arrow table to IPC format (raw bytes for widget transport)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if any(pa.types.is_decimal(field.type) for field in table.schema):
+        arrays = []
+        fields = []
+        for field in table.schema:
+            column = table[field.name]
+            if pa.types.is_decimal(field.type):
+                if decimal_mode == "string":
+                    cast_type = pa.string()
+                else:
+                    cast_type = pa.float64()
+                arrays.append(pc.cast(column, cast_type))
+                fields.append(pa.field(field.name, cast_type))
+            else:
+                arrays.append(column)
+                fields.append(field)
+        table = pa.table(arrays, schema=pa.schema(fields))
+
+    sink = io.BytesIO()
+    with pa.ipc.new_file(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue()
+
+
+def _is_already_quoted_identifier(value: str) -> bool:
+    value = value.strip()
+    if len(value) < 2:
+        return False
+    if value[0] == value[-1] and value[0] in ('"', "`"):
+        return True
+    if value.startswith("[") and value.endswith("]"):
+        return True
+    return False
+
+
+def _quote_qualified_name(name: str, *, dialect: str) -> str:
+    """Quote a qualified identifier like schema.table for the given dialect.
+
+    If name looks like an expression (contains whitespace or parentheses), return as-is.
+    """
+    import sqlglot
+
+    raw = name.strip()
+    if not raw:
+        return raw
+    if any(ch in raw for ch in (" ", "\t", "\n", "\r", "(", ")")):
+        return raw
+
+    parts = raw.split(".")
+    try:
+        parsed = sqlglot.parse_one(raw, into=sqlglot.exp.Table, dialect=dialect)
+        if parsed:
+            # Keep any catalog/db/this parts that sqlglot understood, but ensure quoting.
+            rendered_parts: list[str] = []
+            for attr in ("catalog", "db", "this"):
+                part = getattr(parsed, attr, None)
+                if part is None:
+                    continue
+                rendered_parts.append(part.sql(dialect=dialect, quote=True))
+            if rendered_parts:
+                return ".".join(rendered_parts)
+    except Exception:
+        pass
+
+    quoted_parts: list[str] = []
+    for part in parts:
+        if _is_already_quoted_identifier(part):
+            quoted_parts.append(part)
+            continue
+        quoted_parts.append(sqlglot.to_identifier(part, quoted=True).sql(dialect=dialect))
+    return ".".join(quoted_parts)
+
+
 class MetricsExplorer(anywidget.AnyWidget):
     """Interactive metrics explorer widget.
 
@@ -94,10 +171,13 @@ class MetricsExplorer(anywidget.AnyWidget):
     time_grain = traitlets.Unicode("").tag(sync=True)
     time_grain_options = traitlets.List([]).tag(sync=True)
     active_dimension = traitlets.Unicode("").tag(sync=True)
+    transport = traitlets.Unicode("base64").tag(sync=True)  # "base64" | "binary"
 
     # Data (Python → JS, as Arrow IPC bytes)
     metric_series_data = traitlets.Unicode("").tag(sync=True)
+    metric_series_data_binary = traitlets.Bytes(b"").tag(sync=True)
     dimension_data = traitlets.Dict({}).tag(sync=True)  # {dim_key: base64 arrow ipc}
+    dimension_data_binary = traitlets.Dict({}).tag(sync=True)  # {dim_key: arrow ipc bytes}
     metric_totals = traitlets.Dict({}).tag(sync=True)
 
     # Status
@@ -117,6 +197,7 @@ class MetricsExplorer(anywidget.AnyWidget):
         auto_preagg_min_count: int = 3,
         auto_preagg_min_score: float = 0.2,
         auto_preagg_max: int = 5,
+        transport: str = "base64",
         **kwargs,
     ):
         """Initialize MetricsExplorer widget.
@@ -162,6 +243,10 @@ class MetricsExplorer(anywidget.AnyWidget):
         self._auto_preagg_recommender = None
         self._metric_error = ""
         self._dimension_error = ""
+        if transport not in ("base64", "binary"):
+            raise ValueError("transport must be 'base64' or 'binary'")
+        self._transport = transport
+        self.transport = transport
 
         if layer is not None:
             # Mode 2: Use existing SemanticLayer
@@ -179,6 +264,7 @@ class MetricsExplorer(anywidget.AnyWidget):
         # Create SQLGenerator once (reused for all queries)
         from sidemantic.sql.generator import SQLGenerator
 
+        dialect = self._layer.dialect if self._layer is not None else "duckdb"
         preagg_database = None
         preagg_schema = None
         if self._layer is not None:
@@ -187,7 +273,7 @@ class MetricsExplorer(anywidget.AnyWidget):
 
         self._generator = SQLGenerator(
             self._graph,
-            dialect="duckdb",
+            dialect=dialect,
             preagg_database=preagg_database,
             preagg_schema=preagg_schema,
         )
@@ -366,7 +452,10 @@ class MetricsExplorer(anywidget.AnyWidget):
             return
 
         try:
-            query = f'SELECT MIN("{self._time_dimension}") as min_date, MAX("{self._time_dimension}") as max_date FROM "{self._table_name}"'
+            dialect = self._layer.dialect if self._layer is not None else "duckdb"
+            table_ref = _quote_qualified_name(self._table_name, dialect=dialect)
+            time_col = _quote_qualified_name(self._time_dimension, dialect=dialect)
+            query = f"SELECT MIN({time_col}) as min_date, MAX({time_col}) as max_date FROM {table_ref}"
             result = self._execute(query).fetchone()
             if result and result[0] and result[1]:
                 min_date = result[0]
@@ -464,15 +553,43 @@ class MetricsExplorer(anywidget.AnyWidget):
                 continue
             if values:
                 if len(values) == 1:
-                    value = self._escape_sql_literal(str(values[0]))
-                    filter_exprs.append(f"{self._model_name}.{dim_key} = '{value}'")
+                    if values[0] is None:
+                        filter_exprs.append(f"{self._model_name}.{dim_key} IS NULL")
+                    else:
+                        filter_exprs.append(f"{self._model_name}.{dim_key} = {self._format_sql_literal(values[0])}")
                 else:
-                    clauses = " OR ".join(
-                        f"{self._model_name}.{dim_key} = '{self._escape_sql_literal(str(v))}'" for v in values
-                    )
+                    clauses_list: list[str] = []
+                    for v in values:
+                        if v is None:
+                            clauses_list.append(f"{self._model_name}.{dim_key} IS NULL")
+                        else:
+                            clauses_list.append(f"{self._model_name}.{dim_key} = {self._format_sql_literal(v)}")
+                    clauses = " OR ".join(clauses_list)
                     filter_exprs.append(f"({clauses})")
 
         return filter_exprs
+
+    def _format_sql_literal(self, value: Any) -> str:
+        """Format a python value as a SQL literal in the widget's dialect."""
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+        if isinstance(value, float):
+            if value != value or value in (float("inf"), float("-inf")):
+                return "null"
+            return str(value)
+        return f"'{self._escape_sql_literal(str(value))}'"
+
+    def _format_time_literal(self, value: str) -> str:
+        from sqlglot import exp
+
+        dialect = self._layer.dialect if self._layer is not None else "duckdb"
+        kind = "date" if self._is_date_only(value) else "timestamp"
+        expr = exp.Cast(this=exp.Literal.string(value), to=exp.DataType.build(kind))
+        return expr.sql(dialect=dialect)
 
     def _record_query_intent(
         self,
@@ -625,20 +742,20 @@ class MetricsExplorer(anywidget.AnyWidget):
         start_str = self._stringify_time_value(start)
         end_str = self._stringify_time_value(end)
 
-        start_literal = self._escape_sql_literal(start_str)
-        end_literal = self._escape_sql_literal(end_str)
+        start_literal = self._format_time_literal(start_str)
+        end_literal = self._format_time_literal(end_str)
 
         if self._is_date_only(end_str):
             end_exclusive = (date.fromisoformat(end_str) + timedelta(days=1)).isoformat()
-            end_literal = self._escape_sql_literal(end_exclusive)
+            end_literal = self._format_time_literal(end_exclusive)
             return (
-                f"{self._model_name}.{self._time_dimension} >= '{start_literal}' AND "
-                f"{self._model_name}.{self._time_dimension} < '{end_literal}'"
+                f"{self._model_name}.{self._time_dimension} >= {start_literal} AND "
+                f"{self._model_name}.{self._time_dimension} < {end_literal}"
             )
 
         return (
-            f"{self._model_name}.{self._time_dimension} >= '{start_literal}' AND "
-            f"{self._model_name}.{self._time_dimension} <= '{end_literal}'"
+            f"{self._model_name}.{self._time_dimension} >= {start_literal} AND "
+            f"{self._model_name}.{self._time_dimension} <= {end_literal}"
         )
 
     def _escape_sql_literal(self, value: str) -> str:
@@ -705,25 +822,36 @@ class MetricsExplorer(anywidget.AnyWidget):
     def _sync_status(self) -> None:
         error = self._metric_error or self._dimension_error
         self.error = error
-        self.status = "error" if error else "ready"
+        if error:
+            self.status = "error"
+            return
+        self.status = "loading" if self._pending_refresh else "ready"
 
     def _refresh_all(self):
         """Refresh all data (metrics and dimensions)."""
+        self._pending_refresh = "all"
         self.status = "loading"
         self._refresh_metrics(sync_status=False)
         self._refresh_dimensions(sync_status=False)
+        self._pending_refresh = None
         self._sync_status()
 
     def _refresh_metrics(self, *, sync_status: bool = True):
         """Refresh metric series data."""
+        if sync_status:
+            self._pending_refresh = "metrics"
+            self.status = "loading"
+
         if not self._time_dimension:
             self._metric_error = "No time dimension available for metrics."
             if sync_status:
+                self._pending_refresh = None
                 self._sync_status()
             return
 
         # Clear existing data to show skeletons while loading
         self.metric_series_data = ""
+        self.metric_series_data_binary = b""
         self.metric_totals = {}
         self._metric_error = ""
 
@@ -745,7 +873,13 @@ class MetricsExplorer(anywidget.AnyWidget):
                 skip_default_time_dimensions=True,
             )
             result = self._execute_arrow(sql)
-            self.metric_series_data = _table_to_ipc(result, decimal_mode="float")
+            self._set_time_series_column_from_schema(result, grain=grain)
+            if self._transport == "binary":
+                self.metric_series_data_binary = _table_to_ipc_bytes(result, decimal_mode="float")
+                self.metric_series_data = ""
+            else:
+                self.metric_series_data = _table_to_ipc(result, decimal_mode="float")
+                self.metric_series_data_binary = b""
 
             totals_sql = self._generator.generate(
                 metrics=metric_refs,
@@ -772,24 +906,36 @@ class MetricsExplorer(anywidget.AnyWidget):
         except Exception as e:
             self._metric_error = f"Metric query failed: {e}"
         if sync_status:
+            self._pending_refresh = None
             self._sync_status()
 
     def _refresh_dimensions(self, *, sync_status: bool = True):
         """Refresh dimension leaderboard data."""
+        if sync_status:
+            self._pending_refresh = "dimensions"
+            self.status = "loading"
+
         selected_metric_ref = f"{self._model_name}.{self.selected_metric}"
         self._dimension_error = ""
 
         # Preserve existing data so panels stay interactive while refreshing
         existing = self.dimension_data or {}
+        existing_binary = self.dimension_data_binary or {}
         dimension_data = dict(existing)
+        dimension_data_binary = dict(existing_binary)
         for dim in self.dimensions_config:
             dim_key = dim["key"]
             if dim_key not in dimension_data:
                 dimension_data[dim_key] = ""
+            if dim_key not in dimension_data_binary:
+                dimension_data_binary[dim_key] = b""
 
         if self.active_dimension:
             dim_config = next((d for d in self.dimensions_config if d["key"] == self.active_dimension), None)
             if not dim_config:
+                if sync_status:
+                    self._pending_refresh = None
+                    self._sync_status()
                 return
 
             dim_key = dim_config["key"]
@@ -809,8 +955,16 @@ class MetricsExplorer(anywidget.AnyWidget):
                     use_preaggregations=self._use_preaggregations,
                 )
                 result = self._execute_arrow(sql)
-                dimension_data[dim_key] = _table_to_ipc(result, decimal_mode="string")
-                self.dimension_data = dict(dimension_data)
+                if self._transport == "binary":
+                    dimension_data_binary[dim_key] = _table_to_ipc_bytes(result, decimal_mode="string")
+                    self.dimension_data_binary = dict(dimension_data_binary)
+                    dimension_data[dim_key] = ""
+                    self.dimension_data = dict(dimension_data)
+                else:
+                    dimension_data[dim_key] = _table_to_ipc(result, decimal_mode="string")
+                    self.dimension_data = dict(dimension_data)
+                    dimension_data_binary[dim_key] = b""
+                    self.dimension_data_binary = dict(dimension_data_binary)
                 self._record_query_intent(
                     [selected_metric_ref],
                     [dim_ref],
@@ -820,15 +974,20 @@ class MetricsExplorer(anywidget.AnyWidget):
             except Exception as e:
                 self._dimension_error = f"Dimension query failed for {dim_key}: {e}"
             if sync_status:
+                self._pending_refresh = None
                 self._sync_status()
             return
 
         # Full refresh: show skeletons until each panel completes
         preserve_dim = self._last_active_dimension
         dimension_data = {d["key"]: "" for d in self.dimensions_config}
+        dimension_data_binary = {d["key"]: b"" for d in self.dimensions_config}
         if preserve_dim and preserve_dim in existing:
             dimension_data[preserve_dim] = existing[preserve_dim]
+        if preserve_dim and preserve_dim in existing_binary:
+            dimension_data_binary[preserve_dim] = existing_binary[preserve_dim]
         self.dimension_data = dimension_data
+        self.dimension_data_binary = dimension_data_binary
 
         for dim_config in self.dimensions_config:
             dim_key = dim_config["key"]
@@ -848,8 +1007,16 @@ class MetricsExplorer(anywidget.AnyWidget):
                     use_preaggregations=self._use_preaggregations,
                 )
                 result = self._execute_arrow(sql)
-                dimension_data[dim_key] = _table_to_ipc(result, decimal_mode="string")
-                self.dimension_data = dict(dimension_data)
+                if self._transport == "binary":
+                    dimension_data_binary[dim_key] = _table_to_ipc_bytes(result, decimal_mode="string")
+                    self.dimension_data_binary = dict(dimension_data_binary)
+                    dimension_data[dim_key] = ""
+                    self.dimension_data = dict(dimension_data)
+                else:
+                    dimension_data[dim_key] = _table_to_ipc(result, decimal_mode="string")
+                    self.dimension_data = dict(dimension_data)
+                    dimension_data_binary[dim_key] = b""
+                    self.dimension_data_binary = dict(dimension_data_binary)
                 self._record_query_intent(
                     [selected_metric_ref],
                     [dim_ref],
@@ -860,6 +1027,37 @@ class MetricsExplorer(anywidget.AnyWidget):
                 self._dimension_error = f"Dimension query failed for {dim_key}: {e}"
 
         self.dimension_data = dimension_data
+        self.dimension_data_binary = dimension_data_binary
         self._last_active_dimension = None
         if sync_status:
+            self._pending_refresh = None
             self._sync_status()
+
+    def _set_time_series_column_from_schema(self, table, *, grain: str) -> None:
+        """Update config.time_series_column based on the Arrow schema."""
+        column_name = None
+        try:
+            import pyarrow as pa
+
+            schema = getattr(table, "schema", None)
+            if schema is not None:
+                for field in schema:
+                    if (
+                        pa.types.is_date(field.type)
+                        or pa.types.is_timestamp(field.type)
+                        or pa.types.is_time(field.type)
+                    ):
+                        column_name = field.name
+                        break
+                if column_name is None:
+                    suffix = f"__{grain}"
+                    for field in schema:
+                        if suffix in field.name:
+                            column_name = field.name
+                            break
+        except Exception:
+            column_name = None
+
+        cfg = dict(self.config or {})
+        cfg["time_series_column"] = column_name
+        self.config = cfg

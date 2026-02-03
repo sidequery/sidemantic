@@ -1,0 +1,5 @@
+unique_name: return_count
+object_type: metric
+calculation_method: count non-null
+dataset: fact_returns
+column: return_id

@@ -1,0 +1,5 @@
+unique_name: amount_stddev
+object_type: metric
+calculation_method: stddev_samp
+dataset: fact_orders
+column: total_amount

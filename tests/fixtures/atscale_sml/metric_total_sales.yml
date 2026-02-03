@@ -1,0 +1,7 @@
+unique_name: total_sales
+object_type: metric
+label: Total Sales
+calculation_method: sum
+dataset: fact_sales
+column: amount
+format: standard

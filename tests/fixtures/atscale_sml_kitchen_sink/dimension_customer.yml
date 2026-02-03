@@ -1,0 +1,52 @@
+unique_name: customer_dim
+object_type: dimension
+label: Customer
+type: standard
+level_attributes:
+  - unique_name: customer_id
+    dataset: dim_customers
+    name_column: customer_id
+    key_columns:
+      - customer_id
+    description: Customer identifier
+  - unique_name: customer_name
+    dataset: dim_customers
+    name_column: full_name
+    key_columns:
+      - customer_id
+hierarchies:
+  - unique_name: customer_hierarchy
+    levels:
+      - unique_name: customer_id
+        secondary_attributes:
+          - unique_name: email
+            dataset: dim_customers
+            name_column: email
+            key_columns:
+              - customer_id
+          - unique_name: phone
+            dataset: dim_customers
+            name_column: phone
+            key_columns:
+              - customer_id
+      - unique_name: customer_name
+        aliases:
+          - unique_name: customer_alias
+            dataset: dim_customers
+            name_column: alias
+            key_columns:
+              - customer_id
+        metrics:
+          - unique_name: customer_count
+            dataset: dim_customers
+            calculation_method: count distinct
+            column: customer_id
+relationships:
+  - unique_name: fact_orders_customer
+    from:
+      dataset: fact_orders
+      join_columns:
+        - customer_id
+    to:
+      dimension: customer_dim
+      level: customer_id

@@ -1,0 +1,6 @@
+unique_name: amount_p90
+object_type: metric
+calculation_method: percentile
+dataset: fact_orders
+column: total_amount
+named_quantiles: p90

@@ -1,0 +1,10 @@
+unique_name: dim_regions
+object_type: dataset
+label: Regions
+connection_id: demo_connection
+table: regions
+columns:
+  - name: region_id
+    data_type: int
+  - name: region_name
+    data_type: string

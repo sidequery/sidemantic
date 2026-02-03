@@ -50,10 +50,8 @@ def _check_sqlite_driver() -> tuple[bool, str]:
 
 HAS_SQLITE_DRIVER, SQLITE_DRIVER_NAME = _check_sqlite_driver()
 
-pytestmark = pytest.mark.skipif(
-    not (HAS_ADBC and HAS_SQLITE_DRIVER),
-    reason="adbc_driver_manager and sqlite driver (pip or dbc) required for ADBC tests",
-)
+SQLITE_TESTS_AVAILABLE = HAS_ADBC and HAS_SQLITE_DRIVER
+SQLITE_TESTS_SKIP_REASON = "adbc_driver_manager and sqlite driver (pip or dbc) required for ADBC connection tests"
 
 
 @pytest.fixture
@@ -62,6 +60,9 @@ def sqlite_adapter():
 
     Uses :memory: for test isolation - each test gets a fresh database.
     """
+    if not SQLITE_TESTS_AVAILABLE:
+        pytest.skip(SQLITE_TESTS_SKIP_REASON)
+
     from sidemantic.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter(driver=SQLITE_DRIVER_NAME, uri=":memory:")
@@ -74,6 +75,9 @@ def sqlite_adapter():
 
 def test_adbc_adapter_init():
     """Test ADBC adapter initialization."""
+    if not SQLITE_TESTS_AVAILABLE:
+        pytest.skip(SQLITE_TESTS_SKIP_REASON)
+
     from sidemantic.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter(driver=SQLITE_DRIVER_NAME, uri=":memory:")
@@ -139,6 +143,7 @@ def test_adbc_adapter_dialect_mapping():
     assert DRIVER_DIALECT_MAP["mysql"] == "mysql"
     assert DRIVER_DIALECT_MAP["snowflake"] == "snowflake"
     assert DRIVER_DIALECT_MAP["bigquery"] == "bigquery"
+    assert DRIVER_DIALECT_MAP["clickhouse"] == "clickhouse"
     assert DRIVER_DIALECT_MAP["sqlite"] == "sqlite"
     assert DRIVER_DIALECT_MAP["duckdb"] == "duckdb"
 
@@ -206,6 +211,9 @@ def test_adbc_adapter_valid_table_names_accepted(sqlite_adapter, table_name):
 
 def test_adbc_adapter_from_url():
     """Test creating adapter from URL."""
+    if not SQLITE_TESTS_AVAILABLE:
+        pytest.skip(SQLITE_TESTS_SKIP_REASON)
+
     from sidemantic.db.adbc import ADBCAdapter
 
     # SQLite supports URL-based connection
@@ -254,6 +262,9 @@ def test_adbc_with_sqlite_driver():
     - DBC CLI: dbc install sqlite
     - Python package: pip install adbc_driver_sqlite
     """
+    if not SQLITE_TESTS_AVAILABLE:
+        pytest.skip(SQLITE_TESTS_SKIP_REASON)
+
     from sidemantic.db.adbc import ADBCAdapter
 
     # Create adapter using the detected driver name with :memory: for isolation
@@ -277,6 +288,9 @@ def test_adbc_with_sqlite_driver():
 
 def test_adbc_url_scheme_with_driver():
     """Test adbc:// URL scheme with installed driver."""
+    if not SQLITE_TESTS_AVAILABLE:
+        pytest.skip(SQLITE_TESTS_SKIP_REASON)
+
     from sidemantic.db.adbc import ADBCAdapter
 
     # Test adbc:// URL format - use the short name if DBC driver, else package name
@@ -292,6 +306,9 @@ def test_adbc_url_scheme_with_driver():
 
 def test_semantic_layer_with_adbc_connection():
     """Test SemanticLayer integration with ADBC connection."""
+    if not SQLITE_TESTS_AVAILABLE:
+        pytest.skip(SQLITE_TESTS_SKIP_REASON)
+
     from sidemantic import Dimension, Metric, Model, SemanticLayer
 
     # Create layer with adbc:// connection URL
@@ -383,6 +400,9 @@ def test_adbc_url_parsing():
 
 def test_adbc_url_path_based_uri():
     """Test adbc:// URL with URI as path (adbc://driver/uri format)."""
+    if not SQLITE_TESTS_AVAILABLE:
+        pytest.skip(SQLITE_TESTS_SKIP_REASON)
+
     from sidemantic.db.adbc import ADBCAdapter
 
     # Test path-based URI with SQLite

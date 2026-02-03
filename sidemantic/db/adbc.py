@@ -80,6 +80,7 @@ class ADBCResult:
 # Map driver names to SQLGlot dialect names
 DRIVER_DIALECT_MAP = {
     "bigquery": "bigquery",
+    "clickhouse": "clickhouse",
     "duckdb": "duckdb",
     "flightsql": None,  # Generic SQL, no specific dialect
     "mssql": "tsql",
@@ -373,6 +374,7 @@ class ADBCAdapter(BaseDatabaseAdapter):
             "sqlite": "sqlite",
             "snowflake": "snowflake",
             "bigquery": "bigquery",
+            "clickhouse": "clickhouse",
             "mssql": "mssql",
             "trino": "trino",
             "redshift": "redshift",

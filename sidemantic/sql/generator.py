@@ -492,6 +492,21 @@ class SQLGenerator:
 
         return filters
 
+    def _extract_models_from_sql(self, sql_expr: str) -> set[str]:
+        """Extract referenced model names from qualified column references."""
+        models: set[str] = set()
+        try:
+            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            for column in parsed.find_all(exp.Column):
+                if not column.table:
+                    continue
+                model_name = column.table.replace("_cte", "")
+                if model_name in self.graph.models:
+                    models.add(model_name)
+        except Exception:
+            pass
+        return models
+
     def _find_required_models(
         self, metrics: list[str], dimensions: list[str], filters: list[str] | None = None
     ) -> list[str]:
@@ -533,6 +548,16 @@ class SQLGenerator:
                             # Derived or untyped metrics with sql - auto-detect dependencies
                             for ref_metric in metric.get_dependencies(self.graph):
                                 collect_models_from_metric(ref_metric)
+                            # Inline SQL expression metrics (e.g., SUM(orders.amount))
+                            # can have empty dependencies, so also parse model refs directly.
+                            if metric.sql:
+                                for model_name in self._extract_models_from_sql(metric.sql):
+                                    add_model(model_name)
+                        elif metric.agg and metric.sql:
+                            # Graph-level simple aggregations can qualify fields
+                            # (e.g., SUM(orders.amount)); include those models.
+                            for model_name in self._extract_models_from_sql(metric.sql):
+                                add_model(model_name)
                 except KeyError:
                     pass
 
@@ -673,6 +698,24 @@ class SQLGenerator:
                 except Exception:
                     pass
 
+        def add_sql_columns(sql_expr: str, default_model_name: str | None = None):
+            """Extract column refs from SQL and track them per model."""
+            try:
+                parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+                for col in parsed.find_all(exp.Column):
+                    if col.table:
+                        model_name = col.table.replace("_cte", "")
+                        if model_name in self.graph.models:
+                            if model_name not in columns_by_model:
+                                columns_by_model[model_name] = set()
+                            columns_by_model[model_name].add(col.name)
+                    elif default_model_name:
+                        if default_model_name not in columns_by_model:
+                            columns_by_model[default_model_name] = set()
+                        columns_by_model[default_model_name].add(col.name)
+            except Exception:
+                pass
+
         def extract_from_measure_ref(metric_ref: str):
             """Extract filter columns from a model.measure reference."""
             if "." not in metric_ref:
@@ -696,19 +739,7 @@ class SQLGenerator:
                         # This handles inline SQL like: COUNT(CASE WHEN {model}.status = 'approved' THEN 1 END)
                         if measure.sql:
                             aliased_sql = measure.sql.replace("{model}", f"{model_name}_cte")
-                            try:
-                                parsed = sqlglot.parse_one(aliased_sql, dialect=self.dialect)
-                                for col in parsed.find_all(exp.Column):
-                                    if col.table and col.table.replace("_cte", "") == model_name:
-                                        if model_name not in columns_by_model:
-                                            columns_by_model[model_name] = set()
-                                        columns_by_model[model_name].add(col.name)
-                                    elif not col.table:
-                                        if model_name not in columns_by_model:
-                                            columns_by_model[model_name] = set()
-                                        columns_by_model[model_name].add(col.name)
-                            except Exception:
-                                pass
+                            add_sql_columns(aliased_sql, model_name)
                         # Also check dependencies
                         deps = measure.get_dependencies(self.graph, model_name)
                         for dep in deps:
@@ -752,6 +783,11 @@ class SQLGenerator:
                             extract_from_metric(dep_metric)
                         except KeyError:
                             pass
+
+            # Also parse metric SQL directly so inline aggregate expressions
+            # contribute required columns (critical for graph-level metrics).
+            if metric.sql:
+                add_sql_columns(metric.sql)
 
         for metric_ref in metrics:
             if "." in metric_ref:
@@ -958,7 +994,11 @@ class SQLGenerator:
             for col_name in metric_filter_columns:
                 if col_name in columns_added:
                     continue
-                if model.get_dimension(col_name):
+                dim = model.get_dimension(col_name)
+                if dim:
+                    dim_sql = replace_model_placeholder(dim.sql_expr)
+                    select_cols.append(f"{dim_sql} AS {col_name}")
+                    columns_added.add(col_name)
                     continue
                 if model.get_metric(col_name):
                     continue
@@ -1836,6 +1876,23 @@ class SQLGenerator:
             return f"COALESCE({sql_expr}, {fill_value})"
         return sql_expr
 
+    def _rewrite_model_refs_to_ctes(self, sql_expr: str) -> str:
+        """Rewrite qualified model refs (model.col) to CTE refs (model_cte.col)."""
+        try:
+            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            for col in parsed.find_all(exp.Column):
+                if not col.table:
+                    continue
+                model_name = col.table.replace("_cte", "")
+                if model_name in self.graph.models:
+                    col.set("table", exp.to_identifier(f"{model_name}_cte"))
+            return parsed.sql(dialect=self.dialect)
+        except Exception:
+            rewritten = sql_expr
+            for model_name in self.graph.models:
+                rewritten = rewritten.replace(f"{model_name}.", f"{model_name}_cte.")
+            return rewritten
+
     def _build_measure_aggregation_sql(self, model_name: str, measure) -> str:
         """Build SQL aggregation expression for a measure.
 
@@ -1894,6 +1951,21 @@ class SQLGenerator:
 
             return f"({num_expr}) / NULLIF({denom_expr}, 0)"
 
+        elif metric.agg:
+            # Graph-level simple aggregations (e.g., SUM(orders.amount))
+            # need CTE-qualified references.
+            inner_expr = metric.sql or "*"
+            if inner_expr != "*":
+                inner_expr = self._rewrite_model_refs_to_ctes(inner_expr)
+
+            if metric.agg == "count":
+                if inner_expr == "*":
+                    return "COUNT(*)"
+                return f"COUNT({inner_expr})"
+            if metric.agg == "count_distinct":
+                return f"COUNT(DISTINCT {inner_expr})"
+            return f"{metric.agg.upper()}({inner_expr})"
+
         elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
             # Parse formula and replace metric references (handles both typed "derived" and untyped metrics with sql)
             if not metric.sql:
@@ -1942,6 +2014,9 @@ class SQLGenerator:
                                 replacement = f"{cte_alias}.{measure.name}_raw"
                                 formula = formula.replace(pattern, replacement)
 
+                # Also rewrite any explicit model refs in the expression
+                # (e.g., orders.amount -> orders_cte.amount) for graph metrics.
+                formula = self._rewrite_model_refs_to_ctes(formula)
                 return formula
 
             # Auto-detect dependencies from expression using graph for resolution

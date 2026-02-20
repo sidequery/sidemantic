@@ -28,6 +28,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.omni import OmniAdapter
+    from sidemantic.adapters.osi import OSIAdapter
     from sidemantic.adapters.rill import RillAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
@@ -64,6 +65,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
             # Check for Sidemantic format first (explicit models: key)
             if "models:" in content:
                 adapter = SidemanticAdapter()
+            elif "semantic_model:" in content and "datasets:" in content:
+                adapter = OSIAdapter()
             elif "cubes:" in content or "views:" in content and "measures:" in content:
                 adapter = CubeAdapter()
             elif "semantic_models:" in content or "metrics:" in content and "type: " in content:

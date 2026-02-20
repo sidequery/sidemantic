@@ -205,6 +205,12 @@ git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
 uv run examples/osi_demo/run_demo.py
 ```
 
+**OSI widget notebook (percent-cell Python notebook):**
+```bash
+git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
+uv run examples/osi_demo/osi_widget_notebook.py
+```
+
 See `examples/` for more.
 
 ## Core Features

@@ -58,7 +58,7 @@ def test_osi_ecommerce_metrics_execute():
     assert total == pytest.approx(150.0)
 
     result = layer.query(metrics=["total_revenue"], dimensions=["customers.name"]).fetchall()
-    assert result == [("Alice", 100.0), ("Bob", 50.0)]
+    assert sorted(result) == [("Alice", 100.0), ("Bob", 50.0)]
 
 
 def test_osi_adtech_example_cross_model_metrics_execute():

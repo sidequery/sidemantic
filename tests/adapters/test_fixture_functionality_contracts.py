@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import date
 from functools import cache
+from numbers import Number
 from pathlib import Path
 
+import duckdb
 import pytest
 from pydantic import ValidationError
 
@@ -22,6 +25,11 @@ from sidemantic.adapters.snowflake import SnowflakeAdapter
 from sidemantic.adapters.superset import SupersetAdapter
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 from sidemantic.sql.generator import SQLGenerator
+from tests.adapters.test_added_fixture_coverage import (
+    _materialize_execution_table,
+    _pick_execution_query,
+    _prepare_graph_for_execution,
+)
 
 ALLOWED_RELATIONSHIP_TYPES = {"many_to_one", "one_to_many", "one_to_one", "many_to_many"}
 
@@ -55,6 +63,69 @@ EXPECTED_PARSE_FAILURES = {
 }
 
 EXPECTED_COMPILE_FAILURES = {}
+
+EXPECTED_EMPTY_GRAPH_FIXTURES = {
+    "tests/fixtures/atscale_sml/catalog.yml",
+    "tests/fixtures/atscale_sml/connection_demo.yml",
+    "tests/fixtures/atscale_sml/metric_avg_order_value.yml",
+    "tests/fixtures/atscale_sml/model_sales.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/atscale.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/connection_core.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/metric_avg_order_value.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/model_internet_sales.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/model_orders.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/model_returns.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/row_security_country.yml",
+    "tests/fixtures/cube/rbac_views.yaml",
+    "tests/fixtures/holistics/ecommerce.dataset.aml",
+    "tests/fixtures/holistics/relationships.aml",
+    "tests/fixtures/holistics_kitchen_sink/constants.aml",
+    "tests/fixtures/holistics_kitchen_sink/extensions.aml",
+    "tests/fixtures/holistics_kitchen_sink/kitchen_sink.dataset.aml",
+    "tests/fixtures/holistics_kitchen_sink/relationships.aml",
+    "tests/fixtures/holistics_kitchen_sink/transactions.dataset.aml",
+    "tests/fixtures/lookml/ecommerce_explores.lkml",
+    "tests/fixtures/lookml/kitchen_sink_explores.lkml",
+    "tests/fixtures/lookml/lkml_model_all_fields.model.lkml",
+    "tests/fixtures/lookml/lkml_parameter_join.model.lkml",
+    "tests/fixtures/lookml/orders.explore.lkml",
+    "tests/fixtures/lookml/pylookml_aggregate_tables.model.lkml",
+    "tests/fixtures/lookml/pylookml_manifest.lkml",
+    "tests/fixtures/lookml/pylookml_sql_preamble.view.lkml",
+    "tests/fixtures/lookml/segment_attribution_manifest.lkml",
+    "tests/fixtures/lookml/segment_attribution_model.model.lkml",
+    "tests/fixtures/omni/estore/model.yaml",
+    "tests/fixtures/omni/estore/relationships.yaml",
+    "tests/fixtures/omni/model.yaml",
+    "tests/fixtures/rill/bids_canvas.yaml",
+    "tests/fixtures/rill/bids_explore.yaml",
+    "tests/fixtures/rill/nyc_trips_dashboard.yaml",
+    "tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml",
+}
+
+EXPECTED_LOW_SIGNAL_FIXTURES = {
+    "tests/fixtures/atscale_sml/dataset_dim_customers.yml",
+    "tests/fixtures/atscale_sml/dataset_dim_regions.yml",
+    "tests/fixtures/atscale_sml/dataset_fact_sales.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_customers.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_date.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_dates.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_geography.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_product.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_promos.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_fact_internet_sales.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_fact_orders.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_fact_returns.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/dataset_user_country_mapping.yml",
+    "tests/fixtures/lookml/node_lookml_refinement_sequencing.model.lkml",
+    "tests/fixtures/malloy/bigquery_jobs_config.malloy",
+    "tests/fixtures/malloy/ecommerce_malloydata.malloy",
+    "tests/fixtures/malloy/flights_cube.malloy",
+    "tests/fixtures/malloy/ga4_config.malloy",
+    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
+    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
+    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
+}
 
 
 def _discover_fixture_cases() -> list[tuple[type, str]]:
@@ -110,6 +181,40 @@ def _pick_compile_query(graph):
 
 def _assert_graph_contracts(fixture_path: str, graph) -> None:
     assert graph is not None, f"{fixture_path}: parse returned None"
+
+    stats = {
+        "models": len(graph.models),
+        "model_dimensions": sum(len(model.dimensions) for model in graph.models.values()),
+        "model_metrics": sum(len(model.metrics) for model in graph.models.values()),
+        "model_relationships": sum(len(model.relationships) for model in graph.models.values()),
+        "model_segments": sum(len(model.segments) for model in graph.models.values()),
+        "graph_metrics": len(graph.metrics),
+    }
+
+    if fixture_path in EXPECTED_EMPTY_GRAPH_FIXTURES:
+        assert stats == {
+            "models": 0,
+            "model_dimensions": 0,
+            "model_metrics": 0,
+            "model_relationships": 0,
+            "model_segments": 0,
+            "graph_metrics": 0,
+        }, f"{fixture_path}: expected empty graph, got {stats}"
+        return
+
+    assert stats["models"] + stats["graph_metrics"] > 0, (
+        f"{fixture_path}: parser produced no semantic entities ({stats})"
+    )
+
+    semantic_signal = (
+        stats["model_dimensions"]
+        + stats["model_metrics"]
+        + stats["model_relationships"]
+        + stats["model_segments"]
+        + stats["graph_metrics"]
+    )
+    if fixture_path not in EXPECTED_LOW_SIGNAL_FIXTURES:
+        assert semantic_signal > 0, f"{fixture_path}: expected semantic signal, got only skeletal models ({stats})"
 
     for model_name, model in graph.models.items():
         assert model_name, f"{fixture_path}: model has empty name"
@@ -184,8 +289,106 @@ def test_fixture_query_compilation_coverage():
             f"expected {expected_exception.__name__}"
         )
 
-    minimum_compile_successes = max(1, len(PARSEABLE_FIXTURE_CASES) // 2)
+    minimum_compile_attempts = max(1, (len(PARSEABLE_FIXTURE_CASES) * 3) // 5)
+    assert attempted_queries >= minimum_compile_attempts, (
+        f"Expected at least {minimum_compile_attempts} fixture compile candidates, got {attempted_queries}"
+    )
+
+    minimum_compile_successes = minimum_compile_attempts
     assert compiled_queries >= minimum_compile_successes, (
         f"Expected at least {minimum_compile_successes} compiled fixture queries, got {compiled_queries} "
         f"(attempted {attempted_queries})"
     )
+
+
+def test_fixture_query_execution_coverage():
+    execution_failures = {}
+    attempted_executions = 0
+    executed_queries = 0
+    adapters_with_execution = set()
+
+    for adapter_cls, fixture_path in PARSEABLE_FIXTURE_CASES:
+        graph = _parse_graph(adapter_cls, fixture_path)
+        query_spec = _pick_execution_query(graph)
+        if not query_spec:
+            continue
+
+        attempted_executions += 1
+        adapters_with_execution.add(adapter_cls.__name__)
+        conn = duckdb.connect(":memory:")
+        try:
+            _materialize_execution_table(conn, query_spec)
+            graph_for_query = _prepare_graph_for_execution(graph, query_spec)
+
+            sql = SQLGenerator(graph_for_query).generate(
+                metrics=query_spec["metrics"],
+                dimensions=query_spec["dimensions"],
+                limit=5,
+                skip_default_time_dimensions=True,
+            )
+            result = conn.execute(sql)
+            rows = result.fetchall()
+
+            assert result.description is not None
+            column_names = [column[0] for column in result.description]
+            assert column_names == [query_spec["field_name"]], (
+                f"{fixture_path}: expected output column {query_spec['field_name']}, got {column_names}"
+            )
+            assert len(rows) == 1, f"{fixture_path}: expected one synthetic result row, got {len(rows)}"
+
+            value = rows[0][0]
+            if query_spec["query_kind"] == "metric":
+                metric_agg = query_spec["metric_agg"]
+                if metric_agg in {"count", "count_distinct"}:
+                    assert value == 1, f"{fixture_path}: expected {metric_agg}=1 from one synthetic row, got {value}"
+                elif metric_agg in {"stddev", "variance"}:
+                    assert value is None or isinstance(value, Number), (
+                        f"{fixture_path}: expected nullable numeric for {metric_agg}, got {type(value).__name__}"
+                    )
+                else:
+                    assert isinstance(value, Number), (
+                        f"{fixture_path}: expected numeric metric result for {metric_agg}, got {type(value).__name__}"
+                    )
+            else:
+                dimension_type = query_spec["dimension_type"]
+                if dimension_type == "time":
+                    assert isinstance(value, (date, Number, str)), (
+                        f"{fixture_path}: expected time-like result for time dimension, got {type(value).__name__}"
+                    )
+                elif dimension_type == "numeric":
+                    assert isinstance(value, Number), (
+                        f"{fixture_path}: expected numeric result for numeric dimension, got {type(value).__name__}"
+                    )
+                elif dimension_type == "boolean":
+                    assert isinstance(value, bool), (
+                        f"{fixture_path}: expected bool result for boolean dimension, got {type(value).__name__}"
+                    )
+                else:
+                    assert isinstance(value, (str, Number, bool, date)), (
+                        f"{fixture_path}: expected scalar result for categorical dimension, got {type(value).__name__}"
+                    )
+
+            executed_queries += 1
+        except Exception as exc:
+            execution_failures[fixture_path] = exc
+        finally:
+            conn.close()
+
+    assert attempted_executions > 0, "No fixture produced an executable query candidate"
+
+    minimum_execution_attempts = max(1, len(PARSEABLE_FIXTURE_CASES) // 3)
+    assert attempted_executions >= minimum_execution_attempts, (
+        f"Expected at least {minimum_execution_attempts} executable fixture queries, got {attempted_executions}"
+    )
+
+    total_adapters = len({adapter_cls.__name__ for adapter_cls, _ in PARSEABLE_FIXTURE_CASES})
+    minimum_adapter_execution_coverage = max(1, (total_adapters * 3) // 4)
+    assert len(adapters_with_execution) >= minimum_adapter_execution_coverage, (
+        f"Expected execution coverage in at least {minimum_adapter_execution_coverage}/{total_adapters} adapters, "
+        f"got {len(adapters_with_execution)}"
+    )
+
+    assert not execution_failures, "Unexpected execution failures in fixture contracts:\n" + "\n".join(
+        f"{path}: {type(exc).__name__}({exc})" for path, exc in sorted(execution_failures.items())
+    )
+    assert executed_queries == attempted_executions

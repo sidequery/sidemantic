@@ -87,11 +87,16 @@ class SQLGenerator:
         """
         return self._quote_identifier(name)
 
-    def _quote_identifier(self, name: str) -> str:
-        """Quote a SQL identifier for the current dialect."""
+    @staticmethod
+    def _is_simple_identifier(name: str) -> bool:
+        """Return True when identifier can be emitted without quotes."""
         import re
 
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        return re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) is not None
+
+    def _quote_identifier(self, name: str) -> str:
+        """Quote a SQL identifier for the current dialect."""
+        if self._is_simple_identifier(name):
             return name
         return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
 
@@ -1938,7 +1943,8 @@ class SQLGenerator:
                     continue
                 model_name = col.table.replace("_cte", "")
                 if model_name in self.graph.models:
-                    col.set("table", exp.to_identifier(self._cte_name(model_name), quoted=True))
+                    cte_name = self._cte_name(model_name)
+                    col.set("table", exp.to_identifier(cte_name, quoted=not self._is_simple_identifier(cte_name)))
             return parsed.sql(dialect=self.dialect)
         except Exception:
             rewritten = sql_expr

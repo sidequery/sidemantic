@@ -199,6 +199,29 @@ def test_derived_metric_substitution_uses_word_boundaries(layer):
     assert "gross_revenue" in sql or "GROSS_REVENUE" in sql
 
 
+def test_model_ref_rewrite_matches_cte_identifier_quoting(layer):
+    """CTE ref rewriting should follow the same identifier quoting as CTE definitions."""
+    layer.dialect = "postgres"
+    orders = Model(
+        name="ORDERS",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="amount", type="numeric"),
+        ],
+        metrics=[
+            Metric(name="inline_total", type="derived", sql="SUM(ORDERS.amount)"),
+        ],
+    )
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["ORDERS.inline_total"])
+
+    assert "WITH ORDERS_cte AS" in sql
+    assert "SUM(ORDERS_cte.amount) AS inline_total" in sql
+    assert 'SUM("ORDERS_cte".amount) AS inline_total' not in sql
+
+
 def test_end_to_end_duckdb_coverage():
     """Test that end-to-end tests actually run queries, not just pass.
 

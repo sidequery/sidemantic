@@ -1,0 +1,1055 @@
+{
+  "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_date.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_geography.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/dataset_dim_product.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/dataset_fact_internet_sales.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/dataset_user_country_mapping.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/dimension_date.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 3,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/dimension_geography.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 4,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/dimension_product.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 3,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/metric_orderquantity.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/metric_salesamount.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/model_internet_sales.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/atscale_sml_kitchen_sink/row_security_country.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/bsl/flights.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 47,
+    "model_metrics": 12,
+    "model_relationships": 4,
+    "model_segments": 0,
+    "models": 5
+  },
+  "tests/fixtures/bsl/ga_sessions.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 10,
+    "model_metrics": 7,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/bsl/healthcare.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 24,
+    "model_metrics": 29,
+    "model_relationships": 7,
+    "model_segments": 0,
+    "models": 6
+  },
+  "tests/fixtures/bsl/nyc_taxi.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 25,
+    "model_metrics": 10,
+    "model_relationships": 1,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/bsl/yaml_example_filter.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 6,
+    "model_metrics": 4,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/cube/case_switch_ownership.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 21,
+    "model_metrics": 17,
+    "model_relationships": 1,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/cube/custom_calendar.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 25,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/cube/folders.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 10,
+    "model_metrics": 1,
+    "model_relationships": 2,
+    "model_segments": 0,
+    "models": 3
+  },
+  "tests/fixtures/cube/pre_aggregation_types.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 10,
+    "model_metrics": 5,
+    "model_relationships": 1,
+    "model_segments": 0,
+    "models": 3
+  },
+  "tests/fixtures/cube/rbac_customers.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 2,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/cube/rbac_policy_overlap.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 4,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/cube/rbac_views.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/cube/switch_dimension.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 4,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/cube/visitors_geo_subquery.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 17,
+    "model_metrics": 6,
+    "model_relationships": 0,
+    "model_segments": 1,
+    "models": 2
+  },
+  "tests/fixtures/gooddata/ecommerce_demo_ldm.json": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 21,
+    "model_metrics": 10,
+    "model_relationships": 14,
+    "model_segments": 0,
+    "models": 11
+  },
+  "tests/fixtures/hex/employees.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 15,
+    "model_metrics": 10,
+    "model_relationships": 2,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/hex/inventory.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 13,
+    "model_metrics": 18,
+    "model_relationships": 2,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/hex/page_views.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 9,
+    "model_metrics": 8,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/hex/support_tickets.yml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 17,
+    "model_metrics": 16,
+    "model_relationships": 3,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/holistics_kitchen_sink/events.model.aml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 6,
+    "model_metrics": 6,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/holistics_kitchen_sink/imports.aml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/holistics_kitchen_sink/role_playing.aml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 13,
+    "model_metrics": 3,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/holistics_kitchen_sink/transactions.dataset.aml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/holistics_kitchen_sink/user_sessions.model.aml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 6,
+    "model_metrics": 5,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/lookml/ga360_ga_block.view.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 215,
+    "model_metrics": 27,
+    "model_relationships": 16,
+    "model_segments": 0,
+    "models": 19
+  },
+  "tests/fixtures/lookml/lkml2cube_constants.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 1,
+    "model_relationships": 1,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/lookml/lkml_liquid_templating.model.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 66,
+    "model_metrics": 5,
+    "model_relationships": 3,
+    "model_segments": 0,
+    "models": 19
+  },
+  "tests/fixtures/lookml/lkml_model_all_fields.model.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/lookml/lkml_ndt_bind_filters.model.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 7,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 4
+  },
+  "tests/fixtures/lookml/lkml_parameter_join.model.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/lookml/lkml_view_all_fields.view.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 1,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/lookml/node_lookml_refinement_merging.model.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 2,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/lookml/node_lookml_refinement_sequencing.model.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/lookml/pylookml_aggregate_tables.model.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/lookml/pylookml_manifest.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/lookml/pylookml_sql_preamble.view.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/lookml/segment_attribution_conversion.view.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 11,
+    "model_metrics": 2,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/lookml/segment_attribution_manifest.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/lookml/segment_attribution_model.model.lkml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/malloy/bigquery_jobs.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 6,
+    "model_metrics": 12,
+    "model_relationships": 2,
+    "model_segments": 0,
+    "models": 7
+  },
+  "tests/fixtures/malloy/bigquery_jobs_config.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 3
+  },
+  "tests/fixtures/malloy/ecommerce_malloydata.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 36
+  },
+  "tests/fixtures/malloy/flights_cube.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 32,
+    "models": 34
+  },
+  "tests/fixtures/malloy/flights_docs.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 3,
+    "model_metrics": 8,
+    "model_relationships": 6,
+    "model_segments": 0,
+    "models": 6
+  },
+  "tests/fixtures/malloy/flights_docs_airports.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/malloy/ga4.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 4,
+    "model_metrics": 9,
+    "model_relationships": 0,
+    "model_segments": 1,
+    "models": 3
+  },
+  "tests/fixtures/malloy/ga4_config.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/malloy/hackernews.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 7,
+    "model_metrics": 4,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/malloy/hackernews_faang.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 7,
+    "model_metrics": 4,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/malloy/test_persist.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 0,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 5
+  },
+  "tests/fixtures/malloy/the_met.malloy": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 2,
+    "model_relationships": 1,
+    "model_segments": 1,
+    "models": 1
+  },
+  "tests/fixtures/metricflow/ambiguous_resolution_manifest.yaml": {
+    "graph_metrics": 16,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 3,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/metricflow/cyclic_join_manifest.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 3,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/metricflow/extended_date_manifest.yaml": {
+    "graph_metrics": 4,
+    "has_compile_candidate": true,
+    "model_dimensions": 3,
+    "model_metrics": 3,
+    "model_relationships": 2,
+    "model_segments": 0,
+    "models": 3
+  },
+  "tests/fixtures/metricflow/name_edge_case_manifest.yaml": {
+    "graph_metrics": 2,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/metricflow/scd_listings.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 5,
+    "model_metrics": 0,
+    "model_relationships": 1,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/metricflow/scd_metrics.yaml": {
+    "graph_metrics": 3,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/metricflow/simple_manifest_buys_source.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 3,
+    "model_relationships": 2,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/metricflow/simple_manifest_metrics.yaml": {
+    "graph_metrics": 82,
+    "has_compile_candidate": true,
+    "model_dimensions": 4,
+    "model_metrics": 14,
+    "model_relationships": 3,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/metricflow/simple_manifest_saved_queries.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/model.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/omni/estore/relationships.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/omni/estore/snapshots/snap_user_rfm.view.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 13,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/topics/Customers.topic.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/topics/Events.topic.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/topics/sessions.topic.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/views/dim_categories.view.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 6,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/views/dim_products.view.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 7,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/views/dim_user_rfm.view.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 6,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/views/dim_users.view.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 24,
+    "model_metrics": 16,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/views/fct_events.view.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 16,
+    "model_metrics": 13,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/omni/estore/views/fct_sessions.view.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 19,
+    "model_metrics": 10,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/osi/mdb_member_knowledge.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 9,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 8
+  },
+  "tests/fixtures/osi/mdb_movies.yaml": {
+    "graph_metrics": 3,
+    "has_compile_candidate": true,
+    "model_dimensions": 12,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 5
+  },
+  "tests/fixtures/osi/tpcds_osi_official.yaml": {
+    "graph_metrics": 5,
+    "has_compile_candidate": true,
+    "model_dimensions": 31,
+    "model_metrics": 0,
+    "model_relationships": 4,
+    "model_segments": 0,
+    "models": 5
+  },
+  "tests/fixtures/rill/ad_bids_advanced.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 5,
+    "model_metrics": 4,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/rill/ad_bids_policy.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 4,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/rill/bids_canvas.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/rill/bids_explore.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/rill/metrics_annotations.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 1,
+    "model_metrics": 3,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/rill/metrics_geospatial.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 1,
+    "model_metrics": 2,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/rill/metrics_null_filling.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 1,
+    "model_metrics": 8,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/rill/nyc_trips_dashboard.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/rill/query_log_metrics.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 15,
+    "model_metrics": 14,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/snowflake/customer_loyalty_metrics.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 8,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/snowflake/ecommerce_analytics.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 11,
+    "model_metrics": 34,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 2
+  },
+  "tests/fixtures/snowflake/supply_chain.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 1,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/snowflake/support_tickets.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 6,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/superset/birth_france_by_region.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 14,
+    "model_metrics": 2,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/superset/fcc_new_coder_survey.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 141,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/superset/international_sales.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 13,
+    "model_metrics": 5,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/superset/project_management.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 7,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/superset/sales_dashboard.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 25,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/superset/usa_birth_names.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 8,
+    "model_metrics": 2,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/superset/video_game_sales.yaml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 11,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_customer.table.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 5,
+    "model_metrics": 3,
+    "model_relationships": 2,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_lineitem.table.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 8,
+    "model_metrics": 8,
+    "model_relationships": 2,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": false,
+    "model_dimensions": 0,
+    "model_metrics": 0,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 0
+  },
+  "tests/fixtures/thoughtspot/tpch_nation.table.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 2,
+    "model_metrics": 2,
+    "model_relationships": 1,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_orders.table.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 5,
+    "model_metrics": 5,
+    "model_relationships": 1,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_part.table.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 6,
+    "model_metrics": 3,
+    "model_relationships": 1,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_partsupp.table.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 1,
+    "model_metrics": 4,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_region.table.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 3,
+    "model_metrics": 1,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_supplier.table.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 4,
+    "model_metrics": 3,
+    "model_relationships": 0,
+    "model_segments": 0,
+    "models": 1
+  },
+  "tests/fixtures/thoughtspot/tpch_worksheet.worksheet.tml": {
+    "graph_metrics": 0,
+    "has_compile_candidate": true,
+    "model_dimensions": 34,
+    "model_metrics": 29,
+    "model_relationships": 7,
+    "model_segments": 0,
+    "models": 1
+  }
+}

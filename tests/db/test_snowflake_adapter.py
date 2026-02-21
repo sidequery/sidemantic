@@ -136,8 +136,12 @@ def test_snowflake_get_columns_sql_and_schema_filter():
 
     cols = adapter.get_columns("orders")
     assert cols == [{"column_name": "id", "data_type": "NUMBER"}]
-    assert "information_schema.columns" in cursor.executed[0]
-    assert "table_schema = 'PUBLIC'" in cursor.executed[0]
+    sql = cursor.executed[0]
+    assert "information_schema.columns" in sql
+    # Lowercase table name: matches both uppercase (unquoted) and original (quoted)
+    assert "table_name IN ('ORDERS', 'orders')" in sql
+    # Already-uppercase schema uses exact match
+    assert "table_schema = 'PUBLIC'" in sql
 
 
 def test_snowflake_query_history_sql():
@@ -226,12 +230,10 @@ def test_snowflake_injection_attempt_in_schema_is_rejected(schema):
         "MY_TABLE",
         "Table123",
         "_private_table",
-        "schema.table",
-        "MY_SCHEMA.MY_TABLE",
     ],
 )
 def test_snowflake_valid_table_names_accepted(table_name):
-    """Verify valid table names are accepted."""
+    """Verify valid table names are accepted with case-aware matching."""
     cursor = _FakeCursor(rows=[("id", "NUMBER")])
     adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
     adapter.conn = _FakeConn(cursor)
@@ -240,7 +242,37 @@ def test_snowflake_valid_table_names_accepted(table_name):
     # Should not raise
     adapter.get_columns(table_name)
     assert len(cursor.executed) == 1
-    assert table_name in cursor.executed[0]
+    sql = cursor.executed[0]
+    upper = table_name.upper()
+    if upper == table_name:
+        assert f"table_name = '{table_name}'" in sql
+    else:
+        assert f"table_name IN ('{upper}', '{table_name}')" in sql
+
+
+def test_snowflake_dotted_table_names_parsed():
+    """Verify schema.table names are parsed with case-aware matching."""
+    # Both parts lowercase: uses IN for both
+    cursor = _FakeCursor(rows=[("id", "NUMBER")])
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None
+
+    adapter.get_columns("my_schema.my_table")
+    sql = cursor.executed[0]
+    assert "table_name IN ('MY_TABLE', 'my_table')" in sql
+    assert "table_schema IN ('MY_SCHEMA', 'my_schema')" in sql
+
+    # Mixed case: schema uppercase, table lowercase
+    cursor2 = _FakeCursor(rows=[("id", "NUMBER")])
+    adapter2 = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter2.conn = _FakeConn(cursor2)
+    adapter2.schema = None
+
+    adapter2.get_columns("PUBLIC.orders")
+    sql2 = cursor2.executed[0]
+    assert "table_name IN ('ORDERS', 'orders')" in sql2
+    assert "table_schema = 'PUBLIC'" in sql2
 
 
 @pytest.mark.parametrize(
@@ -248,7 +280,7 @@ def test_snowflake_valid_table_names_accepted(table_name):
     ["PUBLIC", "my_schema", "Schema123", "_PRIVATE", "ANALYTICS"],
 )
 def test_snowflake_valid_schema_names_accepted(schema):
-    """Verify valid schema names are accepted."""
+    """Verify valid schema names are accepted with case-aware matching."""
     cursor = _FakeCursor(rows=[("id", "NUMBER")])
     adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
     adapter.conn = _FakeConn(cursor)
@@ -257,7 +289,12 @@ def test_snowflake_valid_schema_names_accepted(schema):
     # Should not raise
     adapter.get_columns("orders", schema=schema)
     assert len(cursor.executed) == 1
-    assert f"table_schema = '{schema}'" in cursor.executed[0]
+    sql = cursor.executed[0]
+    upper = schema.upper()
+    if upper == schema:
+        assert f"table_schema = '{schema}'" in sql
+    else:
+        assert f"table_schema IN ('{upper}', '{schema}')" in sql
 
 
 def test_snowflake_dialect():
@@ -339,6 +376,20 @@ def test_snowflake_get_tables_with_schema_filter():
     assert "table_schema = 'PUBLIC'" in sql
 
 
+def test_snowflake_get_tables_lowercase_schema_uppercased():
+    """Test that lowercase schema names match both cases."""
+    cursor = _FakeCursor(rows=[("ORDERS", "MY_SCHEMA")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = "my_schema"
+    adapter.database = "mydb"
+
+    adapter.get_tables()
+    sql = cursor.executed[0]
+    assert "table_schema IN ('MY_SCHEMA', 'my_schema')" in sql
+
+
 def test_snowflake_get_columns_with_explicit_schema():
     """Test get_columns with explicitly provided schema overrides adapter schema."""
     cursor = _FakeCursor(rows=[("id", "NUMBER")])
@@ -350,6 +401,37 @@ def test_snowflake_get_columns_with_explicit_schema():
     cols = adapter.get_columns("orders", schema="OVERRIDE_SCHEMA")
     assert cols == [{"column_name": "id", "data_type": "NUMBER"}]
     assert "table_schema = 'OVERRIDE_SCHEMA'" in cursor.executed[0]
+
+
+def test_snowflake_get_columns_cross_database():
+    """Test get_columns with three-part database.schema.table name."""
+    cursor = _FakeCursor(rows=[("ID", "NUMBER"), ("AMOUNT", "DECIMAL")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = "PUBLIC"
+
+    cols = adapter.get_columns("other_db.analytics.sales")
+    assert len(cols) == 2
+    sql = cursor.executed[0]
+    # Should query other database's information_schema
+    assert "OTHER_DB.information_schema.columns" in sql
+    assert "table_name IN ('SALES', 'sales')" in sql
+    assert "table_schema IN ('ANALYTICS', 'analytics')" in sql
+
+
+def test_snowflake_get_columns_lowercase_case_folding():
+    """Test that lowercase identifiers match both cases."""
+    cursor = _FakeCursor(rows=[("ID", "NUMBER")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = "public"
+
+    adapter.get_columns("orders")
+    sql = cursor.executed[0]
+    assert "table_name IN ('ORDERS', 'orders')" in sql
+    assert "table_schema IN ('PUBLIC', 'public')" in sql
 
 
 def test_snowflake_get_columns_no_schema():

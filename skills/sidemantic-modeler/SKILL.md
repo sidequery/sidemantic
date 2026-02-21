@@ -13,12 +13,59 @@ Build semantic layers that map physical database tables to business-friendly dim
 
 ## Quick Start
 
+### 2-Minute First Success (recommended onboarding path)
+
+```bash
+uv add sidemantic duckdb
+
+cat > models.yml <<'YAML'
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+      - name: order_date
+        type: time
+        sql: created_at
+        granularity: day
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: order_amount
+      - name: order_count
+        agg: count
+YAML
+
+uv run python - <<'PY'
+import duckdb
+from sidemantic import SemanticLayer
+
+con = duckdb.connect("data.duckdb")
+con.execute("""
+create or replace table orders as
+select * from (
+  values
+    (1, 'completed', timestamp '2026-01-01', 120.0),
+    (2, 'pending',   timestamp '2026-01-02', 80.0)
+) as t(order_id, status, created_at, order_amount)
+""")
+con.close()
+
+layer = SemanticLayer.from_yaml("models.yml", connection="duckdb:///data.duckdb")
+print(layer.sql("select revenue, status from orders").fetchall())
+PY
+```
+
+If setup is correct, this prints two grouped rows (`completed` and `pending`) with revenue values.
+
 ### YAML (preferred for file-based models)
 
 ```yaml
 models:
   - name: orders
-    table: public.orders
+    table: orders
     primary_key: order_id
     dimensions:
       - name: status
@@ -52,7 +99,7 @@ from sidemantic import Model, Dimension, Metric, SemanticLayer
 layer = SemanticLayer(connection="duckdb:///data.duckdb")
 Model(
     name="orders",
-    table="public.orders",
+    table="orders",
     primary_key="order_id",
     dimensions=[
         Dimension(name="status", type="categorical"),
@@ -88,7 +135,7 @@ from sidemantic.core.migrator import Migrator
 
 # Connect to your database (optional but improves inference via information_schema)
 layer = SemanticLayer(connection="duckdb:///data.duckdb", auto_register=False)
-migrator = Migrator(layer, connection=layer.adapter.raw_connection)
+migrator = Migrator(layer, connection=layer.conn)
 
 # Feed it SQL queries (strings, not files)
 queries = [
@@ -184,7 +231,8 @@ Add metrics for columns that should be aggregated.
 | `avg` | `AVG(col)` | Averages |
 | `min` / `max` | `MIN(col)` / `MAX(col)` | Extremes |
 | `median` | `MEDIAN(col)` | Median |
-| `stddev` / `variance` | `STDDEV(col)` / `VARIANCE(col)` | Statistical |
+
+Model-level simple metrics currently validate against: `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`.
 
 Use `filters` on a metric to create filtered aggregations (e.g., `filters: ["status = 'completed'"]`). These become CASE WHEN expressions, not WHERE clauses.
 
@@ -249,14 +297,25 @@ sql = layer.compile(metrics=["orders.revenue"], dimensions=["customers.region"])
 Reusable named WHERE filters applied at query time. Unlike metric filters, segments affect all metrics in the query.
 
 ```yaml
-segments:
-  - name: completed_orders
-    sql: "status = 'completed'"
-  - name: us_only
-    sql: "region = 'US'"
+models:
+  - name: orders
+    table: orders
+    segments:
+      - name: completed_orders
+        sql: "status = 'completed'"
+      - name: us_only
+        sql: "{model}.region = 'US'"
 ```
 
-Use `{model}` placeholder in SQL if you need to qualify column references.
+Segments are model-scoped and used as `model.segment` references at query time:
+
+```python
+result = layer.query(
+    metrics=["orders.revenue"],
+    dimensions=["orders.status"],
+    segments=["orders.completed_orders"],
+)
+```
 
 ## Loading from Other Formats
 
@@ -342,7 +401,7 @@ Load these when you need deeper detail:
 
 1. **Missing `granularity` on time dimensions.** Every `type: time` dimension needs `granularity: day` (or similar).
 2. **Simple metric without `agg`.** Metrics that are not complex types need an `agg` field (sum, count, avg, etc.) or a full SQL expression like `sql: "SUM(amount)"`.
-3. **Bare dimension names in queries.** Always qualify: `orders.status`, not `status`.
+3. **Unqualified fields in multi-model queries.** Single-model SQL can use unqualified names (`SELECT revenue FROM orders`), but cross-model queries should use explicit `model.field`.
 4. **No relationship path between models.** Cross-model queries require a chain of relationships connecting all involved models.
 5. **Using `type: string` or `type: number` for dimensions.** The valid types are `categorical`, `time`, `boolean`, `numeric`.
 6. **Confusing model-level vs graph-level metrics.** Model-level metrics use `agg`. Graph-level metrics (ratio, derived, etc.) go in the top-level `metrics:` section.

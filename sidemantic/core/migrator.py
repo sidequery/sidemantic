@@ -1379,11 +1379,9 @@ class Migrator:
         for table in sorted(all_tables):
             model_name = table
             model_def = {
-                "model": {
-                    "name": model_name,
-                    "table": table,
-                    "description": "Auto-generated from query analysis",
-                }
+                "name": model_name,
+                "table": table,
+                "description": "Auto-generated from query analysis",
             }
 
             # Add dimensions
@@ -1542,6 +1540,42 @@ class Migrator:
 
         return models
 
+    @staticmethod
+    def _normalize_model_definition(model_def: dict, fallback_name: str | None = None) -> dict:
+        """Normalize model definitions to native Sidemantic model shape.
+
+        Supports both:
+        - Native shape: {"name": ..., "table": ..., "dimensions": [...], ...}
+        - Legacy migrator shape: {"model": {"name": ..., "table": ...}, "dimensions": [...], ...}
+        """
+        if "model" in model_def and isinstance(model_def["model"], dict):
+            normalized = dict(model_def["model"])
+            for key in (
+                "dimensions",
+                "metrics",
+                "relationships",
+                "segments",
+                "pre_aggregations",
+                "primary_key",
+                "default_time_dimension",
+                "default_grain",
+                "metadata",
+                "meta",
+                "source_uri",
+                "sql",
+                "table",
+                "description",
+            ):
+                if key in model_def:
+                    normalized[key] = model_def[key]
+        else:
+            normalized = dict(model_def)
+
+        if fallback_name and "name" not in normalized:
+            normalized["name"] = fallback_name
+
+        return normalized
+
     def generate_graph_metrics(self, report: MigrationReport, models: dict[str, dict]) -> list[dict]:
         """Generate graph-level metric definitions for cross-model derived metrics.
 
@@ -1612,11 +1646,44 @@ class Migrator:
         output_path.mkdir(parents=True, exist_ok=True)
 
         for model_name, model_def in models.items():
+            native_model_def = self._normalize_model_definition(model_def, fallback_name=model_name)
             file_path = output_path / f"{model_name}.yml"
             with open(file_path, "w") as f:
-                yaml.dump(model_def, f, default_flow_style=False, sort_keys=False)
+                yaml.dump({"models": [native_model_def]}, f, default_flow_style=False, sort_keys=False)
 
             print(f"Generated: {file_path}")
+
+    def write_graph_metrics_file(
+        self, graph_metrics: list[dict], output_dir: str, filename: str = "graph_metrics.yml"
+    ) -> str | None:
+        """Write graph-level metrics to a YAML file.
+
+        Args:
+            graph_metrics: Graph-level metrics from generate_graph_metrics()
+            output_dir: Directory to write file to
+            filename: Output YAML filename (default: graph_metrics.yml)
+
+        Returns:
+            Path to generated file, or None if no graph metrics were provided.
+        """
+        from pathlib import Path
+
+        import yaml
+
+        if not graph_metrics:
+            return None
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        file_path = output_path / filename
+        with open(file_path, "w") as f:
+            # Include an explicit models key so auto-format detection in
+            # load_from_directory selects the native Sidemantic adapter.
+            yaml.dump({"models": [], "metrics": graph_metrics}, f, default_flow_style=False, sort_keys=False)
+
+        print(f"Generated: {file_path}")
+        return str(file_path)
 
     def generate_rewritten_queries(self, report: MigrationReport) -> dict[str, str]:
         """Generate rewritten SQL queries using semantic layer syntax.

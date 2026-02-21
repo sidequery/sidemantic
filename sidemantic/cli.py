@@ -112,6 +112,8 @@ def migrator(
 
             models_dir = generate_models / "models"
             analyzer.write_model_files(models, str(models_dir))
+            graph_metrics = analyzer.generate_graph_metrics(report, models)
+            analyzer.write_graph_metrics_file(graph_metrics, str(models_dir))
 
             # Generate rewritten queries
             typer.echo("\nGenerating rewritten queries...", err=True)
@@ -121,7 +123,8 @@ def migrator(
             analyzer.write_rewritten_queries(rewritten, str(queries_dir))
 
             typer.echo(
-                f"\n✓ Generated {len(models)} models and {len(rewritten)} rewritten queries in {generate_models}",
+                f"\n✓ Generated {len(models)} models, {len(graph_metrics)} graph metrics, "
+                f"and {len(rewritten)} rewritten queries in {generate_models}",
                 err=True,
             )
 

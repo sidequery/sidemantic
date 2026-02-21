@@ -404,13 +404,13 @@ for model_name, model_def in sorted(models.items()):
     print(f"\n{'─' * 72}")
     print(f"  {model_name}.yml")
     print(f"{'─' * 72}\n")
-    print(yaml.dump(model_def, default_flow_style=False, sort_keys=False))
+    print(yaml.dump({"models": [model_def]}, default_flow_style=False, sort_keys=False))
 
 if graph_metrics:
     print(f"{'─' * 72}")
     print("  graph_metrics.yml  (cross-model)")
     print(f"{'─' * 72}\n")
-    print(yaml.dump(graph_metrics, default_flow_style=False, sort_keys=False))
+    print(yaml.dump({"models": [], "metrics": graph_metrics}, default_flow_style=False, sort_keys=False))
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +454,8 @@ for model_name, model_def in models.items():
 
     sl.add_model(
         Model(
-            name=model_def["model"]["name"],
-            table=model_def["model"]["table"],
+            name=model_def["name"],
+            table=model_def["table"],
             dimensions=dimensions,
             metrics=metrics,
             relationships=relationships,

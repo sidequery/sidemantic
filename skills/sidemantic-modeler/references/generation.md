@@ -39,14 +39,14 @@ Aggregates patterns across all analyzed queries. Returns a dict keyed by model n
 
 ```python
 {
-    "model": {"name": "orders", "table": "orders", "description": "Auto-generated..."},
+    "name": "orders",
+    "table": "orders",
+    "description": "Auto-generated...",
     "dimensions": [{"name": "status", "sql": "status", "type": "categorical"}, ...],
     "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}, ...],
     "relationships": [{"name": "customers", "type": "many_to_one", "foreign_key": "customer_id"}, ...],
 }
 ```
-
-Note: `"model"`, `"dimensions"`, `"metrics"`, `"relationships"` are sibling keys, not nested.
 
 Auto-detection:
 - GROUP BY columns become dimensions (`type: time` for DATE_TRUNC/EXTRACT, `type: categorical` otherwise)
@@ -68,7 +68,26 @@ Rewrites original SQL into semantic layer syntax:
 
 #### `write_model_files(models: dict, output_dir: str)`
 
-Writes each model to a separate YAML file (`{model_name}.yml`).
+Writes each model to a separate YAML file (`{model_name}.yml`) in native parser format:
+
+```yaml
+models:
+  - name: orders
+    table: orders
+    ...
+```
+
+#### `write_graph_metrics_file(graph_metrics: list[dict], output_dir: str, filename: str = "graph_metrics.yml") -> str | None`
+
+Writes graph-level metrics to `graph_metrics.yml`:
+
+```yaml
+models: []
+metrics:
+  - name: revenue_per_customer
+    type: derived
+    sql: orders.revenue / customers.customer_count
+```
 
 #### `write_rewritten_queries(queries: dict, output_dir: str)`
 
@@ -230,6 +249,7 @@ CLI: `sidemantic preagg recommend` and `sidemantic preagg apply`.
 
 ```python
 from sidemantic import SemanticLayer, Model, Dimension, Metric, Relationship
+from sidemantic.loaders import load_from_directory
 from sidemantic.core.migrator import Migrator
 
 # 1. Connect to database
@@ -244,7 +264,7 @@ queries = [
 ]
 
 # 3. Generate models
-migrator = Migrator(layer, connection=layer.adapter.raw_connection)
+migrator = Migrator(layer, connection=layer.conn)
 report = migrator.analyze_queries(queries)
 models = migrator.generate_models(report)
 graph_metrics = migrator.generate_graph_metrics(report, models)
@@ -259,13 +279,15 @@ for name, model_def in models.items():
 
 # 5. Write to disk and refine
 migrator.write_model_files(models, "output/models/")
+migrator.write_graph_metrics_file(graph_metrics, "output/models/")
 
 # 6. Load refined models and query
-layer2 = SemanticLayer.from_yaml("output/models/orders.yml", connection="duckdb:///warehouse.duckdb")
+layer2 = SemanticLayer(connection="duckdb:///warehouse.duckdb", auto_register=False)
+load_from_directory(layer2, "output/models/")
 result = layer2.sql("SELECT revenue, status FROM orders")
 
 # 7. Check coverage
-migrator2 = Migrator(layer2, connection=layer2.db.raw_connection)
+migrator2 = Migrator(layer2, connection=layer2.conn)
 report2 = migrator2.analyze_queries(queries)
 print(f"Coverage: {report2.coverage_percentage:.0f}%")
 ```

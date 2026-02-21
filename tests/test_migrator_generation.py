@@ -32,8 +32,8 @@ def test_generate_models_from_queries():
 
     # Check orders model
     orders = models["orders"]
-    assert orders["model"]["name"] == "orders"
-    assert orders["model"]["table"] == "orders"
+    assert orders["name"] == "orders"
+    assert orders["table"] == "orders"
 
     # Check orders dimensions
     assert len(orders["dimensions"]) == 2
@@ -49,7 +49,7 @@ def test_generate_models_from_queries():
 
     # Check products model
     products = models["products"]
-    assert products["model"]["name"] == "products"
+    assert products["name"] == "products"
 
     # Check products dimensions
     assert len(products["dimensions"]) == 1
@@ -204,9 +204,88 @@ def test_write_model_files(tmp_path):
     with open(orders_file) as f:
         data = yaml.safe_load(f)
 
-    assert data["model"]["name"] == "orders"
-    assert len(data["dimensions"]) == 1
+    assert "models" in data
+    assert len(data["models"]) == 1
+    assert data["models"][0]["name"] == "orders"
+    assert len(data["models"][0]["dimensions"]) == 1
+    assert len(data["models"][0]["metrics"]) == 1
+
+
+def test_write_graph_metrics_file(tmp_path):
+    """Test writing graph-level metrics to disk."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        "SELECT status, SUM(amount) AS revenue FROM orders GROUP BY status",
+        "SELECT segment, COUNT(DISTINCT id) AS customer_count FROM customers GROUP BY segment",
+        """
+        SELECT
+            c.segment,
+            SUM(o.amount) / COUNT(DISTINCT c.id) AS revenue_per_customer
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.segment
+        """,
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+    graph_metrics = analyzer.generate_graph_metrics(report, models)
+
+    output_dir = tmp_path / "models"
+    path = analyzer.write_graph_metrics_file(graph_metrics, str(output_dir))
+
+    assert path is not None
+    graph_file = output_dir / "graph_metrics.yml"
+    assert graph_file.exists()
+
+    import yaml
+
+    with open(graph_file) as f:
+        data = yaml.safe_load(f)
+
+    assert "models" in data
+    assert data["models"] == []
+    assert "metrics" in data
     assert len(data["metrics"]) == 1
+    assert data["metrics"][0]["name"] == "revenue_per_customer"
+
+
+def test_generated_graph_metrics_load_from_directory(tmp_path):
+    """Test generated graph metrics are loadable from a models directory."""
+    from sidemantic.loaders import load_from_directory
+
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        "SELECT status, SUM(amount) AS revenue FROM orders GROUP BY status",
+        "SELECT segment, COUNT(DISTINCT id) AS customer_count FROM customers GROUP BY segment",
+        """
+        SELECT
+            c.segment,
+            SUM(o.amount) / COUNT(DISTINCT c.id) AS revenue_per_customer
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.segment
+        """,
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+    graph_metrics = analyzer.generate_graph_metrics(report, models)
+
+    output_dir = tmp_path / "models"
+    analyzer.write_model_files(models, str(output_dir))
+    analyzer.write_graph_metrics_file(graph_metrics, str(output_dir))
+
+    loaded = SemanticLayer(auto_register=False)
+    load_from_directory(loaded, output_dir)
+
+    assert "orders" in loaded.list_models()
+    assert "customers" in loaded.list_models()
+    assert "revenue_per_customer" in loaded.list_metrics()
 
 
 def test_write_rewritten_queries(tmp_path):

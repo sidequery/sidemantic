@@ -171,10 +171,12 @@ Enables: `model.get_hierarchy_path("city")` returns `["country", "state", "city"
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agg` | string | Yes* | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`, `stddev`, `stddev_pop`, `variance`, `variance_pop` |
+| `agg` | string | Yes* | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median` |
 | `sql` | string | No | Expression to aggregate. `expr` accepted as alias. Defaults to column matching `name`. For `count` without `sql`, generates `COUNT(*)` |
 
 *Not required if `sql` contains a recognized aggregation (e.g., `sql: "SUM(amount)"` auto-extracts `agg: sum, sql: amount`).
+
+Current model-level validation aligns with this set (`sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`).
 
 ```yaml
 - name: revenue
@@ -319,13 +321,18 @@ Enables: `model.get_hierarchy_path("city")` returns `["country", "state", "city"
 | `description` | string | No | -- | Human-readable description |
 | `public` | boolean | No | `true` | Whether visible in API/UI |
 
+Segments are model-scoped and must be nested under a model's `segments:` list.
+
 ```yaml
-segments:
-  - name: completed
-    sql: "status = 'completed'"
-  - name: internal_only
-    sql: "is_test = false"
-    public: false
+models:
+  - name: orders
+    table: orders
+    segments:
+      - name: completed
+        sql: "status = 'completed'"
+      - name: internal_only
+        sql: "is_test = false"
+        public: false
 ```
 
 ## Pre-Aggregation

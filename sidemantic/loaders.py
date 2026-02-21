@@ -41,8 +41,10 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     if not directory.exists():
         raise ValueError(f"Directory {directory} does not exist")
 
-    # Collect all models first (so we can infer relationships after)
+    # Collect parsed definitions first, then register in dependency order.
     all_models = {}
+    all_metrics = {}
+    all_parameters = {}
 
     # Check for SML repository (catalog.yml/atscale.yml or object_type files)
     if _try_load_sml(layer, directory, all_models):
@@ -126,6 +128,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                     if not hasattr(model, "_source_file"):
                         model._source_file = str(file_path.relative_to(directory))
                 all_models.update(graph.models)
+                all_metrics.update(graph.metrics)
+                all_parameters.update(graph.parameters)
             except Exception as e:
                 # Skip files that fail to parse
                 import logging
@@ -139,6 +143,15 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     for model in all_models.values():
         if model.name not in layer.graph.models:
             layer.add_model(model)
+
+    # Register graph-level metrics and parameters after models.
+    for metric in all_metrics.values():
+        if metric.name not in layer.graph.metrics:
+            layer.add_metric(metric)
+
+    for parameter in all_parameters.values():
+        if parameter.name not in layer.graph.parameters:
+            layer.graph.add_parameter(parameter)
 
     # Rebuild adjacency graph to recognize all inferred relationships
     layer.graph.build_adjacency()

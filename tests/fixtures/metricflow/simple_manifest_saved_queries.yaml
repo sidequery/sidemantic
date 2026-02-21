@@ -1,0 +1,88 @@
+# Source: dbt-labs/metricflow (Apache 2.0)
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/simple_manifest/saved_queries.yaml
+# Tests: saved queries with order_by, limit, where filters, descending(),
+#   cumulative metric in saved query, metric joins, dimensions_only query
+
+# Note: saved_queries are a MetricFlow concept not directly parsed by sidemantic adapter,
+# but this fixture documents the format for future implementation.
+
+# The semantic model is included so the file parses as valid YAML with at least one model.
+semantic_models:
+  - name: sales_for_saved_queries
+    description: Minimal model so this fixture parses
+    model: ref('fct_bookings')
+    defaults:
+      agg_time_dimension: ds
+    measures:
+      - name: bookings
+        expr: "1"
+        agg: sum
+    dimensions:
+      - name: ds
+        type: time
+        type_params:
+          time_granularity: day
+      - name: capacity_latest
+        type: categorical
+    entities:
+      - name: listing
+        type: primary
+        expr: listing_id
+
+saved_queries:
+  - name: p0_booking
+    description: Booking-related metrics that are of the highest priority.
+    query_params:
+      metrics:
+        - bookings
+        - instant_bookings
+      group_by:
+        - TimeDimension('metric_time', 'day')
+        - Dimension('listing__capacity_latest')
+      where:
+        - "{{ Dimension('listing__capacity_latest') }} > 3"
+
+  - name: p0_booking_with_order_by_and_limit
+    description: p0 bookings with order by and limit
+    query_params:
+      metrics:
+        - bookings
+        - views
+      group_by:
+        - TimeDimension('metric_time', 'day')
+        - Dimension('listing__capacity_latest')
+      order_by:
+        - TimeDimension('metric_time', 'day').descending(True)
+        - Dimension('listing__capacity_latest')
+        - Metric('bookings').descending(True)
+        - Metric('views')
+      limit: 10
+
+  - name: saved_query_with_cumulative_metric
+    description: Saved query that includes a cumulative metric.
+    query_params:
+      metrics:
+        - trailing_2_months_revenue
+      group_by:
+        - TimeDimension('metric_time', 'day')
+
+  - name: saved_query_with_metric_joins_and_filter
+    description: Saved query with multiple metrics from different sources and filters.
+    query_params:
+      metrics:
+        - bookings
+        - views
+        - bookings_per_view
+      group_by:
+        - Dimension('listing__capacity_latest')
+      where:
+        - "{{ Dimension('listing__is_lux_latest') }}"
+        - "{{ TimeDimension('metric_time', 'day') }} >= '2020-01-02'"
+
+  - name: dimensions_only
+    description: Query without metrics
+    query_params:
+      group_by:
+        - Dimension('listing__capacity_latest')
+        - TimeDimension('metric_time', 'month')
+      metrics: []

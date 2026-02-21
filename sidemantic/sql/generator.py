@@ -85,7 +85,23 @@ class SQLGenerator:
         Returns:
             Properly quoted identifier for the dialect (e.g., '"auctions.bid_request_cnt_wow"')
         """
+        return self._quote_identifier(name)
+
+    def _quote_identifier(self, name: str) -> str:
+        """Quote a SQL identifier for the current dialect."""
+        import re
+
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            return name
         return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+
+    def _cte_name(self, model_name: str) -> str:
+        """Get the CTE identifier name for a model."""
+        return f"{model_name}_cte"
+
+    def _cte_ref(self, model_name: str, column_name: str) -> str:
+        """Build a quoted reference to a CTE column."""
+        return f"{self._quote_identifier(self._cte_name(model_name))}.{self._quote_identifier(column_name)}"
 
     def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
         """Auto-include default_time_dimension from models if not already present.
@@ -923,7 +939,7 @@ class SQLGenerator:
         # Include this model's primary key columns (always needed for joins/grouping)
         for pk_col in model.primary_key_columns:
             if pk_col not in columns_added:
-                select_cols.append(f"{pk_col} AS {pk_col}")
+                select_cols.append(f"{pk_col} AS {self._quote_alias(pk_col)}")
                 columns_added.add(pk_col)
 
         # Include foreign keys if we're joining OR if they're explicitly requested as dimensions
@@ -934,7 +950,7 @@ class SQLGenerator:
                     # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
                     should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
                     if should_include and fk not in columns_added:
-                        select_cols.append(f"{fk} AS {fk}")
+                        select_cols.append(f"{fk} AS {self._quote_alias(fk)}")
                         columns_added.add(fk)
                         # Mark FK as "needed" so it's not duplicated as a dimension
                         needed_dimensions.discard(fk)
@@ -953,7 +969,7 @@ class SQLGenerator:
                         # For has_many/has_one, foreign_key is the FK column in THIS model
                         fk = other_join.foreign_key or other_join.sql_expr
                         if fk not in columns_added:
-                            select_cols.append(f"{fk} AS {fk}")
+                            select_cols.append(f"{fk} AS {self._quote_alias(fk)}")
                             columns_added.add(fk)
 
             for other_model_name, other_model in self.graph.models.items():
@@ -965,7 +981,7 @@ class SQLGenerator:
                     junction_self_fk, junction_related_fk = other_join.junction_keys()
                     for fk in (junction_self_fk, junction_related_fk):
                         if fk and fk not in columns_added:
-                            select_cols.append(f"{fk} AS {fk}")
+                            select_cols.append(f"{fk} AS {self._quote_alias(fk)}")
                             columns_added.add(fk)
 
         # Determine table alias for {model} placeholder replacement
@@ -990,7 +1006,7 @@ class SQLGenerator:
                     dim_sql = dimension.sql_expr
                 # Replace {model} placeholder with actual table reference
                 dim_sql = replace_model_placeholder(dim_sql)
-                select_cols.append(f"{dim_sql} AS {dimension.name}")
+                select_cols.append(f"{dim_sql} AS {self._quote_alias(dimension.name)}")
                 columns_added.add(dimension.name)
 
         # Then, add time dimensions with specific granularities
@@ -1009,7 +1025,7 @@ class SQLGenerator:
                 dim_sql = self._date_trunc(gran, replace_model_placeholder(dimension.sql_expr))
                 alias = f"{dim_name}__{gran}"
                 if alias not in columns_added:
-                    select_cols.append(f"{dim_sql} AS {alias}")
+                    select_cols.append(f"{dim_sql} AS {self._quote_alias(alias)}")
                     columns_added.add(alias)
 
         # Add raw columns referenced by inline aggregate SQL (if they are not dimensions/measures)
@@ -1020,13 +1036,16 @@ class SQLGenerator:
                 dim = model.get_dimension(col_name)
                 if dim:
                     dim_sql = replace_model_placeholder(dim.sql_expr)
-                    select_cols.append(f"{dim_sql} AS {col_name}")
+                    select_cols.append(f"{dim_sql} AS {self._quote_alias(col_name)}")
                     columns_added.add(col_name)
                     continue
                 if model.get_metric(col_name):
                     continue
-                raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
-                select_cols.append(f"{raw_expr} AS {col_name}")
+                if model_table_alias:
+                    raw_expr = f"{self._quote_identifier(model_table_alias)}.{self._quote_identifier(col_name)}"
+                else:
+                    raw_expr = self._quote_identifier(col_name)
+                select_cols.append(f"{raw_expr} AS {self._quote_alias(col_name)}")
                 columns_added.add(col_name)
 
         # Add measure columns (raw, not aggregated in CTE)
@@ -1142,7 +1161,7 @@ class SQLGenerator:
                 else:
                     measure_sql = base_sql
 
-                select_cols.append(f"{measure_sql} AS {measure_name}_raw")
+                select_cols.append(f"{measure_sql} AS {self._quote_alias(f'{measure_name}_raw')}")
 
         # Build FROM clause
         if model.sql:
@@ -1174,7 +1193,10 @@ class SQLGenerator:
 
         # Build CTE
         select_str = ",\n    ".join(select_cols)
-        cte_sql = f"{model_name}_cte AS (\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}\n)"
+        cte_sql = (
+            f"{self._quote_identifier(self._cte_name(model_name))} AS "
+            f"(\n  SELECT\n    {select_str}\n  FROM {from_clause}{where_clause}\n)"
+        )
 
         return cte_sql
 
@@ -1584,7 +1606,7 @@ class SQLGenerator:
                 else:
                     alias = base_alias
 
-            select_exprs.append(f"{model_name}_cte.{cte_col_name} AS {alias}")
+            select_exprs.append(f"{self._cte_ref(model_name, cte_col_name)} AS {self._quote_alias(alias)}")
 
         # Add metrics
         for metric_ref in metrics:
@@ -1614,7 +1636,7 @@ class SQLGenerator:
                         # Use complex metric builder
                         metric_expr = self._build_metric_sql(measure, model_name)
                         metric_expr = self._wrap_with_fill_nulls(metric_expr, measure)
-                        select_exprs.append(f"{metric_expr} AS {alias}")
+                        select_exprs.append(f"{metric_expr} AS {self._quote_alias(alias)}")
                     elif not measure.agg:
                         # Unknown metric type that needs special handling
                         raise ValueError(
@@ -1623,7 +1645,9 @@ class SQLGenerator:
                         )
                     elif ungrouped:
                         # For ungrouped queries, select raw column without aggregation
-                        select_exprs.append(f"{model_name}_cte.{measure_name}_raw AS {alias}")
+                        select_exprs.append(
+                            f"{self._cte_ref(model_name, f'{measure_name}_raw')} AS {self._quote_alias(alias)}"
+                        )
                     else:
                         # Simple aggregation measures
                         # Check if this model needs symmetric aggregates
@@ -1650,26 +1674,26 @@ class SQLGenerator:
                             # This ensures each metric's filter only affects that metric
                             agg_expr = self._build_measure_aggregation_sql(model_name, measure)
 
-                        select_exprs.append(f"{agg_expr} AS {alias}")
+                        select_exprs.append(f"{agg_expr} AS {self._quote_alias(alias)}")
                 else:
                     # Try as metric
                     metric = self.graph.get_metric(metric_ref)
                     if metric:
                         metric_expr = self._build_metric_sql(metric)
                         metric_expr = self._wrap_with_fill_nulls(metric_expr, metric)
-                        select_exprs.append(f"{metric_expr} AS {metric.name}")
+                        select_exprs.append(f"{metric_expr} AS {self._quote_alias(metric.name)}")
             else:
                 # It's a metric reference (just metric name)
                 metric = self.graph.get_metric(metric_ref)
                 if metric:
                     metric_expr = self._build_metric_sql(metric)
                     metric_expr = self._wrap_with_fill_nulls(metric_expr, metric)
-                    select_exprs.append(f"{metric_expr} AS {metric.name}")
+                    select_exprs.append(f"{metric_expr} AS {self._quote_alias(metric.name)}")
                 else:
                     raise ValueError(f"Metric {metric_ref} not found")
 
         # Build query using builder API
-        query = select(*select_exprs).from_(f"{base_model_name}_cte")
+        query = select(*select_exprs).from_(self._quote_identifier(self._cte_name(base_model_name)))
 
         # Add joins (supports multi-hop)
         if other_models:
@@ -1685,8 +1709,7 @@ class SQLGenerator:
                         if jp.to_model in joined_models:
                             continue
 
-                        left_table = jp.from_model + "_cte"
-                        right_table = jp.to_model + "_cte"
+                        right_table = self._quote_identifier(self._cte_name(jp.to_model))
                         # Validate column counts match for composite keys
                         if len(jp.from_columns) != len(jp.to_columns):
                             raise ValueError(
@@ -1695,7 +1718,8 @@ class SQLGenerator:
                             )
                         # Build join condition for single or multi-column keys
                         join_conditions = [
-                            f"{left_table}.{fk} = {right_table}.{pk}" for fk, pk in zip(jp.from_columns, jp.to_columns)
+                            self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
+                            for fk, pk in zip(jp.from_columns, jp.to_columns)
                         ]
                         join_cond = " AND ".join(join_conditions)
 
@@ -1769,10 +1793,10 @@ class SQLGenerator:
                         field_name = match.group(1)
                         # Check if it's a measure
                         if model_obj.get_metric(field_name):
-                            return f"{model_name}_cte.{field_name}_raw"
+                            return self._cte_ref(model_name, f"{field_name}_raw")
                         else:
                             # It's a dimension or other column
-                            return f"{model_name}_cte.{field_name}"
+                            return self._cte_ref(model_name, field_name)
 
                     result_parts = []
                     for part, is_quoted in parts:
@@ -1914,12 +1938,15 @@ class SQLGenerator:
                     continue
                 model_name = col.table.replace("_cte", "")
                 if model_name in self.graph.models:
-                    col.set("table", exp.to_identifier(f"{model_name}_cte"))
+                    col.set("table", exp.to_identifier(self._cte_name(model_name), quoted=True))
             return parsed.sql(dialect=self.dialect)
         except Exception:
             rewritten = sql_expr
             for model_name in self.graph.models:
-                rewritten = rewritten.replace(f"{model_name}.", f"{model_name}_cte.")
+                rewritten = rewritten.replace(
+                    f"{model_name}.",
+                    f"{self._quote_identifier(self._cte_name(model_name))}.",
+                )
             return rewritten
 
     def _build_measure_aggregation_sql(self, model_name: str, measure) -> str:
@@ -1942,7 +1969,7 @@ class SQLGenerator:
             SQL aggregation expression string
         """
         agg_func = measure.agg.upper()
-        raw_col = f"{model_name}_cte.{measure.name}_raw"
+        raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
 
         # Simple aggregation - filters are already applied in CTE's raw column
         if agg_func == "COUNT_DISTINCT":
@@ -2059,7 +2086,7 @@ class SQLGenerator:
                             break
 
                 if metric_model_name:
-                    cte_alias = f"{metric_model_name}_cte"
+                    cte_alias = self._quote_identifier(self._cte_name(metric_model_name))
                     # Replace {model} placeholder with the CTE alias
                     formula = formula.replace("{model}", cte_alias)
 

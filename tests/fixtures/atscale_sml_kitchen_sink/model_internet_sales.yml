@@ -1,0 +1,112 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Exercises: role-playing relationships, perspectives, drillthroughs,
+# aggregates with partitioning, constraint translation, and partitions.
+unique_name: Internet Sales
+object_type: model
+label: Internet Sales
+visible: true
+
+relationships:
+  - unique_name: factinternetsales_Date_Dimension_Order
+    from:
+      dataset: factinternetsales
+      join_columns:
+        - orderdatekey
+    to:
+      dimension: Date Dimension
+      level: DayMonth
+    role_play: "Order {0}"
+
+  - unique_name: factinternetsales_Date_Dimension_Ship
+    from:
+      dataset: factinternetsales
+      join_columns:
+        - shipdatekey
+    to:
+      dimension: Date Dimension
+      level: DayMonth
+    role_play: "Ship {0}"
+
+  - unique_name: factinternetsales_Product_Dimension
+    from:
+      dataset: factinternetsales
+      join_columns:
+        - productkey
+    to:
+      dimension: Product Dimension
+      level: Product Name
+
+  - unique_name: factinternetsales_Date_Dimension_Order_ct
+    from:
+      dataset: factinternetsales
+      join_columns:
+        - orderdatekey
+    to:
+      dimension: Date Dimension
+      level: DayMonth
+    role_play: "Order {0}"
+    constraint_translation:
+      level: DayMonth
+      from_columns:
+        - orderdatekey
+
+dimensions:
+  - Product Dimension
+  - Geography Dimension
+
+metrics:
+  - unique_name: orderquantity
+    folder: Sales Metrics
+  - unique_name: salesamount
+    folder: Sales Metrics
+
+perspectives:
+  - unique_name: Internet Sales - No PII
+    dimensions:
+      - name: Geography Dimension
+        hierarchies:
+          - name: geography_hierarchy
+            level: City
+        secondary_attributes:
+          - zip_code
+
+drillthroughs:
+  - unique_name: Customer Geo Details
+    attributes:
+      - name: StateCity
+        dimension: Geography Dimension
+      - name: City
+        dimension: Geography Dimension
+      - name: Product Name
+        dimension: Product Dimension
+    metrics:
+      - orderquantity
+      - salesamount
+
+  - unique_name: Shipping Details
+    attributes:
+      - name: product_color
+        dimension: Product Dimension
+      - name: product_size
+        dimension: Product Dimension
+    metrics:
+      - salesamount
+
+aggregates:
+  - unique_name: sales_by_date_agg
+    label: Sales by Date Aggregate
+    metrics:
+      - unique_name: orderquantity
+      - unique_name: salesamount
+    attributes:
+      - name: DateYear
+        dimension: Date Dimension
+        partition: key
+      - name: Product Name
+        dimension: Product Dimension
+
+partitions:
+  - unique_name: date_partition
+    dimension: Date Dimension
+    attribute: DateYear
+    type: key

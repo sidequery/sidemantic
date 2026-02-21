@@ -1,0 +1,75 @@
+id: page_views
+base_sql_table: analytics.page_views
+description: Web page view tracking with minimal configuration
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: session_id
+    type: string
+
+  - id: user_id
+    type: number
+
+  - id: url
+    type: string
+    description: Full page URL
+
+  - id: path
+    type: string
+    expr_sql: SPLIT_PART(url, '?', 1)
+    description: URL path without query params
+
+  - id: referrer
+
+  - id: viewed_at
+    type: timestamp_tz
+    description: When the page was viewed
+
+  - id: duration_seconds
+    type: number
+    description: Time spent on page in seconds
+
+  - id: is_bounce
+    type: boolean
+    description: Whether user left after this page
+
+measures:
+  - id: view_count
+    func: count
+    description: Total page views
+
+  - id: unique_visitors
+    func: count_distinct
+    of: user_id
+    description: Distinct visitors
+
+  - id: unique_sessions
+    func: count_distinct
+    of: session_id
+    description: Distinct sessions
+
+  - id: total_duration
+    func: sum
+    of: duration_seconds
+
+  - id: avg_duration
+    func: avg
+    of: duration_seconds
+    description: Average time on page
+
+  - id: bounce_count
+    func: count
+    filters:
+      - is_bounce
+    description: Number of bounce page views
+
+  - id: bounce_rate
+    func_sql: CAST(SUM(CASE WHEN is_bounce THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0)
+    description: Bounce rate as a fraction
+
+  - id: pages_per_session
+    func_calc: view_count / unique_sessions
+    description: Average pages per session

@@ -1,0 +1,19 @@
+# Source: rilldata/rill (Apache 2.0)
+# https://github.com/rilldata/rill/blob/main/runtime/resolvers/testdata/metrics_geospatial.yaml
+# Features: type: geo dimensions (coordinates, area), DuckDB geometry types
+# Extracted duckdb_metrics from the test harness file.
+
+type: metrics_view
+model: duckdb_data
+timeseries: time
+dimensions:
+  - column: country
+  - column: coordinates
+    type: geo
+  - column: area
+    type: geo
+measures:
+  - name: count
+    expression: count(*)
+  - name: sum
+    expression: sum(val)

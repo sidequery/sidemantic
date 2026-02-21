@@ -1,0 +1,43 @@
+// Source: malloydata/malloy-samples (MIT License)
+// File: bigquery/hackernews/faang.malloy
+// Features: import + extend, view refinement
+
+import "hackernews.malloy"
+
+// analysis about FAANG (Facebook Apple Amazon Netflix and Google)
+// a reasonable threshold for interesting stories is about 10
+
+source: faang_analysis is stories extend {
+  view: apple_dashboard is term_dashboard + {
+    where: faang = 'Apple', score >= threshold
+  }
+
+  view: google_dashboard is term_dashboard + {
+    where: faang = 'Google', score >= threshold
+  }
+
+  view: faang_stories is recent_stories + {
+    where: faang != 'OTHER', score >= threshold
+  }
+
+  view: faang_dashboard is {
+    where:
+      faang != 'OTHER',
+      score >= threshold,
+      post_type = 'story'
+
+    # line_chart
+    nest: faang_story_chart is {
+      group_by: posted_month is post_time.month
+      aggregate: post_count
+      group_by: faang
+    }
+    nest: facebook is top_sites + { where: faang = 'Facebook' }
+    nest: apple is top_sites + { where: faang = 'Apple' }
+    nest: amazon is top_sites + { where: faang = 'Amazon' }
+    nest: netflix is top_sites + { where: faang = 'Netflix' }
+    nest: google is top_sites + { where: faang = 'Google' }
+  }
+
+  view: faang_poster_dashboard is poster_dashboard + { where: faang != 'OTHER' }
+}

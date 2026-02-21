@@ -1,0 +1,23 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Fact dataset for the Internet Sales model exercising role-playing,
+# perspectives, partitions, and constraint translation.
+unique_name: factinternetsales
+object_type: dataset
+label: Fact Internet Sales
+connection_id: core_connection
+table: internet_sales
+columns:
+  - name: salesorderkey
+    data_type: int
+  - name: orderdatekey
+    data_type: int
+  - name: shipdatekey
+    data_type: int
+  - name: customerkey
+    data_type: int
+  - name: productkey
+    data_type: int
+  - name: orderquantity
+    data_type: int
+  - name: salesamount
+    data_type: "decimal(12,2)"

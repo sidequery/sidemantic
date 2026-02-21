@@ -301,3 +301,149 @@ def test_gooddata_loader_auto_detect():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# =============================================================================
+# REAL-WORLD FIXTURE TESTS (permissively licensed)
+# =============================================================================
+# Source: gooddata/gooddata-public-demos (BSD-3-Clause)
+# Source: gooddata/gooddata-python-sdk (MIT)
+
+
+def test_ecommerce_demo_ldm():
+    """Test parsing ecommerce demo LDM (BSD-3, gooddata/gooddata-public-demos).
+
+    6 datasets, 5 date dimensions, GEO labels, returns + inventory models.
+    """
+    adapter = GoodDataAdapter()
+    graph = adapter.parse("tests/fixtures/gooddata/ecommerce_demo_ldm.json")
+
+    # 6 datasets + 5 date instances = 11 models
+    assert len(graph.models) == 11
+
+    # Datasets
+    assert "customer" in graph.models
+    assert "order_lines" in graph.models
+    assert "product" in graph.models
+    assert "returns" in graph.models
+    assert "monthlyinventory" in graph.models
+    assert "orders" in graph.models
+
+    # Date dimensions
+    assert "date" in graph.models
+    assert "order_date" in graph.models
+    assert "return_date" in graph.models
+    assert "customer_created_date" in graph.models
+    assert "inventory_month" in graph.models
+
+    # Customer has GEO labels
+    customer = graph.models["customer"]
+    assert len(customer.dimensions) == 5
+    assert len(customer.relationships) == 1
+    geo_labels_found = False
+    for dim in customer.dimensions:
+        labels = (dim.metadata or {}).get("gooddata", {}).get("labels", [])
+        for label in labels:
+            vt = label.get("valueType", "")
+            if "GEO" in vt:
+                geo_labels_found = True
+                break
+    assert geo_labels_found, "Expected GEO_LATITUDE/GEO_LONGITUDE labels on customer"
+
+    # order_lines has facts and references
+    order_lines = graph.models["order_lines"]
+    assert len(order_lines.metrics) == 4
+    assert len(order_lines.relationships) == 5
+
+    # returns model
+    returns = graph.models["returns"]
+    assert len(returns.metrics) == 3
+    assert len(returns.relationships) == 5
+
+    # monthlyinventory model
+    inventory = graph.models["monthlyinventory"]
+    assert len(inventory.metrics) == 2
+    assert len(inventory.relationships) == 3
+
+    # Date dimensions have rich granularities
+    date_model = graph.models["date"]
+    date_dim = date_model.dimensions[0]
+    assert "day" in date_dim.supported_granularities
+    assert "month" in date_dim.supported_granularities
+    assert "quarter" in date_dim.supported_granularities
+    assert "year" in date_dim.supported_granularities
+
+
+def test_ecommerce_demo_ldm_product_facts():
+    """Test product dataset rating fact (sourceColumnDataType, no dataType)."""
+    adapter = GoodDataAdapter()
+    graph = adapter.parse("tests/fixtures/gooddata/ecommerce_demo_ldm.json")
+
+    product = graph.models["product"]
+    assert len(product.metrics) == 1
+    metric = product.metrics[0]
+    assert metric.name == "rating"
+    assert metric.sql == "rating"
+    # sourceColumnDataType=NUMERIC but no dataType, so agg inference returns None
+    assert metric.agg is None
+
+
+def test_ecommerce_demo_ldm_relationships_resolve():
+    """Test that cross-model references resolve primary keys."""
+    adapter = GoodDataAdapter()
+    graph = adapter.parse("tests/fixtures/gooddata/ecommerce_demo_ldm.json")
+
+    # order_lines references order_date, date, customer, product, orders
+    order_lines = graph.models["order_lines"]
+    ref_names = {r.name for r in order_lines.relationships}
+    assert len(ref_names) == 5
+
+
+def test_sdk_declarative_analytics_model_not_ldm():
+    """Analytics model files are not LDM and should raise GoodDataParseError.
+
+    Source: gooddata/gooddata-python-sdk (MIT). Contains 24 MAQL metrics.
+    """
+    from sidemantic.adapters.gooddata import GoodDataParseError
+
+    adapter = GoodDataAdapter()
+    with pytest.raises(GoodDataParseError, match="does not look like GoodData LDM"):
+        adapter.parse("tests/fixtures/gooddata/sdk_declarative_analytics_model.json")
+
+
+def test_ecommerce_demo_analytics_not_ldm():
+    """Ecommerce analytics file is not LDM and should raise GoodDataParseError.
+
+    Source: gooddata/gooddata-public-demos (BSD-3). Contains 60 MAQL metrics.
+    """
+    from sidemantic.adapters.gooddata import GoodDataParseError
+
+    adapter = GoodDataAdapter()
+    with pytest.raises(GoodDataParseError, match="does not look like GoodData LDM"):
+        adapter.parse("tests/fixtures/gooddata/ecommerce_demo_analytics.json")
+
+
+def test_sdk_declarative_ldm_dict_sql_field():
+    """SDK declarative LDM has dict-style sql field that adapter doesn't yet handle.
+
+    Source: gooddata/gooddata-python-sdk (MIT). 6 datasets, star schema,
+    GEO labels, aggregatedFacts, 1 SQL dataset with dict-style sql.
+    The sql field is {"dataSourceId": ..., "statement": ...} instead of a string.
+    """
+    adapter = GoodDataAdapter()
+    # Currently raises ValidationError because sql is a dict not a string.
+    # When adapter gains dict-style sql support, update this test to verify parsing.
+    with pytest.raises(Exception):
+        adapter.parse("tests/fixtures/gooddata/sdk_declarative_ldm.json")
+
+
+def test_sdk_declarative_ldm_with_sql_dataset():
+    """SDK LDM with SQL datasets has dict-style sql field.
+
+    Source: gooddata/gooddata-python-sdk (MIT). 7 datasets, newer ref format,
+    isNullable facts, 2 SQL datasets with dict-style sql.
+    """
+    adapter = GoodDataAdapter()
+    # Currently raises ValidationError because sql is a dict not a string.
+    with pytest.raises(Exception):
+        adapter.parse("tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json")

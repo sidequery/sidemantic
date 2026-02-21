@@ -368,10 +368,14 @@ class TestHexDirectoryParse:
         assert "organizations" in graph.models
         assert "saas_analytics" in graph.models
         assert "product_events" in graph.models
+        assert "inventory" in graph.models
+        assert "employees" in graph.models
+        assert "support_tickets" in graph.models
+        assert "page_views" in graph.models
 
     def test_total_model_count(self, graph):
-        """All 5 fixture files produce 5 models."""
-        assert len(graph.models) == 5
+        """All 9 fixture files produce 9 models."""
+        assert len(graph.models) == 9
 
     def test_cross_model_measure_reference(self, graph):
         """Organizations model has cross-model measure referencing users."""

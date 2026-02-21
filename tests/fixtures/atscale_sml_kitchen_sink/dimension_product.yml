@@ -1,0 +1,44 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Product dimension with custom_empty_member on level attribute and
+# secondary attribute.
+unique_name: Product Dimension
+object_type: dimension
+label: Product Dimension
+type: standard
+
+hierarchies:
+  - unique_name: product_hierarchy
+    label: Product Hierarchy
+    levels:
+      - unique_name: Product Name
+        secondary_attributes:
+          - unique_name: product_color
+            label: Color
+            dataset: dimproduct
+            name_column: color
+            key_columns:
+              - color
+            custom_empty_member:
+              key:
+                - "-1"
+              name: Unknown Color
+
+          - unique_name: product_size
+            label: Size
+            dataset: dimproduct
+            name_column: size
+            key_columns:
+              - size
+
+level_attributes:
+  - unique_name: Product Name
+    label: Product Name
+    dataset: dimproduct
+    name_column: product_name
+    key_columns:
+      - productkey
+    is_unique_key: true
+    custom_empty_member:
+      key:
+        - "-1"
+      name: Unknown Product

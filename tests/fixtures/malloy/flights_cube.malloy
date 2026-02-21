@@ -1,0 +1,42 @@
+// Source: malloydata/malloy-samples (MIT License)
+// File: cubed_data/flights_cube.malloy
+// Features: ##! experimental{composite_sources}, compose(), except:
+
+##! experimental{composite_sources}
+
+source: flights_cubed is duckdb.table('flights_cubed.parquet')
+
+source: `cube:` is flights_cubed extend { where: agg_level = '' except: `origin`,`dep_date`,`destination`,`carrier`,`tail_num` }
+source: `cube:carrier` is flights_cubed extend { where: agg_level = 'carrier' except: `dep_date`,`tail_num`,`destination`,`origin` }
+source: `cube:tail_num` is flights_cubed extend { where: agg_level = 'tail_num' except: `dep_date`,`carrier`,`destination`,`origin` }
+source: `cube:carrier.tail_num` is flights_cubed extend { where: agg_level = 'carrier.tail_num' except: `origin`,`dep_date`,`destination` }
+source: `cube:destination` is flights_cubed extend { where: agg_level = 'destination' except: `dep_date`,`tail_num`,`origin`,`carrier` }
+source: `cube:origin` is flights_cubed extend { where: agg_level = 'origin' except: `destination`,`tail_num`,`dep_date`,`carrier` }
+source: `cube:carrier.origin` is flights_cubed extend { where: agg_level = 'carrier.origin' except: `destination`,`tail_num`,`dep_date` }
+source: `cube:carrier.destination` is flights_cubed extend { where: agg_level = 'carrier.destination' except: `tail_num`,`origin`,`dep_date` }
+source: `cube:dep_date` is flights_cubed extend { where: agg_level = 'dep_date' except: `destination`,`origin`,`carrier`,`tail_num` }
+source: `cube:destination.tail_num` is flights_cubed extend { where: agg_level = 'destination.tail_num' except: `origin`,`dep_date`,`carrier` }
+source: `cube:carrier.destination.tail_num` is flights_cubed extend { where: agg_level = 'carrier.destination.tail_num' except: `origin`,`dep_date` }
+source: `cube:origin.tail_num` is flights_cubed extend { where: agg_level = 'origin.tail_num' except: `dep_date`,`destination`,`carrier` }
+source: `cube:carrier.origin.tail_num` is flights_cubed extend { where: agg_level = 'carrier.origin.tail_num' except: `dep_date`,`destination` }
+source: `cube:origin.destination` is flights_cubed extend { where: agg_level = 'origin.destination' except: `carrier`,`dep_date`,`tail_num` }
+source: `cube:carrier.origin.destination` is flights_cubed extend { where: agg_level = 'carrier.origin.destination' except: `dep_date`,`tail_num` }
+source: `cube:carrier.origin.destination.tail_num` is flights_cubed extend { where: agg_level = 'carrier.origin.destination.tail_num' except: `dep_date` }
+source: `cube:origin.destination.tail_num` is flights_cubed extend { where: agg_level = 'origin.destination.tail_num' except: `carrier`,`dep_date` }
+source: `cube:dep_date.carrier` is flights_cubed extend { where: agg_level = 'dep_date.carrier' except: `destination`,`tail_num`,`origin` }
+source: `cube:dep_date.tail_num` is flights_cubed extend { where: agg_level = 'dep_date.tail_num' except: `origin`,`carrier`,`destination` }
+source: `cube:dep_date.carrier.tail_num` is flights_cubed extend { where: agg_level = 'dep_date.carrier.tail_num' except: `origin`,`destination` }
+source: `cube:dep_date.origin` is flights_cubed extend { where: agg_level = 'dep_date.origin' except: `destination`,`carrier`,`tail_num` }
+source: `cube:dep_date.destination` is flights_cubed extend { where: agg_level = 'dep_date.destination' except: `origin`,`carrier`,`tail_num` }
+source: `cube:dep_date.carrier.origin` is flights_cubed extend { where: agg_level = 'dep_date.carrier.origin' except: `tail_num`,`destination` }
+source: `cube:dep_date.carrier.destination` is flights_cubed extend { where: agg_level = 'dep_date.carrier.destination' except: `tail_num`,`origin` }
+source: `cube:dep_date.carrier.origin.tail_num` is flights_cubed extend { where: agg_level = 'dep_date.carrier.origin.tail_num' except: `destination` }
+source: `cube:dep_date.origin.tail_num` is flights_cubed extend { where: agg_level = 'dep_date.origin.tail_num' except: `destination`,`carrier` }
+source: `cube:dep_date.carrier.destination.tail_num` is flights_cubed extend { where: agg_level = 'dep_date.carrier.destination.tail_num' except: `origin` }
+source: `cube:dep_date.destination.tail_num` is flights_cubed extend { where: agg_level = 'dep_date.destination.tail_num' except: `carrier`,`origin` }
+source: `cube:dep_date.origin.destination` is flights_cubed extend { where: agg_level = 'dep_date.origin.destination' except: `carrier`,`tail_num` }
+source: `cube:dep_date.carrier.origin.destination` is flights_cubed extend { where: agg_level = 'dep_date.carrier.origin.destination' except: `tail_num` }
+source: `cube:dep_date.carrier.origin.destination.tail_num` is flights_cubed extend { where: agg_level = 'dep_date.carrier.origin.destination.tail_num' }
+source: `cube:dep_date.origin.destination.tail_num` is flights_cubed extend { where: agg_level = 'dep_date.origin.destination.tail_num' except: `carrier` }
+
+source: flights_cube_base is compose(`cube:`,`cube:carrier`,`cube:tail_num`,`cube:carrier.tail_num`,`cube:destination`,`cube:origin`,`cube:carrier.origin`,`cube:carrier.destination`,`cube:dep_date`,`cube:destination.tail_num`,`cube:carrier.destination.tail_num`,`cube:origin.tail_num`,`cube:carrier.origin.tail_num`,`cube:origin.destination`,`cube:carrier.origin.destination`,`cube:origin.destination.tail_num`,`cube:carrier.origin.destination.tail_num`,`cube:dep_date.carrier`,`cube:dep_date.tail_num`,`cube:dep_date.carrier.tail_num`,`cube:dep_date.origin`,`cube:dep_date.destination`,`cube:dep_date.carrier.origin`,`cube:dep_date.carrier.destination`,`cube:dep_date.carrier.origin.tail_num`,`cube:dep_date.origin.tail_num`,`cube:dep_date.carrier.destination.tail_num`,`cube:dep_date.destination.tail_num`,`cube:dep_date.origin.destination`,`cube:dep_date.carrier.origin.destination`,`cube:dep_date.origin.destination.tail_num`,`cube:dep_date.carrier.origin.destination.tail_num`)

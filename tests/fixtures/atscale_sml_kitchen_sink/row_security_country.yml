@@ -1,0 +1,12 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# See sml-reference/row-security.md for the row_security object type.
+unique_name: Country Security Filter
+label: Country Security Filter
+object_type: row_security
+dataset: user_country_mapping
+filter_key_column: country
+use_filter_key: true
+ids_column: username
+id_type: group
+scope: related
+secure_totals: true

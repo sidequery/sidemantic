@@ -1,0 +1,26 @@
+# Source: rilldata/rill (Apache 2.0)
+# https://github.com/rilldata/rill/blob/main/runtime/resolvers/testdata/metrics_annotations.yaml
+# Features: annotations list linking measures to annotation models/tables,
+#   connector specification on annotation, measure-specific annotations
+# Extracted duckdb_metrics from the test harness file.
+
+type: metrics_view
+model: duckdb_data
+timeseries: time
+dimensions:
+  - column: country
+measures:
+  - name: count
+    expression: count(*)
+  - name: sum
+    expression: sum(val)
+  - name: mes_for_grain_annotation
+    expression: count(*)
+annotations:
+  - model: simple_duckdb_annotation
+    measures: ['count']
+  - table: time_end_clickhouse_annotation
+    connector: clickhouse
+    measures: ['sum']
+  - model: grain_duckdb_annotation
+    measures: ['mes_for_grain_annotation']

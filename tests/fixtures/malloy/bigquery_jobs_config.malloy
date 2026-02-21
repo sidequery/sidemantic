@@ -1,0 +1,14 @@
+// Source: malloydata/bigquery_jobs (MIT License)
+// File: config.malloy
+// Features: SQL-based source definitions
+
+-- Un-comment the following lines, and replace `US` with your BigQuery Project's region:
+
+-- source: jobs_tbl is bigquery.sql('SELECT * FROM `region-US`.INFORMATION_SCHEMA.JOBS')
+-- source: tables_tbl is bigquery.sql('SELECT * FROM `region-US`.INFORMATION_SCHEMA.TABLES')
+-- source: table_storage_tbl is bigquery.sql('SELECT * FROM `region-US`.INFORMATION_SCHEMA.TABLE_STORAGE')
+
+-- Comment these lines out:
+source: jobs_tbl is bigquery.sql('SELECT * FROM job_views.info_schema_jobs')
+source: tables_tbl is bigquery.sql('SELECT * FROM job_views.info_schema_tables')
+source: table_storage_tbl is bigquery.sql('SELECT * FROM job_views.info_schema_table_storage')

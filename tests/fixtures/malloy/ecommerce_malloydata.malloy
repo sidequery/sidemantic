@@ -1,0 +1,386 @@
+// Source: malloydata/ecommerce (MIT License)
+// File: ecommerce.malloy
+// Features: from(), old + syntax, join_cross:, cohort patterns, pick conditional
+
+--! styles ecommerce.styles.json
+
+// bigquery sources
+
+source: users_table is table('malloy-data.ecomm.users'){}
+source: product_table is table('malloy-data.ecomm.products'){}
+source: inventory_items_table is table('malloy-data.ecomm.inventory_items'){}
+source: order_items_table is table('malloy-data.ecomm.order_items')
+source: events_table is table('malloy-data.ecomm.events')
+
+// // duckdb sources
+// source: users_table is table('duckdb:./users.parquet'){}
+// source: product_table  table('duckdb:./products.parquet'){}
+// source: inventory_items_table is table('duckdb:./inventory_items.parquet'){}
+// source: order_items_table is table('duckdb:./order_items.parquet')
+
+
+source: users is users_table + {
+  primary_key: id
+  //dimension: full_name is INITCAP(CONCAT(first_name,' ',last_name))
+  dimension: full_name is CONCAT(
+      upper(left!(first_name,1)),lower(substr(first_name,2)),
+      ' ',
+      upper(left!(last_name,1)),lower(substr(last_name,2))
+    )
+  measure: user_count is count()
+}
+
+source: product is product_table{
+  primary_key: id
+  measure: product_count is count()
+}
+
+source: inventory_items is inventory_items_table + {
+  primary_key: id
+
+  join_one: product with product_id
+
+  measure:
+    inventory_item_count is count(distinct id)
+    total_cost is cost.sum()
+}
+
+source: events is events_table + {
+  join_one: users on user_id = users.id
+
+
+  dimension:
+    product_id is cast(regexp_extract(uri, r'/product/(\d+)') as number)
+}
+
+source: user_order_facts is from(
+  order_items_table ->  {
+    group_by: user_id
+    aggregate: first_order is min(created_at)
+    aggregate: most_recent_order is max(created_at)
+    aggregate: lifetime_orders is count()
+    aggregate: lifetime_spend is sale_price.sum() {where: status != 'Cancelled' & 'Returned'}
+  }
+){
+  primary_key: user_id
+
+  dimension: top_customer is lifetime_orders > 10
+  dimension: lifetime_order_tier is lifetime_orders ?
+    pick '1 to 3' when  < 4
+    pick '4 to 6' when < 7
+    pick '7 to 10' when < 11
+    else '11+'
+
+  dimension: spend_category is lifetime_spend ?
+    pick 'Low Spend' when < 50
+    pick 'Mid Spend' when < 500
+    pick 'High Spend' when < 1000
+    pick 'VIP' when >= 1000
+    else null
+}
+
+source: order_items is order_items_table + {
+  primary_key: id
+
+  join_one:
+    users with user_id
+    inventory_items with inventory_item_id
+    user_order_facts with user_id
+
+  dimension:
+    gross_margin is sale_price - inventory_items.cost
+
+  measure:
+    order_count is count(distinct order_id)
+    order_item_count is count()
+    total_sales is sale_price.sum()
+    total_gross_margin is gross_margin.sum()
+    average_gross_margin is gross_margin.avg()
+    total_sales_2022 is total_sales { where: year(created_at) = 2022 }
+    total_sales_2021 is total_sales { where: year(created_at) = 2021 }
+   
+  query: top_categories is {
+    top: 5
+    group_by: inventory_items.product_category
+    aggregate: total_sales
+  }
+
+  query: top_brands is {
+    top: 5
+    group_by: inventory_items.product_brand
+    aggregate: total_sales, total_gross_margin, order_item_count
+  }
+
+  query: top_products is {
+    top: 5
+    group_by: inventory_items.product_name
+    aggregate: total_sales, total_gross_margin, order_item_count
+  }
+
+  query: top_customers is {
+    top: 5
+    group_by: users.full_name, user_id
+    aggregate: total_sales, order_item_count
+  }
+
+  query: recent_purchases is {
+    top: 5
+    group_by: id, order_id, created_at, sale_price, inventory_items.product_name
+    order_by: created_at desc
+  }
+
+  query: by_year is {
+    group_by: created_year is year(created_at)
+    aggregate: total_sales
+  }
+
+  query: by_month is {
+    group_by: created_month is created_at.month
+    aggregate: total_sales
+  }
+
+  query: sales_by_state is {
+    group_by: users.state
+    aggregate: total_sales
+  }
+
+  query: sales_by_month_2022 is {
+    where: created_at = @2022
+    group_by: order_month is created_at.month
+    aggregate: total_sales
+  }
+
+  query: orders_by_status is {
+    group_by: status
+    aggregate: order_count
+  }
+
+  query: frequent_returners is {
+    group_by: users.full_name, user_id
+    aggregate: 
+      count_returns is order_item_count { ? status = 'Returned'}
+      percent_purchases_returned is round(100.0 * order_item_count { ? status = 'Returned'} / order_item_count, 0)
+      value_returned is total_sales { ? status = 'Returned'}
+  }
+
+  query: brand_dashboard is {
+  group_by: inventory_items.product.brand
+  aggregate:
+    total_sales
+    order_item_count
+    inventory_items.product.product_count
+  nest:
+    top_categories
+    by_month
+    top_products
+  limit: 10
+  }
+
+  query: customer_dashboard is {
+    top: 5
+    group_by: users.full_name, user_id, users.city, users.state, users.country
+    aggregate:
+      total_sales
+      order_item_count
+      order_count
+    nest:
+      top_categories
+      by_year
+      top_brands
+      recent_purchases
+  }
+
+  query: business_overview_dashboard is {
+    aggregate:
+      total_sales
+      order_count
+      total_gross_margin
+    nest: 
+      by_month
+      sales_by_state_shape_map is sales_by_state
+      top_brands
+      top_customers + {aggregate : order_count}
+  }
+
+  query: sales_summary is {
+    aggregate:
+        sales is total_sales { where: status != 'Cancelled' and status != 'Returned'}
+        orders is order_count { where: status != 'Cancelled' and status != 'Returned'}
+        order_items is order_item_count { where: status != 'Cancelled' and status != 'Returned'}
+        purchasers is count(distinct user_id) { where: status != 'Cancelled' and status != 'Returned'}
+        refunds is total_sales { where: status ? 'Cancelled' | 'Returned' }
+        refunded_orders is order_count { where: status ? 'Cancelled' | 'Returned' }
+        refunded_items is order_item_count { where: status ? 'Cancelled' | 'Returned' }
+  }
+
+  query: sales_summary_yoy is {
+    aggregate:
+      total_sales_2022
+      sales_growth is total_sales_2022 - total_sales_2021
+      sales_yoy is total_sales_2022 / nullif(total_sales_2021,0) - 1
+      growth_contribution is (total_sales_2022 - total_sales_2021) / all(total_sales_2022 - total_sales_2021)
+  }
+
+  query: sales_yoy_by_category is sales_summary_yoy + {
+    nest: by_department is sales_summary_yoy + {
+        group_by: inventory_items.product.department
+        order_by: sales_yoy desc
+        nest: by_category is sales_summary_yoy + {
+            group_by: inventory_items.product_category
+            order_by: sales_yoy desc
+        }
+     }
+  }
+
+  query: sales_yoy_by_region is sales_summary_yoy + {
+    nest: by_country is sales_summary_yoy + {
+      group_by: users.country
+      order_by: sales_growth desc
+      nest: by_state is sales_summary_yoy + {
+        group_by: users.state
+        order_by: sales_growth desc
+      }
+    }
+  }
+
+  query: search_index is {
+    index: *, users.*, inventory_items.* 
+    sample: true
+  }
+}
+
+source: calendar is from(
+    order_items -> {
+        group_by:
+            the_date is created_at.day
+    }
+) {
+    primary_key: the_date
+}
+
+source: calendar_months is from(
+  calendar -> {
+    group_by:
+      the_month is the_date.month
+  }
+)
+
+  source: funnel_orders is from(
+    order_items_table -> {
+        group_by:  
+            order_date is created_at.day
+
+        aggregate:
+            order_count is count()
+    }
+  )
+
+source: funnel_signups is from(
+    users_table -> {
+        group_by:
+            signup_date is created_at.day
+
+        aggregate:
+            signup_count is count()
+    }
+)
+
+source: daily_funnel is calendar + {
+    join_one: funnel_orders on the_date = funnel_orders.order_date
+    join_one: funnel_signups on the_date = funnel_signups.signup_date
+}
+
+source: cohorts is from(order_items -> {
+    group_by:
+        user_id
+        cohort_month is users.created_at.month
+        order_month is created_at.month
+
+    aggregate:
+        total_sales
+        order_item_count
+} -> {
+    join_many: calendar_months on order_month <= calendar_months.the_month
+
+    group_by:
+        user_id
+        current_month is calendar_months.the_month
+        cohort_month
+
+    aggregate:
+        cumulative_sales is sum(total_sales)
+        cumulative_order_count is sum(order_item_count)
+        sales_this_month is sum(pick total_sales when order_month = calendar_months.the_month else 0)
+        orders_this_month is sum(pick order_item_count when order_month = calendar_months.the_month else 0)
+})
+
+source: user_day_order_facts is from(
+  order_items -> {
+    group_by:
+      user_id
+      the_date is created_at.day
+
+    aggregate:
+      order_count is count()
+      num_cancelled_orders is count() { where: status = 'Cancelled' }
+      num_completed_orders is count() { where: status = 'Complete' }
+      num_returned_orders is count() { where: status = 'Returned' }
+      num_shipped_orders is count() { where: status = 'Shipped' }
+      num_processing_orders is count() { where: status = 'Processing' }
+      total_booking_amt is sum(sale_price) { where: status = 'Complete' | 'Shipped' | 'Processing' }
+      total_refund_amt is sum(sale_price) { where: status = 'Cancelled' | 'Returned' }
+  }
+)
+
+source: user_day_event_facts is from(
+  events -> {
+    group_by:
+      user_id
+      the_date is created_at.day
+    
+    aggregate:
+      event_count is count()
+      event_count_home is count() { where: event_type = 'Home' }
+      event_count_cart is count() { where: event_type = 'Cart' }
+      event_count_purchase is count() { where: event_type = 'Purchase' }
+      event_count_cancel is count() { where: event_type = 'Cancel' }
+  }
+)
+
+source: user_days is from(
+  users -> {
+    join_cross: calendar on created_at.day <= calendar.the_date.day
+    group_by:
+      user_id is id
+      the_date is calendar.the_date.day
+  }
+)
+
+source: user_day_facts is user_days + {
+  join_one: ef is user_day_event_facts 
+            on user_id = ef.user_id and the_date = ef.the_date
+  join_one: of is user_day_order_facts
+            on user_id = of.user_id and the_date = of.the_date
+
+  dimension:
+    is_active is pick 1 when ef.event_count + of.order_count > 0 else 0
+}
+
+
+// Notes:
+
+// Can't do 7d active users
+// Need window functions or interval date math:
+
+// query: active_users_7d is user_day_facts + {
+//     join_cross: l7 is calendar on the_date <= l7.the_date and the_date > date_add(l7.the_date, interval -6 days)
+// } -> {
+//   group_by: l7.the_date
+// }
+
+// When I run this query, it assumes none of the intermediate models
+// are materialized, and writes SQL to execute from the base table.
+//
+// If I add annotations to materialize a source, Malloy needs a way
+// to know that it doesn't need to execute the model from scratch again
+// and that it can use the materialized version.

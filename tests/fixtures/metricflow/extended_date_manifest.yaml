@@ -1,0 +1,105 @@
+# Source: dbt-labs/metricflow (Apache 2.0)
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/extended_date_manifest/
+# Tests: monthly grain semantic model, cross-grain ratio metrics, cumulative with monthly grain,
+#   derived with offset_window on monthly measure, listings with day-grain creation date,
+#   create_metric shorthand on measures
+
+semantic_models:
+  - name: monthly_bookings_source
+    description: >
+      Contains bookings by month. Renamed from bookings_monthly_source to trigger
+      edge case for skipped tests.
+    model: ref('fct_bookings_extended_monthly')
+    defaults:
+      agg_time_dimension: ds
+    measures:
+      - name: bookings_monthly
+        agg: sum
+        create_metric: true
+    primary_entity: booking_monthly
+    dimensions:
+      - name: ds
+        type: time
+        type_params:
+          time_granularity: month
+    entities:
+      - name: listing
+        expr: listing_id
+        type: foreign
+
+  - name: extended_bookings_source
+    description: extended_bookings_source
+    model: ref('fct_bookings_extended')
+    defaults:
+      agg_time_dimension: ds
+    measures:
+      - name: bookings
+        expr: "1"
+        agg: sum
+        create_metric: true
+      - name: unique_listings_booked
+        expr: listing_id
+        agg: count_distinct
+        create_metric: true
+    dimensions:
+      - name: ds
+        type: time
+        type_params:
+          time_granularity: day
+    entities:
+      - name: booking
+        expr: booking_id
+        type: primary
+      - name: listing
+        expr: listing_id
+        type: foreign
+
+  - name: listings_extended_source
+    description: listings_extended_source
+    model: ref('dim_listings_extended')
+    dimensions:
+      - name: ds
+        expr: listing_creation_ds
+        type: time
+        type_params:
+          time_granularity: day
+    entities:
+      - name: listing
+        expr: listing_id
+        type: primary
+
+metrics:
+  - name: weekly_bookers
+    description: weekly_bookers
+    type: cumulative
+    type_params:
+      measure: bookings
+      cumulative_type_params:
+        window: 7 days
+
+  - name: bookings_last_month
+    description: bookings the prior month, based on dimension with month granularity
+    type: derived
+    type_params:
+      expr: bookings_last_month
+      metrics:
+        - name: bookings_monthly
+          offset_window: 1 month
+          alias: bookings_last_month
+
+  - name: trailing_3_months_bookings
+    description: Prior 3 months bookings. Tests cumulative with non-day granularity.
+    type: cumulative
+    type_params:
+      measure: bookings_monthly
+      cumulative_type_params:
+        window: 3 month
+
+  - name: monthly_bookings_to_daily_bookings
+    description: Ratio of daily bookings in monthly total as derived metric.
+    type: ratio
+    type_params:
+      numerator:
+        name: bookings
+      denominator:
+        name: bookings_monthly

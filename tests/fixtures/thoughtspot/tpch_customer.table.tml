@@ -1,0 +1,86 @@
+# Source: thoughtspot/ps_tools (MIT license)
+# https://github.com/thoughtspot/ps_tools
+guid: b1a41df3-9d3f-7526-95e7-30a4e43c30ae
+table:
+  name: CUSTOMER
+  db: NaN
+  schema: NaN
+  db_table: CUSTOMER
+  connection:
+    name: SF Trial
+  columns:
+  - name: C_ACCTBAL
+    db_column_name: C_ACCTBAL
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DOUBLE
+  - name: C_ADDRESS
+    db_column_name: C_ADDRESS
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: C_COMMENT
+    db_column_name: C_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: C_MKTSEGMENT
+    db_column_name: C_MKTSEGMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: C_NAME
+    db_column_name: C_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: C_PHONE
+    db_column_name: C_PHONE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: C_CUSTKEY
+    db_column_name: C_CUSTKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  - name: C_NATIONKEY
+    db_column_name: C_NATIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  joins_with:
+  - name: CUSTOMER_NATION
+    destination:
+      name: NATION
+    "on": "[CUSTOMER::C_NATIONKEY] = [NATION (SNOWFLAKE_SAMPLE_DATA.NATION)_FFD2A26E311E49FD87CAB09F88089559::N_NATIONKEY]"
+    type: INNER
+  - name: CUSTOMER_ORDERS
+    destination:
+      name: ORDERS
+    "on": "[CUSTOMER::C_CUSTKEY] = [ORDERS (SNOWFLAKE_SAMPLE_DATA.ORDERS)_08F7D1C30E7B4A22AF1B0499CFB91CB6::O_CUSTKEY]"
+    type: INNER

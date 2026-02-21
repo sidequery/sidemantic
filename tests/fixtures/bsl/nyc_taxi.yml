@@ -1,0 +1,61 @@
+# Source: https://github.com/sspaeti/semantic-layer-duckdb (MIT license)
+# File: nyc_taxi.yml
+# Tests: boolean measures ((_.shared_match_flag == 'Y').mean()), with: join syntax, model-level primary_key/time_dimension
+
+taxi_zones:
+  table: taxi_zones_tbl
+  primary_key: LocationID
+
+  dimensions:
+    location_id: _.LocationID
+    borough: _.Borough
+    zone: _.Zone
+    service_zone: _.service_zone
+
+  measures:
+    zone_count: _.count()
+
+fhvhv_trips:
+  table: trips_tbl
+  time_dimension: pickup_datetime
+  smallest_time_grain: TIME_GRAIN_SECOND
+
+  dimensions:
+    hvfhs_license_num: _.hvfhs_license_num
+    dispatching_base_num: _.dispatching_base_num
+    originating_base_num: _.originating_base_num
+    request_datetime: _.request_datetime
+    pickup_datetime: _.pickup_datetime
+    dropoff_datetime: _.dropoff_datetime
+    trip_miles: _.trip_miles
+    trip_time: _.trip_time
+    base_passenger_fare: _.base_passenger_fare
+    tolls: _.tolls
+    bcf: _.bcf
+    sales_tax: _.sales_tax
+    congestion_surcharge: _.congestion_surcharge
+    airport_fee: _.airport_fee
+    tips: _.tips
+    driver_pay: _.driver_pay
+    shared_request_flag: _.shared_request_flag
+    shared_match_flag: _.shared_match_flag
+    access_a_ride_flag: _.access_a_ride_flag
+    wav_request_flag: _.wav_request_flag
+    wav_match_flag: _.wav_match_flag
+
+  measures:
+    trip_count: _.count()
+    avg_trip_miles: _.trip_miles.mean()
+    avg_trip_time: _.trip_time.mean()
+    avg_base_fare: _.base_passenger_fare.mean()
+    total_revenue: _.base_passenger_fare.sum()
+    avg_tips: _.tips.mean()
+    avg_driver_pay: _.driver_pay.mean()
+    shared_trip_rate: (_.shared_match_flag == 'Y').mean()
+    wheelchair_request_rate: (_.wav_request_flag == 'Y').mean()
+
+  joins:
+    pickup_zone:
+      model: taxi_zones
+      type: one
+      with: _.PULocationID

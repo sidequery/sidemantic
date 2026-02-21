@@ -1,0 +1,126 @@
+# Source: rilldata/clickhouse-system-analytics (Apache 2.0)
+# https://github.com/rilldata/clickhouse-system-analytics/blob/main/metrics/query_log_metrics.yaml
+# Features: quantiles() ClickHouse function, large dimension set (14 dims),
+#   SUM/COUNT() ratio, CASE WHEN in measures, byte/unit conversions
+
+version: 1
+type: metrics_view
+display_name: 'Query Log'
+model: 'rill_query_log'
+timeseries: event_time
+
+dimensions:
+  - name: hostname
+    display_name: Hostname
+    column: hostname
+    description: 'Hostname of the server executing the query.'
+  - name: type
+    display_name: Query Event Type
+    column: type
+    description: 'Type of query event (QueryStart, QueryFinish, ExceptionBeforeStart, ExceptionWhileProcessing).'
+  - name: event_date
+    display_name: Event Date
+    column: event_date
+    description: 'The date when the query event occurred.'
+  - name: query_start_time
+    display_name: Query Start Time
+    column: query_start_time
+    description: 'Timestamp when the query started execution.'
+  - name: current_database
+    display_name: Current Database
+    column: current_database
+    description: 'The database in which the query was executed.'
+  - name: query_kind
+    display_name: Query Kind
+    column: query_kind
+    description: 'Type of query executed (e.g., SELECT, INSERT).'
+  - name: user
+    display_name: User
+    column: user
+    description: 'The user who initiated the query.'
+  - name: query_id
+    display_name: Query ID
+    column: query_id
+    description: 'Unique identifier for the query.'
+  - name: query
+    display_name: Query
+    column: query
+    description: 'Query text.'
+  - name: client_name
+    display_name: Client Name
+    column: client_name
+    description: 'Name of the client application used to execute the query.'
+  - name: interface
+    display_name: Query Interface
+    column: interface
+    description: 'Interface used for the query (e.g., TCP, HTTP).'
+  - name: exception
+    display_name: Exception
+    column: exception
+    description: 'Exception message if the query failed.'
+  - name: exception_code
+    display_name: Exception Code
+    column: exception_code
+    description: 'Code of the exception if the query failed.'
+  - name: query_table_name
+    display_name: Query Table Name
+    column: table_name
+    description: 'Extracted table name from the query text.'
+
+measures:
+  - name: avg_query_duration_ms
+    display_name: Avg Query Duration (ms)
+    expression: SUM(query_duration_ms)/COUNT()
+    description: 'Average duration of query execution in milliseconds.'
+  - name: min_query_duration_ms
+    display_name: Min Query Duration (ms)
+    expression: MIN(query_duration_ms)
+    description: 'Minimum duration of query execution in milliseconds.'
+  - name: max_query_duration_ms
+    display_name: Max Query Duration (ms)
+    expression: MAX(query_duration_ms)
+    description: 'Maximum duration of query execution in milliseconds.'
+  - name: p99_query_duration_ms
+    display_name: P99 Query Duration (ms)
+    expression: quantiles(0.99)(query_duration_ms)[1]
+    description: 'P99 duration of query execution in milliseconds.'
+  - name: p95_query_duration_ms
+    display_name: P95 Query Duration (ms)
+    expression: quantiles(0.95)(query_duration_ms)[1]
+    description: 'P95 duration of query execution in milliseconds.'
+  - name: p90_query_duration_ms
+    display_name: P90 Query Duration (ms)
+    expression: quantiles(0.90)(query_duration_ms)[1]
+    description: 'P90 duration of query execution in milliseconds.'
+  - name: successful_queries
+    display_name: Successful Queries
+    expression: SUM(CASE WHEN exception_code = 0 THEN Query ELSE 0 END)
+    description: 'Total number of successful queries.'
+  - name: failed_queries
+    display_name: Failed Queries
+    expression: SUM(CASE WHEN exception_code != 0 THEN Query ELSE 0 END)
+    description: 'Total number of failed queries.'
+  - name: total_read_rows
+    display_name: Total Read Rows
+    expression: SUM(read_rows)
+    description: 'Aggregate number of rows read across all queries.'
+  - name: total_read_bytes_gb
+    display_name: Total Read Bytes (GB)
+    expression: SUM(read_bytes) / 1024 / 1024 / 1024
+    description: 'Aggregate bytes read across all queries, converted to gigabytes.'
+  - name: total_written_rows
+    display_name: Total Written Rows
+    expression: SUM(written_rows)
+    description: 'Aggregate number of rows written across all queries.'
+  - name: total_memory_usage_mb
+    display_name: Total Memory Usage (MB)
+    expression: SUM(memory_usage) / 1024 / 1024
+    description: 'Aggregate memory consumption by queries, converted to megabytes.'
+  - name: profile_query
+    display_name: Query Count
+    expression: SUM(Query)
+    description: 'Total count of Query events.'
+  - name: profile_select_query
+    display_name: Select Query Count
+    expression: SUM(SelectQuery)
+    description: 'Total count of SelectQuery events.'

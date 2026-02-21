@@ -1,0 +1,71 @@
+// Role-playing dimensions via Model.extend() with multiple partials
+// and Model assignments. Exercises chaining extend with inline blocks
+// and ObjectAssignment resolution.
+
+PartialModel kitchen_person_details {
+  dimension person_id {
+    type: 'number'
+    primary_key: true
+  }
+
+  dimension full_name {
+    type: 'text'
+    label: 'Full Name'
+  }
+
+  dimension email {
+    type: 'text'
+    label: 'Email Address'
+  }
+}
+
+PartialModel kitchen_address_fields {
+  dimension city {
+    type: 'text'
+    label: 'City'
+  }
+
+  dimension country {
+    type: 'text'
+    label: 'Country'
+  }
+}
+
+// Buyers: person details + address + buyer-specific measure
+Model kitchen_buyers = kitchen_person_details.extend(kitchen_address_fields, {
+  dimension loyalty_tier {
+    type: 'text'
+    label: 'Loyalty Tier'
+  }
+
+  measure buyer_count {
+    label: 'Total Buyers'
+    aggregation_type: 'count'
+  }
+})
+
+// Sellers: person details + address + seller-specific fields
+Model kitchen_sellers = kitchen_person_details.extend(kitchen_address_fields, {
+  dimension store_name {
+    type: 'text'
+    label: 'Store Name'
+  }
+
+  dimension rating {
+    type: 'number'
+    label: 'Seller Rating'
+    format: '#,##0.0'
+  }
+
+  measure seller_count {
+    label: 'Total Sellers'
+    aggregation_type: 'count'
+  }
+
+  measure avg_rating {
+    label: 'Average Rating'
+    definition: @sql {{ rating }};;
+    aggregation_type: 'avg'
+    format: '#,##0.00'
+  }
+})

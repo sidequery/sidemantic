@@ -378,10 +378,17 @@ class TestSupersetDirectoryParse:
         assert "sales_summary" in graph.models
         assert "covid_stats" in graph.models
         assert "ecommerce_products" in graph.models
+        assert "birth_names" in graph.models
+        assert "international_sales" in graph.models
+        assert "FCC 2018 Survey" in graph.models
+        assert "birth_france_by_region" in graph.models
+        assert "project_management" in graph.models
+        assert "video_game_sales" in graph.models
+        assert "cleaned_sales_data" in graph.models
 
     def test_total_model_count(self, graph):
-        """All 4 fixture files produce 4 models."""
-        assert len(graph.models) == 4
+        """All fixture files produce models."""
+        assert len(graph.models) == 11
 
     def test_virtual_and_physical_datasets(self, graph):
         """Both virtual and physical datasets coexist."""

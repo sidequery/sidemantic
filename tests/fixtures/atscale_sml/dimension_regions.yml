@@ -1,0 +1,24 @@
+unique_name: region_dimension
+object_type: dimension
+label: Regions
+type: standard
+
+hierarchies:
+  - unique_name: region_hierarchy
+    levels:
+      - unique_name: region_id
+      - unique_name: region_name
+
+level_attributes:
+  - unique_name: region_id
+    label: Region ID
+    dataset: dim_regions
+    name_column: region_id
+    key_columns:
+      - region_id
+  - unique_name: region_name
+    label: Region Name
+    dataset: dim_regions
+    name_column: region_name
+    key_columns:
+      - region_id

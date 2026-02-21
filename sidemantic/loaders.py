@@ -28,10 +28,12 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.omni import OmniAdapter
+    from sidemantic.adapters.osi import OSIAdapter
     from sidemantic.adapters.rill import RillAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
     from sidemantic.adapters.superset import SupersetAdapter
+    from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 
     directory = Path(directory)
     if not directory.exists():
@@ -39,6 +41,10 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
     # Collect all models first (so we can infer relationships after)
     all_models = {}
+
+    # Check for SML repository (catalog.yml/atscale.yml or object_type files)
+    if _try_load_sml(layer, directory, all_models):
+        return
 
     # Find and parse all files
     for file_path in directory.rglob("*"):
@@ -58,18 +64,26 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         elif suffix == ".sql":
             # Sidemantic SQL files (pure SQL or with YAML frontmatter)
             adapter = SidemanticAdapter()
+        elif suffix == ".tml":
+            adapter = ThoughtSpotAdapter()
         elif suffix in (".yml", ".yaml"):
             # Try to detect which format by reading the file
             content = file_path.read_text()
             # Check for Sidemantic format first (explicit models: key)
             if "models:" in content:
                 adapter = SidemanticAdapter()
+            elif "semantic_model:" in content and "datasets:" in content:
+                adapter = OSIAdapter()
             elif "cubes:" in content or "views:" in content and "measures:" in content:
                 adapter = CubeAdapter()
             elif "semantic_models:" in content or "metrics:" in content and "type: " in content:
                 adapter = MetricFlowAdapter()
             elif "base_sql_table:" in content and "measures:" in content:
                 adapter = HexAdapter()
+            elif "table:" in content and "db_table:" in content and "columns:" in content:
+                adapter = ThoughtSpotAdapter()
+            elif "worksheet:" in content and "worksheet_columns:" in content:
+                adapter = ThoughtSpotAdapter()
             elif "tables:" in content and "base_table:" in content:
                 # Snowflake Cortex Semantic Model format
                 adapter = SnowflakeAdapter()
@@ -114,6 +128,60 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
     # Rebuild adjacency graph to recognize all inferred relationships
     layer.graph.build_adjacency()
+
+
+def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dict) -> None:
+    """Parse an SML directory and load all models into the layer."""
+    from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
+
+    adapter = AtScaleSMLAdapter()
+    graph = adapter.parse(str(directory))
+    adapter_name = adapter.__class__.__name__.replace("Adapter", "")
+    for model in graph.models.values():
+        if not hasattr(model, "_source_format"):
+            model._source_format = adapter_name
+        if not hasattr(model, "_source_file"):
+            model._source_file = str(directory)
+    all_models.update(graph.models)
+    _infer_relationships(all_models)
+    for model in all_models.values():
+        if model.name not in layer.graph.models:
+            layer.add_model(model)
+    layer.graph.build_adjacency()
+
+
+def _try_load_sml(layer: "SemanticLayer", directory: Path, all_models: dict) -> bool:
+    """Detect and load an AtScale SML repository. Returns True if SML was found."""
+    for catalog_name in ("catalog.yml", "catalog.yaml", "atscale.yml", "atscale.yaml"):
+        candidate = directory / catalog_name
+        if candidate.exists():
+            catalog_text = candidate.read_text()
+            if "object_type" in catalog_text and "catalog" in catalog_text:
+                _load_sml_directory(layer, directory, all_models)
+                return True
+
+    for sml_file in list(directory.rglob("*.yml")) + list(directory.rglob("*.yaml")):
+        try:
+            content = sml_file.read_text()
+        except Exception:
+            continue
+        if "object_type" in content and "unique_name" in content:
+            if any(
+                token in content
+                for token in (
+                    "object_type: dataset",
+                    "object_type: dimension",
+                    "object_type: metric",
+                    "object_type: metric_calc",
+                    "object_type: model",
+                    "object_type: composite_model",
+                    "object_type: connection",
+                )
+            ):
+                _load_sml_directory(layer, directory, all_models)
+                return True
+
+    return False
 
 
 def _infer_relationships(models: dict) -> None:

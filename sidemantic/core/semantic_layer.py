@@ -452,12 +452,19 @@ class SemanticLayer:
         return get_catalog_metadata(self.graph, schema=schema)
 
     @classmethod
-    def from_yaml(cls, path: str | Path, connection: str | None = None) -> SemanticLayer:
+    def from_yaml(
+        cls,
+        path: str | Path,
+        connection: str | BaseDatabaseAdapter | None = None,  # type: ignore # noqa: F821
+    ) -> SemanticLayer:
         """Load semantic layer from native YAML file.
 
         Args:
             path: Path to YAML file
-            connection: Database connection string (overrides connection in YAML file)
+            connection: Database connection string, adapter instance, or None
+                (overrides connection in YAML file). Pass an adapter instance
+                when your model files don't include connection config, e.g.:
+                ``SemanticLayer.from_yaml("models.yaml", connection=ADBCAdapter(...))``
 
         Returns:
             SemanticLayer instance

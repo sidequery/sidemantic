@@ -124,9 +124,15 @@ def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
 
     # Validate untyped metrics with sql (measure references)
     if not measure.type and not measure.agg and measure.sql:
-        # This is an untyped metric referencing a measure
-        if "." in measure.sql:
-            model_name, measure_name = measure.sql.split(".")
+        # Only validate direct model.measure references here.
+        # Complex SQL expressions (e.g., COUNT(model.col) / COUNT(other.col))
+        # are valid untyped metrics and should not be split as plain refs.
+        sql_ref = measure.sql.strip()
+        is_direct_ref = (
+            "." in sql_ref and " " not in sql_ref and not any(op in sql_ref for op in ["+", "-", "*", "/", "(", ")"])
+        )
+        if is_direct_ref:
+            model_name, measure_name = sql_ref.split(".", 1)
             model = graph.models.get(model_name)
             if not model:
                 errors.append(f"Metric '{measure.name}': model '{model_name}' not found")

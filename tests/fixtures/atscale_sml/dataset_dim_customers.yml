@@ -1,0 +1,14 @@
+unique_name: dim_customers
+object_type: dataset
+label: Customers
+connection_id: demo_connection
+table: customers
+columns:
+  - name: customer_id
+    data_type: int
+  - name: customer_name
+    data_type: string
+  - name: created_at
+    data_type: datetime
+  - name: region_id
+    data_type: int

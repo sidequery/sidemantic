@@ -1,0 +1,15 @@
+unique_name: dim_customers
+object_type: dataset
+connection_id: core_connection
+table: analytics.customers
+columns:
+  - name: customer_id
+    data_type: int
+  - name: full_name
+    data_type: string
+  - name: email
+    data_type: string
+  - name: phone
+    data_type: string
+  - name: alias
+    data_type: string

@@ -1,0 +1,7 @@
+unique_name: total_amount
+object_type: metric
+label: Total Amount
+calculation_method: sum
+dataset: fact_orders
+column: total_amount
+format: currency

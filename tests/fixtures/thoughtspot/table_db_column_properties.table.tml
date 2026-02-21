@@ -1,0 +1,32 @@
+guid: "table-db-column-properties"
+table:
+  name: inventory
+  db: ANALYTICS
+  schema: PUBLIC
+  db_table: inventory
+  columns:
+    - name: sku
+      db_column_name: sku
+      properties:
+        column_type: ATTRIBUTE
+      db_column_properties:
+        data_type: VARCHAR
+    - name: in_stock
+      db_column_name: in_stock
+      properties:
+        column_type: ATTRIBUTE
+      db_column_properties:
+        data_type: BOOLEAN
+    - name: last_updated
+      db_column_name: last_updated
+      properties:
+        column_type: ATTRIBUTE
+      db_column_properties:
+        data_type: TIMESTAMP
+    - name: quantity
+      db_column_name: quantity
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+      db_column_properties:
+        data_type: INT64

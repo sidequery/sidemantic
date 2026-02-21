@@ -215,25 +215,14 @@ Declare relationships on the model that owns the foreign key. For `many_to_one`,
 
 For `many_to_many`, specify `through` (junction model), `through_foreign_key`, and `related_foreign_key`.
 
-### Step 6: Validate the model
-
-Run the validation script:
+### Step 6: Validate and inspect
 
 ```bash
-uv run python skills/sidemantic-modeler/scripts/validate-model.py models.yml
-```
+# Validate definitions (checks for errors and warnings)
+sidemantic validate models/ --verbose
 
-Or validate programmatically:
-
-```python
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.validation import validate_model
-
-graph = SidemanticAdapter().parse("models.yml")
-for model in graph.models.values():
-    errors = validate_model(model)
-    if errors:
-        print(f"{model.name}: {errors}")
+# Quick summary of what's defined
+sidemantic info models/
 ```
 
 ### Step 7: Test with queries

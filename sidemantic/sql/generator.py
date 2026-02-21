@@ -1966,18 +1966,48 @@ class SQLGenerator:
         """
         if metric.type == "ratio":
             # numerator / NULLIF(denominator, 0)
-            num_model, num_measure = metric.numerator.split(".")
-            denom_model, denom_measure = metric.denominator.split(".")
+            if not metric.numerator or not metric.denominator:
+                raise ValueError(f"Ratio metric {metric.name} requires numerator and denominator")
 
-            num_model_obj = self.graph.get_model(num_model)
-            denom_model_obj = self.graph.get_model(denom_model)
+            def resolve_ratio_ref(ref: str) -> str:
+                # First try model-scoped references (qualified or model_context-qualified).
+                if "." in ref:
+                    ref_model, ref_name = ref.split(".", 1)
+                    try:
+                        ref_model_obj = self.graph.get_model(ref_model)
+                    except KeyError:
+                        ref_model_obj = None
 
-            num_measure_obj = num_model_obj.get_metric(num_measure)
-            denom_measure_obj = denom_model_obj.get_metric(denom_measure)
+                    if ref_model_obj:
+                        ref_metric = ref_model_obj.get_metric(ref_name)
+                        if ref_metric:
+                            if ref_metric.agg:
+                                return self._build_measure_aggregation_sql(ref_model, ref_metric)
+                            return self._build_metric_sql(ref_metric, ref_model)
 
-            # Build numerator and denominator with metric-level filters applied
-            num_expr = self._build_measure_aggregation_sql(num_model, num_measure_obj)
-            denom_expr = self._build_measure_aggregation_sql(denom_model, denom_measure_obj)
+                elif model_context:
+                    try:
+                        context_model = self.graph.get_model(model_context)
+                    except KeyError:
+                        context_model = None
+
+                    if context_model:
+                        ref_metric = context_model.get_metric(ref)
+                        if ref_metric:
+                            if ref_metric.agg:
+                                return self._build_measure_aggregation_sql(model_context, ref_metric)
+                            return self._build_metric_sql(ref_metric, model_context)
+
+                # Fallback to graph-level metrics (including dotted metric names).
+                try:
+                    ref_metric = self.graph.get_metric(ref)
+                except KeyError as exc:
+                    raise ValueError(f"Metric {ref} not found") from exc
+
+                return self._build_metric_sql(ref_metric, model_context)
+
+            num_expr = resolve_ratio_ref(metric.numerator)
+            denom_expr = resolve_ratio_ref(metric.denominator)
 
             return f"({num_expr}) / NULLIF({denom_expr}, 0)"
 
@@ -2338,60 +2368,173 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         offset_ratio_metrics = []
         conversion_metrics = []
         base_metrics = []
+        time_comparison_base_plans = {}
+        regular_expression_metric_plans = {}
+        precomputed_cumulative_metrics = []
 
-        for m in metrics:
-            # Check both graph-level metrics (no dot) and model.measure format
-            metric = None
-            if "." not in m:
-                # Graph-level metric
-                metric = self.graph.get_metric(m)
-            else:
-                # model.measure format - check if it's a metric on the model
-                model_name, measure_name = m.split(".", 1)
+        def add_unique(items: list[str], value: str | None) -> None:
+            if value and value not in items:
+                items.append(value)
+
+        def metric_ref_alias(metric_ref: str) -> str:
+            return metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
+
+        def canonical_ref(metric_ref: str, model_context: str | None = None) -> str:
+            if "." in metric_ref:
+                return metric_ref
+
+            if model_context:
+                try:
+                    model = self.graph.get_model(model_context)
+                except KeyError:
+                    model = None
+                if model and model.get_metric(metric_ref):
+                    return f"{model_context}.{metric_ref}"
+
+            return metric_ref
+
+        def resolve_metric_ref(metric_ref: str, model_context: str | None = None):
+            if "." in metric_ref:
+                model_name, metric_name = metric_ref.split(".", 1)
                 try:
                     model = self.graph.get_model(model_name)
-                    if model:
-                        metric = model.get_metric(measure_name)
                 except KeyError:
-                    pass
-                # Fall back to graph-level metric with dotted name
-                if not metric:
-                    try:
-                        metric = self.graph.get_metric(m)
-                    except KeyError:
-                        pass
+                    model = None
+                if model:
+                    model_metric = model.get_metric(metric_name)
+                    if model_metric:
+                        return model_metric, model_name
+                try:
+                    return self.graph.get_metric(metric_ref), model_context
+                except KeyError:
+                    return None, model_context
+
+            if model_context:
+                try:
+                    context_model = self.graph.get_model(model_context)
+                except KeyError:
+                    context_model = None
+                if context_model:
+                    context_metric = context_model.get_metric(metric_ref)
+                    if context_metric:
+                        return context_metric, model_context
+
+            try:
+                return self.graph.get_metric(metric_ref), model_context
+            except KeyError:
+                return None, model_context
+
+        def collect_leaf_base_metrics(
+            metric_ref: str, model_context: str | None = None, visited: set[str] | None = None
+        ) -> None:
+            if visited is None:
+                visited = set()
+
+            canon_ref = canonical_ref(metric_ref, model_context)
+            if canon_ref in visited:
+                return
+            visited.add(canon_ref)
+
+            metric_obj, resolved_context = resolve_metric_ref(canon_ref, model_context)
+            if not metric_obj:
+                add_unique(base_metrics, canon_ref)
+                return
+
+            is_expression_metric = not metric_obj.type and not metric_obj.agg and metric_obj.sql
+            if metric_obj.type == "derived" or is_expression_metric:
+                dependencies = metric_obj.get_dependencies(self.graph, resolved_context)
+                if not dependencies:
+                    add_unique(base_metrics, canon_ref)
+                    return
+                for dep in dependencies:
+                    collect_leaf_base_metrics(dep, resolved_context, visited)
+                return
+
+            if metric_obj.type == "ratio" and not metric_obj.offset_window:
+                if metric_obj.numerator:
+                    collect_leaf_base_metrics(metric_obj.numerator, resolved_context, visited)
+                if metric_obj.denominator:
+                    collect_leaf_base_metrics(metric_obj.denominator, resolved_context, visited)
+                return
+
+            add_unique(base_metrics, canon_ref)
+            if metric_obj.type == "cumulative":
+                add_unique(precomputed_cumulative_metrics, canon_ref)
+
+        for m in metrics:
+            metric_context = m.split(".", 1)[0] if "." in m else None
+            metric, resolved_context = resolve_metric_ref(m, metric_context)
 
             # Classify metric by type
             if metric and metric.type == "cumulative":
-                cumulative_metrics.append(m)
+                add_unique(cumulative_metrics, m)
                 # Add the base measure/metric to base_metrics
                 if metric.sql:
-                    base_ref = metric.sql
-                    # Qualify unqualified references with the model name
-                    if "." not in base_ref and "." in m:
-                        model_name = m.split(".")[0]
-                        base_ref = f"{model_name}.{base_ref}"
-                    base_metrics.append(base_ref)
+                    add_unique(base_metrics, canonical_ref(metric.sql, resolved_context))
+                elif metric.base_metric:
+                    add_unique(base_metrics, canonical_ref(metric.base_metric, resolved_context))
             elif metric and metric.type == "time_comparison":
                 # Validate required fields
                 if not metric.base_metric:
                     raise ValueError(f"time_comparison metric '{m}' requires 'base_metric' field")
-                time_comparison_metrics.append(m)
-                # Add the base metric to base_metrics
-                base_metrics.append(metric.base_metric)
+                add_unique(time_comparison_metrics, m)
+
+                base_ref = canonical_ref(metric.base_metric, resolved_context)
+                base_metric, base_context = resolve_metric_ref(base_ref, resolved_context)
+                base_is_expression_metric = bool(
+                    base_metric
+                    and (
+                        base_metric.type == "derived"
+                        or (not base_metric.type and not base_metric.agg and base_metric.sql)
+                        or (base_metric.type == "ratio" and not base_metric.offset_window)
+                    )
+                )
+
+                if base_is_expression_metric:
+                    collect_leaf_base_metrics(base_ref, base_context)
+                else:
+                    add_unique(base_metrics, base_ref)
+
+                time_comparison_base_plans[m] = {
+                    "base_ref": base_ref,
+                    "base_context": base_context,
+                    "is_expression": base_is_expression_metric,
+                }
             elif metric and metric.type == "ratio" and metric.offset_window:
-                offset_ratio_metrics.append(m)
+                add_unique(offset_ratio_metrics, m)
                 # Add numerator and denominator to base_metrics
                 if metric.numerator:
-                    base_metrics.append(metric.numerator)
+                    add_unique(base_metrics, canonical_ref(metric.numerator, resolved_context))
                 if metric.denominator:
-                    base_metrics.append(metric.denominator)
+                    add_unique(base_metrics, canonical_ref(metric.denominator, resolved_context))
             elif metric and metric.type == "conversion":
-                conversion_metrics.append(m)
+                add_unique(conversion_metrics, m)
                 # Conversion metrics need special handling - don't add to base_metrics
             else:
                 # Regular metric or measure
-                base_metrics.append(m)
+                metric_ref = canonical_ref(m, resolved_context)
+                is_expression_metric = bool(
+                    metric
+                    and (
+                        metric.type == "derived"
+                        or (metric.type == "ratio" and not metric.offset_window)
+                        or (not metric.type and not metric.agg and metric.sql)
+                    )
+                )
+                if is_expression_metric:
+                    collect_leaf_base_metrics(metric_ref, resolved_context)
+                    regular_expression_metric_plans[m] = {
+                        "metric_ref": metric_ref,
+                        "metric_context": resolved_context,
+                    }
+                else:
+                    add_unique(base_metrics, metric_ref)
+
+        # When cumulative dependencies are needed to build time comparison base
+        # expressions, precompute them in the inner query and skip re-computing
+        # them in the outer window pass.
+        if precomputed_cumulative_metrics:
+            cumulative_metrics = [m for m in cumulative_metrics if m not in precomputed_cumulative_metrics]
 
         # Handle conversion metrics separately - they need a completely different pattern
         if conversion_metrics:
@@ -2412,6 +2555,67 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Parse dimensions for outer SELECT
         parsed_dims = self._parse_dimension_refs(dimensions)
 
+        def sql_identifier(name: str) -> str:
+            import re
+
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                return name
+            return self._quote_alias(name)
+
+        def metric_column(metric_ref: str) -> str:
+            alias = metric_ref_alias(metric_ref)
+            return f"base.{sql_identifier(alias)}"
+
+        def build_time_comparison_base_expression(
+            metric_ref: str, model_context: str | None = None, visited: set[str] | None = None
+        ) -> str:
+            import re
+
+            if visited is None:
+                visited = set()
+
+            canon_ref = canonical_ref(metric_ref, model_context)
+            if canon_ref in visited:
+                return metric_column(canon_ref)
+            visited.add(canon_ref)
+
+            metric_obj, resolved_context = resolve_metric_ref(canon_ref, model_context)
+            if not metric_obj:
+                return metric_column(canon_ref)
+
+            is_expression_metric = not metric_obj.type and not metric_obj.agg and metric_obj.sql
+            if metric_obj.type == "derived" or is_expression_metric:
+                if not metric_obj.sql:
+                    return metric_column(canon_ref)
+
+                formula = metric_obj.sql
+                dependencies = sorted(metric_obj.get_dependencies(self.graph, resolved_context), key=len, reverse=True)
+                for dependency in dependencies:
+                    dep_expr = build_time_comparison_base_expression(dependency, resolved_context, visited.copy())
+                    if "." in dependency:
+                        model_name, dep_name = dependency.split(".", 1)
+                        qualified_pattern = r"\b" + re.escape(f"{model_name}.{dep_name}") + r"\b"
+                        if re.search(qualified_pattern, formula):
+                            formula = re.sub(qualified_pattern, f"({dep_expr})", formula)
+                        else:
+                            unqualified_pattern = r"\b" + re.escape(dep_name) + r"\b"
+                            formula = re.sub(unqualified_pattern, f"({dep_expr})", formula)
+                    else:
+                        dep_pattern = r"\b" + re.escape(dependency) + r"\b"
+                        formula = re.sub(dep_pattern, f"({dep_expr})", formula)
+                return formula
+
+            if metric_obj.type == "ratio" and not metric_obj.offset_window:
+                if not metric_obj.numerator or not metric_obj.denominator:
+                    raise ValueError(f"Ratio metric {metric_obj.name} requires numerator and denominator")
+                num_expr = build_time_comparison_base_expression(metric_obj.numerator, resolved_context, visited.copy())
+                denom_expr = build_time_comparison_base_expression(
+                    metric_obj.denominator, resolved_context, visited.copy()
+                )
+                return f"({num_expr}) / NULLIF({denom_expr}, 0)"
+
+            return metric_column(canon_ref)
+
         # Build outer SELECT with window functions
         select_exprs = []
 
@@ -2426,15 +2630,14 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         # Add base metrics (pass through)
         for m in base_metrics:
-            if "." in m:
-                # Extract just the measure name
-                alias = m.split(".")[1]
-            else:
-                # It's a metric name
-                metric = self.graph.get_metric(m)
-                if metric:
-                    alias = m
-            select_exprs.append(f"base.{alias}")
+            alias = metric_ref_alias(m)
+            select_exprs.append(f"base.{sql_identifier(alias)}")
+
+        # Add expression metrics that depend on cumulative/derived chains.
+        for plan in regular_expression_metric_plans.values():
+            metric_ref = plan["metric_ref"]
+            metric_expr = build_time_comparison_base_expression(metric_ref, plan["metric_context"])
+            select_exprs.append(f"{metric_expr} AS {sql_identifier(metric_ref_alias(metric_ref))}")
 
         # Track cumulative window expressions for inclusion in LAG CTE path
         cumulative_window_entries = []  # (window_expr, alias)
@@ -2582,16 +2785,20 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 alias = dim_name
                 if gran:
                     alias = f"{alias}__{gran}"
-                lag_selects.append(f"base.{alias}")
+                lag_selects.append(f"base.{sql_identifier(alias)}")
                 lag_cte_columns.append(alias)
 
             for m in base_metrics:
-                if "." in m:
-                    alias = m.split(".")[1]
-                else:
-                    alias = m
-                lag_selects.append(f"base.{alias}")
+                alias = metric_ref_alias(m)
+                lag_selects.append(f"base.{sql_identifier(alias)}")
                 lag_cte_columns.append(alias)
+
+            for plan in regular_expression_metric_plans.values():
+                metric_ref = plan["metric_ref"]
+                metric_expr = build_time_comparison_base_expression(metric_ref, plan["metric_context"])
+                metric_expr_alias = metric_ref_alias(metric_ref)
+                lag_selects.append(f"{metric_expr} AS {sql_identifier(metric_expr_alias)}")
+                lag_cte_columns.append(metric_expr_alias)
 
             # Include cumulative window expressions in the LAG CTE
             for cum_expr, cum_alias in cumulative_window_entries:
@@ -2600,7 +2807,8 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
             # Add LAG expressions for each time comparison metric
             for m in time_comparison_metrics:
-                metric = self.graph.get_metric(m)
+                metric_context = m.split(".", 1)[0] if "." in m else None
+                metric, _ = resolve_metric_ref(m, metric_context)
                 if not metric or not metric.base_metric:
                     continue
 
@@ -2640,12 +2848,22 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 if partition_cols:
                     partition_clause = f"PARTITION BY {', '.join(partition_cols)} "
 
-                # Get base metric alias
-                base_ref = metric.base_metric
-                if "." in base_ref:
-                    base_alias = base_ref.split(".")[1]
-                else:
-                    base_alias = base_ref
+                base_plan = time_comparison_base_plans.get(m, {})
+                base_ref = base_plan.get("base_ref", metric.base_metric)
+                base_context = base_plan.get("base_context")
+                base_alias = metric_ref_alias(base_ref)
+                base_is_expression = bool(base_plan.get("is_expression"))
+
+                if base_is_expression and base_alias not in lag_cte_columns:
+                    base_expr = build_time_comparison_base_expression(base_ref, base_context)
+                    lag_selects.append(f"{base_expr} AS {sql_identifier(base_alias)}")
+                    lag_cte_columns.append(base_alias)
+
+                lag_input_expr = (
+                    build_time_comparison_base_expression(base_ref, base_context)
+                    if base_is_expression
+                    else metric_column(base_ref)
+                )
 
                 # Calculate LAG offset
                 lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
@@ -2653,12 +2871,13 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 # Add LAG for base metric (quote alias to handle dotted names)
                 prev_value_alias = self._quote_alias(f"{m}_prev_value")
                 lag_selects.append(
-                    f"LAG(base.{base_alias}, {lag_offset}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_value_alias}"
+                    f"LAG({lag_input_expr}, {lag_offset}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_value_alias}"
                 )
 
             # Add LAG expressions for each offset ratio metric
             for m in offset_ratio_metrics:
-                metric = self.graph.get_metric(m)
+                metric_context = m.split(".", 1)[0] if "." in m else None
+                metric, _ = resolve_metric_ref(m, metric_context)
                 if not metric or not metric.numerator or not metric.denominator:
                     continue
 
@@ -2697,13 +2916,13 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     partition_clause = f"PARTITION BY {', '.join(partition_cols)} "
 
                 # Get denominator alias
-                denom_alias = metric.denominator.split(".")[1] if "." in metric.denominator else metric.denominator
+                denom_alias = metric_ref_alias(metric.denominator)
 
                 # Add LAG for denominator - reference base.denom_alias since it's from inner query
                 # Quote alias to handle dotted names
                 prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
                 lag_selects.append(
-                    f"LAG(base.{denom_alias}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
+                    f"LAG(base.{sql_identifier(denom_alias)}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
                 )
 
             # Build intermediate CTE - inner_query already has all the columns we need
@@ -2720,16 +2939,14 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
             # Add time comparison metrics
             for m in time_comparison_metrics:
-                metric = self.graph.get_metric(m)
+                metric_context = m.split(".", 1)[0] if "." in m else None
+                metric, _ = resolve_metric_ref(m, metric_context)
                 if not metric or not metric.base_metric:
                     continue
 
-                # Get base metric alias
-                base_ref = metric.base_metric
-                if "." in base_ref:
-                    base_alias = base_ref.split(".")[1]
-                else:
-                    base_alias = base_ref
+                base_plan = time_comparison_base_plans.get(m, {})
+                base_ref = base_plan.get("base_ref", metric.base_metric)
+                base_alias = sql_identifier(metric_ref_alias(base_ref))
 
                 # Quote aliases to handle dotted metric names
                 prev_value_col = self._quote_alias(f"{m}_prev_value")
@@ -2750,11 +2967,12 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
             # Add offset ratio metrics
             for m in offset_ratio_metrics:
-                metric = self.graph.get_metric(m)
+                metric_context = m.split(".", 1)[0] if "." in m else None
+                metric, _ = resolve_metric_ref(m, metric_context)
                 if not metric:
                     continue
 
-                num_alias = metric.numerator.split(".")[1] if "." in metric.numerator else metric.numerator
+                num_alias = sql_identifier(metric_ref_alias(metric.numerator))
 
                 # Quote aliases to handle dotted metric names
                 prev_denom_col = self._quote_alias(f"{m}_prev_denom")

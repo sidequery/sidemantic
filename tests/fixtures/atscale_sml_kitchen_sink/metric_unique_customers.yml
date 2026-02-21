@@ -1,0 +1,5 @@
+unique_name: unique_customers
+object_type: metric
+calculation_method: count distinct
+dataset: fact_orders
+column: customer_id

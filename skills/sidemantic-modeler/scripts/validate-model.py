@@ -13,10 +13,11 @@ import sys
 from pathlib import Path
 
 from sidemantic.adapters.sidemantic import SidemanticAdapter
+from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.validation import validate_metric, validate_model
 
 
-def validate_graph(graph) -> list[str]:
+def validate_graph(graph: SemanticGraph) -> list[str]:
     """Validate a parsed SemanticGraph. Returns list of errors."""
     errors = []
 
@@ -61,6 +62,20 @@ def validate_graph(graph) -> list[str]:
     return errors
 
 
+def merge_graph(combined: SemanticGraph, source: SemanticGraph) -> list[str]:
+    """Merge source graph into combined graph. Returns list of parse-level errors."""
+    errors = []
+    for name, model in source.models.items():
+        if name in combined.models:
+            errors.append(f"Duplicate model '{name}' across files")
+        else:
+            combined.models[name] = model
+    for name, metric in source.metrics.items():
+        if name not in combined.metrics:
+            combined.metrics[name] = metric
+    return errors
+
+
 def collect_files(path: Path, recursive: bool = False) -> list[Path]:
     """Collect YAML files from a path (file or directory)."""
     if path.is_file():
@@ -91,40 +106,32 @@ def main():
         print(f"No YAML files found at {target}")
         sys.exit(1)
 
-    total_errors = 0
-    total_models = 0
-    total_metrics = 0
+    # Parse all files into a combined graph so cross-file references resolve
+    combined = SemanticGraph()
+    parse_errors = []
 
     for f in files:
-        print(f"\n--- {f} ---")
-
         try:
-            adapter = SidemanticAdapter()
-            graph = adapter.parse(f)
-            total_models += len(graph.models)
-            total_metrics += len(graph.metrics)
-        except Exception as e:
-            print(f"  PARSE ERROR: {e}")
-            total_errors += 1
-            continue
-
-        errors = validate_graph(graph)
-
-        if errors:
-            total_errors += len(errors)
-            for err in errors:
-                print(f"  ERROR: {err}")
-        else:
+            graph = SidemanticAdapter().parse(f)
+            merge_errors = merge_graph(combined, graph)
+            parse_errors.extend(merge_errors)
             models = ", ".join(graph.models.keys()) or "(none)"
-            print(f"  OK: {len(graph.models)} models [{models}], {len(graph.metrics)} graph-level metrics")
+            print(f"  Parsed {f}: {len(graph.models)} models [{models}], {len(graph.metrics)} graph-level metrics")
+        except Exception as e:
+            parse_errors.append(f"Parse error in {f}: {e}")
+
+    # Validate the combined graph
+    errors = parse_errors + validate_graph(combined)
 
     print(f"\n{'=' * 50}")
     print(f"Files: {len(files)}")
-    print(f"Models: {total_models}")
-    print(f"Graph-level metrics: {total_metrics}")
-    print(f"Errors: {total_errors}")
+    print(f"Models: {len(combined.models)}")
+    print(f"Graph-level metrics: {len(combined.metrics)}")
+    print(f"Errors: {len(errors)}")
 
-    if total_errors > 0:
+    if errors:
+        for err in errors:
+            print(f"  ERROR: {err}")
         print("\nValidation FAILED")
         sys.exit(1)
     else:

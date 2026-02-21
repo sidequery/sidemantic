@@ -223,33 +223,21 @@ class ADBCAdapter(BaseDatabaseAdapter):
         rows = result.fetchall()
         return [{"table_name": row[0], "schema": row[1]} for row in rows]
 
-    def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
-        """Get columns for a table."""
-        # Validate identifiers to prevent SQL injection
-        validate_identifier(table_name, "table name")
-        if schema:
-            validate_identifier(schema, "schema")
-
-        # Snowflake stores unquoted identifiers as uppercase
-        is_snowflake = self.dialect == "snowflake"
-        lookup_table = table_name.upper() if is_snowflake else table_name
-        lookup_schema = schema.upper() if schema and is_snowflake else schema
-
+    def _adbc_get_columns_impl(self, table_name: str, schema: str | None) -> list[dict]:
+        """Try all ADBC metadata paths for a specific table/schema name."""
         try:
-            # Try to use ADBC's native table schema retrieval
             arrow_schema = self.conn.adbc_get_table_schema(
-                table_name=lookup_table,
-                db_schema=lookup_schema,
+                table_name=table_name,
+                db_schema=schema,
             )
             return [{"column_name": field.name, "data_type": str(field.type)} for field in arrow_schema]
         except Exception:
-            pass  # Fall back to get_objects approach
+            pass
 
         try:
-            # Try using adbc_get_objects filtered by table
             reader = self.conn.adbc_get_objects(
-                db_schema_filter=lookup_schema,
-                table_name_filter=lookup_table,
+                db_schema_filter=schema,
+                table_name_filter=table_name,
             )
             arrow_table = reader.read_all()
             data = arrow_table.to_pydict()
@@ -259,7 +247,7 @@ class ADBCAdapter(BaseDatabaseAdapter):
                     continue
                 for db_schema in db_schemas:
                     for table in db_schema.get("db_schema_tables") or []:
-                        if table.get("table_name") == lookup_table:
+                        if table.get("table_name") == table_name:
                             columns = []
                             for col in table.get("table_columns") or []:
                                 columns.append(
@@ -271,19 +259,40 @@ class ADBCAdapter(BaseDatabaseAdapter):
                             if columns:
                                 return columns
         except Exception:
-            pass  # Fall back to SQL query
+            pass
 
-        # Fall back to information_schema query (works for PostgreSQL, etc.)
-        schema_filter = f"AND table_schema = '{lookup_schema}'" if lookup_schema else ""
+        schema_filter = f"AND table_schema = '{schema}'" if schema else ""
         result = self.execute(
             f"""
             SELECT column_name, data_type
             FROM information_schema.columns
-            WHERE table_name = '{lookup_table}' {schema_filter}
+            WHERE table_name = '{table_name}' {schema_filter}
         """
         )
         rows = result.fetchall()
         return [{"column_name": row[0], "data_type": row[1]} for row in rows]
+
+    def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
+        """Get columns for a table.
+
+        For Snowflake, tries uppercase identifiers first (unquoted default),
+        then falls back to original case for quoted identifiers.
+        """
+        validate_identifier(table_name, "table name")
+        if schema:
+            validate_identifier(schema, "schema")
+
+        is_snowflake = self.dialect == "snowflake"
+        if is_snowflake:
+            # Try uppercase first, fall back to original case
+            table_upper = table_name.upper()
+            schema_upper = schema.upper() if schema else None
+            rows = self._adbc_get_columns_impl(table_upper, schema_upper)
+            if not rows and (table_upper != table_name or schema_upper != schema):
+                rows = self._adbc_get_columns_impl(table_name, schema)
+            return rows
+
+        return self._adbc_get_columns_impl(table_name, schema)
 
     def close(self) -> None:
         """Close database connection."""

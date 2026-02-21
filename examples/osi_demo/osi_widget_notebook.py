@@ -248,7 +248,13 @@ conn.execute("""
         (3, '2025-01-01 10:03:00', 101, 10001, 1),
         (4, '2025-01-01 10:04:00', 202, 20001, 1),
         (5, '2025-01-01 10:05:00', 202, 20002, 1),
-        (6, '2025-01-01 10:06:00', 202, 20001, 0)
+        (6, '2025-01-01 10:06:00', 202, 20001, 0),
+        (7, '2025-01-08 10:01:00', 101, 10004, 1),
+        (8, '2025-01-08 10:02:00', 101, 10005, 1),
+        (9, '2025-01-08 10:03:00', 101, 10006, 1),
+        (10, '2025-01-08 10:04:00', 202, 20004, 1),
+        (11, '2025-01-08 10:05:00', 202, 20005, 1),
+        (12, '2025-01-08 10:06:00', 202, 20006, 0)
 """)
 
 conn.execute("""
@@ -263,7 +269,10 @@ conn.execute("""
         (10101, 1, '2025-01-01 10:10:00'),
         (10102, 2, '2025-01-01 10:11:00'),
         (20201, 4, '2025-01-01 10:12:00'),
-        (20202, 5, '2025-01-01 10:13:00')
+        (20202, 5, '2025-01-01 10:13:00'),
+        (30301, 7, '2025-01-08 10:10:00'),
+        (30302, 8, '2025-01-08 10:11:00'),
+        (40401, 10, '2025-01-08 10:12:00')
 """)
 
 conn.execute("""
@@ -278,7 +287,8 @@ conn.execute("""
     insert into adtech.conversions values
         (9001, 10101, 120.0, 0),
         (9002, 20201, 50.0, 1),
-        (9003, 20202, 180.0, 0)
+        (9003, 20202, 180.0, 0),
+        (9101, 30301, 140.0, 0)
 """)
 
 conn.execute("""
@@ -292,7 +302,9 @@ conn.execute("""
 conn.execute("""
     insert into adtech.spend values
         (1, '2025-01-01', 101, 100.0),
-        (2, '2025-01-01', 202, 120.0)
+        (2, '2025-01-01', 202, 120.0),
+        (3, '2025-01-08', 101, 130.0),
+        (4, '2025-01-08', 202, 80.0)
 """)
 
 # %% [markdown]
@@ -306,13 +318,51 @@ with tempfile.TemporaryDirectory() as tmp_dir:
 
     graph = OSIAdapter().parse(tmp_path)
 
-from sidemantic import SemanticLayer
+from sidemantic import Metric, SemanticLayer
 
 layer = SemanticLayer()
 layer.conn = conn
 for model in graph.models.values():
     layer.add_model(model)
 for metric in graph.metrics.values():
+    layer.add_metric(metric)
+for metric in [
+    Metric(
+        name="impression_count_wow_pct",
+        type="time_comparison",
+        base_metric="impression_count",
+        comparison_type="wow",
+        calculation="percent_change",
+    ),
+    Metric(
+        name="click_count_wow_pct",
+        type="time_comparison",
+        base_metric="click_count",
+        comparison_type="wow",
+        calculation="percent_change",
+    ),
+    Metric(
+        name="conversion_count_wow_pct",
+        type="time_comparison",
+        base_metric="conversion_count",
+        comparison_type="wow",
+        calculation="percent_change",
+    ),
+    Metric(
+        name="spend_usd_wow_pct",
+        type="time_comparison",
+        base_metric="spend_usd",
+        comparison_type="wow",
+        calculation="percent_change",
+    ),
+    Metric(
+        name="roas_wow_pct",
+        type="time_comparison",
+        base_metric="roas",
+        comparison_type="wow",
+        calculation="percent_change",
+    ),
+]:
     layer.add_metric(metric)
 
 print(f"Loaded models: {len(layer.graph.models)}")
@@ -331,7 +381,33 @@ print(sql)
 conn.execute(sql).fetchdf()
 
 # %% [markdown]
-# ## 5) Launch Sidemantic widget
+# ## 5) Week-over-week comparison (native semantic metrics)
+
+# %%
+weekly_sql = layer.compile(
+    metrics=[
+        "impression_count",
+        "click_count",
+        "conversion_count",
+        "spend_usd",
+        "conversion_revenue_usd",
+        "ctr",
+        "roas",
+        "impression_count_wow_pct",
+        "click_count_wow_pct",
+        "conversion_count_wow_pct",
+        "spend_usd_wow_pct",
+        "roas_wow_pct",
+    ],
+    dimensions=["campaigns.campaign_name", "impressions.impression_time__week"],
+    order_by=["campaigns.campaign_name", "impressions.impression_time__week"],
+)
+
+weekly_df = conn.execute(weekly_sql).fetchdf()
+weekly_df
+
+# %% [markdown]
+# ## 6) Launch Sidemantic widget
 #
 # In notebook mode, render `widget` to explore metrics interactively.
 

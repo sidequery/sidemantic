@@ -2574,6 +2574,22 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 if not time_dim:
                     raise ValueError(f"Time comparison metric {m} requires a time dimension")
 
+                # Partition by non-time dimensions to avoid cross-group leakage.
+                partition_cols = []
+                for partition_dim_ref, partition_gran in parsed_dims:
+                    partition_dim_name = (
+                        partition_dim_ref.split(".")[1] if "." in partition_dim_ref else partition_dim_ref
+                    )
+                    partition_alias = partition_dim_name
+                    if partition_gran:
+                        partition_alias = f"{partition_alias}__{partition_gran}"
+                    partition_col = f"base.{partition_alias}"
+                    if partition_col != time_dim and partition_col not in partition_cols:
+                        partition_cols.append(partition_col)
+                partition_clause = ""
+                if partition_cols:
+                    partition_clause = f"PARTITION BY {', '.join(partition_cols)} "
+
                 # Get base metric alias
                 base_ref = metric.base_metric
                 if "." in base_ref:
@@ -2587,7 +2603,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 # Add LAG for base metric (quote alias to handle dotted names)
                 prev_value_alias = self._quote_alias(f"{m}_prev_value")
                 lag_selects.append(
-                    f"LAG(base.{base_alias}, {lag_offset}) OVER (ORDER BY {time_dim}) AS {prev_value_alias}"
+                    f"LAG(base.{base_alias}, {lag_offset}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_value_alias}"
                 )
 
             # Add LAG expressions for each offset ratio metric
@@ -2614,13 +2630,31 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 if not time_dim:
                     raise ValueError(f"Offset ratio metric {m} requires a time dimension")
 
+                # Partition by non-time dimensions to avoid cross-group leakage.
+                partition_cols = []
+                for partition_dim_ref, partition_gran in parsed_dims:
+                    partition_dim_name = (
+                        partition_dim_ref.split(".")[1] if "." in partition_dim_ref else partition_dim_ref
+                    )
+                    partition_alias = partition_dim_name
+                    if partition_gran:
+                        partition_alias = f"{partition_alias}__{partition_gran}"
+                    partition_col = f"base.{partition_alias}"
+                    if partition_col != time_dim and partition_col not in partition_cols:
+                        partition_cols.append(partition_col)
+                partition_clause = ""
+                if partition_cols:
+                    partition_clause = f"PARTITION BY {', '.join(partition_cols)} "
+
                 # Get denominator alias
                 denom_alias = metric.denominator.split(".")[1] if "." in metric.denominator else metric.denominator
 
                 # Add LAG for denominator - reference base.denom_alias since it's from inner query
                 # Quote alias to handle dotted names
                 prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
-                lag_selects.append(f"LAG(base.{denom_alias}) OVER (ORDER BY {time_dim}) AS {prev_denom_alias}")
+                lag_selects.append(
+                    f"LAG(base.{denom_alias}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
+                )
 
             # Build intermediate CTE - inner_query already has all the columns we need
             # We need to add "base." prefix since we're wrapping inner_query in a FROM (inner_query) AS base

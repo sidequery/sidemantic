@@ -513,3 +513,57 @@ def test_wow_ratio():
     assert abs(rows[1][2] - 1.5) < 0.01  # Week 2
     assert abs(rows[2][2] - 0.8) < 0.01  # Week 3
     assert abs(rows[3][2] - 1.5) < 0.01  # Week 4
+
+
+def test_wow_percent_change_partitions_by_dimension():
+    """Test WoW percent change partitions by non-time dimensions."""
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT 1 AS id, 'A' AS campaign, '2024-01-01'::DATE AS sale_date, 100 AS revenue
+            UNION ALL SELECT 2, 'A', '2024-01-08'::DATE, 150
+            UNION ALL SELECT 3, 'B', '2024-01-01'::DATE, 200
+            UNION ALL SELECT 4, 'B', '2024-01-08'::DATE, 100
+        """,
+        primary_key="id",
+        dimensions=[
+            Dimension(name="campaign", sql="campaign", type="categorical"),
+            Dimension(name="sale_date", sql="sale_date", type="time"),
+        ],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+
+    revenue_wow_pct = Metric(
+        name="revenue_wow_pct",
+        type="time_comparison",
+        base_metric="sales.revenue",
+        comparison_type="wow",
+        calculation="percent_change",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(revenue_wow_pct)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(
+        metrics=["revenue_wow_pct"],
+        dimensions=["sales.campaign", "sales.sale_date__week"],
+        order_by=["sales.campaign", "sales.sale_date__week"],
+    )
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # Campaign A: 100 -> 150 => +50%
+    assert rows[0][0] == "A"
+    assert rows[0][3] is None
+    assert rows[1][0] == "A"
+    assert abs(rows[1][3] - 50.0) < 0.1
+
+    # Campaign B: 200 -> 100 => -50%
+    assert rows[2][0] == "B"
+    assert rows[2][3] is None
+    assert rows[3][0] == "B"
+    assert abs(rows[3][3] - (-50.0)) < 0.1

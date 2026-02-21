@@ -8,6 +8,7 @@ This demo:
 1. Loads a complex OSI semantic model (10 datasets, 25 metrics)
 2. Creates realistic adtech sample data in DuckDB
 3. Runs multi-hop and cross-model metric queries
+4. Runs week-over-week campaign comparisons
 
 Run with:
     uv run examples/osi_demo/run_demo.py
@@ -147,7 +148,15 @@ def create_demo_data(conn: duckdb.DuckDBPyConnection) -> None:
             (5, '2025-01-01 10:05:00', 202, 2001, 5003, 11, 2, 1, 20001, 1, 1, 1),
             (6, '2025-01-01 10:06:00', 202, 2001, 5004, 22, 2, 2, 20002, 1, 1, 1),
             (7, '2025-01-01 10:07:00', 202, 2001, 5003, 11, 2, 1, 20001, 0, 1, 0),
-            (8, '2025-01-01 10:08:00', 202, 2001, 5004, 22, 1, 2, 20003, 1, 0, 0)
+            (8, '2025-01-01 10:08:00', 202, 2001, 5004, 22, 1, 2, 20003, 1, 0, 0),
+            (9, '2025-01-08 10:01:00', 101, 1001, 5001, 11, 1, 1, 10004, 1, 1, 1),
+            (10, '2025-01-08 10:02:00', 101, 1001, 5001, 22, 1, 2, 10005, 1, 1, 0),
+            (11, '2025-01-08 10:03:00', 101, 1002, 5002, 11, 1, 1, 10006, 1, 1, 1),
+            (12, '2025-01-08 10:04:00', 101, 1002, 5002, 22, 2, 2, 10007, 0, 0, 0),
+            (13, '2025-01-08 10:05:00', 101, 1001, 5001, 11, 1, 1, 10008, 1, 1, 1),
+            (14, '2025-01-08 10:06:00', 202, 2001, 5003, 11, 2, 1, 20004, 1, 1, 0),
+            (15, '2025-01-08 10:07:00', 202, 2001, 5004, 22, 2, 2, 20005, 1, 1, 0),
+            (16, '2025-01-08 10:08:00', 202, 2001, 5003, 11, 1, 1, 20006, 0, 0, 0)
     """)
 
     conn.execute("""
@@ -164,7 +173,11 @@ def create_demo_data(conn: duckdb.DuckDBPyConnection) -> None:
             (10101, '2025-01-01 10:10:00', 1, 101, 10001),
             (10102, '2025-01-01 10:11:00', 2, 101, 10002),
             (20201, '2025-01-01 10:12:00', 5, 202, 20001),
-            (20202, '2025-01-01 10:13:00', 6, 202, 20002)
+            (20202, '2025-01-01 10:13:00', 6, 202, 20002),
+            (30301, '2025-01-08 10:10:00', 9, 101, 10004),
+            (30302, '2025-01-08 10:11:00', 10, 101, 10005),
+            (30303, '2025-01-08 10:12:00', 11, 101, 10006),
+            (40401, '2025-01-08 10:13:00', 14, 202, 20004)
     """)
 
     conn.execute("""
@@ -182,7 +195,9 @@ def create_demo_data(conn: duckdb.DuckDBPyConnection) -> None:
         insert into adtech.conversions values
             (9001, '2025-01-01 12:00:00', 10101, 101, 'purchase', 120.0, 0),
             (9002, '2025-01-01 12:30:00', 20201, 202, 'signup', 50.0, 1),
-            (9003, '2025-01-01 13:00:00', 20202, 202, 'purchase', 180.0, 0)
+            (9003, '2025-01-01 13:00:00', 20202, 202, 'purchase', 180.0, 0),
+            (9101, '2025-01-08 12:00:00', 30301, 101, 'purchase', 140.0, 0),
+            (9102, '2025-01-08 12:20:00', 30303, 101, 'signup', 120.0, 1)
     """)
 
     conn.execute("""
@@ -201,13 +216,17 @@ def create_demo_data(conn: duckdb.DuckDBPyConnection) -> None:
             (1, '2025-01-01', 101, 11, 60.0, 6.0, 2.0),
             (2, '2025-01-01', 101, 22, 40.0, 4.0, 1.0),
             (3, '2025-01-01', 202, 11, 70.0, 7.0, 3.0),
-            (4, '2025-01-01', 202, 22, 50.0, 5.0, 2.0)
+            (4, '2025-01-01', 202, 22, 50.0, 5.0, 2.0),
+            (5, '2025-01-08', 101, 11, 80.0, 8.0, 3.0),
+            (6, '2025-01-08', 101, 22, 50.0, 5.0, 2.0),
+            (7, '2025-01-08', 202, 11, 45.0, 4.0, 2.0),
+            (8, '2025-01-08', 202, 22, 35.0, 3.0, 1.0)
     """)
 
 
 def load_osi_layer(conn: duckdb.DuckDBPyConnection) -> "SemanticLayer":
     """Load OSI file and build a SemanticLayer."""
-    from sidemantic import SemanticLayer
+    from sidemantic import Metric, SemanticLayer
     from sidemantic.adapters.osi import OSIAdapter
 
     model_path = Path(__file__).parent / "adtech_semantic_model.yaml"
@@ -219,6 +238,46 @@ def load_osi_layer(conn: duckdb.DuckDBPyConnection) -> "SemanticLayer":
     for model in graph.models.values():
         layer.add_model(model)
     for metric in graph.metrics.values():
+        layer.add_metric(metric)
+
+    # Add native semantic-layer WoW metrics.
+    for metric in [
+        Metric(
+            name="impression_count_wow_pct",
+            type="time_comparison",
+            base_metric="impression_count",
+            comparison_type="wow",
+            calculation="percent_change",
+        ),
+        Metric(
+            name="click_count_wow_pct",
+            type="time_comparison",
+            base_metric="click_count",
+            comparison_type="wow",
+            calculation="percent_change",
+        ),
+        Metric(
+            name="conversion_count_wow_pct",
+            type="time_comparison",
+            base_metric="conversion_count",
+            comparison_type="wow",
+            calculation="percent_change",
+        ),
+        Metric(
+            name="spend_usd_wow_pct",
+            type="time_comparison",
+            base_metric="spend_usd",
+            comparison_type="wow",
+            calculation="percent_change",
+        ),
+        Metric(
+            name="roas_wow_pct",
+            type="time_comparison",
+            base_metric="roas",
+            comparison_type="wow",
+            calculation="percent_change",
+        ),
+    ]:
         layer.add_metric(metric)
 
     return layer
@@ -243,6 +302,40 @@ def run_query(
     if df.empty:
         raise RuntimeError(f"Query returned no rows: {title}")
     print(df.to_string(index=False))
+    print()
+
+
+def run_week_over_week_query(layer: "SemanticLayer") -> None:
+    """Run weekly semantic query with native WoW metrics."""
+    print("=" * 90)
+    print("Query 4: Week-over-week campaign comparison")
+    print("=" * 90)
+
+    sql = layer.compile(
+        metrics=[
+            "impression_count",
+            "click_count",
+            "conversion_count",
+            "spend_usd",
+            "conversion_revenue_usd",
+            "ctr",
+            "roas",
+            "impression_count_wow_pct",
+            "click_count_wow_pct",
+            "conversion_count_wow_pct",
+            "spend_usd_wow_pct",
+            "roas_wow_pct",
+        ],
+        dimensions=["campaigns.campaign_name", "impressions.impression_time__week"],
+        order_by=["campaigns.campaign_name", "impressions.impression_time__week"],
+    )
+    print("\nGenerated SQL:")
+    print(sql)
+    wow_df = layer.conn.execute(sql).fetchdf()
+    if wow_df.empty:
+        raise RuntimeError("Query returned no rows: Query 4: Week-over-week campaign comparison")
+    print("\nWeek-over-week results (native semantic metrics):")
+    print(wow_df.to_string(index=False))
     print()
 
 
@@ -306,6 +399,8 @@ def main() -> None:
         dimensions=["geos.country", "campaigns.objective"],
         order_by=["geos.country", "campaigns.objective"],
     )
+
+    run_week_over_week_query(layer)
 
     print("Done: OSI adtech example executed successfully.")
 

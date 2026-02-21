@@ -1,0 +1,1 @@
+"""GoodData adapter tests package."""

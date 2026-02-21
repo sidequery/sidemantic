@@ -1,0 +1,160 @@
+{
+  "ldm": {
+    "datasets": [
+      {
+        "id": "orders",
+        "title": "Orders",
+        "description": "Orders kitchen sink dataset",
+        "tags": [
+          "core",
+          "sales"
+        ],
+        "dataSourceId": "demo",
+        "tablePath": [
+          "analytics",
+          "orders"
+        ],
+        "grain": [
+          {
+            "id": "order_id",
+            "type": "attribute"
+          },
+          {
+            "id": "order_line_id",
+            "type": "attribute"
+          }
+        ],
+        "attributes": [
+          {
+            "id": "order_id",
+            "title": "Order Id",
+            "sourceColumn": "order_id",
+            "dataType": "NUMERIC",
+            "labels": [
+              {
+                "id": "order_id_label",
+                "title": "Order Id",
+                "sourceColumn": "order_id",
+                "dataType": "NUMERIC"
+              },
+              {
+                "id": "order_id_url",
+                "title": "Order Link",
+                "sourceColumn": "order_url",
+                "dataType": "TEXT",
+                "type": "HYPERLINK"
+              }
+            ],
+            "defaultView": {
+              "id": "order_id_label",
+              "type": "label"
+            }
+          }
+        ],
+        "facts": [
+          {
+            "id": "amount",
+            "title": "Amount",
+            "sourceColumn": "amount",
+            "dataType": "NUMERIC",
+            "aggregation": "sum"
+          },
+          {
+            "id": "discount_rate",
+            "title": "Discount Rate",
+            "sourceColumn": "discount_rate",
+            "dataType": "NUMERIC",
+            "aggregation": "avg",
+            "format": "0.0%"
+          }
+        ],
+        "fields": [
+          {
+            "id": "order_status",
+            "type": "attribute",
+            "title": "Status",
+            "sourceColumn": "status",
+            "dataType": "TEXT",
+            "labels": [
+              {
+                "id": "order_status_label",
+                "title": "Status",
+                "sourceColumn": "status",
+                "dataType": "TEXT"
+              }
+            ],
+            "defaultView": {
+              "id": "order_status_label",
+              "type": "label"
+            }
+          },
+          {
+            "id": "order_total",
+            "type": "fact",
+            "title": "Order Total",
+            "sourceColumn": "order_total",
+            "dataType": "NUMERIC",
+            "aggregation": "sum"
+          }
+        ],
+        "references": [
+          {
+            "identifier": {
+              "id": "customers",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sourceColumns": [
+              "customer_id"
+            ]
+          },
+          {
+            "identifier": {
+              "id": "date",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sourceColumns": [
+              "order_date"
+            ]
+          },
+          {
+            "identifier": {
+              "id": "products",
+              "type": "dataset"
+            },
+            "multivalue": true,
+            "sourceColumns": [
+              "product_id"
+            ]
+          }
+        ],
+        "customField": {
+          "owner": "analytics-team",
+          "pii": false
+        }
+      }
+    ],
+    "dateInstances": [
+      {
+        "id": "date",
+        "title": "Date",
+        "description": "Primary date instance",
+        "dataSourceId": "demo",
+        "dataSourceTableId": "analytics.date_dim",
+        "granularities": [
+          "DAY",
+          "WEEK",
+          "MONTH",
+          "QUARTER",
+          "YEAR"
+        ],
+        "granularitiesFormatting": {
+          "titleBase": "Date",
+          "titlePattern": "%granularityTitle (%titleBase)"
+        },
+        "calendarType": "GREGORIAN"
+      }
+    ]
+  }
+}

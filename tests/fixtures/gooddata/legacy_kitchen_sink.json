@@ -1,0 +1,97 @@
+{
+  "projectModel": {
+    "datasets": [
+      {
+        "dataset": {
+          "identifier": "dataset.sales",
+          "title": "Sales",
+          "description": "Legacy kitchen sink dataset",
+          "table": "legacy.sales",
+          "anchor": {
+            "attribute": {
+              "identifier": "attr.sales.id",
+              "title": "Sales Id",
+              "labels": [
+                "label.sales.id"
+              ]
+            }
+          },
+          "attributes": [
+            {
+              "attribute": {
+                "identifier": "attr.sales.region",
+                "title": "Region",
+                "labels": [
+                  "label.sales.region",
+                  "label.sales.region_code"
+                ]
+              }
+            }
+          ],
+          "facts": [
+            {
+              "fact": {
+                "identifier": "fact.sales.revenue",
+                "title": "Revenue",
+                "dataType": "NUMERIC"
+              }
+            }
+          ],
+          "labels": [
+            {
+              "label": {
+                "identifier": "label.sales.id",
+                "title": "Sales Id",
+                "sourceColumn": "sales_id",
+                "dataType": "NUMERIC"
+              }
+            },
+            {
+              "label": {
+                "identifier": "label.sales.region",
+                "title": "Region",
+                "sourceColumn": "region",
+                "dataType": "TEXT"
+              }
+            },
+            {
+              "label": {
+                "identifier": "label.sales.region_code",
+                "title": "Region Code",
+                "sourceColumn": "region_code",
+                "dataType": "TEXT"
+              }
+            }
+          ],
+          "references": [
+            "dataset.customers",
+            {
+              "identifier": "date"
+            }
+          ],
+          "customField": {
+            "owner": "legacy-team",
+            "deprecated": false
+          }
+        }
+      }
+    ],
+    "dateDimensions": [
+      {
+        "dateDimension": {
+          "identifier": "date",
+          "title": "Date",
+          "description": "Legacy date dimension",
+          "granularities": [
+            "day",
+            "month",
+            "year"
+          ],
+          "customField": {
+            "calendarType": "GREGORIAN"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,177 @@
+{
+  "ldm": {
+    "datasets": [
+      {
+        "id": "customers",
+        "title": "Customers",
+        "description": "Customer information",
+        "dataSourceId": "demo",
+        "dataSourceTableId": "public.customers",
+        "grain": [
+          {
+            "id": "customer_id",
+            "type": "attribute"
+          }
+        ],
+        "attributes": [
+          {
+            "id": "customer_id",
+            "title": "Customer Id",
+            "sourceColumn": "customer_id",
+            "dataType": "NUMERIC",
+            "labels": [
+              {
+                "id": "customer_id_label",
+                "title": "Customer Id",
+                "sourceColumn": "customer_id",
+                "dataType": "NUMERIC"
+              }
+            ],
+            "defaultView": {
+              "id": "customer_id_label",
+              "type": "label"
+            }
+          },
+          {
+            "id": "customer_name",
+            "title": "Customer Name",
+            "sourceColumn": "customer_name",
+            "dataType": "TEXT",
+            "labels": [
+              {
+                "id": "customer_name_label",
+                "title": "Customer Name",
+                "sourceColumn": "customer_name",
+                "dataType": "TEXT"
+              }
+            ],
+            "defaultView": {
+              "id": "customer_name_label",
+              "type": "label"
+            }
+          }
+        ]
+      },
+      {
+        "id": "orders",
+        "title": "Orders",
+        "description": "Orders dataset",
+        "tags": [
+          "core"
+        ],
+        "dataSourceId": "demo",
+        "dataSourceTableId": "public.orders",
+        "grain": [
+          {
+            "id": "order_id",
+            "type": "attribute"
+          }
+        ],
+        "attributes": [
+          {
+            "id": "order_id",
+            "title": "Order Id",
+            "sourceColumn": "order_id",
+            "dataType": "NUMERIC",
+            "labels": [
+              {
+                "id": "order_id_label",
+                "title": "Order Id",
+                "sourceColumn": "order_id",
+                "dataType": "NUMERIC"
+              }
+            ],
+            "defaultView": {
+              "id": "order_id_label",
+              "type": "label"
+            }
+          },
+          {
+            "id": "order_status",
+            "title": "Status",
+            "sourceColumn": "status",
+            "dataType": "TEXT",
+            "labels": [
+              {
+                "id": "order_status_label",
+                "title": "Status",
+                "sourceColumn": "status",
+                "dataType": "TEXT"
+              }
+            ],
+            "defaultView": {
+              "id": "order_status_label",
+              "type": "label"
+            }
+          },
+          {
+            "id": "order_date",
+            "title": "Order Date",
+            "sourceColumn": "order_date",
+            "dataType": "DATE",
+            "labels": [
+              {
+                "id": "order_date_label",
+                "title": "Order Date",
+                "sourceColumn": "order_date",
+                "dataType": "DATE"
+              }
+            ],
+            "defaultView": {
+              "id": "order_date_label",
+              "type": "label"
+            }
+          }
+        ],
+        "facts": [
+          {
+            "id": "amount",
+            "title": "Amount",
+            "sourceColumn": "amount",
+            "dataType": "NUMERIC",
+            "aggregation": "sum"
+          }
+        ],
+        "references": [
+          {
+            "identifier": {
+              "id": "customers",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sourceColumns": [
+              "customer_id"
+            ]
+          },
+          {
+            "identifier": {
+              "id": "date",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sourceColumns": [
+              "order_date"
+            ]
+          }
+        ]
+      }
+    ],
+    "dateInstances": [
+      {
+        "id": "date",
+        "title": "Date",
+        "dataSourceId": "demo",
+        "dataSourceTableId": "public.date_dim",
+        "granularities": [
+          "DAY",
+          "MONTH",
+          "YEAR"
+        ],
+        "granularitiesFormatting": {
+          "titleBase": "Date",
+          "titlePattern": "Date %s"
+        }
+      }
+    ]
+  }
+}

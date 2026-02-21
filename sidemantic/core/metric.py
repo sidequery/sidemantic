@@ -257,6 +257,7 @@ class Metric(BaseModel):
     fill_nulls_with: int | float | str | None = Field(None, description="Default value when result is NULL")
     description: str | None = Field(None, description="Human-readable description")
     label: str | None = Field(None, description="Display label")
+    metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     # Display formatting
     format: str | None = Field(None, description="Display format string (e.g., '$#,##0.00', '0.00%')")

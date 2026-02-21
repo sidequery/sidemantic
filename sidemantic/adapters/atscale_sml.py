@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -128,6 +129,7 @@ def _parse_named_quantile(value: str | None) -> float | None:
         return None
     if numeric > 1:
         numeric = numeric / 100
+    # Boundary values (0.0, 1.0) are excluded as degenerate quantiles
     if 0 < numeric < 1:
         return numeric
     return None
@@ -740,7 +742,7 @@ class AtScaleSMLAdapter(BaseAdapter):
                 continue
             if dataset_name in dataset_to_model:
                 continue
-            model_name = dataset_to_model.get(dataset_name, dataset_name)
+            model_name = dataset_name
             model = graph.models.get(model_name)
             if not model:
                 dataset_info = datasets.get(dataset_name)
@@ -843,6 +845,12 @@ class AtScaleSMLAdapter(BaseAdapter):
         if len(from_datasets) == 1:
             return next(iter(from_datasets))
         if len(from_datasets) > 1:
+            model_name = model_def.get("unique_name", "<unknown>")
+            warnings.warn(
+                f"SML model '{model_name}' references multiple from-datasets "
+                f"({', '.join(sorted(from_datasets))}); skipping model",
+                stacklevel=2,
+            )
             return None
 
         metric_names = [metric.get("unique_name") for metric in model_def.get("metrics") or []]
@@ -1129,7 +1137,7 @@ class AtScaleSMLAdapter(BaseAdapter):
             "unique_name": "sidemantic-export",
             "object_type": "catalog",
             "label": "Sidemantic Export",
-            "version": 1.0,
+            "version": "1.0",
             "aggressive_agg_promotion": False,
             "build_speculative_aggs": False,
         }
@@ -1221,13 +1229,16 @@ class AtScaleSMLAdapter(BaseAdapter):
             "median": "percentile",
         }
 
+        if not metric.sql:
+            return self._export_metric_calc(metric)
+
         metric_def = {
             "unique_name": metric.name,
             "object_type": "metric",
             "label": metric.label or metric.name,
             "calculation_method": method_mapping.get(metric.agg, "sum"),
             "dataset": model.name,
-            "column": metric.sql or model.primary_key,
+            "column": metric.sql,
         }
 
         if metric.description:

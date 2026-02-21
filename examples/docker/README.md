@@ -1,6 +1,20 @@
 # Docker
 
-The published image is `sidequery/sidemantic` on Docker Hub. It includes all database drivers, the PostgreSQL wire-protocol server, and the MCP server.
+The published image is [`sidequery/sidemantic`](https://hub.docker.com/repository/docker/sidequery/sidemantic) on Docker Hub. It includes all database drivers, the PostgreSQL wire-protocol server, and the MCP server.
+
+## Mounting your models
+
+The container looks for model files (YAML, SQL, etc.) in `/app/models`. Use a volume mount (`-v`) to point it at your local models directory:
+
+```bash
+# If your models are in ~/my-project/models/
+docker run -p 5433:5433 -v ~/my-project/models:/app/models sidequery/sidemantic
+
+# Or from the current directory
+docker run -p 5433:5433 -v $(pwd)/models:/app/models sidequery/sidemantic
+```
+
+The `-v local/path:/app/models` flag maps a folder on your machine into the container. Any `.yml`, `.sql`, or other semantic model files in that folder will be auto-detected and loaded.
 
 ## PostgreSQL server (default)
 

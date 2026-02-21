@@ -223,76 +223,91 @@ class ADBCAdapter(BaseDatabaseAdapter):
         rows = result.fetchall()
         return [{"table_name": row[0], "schema": row[1]} for row in rows]
 
-    def _adbc_get_columns_impl(self, table_name: str, schema: str | None) -> list[dict]:
-        """Try all ADBC metadata paths for a specific table/schema name."""
-        try:
-            arrow_schema = self.conn.adbc_get_table_schema(
-                table_name=table_name,
-                db_schema=schema,
-            )
-            return [{"column_name": field.name, "data_type": str(field.type)} for field in arrow_schema]
-        except Exception:
-            pass
+    def _snowflake_case_variants(self, name: str) -> list[str]:
+        """Return case variants to try for Snowflake identifier matching.
 
-        try:
-            reader = self.conn.adbc_get_objects(
-                db_schema_filter=schema,
-                table_name_filter=table_name,
-            )
-            arrow_table = reader.read_all()
-            data = arrow_table.to_pydict()
-
-            for db_schemas in data.get("catalog_db_schemas", []):
-                if db_schemas is None:
-                    continue
-                for db_schema in db_schemas:
-                    for table in db_schema.get("db_schema_tables") or []:
-                        if table.get("table_name") == table_name:
-                            columns = []
-                            for col in table.get("table_columns") or []:
-                                columns.append(
-                                    {
-                                        "column_name": col.get("column_name"),
-                                        "data_type": col.get("xdbc_type_name", "unknown"),
-                                    }
-                                )
-                            if columns:
-                                return columns
-        except Exception:
-            pass
-
-        schema_filter = f"AND table_schema = '{schema}'" if schema else ""
-        result = self.execute(
-            f"""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = '{table_name}' {schema_filter}
+        Snowflake stores unquoted identifiers as uppercase, but quoted identifiers
+        preserve original case. Returns [UPPER, original] if they differ, else [name].
         """
-        )
-        rows = result.fetchall()
-        return [{"column_name": row[0], "data_type": row[1]} for row in rows]
+        upper = name.upper()
+        return [upper, name] if upper != name else [name]
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
         """Get columns for a table.
 
-        For Snowflake, tries uppercase identifiers first (unquoted default),
-        then falls back to original case for quoted identifiers.
+        For Snowflake, checks both uppercase (unquoted) and original case (quoted).
         """
         validate_identifier(table_name, "table name")
         if schema:
             validate_identifier(schema, "schema")
 
         is_snowflake = self.dialect == "snowflake"
-        if is_snowflake:
-            # Try uppercase first, fall back to original case
-            table_upper = table_name.upper()
-            schema_upper = schema.upper() if schema else None
-            rows = self._adbc_get_columns_impl(table_upper, schema_upper)
-            if not rows and (table_upper != table_name or schema_upper != schema):
-                rows = self._adbc_get_columns_impl(table_name, schema)
-            return rows
+        table_variants = self._snowflake_case_variants(table_name) if is_snowflake else [table_name]
+        schema_variants = self._snowflake_case_variants(schema) if is_snowflake and schema else [schema]
 
-        return self._adbc_get_columns_impl(table_name, schema)
+        for t_name in table_variants:
+            for s_name in schema_variants:
+                try:
+                    arrow_schema = self.conn.adbc_get_table_schema(
+                        table_name=t_name,
+                        db_schema=s_name,
+                    )
+                    return [{"column_name": field.name, "data_type": str(field.type)} for field in arrow_schema]
+                except Exception:
+                    pass
+
+                try:
+                    reader = self.conn.adbc_get_objects(
+                        db_schema_filter=s_name,
+                        table_name_filter=t_name,
+                    )
+                    arrow_table = reader.read_all()
+                    data = arrow_table.to_pydict()
+
+                    for db_schemas in data.get("catalog_db_schemas", []):
+                        if db_schemas is None:
+                            continue
+                        for db_schema in db_schemas:
+                            for table in db_schema.get("db_schema_tables") or []:
+                                if table.get("table_name") == t_name:
+                                    columns = []
+                                    for col in table.get("table_columns") or []:
+                                        columns.append(
+                                            {
+                                                "column_name": col.get("column_name"),
+                                                "data_type": col.get("xdbc_type_name", "unknown"),
+                                            }
+                                        )
+                                    if columns:
+                                        return columns
+                except Exception:
+                    pass
+
+        # SQL fallback: use IN clause to check both cases in one query
+        lookup_table = table_variants[0]
+        lookup_schema = schema_variants[0]
+        if is_snowflake and len(table_variants) > 1:
+            table_filter = f"table_name IN ('{table_variants[0]}', '{table_variants[1]}')"
+        else:
+            table_filter = f"table_name = '{lookup_table}'"
+
+        if lookup_schema:
+            if is_snowflake and len(schema_variants) > 1:
+                schema_filter = f"AND table_schema IN ('{schema_variants[0]}', '{schema_variants[1]}')"
+            else:
+                schema_filter = f"AND table_schema = '{lookup_schema}'"
+        else:
+            schema_filter = ""
+
+        result = self.execute(
+            f"""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE {table_filter} {schema_filter}
+        """
+        )
+        rows = result.fetchall()
+        return [{"column_name": row[0], "data_type": row[1]} for row in rows]
 
     def close(self) -> None:
         """Close database connection."""

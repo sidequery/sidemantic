@@ -1,0 +1,34 @@
+Model kitchen_order_summary {
+  type: 'query'
+  label: 'Kitchen Order Summary'
+  description: 'Query model with joins'
+  data_source_name: 'demo'
+  models: [kitchen_orders, kitchen_customers]
+  query: @sql
+    select
+      o.order_id,
+      o.customer_id,
+      c.name as customer_name,
+      o.amount
+    from {{ ref('kitchen_orders') }} o
+    left join {{ ref('kitchen_customers') }} c
+      on o.customer_id = c.customer_id
+  ;;
+
+  dimension order_id {
+    type: 'number'
+    primary_key: true
+    definition: @sql {{ #SOURCE.order_id }};;
+  }
+
+  dimension customer_name {
+    type: 'text'
+    definition: @sql {{ customer_name }};;
+  }
+
+  measure total_orders {
+    type: 'number'
+    definition: @sql {{ order_id }};;
+    aggregation_type: 'count'
+  }
+}

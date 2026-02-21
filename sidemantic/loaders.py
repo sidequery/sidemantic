@@ -25,6 +25,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.bsl import BSLAdapter
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.hex import HexAdapter
+    from sidemantic.adapters.holistics import HolisticsAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.omni import OmniAdapter
@@ -64,6 +65,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         elif suffix == ".sql":
             # Sidemantic SQL files (pure SQL or with YAML frontmatter)
             adapter = SidemanticAdapter()
+        elif suffix == ".aml":
+            adapter = HolisticsAdapter()
         elif suffix == ".tml":
             adapter = ThoughtSpotAdapter()
         elif suffix in (".yml", ".yaml"):

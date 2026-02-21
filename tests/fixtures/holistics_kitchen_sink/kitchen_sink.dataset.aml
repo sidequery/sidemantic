@@ -1,0 +1,36 @@
+use finance { refunds }
+
+Dataset kitchen_sink {
+  label: 'Kitchen Sink Dataset'
+  description: 'Dataset covering most AML constructs'
+  owner: 'analytics@company.com'
+  data_source_name: 'demo'
+  models: [kitchen_orders, kitchen_customers, kitchen_products, kitchen_order_summary, refunds]
+
+  relationships: [
+    RelationshipConfig {
+      active: true
+      rel: Relationship {
+        type: 'many_to_one'
+        from: r(kitchen_orders.customer_id)
+        to: r(kitchen_customers.customer_id)
+      }
+    },
+    relationship(orders_products, true),
+    relationship(refunds.order_id > kitchen_orders.order_id, true),
+    rel(rel_expr: kitchen_orders.product_id > kitchen_products.product_id, active: true),
+    rel(rel_expr: kitchen_orders.customer_id > kitchen_customers.customer_id, active: false)
+  ]
+
+  dimension total_orders {
+    label: 'Total Orders'
+    type: 'number'
+    definition: @aql count(kitchen_orders.order_id);;
+  }
+
+  metric revenue_per_customer {
+    label: 'Revenue per Customer'
+    type: 'number'
+    definition: @aql sum(kitchen_orders.amount) / count(kitchen_customers.customer_id);;
+  }
+}

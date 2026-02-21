@@ -1,0 +1,23 @@
+PartialModel kitchen_order_extension {
+  dimension status {
+    label: 'Order Status'
+  }
+
+  dimension shipping_method {
+    type: 'text'
+    definition: @sql {{ shipping_method }};;
+  }
+}
+
+Model kitchen_orders_extended = kitchen_orders.extend(kitchen_order_extension)
+
+Model kitchen_orders_inline = kitchen_orders.extend({
+  dimension status {
+    label: 'Inline Status'
+  }
+
+  dimension promised_at {
+    type: 'datetime'
+    definition: @sql {{ promised_at }};;
+  }
+})

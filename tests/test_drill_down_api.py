@@ -111,6 +111,45 @@ def test_time_hierarchy_drill():
     assert model.get_drill_up("event_year") is None
 
 
+def test_hierarchy_cycle_detection():
+    """Test that get_hierarchy_path terminates on cyclic parent references."""
+    model = Model(
+        name="bad",
+        table="t",
+        dimensions=[
+            Dimension(name="a", type="categorical", parent="b"),
+            Dimension(name="b", type="categorical", parent="a"),
+        ],
+        metrics=[
+            Metric(name="c", agg="count"),
+        ],
+    )
+
+    # Should terminate, not infinite loop
+    path = model.get_hierarchy_path("a")
+    # b -> a, but b's parent is a which is already visited, so path is [b, a]
+    assert "a" in path
+    assert "b" in path
+    assert len(path) == 2
+
+
+def test_hierarchy_self_referencing_cycle():
+    """Test that get_hierarchy_path handles self-referencing parent."""
+    model = Model(
+        name="bad",
+        table="t",
+        dimensions=[
+            Dimension(name="a", type="categorical", parent="a"),
+        ],
+        metrics=[
+            Metric(name="c", agg="count"),
+        ],
+    )
+
+    path = model.get_hierarchy_path("a")
+    assert path == ["a"]
+
+
 def test_multiple_children():
     """Test dimension with multiple children."""
     model = Model(

@@ -6,9 +6,10 @@ import {
   TransportKind,
 } from 'vscode-languageclient/node';
 import {
+  SIDEMANTIC_PYTHON_FILE_GLOBS,
   SIDEMANTIC_INSTALL_COMMAND,
   SIDEMANTIC_SQL_FILE_GLOB,
-  SIDEMANTIC_SQL_LANGUAGE_ID,
+  buildDocumentSelector,
   buildServerCommand,
   getStartupFailure,
 } from './lspConfig';
@@ -23,9 +24,17 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   const command = config.get<string>('lsp.path', 'sidemantic');
+  const pythonEnabled = config.get<boolean>('lsp.python.enabled', true);
 
-  const watcher = vscode.workspace.createFileSystemWatcher(SIDEMANTIC_SQL_FILE_GLOB);
-  context.subscriptions.push(watcher);
+  const watchers = [vscode.workspace.createFileSystemWatcher(SIDEMANTIC_SQL_FILE_GLOB)];
+  if (pythonEnabled) {
+    for (const glob of SIDEMANTIC_PYTHON_FILE_GLOBS) {
+      watchers.push(vscode.workspace.createFileSystemWatcher(glob));
+    }
+  }
+  for (const watcher of watchers) {
+    context.subscriptions.push(watcher);
+  }
 
   const serverOptions: ServerOptions = {
     ...buildServerCommand(command),
@@ -33,9 +42,9 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: SIDEMANTIC_SQL_LANGUAGE_ID }],
+    documentSelector: buildDocumentSelector(pythonEnabled),
     synchronize: {
-      fileEvents: watcher,
+      fileEvents: watchers,
     },
   };
 

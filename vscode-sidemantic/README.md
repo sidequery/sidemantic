@@ -14,6 +14,11 @@ Language support for [Sidemantic](https://sidemantic.com) semantic layer definit
 - JSON Schema validation via [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)
 - Autocompletion for all model/metric/dimension properties
 
+**For `.sidemantic.py` and `sidemantic.py` files:**
+- Autocompletion for `Model`, `Dimension`, `Metric`, `Relationship`, and `Segment` keyword arguments
+- Hover documentation for constructors and keyword args
+- Go-to-definition, references, rename, symbols, and signature help on definition names
+
 ## Requirements
 
 Install the Sidemantic CLI with LSP support:
@@ -32,11 +37,13 @@ For YAML support, install the [YAML extension](https://marketplace.visualstudio.
 |---------|---------|-------------|
 | `sidemantic.lsp.enabled` | `true` | Enable the language server |
 | `sidemantic.lsp.path` | `sidemantic` | Path to sidemantic CLI |
+| `sidemantic.lsp.python.enabled` | `true` | Enable language server support for Sidemantic Python definition files |
 
 ## File Associations
 
 - `*.sidemantic.sql` - Sidemantic SQL dialect (MODEL, METRIC, etc.)
 - `*.sidemantic.yaml`, `*.sidemantic.yml`, `sidemantic.yaml` - YAML definitions
+- `*.sidemantic.py`, `sidemantic.py` - Python definitions
 
 ## Development
 

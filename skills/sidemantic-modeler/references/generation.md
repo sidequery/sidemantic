@@ -35,18 +35,24 @@ Loads all `.sql` files from a directory, splits by semicolons, feeds through `an
 
 #### `generate_models(report: MigrationReport) -> dict[str, dict]`
 
-Aggregates patterns across all analyzed queries. For each discovered table:
-- Creates model with `name`, `table`, `description`
-- Adds dimensions from GROUP BY columns (`type: time` for DATE_TRUNC/EXTRACT columns, `type: categorical` otherwise)
-- Adds metrics from aggregations with naming:
-  - `count` for COUNT(*)
-  - `{col}_count` for COUNT(col)
-  - `{col}_count_distinct` for COUNT(DISTINCT col)
-  - `{agg}_{col}` for SUM(amount) -> `sum_amount`
-  - Preserves user aliases (e.g., `SUM(amount) AS revenue` -> name is `revenue`)
-- Adds derived metrics with `type: derived`
-- Adds cumulative metrics with `type: cumulative` and optional `window` or `grain_to_date`
-- Adds relationships with `many_to_one`/`one_to_many` and `foreign_key`
+Aggregates patterns across all analyzed queries. Returns a dict keyed by model name where each value has this structure:
+
+```python
+{
+    "model": {"name": "orders", "table": "orders", "description": "Auto-generated..."},
+    "dimensions": [{"name": "status", "sql": "status", "type": "categorical"}, ...],
+    "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}, ...],
+    "relationships": [{"name": "customers", "type": "many_to_one", "foreign_key": "customer_id"}, ...],
+}
+```
+
+Note: `"model"`, `"dimensions"`, `"metrics"`, `"relationships"` are sibling keys, not nested.
+
+Auto-detection:
+- GROUP BY columns become dimensions (`type: time` for DATE_TRUNC/EXTRACT, `type: categorical` otherwise)
+- Metric naming: `count` for COUNT(\*), `{col}_count` for COUNT(col), `{col}_count_distinct`, `{agg}_{col}` for others
+- Preserves user aliases (e.g., `SUM(amount) AS revenue` -> name is `revenue`)
+- Derived metrics get `type: derived`, cumulative metrics get `type: cumulative`
 
 #### `generate_graph_metrics(report: MigrationReport, models: dict) -> list[dict]`
 
@@ -146,8 +152,8 @@ All database adapters implement `get_tables()` and `get_columns()`:
 
 ```python
 layer = SemanticLayer(connection="duckdb:///data.duckdb")
-tables = layer.db.get_tables()       # [{"table_name": "orders", "schema": "main"}, ...]
-columns = layer.db.get_columns("orders")  # [{"column_name": "id", "data_type": "INTEGER"}, ...]
+tables = layer.adapter.get_tables()       # [{"table_name": "orders", "schema": "main"}, ...]
+columns = layer.adapter.get_columns("orders")  # [{"column_name": "id", "data_type": "INTEGER"}, ...]
 ```
 
 | Adapter | `get_tables()` source | `get_columns()` source |
@@ -209,7 +215,7 @@ Analyzes query patterns to recommend materialized rollup tables:
 ```python
 from sidemantic.core.preagg_recommender import PreAggregationRecommender
 
-recommender = PreAggregationRecommender(min_query_count=10, min_benefit_score=0.3)
+recommender = PreAggregationRecommender(min_query_count=10, min_benefit_score=0.0)
 recommender.parse_query_log(queries)
 # Or: recommender.fetch_and_parse_query_history(connection, days_back=7)
 
@@ -238,7 +244,7 @@ queries = [
 ]
 
 # 3. Generate models
-migrator = Migrator(layer, connection=layer.db.raw_connection)
+migrator = Migrator(layer, connection=layer.adapter.raw_connection)
 report = migrator.analyze_queries(queries)
 models = migrator.generate_models(report)
 graph_metrics = migrator.generate_graph_metrics(report, models)

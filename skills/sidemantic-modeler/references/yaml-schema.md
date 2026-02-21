@@ -124,6 +124,7 @@ Dictionary form:
 | `value_format_name` | string | No | -- | Named format (e.g., `"usd"`, `"percent"`) |
 | `parent` | string | No | -- | Parent dimension for drill hierarchies |
 | `metadata` | dict | No | -- | Adapter-specific metadata |
+| `meta` | dict | No | -- | Arbitrary metadata for extensions |
 
 ### Type guidance
 
@@ -164,6 +165,7 @@ Enables: `model.get_hierarchy_path("city")` returns `["country", "state", "city"
 | `drill_fields` | list[string] | No | Fields for drill-down |
 | `non_additive_dimension` | string | No | Dimension across which this metric cannot be summed |
 | `metadata` | dict | No | Adapter-specific metadata |
+| `meta` | dict | No | Arbitrary metadata for extensions |
 
 ### Simple Aggregation (no `type` field)
 

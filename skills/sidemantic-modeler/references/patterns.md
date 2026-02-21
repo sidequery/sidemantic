@@ -341,8 +341,8 @@ metrics:
   - name: trial_conversion
     type: conversion
     entity: user_id
-    base_event: signup
-    conversion_event: subscription_created
+    base_event: "event_type = 'signup'"
+    conversion_event: "event_type = 'subscription_created'"
     conversion_window: "14 days"
 ```
 
@@ -458,8 +458,8 @@ metrics:
   - name: click_to_purchase
     type: conversion
     entity: user_id
-    base_event: click
-    conversion_event: purchase
+    base_event: "event_type = 'click'"
+    conversion_event: "conversion_type = 'purchase'"
     conversion_window: "7 days"
 ```
 

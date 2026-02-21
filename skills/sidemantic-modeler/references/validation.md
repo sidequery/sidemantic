@@ -79,7 +79,7 @@ Exception: if `sql` contains a recognized function (e.g., `SUM(amount)`), agg is
 **Error:** `Model 'orders': measure 'revenue' has invalid aggregation 'None'. Must be one of: sum, count, count_distinct, avg, min, max, median`
 **Fix:** Add `agg: sum` or use `sql: "SUM(amount)"`
 
-Note: `stddev`, `stddev_pop`, `variance`, `variance_pop` are accepted by Pydantic but may fail `validate_model()`. This is a known inconsistency.
+Note: `stddev`, `stddev_pop`, `variance`, `variance_pop` are accepted by Pydantic (Phase 1) but may fail `validate_model()` (Phase 2). See "Two-Phase Validation" below.
 
 ### Auto-parsing behavior
 
@@ -257,16 +257,48 @@ Bare `yes`, `no`, `true`, `false` are parsed as booleans. Quote them if used as 
 | `No join path found` | Add relationships between models |
 | `Cannot apply granularity to non-time dimension` | Only use `__month` on time dims |
 
+## Two-Phase Validation
+
+Sidemantic validates in two distinct phases. Understanding which phase produces an error is essential for debugging.
+
+### Phase 1: Pydantic (at construction time)
+
+When you call `Model(...)` or `Metric(...)`, Pydantic validators run immediately:
+
+- `expr` alias converted to `sql`
+- Aggregation functions auto-parsed from SQL (e.g., `sql: "SUM(amount)"` extracts `agg: sum, sql: amount`)
+- Type-specific required fields checked: conversion needs `entity`/`base_event`/`conversion_event`, ratio needs `numerator`/`denominator`, derived needs `sql`, cumulative needs `sql` or `window_expression`, time_comparison needs `base_metric`
+
+These raise `ValueError` on failure. The object is never created.
+
+### Phase 2: validate_model / validate_metric (at registration time)
+
+When `SemanticLayer.add_model()` or `SemanticLayer.add_metric()` is called (including via auto-registration), the `validate_model()` and `validate_metric()` functions in `sidemantic/validation.py` check semantic correctness against the graph:
+
+- Does the model have `primary_key`, `table` or `sql`?
+- Are dimension types valid? Do time dimensions have granularity?
+- Do measures have valid aggregation types?
+- Do ratio `numerator`/`denominator` references point to existing models and measures?
+- Are there circular dependencies in derived metrics?
+- Does the join path exist for cross-model references?
+
+These raise `ModelValidationError` or `MetricValidationError`.
+
+**Key difference:** Phase 1 catches structural errors (missing fields, wrong types). Phase 2 catches reference errors (model not found, measure not found, circular dependency). A metric can pass Phase 1 and fail Phase 2 if its references don't resolve.
+
+**Known inconsistency:** `stddev`, `stddev_pop`, `variance`, `variance_pop` are accepted by Pydantic (Phase 1) but may fail `validate_model()` (Phase 2) which has a more restrictive aggregation list.
+
 ## Error Class Hierarchy
 
 ```
 ValidationError
-  |-- ModelValidationError     (SemanticLayer.add_model)
-  |-- MetricValidationError    (SemanticLayer.add_metric)
+  |-- ModelValidationError     (SemanticLayer.add_model, Phase 2)
+  |-- MetricValidationError    (SemanticLayer.add_metric, Phase 2)
   |-- QueryValidationError     (SemanticLayer.compile / query)
 ```
 
 `SemanticGraph` raises `ValueError` for duplicates and `KeyError` for not-found lookups.
+Pydantic validators raise `ValueError` (Phase 1).
 
 Import: `from sidemantic.validation import ValidationError, ModelValidationError, MetricValidationError, QueryValidationError`
 

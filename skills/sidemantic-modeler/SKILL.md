@@ -88,7 +88,7 @@ from sidemantic.core.migrator import Migrator
 
 # Connect to your database (optional but improves inference via information_schema)
 layer = SemanticLayer(connection="duckdb:///data.duckdb", auto_register=False)
-migrator = Migrator(layer, connection=layer.db.raw_connection)
+migrator = Migrator(layer, connection=layer.adapter.raw_connection)
 
 # Feed it SQL queries (strings, not files)
 queries = [
@@ -119,7 +119,7 @@ migrator.print_report(report, verbose=True)
 | `COUNT(DISTINCT user_id)` | Metric with `agg: count_distinct` |
 | `SUM(amount) AS revenue` | Metric named `revenue` (preserves aliases) |
 | `GROUP BY status` | Dimension `type: categorical` |
-| `DATE_TRUNC('month', created_at)` | Dimension `type: time`, `granularity: day` |
+| `DATE_TRUNC('month', created_at)` | Dimension `type: time`, granularity extracted from SQL (here: `month`) |
 | `JOIN customers ON o.customer_id = c.id` | Relationship `many_to_one`, `foreign_key: customer_id` |
 | `SUM(a) / NULLIF(COUNT(b), 0)` | Derived metric with formula |
 | `SUM(x) OVER (ORDER BY date ROWS ...)` | Cumulative metric with `window` |
@@ -273,15 +273,59 @@ Auto-detects: Cube (.yml with `cubes:`), dbt MetricFlow (.yml with `semantic_mod
 
 For detailed field mappings from each format, load `references/migration.md`.
 
+## Auto-Registration
+
+When `SemanticLayer()` is created with `auto_register=True` (the default), it sets itself as the "current layer." Any `Model()` or `Metric()` constructed while a layer is active auto-registers with it. This is why the Quick Start examples don't call `layer.add_model()`.
+
+If you create Models before creating a SemanticLayer, they won't be registered. Either create the layer first, or use `layer.add_model(model)` explicitly.
+
+## Jinja2 Parameters
+
+SQL expressions in models support Jinja2 templating:
+
+```yaml
+models:
+  - name: orders
+    sql: "SELECT * FROM orders WHERE region = '{{ region }}'"
+```
+
+Pass values at query time:
+
+```python
+result = layer.query(metrics=["orders.revenue"], parameters={"region": "US"})
+```
+
+## CLI Reference
+
+All commands are run as `sidemantic <command>`. Use `--config path/to/sidemantic.yaml` to load a config file with connection and model path settings.
+
+| Command | Purpose |
+|---------|---------|
+| `validate [DIR] --verbose` | Validate definitions, show errors and warnings |
+| `info [DIR]` | Summary of models, dimensions, metrics, relationships |
+| `query [DIR] -c CONNECTION SQL` | Execute SQL through the semantic layer (`--format table/json/csv`, `--limit N`) |
+| `migrator [DIR] --queries PATH` | Coverage analysis: check how well models handle SQL queries |
+| `migrator --queries PATH --generate-models OUT` | Bootstrap: generate model YAML from SQL queries |
+| `preagg recommend [DIR]` | Recommend pre-aggregation tables from query patterns |
+| `preagg apply [DIR]` | Apply pre-aggregation recommendations |
+| `serve [DIR] -c CONNECTION` | Start PostgreSQL wire-protocol server |
+| `mcp-serve [DIR] -c CONNECTION` | Start MCP server for AI tool integration |
+| `workbench [DIR] -c CONNECTION` | Interactive TUI with SQL editor and charting |
+| `lsp` | Start LSP server for Sidemantic SQL files |
+
 ## Connection Strings
 
 ```
-duckdb:///:memory:                          # In-memory DuckDB
-duckdb:///path/to/db.duckdb                 # File-based DuckDB
-duckdb://md:database_name                   # MotherDuck
-postgres://user:pass@host:port/dbname       # PostgreSQL
-bigquery://project_id/dataset_id            # BigQuery
+duckdb:///:memory:                             # In-memory DuckDB
+duckdb:///path/to/db.duckdb                    # File-based DuckDB
+duckdb://md:database_name                      # MotherDuck
+postgres://user:pass@host:port/dbname          # PostgreSQL
+bigquery://project_id/dataset_id               # BigQuery
 snowflake://user:pass@account/database/schema  # Snowflake
+clickhouse://user:pass@host:port/database      # ClickHouse
+databricks://token@server-hostname/http-path   # Databricks
+spark://host:port/database                     # Spark SQL
+adbc://driver/uri                              # ADBC
 ```
 
 ## Reference Files
@@ -300,9 +344,10 @@ Load these when you need deeper detail:
 2. **Simple metric without `agg`.** Metrics that are not complex types need an `agg` field (sum, count, avg, etc.) or a full SQL expression like `sql: "SUM(amount)"`.
 3. **Bare dimension names in queries.** Always qualify: `orders.status`, not `status`.
 4. **No relationship path between models.** Cross-model queries require a chain of relationships connecting all involved models.
-5. **Indentation errors in YAML.** Dimensions and metrics must be nested under their model, not at root level.
-6. **Using `type: string` or `type: number` for dimensions.** The valid types are `categorical`, `time`, `boolean`, `numeric`.
-7. **Confusing model-level vs graph-level metrics.** Model-level metrics use `agg`. Graph-level metrics (ratio, derived, etc.) go in the top-level `metrics:` section.
-8. **Missing required fields on complex metrics.** ratio needs `numerator` + `denominator`. derived needs `sql`. cumulative needs `sql` or `window_expression`. time_comparison needs `base_metric`. conversion needs `entity`, `base_event`, `conversion_event`.
+5. **Using `type: string` or `type: number` for dimensions.** The valid types are `categorical`, `time`, `boolean`, `numeric`.
+6. **Confusing model-level vs graph-level metrics.** Model-level metrics use `agg`. Graph-level metrics (ratio, derived, etc.) go in the top-level `metrics:` section.
+7. **Missing required fields on complex metrics.** ratio needs `numerator` + `denominator`. derived needs `sql`. time_comparison needs `base_metric`. conversion needs `entity`, `base_event`, `conversion_event`.
+8. **Plural relationship names create wrong FK defaults.** Relationship named `customers` defaults FK to `customers_id`, not `customer_id`. Always set `foreign_key` explicitly.
 9. **SQL expressions with YAML special characters.** Quote SQL containing `:`, `#`, `{`, or `>`.
 10. **Duplicate model or metric names.** Names must be unique across the entire semantic layer.
+11. **Creating Models before SemanticLayer.** With auto-registration (default), Models must be created after the SemanticLayer, or they won't register.

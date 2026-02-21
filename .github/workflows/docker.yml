@@ -46,14 +46,18 @@ jobs:
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
-      - name: Test basic query
+      - name: Test connection
         run: PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c "SELECT 1 AS test"
 
-      - name: Test semantic layer query
-        run: PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c "SELECT * FROM semantic_layer.customers LIMIT 3"
+      - name: Test metric aggregation (products)
+        run: |
+          PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c \
+            "SELECT category, product_count, avg_price, total_catalog_value FROM semantic_layer.products GROUP BY category ORDER BY category"
 
-      - name: Test aggregation query
-        run: PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c "SELECT region, customer_count FROM semantic_layer.customers GROUP BY region"
+      - name: Test metric aggregation (customers)
+        run: |
+          PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c \
+            "SELECT region, customer_count FROM semantic_layer.customers GROUP BY region ORDER BY region"
 
       - name: Stop server
         if: always()

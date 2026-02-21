@@ -551,6 +551,12 @@ impl<'a> QueryRewriter<'a> {
                     "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" | "MEDIAN"
                 )
             }
+            Expression::Function(f) => {
+                matches!(
+                    f.name.to_uppercase().as_str(),
+                    "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" | "MEDIAN" | "COUNT_DISTINCT"
+                )
+            }
             _ => false,
         }
     }

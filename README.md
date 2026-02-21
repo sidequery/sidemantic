@@ -5,7 +5,7 @@ A universal metrics layer for consistent metrics across your data stack. Compati
 - **Supported Formats:** Sidemantic (YAML, Python or SQL), Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL, ADBC
 
-[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB download)
+[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
 ![Jupyter Widget Preview](preview.png)
 

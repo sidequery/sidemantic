@@ -558,6 +558,8 @@ class SemanticLayer:
 
         metrics = metrics or []
         dimensions = dimensions or []
+        filters = list(filters) if filters else []
+        segments = segments or []
 
         # Compile the actual SQL (respects use_preaggregations setting)
         sql = self.compile(
@@ -576,21 +578,15 @@ class SemanticLayer:
 
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
-        # Extract model names from metric/dimension/filter references
-        model_names = set()
-        for ref in list(metrics) + list(dimensions):
-            if "." in ref:
-                model_name = ref.split(".", 1)[0]
-                if model_name:
-                    model_names.add(model_name)
-
-        # Also extract model names from filters (e.g., "customers.status = 'vip'")
-        import re
-
-        for f in filters or []:
-            # Match "model.column" patterns before operators
-            for match in re.finditer(r"(\w+)\.(\w+)\s*[=<>!]", f):
-                model_names.add(match.group(1))
+        generator = SQLGenerator(
+            self.graph,
+            dialect=dialect or self.dialect,
+            preagg_database=self.preagg_database,
+            preagg_schema=self.preagg_schema,
+        )
+        segment_filters = generator._resolve_segments(segments)
+        all_filters = filters + segment_filters
+        model_names = generator._find_required_models(metrics, dimensions, all_filters)
 
         # Strip model prefixes from metrics and dimensions for matcher
         bare_metrics = []
@@ -610,18 +606,17 @@ class SemanticLayer:
                 bare_dims.append(dim_name)
 
         bare_filters = []
-        if filters:
-            for f in filters:
-                # Strip any model prefix from filters
-                for mn in model_names:
-                    f = f.replace(f"{mn}.", "")
-                bare_filters.append(f)
+        for f in all_filters:
+            for mn in model_names:
+                f = f.replace(f"{mn}.", "")
+                f = f.replace(f"{mn}_cte.", "")
+            bare_filters.append(f)
 
         # Check preconditions for preagg routing
         if not use_preaggs:
             return QueryPlan(
                 sql=sql,
-                model=next(iter(model_names), None),
+                model=model_names[0] if model_names else None,
                 metrics=bare_metrics,
                 dimensions=bare_dims,
                 used_preaggregation=False,
@@ -641,14 +636,14 @@ class SemanticLayer:
         if ungrouped:
             return QueryPlan(
                 sql=sql,
-                model=next(iter(model_names)),
+                model=model_names[0],
                 metrics=bare_metrics,
                 dimensions=bare_dims,
                 used_preaggregation=False,
                 routing_reason="ungrouped query, preaggs require aggregation",
             )
 
-        model_name = next(iter(model_names))
+        model_name = model_names[0]
         try:
             model = self.get_model(model_name)
         except KeyError:

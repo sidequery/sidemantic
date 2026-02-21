@@ -432,14 +432,21 @@ class SemanticLayer:
 
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
-        # Extract model names from metric/dimension references
+        # Extract model names from metric/dimension/filter references
         model_names = set()
         for ref in list(metrics) + list(dimensions):
             if "." in ref:
                 model_name = ref.split(".", 1)[0]
-                # Strip granularity suffix from dimension (e.g., "events" from "events.date__month")
                 if model_name:
                     model_names.add(model_name)
+
+        # Also extract model names from filters (e.g., "customers.status = 'vip'")
+        import re
+
+        for f in filters or []:
+            # Match "model.column" patterns before operators
+            for match in re.finditer(r"(\w+)\.(\w+)\s*[=<>!]", f):
+                model_names.add(match.group(1))
 
         # Strip model prefixes from metrics and dimensions for matcher
         bare_metrics = []

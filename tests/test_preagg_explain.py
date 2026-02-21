@@ -225,3 +225,36 @@ class TestSemanticLayerExplain:
 
         assert "preagg" in plan.sql.lower() or "events" in plan.sql.lower()
         assert plan.sql.strip() != ""
+
+    def test_explain_cross_model_filter_detected(self):
+        """Filters referencing another model should trigger multi-model detection."""
+        layer = make_layer_with_preaggs()
+
+        # Add a second model so the cross-model filter is valid
+        from sidemantic import Relationship
+
+        customers = Model(
+            name="customers",
+            table="customers",
+            primary_key="customer_id",
+            dimensions=[
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[Metric(name="customer_count", agg="count")],
+        )
+        layer.add_model(customers)
+
+        # Update events model to have a relationship to customers
+        events = layer.get_model("events")
+        events.relationships = [
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
+        ]
+
+        plan = layer.explain(
+            metrics=["events.event_count"],
+            dimensions=["events.event_type"],
+            filters=["customers.status = 'vip'"],
+        )
+
+        assert plan.used_preaggregation is False
+        assert "multi-model" in plan.routing_reason

@@ -9,11 +9,9 @@ A universal metrics layer for consistent metrics across your data stack. Compati
 
 ![Jupyter Widget Preview](preview.png)
 
-## Should I use Sidemantic
+## How mature is Sidemantic?
 
-Sidemantic is a very ambitious and young semantic layer project. You may encounter rough patches, especially with the more exotic features like converting between semantic model formats.
-
-Issue reports are much appreciated if you try out Sidemantic and hit a snag 🫡
+Sidemantic is a very ambitious and young semantic layer project. You may encounter rough patches, especially with the more exotic features like converting between semantic model formats or serving semantic layers via the included Postgres protocol server.
 
 ## Quickstart
 

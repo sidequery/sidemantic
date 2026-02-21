@@ -1,0 +1,86 @@
+# Source: MetricFlow official test fixtures - SCD manifest
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/scd_manifest/
+# Tests: SCD Type II validity_params (is_start, is_end), natural entity type,
+#   unique entity type, multiple semantic models in one file, primary_entity shorthand
+
+semantic_models:
+  - name: listings
+    description: SCD Type II table of listings history
+    model: ref('dim_listings')
+
+    dimensions:
+      - name: window_start
+        type: time
+        expr: active_from
+        type_params:
+          time_granularity: day
+          validity_params:
+            is_start: true
+      - name: window_end
+        type: time
+        expr: active_to
+        type_params:
+          time_granularity: day
+          validity_params:
+            is_end: true
+      - name: country
+        type: categorical
+      - name: is_lux
+        type: categorical
+      - name: capacity
+        type: categorical
+
+    primary_entity: listing
+
+    entities:
+      - name: listing
+        type: natural
+        expr: listing_id
+      - name: user
+        type: foreign
+        expr: user_id
+
+  - name: primary_accounts
+    description: SCD Type II table of primary account history
+    model: ref('dim_primary_accounts')
+
+    dimensions:
+      - name: primary_from
+        type: time
+        expr: set_as_primary
+        type_params:
+          time_granularity: day
+          validity_params:
+            is_start: true
+      - name: primary_to
+        type: time
+        expr: removed_as_primary
+        type_params:
+          time_granularity: day
+          validity_params:
+            is_end: true
+      - name: account_type
+        type: categorical
+
+    primary_entity: scd_user
+
+    entities:
+      - name: user
+        type: natural
+        expr: user_id
+
+  - name: companies
+    description: Company to user mapping with unique entity
+    model: ref('dim_companies')
+
+    dimensions:
+      - name: company_name
+        type: categorical
+
+    entities:
+      - name: company
+        type: primary
+        expr: company_id
+      - name: user
+        type: unique
+        expr: user_id

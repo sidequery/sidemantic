@@ -10,10 +10,16 @@ from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.sql_definitions import parse_sql_definitions, parse_sql_file_with_frontmatter, parse_sql_model
+from sidemantic.core.sql_definitions import (
+    parse_sql_definitions,
+    parse_sql_file_with_frontmatter_extended,
+    parse_sql_graph_definitions,
+    parse_sql_model,
+)
 
 
 def substitute_env_vars(content: str) -> str:
@@ -117,9 +123,21 @@ class SidemanticAdapter(BaseAdapter):
                 model = parse_sql_model(content)
                 if model:
                     graph.add_model(model)
+                sql_metrics, sql_segments, sql_parameters = parse_sql_graph_definitions(content)
+                if model:
+                    model_metric_names = {metric.name for metric in model.metrics}
+                else:
+                    model_metric_names = set()
+                for metric in sql_metrics:
+                    if metric.name not in model_metric_names:
+                        graph.add_metric(metric)
+                for param in sql_parameters:
+                    graph.add_parameter(param)
             else:
                 # YAML frontmatter + SQL metrics/segments
-                frontmatter, sql_metrics, sql_segments = parse_sql_file_with_frontmatter(source_path)
+                frontmatter, sql_metrics, sql_segments, sql_parameters, sql_preaggs = (
+                    parse_sql_file_with_frontmatter_extended(source_path)
+                )
 
                 # Parse frontmatter as model definition if present
                 if frontmatter:
@@ -128,11 +146,15 @@ class SidemanticAdapter(BaseAdapter):
                         # Add SQL-defined metrics/segments to the model
                         model.metrics.extend(sql_metrics)
                         model.segments.extend(sql_segments)
+                        if sql_preaggs:
+                            model.pre_aggregations.extend(sql_preaggs)
                         graph.add_model(model)
                 else:
                     # No frontmatter - treat as graph-level metrics/segments
                     for metric in sql_metrics:
                         graph.add_metric(metric)
+                    for param in sql_parameters:
+                        graph.add_parameter(param)
                     # Segments need to be attached to models, skip if no model
 
             return graph
@@ -160,6 +182,11 @@ class SidemanticAdapter(BaseAdapter):
             metric = self._parse_metric(metric_def)
             if metric:
                 graph.add_metric(metric)
+        # Parse parameters
+        for parameter_def in data.get("parameters") or []:
+            parameter = self._parse_parameter(parameter_def)
+            if parameter:
+                graph.add_parameter(parameter)
 
         # Parse SQL-defined metrics/segments if present
         if "sql_metrics" in data:
@@ -216,6 +243,9 @@ class SidemanticAdapter(BaseAdapter):
                 type=relationship_def.get("type"),
                 foreign_key=relationship_def.get("foreign_key"),
                 primary_key=relationship_def.get("primary_key"),
+                through=relationship_def.get("through"),
+                through_foreign_key=relationship_def.get("through_foreign_key"),
+                related_foreign_key=relationship_def.get("related_foreign_key"),
             )
             joins.append(join)
 
@@ -225,8 +255,9 @@ class SidemanticAdapter(BaseAdapter):
             dimension = Dimension(
                 name=dim_def.get("name"),
                 type=dim_def.get("type", "categorical"),  # Default to categorical
-                sql=dim_def.get("sql"),
+                sql=dim_def.get("sql") or dim_def.get("expr"),
                 granularity=dim_def.get("granularity"),
+                supported_granularities=dim_def.get("supported_granularities"),
                 description=dim_def.get("description"),
                 label=dim_def.get("label"),
                 format=dim_def.get("format"),
@@ -240,16 +271,29 @@ class SidemanticAdapter(BaseAdapter):
         for measure_def in model_def.get("metrics", model_def.get("measures") or []):
             measure = Metric(
                 name=measure_def.get("name"),
+                extends=measure_def.get("extends"),
                 agg=measure_def.get("agg"),
-                sql=measure_def.get("sql"),
+                sql=measure_def.get("sql") or measure_def.get("expr"),
                 type=measure_def.get("type"),
                 filters=measure_def.get("filters"),
+                fill_nulls_with=measure_def.get("fill_nulls_with"),
                 description=measure_def.get("description"),
                 label=measure_def.get("label"),
                 format=measure_def.get("format"),
                 value_format_name=measure_def.get("value_format_name"),
                 drill_fields=measure_def.get("drill_fields"),
                 non_additive_dimension=measure_def.get("non_additive_dimension"),
+                base_metric=measure_def.get("base_metric"),
+                comparison_type=measure_def.get("comparison_type"),
+                time_offset=measure_def.get("time_offset"),
+                calculation=measure_def.get("calculation"),
+                numerator=measure_def.get("numerator"),
+                denominator=measure_def.get("denominator"),
+                entity=measure_def.get("entity"),
+                base_event=measure_def.get("base_event"),
+                conversion_event=measure_def.get("conversion_event"),
+                conversion_window=measure_def.get("conversion_window"),
+                offset_window=measure_def.get("offset_window"),
                 # Cumulative/window parameters
                 window=measure_def.get("window"),
                 grain_to_date=measure_def.get("grain_to_date"),
@@ -292,15 +336,20 @@ class SidemanticAdapter(BaseAdapter):
                     refresh_key = RefreshKey(
                         every=refresh_key_def.get("every"),
                         sql=refresh_key_def.get("sql"),
+                        incremental=refresh_key_def.get("incremental", False),
+                        update_window=refresh_key_def.get("update_window"),
                     )
 
             preagg = PreAggregation(
                 name=preagg_def.get("name"),
+                type=preagg_def.get("type", "rollup"),
                 measures=preagg_def.get("measures") or [],
                 dimensions=preagg_def.get("dimensions") or [],
                 time_dimension=preagg_def.get("time_dimension"),
                 granularity=preagg_def.get("granularity"),
+                partition_granularity=preagg_def.get("partition_granularity"),
                 refresh_key=refresh_key,
+                scheduled_refresh=preagg_def.get("scheduled_refresh", True),
                 indexes=preagg_def.get("indexes"),
                 build_range_start=preagg_def.get("build_range_start"),
                 build_range_end=preagg_def.get("build_range_end"),
@@ -313,6 +362,7 @@ class SidemanticAdapter(BaseAdapter):
             sql=model_def.get("sql"),
             source_uri=model_def.get("source_uri"),
             description=model_def.get("description"),
+            extends=model_def.get("extends"),
             primary_key=model_def.get("primary_key", "id"),
             relationships=joins,
             dimensions=dimensions,
@@ -340,14 +390,59 @@ class SidemanticAdapter(BaseAdapter):
 
         return Metric(
             name=name,
+            extends=metric_def.get("extends"),
             type=metric_type,
             description=metric_def.get("description"),
             label=metric_def.get("label"),
-            sql=metric_def.get("sql") or metric_def.get("measure"),
+            sql=metric_def.get("sql") or metric_def.get("expr") or metric_def.get("measure"),
+            agg=metric_def.get("agg"),
             numerator=metric_def.get("numerator"),
             denominator=metric_def.get("denominator"),
+            base_metric=metric_def.get("base_metric"),
+            comparison_type=metric_def.get("comparison_type"),
+            time_offset=metric_def.get("time_offset"),
+            calculation=metric_def.get("calculation"),
+            entity=metric_def.get("entity"),
+            base_event=metric_def.get("base_event"),
+            conversion_event=metric_def.get("conversion_event"),
+            conversion_window=metric_def.get("conversion_window"),
+            offset_window=metric_def.get("offset_window"),
             window=metric_def.get("window"),
+            grain_to_date=metric_def.get("grain_to_date"),
+            window_expression=metric_def.get("window_expression"),
+            window_frame=metric_def.get("window_frame"),
+            window_order=metric_def.get("window_order"),
             filters=metric_def.get("filters"),
+            fill_nulls_with=metric_def.get("fill_nulls_with"),
+            format=metric_def.get("format"),
+            value_format_name=metric_def.get("value_format_name"),
+            drill_fields=metric_def.get("drill_fields"),
+            non_additive_dimension=metric_def.get("non_additive_dimension"),
+        )
+
+    def _parse_parameter(self, parameter_def: dict) -> Parameter | None:
+        """Parse parameter definition.
+
+        Args:
+            parameter_def: Parameter definition dictionary
+
+        Returns:
+            Parameter instance or None
+        """
+        name = parameter_def.get("name")
+        param_type = parameter_def.get("type")
+
+        if not name or not param_type:
+            return None
+
+        return Parameter(
+            name=name,
+            type=param_type,
+            description=parameter_def.get("description"),
+            label=parameter_def.get("label"),
+            default_value=parameter_def.get("default_value"),
+            allowed_values=parameter_def.get("allowed_values"),
+            default_to_today=parameter_def.get("default_to_today", False),
         )
 
     def _export_model(self, model: Model) -> dict:
@@ -378,6 +473,17 @@ class SidemanticAdapter(BaseAdapter):
                     "type": relationship.type,
                     **({"foreign_key": relationship.foreign_key} if relationship.foreign_key else {}),
                     **({"primary_key": relationship.primary_key} if relationship.primary_key else {}),
+                    **({"through": relationship.through} if relationship.through else {}),
+                    **(
+                        {"through_foreign_key": relationship.through_foreign_key}
+                        if relationship.through_foreign_key
+                        else {}
+                    ),
+                    **(
+                        {"related_foreign_key": relationship.related_foreign_key}
+                        if relationship.related_foreign_key
+                        else {}
+                    ),
                 }
                 for relationship in model.relationships
             ]
@@ -436,6 +542,24 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["non_additive_dimension"] = measure.non_additive_dimension
                 if measure.type:
                     measure_def["type"] = measure.type
+                if measure.base_metric:
+                    measure_def["base_metric"] = measure.base_metric
+                if measure.comparison_type:
+                    measure_def["comparison_type"] = measure.comparison_type
+                if measure.time_offset:
+                    measure_def["time_offset"] = measure.time_offset
+                if measure.calculation:
+                    measure_def["calculation"] = measure.calculation
+                if measure.entity:
+                    measure_def["entity"] = measure.entity
+                if measure.base_event:
+                    measure_def["base_event"] = measure.base_event
+                if measure.conversion_event:
+                    measure_def["conversion_event"] = measure.conversion_event
+                if measure.conversion_window:
+                    measure_def["conversion_window"] = measure.conversion_window
+                if measure.offset_window:
+                    measure_def["offset_window"] = measure.offset_window
                 # Cumulative/window parameters
                 if measure.window:
                     measure_def["window"] = measure.window
@@ -497,6 +621,24 @@ class SidemanticAdapter(BaseAdapter):
             result["numerator"] = measure.numerator
         if measure.denominator:
             result["denominator"] = measure.denominator
+        if measure.base_metric:
+            result["base_metric"] = measure.base_metric
+        if measure.comparison_type:
+            result["comparison_type"] = measure.comparison_type
+        if measure.time_offset:
+            result["time_offset"] = measure.time_offset
+        if measure.calculation:
+            result["calculation"] = measure.calculation
+        if measure.entity:
+            result["entity"] = measure.entity
+        if measure.base_event:
+            result["base_event"] = measure.base_event
+        if measure.conversion_event:
+            result["conversion_event"] = measure.conversion_event
+        if measure.conversion_window:
+            result["conversion_window"] = measure.conversion_window
+        if measure.offset_window:
+            result["offset_window"] = measure.offset_window
         if measure.sql:
             result["sql"] = measure.sql
             # Auto-detect and export dependencies for derived measures

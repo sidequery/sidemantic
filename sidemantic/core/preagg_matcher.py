@@ -1,5 +1,7 @@
 """Pre-aggregation query matching logic."""
 
+import re
+
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import PreAggregation
@@ -248,12 +250,11 @@ class PreAggregationMatcher:
         if "count" in preagg_measures:
             return "count"
 
-        # Accept any count measure as a fallback
-        # This is safe for AVG re-aggregation as long as:
-        # 1. The count matches the avg's population (unfiltered for unfiltered avg)
-        # 2. We're re-aggregating at compatible grain
+        # Accept any measure whose name contains "count" as a separate word
+        # (e.g., "order_count", "count_orders") but NOT substring matches
+        # like "discount_amount" where "count" is part of another word.
         for measure in preagg_measures:
-            if measure.startswith("count") or "count" in measure:
+            if re.search(r"(?:^|_)count(?:$|_)", measure):  # word-boundary match
                 return measure
 
         return None

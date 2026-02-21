@@ -35,4 +35,8 @@ def __getattr__(name):
         from sidemantic.db.motherduck import MotherDuckAdapter
 
         return MotherDuckAdapter
+    if name == "ADBCAdapter":
+        from sidemantic.db.adbc import ADBCAdapter
+
+        return ADBCAdapter
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

@@ -81,6 +81,36 @@ class SegmentDef(exp.Expression):
     arg_types = {"expressions": True}
 
 
+class ParameterDef(exp.Expression):
+    """PARAMETER() definition statement.
+
+    Syntax:
+        PARAMETER (
+            name region,
+            type string,
+            default_value 'us'
+        );
+    """
+
+    arg_types = {"expressions": True}
+
+
+class PreAggregationDef(exp.Expression):
+    """PRE_AGGREGATION() definition statement.
+
+    Syntax:
+        PRE_AGGREGATION (
+            name daily_rollup,
+            measures [order_count, revenue],
+            dimensions [status],
+            time_dimension order_date,
+            granularity day
+        );
+    """
+
+    arg_types = {"expressions": True}
+
+
 class PropertyEQ(exp.Expression):
     """Property assignment in METRIC/SEGMENT definitions.
 
@@ -100,11 +130,15 @@ class SidemanticParser(parser.Parser):
         "RELATIONSHIP": lambda args: RelationshipDef(expressions=args),
         "METRIC": lambda args: MetricDef(expressions=args),
         "SEGMENT": lambda args: SegmentDef(expressions=args),
+        "PARAMETER": lambda args: ParameterDef(expressions=args),
+        "PRE_AGGREGATION": lambda args: PreAggregationDef(expressions=args),
     }
 
     def _parse_statement(self) -> exp.Expression | None:
         """Override to handle MODEL, DIMENSION, RELATIONSHIP, METRIC, and SEGMENT as statements."""
-        if self._match_texts(("MODEL", "DIMENSION", "RELATIONSHIP", "METRIC", "SEGMENT")):
+        if self._match_texts(
+            ("MODEL", "DIMENSION", "RELATIONSHIP", "METRIC", "SEGMENT", "PARAMETER", "PRE_AGGREGATION")
+        ):
             func_name = self._prev.text.upper()
             self._match(tokens.TokenType.L_PAREN)
 
@@ -129,8 +163,12 @@ class SidemanticParser(parser.Parser):
                 return RelationshipDef(expressions=properties)
             elif func_name == "METRIC":
                 return MetricDef(expressions=properties)
-            else:  # SEGMENT
+            elif func_name == "SEGMENT":
                 return SegmentDef(expressions=properties)
+            elif func_name == "PARAMETER":
+                return ParameterDef(expressions=properties)
+            else:  # PRE_AGGREGATION
+                return PreAggregationDef(expressions=properties)
 
         return super()._parse_statement()
 
@@ -146,19 +184,28 @@ class SidemanticParser(parser.Parser):
         value_parts = []
 
         while self._curr:
-            if self._curr.token_type == tokens.TokenType.L_PAREN:
+            if self._curr.token_type in (
+                tokens.TokenType.L_PAREN,
+                tokens.TokenType.L_BRACKET,
+                tokens.TokenType.L_BRACE,
+            ):
                 depth += 1
                 # Don't add space before opening paren if last token was identifier/function name
                 if value_parts and value_parts[-1] not in ("(", ",", "="):
-                    value_parts.append("(")
+                    value_parts.append(self._curr.text)
                 else:
-                    value_parts.append("(")
+                    value_parts.append(self._curr.text)
                 self._advance()
-            elif self._curr.token_type == tokens.TokenType.R_PAREN:
-                if depth == 0:
+            elif self._curr.token_type in (
+                tokens.TokenType.R_PAREN,
+                tokens.TokenType.R_BRACKET,
+                tokens.TokenType.R_BRACE,
+            ):
+                if self._curr.token_type == tokens.TokenType.R_PAREN and depth == 0:
                     break
-                depth -= 1
-                value_parts.append(")")
+                if depth > 0:
+                    depth -= 1
+                value_parts.append(self._curr.text)
                 self._advance()
             elif self._curr.token_type == tokens.TokenType.COMMA and depth == 0:
                 break
@@ -199,6 +246,8 @@ class SidemanticParser(parser.Parser):
         from sidemantic.core.dimension import Dimension
         from sidemantic.core.metric import Metric
         from sidemantic.core.model import Model
+        from sidemantic.core.parameter import Parameter
+        from sidemantic.core.pre_aggregation import PreAggregation
         from sidemantic.core.relationship import Relationship
         from sidemantic.core.segment import Segment
 
@@ -209,6 +258,8 @@ class SidemanticParser(parser.Parser):
         names.update(field.upper() for field in Relationship.model_fields.keys())
         names.update(field.upper() for field in Metric.model_fields.keys())
         names.update(field.upper() for field in Segment.model_fields.keys())
+        names.update(field.upper() for field in Parameter.model_fields.keys())
+        names.update(field.upper() for field in PreAggregation.model_fields.keys())
 
         # Add alias keys (SQL syntax variants)
         names.update(alias.upper() for alias in PROPERTY_ALIASES.keys())

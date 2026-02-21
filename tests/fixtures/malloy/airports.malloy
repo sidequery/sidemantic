@@ -1,0 +1,35 @@
+// Airports example - based on malloy-samples airports.malloy
+// Tests: simple source, rename, views, where in views, nested views
+
+source: airports is duckdb.table('../data/airports.parquet') extend {
+  primary_key: code
+
+  rename: facility_type is fac_type
+
+  dimension:
+    name is concat(code, '-', full_name)
+    is_large is major = 'Y'
+
+  measure:
+    airport_count is count()
+    avg_elevation is avg(elevation)
+
+  view: by_state is {
+    where: state != null
+    group_by: state
+    aggregate: airport_count
+  }
+
+  view: by_facility_type is {
+    group_by: facility_type
+    aggregate: airport_count
+  }
+
+  view: airports_by_region_dashboard is {
+    group_by: faa_region
+    aggregate: airport_count
+    nest:
+      by_state
+      by_facility_type
+  }
+}

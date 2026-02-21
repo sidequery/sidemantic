@@ -1,6 +1,6 @@
 """Dimension definitions."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -28,6 +28,9 @@ class Dimension(BaseModel):
     # Hierarchy
     parent: str | None = Field(None, description="Parent dimension for hierarchies (e.g., 'state' parent is 'country')")
 
+    # Arbitrary metadata (ai_context, custom_extensions, etc.)
+    meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
+
     @model_validator(mode="before")
     @classmethod
     def handle_expr_alias(cls, data):
@@ -52,6 +55,9 @@ class Dimension(BaseModel):
             data.pop("expr", None)
 
         return data
+
+    def __init__(self, **data: Any):
+        super().__init__(**data)
 
     def __hash__(self) -> int:
         return hash((self.name, self.type, self.sql))

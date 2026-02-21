@@ -1,6 +1,6 @@
 """Measure definitions - unified metric/measure abstraction."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -115,8 +115,46 @@ class Metric(BaseModel):
                         else:
                             agg_func = "count"
                             if parsed.this:
-                                inner_expr = parsed.this.sql(dialect="duckdb")
-                            # COUNT(*) case - inner_expr stays None
+                                if isinstance(parsed.this, exp.Star):
+                                    inner_expr = "*"
+                                else:
+                                    inner_expr = parsed.this.sql(dialect="duckdb")
+                            # COUNT(*) case - inner_expr is "*"
+
+                    # Handle generic function nodes (e.g., Anonymous) that still represent aggregations.
+                    if not agg_func and isinstance(parsed, exp.Func):
+                        func_name = (parsed.name or "").lower()
+                        func_map = {
+                            "sum": "sum",
+                            "avg": "avg",
+                            "min": "min",
+                            "max": "max",
+                            "median": "median",
+                            "count": "count",
+                        }
+                        if func_name in func_map:
+                            agg_func = func_map[func_name]
+                            arg_expr = parsed.this
+                            if arg_expr is None and parsed.expressions:
+                                if len(parsed.expressions) == 1:
+                                    arg_expr = parsed.expressions[0]
+                                else:
+                                    arg_expr = exp.Tuple(expressions=list(parsed.expressions))
+
+                            if func_name == "count":
+                                if isinstance(arg_expr, exp.Distinct):
+                                    agg_func = "count_distinct"
+                                    if arg_expr.expressions:
+                                        inner_expr = ", ".join(e.sql(dialect="duckdb") for e in arg_expr.expressions)
+                                    else:
+                                        inner_expr = arg_expr.sql(dialect="duckdb")
+                                elif arg_expr is None or isinstance(arg_expr, exp.Star):
+                                    inner_expr = "*"
+                                else:
+                                    inner_expr = arg_expr.sql(dialect="duckdb")
+                            else:
+                                if arg_expr is not None:
+                                    inner_expr = arg_expr.sql(dialect="duckdb")
 
                     if agg_func:
                         data["agg"] = agg_func
@@ -219,6 +257,9 @@ class Metric(BaseModel):
         None,
         description="Dimension across which this metric cannot be summed (e.g., time for averages)",
     )
+
+    # Arbitrary metadata (ai_context, custom_extensions, etc.)
+    meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
 
     def __hash__(self) -> int:
         return hash((self.name, self.agg, self.sql))

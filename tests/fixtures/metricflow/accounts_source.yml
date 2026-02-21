@@ -1,0 +1,61 @@
+# Source: MetricFlow official test fixtures - accounts_source.yaml
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/simple_manifest/semantic_models/accounts_source.yaml
+# Tests: non_additive_dimension with window_choice (min/max) and window_groupings,
+#   create_metric: true, dual time dimensions, primary_entity shorthand
+
+semantic_models:
+  - name: accounts_source
+    description: accounts_source
+    model: ref('fct_accounts')
+
+    defaults:
+      agg_time_dimension: ds
+
+    measures:
+      - name: account_balance
+        agg: sum
+
+      - name: total_account_balance_first_day
+        agg: sum
+        expr: account_balance
+        non_additive_dimension:
+          name: ds
+          window_choice: min
+
+      - name: current_account_balance_by_user
+        agg: sum
+        expr: account_balance
+        non_additive_dimension:
+          name: ds
+          window_choice: max
+          window_groupings:
+            - user
+
+      - name: total_account_balance_first_day_of_month
+        agg: sum
+        expr: account_balance
+        agg_time_dimension: ds_month
+        non_additive_dimension:
+          name: ds_month
+          window_choice: min
+        create_metric: true
+
+    dimensions:
+      - name: ds
+        type: time
+        type_params:
+          time_granularity: day
+      - name: ds_month
+        type: time
+        expr: ds_month
+        type_params:
+          time_granularity: month
+      - name: account_type
+        type: categorical
+
+    primary_entity: account
+
+    entities:
+      - name: user
+        type: foreign
+        expr: user_id

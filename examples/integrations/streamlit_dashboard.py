@@ -10,7 +10,7 @@
 # ///
 """Interactive Streamlit dashboard with parameterized queries.
 
-Run with: streamlit run examples/streamlit_dashboard.py
+Run with: streamlit run examples/integrations/streamlit_dashboard.py
 """
 
 from datetime import datetime

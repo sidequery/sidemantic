@@ -1,0 +1,71 @@
+# Based on rill-examples/rill-app-engagement: mobile_events_metrics.yaml
+# Conversion/funnel metrics with ratio of COUNT DISTINCT values,
+# smallest_time_grain: hour, security access section, *1.0 casting pattern.
+
+version: 1
+type: metrics_view
+
+display_name: Mobile Events Model Metrics
+model: mobile_events_model
+timeseries: event_time
+smallest_time_grain: "hour"
+
+security:
+  access: true
+
+dimensions:
+  - name: new_existing
+    display_name: New vs Existing
+    column: new_existing
+  - name: referral_source
+    display_name: "Referral Source"
+    column: "referral_source"
+  - name: device_type
+    display_name: Device Type
+    column: device_type
+  - name: os_version
+    display_name: OS Version
+    column: os_version
+  - name: campaign_name
+    display_name: Campaign Name
+    column: campaign_name
+  - name: country
+    display_name: Country
+    column: country
+  - name: app_version
+    display_name: App Version
+    column: app_version
+
+measures:
+  - display_name: Page Views
+    expression: sum(landing_page_view_cnt)
+    name: total_page_views
+    format_preset: humanize
+  - display_name: Clicks
+    expression: sum(landing_page_click_cnt)
+    name: total_clicks
+    format_preset: humanize
+  - display_name: Downloads
+    expression: count(distinct download_id)
+    name: total_downloads
+    format_preset: humanize
+  - display_name: Unique Visitors
+    expression: count (distinct visitor_id)
+    name: unique_visitors
+    format_preset: humanize
+  - display_name: "Site Conversion Rate"
+    expression: "sum(landing_page_click_cnt)*1.0/sum(landing_page_view_cnt)*1.0"
+    name: site_conversion_rate
+    format_preset: percentage
+  - display_name: "Opt-In Rate"
+    expression: "count(distinct opt_in_id)*1.0/count(distinct landing_page_click_id)*1.0"
+    name: opt_in_rate
+    format_preset: percentage
+  - display_name: "Completion Rate"
+    expression: "count (distinct download_id)*1.0/count (distinct landing_page_view_id) *1.0"
+    name: completion_rate
+    format_preset: percentage
+  - display_name: "Avg Session Duration"
+    expression: AVG(session_duration_seconds)
+    name: avg_session_duration
+    format_preset: humanize

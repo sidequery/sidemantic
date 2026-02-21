@@ -39,6 +39,7 @@ class SemanticLayer:
                 - clickhouse://user:password@host:port/database
                 - databricks://token@server-hostname/http-path
                 - spark://host:port/database
+                - adbc://driver/uri (e.g., adbc://postgresql/postgresql://localhost/mydb)
             dialect: SQL dialect for query generation (optional, inferred from adapter)
             auto_register: Set as current layer for auto-registration (default: True)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
@@ -100,10 +101,15 @@ class SemanticLayer:
 
                 self.adapter = SparkAdapter.from_url(connection)
                 self.dialect = dialect or "spark"
+            elif connection.startswith("adbc://"):
+                from sidemantic.db.adbc import ADBCAdapter
+
+                self.adapter = ADBCAdapter.from_url(connection)
+                self.dialect = dialect or self.adapter.dialect
             else:
                 raise ValueError(
                     f"Unsupported connection URL: {connection}. "
-                    "Supported: duckdb:///, duckdb://md:, postgres://, bigquery://, snowflake://, clickhouse://, databricks://, spark://, or BaseDatabaseAdapter instance"
+                    "Supported: duckdb:///, duckdb://md:, postgres://, bigquery://, snowflake://, clickhouse://, databricks://, spark://, adbc://, or BaseDatabaseAdapter instance"
                 )
         else:
             raise TypeError(f"connection must be a string URL or BaseDatabaseAdapter instance, got {type(connection)}")
@@ -444,12 +450,19 @@ class SemanticLayer:
         return get_catalog_metadata(self.graph, schema=schema)
 
     @classmethod
-    def from_yaml(cls, path: str | Path, connection: str | None = None) -> SemanticLayer:
+    def from_yaml(
+        cls,
+        path: str | Path,
+        connection: str | BaseDatabaseAdapter | None = None,  # type: ignore # noqa: F821
+    ) -> SemanticLayer:
         """Load semantic layer from native YAML file.
 
         Args:
             path: Path to YAML file
-            connection: Database connection string (overrides connection in YAML file)
+            connection: Database connection string, adapter instance, or None
+                (overrides connection in YAML file). Pass an adapter instance
+                when your model files don't include connection config, e.g.:
+                ``SemanticLayer.from_yaml("models.yaml", connection=ADBCAdapter(...))``
 
         Returns:
             SemanticLayer instance
@@ -473,6 +486,10 @@ class SemanticLayer:
             if data and "connection" in data:
                 connection = data["connection"]
 
+        # Convert dict-style connection config to URL string
+        if isinstance(connection, dict):
+            connection = cls._connection_dict_to_url(connection)
+
         # Create layer with connection (or use default if still None)
         if connection:
             layer = cls(connection=connection)
@@ -481,6 +498,148 @@ class SemanticLayer:
         layer.graph = graph
 
         return layer
+
+    @staticmethod
+    def _connection_dict_to_url(config: dict) -> str:
+        """Convert dict-style connection config to URL string.
+
+        Supports YAML connection configurations like:
+            connection:
+              type: duckdb
+              path: data/warehouse.db
+
+            connection:
+              type: postgres
+              host: localhost
+              port: 5432
+              database: mydb
+              user: myuser
+              password: mypass
+
+            connection:
+              type: adbc
+              driver: postgresql
+              uri: postgresql://localhost/mydb
+
+            connection:
+              type: adbc
+              driver: snowflake
+              account: myaccount
+              database: mydb
+
+        Args:
+            config: Connection configuration dictionary
+
+        Returns:
+            Connection URL string
+        """
+        from urllib.parse import quote, urlencode
+
+        conn_type = config.get("type", "duckdb").lower()
+
+        if conn_type == "duckdb":
+            path = config.get("path", ":memory:")
+            if path.startswith("md:"):
+                return f"duckdb://{path}"
+            return f"duckdb:///{path}"
+
+        elif conn_type in ("postgres", "postgresql"):
+            host = config.get("host", "localhost")
+            port = config.get("port", 5432)
+            database = config.get("database", "postgres")
+            user = config.get("user", "")
+            password = config.get("password", "")
+
+            if user and password:
+                return f"postgres://{quote(user)}:{quote(password)}@{host}:{port}/{database}"
+            elif user:
+                return f"postgres://{quote(user)}@{host}:{port}/{database}"
+            else:
+                return f"postgres://{host}:{port}/{database}"
+
+        elif conn_type == "bigquery":
+            project = config.get("project")
+            dataset = config.get("dataset", "")
+            if project:
+                return f"bigquery://{project}/{dataset}"
+            raise ValueError("BigQuery connection requires 'project' field")
+
+        elif conn_type == "snowflake":
+            account = config.get("account")
+            user = config.get("user", "")
+            password = config.get("password", "")
+            database = config.get("database", "")
+            schema = config.get("schema", "")
+
+            if not account:
+                raise ValueError("Snowflake connection requires 'account' field")
+
+            path = f"/{database}" if database else ""
+            if schema:
+                path += f"/{schema}"
+
+            if user and password:
+                return f"snowflake://{quote(user)}:{quote(password)}@{account}{path}"
+            elif user:
+                return f"snowflake://{quote(user)}@{account}{path}"
+            else:
+                return f"snowflake://{account}{path}"
+
+        elif conn_type == "clickhouse":
+            host = config.get("host", "localhost")
+            port = config.get("port", 8123)
+            database = config.get("database", "default")
+            user = config.get("user", "")
+            password = config.get("password", "")
+
+            if user and password:
+                return f"clickhouse://{quote(user)}:{quote(password)}@{host}:{port}/{database}"
+            elif user:
+                return f"clickhouse://{quote(user)}@{host}:{port}/{database}"
+            else:
+                return f"clickhouse://{host}:{port}/{database}"
+
+        elif conn_type == "databricks":
+            server = config.get("server") or config.get("host")
+            http_path = config.get("http_path")
+            token = config.get("token", "")
+
+            if not server:
+                raise ValueError("Databricks connection requires 'server' or 'host' field")
+            if not http_path:
+                raise ValueError("Databricks connection requires 'http_path' field")
+
+            return f"databricks://{token}@{server}/{http_path}"
+
+        elif conn_type == "spark":
+            host = config.get("host", "localhost")
+            port = config.get("port", 10000)
+            database = config.get("database", "default")
+            return f"spark://{host}:{port}/{database}"
+
+        elif conn_type == "adbc":
+            # ADBC connection: driver + optional uri + optional params
+            driver = config.get("driver")
+            if not driver:
+                raise ValueError("ADBC connection requires 'driver' field")
+
+            uri = config.get("uri")
+
+            # Build query params from remaining fields
+            params = {k: v for k, v in config.items() if k not in ("type", "driver", "uri")}
+
+            if uri:
+                params["uri"] = uri
+
+            if params:
+                return f"adbc://{driver}?{urlencode(params)}"
+            return f"adbc://{driver}"
+
+        else:
+            raise ValueError(
+                f"Unknown connection type: {conn_type}. "
+                "Supported: duckdb, postgres, bigquery, snowflake, clickhouse, databricks, spark, adbc"
+            )
 
     def sql(self, query: str):
         """Execute a SQL query against the semantic layer.

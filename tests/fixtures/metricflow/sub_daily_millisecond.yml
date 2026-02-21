@@ -1,0 +1,15 @@
+# Minimal fixture to test millisecond granularity (unsupported in sidemantic Dimension model).
+# Used by test_millisecond_xfail.
+
+semantic_models:
+  - name: test_millisecond
+    description: test model with millisecond granularity
+    model: ref('test')
+    dimensions:
+      - name: last_profile_edit_ts
+        type: time
+        type_params:
+          time_granularity: millisecond
+    entities:
+      - name: id
+        type: primary

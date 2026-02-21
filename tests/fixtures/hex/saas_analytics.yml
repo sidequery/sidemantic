@@ -1,0 +1,158 @@
+id: saas_analytics
+base_sql_query: |
+  SELECT
+    s.id,
+    s.customer_id,
+    s.plan,
+    s.mrr,
+    s.arr,
+    s.costs,
+    s.started_at,
+    s.ended_at,
+    s.is_active,
+    c.segment
+  FROM subscriptions s
+  JOIN customers c ON s.customer_id = c.id
+description: SaaS subscription analytics model with advanced measures
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: customer_id
+    type: number
+
+  - id: plan
+    name: Subscription Plan
+    type: string
+    description: Plan tier (free, starter, pro, enterprise)
+
+  - id: mrr
+    type: number
+    description: Monthly recurring revenue
+
+  - id: arr
+    type: number
+    description: Annual recurring revenue
+    expr_sql: mrr * 12
+
+  - id: costs
+    type: number
+    description: Monthly costs for this subscription
+
+  - id: started_at
+    type: timestamp_tz
+    description: Subscription start date
+
+  - id: ended_at
+    type: timestamp_naive
+    description: Subscription end date (null if active)
+
+  - id: is_active
+    type: boolean
+    expr_sql: ended_at IS NULL
+
+  - id: segment
+    type: string
+    description: Customer segment
+
+  - id: subscription_quarter
+    type: timestamp_tz
+    expr_sql: DATE_TRUNC(started_at, 'quarter')
+    description: Quarter in which subscription started
+
+  - id: tenure_months
+    name: Tenure (Months)
+    type: number
+    expr_calc: DATEDIFF('month', started_at, COALESCE(ended_at, CURRENT_DATE))
+    description: Number of months subscribed
+
+measures:
+  - id: total_mrr
+    func: sum
+    of: mrr
+    description: Total monthly recurring revenue
+
+  - id: total_arr
+    func: sum
+    of: arr
+    description: Total annual recurring revenue
+
+  - id: total_costs
+    func: sum
+    of: costs
+    description: Total monthly costs
+
+  - id: subscription_count
+    func: count
+    description: Total number of subscriptions
+
+  - id: active_subscriptions
+    func: count
+    filters:
+      - is_active
+    description: Number of active subscriptions
+
+  - id: unique_customers
+    func: count_distinct
+    of: customer_id
+    description: Distinct customer count
+
+  - id: avg_mrr
+    func: avg
+    of: mrr
+    description: Average MRR per subscription
+
+  - id: median_mrr
+    func: median
+    of: mrr
+    description: Median MRR per subscription
+
+  - id: mrr_stddev
+    func: stddev
+    of: mrr
+    description: Standard deviation of MRR
+
+  - id: profit
+    name: Net Profit
+    func_calc: total_mrr - total_costs
+    description: Net profit (revenue minus costs)
+
+  - id: gross_margin
+    func_sql: SUM(mrr - costs) / NULLIF(SUM(mrr), 0)
+    description: Gross margin percentage
+
+  - id: adjusted_arr
+    func_sql: SUM(mrr) * 12 * 0.95
+    description: ARR adjusted for expected churn
+
+  - id: arpu
+    func_calc: total_mrr / unique_customers
+    description: Average revenue per user
+
+  - id: current_mrr
+    name: Current MRR
+    func: sum
+    of: mrr
+    semi_additive: end_of_period
+    description: MRR as of end of period (semi-additive)
+
+  - id: enterprise_mrr
+    func: sum
+    of: mrr
+    filters:
+      - expr_sql: plan = 'enterprise'
+    description: MRR from enterprise plans only
+
+  - id: high_value_count
+    func: count_if
+    of: mrr
+    filters:
+      - expr_sql: mrr >= 1000
+    description: Count of high-value subscriptions
+
+relations:
+  - id: customers
+    type: many_to_one
+    join_sql: customer_id = ${customers}.id

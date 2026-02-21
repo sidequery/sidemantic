@@ -1,0 +1,423 @@
+version: "1.0"
+
+semantic_model:
+  - name: tpcds_retail_model
+    description: TPC-DS retail semantic model for sales and customer analytics
+    ai_context:
+      instructions: "Use this semantic model for retail analytics including sales, customer behavior, and store performance."
+      synonyms:
+        - retail analytics
+        - store sales analysis
+        - TPC-DS benchmark
+      examples:
+        - "Show total sales by store"
+        - "What is the customer lifetime value?"
+
+    datasets:
+      - name: store_sales
+        source: tpcds.public.store_sales
+        primary_key: [ss_item_sk, ss_ticket_number]
+        unique_keys:
+          - [ss_item_sk, ss_ticket_number]
+        description: Fact table containing all store sales transactions
+        ai_context:
+          synonyms:
+            - sales transactions
+            - store purchases
+            - retail sales
+            - POS data
+          instructions: "This is the central fact table. Join to dimension tables via surrogate keys."
+        fields:
+          - name: ss_item_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_item_sk
+            description: Item surrogate key (part of composite PK)
+            ai_context:
+              synonyms:
+                - item key
+                - product key
+          - name: ss_ticket_number
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_ticket_number
+            description: Ticket number (part of composite PK)
+            ai_context:
+              synonyms:
+                - transaction number
+                - receipt number
+          - name: ss_customer_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_customer_sk
+            description: Customer surrogate key (FK to customer)
+          - name: ss_store_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_store_sk
+            description: Store surrogate key (FK to store)
+          - name: ss_sold_date_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_sold_date_sk
+            description: Foreign key to date dimension
+            dimension:
+              is_time: false
+            ai_context:
+              synonyms:
+                - sale date
+                - transaction date
+          - name: ss_ext_sales_price
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_ext_sales_price
+                - dialect: SNOWFLAKE
+                  expression: ss_ext_sales_price
+            description: Extended sales price
+            ai_context:
+              synonyms:
+                - sales amount
+                - revenue
+          - name: ss_net_profit
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_net_profit
+                - dialect: SNOWFLAKE
+                  expression: ss_net_profit
+            description: Net profit from the sale
+          - name: ss_quantity
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_quantity
+            description: Quantity of items sold
+
+      - name: customer
+        source: tpcds.public.customer
+        primary_key: [c_customer_sk]
+        description: Customer dimension table
+        ai_context:
+          synonyms:
+            - buyers
+            - shoppers
+            - patrons
+          instructions: "Customer demographics and contact info. Use customer_full_name for display."
+        fields:
+          - name: c_customer_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_customer_sk
+            description: Customer surrogate key
+          - name: c_customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_customer_id
+            description: Customer business key
+          - name: c_first_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_first_name
+            description: Customer first name
+          - name: c_last_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_last_name
+            description: Customer last name
+          - name: customer_full_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_first_name || ' ' || c_last_name
+                - dialect: SNOWFLAKE
+                  expression: CONCAT(c_first_name, ' ', c_last_name)
+                - dialect: DATABRICKS
+                  expression: CONCAT(c_first_name, ' ', c_last_name)
+            description: Customer full name (computed from first and last)
+            label: Full Name
+            ai_context:
+              synonyms:
+                - name
+                - customer name
+          - name: c_email_address
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_email_address
+            description: Customer email address
+          - name: c_birth_year
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_birth_year
+            description: Customer birth year
+
+      - name: date_dim
+        source: tpcds.public.date_dim
+        primary_key: [d_date_sk]
+        description: Date dimension for time-based analysis
+        ai_context:
+          synonyms:
+            - calendar
+            - time dimension
+        fields:
+          - name: d_date_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: d_date_sk
+            description: Date surrogate key
+          - name: d_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: d_date
+            dimension:
+              is_time: true
+            description: Calendar date
+            ai_context:
+              synonyms:
+                - date
+                - calendar date
+          - name: d_year
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: d_year
+            description: Calendar year
+          - name: d_quarter_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: d_quarter_name
+            description: Quarter name (e.g. 2024Q1)
+          - name: d_month_seq
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: d_month_seq
+            description: Month sequence number
+          - name: d_day_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: d_day_name
+            description: Day of week name
+
+      - name: store
+        source: tpcds.public.store
+        primary_key: [s_store_sk]
+        description: Store dimension with location and staffing info
+        ai_context:
+          synonyms:
+            - retail location
+            - branch
+            - outlet
+        fields:
+          - name: s_store_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_store_sk
+            description: Store surrogate key
+          - name: s_store_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_store_name
+            description: Store name
+          - name: s_store_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_store_id
+            description: Store business identifier
+          - name: s_city
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_city
+            description: Store city
+          - name: s_state
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_state
+            description: Store state
+          - name: s_number_employees
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_number_employees
+            description: Number of employees at this store
+            ai_context:
+              synonyms:
+                - headcount
+                - staff count
+
+      - name: item
+        source: tpcds.public.item
+        primary_key: [i_item_sk]
+        description: Item/product dimension
+        ai_context:
+          synonyms:
+            - product
+            - SKU
+            - merchandise
+        fields:
+          - name: i_item_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_item_sk
+            description: Item surrogate key
+          - name: i_item_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_item_id
+            description: Item business identifier
+          - name: i_item_desc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_item_desc
+            description: Item description
+          - name: i_brand
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_brand
+            description: Brand name
+            ai_context:
+              synonyms:
+                - brand
+                - manufacturer
+          - name: i_category
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_category
+            description: Product category
+          - name: i_current_price
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_current_price
+            description: Current list price
+
+    relationships:
+      - name: store_sales_to_customer
+        from: store_sales
+        to: customer
+        from_columns: [ss_customer_sk]
+        to_columns: [c_customer_sk]
+        ai_context:
+          instructions: "Links each sale to the purchasing customer"
+
+      - name: store_sales_to_date
+        from: store_sales
+        to: date_dim
+        from_columns: [ss_sold_date_sk]
+        to_columns: [d_date_sk]
+        ai_context:
+          instructions: "Links each sale to its date for time-based analysis"
+
+      - name: store_sales_to_store
+        from: store_sales
+        to: store
+        from_columns: [ss_store_sk]
+        to_columns: [s_store_sk]
+
+      - name: store_sales_to_item
+        from: store_sales
+        to: item
+        from_columns: [ss_item_sk]
+        to_columns: [i_item_sk]
+
+    metrics:
+      - name: total_sales
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(store_sales.ss_ext_sales_price)
+            - dialect: SNOWFLAKE
+              expression: SUM(store_sales.ss_ext_sales_price)
+        description: Total sales revenue across all transactions
+        ai_context:
+          synonyms:
+            - total revenue
+            - gross sales
+            - sales amount
+          examples:
+            - "What were total sales last quarter?"
+
+      - name: total_profit
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(store_sales.ss_net_profit)
+        description: Total net profit from all store sales
+        ai_context:
+          synonyms:
+            - net profit
+            - bottom line
+
+      - name: customer_lifetime_value
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(store_sales.ss_ext_sales_price) / COUNT(DISTINCT customer.c_customer_sk)
+        description: Average lifetime sales value per customer
+        ai_context:
+          synonyms:
+            - CLV
+            - LTV
+            - lifetime value
+
+      - name: sales_by_brand
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(store_sales.ss_ext_sales_price)
+        description: Sales revenue grouped by brand (use with item.i_brand dimension)
+        ai_context:
+          instructions: "Always group by item.i_brand when using this metric"
+          synonyms:
+            - brand revenue
+            - brand sales
+
+      - name: store_productivity
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(store_sales.ss_ext_sales_price) / NULLIF(SUM(store.s_number_employees), 0)
+        description: Sales revenue per employee, measuring store efficiency
+        ai_context:
+          synonyms:
+            - revenue per employee
+            - sales efficiency
+            - productivity ratio
+
+    custom_extensions:
+      - vendor_name: SALESFORCE
+        data: |
+          {
+            "tableau_workbook_id": "tpcds_retail_dashboard",
+            "einstein_enabled": true,
+            "crm_sync": { "enabled": true, "sync_frequency": "daily" }
+          }
+      - vendor_name: DBT
+        data: '{"project_name": "tpcds_analytics", "models_path": "models/semantic"}'
+      - vendor_name: SNOWFLAKE
+        data: '{"warehouse": "ANALYTICS_WH", "database": "TPCDS", "schema": "PUBLIC"}'

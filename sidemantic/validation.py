@@ -1,5 +1,6 @@
 """Validation and error handling for semantic layer."""
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -30,6 +31,18 @@ class ModelValidationError(ValidationError):
     """Raised when model validation fails."""
 
     pass
+
+
+def _sql_has_aggregation(sql: str) -> bool:
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        parsed = sqlglot.parse_one(sql, read="duckdb")
+        agg_classes = (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max, exp.Median)
+        return any(parsed.find_all(*agg_classes))
+    except Exception:
+        return bool(re.search(r"\b(sum|count|avg|min|max|median)\s*\(", sql, re.IGNORECASE))
 
 
 def validate_model(model: "Model") -> list[str]:
@@ -70,6 +83,10 @@ def validate_model(model: "Model") -> list[str]:
         if measure.type in ["derived", "ratio", "cumulative", "time_comparison", "conversion"]:
             continue
 
+        if measure.agg in ["sum", "count", "count_distinct", "avg", "min", "max", "median"]:
+            continue
+        if measure.agg is None and measure.sql and _sql_has_aggregation(measure.sql):
+            continue
         if measure.agg not in ["sum", "count", "count_distinct", "avg", "min", "max", "median"]:
             errors.append(
                 f"Model '{model.name}': measure '{measure.name}' has invalid aggregation '{measure.agg}'. "
@@ -107,9 +124,15 @@ def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
 
     # Validate untyped metrics with sql (measure references)
     if not measure.type and not measure.agg and measure.sql:
-        # This is an untyped metric referencing a measure
-        if "." in measure.sql:
-            model_name, measure_name = measure.sql.split(".")
+        # Only validate direct model.measure references here.
+        # Complex SQL expressions (e.g., COUNT(model.col) / COUNT(other.col))
+        # are valid untyped metrics and should not be split as plain refs.
+        sql_ref = measure.sql.strip()
+        is_direct_ref = (
+            "." in sql_ref and " " not in sql_ref and not any(op in sql_ref for op in ["+", "-", "*", "/", "(", ")"])
+        )
+        if is_direct_ref:
+            model_name, measure_name = sql_ref.split(".", 1)
             model = graph.models.get(model_name)
             if not model:
                 errors.append(f"Metric '{measure.name}': model '{model_name}' not found")

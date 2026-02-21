@@ -45,6 +45,16 @@ def test_validate_filter_rejects_delete():
         mcp_server._validate_filter("1=1; DELETE FROM users")
 
 
+def test_validate_filter_rejects_multi_statement():
+    with pytest.raises(ValueError, match="multi-statement"):
+        mcp_server._validate_filter("1=1; SELECT 1")
+
+
 def test_validate_filter_rejects_invalid_sql():
     with pytest.raises(ValueError, match="Invalid filter"):
         mcp_server._validate_filter(")))invalid((( sql garbage")
+
+
+def test_validate_filter_accepts_dialect_syntax():
+    mcp_server._validate_filter("status = 'active'", dialect="bigquery")
+    mcp_server._validate_filter("amount > 100", dialect="duckdb")

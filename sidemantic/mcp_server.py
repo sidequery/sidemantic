@@ -97,15 +97,19 @@ def _convert_to_json_compatible(value: Any) -> Any:
     return value
 
 
-def _validate_filter(filter_str: str) -> None:
+def _validate_filter(filter_str: str, dialect: str | None = None) -> None:
     """Validate a filter string to prevent SQL injection.
 
-    Parses the filter as a SQL expression and rejects DDL/DML statements.
+    Parses the filter as a SQL expression using the active dialect and rejects
+    DDL/DML statements. Also rejects multi-statement input (semicolons).
     """
     import sqlglot
 
+    if ";" in filter_str:
+        raise ValueError("Filter contains disallowed SQL: multi-statement input")
+
     try:
-        parsed = sqlglot.parse_one(f"SELECT 1 WHERE {filter_str}")
+        parsed = sqlglot.parse_one(f"SELECT 1 WHERE {filter_str}", dialect=dialect)
     except Exception:
         raise ValueError(f"Invalid filter expression: {filter_str}")
 
@@ -381,7 +385,7 @@ def run_query(
 
     # Validate filter to prevent SQL injection
     if where:
-        _validate_filter(where)
+        _validate_filter(where, dialect=layer.dialect)
 
     # Compile SQL
     sql = layer.compile(
@@ -493,7 +497,7 @@ def create_chart(
 
     # Validate filter to prevent SQL injection
     if where:
-        _validate_filter(where)
+        _validate_filter(where, dialect=layer.dialect)
 
     # Compile and execute query (same as run_query)
     sql = layer.compile(

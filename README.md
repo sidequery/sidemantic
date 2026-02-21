@@ -1,6 +1,6 @@
 # Sidemantic
 
-A universal metrics layer for consistent metrics across your data stack. Compatible with 15+ semantic model formats.
+The universal metrics layer for consistent metrics across your data stack. Compatible with 15+ semantic model formats.
 
 - **Supported Formats:** Sidemantic (YAML, Python or SQL), Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL (also via ADBC)

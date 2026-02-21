@@ -64,20 +64,27 @@ def _validate_filter(filter_str: str, dialect: str | None = None) -> None:
     except Exception:
         raise ValueError(f"Invalid filter expression: {filter_str}")
 
+    # Build the disallowed SQL node types defensively because sqlglot class
+    # names can vary by version (e.g., AlterTable vs Alter).
+    disallowed_type_names = (
+        "Drop",
+        "Insert",
+        "Delete",
+        "Update",
+        "Create",
+        "Command",
+        "AlterTable",
+        "Alter",
+    )
+    disallowed_types = tuple(
+        expr_type
+        for type_name in disallowed_type_names
+        if (expr_type := getattr(sqlglot.exp, type_name, None)) is not None
+    )
+
     # Walk the parse tree and reject DDL/DML nodes
     for node in parsed.walk():
-        if isinstance(
-            node,
-            (
-                sqlglot.exp.Drop,
-                sqlglot.exp.Insert,
-                sqlglot.exp.Delete,
-                sqlglot.exp.Update,
-                sqlglot.exp.Create,
-                sqlglot.exp.Command,
-                sqlglot.exp.AlterTable,
-            ),
-        ):
+        if disallowed_types and isinstance(node, disallowed_types):
             raise ValueError(f"Filter contains disallowed SQL: {type(node).__name__}")
 
 

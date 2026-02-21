@@ -355,10 +355,8 @@ fn extract_aggregation(expr: &Expression) -> Option<(String, String)> {
                 "count_distinct" => "count_distinct",
                 _ => return None,
             };
-            let inner = if f.args.is_empty() {
+            let inner = if f.args.is_empty() || matches!(f.args[0], Expression::Star(_)) {
                 String::new()
-            } else if matches!(f.args[0], Expression::Star(_)) {
-                String::new() // COUNT(*)
             } else {
                 generate_expr_str(&f.args[0])
             };

@@ -259,7 +259,7 @@ impl<'a> QueryRewriter<'a> {
             MetricType::Simple => {
                 // Handle Expression type: sql field contains the full expression
                 if let Some(crate::core::Aggregation::Expression) = &metric.agg {
-                    return self.parse_sql_fragment(&metric.sql_expr());
+                    return self.parse_sql_fragment(metric.sql_expr());
                 }
 
                 let agg = metric.agg.as_ref().unwrap();
@@ -322,7 +322,7 @@ impl<'a> QueryRewriter<'a> {
             }
             MetricType::Derived | MetricType::Ratio => {
                 // For derived/ratio metrics, parse the SQL expression
-                self.parse_sql_fragment(&metric.sql_expr())
+                self.parse_sql_fragment(metric.sql_expr())
             }
             MetricType::Cumulative | MetricType::TimeComparison => {
                 // Complex metric types require special handling with window functions

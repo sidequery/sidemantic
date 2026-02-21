@@ -3,7 +3,7 @@
 A universal metrics layer for consistent metrics across your data stack. Compatible with 15+ semantic model formats.
 
 - **Supported Formats:** Sidemantic (YAML, Python or SQL), Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
-- **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL, ADBC
+- **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL (also via ADBC)
 
 [Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
@@ -252,74 +252,19 @@ load_from_directory(layer, "my_models/")  # Auto-detects formats
 
 ## Docker
 
-Build the image (includes all database drivers, PG server, and MCP server):
+The published image is [`sidequery/sidemantic`](https://hub.docker.com/r/sidequery/sidemantic) on Docker Hub. Mount your models directory as a volume at `/app/models`:
 
 ```bash
-docker build -t sidemantic .
+docker run -p 5433:5433 -v ./models:/app/models sidequery/sidemantic
 ```
 
-### PostgreSQL server (default)
-
-Mount your models directory and expose port 5433:
+Demo mode (built-in sample data, no volume needed):
 
 ```bash
-docker run -p 5433:5433 -v ./models:/app/models sidemantic
+docker run -p 5433:5433 sidequery/sidemantic --demo
 ```
 
-Connect with any PostgreSQL client:
-
-```bash
-psql -h localhost -p 5433 -U any -d sidemantic
-```
-
-With a backend database connection:
-
-```bash
-docker run -p 5433:5433 \
-  -v ./models:/app/models \
-  -e SIDEMANTIC_CONNECTION="postgres://user:pass@host:5432/db" \
-  sidemantic
-```
-
-### MCP server
-
-```bash
-docker run -v ./models:/app/models -e SIDEMANTIC_MODE=mcp sidemantic
-```
-
-### Both servers simultaneously
-
-Runs the PG server in the background and MCP on stdio:
-
-```bash
-docker run -p 5433:5433 -v ./models:/app/models -e SIDEMANTIC_MODE=both sidemantic
-```
-
-### Demo mode
-
-```bash
-docker run -p 5433:5433 sidemantic --demo
-```
-
-### Baking models into the image
-
-Create a `Dockerfile` that copies your models at build time:
-
-```dockerfile
-FROM sidemantic
-COPY my_models/ /app/models/
-```
-
-### Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `SIDEMANTIC_MODE` | `serve` (default), `mcp`, or `both` |
-| `SIDEMANTIC_CONNECTION` | Database connection string |
-| `SIDEMANTIC_DB` | Path to DuckDB file (inside container) |
-| `SIDEMANTIC_USERNAME` | PG server auth username |
-| `SIDEMANTIC_PASSWORD` | PG server auth password |
-| `SIDEMANTIC_PORT` | PG server port (default 5433) |
+See [`examples/docker/`](examples/docker/) for MCP mode, env vars, building from source, and integration test services.
 
 ## Testing
 

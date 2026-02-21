@@ -8,7 +8,7 @@
     "type": "git",
     "url": "https://github.com/sidequery/sidemantic"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -26,7 +26,9 @@
   "activationEvents": [
     "onLanguage:sidemantic-sql",
     "workspaceContains:**/*.sidemantic.yaml",
-    "workspaceContains:**/*.sidemantic.yml"
+    "workspaceContains:**/*.sidemantic.yml",
+    "workspaceContains:**/*.sidemantic.py",
+    "workspaceContains:**/sidemantic.py"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -63,6 +65,11 @@
           "type": "string",
           "default": "sidemantic",
           "description": "Path to the sidemantic CLI executable"
+        },
+        "sidemantic.lsp.python.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Sidemantic language server intelligence for *.sidemantic.py files"
         }
       }
     }

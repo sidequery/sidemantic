@@ -1,12 +1,10 @@
 //! Dependency analysis for derived metrics
 //!
-//! Extracts metric dependencies from SQL expressions using sqlparser.
+//! Extracts metric dependencies from SQL expressions using polyglot-sql.
 
 use std::collections::HashSet;
 
-use sqlparser::ast::{Expr, SelectItem, SetExpr, Statement};
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::Parser;
+use polyglot_sql::{DialectType, Expression, ExpressionWalk};
 
 use super::model::{Metric, MetricType};
 use super::SemanticGraph;
@@ -86,25 +84,22 @@ fn has_operators(s: &str) -> bool {
 
 /// Extract column references from a SQL expression
 ///
-/// Uses sqlparser to parse the expression and find all column identifiers.
+/// Uses polyglot-sql to parse the expression and find all column identifiers.
 fn extract_column_references(sql: &str) -> HashSet<String> {
     let mut refs = HashSet::new();
 
     // Wrap in SELECT to make it valid SQL
     let wrapped = format!("SELECT {sql}");
 
-    let dialect = GenericDialect {};
-    let Ok(statements) = Parser::parse_sql(&dialect, &wrapped) else {
+    let Ok(expressions) = polyglot_sql::parse(&wrapped, DialectType::Generic) else {
         // If parsing fails, try simple extraction
         return extract_simple_references(sql);
     };
 
-    for statement in statements {
-        if let Statement::Query(query) = statement {
-            if let SetExpr::Select(select) = *query.body {
-                for item in select.projection {
-                    extract_refs_from_select_item(&item, &mut refs);
-                }
+    for expr in expressions {
+        if let Expression::Select(select) = expr {
+            for item in &select.expressions {
+                extract_refs_from_expr(item, &mut refs);
             }
         }
     }
@@ -112,69 +107,22 @@ fn extract_column_references(sql: &str) -> HashSet<String> {
     refs
 }
 
-/// Extract column references from a SELECT item
-fn extract_refs_from_select_item(item: &SelectItem, refs: &mut HashSet<String>) {
-    match item {
-        SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-            extract_refs_from_expr(expr, refs);
-        }
-        _ => {}
-    }
-}
-
-/// Recursively extract column references from an expression
-fn extract_refs_from_expr(expr: &Expr, refs: &mut HashSet<String>) {
-    match expr {
-        Expr::Identifier(ident) => {
-            refs.insert(ident.value.clone());
-        }
-        Expr::CompoundIdentifier(idents) => {
-            // model.column or schema.table.column
-            let names: Vec<&str> = idents.iter().map(|i| i.value.as_str()).collect();
-            refs.insert(names.join("."));
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            extract_refs_from_expr(left, refs);
-            extract_refs_from_expr(right, refs);
-        }
-        Expr::UnaryOp { expr, .. } => {
-            extract_refs_from_expr(expr, refs);
-        }
-        Expr::Nested(inner) => {
-            extract_refs_from_expr(inner, refs);
-        }
-        Expr::Function(func) => {
-            if let sqlparser::ast::FunctionArguments::List(args) = &func.args {
-                for arg in &args.args {
-                    if let sqlparser::ast::FunctionArg::Unnamed(
-                        sqlparser::ast::FunctionArgExpr::Expr(e),
-                    ) = arg
-                    {
-                        extract_refs_from_expr(e, refs);
-                    }
+/// Recursively extract column references from an expression using DFS
+fn extract_refs_from_expr(expr: &Expression, refs: &mut HashSet<String>) {
+    for node in expr.dfs() {
+        match node {
+            Expression::Identifier(ident) => {
+                refs.insert(ident.name.clone());
+            }
+            Expression::Column(col) => {
+                if let Some(table) = &col.table {
+                    refs.insert(format!("{}.{}", table.name, col.name.name));
+                } else {
+                    refs.insert(col.name.name.clone());
                 }
             }
+            _ => {}
         }
-        Expr::Case {
-            operand,
-            conditions,
-            results,
-            else_result,
-        } => {
-            if let Some(op) = operand {
-                extract_refs_from_expr(op, refs);
-            }
-            for cond in conditions {
-                extract_refs_from_expr(cond, refs);
-            }
-            for result in results {
-                extract_refs_from_expr(result, refs);
-            }
-            if let Some(else_r) = else_result {
-                extract_refs_from_expr(else_r, refs);
-            }
-        }
-        _ => {}
     }
 }
 

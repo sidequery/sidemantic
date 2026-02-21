@@ -2649,6 +2649,12 @@
         },
         "description": "Model (dataset) definition.\n\nModels are the foundation of the semantic layer, mapping to physical tables\nor SQL expressions. Auto-registers with the current semantic layer context if available.",
         "properties": {
+          "auto_dimensions": {
+            "default": false,
+            "description": "Auto-discover dimensions from database schema when added to a SemanticLayer",
+            "title": "Auto Dimensions",
+            "type": "boolean"
+          },
           "default_grain": {
             "anyOf": [
               {

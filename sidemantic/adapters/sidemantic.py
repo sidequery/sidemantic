@@ -375,6 +375,7 @@ class SidemanticAdapter(BaseAdapter):
             default_time_dimension=model_def.get("default_time_dimension"),
             default_grain=model_def.get("default_grain"),
             metadata=model_def.get("metadata"),
+            auto_dimensions=model_def.get("auto_dimensions", False),
         )
 
     def _parse_metric(self, metric_def: dict) -> Metric | None:

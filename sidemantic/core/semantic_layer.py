@@ -174,10 +174,24 @@ class SemanticLayer:
         if existing is not None:
             if existing is model:
                 return
-            if existing.model_dump() == model.model_dump():
+            existing_dump = existing.model_dump()
+            new_dump = model.model_dump()
+            if existing_dump == new_dump:
                 return
+            # When both models use auto_dimensions, the existing model has
+            # introspected dimensions that the new model doesn't yet. Compare
+            # excluding dimensions to preserve idempotent add_model behavior.
+            if existing.auto_dimensions and model.auto_dimensions:
+                existing_dump.pop("dimensions", None)
+                new_dump.pop("dimensions", None)
+                if existing_dump == new_dump:
+                    return
 
         self._normalize_model_table(model)
+
+        # Auto-introspect dimensions from DB schema if requested
+        if model.auto_dimensions:
+            self._introspect_dimensions(model)
 
         errors = validate_model(model)
         if errors:
@@ -246,6 +260,136 @@ class SemanticLayer:
             elif row:
                 catalogs.add(row[0])
         return catalogs
+
+    def _introspect_dimensions(self, model: Model) -> None:
+        """Auto-discover dimensions from database schema.
+
+        Queries the database for column metadata and creates Dimension objects
+        for columns that don't already have explicit definitions.
+
+        Args:
+            model: Model to introspect dimensions for
+        """
+        from sidemantic.core.dimension import Dimension
+
+        existing_dim_names = {dim.name for dim in model.dimensions}
+        pk_columns = set(model.primary_key_columns)
+
+        columns = self._get_model_columns(model)
+        if not columns:
+            return
+
+        for col in columns:
+            col_name = col["column_name"]
+
+            # Skip columns that already have explicit dimensions
+            if col_name in existing_dim_names:
+                continue
+
+            # Skip primary key columns
+            if col_name in pk_columns:
+                continue
+
+            dim_type, granularity = self._map_db_type(col["data_type"])
+            dim = Dimension(name=col_name, type=dim_type, granularity=granularity)
+            model.dimensions.append(dim)
+
+    def _get_model_columns(self, model: Model) -> list[dict]:
+        """Get column metadata for a model's backing table or SQL.
+
+        Returns:
+            List of dicts with 'column_name' and 'data_type' keys
+        """
+        if model.table:
+            # Parse table reference: "table", "schema.table", or "catalog.schema.table"
+            parts = model.table.split(".")
+            if len(parts) >= 3:
+                # catalog.schema.table -- use last two parts
+                schema, table_name = parts[-2], parts[-1]
+            elif len(parts) == 2:
+                schema, table_name = parts
+            else:
+                schema, table_name = None, parts[-1]
+            try:
+                return self.adapter.get_columns(table_name, schema=schema)
+            except Exception:
+                return []
+        elif model.sql:
+            # For SQL-based models, run a LIMIT 0 query to get column types
+            try:
+                result = self.adapter.execute(f"SELECT * FROM ({model.sql}) AS _introspect LIMIT 0")
+                # DuckDB returns column info via .description
+                if hasattr(result, "description") and result.description:
+                    return [
+                        {
+                            "column_name": desc[0],
+                            "data_type": str(desc[1]) if len(desc) > 1 and desc[1] is not None else "VARCHAR",
+                        }
+                        for desc in result.description
+                    ]
+            except Exception:
+                return []
+        return []
+
+    @staticmethod
+    def _map_db_type(db_type: str) -> tuple[str, str | None]:
+        """Map a database column type to a sidemantic dimension type and granularity.
+
+        Args:
+            db_type: Database column type string (e.g., 'VARCHAR', 'TIMESTAMP', 'INTEGER')
+
+        Returns:
+            Tuple of (dimension_type, granularity). Granularity is only set for time types.
+        """
+        upper = db_type.upper()
+
+        # Strip precision/length info: "VARCHAR(255)" -> "VARCHAR", "DECIMAL(10,2)" -> "DECIMAL"
+        base_type = upper.split("(")[0].strip()
+
+        # Also handle array/complex types: "INTEGER[]" -> "INTEGER"
+        base_type = base_type.rstrip("[]")
+
+        time_types = {
+            "DATE": "day",
+            "TIMESTAMP": "second",
+            "TIMESTAMPTZ": "second",
+            "TIMESTAMP WITH TIME ZONE": "second",
+            "TIMESTAMP WITHOUT TIME ZONE": "second",
+            "DATETIME": "second",
+            "TIME": "second",
+            "TIMETZ": "second",
+        }
+        if base_type in time_types:
+            return "time", time_types[base_type]
+
+        boolean_types = {"BOOLEAN", "BOOL"}
+        if base_type in boolean_types:
+            return "boolean", None
+
+        numeric_types = {
+            "INTEGER",
+            "INT",
+            "INT2",
+            "INT4",
+            "INT8",
+            "BIGINT",
+            "SMALLINT",
+            "TINYINT",
+            "HUGEINT",
+            "FLOAT",
+            "FLOAT4",
+            "FLOAT8",
+            "DOUBLE",
+            "DECIMAL",
+            "NUMERIC",
+            "REAL",
+            "NUMBER",
+        }
+        if base_type in numeric_types:
+            return "numeric", None
+
+        # Everything else (VARCHAR, TEXT, CHAR, STRING, ENUM, BLOB, JSON, etc.)
+        return "categorical", None
 
     def add_metric(self, measure: Metric) -> None:
         """Add a measure to the semantic layer.

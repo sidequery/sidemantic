@@ -436,13 +436,6 @@ class Migrator:
                             if table_name and table_name in analysis.table_aliases:
                                 table_name = analysis.table_aliases[table_name]
 
-                    # Normalize COUNT(column) to COUNT(*) since they are
-                    # semantically equivalent for non-nullable columns (the
-                    # common case).  This prevents duplicate metrics and
-                    # coverage gaps when analysts write COUNT(id) vs COUNT(*).
-                    if agg_name == "count" and col_name != "*":
-                        col_name = "*"
-
                     # Infer table if not found
                     if not table_name and len(analysis.tables) == 1:
                         table_name = list(analysis.tables)[0]
@@ -521,7 +514,6 @@ class Migrator:
                                 agg_type_name = "count_distinct"
                             else:
                                 agg_type_name = "count"
-                                agg_col = "*"  # normalize COUNT(col) -> COUNT(*)
                         elif isinstance(agg, exp.Sum):
                             agg_type_name = "sum"
                         elif isinstance(agg, exp.Avg):
@@ -1438,23 +1430,28 @@ class Migrator:
                 # Add base metrics
                 if table in table_metrics:
                     for agg_type, col_name in sorted(table_metrics[table]):
-                        # Check if we have an alias for this metric
+                        # Generate the canonical metric name first
+                        if agg_type == "count" and col_name == "*":
+                            generated_name = "count"
+                        elif agg_type == "count" and col_name != "*":
+                            generated_name = f"{col_name}_count"
+                        elif agg_type == "count_distinct":
+                            generated_name = f"{col_name}_count_distinct"
+                        else:
+                            generated_name = f"{agg_type}_{col_name}"
+
+                        # Prefer alias if available
                         alias_key = (table, agg_type, col_name)
                         if alias_key in metric_aliases:
                             metric_name = metric_aliases[alias_key]
                         else:
-                            # Generate metric name
-                            if agg_type == "count" and col_name == "*":
-                                metric_name = "count"
-                            elif agg_type == "count" and col_name != "*":
-                                # COUNT(column) - use column_count pattern
-                                metric_name = f"{col_name}_count"
-                            elif agg_type == "count_distinct":
-                                metric_name = f"{col_name}_count"
-                            else:
-                                metric_name = f"{agg_type}_{col_name}"
+                            metric_name = generated_name
 
-                        # Avoid duplicates
+                        # If alias collides with another metric, fall back to generated name
+                        if metric_name in seen_metrics and metric_name != generated_name:
+                            metric_name = generated_name
+
+                        # Avoid true duplicates (same aggregation seen from multiple queries)
                         if metric_name in seen_metrics:
                             continue
                         seen_metrics.add(metric_name)
@@ -1681,7 +1678,7 @@ class Migrator:
                     # COUNT(column) - use column_count pattern
                     metric_name = f"{col_name}_count"
                 elif agg_type == "count_distinct":
-                    metric_name = f"{col_name}_count"
+                    metric_name = f"{col_name}_count_distinct"
                 else:
                     metric_name = f"{agg_type}_{col_name}"
 
@@ -1693,6 +1690,15 @@ class Migrator:
                 if not real_table and len(analysis.tables) == 1:
                     real_table = list(analysis.tables)[0]
                 select_parts.append(f"{real_table}.{metric_name}")
+
+            # Add cross-model derived metrics (graph-level, no model prefix)
+            # Only include if all aggregation parts have a resolved table,
+            # otherwise generate_graph_metrics won't be able to create the
+            # metric and the rewritten query would reference something that
+            # doesn't exist.
+            for cm in analysis.cross_model_derived_metrics:
+                if all(part["table_name"] for part in cm["agg_parts"]):
+                    select_parts.append(cm["name"])
 
             if not select_parts:
                 continue

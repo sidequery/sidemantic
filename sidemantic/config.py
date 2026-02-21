@@ -104,6 +104,7 @@ class PostgresServerConfig(BaseModel):
     This feature is experimental and may change.
     """
 
+    host: str = Field(default="127.0.0.1", description="Host/IP to bind to (use 0.0.0.0 for Docker)")
     port: int = Field(default=5433, description="Port to listen on")
     username: str | None = Field(default=None, description="Username for authentication (optional)")
     password: str | None = Field(default=None, description="Password for authentication (optional)")

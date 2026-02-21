@@ -252,6 +252,77 @@ load_from_directory(layer, "my_models/")  # Auto-detects formats
 | Databricks | ✅ | `uv add sidemantic[databricks]` |
 | Spark SQL | ✅ | `uv add sidemantic[spark]` |
 
+## Docker
+
+Build the image (includes all database drivers, PG server, and MCP server):
+
+```bash
+docker build -t sidemantic .
+```
+
+### PostgreSQL server (default)
+
+Mount your models directory and expose port 5433:
+
+```bash
+docker run -p 5433:5433 -v ./models:/app/models sidemantic
+```
+
+Connect with any PostgreSQL client:
+
+```bash
+psql -h localhost -p 5433 -U any -d sidemantic
+```
+
+With a backend database connection:
+
+```bash
+docker run -p 5433:5433 \
+  -v ./models:/app/models \
+  -e SIDEMANTIC_CONNECTION="postgres://user:pass@host:5432/db" \
+  sidemantic
+```
+
+### MCP server
+
+```bash
+docker run -v ./models:/app/models -e SIDEMANTIC_MODE=mcp sidemantic
+```
+
+### Both servers simultaneously
+
+Runs the PG server in the background and MCP on stdio:
+
+```bash
+docker run -p 5433:5433 -v ./models:/app/models -e SIDEMANTIC_MODE=both sidemantic
+```
+
+### Demo mode
+
+```bash
+docker run -p 5433:5433 sidemantic --demo
+```
+
+### Baking models into the image
+
+Create a `Dockerfile` that copies your models at build time:
+
+```dockerfile
+FROM sidemantic
+COPY my_models/ /app/models/
+```
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `SIDEMANTIC_MODE` | `serve` (default), `mcp`, or `both` |
+| `SIDEMANTIC_CONNECTION` | Database connection string |
+| `SIDEMANTIC_DB` | Path to DuckDB file (inside container) |
+| `SIDEMANTIC_USERNAME` | PG server auth username |
+| `SIDEMANTIC_PASSWORD` | PG server auth password |
+| `SIDEMANTIC_PORT` | PG server port (default 5433) |
+
 ## Testing
 
 ```bash

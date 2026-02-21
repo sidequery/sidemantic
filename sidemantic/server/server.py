@@ -33,6 +33,7 @@ def map_type(duckdb_type: str) -> str:
 
 def start_server(
     layer: SemanticLayer,
+    host: str = "127.0.0.1",
     port: int = 5433,
     username: str | None = None,
     password: str | None = None,
@@ -41,6 +42,7 @@ def start_server(
 
     Args:
         layer: Semantic layer instance
+        host: Host/IP to bind to (use 0.0.0.0 for Docker)
         port: Port to listen on
         username: Username for authentication (optional)
         password: Password for authentication (optional)
@@ -52,7 +54,7 @@ def start_server(
             super().__init__(connection_id, executor, layer, username, password)
 
     # Start server
-    server = riffq.RiffqServer(f"127.0.0.1:{port}", connection_cls=BoundConnection)
+    server = riffq.RiffqServer(f"{host}:{port}", connection_cls=BoundConnection)
 
     # Register catalog
     typer.echo("Registering semantic layer catalog...", err=True)
@@ -134,12 +136,13 @@ def start_server(
         server._server.register_table("sidemantic", "semantic_layer", "metrics", metric_columns)
         typer.echo("  Registered table: semantic_layer.metrics", err=True)
 
-    typer.echo(f"\nStarting PostgreSQL-compatible server on 127.0.0.1:{port}", err=True)
+    typer.echo(f"\nStarting PostgreSQL-compatible server on {host}:{port}", err=True)
     if username:
         typer.echo(f"Authentication: username={username}", err=True)
     else:
         typer.echo("Authentication: disabled (any username/password accepted)", err=True)
-    typer.echo(f"\nConnect with: psql -h 127.0.0.1 -p {port} -U {username or 'any'} -d sidemantic\n", err=True)
+    connect_host = "localhost" if host == "0.0.0.0" else host
+    typer.echo(f"\nConnect with: psql -h {connect_host} -p {port} -U {username or 'any'} -d sidemantic\n", err=True)
 
     # Disable catalog_emulation and handle catalog queries manually in our Python handler
     # This prevents riffq from intercepting queries with its DataFusion parser (which fails on multi-statement queries)

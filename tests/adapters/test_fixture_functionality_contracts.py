@@ -147,6 +147,24 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
 
 EXPECTED_NO_COMPILE_ADAPTERS = {"AtScaleSMLAdapter"}
 
+EXACT_SEMANTIC_ADAPTER_FIXTURES = {
+    "AtScaleSMLAdapter": "tests/fixtures/atscale_sml/dimension_customers.yml",
+    "BSLAdapter": "tests/fixtures/bsl/ga_sessions.yaml",
+    "CubeAdapter": "tests/fixtures/cube/case_switch_ownership.yaml",
+    "GoodDataAdapter": "tests/fixtures/gooddata/cloud_kitchen_sink.json",
+    "HexAdapter": "tests/fixtures/hex/inventory.yml",
+    "HolisticsAdapter": "tests/fixtures/holistics/accounts.model.aml",
+    "LookMLAdapter": "tests/fixtures/lookml/bq_thelook_derived_table.view.lkml",
+    "MalloyAdapter": "tests/fixtures/malloy/ga4.malloy",
+    "MetricFlowAdapter": "tests/fixtures/metricflow/accounts_source.yml",
+    "OmniAdapter": "tests/fixtures/omni/estore/views/dim_categories.view.yaml",
+    "OSIAdapter": "tests/fixtures/osi/ecommerce.yaml",
+    "RillAdapter": "tests/fixtures/rill/cost_monitoring.yaml",
+    "SnowflakeAdapter": "tests/fixtures/snowflake/customer_loyalty_metrics.yaml",
+    "SupersetAdapter": "tests/fixtures/superset/covid_dashboard.yaml",
+    "ThoughtSpotAdapter": "tests/fixtures/thoughtspot/kitchen_sink.table.tml",
+}
+
 EXECUTION_SEMANTIC_FIXTURE_CASES = (
     {
         "fixture_path": "tests/fixtures/atscale_sml/metric_order_count.yml",
@@ -372,6 +390,67 @@ def _execute_query_spec(graph, query_spec: dict) -> tuple[list[str], list[tuple]
         conn.close()
 
 
+def _is_deterministic_query_candidate(query_spec: dict) -> bool:
+    if query_spec["query_kind"] == "metric":
+        metric_agg = query_spec.get("metric_agg")
+        if metric_agg == "count":
+            return not query_spec.get("has_metric_filters", False)
+        return (
+            metric_agg in {"count_distinct", "sum", "avg", "min", "max", "median"}
+            and not query_spec.get("has_metric_filters", False)
+            and query_spec.get("metric_sql_is_plain_column", False)
+        )
+    return query_spec.get("dimension_sql_is_plain_column", False)
+
+
+def _assert_exact_deterministic_result(query_spec: dict, rows: list[tuple], fixture_path: str) -> None:
+    if query_spec["query_kind"] == "metric":
+        assert len(rows) == 1, f"{fixture_path}: expected one metric row, got {len(rows)}"
+        value = rows[0][0]
+        metric_agg = query_spec["metric_agg"]
+        if metric_agg == "count":
+            assert value == 2, f"{fixture_path}: expected count=2, got {value}"
+        elif metric_agg == "count_distinct":
+            assert value == 2, f"{fixture_path}: expected count_distinct=2, got {value}"
+        elif metric_agg == "sum":
+            assert value == 3.0, f"{fixture_path}: expected sum=3.0, got {value}"
+        elif metric_agg == "avg":
+            assert value == 1.5, f"{fixture_path}: expected avg=1.5, got {value}"
+        elif metric_agg == "min":
+            assert value == 1.0, f"{fixture_path}: expected min=1.0, got {value}"
+        elif metric_agg == "max":
+            assert value == 2.0, f"{fixture_path}: expected max=2.0, got {value}"
+        elif metric_agg == "median":
+            assert value == 1.5, f"{fixture_path}: expected median=1.5, got {value}"
+        else:
+            raise AssertionError(f"{fixture_path}: unsupported deterministic metric agg {metric_agg}")
+        return
+
+    result_values = {row[0] for row in rows}
+    dimension_type = query_spec["dimension_type"]
+    if dimension_type == "time":
+        assert result_values == {date(2024, 1, 1), date(2024, 1, 2)}, (
+            f"{fixture_path}: expected time values [2024-01-01, 2024-01-02], got {sorted(result_values)}"
+        )
+    elif dimension_type == "numeric":
+        assert {float(value) for value in result_values} == {1.0, 2.0}, (
+            f"{fixture_path}: expected numeric values [1, 2], got {sorted(result_values)}"
+        )
+    elif dimension_type == "boolean":
+        assert result_values == {True, False}, (
+            f"{fixture_path}: expected boolean values [True, False], got {sorted(result_values)}"
+        )
+    else:
+        if all(isinstance(value, str) for value in result_values):
+            assert result_values == {"x", "y"}, (
+                f"{fixture_path}: expected categorical values ['x', 'y'], got {sorted(result_values)}"
+            )
+        else:
+            assert {float(value) for value in result_values} == {1.0, 2.0}, (
+                f"{fixture_path}: expected categorical fallback values [1, 2], got {sorted(result_values)}"
+            )
+
+
 @pytest.mark.parametrize(
     ("adapter_cls", "fixture_path"),
     ALL_FIXTURE_CASES,
@@ -547,3 +626,38 @@ def test_fixture_representative_execution_semantics():
             assert result_values == case["expected_values"], (
                 f"{fixture_path}: expected values={sorted(case['expected_values'])}, got {sorted(result_values)}"
             )
+
+
+def test_fixture_adapter_exact_execution_semantics():
+    fixture_to_adapter = {fixture_path: adapter_cls for adapter_cls, fixture_path in PARSEABLE_FIXTURE_CASES}
+    adapters_with_execution = set()
+    for adapter_cls, fixture_path in PARSEABLE_FIXTURE_CASES:
+        if _pick_execution_query(_parse_graph(adapter_cls, fixture_path)):
+            adapters_with_execution.add(adapter_cls.__name__)
+
+    assert set(EXACT_SEMANTIC_ADAPTER_FIXTURES) == adapters_with_execution, (
+        "Exact semantic fixture adapter set drifted.\n"
+        f"Expected adapters: {sorted(adapters_with_execution)}\n"
+        f"Actual adapters: {sorted(EXACT_SEMANTIC_ADAPTER_FIXTURES)}"
+    )
+
+    for adapter_name, fixture_path in EXACT_SEMANTIC_ADAPTER_FIXTURES.items():
+        assert fixture_path in fixture_to_adapter, f"{fixture_path}: fixture missing from parseable corpus"
+        adapter_cls = fixture_to_adapter[fixture_path]
+        assert adapter_cls.__name__ == adapter_name, (
+            f"{fixture_path}: expected adapter {adapter_name}, got {adapter_cls.__name__}"
+        )
+
+        graph = _parse_graph(adapter_cls, fixture_path)
+        query_spec = _pick_execution_query(graph)
+        assert query_spec is not None, f"{fixture_path}: expected execution query candidate"
+        assert _is_deterministic_query_candidate(query_spec), (
+            f"{fixture_path}: expected deterministic execution candidate, got {query_spec}"
+        )
+
+        column_names, rows = _execute_query_spec(graph, query_spec)
+        assert column_names == [query_spec["field_name"]], (
+            f"{fixture_path}: expected output column {query_spec['field_name']}, got {column_names}"
+        )
+        _assert_execution_result_contract(query_spec, rows, fixture_path)
+        _assert_exact_deterministic_result(query_spec, rows, fixture_path)

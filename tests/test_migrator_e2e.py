@@ -293,7 +293,7 @@ def test_coverage_analysis_join_query():
     assert "customers.customer_segment" in rewritten_sql
 
     # Verify metrics use resolved table names
-    assert "orders.order_id_count" in rewritten_sql
+    assert "orders.count" in rewritten_sql
     assert "orders.sum_total_amount" in rewritten_sql
 
     conn.close()

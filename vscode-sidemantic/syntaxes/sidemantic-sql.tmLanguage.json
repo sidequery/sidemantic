@@ -1,0 +1,90 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Sidemantic SQL",
+  "scopeName": "source.sidemantic-sql",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords" },
+    { "include": "#properties" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-dash.sidemantic-sql",
+          "match": "--.*$"
+        },
+        {
+          "name": "comment.block.sidemantic-sql",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.sidemantic-sql",
+          "match": "\\b(MODEL|DIMENSION|METRIC|RELATIONSHIP|SEGMENT)\\b"
+        },
+        {
+          "name": "keyword.other.sidemantic-sql",
+          "match": "\\b(AS|FROM|WHERE|AND|OR|NOT|IN|IS|NULL|TRUE|FALSE|JOIN|ON|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|GROUP|BY|ORDER|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|CASE|WHEN|THEN|ELSE|END|DISTINCT|ALL|ANY|EXISTS|BETWEEN|LIKE|ILIKE)\\b"
+        }
+      ]
+    },
+    "properties": {
+      "patterns": [
+        {
+          "name": "variable.other.property.sidemantic-sql",
+          "match": "\\b(name|table|primary_key|sql|agg|type|description|dimensions|metrics|format|label|hidden|model|from_column|to_column|to_model|filter|base_metric|comparison_type|numerator|denominator|entity|base_event|conversion_event|window|grain|measure|type_params|time_dimension|default_time_dimension|timestamp_column|timestamp_granularity)\\b"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.single.sidemantic-sql",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.sidemantic-sql",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.sidemantic-sql",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.sidemantic-sql",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.sidemantic-sql",
+          "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.sidemantic-sql",
+          "match": "(=|<>|!=|<|>|<=|>=|\\+|-|\\*|/|%|\\|\\||&&)"
+        }
+      ]
+    }
+  }
+}

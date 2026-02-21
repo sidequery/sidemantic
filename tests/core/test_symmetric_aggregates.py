@@ -998,3 +998,26 @@ class TestSymmetricAggregateEdgeCases:
         # NULLIF prevents division by zero, returns NULL
         result = conn.execute(f"SELECT {symmetric_sql} FROM joined_data").fetchone()[0]
         assert result is None
+
+
+class TestBigQueryBignumericOverflow:
+    """Verify BigQuery symmetric aggregate uses BIGNUMERIC cast."""
+
+    def test_bigquery_sum_uses_bignumeric(self):
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="sum",
+            dialect="bigquery",
+        )
+        assert "BIGNUMERIC" in sql
+        assert "FARM_FINGERPRINT" in sql
+
+    def test_bigquery_avg_uses_bignumeric(self):
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="avg",
+            dialect="bigquery",
+        )
+        assert "BIGNUMERIC" in sql

@@ -422,6 +422,27 @@ models:
         assert called["directory"] == tmp_path
 
 
+class TestSemanticLayerExitClosesAdapter:
+    """Verify SemanticLayer closes adapter on __exit__."""
+
+    def test_exit_closes_adapter(self):
+        layer = SemanticLayer(auto_register=False)
+        mock_adapter = MagicMock()
+        mock_adapter.close = MagicMock()
+        layer.adapter = mock_adapter
+
+        layer.__exit__(None, None, None)
+        mock_adapter.close.assert_called_once()
+
+    def test_exit_works_without_close_method(self):
+        layer = SemanticLayer(auto_register=False)
+        mock_adapter = MagicMock(spec=[])  # No close method
+        layer.adapter = mock_adapter
+
+        # Should not raise even if adapter has no close
+        layer.__exit__(None, None, None)
+
+
 class TestWidgetAdapterIntegration:
     """Tests for widget using adapter interface."""
 

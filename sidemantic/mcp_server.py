@@ -97,6 +97,35 @@ def _convert_to_json_compatible(value: Any) -> Any:
     return value
 
 
+def _validate_filter(filter_str: str) -> None:
+    """Validate a filter string to prevent SQL injection.
+
+    Parses the filter as a SQL expression and rejects DDL/DML statements.
+    """
+    import sqlglot
+
+    try:
+        parsed = sqlglot.parse_one(f"SELECT 1 WHERE {filter_str}")
+    except Exception:
+        raise ValueError(f"Invalid filter expression: {filter_str}")
+
+    # Walk the parse tree and reject DDL/DML nodes
+    for node in parsed.walk():
+        if isinstance(
+            node,
+            (
+                sqlglot.exp.Drop,
+                sqlglot.exp.Insert,
+                sqlglot.exp.Delete,
+                sqlglot.exp.Update,
+                sqlglot.exp.Create,
+                sqlglot.exp.Command,
+                sqlglot.exp.AlterTable,
+            ),
+        ):
+            raise ValueError(f"Filter contains disallowed SQL: {type(node).__name__}")
+
+
 def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str | None:
     related_name = rel.name
     related_model = models.get(related_name)
@@ -350,6 +379,10 @@ def run_query(
     """
     layer = get_layer()
 
+    # Validate filter to prevent SQL injection
+    if where:
+        _validate_filter(where)
+
     # Compile SQL
     sql = layer.compile(
         dimensions=dimensions or [],
@@ -457,6 +490,10 @@ def create_chart(
     from sidemantic.charts import create_chart as make_chart
 
     layer = get_layer()
+
+    # Validate filter to prevent SQL injection
+    if where:
+        _validate_filter(where)
 
     # Compile and execute query (same as run_query)
     sql = layer.compile(

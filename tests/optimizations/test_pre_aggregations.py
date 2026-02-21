@@ -1182,5 +1182,27 @@ def test_refresh_engine_mode_unsupported_dialect():
         )
 
 
+def test_preagg_injection_in_model_name_rejected():
+    """get_table_name rejects SQL injection in model name."""
+    preagg = PreAggregation(
+        name="daily_summary",
+        measures=["count"],
+        dimensions=["status"],
+    )
+    with pytest.raises(ValueError, match="Invalid model name"):
+        preagg.get_table_name("orders; DROP TABLE--")
+
+
+def test_preagg_injection_in_preagg_name_rejected():
+    """get_table_name rejects SQL injection in preagg name."""
+    preagg = PreAggregation(
+        name="daily; DROP TABLE--",
+        measures=["count"],
+        dimensions=["status"],
+    )
+    with pytest.raises(ValueError, match="Invalid preagg name"):
+        preagg.get_table_name("orders")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

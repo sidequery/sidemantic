@@ -92,3 +92,28 @@ def test_dml_passthrough():
     conn._handle_query("SET search_path TO public", lambda *_: None)
 
     assert "reader" in captured
+
+
+def test_query_error_raises_exception():
+    """_handle_query should raise on errors, not return error as data rows."""
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+    from unittest.mock import MagicMock
+
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    mock_layer = MagicMock()
+    mock_layer.adapter.execute.side_effect = Exception("test error")
+    mock_layer.graph = SemanticGraph()
+    mock_layer.dialect = "duckdb"
+
+    conn = SemanticLayerConnection.__new__(SemanticLayerConnection)
+    conn.layer = mock_layer
+
+    callback = MagicMock()
+
+    with pytest.raises(Exception, match="test error"):
+        conn._handle_query("SELECT invalid_col FROM nonexistent", callback)
+
+    callback.assert_not_called()

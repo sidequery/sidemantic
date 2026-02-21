@@ -87,6 +87,17 @@ class PreAggregation(BaseModel):
         Returns:
             Qualified table name in format: [database.][schema.]{model_name}_preagg_{preagg_name}
         """
+        import re
+
+        # Validate identifiers to prevent SQL injection
+        for name, label in [(model_name, "model"), (self.name, "preagg")]:
+            if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", name):
+                raise ValueError(f"Invalid {label} name for table generation: {name}")
+        if schema and not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", schema):
+            raise ValueError(f"Invalid schema name: {schema}")
+        if database and not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", database):
+            raise ValueError(f"Invalid database name: {database}")
+
         table_name = f"{model_name}_preagg_{self.name}"
 
         # Build fully qualified name if database/schema provided

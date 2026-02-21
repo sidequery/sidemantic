@@ -59,7 +59,7 @@ def test_generate_models_from_queries():
     assert len(products["metrics"]) == 2
     metric_names = {m["name"] for m in products["metrics"]}
     assert "avg_price" in metric_names
-    assert "product_id_count" in metric_names
+    assert "product_id_count_distinct" in metric_names
 
 
 def test_generate_models_count_distinct():
@@ -81,9 +81,9 @@ def test_generate_models_count_distinct():
     orders = models["orders"]
     metrics = {m["name"]: m for m in orders["metrics"]}
 
-    assert "customer_id_count" in metrics
-    assert metrics["customer_id_count"]["agg"] == "count_distinct"
-    assert metrics["customer_id_count"]["sql"] == "customer_id"
+    assert "customer_id_count_distinct" in metrics
+    assert metrics["customer_id_count_distinct"]["agg"] == "count_distinct"
+    assert metrics["customer_id_count_distinct"]["sql"] == "customer_id"
 
 
 def test_generate_models_no_duplicate_metrics():
@@ -399,7 +399,7 @@ def test_generate_rewritten_query_multi_table():
 
     # Should resolve aliases to real table names in SELECT
     assert "customers.region" in sql
-    assert "orders.count" in sql
+    assert "orders.order_id_count" in sql
 
 
 def test_generate_rewritten_query_left_join():
@@ -864,7 +864,7 @@ def test_generate_models_resolves_aliases_in_aggregations():
     orders = models["orders"]
     metric_names = {m["name"] for m in orders.get("metrics", [])}
     assert "total_revenue" in metric_names or "sum_total_amount" in metric_names
-    assert "customer_id_count" in metric_names or "unique_customers" in metric_names
+    assert "customer_id_count_distinct" in metric_names or "unique_customers" in metric_names
 
     # Dimensions should land on 'customers', not on alias 'c'
     assert "c" not in models
@@ -1023,3 +1023,93 @@ def test_single_model_derived_stays_on_model():
 
     # Should NOT be in cross_model_derived_metrics
     assert len(analysis.cross_model_derived_metrics) == 0
+
+
+def test_count_column_distinct_from_count_star():
+    """Test that COUNT(column) is kept separate from COUNT(*).
+
+    COUNT(column) excludes NULLs while COUNT(*) counts all rows.
+    This matters for LEFT JOINs where the joined column can be NULL.
+    """
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    # Single-table query so both COUNT(*) and COUNT(id) are unambiguous
+    queries = [
+        """
+        SELECT
+            status,
+            COUNT(*) AS total_rows,
+            COUNT(customer_id) AS non_null_customers
+        FROM orders
+        GROUP BY status
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    orders = models["orders"]
+
+    # COUNT(*) and COUNT(customer_id) should produce separate metrics
+    count_star = next((m for m in orders["metrics"] if m["sql"] == "*" and m["agg"] == "count"), None)
+    count_col = next((m for m in orders["metrics"] if m["sql"] == "customer_id" and m["agg"] == "count"), None)
+    assert count_star is not None, "COUNT(*) metric should exist"
+    assert count_col is not None, "COUNT(customer_id) metric should exist"
+    assert count_star["name"] != count_col["name"], "They should have different names"
+
+
+def test_count_column_vs_count_distinct_column():
+    """Test that COUNT(col) and COUNT(DISTINCT col) get different metric names."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        """
+        SELECT
+            status,
+            COUNT(customer_id) AS customer_count,
+            COUNT(DISTINCT customer_id) AS unique_customers
+        FROM orders
+        GROUP BY status
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    orders = models["orders"]
+
+    # Both should exist with different names
+    count_col = next((m for m in orders["metrics"] if m["agg"] == "count" and m.get("sql") == "customer_id"), None)
+    count_dist = next(
+        (m for m in orders["metrics"] if m["agg"] == "count_distinct" and m.get("sql") == "customer_id"), None
+    )
+    assert count_col is not None, "COUNT(customer_id) metric should exist"
+    assert count_dist is not None, "COUNT(DISTINCT customer_id) metric should exist"
+    assert count_col["name"] != count_dist["name"], "COUNT and COUNT DISTINCT should have different names"
+
+
+def test_cross_model_derived_metric_in_rewritten_query():
+    """Test that cross-model derived metrics appear in rewritten queries."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        """
+        SELECT
+            c.segment,
+            SUM(o.amount) / COUNT(DISTINCT c.id) AS revenue_per_customer
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.segment
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    rewritten = analyzer.generate_rewritten_queries(report)
+
+    sql = rewritten["query_1"]
+
+    # Cross-model derived metric should appear in the rewritten query
+    assert "revenue_per_customer" in sql

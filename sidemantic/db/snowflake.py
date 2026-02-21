@@ -147,14 +147,20 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         return result.fetch_record_batch()
 
     def get_tables(self) -> list[dict]:
-        """List all tables in the database/schema."""
+        """List all tables in the database/schema.
+
+        Snowflake stores unquoted identifiers as uppercase in information_schema,
+        so we uppercase schema names for comparison.
+        """
         if self.schema:
             # Validate schema to prevent SQL injection
             validate_identifier(self.schema, "schema")
+            # Snowflake stores unquoted identifiers as uppercase
+            schema_upper = self.schema.upper()
             sql = f"""
                 SELECT table_name, table_schema as schema
                 FROM information_schema.tables
-                WHERE table_schema = '{self.schema}'
+                WHERE table_schema = '{schema_upper}'
                     AND table_type = 'BASE TABLE'
             """
         elif self.database:
@@ -175,19 +181,44 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         return [{"table_name": row[0], "schema": row[1]} for row in rows]
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
-        """Get column information for a table."""
-        # Validate identifiers to prevent SQL injection
-        validate_identifier(table_name, "table name")
-        schema = schema or self.schema
+        """Get column information for a table.
+
+        Handles cross-database lookups: if table_name contains a database qualifier
+        (e.g., "other_db.my_schema.my_table"), queries that database's information_schema.
+        Snowflake stores unquoted identifiers as uppercase, so identifiers are uppercased.
+        """
+        # Parse potential database.schema.table or schema.table references
+        parts = table_name.split(".")
+        db_prefix = ""
+        if len(parts) == 3:
+            # database.schema.table
+            validate_identifier(parts[0], "database")
+            validate_identifier(parts[1], "schema")
+            validate_identifier(parts[2], "table name")
+            db_prefix = f"{parts[0].upper()}."
+            schema = parts[1]
+            table_name = parts[2]
+        elif len(parts) == 2:
+            # schema.table
+            validate_identifier(parts[0], "schema")
+            validate_identifier(parts[1], "table name")
+            schema = parts[0]
+            table_name = parts[1]
+        else:
+            validate_identifier(table_name, "table name")
+            schema = schema or self.schema
+
         if schema:
             validate_identifier(schema, "schema")
 
-        schema_filter = f"AND table_schema = '{schema}'" if schema else ""
+        # Snowflake stores unquoted identifiers as uppercase
+        table_upper = table_name.upper()
+        schema_filter = f"AND table_schema = '{schema.upper()}'" if schema else ""
 
         sql = f"""
             SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = '{table_name}' {schema_filter}
+            FROM {db_prefix}information_schema.columns
+            WHERE table_name = '{table_upper}' {schema_filter}
         """
         result = self.execute(sql)
         rows = result.fetchall()

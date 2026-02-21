@@ -137,6 +137,8 @@ def test_snowflake_get_columns_sql_and_schema_filter():
     cols = adapter.get_columns("orders")
     assert cols == [{"column_name": "id", "data_type": "NUMBER"}]
     assert "information_schema.columns" in cursor.executed[0]
+    # Snowflake uppercases identifiers for information_schema queries
+    assert "table_name = 'ORDERS'" in cursor.executed[0]
     assert "table_schema = 'PUBLIC'" in cursor.executed[0]
 
 
@@ -226,12 +228,10 @@ def test_snowflake_injection_attempt_in_schema_is_rejected(schema):
         "MY_TABLE",
         "Table123",
         "_private_table",
-        "schema.table",
-        "MY_SCHEMA.MY_TABLE",
     ],
 )
 def test_snowflake_valid_table_names_accepted(table_name):
-    """Verify valid table names are accepted."""
+    """Verify valid table names are accepted and uppercased for Snowflake."""
     cursor = _FakeCursor(rows=[("id", "NUMBER")])
     adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
     adapter.conn = _FakeConn(cursor)
@@ -240,7 +240,28 @@ def test_snowflake_valid_table_names_accepted(table_name):
     # Should not raise
     adapter.get_columns(table_name)
     assert len(cursor.executed) == 1
-    assert table_name in cursor.executed[0]
+    # Snowflake uppercases identifiers for information_schema queries
+    assert table_name.upper() in cursor.executed[0]
+
+
+@pytest.mark.parametrize(
+    "table_name,expected_table,expected_schema",
+    [
+        ("my_schema.my_table", "MY_TABLE", "MY_SCHEMA"),
+        ("PUBLIC.orders", "ORDERS", "PUBLIC"),
+    ],
+)
+def test_snowflake_dotted_table_names_parsed(table_name, expected_table, expected_schema):
+    """Verify schema.table names are parsed and uppercased."""
+    cursor = _FakeCursor(rows=[("id", "NUMBER")])
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = None
+
+    adapter.get_columns(table_name)
+    assert len(cursor.executed) == 1
+    assert f"table_name = '{expected_table}'" in cursor.executed[0]
+    assert f"table_schema = '{expected_schema}'" in cursor.executed[0]
 
 
 @pytest.mark.parametrize(
@@ -248,7 +269,7 @@ def test_snowflake_valid_table_names_accepted(table_name):
     ["PUBLIC", "my_schema", "Schema123", "_PRIVATE", "ANALYTICS"],
 )
 def test_snowflake_valid_schema_names_accepted(schema):
-    """Verify valid schema names are accepted."""
+    """Verify valid schema names are accepted and uppercased for Snowflake."""
     cursor = _FakeCursor(rows=[("id", "NUMBER")])
     adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
     adapter.conn = _FakeConn(cursor)
@@ -257,7 +278,8 @@ def test_snowflake_valid_schema_names_accepted(schema):
     # Should not raise
     adapter.get_columns("orders", schema=schema)
     assert len(cursor.executed) == 1
-    assert f"table_schema = '{schema}'" in cursor.executed[0]
+    # Snowflake uppercases identifiers for information_schema queries
+    assert f"table_schema = '{schema.upper()}'" in cursor.executed[0]
 
 
 def test_snowflake_dialect():
@@ -339,6 +361,20 @@ def test_snowflake_get_tables_with_schema_filter():
     assert "table_schema = 'PUBLIC'" in sql
 
 
+def test_snowflake_get_tables_lowercase_schema_uppercased():
+    """Test that lowercase schema names are uppercased for information_schema."""
+    cursor = _FakeCursor(rows=[("ORDERS", "MY_SCHEMA")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = "my_schema"
+    adapter.database = "mydb"
+
+    adapter.get_tables()
+    sql = cursor.executed[0]
+    assert "table_schema = 'MY_SCHEMA'" in sql
+
+
 def test_snowflake_get_columns_with_explicit_schema():
     """Test get_columns with explicitly provided schema overrides adapter schema."""
     cursor = _FakeCursor(rows=[("id", "NUMBER")])
@@ -350,6 +386,37 @@ def test_snowflake_get_columns_with_explicit_schema():
     cols = adapter.get_columns("orders", schema="OVERRIDE_SCHEMA")
     assert cols == [{"column_name": "id", "data_type": "NUMBER"}]
     assert "table_schema = 'OVERRIDE_SCHEMA'" in cursor.executed[0]
+
+
+def test_snowflake_get_columns_cross_database():
+    """Test get_columns with three-part database.schema.table name."""
+    cursor = _FakeCursor(rows=[("ID", "NUMBER"), ("AMOUNT", "DECIMAL")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = "PUBLIC"
+
+    cols = adapter.get_columns("other_db.analytics.sales")
+    assert len(cols) == 2
+    sql = cursor.executed[0]
+    # Should query other database's information_schema
+    assert "OTHER_DB.information_schema.columns" in sql
+    assert "table_name = 'SALES'" in sql
+    assert "table_schema = 'ANALYTICS'" in sql
+
+
+def test_snowflake_get_columns_lowercase_case_folding():
+    """Test that lowercase identifiers are uppercased for Snowflake information_schema."""
+    cursor = _FakeCursor(rows=[("ID", "NUMBER")])
+
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    adapter.conn = _FakeConn(cursor)
+    adapter.schema = "public"
+
+    adapter.get_columns("orders")
+    sql = cursor.executed[0]
+    assert "table_name = 'ORDERS'" in sql
+    assert "table_schema = 'PUBLIC'" in sql
 
 
 def test_snowflake_get_columns_no_schema():

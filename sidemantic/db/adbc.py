@@ -230,11 +230,16 @@ class ADBCAdapter(BaseDatabaseAdapter):
         if schema:
             validate_identifier(schema, "schema")
 
+        # Snowflake stores unquoted identifiers as uppercase
+        is_snowflake = self.dialect == "snowflake"
+        lookup_table = table_name.upper() if is_snowflake else table_name
+        lookup_schema = schema.upper() if schema and is_snowflake else schema
+
         try:
             # Try to use ADBC's native table schema retrieval
             arrow_schema = self.conn.adbc_get_table_schema(
-                table_name=table_name,
-                db_schema=schema,
+                table_name=lookup_table,
+                db_schema=lookup_schema,
             )
             return [{"column_name": field.name, "data_type": str(field.type)} for field in arrow_schema]
         except Exception:
@@ -243,8 +248,8 @@ class ADBCAdapter(BaseDatabaseAdapter):
         try:
             # Try using adbc_get_objects filtered by table
             reader = self.conn.adbc_get_objects(
-                db_schema_filter=schema,
-                table_name_filter=table_name,
+                db_schema_filter=lookup_schema,
+                table_name_filter=lookup_table,
             )
             arrow_table = reader.read_all()
             data = arrow_table.to_pydict()
@@ -254,7 +259,7 @@ class ADBCAdapter(BaseDatabaseAdapter):
                     continue
                 for db_schema in db_schemas:
                     for table in db_schema.get("db_schema_tables") or []:
-                        if table.get("table_name") == table_name:
+                        if table.get("table_name") == lookup_table:
                             columns = []
                             for col in table.get("table_columns") or []:
                                 columns.append(
@@ -269,12 +274,12 @@ class ADBCAdapter(BaseDatabaseAdapter):
             pass  # Fall back to SQL query
 
         # Fall back to information_schema query (works for PostgreSQL, etc.)
-        schema_filter = f"AND table_schema = '{schema}'" if schema else ""
+        schema_filter = f"AND table_schema = '{lookup_schema}'" if lookup_schema else ""
         result = self.execute(
             f"""
             SELECT column_name, data_type
             FROM information_schema.columns
-            WHERE table_name = '{table_name}' {schema_filter}
+            WHERE table_name = '{lookup_table}' {schema_filter}
         """
         )
         rows = result.fetchall()

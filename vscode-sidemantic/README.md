@@ -44,6 +44,7 @@ For YAML support, install the [YAML extension](https://marketplace.visualstudio.
 cd vscode-sidemantic
 bun install
 bun run compile
+bun run test
 ```
 
 To test locally, press F5 in VS Code to launch the Extension Development Host.

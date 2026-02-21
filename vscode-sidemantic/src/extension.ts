@@ -5,6 +5,13 @@ import {
   ServerOptions,
   TransportKind,
 } from 'vscode-languageclient/node';
+import {
+  SIDEMANTIC_INSTALL_COMMAND,
+  SIDEMANTIC_SQL_FILE_GLOB,
+  SIDEMANTIC_SQL_LANGUAGE_ID,
+  buildServerCommand,
+  getStartupFailure,
+} from './lspConfig';
 
 let client: LanguageClient | undefined;
 
@@ -17,16 +24,18 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const command = config.get<string>('lsp.path', 'sidemantic');
 
+  const watcher = vscode.workspace.createFileSystemWatcher(SIDEMANTIC_SQL_FILE_GLOB);
+  context.subscriptions.push(watcher);
+
   const serverOptions: ServerOptions = {
-    command,
-    args: ['lsp'],
+    ...buildServerCommand(command),
     transport: TransportKind.stdio,
   };
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'sidemantic-sql' }],
+    documentSelector: [{ scheme: 'file', language: SIDEMANTIC_SQL_LANGUAGE_ID }],
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/*.sidemantic.sql'),
+      fileEvents: watcher,
     },
   };
 
@@ -40,23 +49,22 @@ export async function activate(context: vscode.ExtensionContext) {
   try {
     await client.start();
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Unknown error';
+    const failure = getStartupFailure(error);
 
-    if (message.includes('ENOENT') || message.includes('not found')) {
+    if (failure.missingCli) {
       vscode.window
         .showErrorMessage(
-          `Sidemantic CLI not found. Install with: uv pip install sidemantic[lsp]`,
+          `Sidemantic CLI not found. Install with: ${SIDEMANTIC_INSTALL_COMMAND}`,
           'Copy Install Command'
         )
         .then((selection) => {
           if (selection === 'Copy Install Command') {
-            vscode.env.clipboard.writeText('uv pip install sidemantic[lsp]');
+            vscode.env.clipboard.writeText(SIDEMANTIC_INSTALL_COMMAND);
             vscode.window.showInformationMessage('Install command copied to clipboard');
           }
         });
     } else {
-      vscode.window.showErrorMessage(`Failed to start Sidemantic LSP: ${message}`);
+      vscode.window.showErrorMessage(`Failed to start Sidemantic LSP: ${failure.message}`);
     }
   }
 }

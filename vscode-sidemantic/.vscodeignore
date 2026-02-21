@@ -2,6 +2,8 @@
 .vscode-test/**
 src/**
 .gitignore
+bun.lock
+test/**
 tsconfig.json
 **/*.map
 **/*.ts

@@ -32,6 +32,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
     from sidemantic.adapters.superset import SupersetAdapter
+    from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 
     directory = Path(directory)
     if not directory.exists():
@@ -58,6 +59,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         elif suffix == ".sql":
             # Sidemantic SQL files (pure SQL or with YAML frontmatter)
             adapter = SidemanticAdapter()
+        elif suffix == ".tml":
+            adapter = ThoughtSpotAdapter()
         elif suffix in (".yml", ".yaml"):
             # Try to detect which format by reading the file
             content = file_path.read_text()
@@ -70,6 +73,10 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = MetricFlowAdapter()
             elif "base_sql_table:" in content and "measures:" in content:
                 adapter = HexAdapter()
+            elif "table:" in content and "db_table:" in content and "columns:" in content:
+                adapter = ThoughtSpotAdapter()
+            elif "worksheet:" in content and "worksheet_columns:" in content:
+                adapter = ThoughtSpotAdapter()
             elif "tables:" in content and "base_table:" in content:
                 # Snowflake Cortex Semantic Model format
                 adapter = SnowflakeAdapter()

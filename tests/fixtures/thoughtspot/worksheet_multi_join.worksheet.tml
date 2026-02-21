@@ -1,0 +1,80 @@
+guid: "worksheet-multi-join"
+worksheet:
+  name: sales_multi_join
+  description: Multiple join paths and formulas
+  tables:
+    - id: fact_sales
+      fqn: ANALYTICS.PUBLIC.fact_sales
+    - id: dim_product_main
+      fqn: ANALYTICS.PUBLIC.dim_product
+    - id: dim_product_alt
+      fqn: ANALYTICS.PUBLIC.dim_product_alt
+  joins:
+    - name: sales_product_main
+      source: fact_sales
+      destination: dim_product_main
+      type: INNER
+      on: "[fact_sales::product_id] = [dim_product_main::id]"
+      is_one_to_one: false
+    - name: sales_product_alt
+      source: fact_sales
+      destination: dim_product_alt
+      type: LEFT_OUTER
+      on: "[fact_sales::alt_product_id] = [dim_product_alt::id] AND [fact_sales::country_code] = [dim_product_alt::country_code]"
+      is_one_to_one: true
+  table_paths:
+    - id: fact_sales_path
+      table: fact_sales
+      join_path:
+        - {}
+    - id: product_main_path
+      table: dim_product_main
+      join_path:
+        - join:
+          - sales_product_main
+    - id: product_alt_path
+      table: dim_product_alt
+      join_path:
+        - join:
+          - sales_product_alt
+  formulas:
+    - name: gross_revenue
+      expr: "[fact_sales_path::price] * [fact_sales_path::quantity]"
+      id: gross_rev_formula
+    - name: net_revenue
+      expr: "[gross_revenue] - [fact_sales_path::discount]"
+      id: net_rev_formula
+  worksheet_columns:
+    - name: order_id
+      column_id: fact_sales_path::order_id
+      properties:
+        column_type: ATTRIBUTE
+    - name: order_date
+      column_id: fact_sales_path::order_date
+      data_type: DATE
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: DAILY
+    - name: product_main
+      column_id: product_main_path::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: product_alt
+      column_id: product_alt_path::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: gross_revenue
+      formula_id: gross_rev_formula
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+    - name: net_revenue
+      formula_id: net_rev_formula
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+    - name: order_count
+      column_id: fact_sales_path::order_id
+      properties:
+        column_type: MEASURE
+        aggregation: COUNT

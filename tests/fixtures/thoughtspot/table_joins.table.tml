@@ -1,0 +1,30 @@
+guid: "table-joins"
+table:
+  id: orders
+  db: ANALYTICS
+  schema: PUBLIC
+  db_table: orders
+  columns:
+    - name: id
+      db_column_name: id
+      data_type: INT64
+      properties:
+        column_type: ATTRIBUTE
+    - name: customer_id
+      db_column_name: customer_id
+      data_type: INT64
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      db_column_name: amount
+      data_type: DOUBLE
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+  joins_with:
+    - name: orders_customers
+      destination:
+        name: customers
+      on: "[orders::customer_id] = [customers::id]"
+      type: INNER
+      is_one_to_one: false

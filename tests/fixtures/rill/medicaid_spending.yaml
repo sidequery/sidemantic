@@ -1,0 +1,138 @@
+# Based on rill-examples: medicaid_provider_spending.yaml
+# Complex healthcare analytics with 20+ dimensions including expression-based
+# dimensions using CASE WHEN, NULLIF division safety in measures, rich descriptions.
+
+type: metrics_view
+
+display_name: Medicaid Provider Spending
+description: Analysis of Medicaid provider spending by billing/servicing provider, procedure code, and time period
+
+model: medicaid_spending_enriched
+timeseries: claim_month
+smallest_time_grain: month
+
+dimensions:
+  - name: claim_month
+    column: claim_month
+    description: Month the claim was filed
+  - name: hcpcs_code
+    display_name: HCPCS Code
+    column: hcpcs_code
+    description: Healthcare Common Procedure Coding System code for the service billed
+  - name: same_provider
+    display_name: Same Billing & Servicing Provider
+    expression: CASE WHEN billing_provider_npi = servicing_provider_npi THEN 'Yes' ELSE 'No' END
+    description: Whether the billing and servicing provider are the same entity
+  - name: is_excluded
+    display_name: Excluded Provider
+    expression: CASE WHEN is_excluded THEN 'Yes' ELSE 'No' END
+    description: Whether the billing or servicing provider appears on the OIG LEIE exclusion list
+  - name: billing_provider_npi
+    display_name: Billing Provider NPI
+    column: billing_provider_npi
+    description: National Provider Identifier for the billing entity
+  - name: billing_provider_name
+    display_name: Billing Provider Name
+    column: billing_provider_name
+    description: Name of the billing provider
+  - name: billing_provider_type
+    display_name: Billing Provider Type
+    column: billing_provider_type
+    description: Type classification of the billing provider
+  - name: billing_provider_state
+    display_name: Billing Provider State
+    column: billing_provider_state
+    description: State where the billing provider is located
+  - name: billing_provider_city
+    display_name: Billing Provider City
+    column: billing_provider_city
+    description: City where the billing provider is located
+  - name: servicing_provider_npi
+    display_name: Servicing Provider NPI
+    column: servicing_provider_npi
+    description: National Provider Identifier for the servicing entity
+  - name: servicing_provider_name
+    display_name: Servicing Provider Name
+    column: servicing_provider_name
+    description: Name of the servicing provider
+  - name: servicing_provider_type
+    display_name: Servicing Provider Type
+    column: servicing_provider_type
+    description: Type classification of the servicing provider
+  - name: servicing_provider_state
+    display_name: Servicing Provider State
+    column: servicing_provider_state
+    description: State where the servicing provider is located
+  - name: servicing_provider_city
+    display_name: Servicing Provider City
+    column: servicing_provider_city
+    description: City where the servicing provider is located
+  - name: procedure_description
+    display_name: Procedure Description
+    column: procedure_description
+    description: Human-readable description of the procedure code
+  - name: place_of_service
+    display_name: Place of Service
+    column: place_of_service
+    description: Where the service was rendered
+  - name: claim_type
+    display_name: Claim Type
+    column: claim_type
+    description: Type of Medicaid claim
+  - name: high_cost_flag
+    display_name: High Cost Claim
+    expression: CASE WHEN total_paid > 10000 THEN 'Yes' ELSE 'No' END
+    description: Whether this is a high-cost claim above $10,000
+  - name: multi_state
+    display_name: Multi-State Provider
+    expression: CASE WHEN billing_provider_state != servicing_provider_state THEN 'Yes' ELSE 'No' END
+    description: Whether billing and servicing providers are in different states
+  - name: payment_range
+    display_name: Payment Range
+    expression: |
+      CASE
+        WHEN total_paid < 100 THEN 'Under $100'
+        WHEN total_paid < 1000 THEN '$100-$999'
+        WHEN total_paid < 10000 THEN '$1,000-$9,999'
+        ELSE '$10,000+'
+      END
+    description: Bucketed payment range
+
+measures:
+  - name: total_paid
+    display_name: Total Paid
+    expression: SUM(total_paid)
+    format_preset: currency_usd
+    description: Total Medicaid payments
+  - name: total_claims
+    display_name: Total Claims
+    expression: COUNT(*)
+    format_preset: humanize
+    description: Total number of claims
+  - name: avg_paid_per_claim
+    display_name: Avg Paid per Claim
+    expression: SUM(total_paid) / NULLIF(SUM(total_claims), 0)
+    format_preset: currency_usd
+    valid_percent_of_total: false
+    description: Average Medicaid payment per claim
+  - name: unique_providers
+    display_name: Unique Providers
+    expression: COUNT(DISTINCT billing_provider_npi)
+    format_preset: humanize
+    description: Count of distinct billing provider NPIs
+  - name: unique_servicing_providers
+    display_name: Unique Servicing Providers
+    expression: COUNT(DISTINCT servicing_provider_npi)
+    format_preset: humanize
+    description: Count of distinct servicing provider NPIs
+  - name: unique_procedures
+    display_name: Unique Procedures
+    expression: COUNT(DISTINCT hcpcs_code)
+    format_preset: humanize
+    description: Count of distinct HCPCS procedure codes
+  - name: avg_claims_per_provider
+    display_name: Avg Claims per Provider
+    expression: COUNT(*) / NULLIF(COUNT(DISTINCT billing_provider_npi), 0)
+    format_preset: humanize
+    valid_percent_of_total: false
+    description: Average number of claims per billing provider

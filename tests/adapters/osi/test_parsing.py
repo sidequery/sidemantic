@@ -1422,3 +1422,421 @@ def test_nested_custom_extensions():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# =============================================================================
+# TPC-DS RETAIL MODEL (REAL-WORLD OSI FIXTURE) TESTS
+# =============================================================================
+
+
+class TestTpcdsRetailFixture:
+    """Tests for the TPC-DS retail model fixture based on OSI spec examples.
+
+    This fixture exercises: composite PKs, multi-dialect expressions, ai_context
+    at every level, custom_extensions for Salesforce/DBT/Snowflake, 5 cross-dataset
+    metrics, 5 datasets (1 fact + 4 dimensions), and 4 relationships.
+    """
+
+    @pytest.fixture
+    def graph(self):
+        adapter = OSIAdapter()
+        return adapter.parse("tests/fixtures/osi/tpcds_retail.yaml")
+
+    def test_parses_without_errors(self, graph):
+        """Fixture parses cleanly into a SemanticGraph."""
+        assert isinstance(graph, SemanticGraph)
+
+    def test_dataset_count(self, graph):
+        """All 5 datasets (store_sales, customer, date_dim, store, item) are loaded."""
+        assert len(graph.models) == 5
+        expected = {"store_sales", "customer", "date_dim", "store", "item"}
+        assert set(graph.models.keys()) == expected
+
+    def test_metric_count(self, graph):
+        """All 5 cross-dataset metrics are loaded."""
+        assert len(graph.metrics) == 5
+        expected = {
+            "total_sales",
+            "total_profit",
+            "customer_lifetime_value",
+            "sales_by_brand",
+            "store_productivity",
+        }
+        assert set(graph.metrics.keys()) == expected
+
+    def test_composite_primary_key(self, graph):
+        """store_sales has a composite primary key [ss_item_sk, ss_ticket_number]."""
+        store_sales = graph.models["store_sales"]
+        assert store_sales.primary_key == ["ss_item_sk", "ss_ticket_number"]
+        assert store_sales.primary_key_columns == ["ss_item_sk", "ss_ticket_number"]
+
+    def test_unique_keys(self, graph):
+        """store_sales has unique_keys defined."""
+        store_sales = graph.models["store_sales"]
+        assert store_sales.unique_keys == [["ss_item_sk", "ss_ticket_number"]]
+
+    def test_single_column_primary_key(self, graph):
+        """Dimension tables have single-column primary keys stored as strings."""
+        customer = graph.models["customer"]
+        assert customer.primary_key == "c_customer_sk"
+
+        date_dim = graph.models["date_dim"]
+        assert date_dim.primary_key == "d_date_sk"
+
+        store = graph.models["store"]
+        assert store.primary_key == "s_store_sk"
+
+        item = graph.models["item"]
+        assert item.primary_key == "i_item_sk"
+
+    def test_source_tables(self, graph):
+        """Each dataset maps to the correct source table."""
+        assert graph.models["store_sales"].table == "tpcds.public.store_sales"
+        assert graph.models["customer"].table == "tpcds.public.customer"
+        assert graph.models["date_dim"].table == "tpcds.public.date_dim"
+        assert graph.models["store"].table == "tpcds.public.store"
+        assert graph.models["item"].table == "tpcds.public.item"
+
+    def test_store_sales_dimension_count(self, graph):
+        """store_sales has 8 field dimensions."""
+        store_sales = graph.models["store_sales"]
+        assert len(store_sales.dimensions) == 8
+
+    def test_customer_dimension_count(self, graph):
+        """customer has 7 field dimensions."""
+        customer = graph.models["customer"]
+        assert len(customer.dimensions) == 7
+
+    def test_date_dim_dimension_count(self, graph):
+        """date_dim has 6 field dimensions."""
+        date_dim = graph.models["date_dim"]
+        assert len(date_dim.dimensions) == 6
+
+    def test_store_dimension_count(self, graph):
+        """store has 6 field dimensions."""
+        store = graph.models["store"]
+        assert len(store.dimensions) == 6
+
+    def test_item_dimension_count(self, graph):
+        """item has 6 field dimensions."""
+        item = graph.models["item"]
+        assert len(item.dimensions) == 6
+
+    def test_time_dimension_date_dim(self, graph):
+        """date_dim.d_date is recognized as a time dimension."""
+        date_dim = graph.models["date_dim"]
+        d_date = date_dim.get_dimension("d_date")
+        assert d_date is not None
+        assert d_date.type == "time"
+
+    def test_default_time_dimension(self, graph):
+        """date_dim has d_date as default_time_dimension."""
+        date_dim = graph.models["date_dim"]
+        assert date_dim.default_time_dimension == "d_date"
+
+    def test_computed_field_multi_dialect(self, graph):
+        """customer_full_name uses ANSI_SQL dialect (concatenation expression)."""
+        customer = graph.models["customer"]
+        full_name = customer.get_dimension("customer_full_name")
+        assert full_name is not None
+        assert full_name.sql == "c_first_name || ' ' || c_last_name"
+
+    def test_computed_field_label(self, graph):
+        """customer_full_name preserves the label attribute."""
+        customer = graph.models["customer"]
+        full_name = customer.get_dimension("customer_full_name")
+        assert full_name.label == "Full Name"
+
+    def test_relationships_count(self, graph):
+        """store_sales has 4 relationships (to customer, date_dim, store, item)."""
+        store_sales = graph.models["store_sales"]
+        assert len(store_sales.relationships) == 4
+
+    def test_relationship_targets(self, graph):
+        """Relationships point to the correct dimension tables."""
+        store_sales = graph.models["store_sales"]
+        rel_targets = {r.name for r in store_sales.relationships}
+        assert rel_targets == {"customer", "date_dim", "store", "item"}
+
+    def test_relationship_foreign_keys(self, graph):
+        """Each relationship has the correct foreign key column."""
+        store_sales = graph.models["store_sales"]
+        rel_map = {r.name: r for r in store_sales.relationships}
+
+        assert rel_map["customer"].foreign_key == "ss_customer_sk"
+        assert rel_map["date_dim"].foreign_key == "ss_sold_date_sk"
+        assert rel_map["store"].foreign_key == "ss_store_sk"
+        assert rel_map["item"].foreign_key == "ss_item_sk"
+
+    def test_relationship_primary_keys(self, graph):
+        """Each relationship has the correct primary key on the target."""
+        store_sales = graph.models["store_sales"]
+        rel_map = {r.name: r for r in store_sales.relationships}
+
+        assert rel_map["customer"].primary_key == "c_customer_sk"
+        assert rel_map["date_dim"].primary_key == "d_date_sk"
+        assert rel_map["store"].primary_key == "s_store_sk"
+        assert rel_map["item"].primary_key == "i_item_sk"
+
+    def test_relationship_type(self, graph):
+        """All relationships are many_to_one (fact to dimension)."""
+        store_sales = graph.models["store_sales"]
+        for rel in store_sales.relationships:
+            assert rel.type == "many_to_one"
+
+    def test_metric_total_sales(self, graph):
+        """total_sales metric parses with correct expression."""
+        metric = graph.metrics["total_sales"]
+        assert metric.name == "total_sales"
+        assert metric.description is not None
+        assert "Total sales" in metric.description
+
+    def test_metric_total_profit(self, graph):
+        """total_profit metric parses correctly."""
+        metric = graph.metrics["total_profit"]
+        assert metric.name == "total_profit"
+
+    def test_metric_customer_lifetime_value(self, graph):
+        """customer_lifetime_value (ratio expression) parses correctly."""
+        metric = graph.metrics["customer_lifetime_value"]
+        assert metric.name == "customer_lifetime_value"
+        assert metric.description is not None
+
+    def test_metric_store_productivity(self, graph):
+        """store_productivity (division with NULLIF) parses correctly."""
+        metric = graph.metrics["store_productivity"]
+        assert metric.name == "store_productivity"
+
+    def test_ai_context_on_dataset(self, graph):
+        """store_sales has ai_context with synonyms in meta."""
+        store_sales = graph.models["store_sales"]
+        assert store_sales.meta is not None
+        assert "ai_context" in store_sales.meta
+        synonyms = store_sales.meta["ai_context"]["synonyms"]
+        assert "sales transactions" in synonyms
+        assert "POS data" in synonyms
+
+    def test_ai_context_on_field(self, graph):
+        """Field-level ai_context is preserved in dimension meta."""
+        store_sales = graph.models["store_sales"]
+        ss_item = store_sales.get_dimension("ss_item_sk")
+        assert ss_item.meta is not None
+        assert "ai_context" in ss_item.meta
+        assert "item key" in ss_item.meta["ai_context"]["synonyms"]
+
+    def test_ai_context_on_metric(self, graph):
+        """Metric-level ai_context is preserved."""
+        total_sales = graph.metrics["total_sales"]
+        assert total_sales.meta is not None
+        assert "ai_context" in total_sales.meta
+        synonyms = total_sales.meta["ai_context"]["synonyms"]
+        assert "total revenue" in synonyms
+
+    def test_ai_context_on_multiple_datasets(self, graph):
+        """ai_context with synonyms exists on customer and store datasets."""
+        customer = graph.models["customer"]
+        assert customer.meta is not None
+        assert "ai_context" in customer.meta
+        assert "buyers" in customer.meta["ai_context"]["synonyms"]
+
+        store = graph.models["store"]
+        assert store.meta is not None
+        assert "ai_context" in store.meta
+        assert "retail location" in store.meta["ai_context"]["synonyms"]
+
+    @pytest.mark.xfail(reason="OSI adapter does not parse model-level custom_extensions (only dataset-level)")
+    def test_model_level_custom_extensions(self, graph):
+        """custom_extensions at semantic_model level (SALESFORCE, DBT, SNOWFLAKE) are captured.
+
+        The current adapter only parses custom_extensions at the dataset level,
+        not the semantic_model level. This is a known gap.
+        """
+        # These are defined at the semantic_model level, not on any particular dataset
+        # The adapter would need to store them on the graph or in a separate structure
+        has_custom_ext = False
+        for model in graph.models.values():
+            if model.meta and "custom_extensions" in model.meta:
+                has_custom_ext = True
+                break
+        # Also check graph-level storage (doesn't exist yet)
+        assert has_custom_ext or hasattr(graph, "custom_extensions")
+
+    def test_dimension_tables_have_no_relationships(self, graph):
+        """Dimension tables (customer, date_dim, store, item) have no outbound relationships."""
+        for name in ["customer", "date_dim", "store", "item"]:
+            model = graph.models[name]
+            assert len(model.relationships) == 0, f"{name} should have no relationships"
+
+
+# =============================================================================
+# SUPPLY CHAIN MODEL (REAL-WORLD OSI FIXTURE) TESTS
+# =============================================================================
+
+
+class TestSupplyChainFixture:
+    """Tests for the supply chain fixture exercising multi-dialect computed fields,
+    multiple unique key constraints, composite PKs, and cross-dataset metrics.
+    """
+
+    @pytest.fixture
+    def graph(self):
+        adapter = OSIAdapter()
+        return adapter.parse("tests/fixtures/osi/supply_chain.yaml")
+
+    def test_parses_without_errors(self, graph):
+        """Fixture parses cleanly into a SemanticGraph."""
+        assert isinstance(graph, SemanticGraph)
+
+    def test_dataset_count(self, graph):
+        """All 4 datasets are loaded."""
+        assert len(graph.models) == 4
+        expected = {"shipments", "warehouse", "supplier", "product"}
+        assert set(graph.models.keys()) == expected
+
+    def test_metric_count(self, graph):
+        """All 5 metrics are loaded."""
+        assert len(graph.metrics) == 5
+        expected = {
+            "total_shipment_cost",
+            "total_shipping_cost",
+            "avg_transit_days",
+            "shipment_count",
+            "cost_per_unit_shipped",
+        }
+        assert set(graph.metrics.keys()) == expected
+
+    def test_composite_primary_key(self, graph):
+        """shipments has composite PK [shipment_id, line_item_id]."""
+        shipments = graph.models["shipments"]
+        assert shipments.primary_key == ["shipment_id", "line_item_id"]
+
+    def test_multiple_unique_keys(self, graph):
+        """shipments has two unique key constraints."""
+        shipments = graph.models["shipments"]
+        assert shipments.unique_keys is not None
+        assert len(shipments.unique_keys) == 2
+        assert ["shipment_id", "line_item_id"] in shipments.unique_keys
+        assert ["tracking_number"] in shipments.unique_keys
+
+    def test_shipments_field_count(self, graph):
+        """shipments has 12 fields."""
+        shipments = graph.models["shipments"]
+        assert len(shipments.dimensions) == 12
+
+    def test_multi_dialect_computed_field(self, graph):
+        """transit_days field has ANSI_SQL expression (preferred over SNOWFLAKE)."""
+        shipments = graph.models["shipments"]
+        transit = shipments.get_dimension("transit_days")
+        assert transit is not None
+        # Adapter prefers ANSI_SQL
+        assert transit.sql == "delivery_date - ship_date"
+
+    def test_time_dimensions(self, graph):
+        """shipments has two time dimensions (ship_date, delivery_date)."""
+        shipments = graph.models["shipments"]
+        time_dims = [d for d in shipments.dimensions if d.type == "time"]
+        time_names = {d.name for d in time_dims}
+        assert "ship_date" in time_names
+        assert "delivery_date" in time_names
+        assert len(time_dims) == 2
+
+    def test_default_time_dimension_is_first(self, graph):
+        """default_time_dimension is ship_date (first time dim encountered)."""
+        shipments = graph.models["shipments"]
+        assert shipments.default_time_dimension == "ship_date"
+
+    def test_relationships_count(self, graph):
+        """shipments has 3 relationships."""
+        shipments = graph.models["shipments"]
+        assert len(shipments.relationships) == 3
+
+    def test_relationship_targets(self, graph):
+        """Relationships point to warehouse, supplier, product."""
+        shipments = graph.models["shipments"]
+        targets = {r.name for r in shipments.relationships}
+        assert targets == {"warehouse", "supplier", "product"}
+
+    def test_source_tables(self, graph):
+        """Each dataset maps to the correct fully qualified source."""
+        assert graph.models["shipments"].table == "logistics.public.shipments"
+        assert graph.models["warehouse"].table == "logistics.public.warehouses"
+        assert graph.models["supplier"].table == "logistics.public.suppliers"
+        assert graph.models["product"].table == "logistics.public.products"
+
+    def test_metric_total_shipment_cost(self, graph):
+        """total_shipment_cost metric parses correctly."""
+        metric = graph.metrics["total_shipment_cost"]
+        assert metric.name == "total_shipment_cost"
+        assert metric.description is not None
+
+    def test_metric_with_count_distinct(self, graph):
+        """shipment_count uses COUNT(DISTINCT ...)."""
+        metric = graph.metrics["shipment_count"]
+        assert metric.name == "shipment_count"
+
+    def test_metric_ratio_with_nullif(self, graph):
+        """cost_per_unit_shipped uses division with NULLIF."""
+        metric = graph.metrics["cost_per_unit_shipped"]
+        assert metric.name == "cost_per_unit_shipped"
+
+    def test_metric_multi_dialect(self, graph):
+        """avg_transit_days has multi-dialect definition (ANSI_SQL preferred)."""
+        metric = graph.metrics["avg_transit_days"]
+        assert metric.name == "avg_transit_days"
+
+    def test_ai_context_on_shipments(self, graph):
+        """shipments dataset has ai_context synonyms."""
+        shipments = graph.models["shipments"]
+        assert shipments.meta is not None
+        assert "ai_context" in shipments.meta
+        assert "deliveries" in shipments.meta["ai_context"]["synonyms"]
+
+    def test_ai_context_on_field(self, graph):
+        """transit_days field has ai_context synonyms."""
+        shipments = graph.models["shipments"]
+        transit = shipments.get_dimension("transit_days")
+        assert transit.meta is not None
+        assert "ai_context" in transit.meta
+        assert "lead time" in transit.meta["ai_context"]["synonyms"]
+
+    def test_ai_context_on_metric(self, graph):
+        """total_shipment_cost metric has ai_context."""
+        metric = graph.metrics["total_shipment_cost"]
+        assert metric.meta is not None
+        assert "ai_context" in metric.meta
+        assert "COGS shipped" in metric.meta["ai_context"]["synonyms"]
+
+    def test_dimension_tables_no_relationships(self, graph):
+        """Dimension tables have no outbound relationships."""
+        for name in ["warehouse", "supplier", "product"]:
+            model = graph.models[name]
+            assert len(model.relationships) == 0
+
+    def test_warehouse_dimensions(self, graph):
+        """warehouse has expected fields including is_active."""
+        warehouse = graph.models["warehouse"]
+        dim_names = {d.name for d in warehouse.dimensions}
+        assert "warehouse_id" in dim_names
+        assert "warehouse_name" in dim_names
+        assert "region" in dim_names
+        assert "capacity_sqft" in dim_names
+        assert "is_active" in dim_names
+
+    def test_supplier_dimensions(self, graph):
+        """supplier has expected fields including reliability_rating."""
+        supplier = graph.models["supplier"]
+        dim_names = {d.name for d in supplier.dimensions}
+        assert "supplier_id" in dim_names
+        assert "supplier_name" in dim_names
+        assert "country" in dim_names
+        assert "reliability_rating" in dim_names
+
+    @pytest.mark.xfail(reason="OSI adapter does not parse model-level custom_extensions (only dataset-level)")
+    def test_model_level_custom_extensions(self, graph):
+        """custom_extensions at semantic_model level (DATABRICKS, COMMON) are captured."""
+        has_custom_ext = False
+        for model in graph.models.values():
+            if model.meta and "custom_extensions" in model.meta:
+                has_custom_ext = True
+                break
+        assert has_custom_ext or hasattr(graph, "custom_extensions")

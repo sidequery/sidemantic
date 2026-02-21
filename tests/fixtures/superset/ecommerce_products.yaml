@@ -1,0 +1,229 @@
+table_name: ecommerce_products
+main_dttm_col: updated_at
+description: E-commerce product catalog with calculated columns
+schema: ecommerce
+sql: null
+cache_timeout: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: '{"certification": {"certified_by": "Data Team", "details": "Verified product data"}}'
+uuid: f9e8d7c6-b5a4-3210-fedc-ba0987654321
+default_endpoint: null
+offset: 0
+params: null
+template_params: null
+version: 1.0.0
+
+metrics:
+  - metric_name: count
+    verbose_name: Product Count
+    metric_type: count
+    expression: COUNT(*)
+    description: Total number of products
+    d3format: ","
+    extra: null
+    warning_text: null
+
+  - metric_name: total_revenue
+    verbose_name: Total Revenue
+    metric_type: sum
+    expression: SUM(price * quantity_sold)
+    description: Total revenue across all products
+    d3format: "$,.2f"
+    extra: null
+    warning_text: null
+
+  - metric_name: avg_price
+    verbose_name: Average Price
+    metric_type: avg
+    expression: AVG(price)
+    description: Average product price
+    d3format: "$,.2f"
+    extra: null
+    warning_text: null
+
+  - metric_name: min_price
+    verbose_name: Minimum Price
+    metric_type: min
+    expression: MIN(price)
+    description: Lowest product price
+    d3format: "$,.2f"
+    extra: null
+    warning_text: null
+
+  - metric_name: max_price
+    verbose_name: Maximum Price
+    metric_type: max
+    expression: MAX(price)
+    description: Highest product price
+    d3format: "$,.2f"
+    extra: null
+    warning_text: null
+
+  - metric_name: unique_categories
+    verbose_name: Unique Categories
+    metric_type: count_distinct
+    expression: COUNT(DISTINCT category)
+    description: Number of distinct product categories
+    d3format: ","
+    extra: null
+    warning_text: null
+
+  - metric_name: avg_margin
+    verbose_name: Average Margin %
+    metric_type: null
+    expression: AVG((price - cost) / NULLIF(price, 0))
+    description: Average profit margin percentage
+    d3format: ".1%"
+    extra: null
+    warning_text: null
+
+  - metric_name: inventory_value
+    verbose_name: Total Inventory Value
+    metric_type: null
+    expression: SUM(price * stock_quantity)
+    description: Total value of current inventory
+    d3format: "$,.0f"
+    extra: null
+    warning_text: Includes out-of-stock items with zero quantity
+
+  - metric_name: sell_through_rate
+    verbose_name: Sell-Through Rate
+    metric_type: null
+    expression: SUM(quantity_sold) / NULLIF(SUM(quantity_sold + stock_quantity), 0)
+    description: Ratio of sold to total available quantity
+    d3format: ".1%"
+    extra: null
+    warning_text: null
+
+columns:
+  - column_name: product_id
+    verbose_name: Product ID
+    is_dttm: false
+    is_active: true
+    type: INTEGER
+    groupby: true
+    filterable: true
+    expression: null
+    description: Unique product identifier
+
+  - column_name: product_name
+    verbose_name: Product Name
+    is_dttm: false
+    is_active: true
+    type: VARCHAR(255)
+    groupby: true
+    filterable: true
+    expression: null
+    description: Name of the product
+
+  - column_name: category
+    verbose_name: Product Category
+    is_dttm: false
+    is_active: true
+    type: VARCHAR(100)
+    groupby: true
+    filterable: true
+    expression: null
+    description: Product category
+
+  - column_name: subcategory
+    verbose_name: Subcategory
+    is_dttm: false
+    is_active: true
+    type: VARCHAR(100)
+    groupby: true
+    filterable: true
+    expression: null
+    description: Product subcategory
+
+  - column_name: price
+    verbose_name: Unit Price
+    is_dttm: false
+    is_active: true
+    type: DECIMAL(10,2)
+    groupby: false
+    filterable: true
+    expression: null
+    description: Product unit price
+
+  - column_name: cost
+    verbose_name: Unit Cost
+    is_dttm: false
+    is_active: true
+    type: DECIMAL(10,2)
+    groupby: false
+    filterable: true
+    expression: null
+    description: Product unit cost
+
+  - column_name: quantity_sold
+    verbose_name: Quantity Sold
+    is_dttm: false
+    is_active: true
+    type: INTEGER
+    groupby: false
+    filterable: true
+    expression: null
+    description: Total quantity sold
+
+  - column_name: stock_quantity
+    verbose_name: Stock Quantity
+    is_dttm: false
+    is_active: true
+    type: INTEGER
+    groupby: false
+    filterable: true
+    expression: null
+    description: Current stock quantity
+
+  - column_name: is_active
+    verbose_name: Is Active
+    is_dttm: false
+    is_active: true
+    type: BOOLEAN
+    groupby: true
+    filterable: true
+    expression: null
+    description: Whether the product is currently active
+
+  - column_name: created_at
+    verbose_name: Created At
+    is_dttm: true
+    is_active: true
+    type: TIMESTAMP WITH TIME ZONE
+    groupby: true
+    filterable: true
+    expression: null
+    description: When the product was created
+
+  - column_name: updated_at
+    verbose_name: Last Updated
+    is_dttm: true
+    is_active: true
+    type: TIMESTAMP WITHOUT TIME ZONE
+    groupby: true
+    filterable: true
+    expression: null
+    description: When the product was last updated
+    python_date_format: null
+
+  - column_name: margin_pct
+    verbose_name: Margin Percentage
+    is_dttm: false
+    is_active: true
+    type: FLOAT
+    groupby: false
+    filterable: true
+    expression: (price - cost) / NULLIF(price, 0)
+    description: Calculated profit margin percentage
+
+  - column_name: rating
+    verbose_name: Product Rating
+    is_dttm: false
+    is_active: true
+    type: DOUBLE PRECISION
+    groupby: false
+    filterable: true
+    expression: null
+    description: Average product rating (1-5)

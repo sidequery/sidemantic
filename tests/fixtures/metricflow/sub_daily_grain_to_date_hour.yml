@@ -1,0 +1,28 @@
+# Minimal fixture to test grain_to_date: hour (unsupported in sidemantic Metric model).
+# Used by test_subdaily_grain_to_date_xfail.
+
+semantic_models:
+  - name: test_gtd_hour
+    description: test model
+    model: ref('test')
+    dimensions:
+      - name: ts
+        type: time
+        type_params:
+          time_granularity: hour
+    entities:
+      - name: id
+        type: primary
+    measures:
+      - name: archived_users
+        expr: "1"
+        agg: sum
+
+metrics:
+  - name: subdaily_cumulative_grain_to_date_metric
+    description: cumulative grain to date metric with hour
+    type: cumulative
+    type_params:
+      measure: archived_users
+      cumulative_type_params:
+        grain_to_date: hour

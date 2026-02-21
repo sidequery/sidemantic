@@ -1,0 +1,310 @@
+version: "1.0"
+
+semantic_model:
+  - name: supply_chain_analytics
+    description: Supply chain and inventory analytics model with multi-warehouse tracking
+    ai_context:
+      instructions: "Use this model for supply chain optimization, inventory management, and supplier performance analysis."
+      synonyms:
+        - logistics analytics
+        - inventory model
+        - warehouse analytics
+
+    datasets:
+      - name: shipments
+        source: logistics.public.shipments
+        primary_key: [shipment_id, line_item_id]
+        unique_keys:
+          - [shipment_id, line_item_id]
+          - [tracking_number]
+        description: Fact table of all shipment line items across warehouses
+        ai_context:
+          synonyms:
+            - deliveries
+            - orders shipped
+            - dispatch records
+        fields:
+          - name: shipment_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: shipment_id
+            description: Shipment identifier (part of composite PK)
+          - name: line_item_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: line_item_id
+            description: Line item within shipment (part of composite PK)
+          - name: tracking_number
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: tracking_number
+            description: Unique tracking number for the shipment
+          - name: warehouse_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: warehouse_id
+            description: FK to warehouse dimension
+          - name: supplier_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: supplier_id
+            description: FK to supplier dimension
+          - name: product_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_id
+            description: FK to product dimension
+          - name: ship_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ship_date
+            dimension:
+              is_time: true
+            description: Date the shipment was dispatched
+            ai_context:
+              synonyms:
+                - dispatch date
+                - sent date
+          - name: delivery_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: delivery_date
+            dimension:
+              is_time: true
+            description: Date the shipment was delivered
+          - name: quantity
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: quantity
+            description: Number of units shipped
+          - name: unit_cost
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: unit_cost
+            description: Cost per unit at time of shipment
+          - name: shipping_cost
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: shipping_cost
+            description: Total shipping/freight cost for this line
+          - name: transit_days
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: delivery_date - ship_date
+                - dialect: SNOWFLAKE
+                  expression: DATEDIFF(day, ship_date, delivery_date)
+                - dialect: DATABRICKS
+                  expression: DATEDIFF(delivery_date, ship_date)
+            description: Number of days in transit (computed)
+            ai_context:
+              synonyms:
+                - delivery time
+                - lead time
+                - days to deliver
+
+      - name: warehouse
+        source: logistics.public.warehouses
+        primary_key: [warehouse_id]
+        description: Warehouse/distribution center dimension
+        ai_context:
+          synonyms:
+            - distribution center
+            - DC
+            - fulfillment center
+        fields:
+          - name: warehouse_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: warehouse_id
+            description: Warehouse identifier
+          - name: warehouse_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: warehouse_name
+            description: Warehouse name
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+            description: Geographic region
+          - name: capacity_sqft
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: capacity_sqft
+            description: Warehouse capacity in square feet
+          - name: is_active
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: is_active
+            description: Whether warehouse is currently operational
+
+      - name: supplier
+        source: logistics.public.suppliers
+        primary_key: [supplier_id]
+        description: Supplier/vendor dimension
+        ai_context:
+          synonyms:
+            - vendor
+            - manufacturer
+            - provider
+        fields:
+          - name: supplier_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: supplier_id
+            description: Supplier identifier
+          - name: supplier_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: supplier_name
+            description: Supplier company name
+          - name: country
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: country
+            description: Supplier country of origin
+          - name: reliability_rating
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: reliability_rating
+            description: Supplier reliability score (0-100)
+            ai_context:
+              synonyms:
+                - vendor score
+                - supplier rating
+
+      - name: product
+        source: logistics.public.products
+        primary_key: [product_id]
+        description: Product catalog dimension
+        fields:
+          - name: product_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_id
+            description: Product identifier
+          - name: product_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_name
+            description: Product name
+          - name: category
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: category
+            description: Product category
+          - name: weight_kg
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: weight_kg
+            description: Product weight in kilograms
+          - name: is_hazardous
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: is_hazardous
+            description: Whether product requires hazmat handling
+
+    relationships:
+      - name: shipments_to_warehouse
+        from: shipments
+        to: warehouse
+        from_columns: [warehouse_id]
+        to_columns: [warehouse_id]
+
+      - name: shipments_to_supplier
+        from: shipments
+        to: supplier
+        from_columns: [supplier_id]
+        to_columns: [supplier_id]
+
+      - name: shipments_to_product
+        from: shipments
+        to: product
+        from_columns: [product_id]
+        to_columns: [product_id]
+
+    metrics:
+      - name: total_shipment_cost
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(shipments.quantity * shipments.unit_cost)
+        description: Total cost of goods shipped
+        ai_context:
+          synonyms:
+            - COGS shipped
+            - total procurement cost
+
+      - name: total_shipping_cost
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(shipments.shipping_cost)
+        description: Total freight and shipping costs
+        ai_context:
+          synonyms:
+            - freight cost
+            - logistics cost
+
+      - name: avg_transit_days
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: AVG(shipments.delivery_date - shipments.ship_date)
+            - dialect: SNOWFLAKE
+              expression: AVG(DATEDIFF(day, shipments.ship_date, shipments.delivery_date))
+        description: Average number of days from ship to delivery
+        ai_context:
+          synonyms:
+            - average delivery time
+            - mean lead time
+
+      - name: shipment_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT shipments.shipment_id)
+        description: Number of unique shipments
+
+      - name: cost_per_unit_shipped
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(shipments.shipping_cost) / NULLIF(SUM(shipments.quantity), 0)
+        description: Average shipping cost per unit across all shipments
+        ai_context:
+          synonyms:
+            - unit shipping cost
+            - per-unit freight
+
+    custom_extensions:
+      - vendor_name: DATABRICKS
+        data: '{"catalog": "logistics_prod", "schema": "analytics", "cluster_id": "abc-123"}'
+      - vendor_name: COMMON
+        data: '{"data_owner": "supply_chain_team", "refresh_schedule": "hourly", "sla_hours": 4}'

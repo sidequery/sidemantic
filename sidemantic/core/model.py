@@ -50,6 +50,12 @@ class Model(BaseModel):
         None, description="Default time granularity when using default_time_dimension"
     )
 
+    # Auto-discover dimensions from database schema
+    auto_dimensions: bool = Field(
+        default=False,
+        description="Auto-discover dimensions from database schema when added to a SemanticLayer",
+    )
+
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
 

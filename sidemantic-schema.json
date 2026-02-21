@@ -65,6 +65,20 @@
           "description": "Display label",
           "title": "Label"
         },
+        "meta": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Arbitrary metadata for extensions",
+          "title": "Meta"
+        },
         "name": {
           "description": "Unique dimension name within model",
           "title": "Name",
@@ -442,6 +456,20 @@
           "default": null,
           "description": "Display label",
           "title": "Label"
+        },
+        "meta": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Arbitrary metadata for extensions",
+          "title": "Meta"
         },
         "name": {
           "description": "Unique measure name",
@@ -918,11 +946,17 @@
               "type": "string"
             },
             {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Foreign key column (defaults to {name}_id for many_to_one)",
+          "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
           "title": "Foreign Key"
         },
         "name": {
@@ -936,12 +970,57 @@
               "type": "string"
             },
             {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Primary key column in related model (defaults to id)",
+          "description": "Primary key column(s) in related model (defaults to id)",
           "title": "Primary Key"
+        },
+        "related_foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key in junction model pointing to related model",
+          "title": "Related Foreign Key"
+        },
+        "through": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Junction model for many_to_many relationships",
+          "title": "Through"
+        },
+        "through_foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key in junction model pointing to this model",
+          "title": "Through Foreign Key"
         },
         "type": {
           "description": "Type of relationship",
@@ -1273,6 +1352,20 @@
             "description": "Display label",
             "title": "Label"
           },
+          "meta": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Arbitrary metadata for extensions",
+            "title": "Meta"
+          },
           "name": {
             "description": "Unique measure name",
             "title": "Name",
@@ -1505,6 +1598,20 @@
                 "default": null,
                 "description": "Display label",
                 "title": "Label"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Arbitrary metadata for extensions",
+                "title": "Meta"
               },
               "name": {
                 "description": "Unique dimension name within model",
@@ -1883,6 +1990,20 @@
                 "default": null,
                 "description": "Display label",
                 "title": "Label"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Arbitrary metadata for extensions",
+                "title": "Meta"
               },
               "name": {
                 "description": "Unique measure name",
@@ -2280,11 +2401,17 @@
                     "type": "string"
                   },
                   {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
                     "type": "null"
                   }
                 ],
                 "default": null,
-                "description": "Foreign key column (defaults to {name}_id for many_to_one)",
+                "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
                 "title": "Foreign Key"
               },
               "name": {
@@ -2298,12 +2425,57 @@
                     "type": "string"
                   },
                   {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
                     "type": "null"
                   }
                 ],
                 "default": null,
-                "description": "Primary key column in related model (defaults to id)",
+                "description": "Primary key column(s) in related model (defaults to id)",
                 "title": "Primary Key"
+              },
+              "related_foreign_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key in junction model pointing to related model",
+                "title": "Related Foreign Key"
+              },
+              "through": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Junction model for many_to_many relationships",
+                "title": "Through"
+              },
+              "through_foreign_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key in junction model pointing to this model",
+                "title": "Through Foreign Key"
               },
               "type": {
                 "description": "Type of relationship",
@@ -2435,6 +2607,20 @@
             "description": "Parent model to inherit from",
             "title": "Extends"
           },
+          "meta": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Arbitrary metadata for extensions",
+            "title": "Meta"
+          },
           "metrics": {
             "description": "Measure definitions",
             "items": {
@@ -2457,10 +2643,20 @@
             "type": "array"
           },
           "primary_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
             "default": "id",
-            "description": "Primary key column",
-            "title": "Primary Key",
-            "type": "string"
+            "description": "Primary key column(s)",
+            "title": "Primary Key"
           },
           "relationships": {
             "description": "Relationships to other models",
@@ -2516,6 +2712,25 @@
             "default": null,
             "description": "Physical table name (schema.table)",
             "title": "Table"
+          },
+          "unique_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Unique key constraints (each is a list of columns)",
+            "title": "Unique Keys"
           }
         },
         "required": [

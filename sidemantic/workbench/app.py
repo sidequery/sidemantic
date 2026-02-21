@@ -308,12 +308,12 @@ class SidequeryWorkbench(App):
                     create_sql = demo_conn.execute(
                         f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'"
                     ).fetchone()[0]
-                    self.layer.conn.execute(create_sql)
+                    self.layer.adapter.execute(create_sql)
 
                     # Insert data if there are rows
                     if rows:
                         placeholders = ", ".join(["?" for _ in columns])
-                        self.layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+                        self.layer.adapter.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
             else:
                 # Use explicit connection if provided, otherwise try to find database file
                 connection = None

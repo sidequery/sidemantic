@@ -157,3 +157,86 @@ jobs:
           CLICKHOUSE_PORT: "8123"
           CLICKHOUSE_PASSWORD: "clickhouse"
         run: uv run pytest -m integration tests/db/test_clickhouse_integration.py -v
+
+  adbc-integration:
+    name: ADBC integration (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [postgres, bigquery, snowflake, clickhouse]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: sidemantic_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        env:
+          CLICKHOUSE_DB: default
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: clickhouse
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "wget --spider -q localhost:8123/ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start BigQuery emulator
+        if: matrix.db == 'bigquery'
+        run: |
+          docker run -d --name bigquery-emulator \
+            -p 9050:9050 \
+            ghcr.io/goccy/bigquery-emulator:latest \
+            --project=test-project --dataset=test_dataset
+          sleep 5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra adbc
+
+      - name: Install ADBC driver (best effort)
+        run: |
+          DB="${{ matrix.db }}"
+          PKG_DB="$DB"
+          if [ "$DB" = "postgres" ]; then
+            PKG_DB="postgresql"
+          fi
+          uv pip install "adbc_driver_${PKG_DB}" || uv pip install "adbc-driver-${PKG_DB}" || true
+
+      - name: Run ADBC smoke tests
+        env:
+          ADBC_TEST: "1"
+          ADBC_DB: ${{ matrix.db }}
+          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
+          BIGQUERY_EMULATOR_HOST: "localhost:9050"
+          BIGQUERY_PROJECT: "test-project"
+          BIGQUERY_DATASET: "test_dataset"
+          CLICKHOUSE_HOST: "localhost"
+          CLICKHOUSE_PORT: "8123"
+          CLICKHOUSE_PASSWORD: "clickhouse"
+          SNOWFLAKE_TEST: "1"
+        run: uv run pytest -m integration tests/db/test_adbc_ci_smoke.py -v

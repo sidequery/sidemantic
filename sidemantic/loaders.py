@@ -26,10 +26,13 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.hex import HexAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
-    from sidemantic.adapters.malloy import MalloyAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
+    from sidemantic.adapters.omni import OmniAdapter
+    from sidemantic.adapters.rill import RillAdapter
     from sidemantic.adapters.sidemantic import SidemanticAdapter
     from sidemantic.adapters.snowflake import SnowflakeAdapter
+    from sidemantic.adapters.superset import SupersetAdapter
+    from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 
     directory = Path(directory)
     if not directory.exists():
@@ -54,10 +57,14 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         if suffix == ".lkml":
             adapter = LookMLAdapter()
         elif suffix == ".malloy":
+            from sidemantic.adapters.malloy import MalloyAdapter
+
             adapter = MalloyAdapter()
         elif suffix == ".sql":
             # Sidemantic SQL files (pure SQL or with YAML frontmatter)
             adapter = SidemanticAdapter()
+        elif suffix == ".tml":
+            adapter = ThoughtSpotAdapter()
         elif suffix in (".yml", ".yaml"):
             # Try to detect which format by reading the file
             content = file_path.read_text()
@@ -70,12 +77,26 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = MetricFlowAdapter()
             elif "base_sql_table:" in content and "measures:" in content:
                 adapter = HexAdapter()
+            elif "table:" in content and "db_table:" in content and "columns:" in content:
+                adapter = ThoughtSpotAdapter()
+            elif "worksheet:" in content and "worksheet_columns:" in content:
+                adapter = ThoughtSpotAdapter()
             elif "tables:" in content and "base_table:" in content:
                 # Snowflake Cortex Semantic Model format
                 adapter = SnowflakeAdapter()
             elif "_." in content and ("dimensions:" in content or "measures:" in content):
                 # BSL format uses _.column syntax for expressions
                 adapter = BSLAdapter()
+            elif "type: metrics_view" in content:
+                adapter = RillAdapter()
+            elif "table_name:" in content and "columns:" in content and "metrics:" in content:
+                adapter = SupersetAdapter()
+            elif (
+                "measures:" in content
+                and "dimensions:" in content
+                and ("table_name:" in content or "table:" in content or "schema:" in content)
+            ):
+                adapter = OmniAdapter()
 
         if adapter:
             try:

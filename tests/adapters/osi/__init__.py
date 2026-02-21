@@ -1,0 +1,1 @@
+"""OSI adapter tests."""

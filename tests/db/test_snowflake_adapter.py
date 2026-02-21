@@ -24,12 +24,13 @@ def _block_import(monkeypatch, module_prefix: str) -> None:
 
 
 class _FakeCursor:
-    def __init__(self, rows=None, description=None):
+    def __init__(self, rows=None, description=None, arrow_table=None):
         self._rows = rows or []
         self._idx = 0
         self.description = description or []
         self.executed = []
         self.executemany_args = None
+        self._arrow_table = arrow_table
 
     def execute(self, sql):
         self.executed.append(sql)
@@ -46,6 +47,12 @@ class _FakeCursor:
 
     def fetchall(self):
         return self._rows[self._idx :]
+
+    def fetch_arrow_all(self):
+        """Native Arrow fetch method (available since snowflake-connector-python 2.4.0)."""
+        if self._arrow_table is not None:
+            return self._arrow_table
+        raise AttributeError("No native Arrow support in this cursor")
 
 
 class _FakeConn:
@@ -389,3 +396,60 @@ def test_snowflake_get_tables_multiple():
     assert "users" in table_names
     assert "orders" in table_names
     assert "logs" in table_names
+
+
+def test_snowflake_fetch_record_batch_native_arrow():
+    """Test native Arrow fetching path when available."""
+    pa = pytest.importorskip("pyarrow")
+
+    # Create Arrow table directly
+    arrow_table = pa.table({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    cursor = _FakeCursor(
+        arrow_table=arrow_table,
+        description=[("a", None), ("b", None)],
+    )
+
+    reader = SnowflakeResult(cursor).fetch_record_batch()
+    result_table = reader.read_all()
+
+    # Should get back the exact data from native Arrow
+    assert result_table.num_rows == 3
+    assert result_table.column("a").to_pylist() == [1, 2, 3]
+    assert result_table.column("b").to_pylist() == ["x", "y", "z"]
+
+
+def test_snowflake_fetch_record_batch_native_arrow_empty():
+    """Test native Arrow fetching with empty result."""
+    pa = pytest.importorskip("pyarrow")
+
+    # Create empty Arrow table
+    arrow_table = pa.table({"a": pa.array([], type=pa.int64()), "b": pa.array([], type=pa.string())})
+    cursor = _FakeCursor(
+        arrow_table=arrow_table,
+        description=[("a", None), ("b", None)],
+    )
+
+    reader = SnowflakeResult(cursor).fetch_record_batch()
+    result_table = reader.read_all()
+
+    assert result_table.num_rows == 0
+    assert result_table.num_columns == 2
+
+
+def test_snowflake_fetch_record_batch_fallback():
+    """Test fallback to row-by-row when native Arrow unavailable."""
+    pytest.importorskip("pyarrow")
+
+    # Cursor without Arrow support (no arrow_table provided)
+    cursor = _FakeCursor(
+        rows=[(1, "x"), (2, "y")],
+        description=[("a", None), ("b", None)],
+    )
+
+    reader = SnowflakeResult(cursor).fetch_record_batch()
+    result_table = reader.read_all()
+
+    # Should still work via fallback path
+    assert result_table.num_rows == 2
+    assert result_table.column(0).to_pylist() == [1, 2]
+    assert result_table.column(1).to_pylist() == ["x", "y"]

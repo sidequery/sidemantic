@@ -237,3 +237,167 @@ def test_clickhouse_get_columns_uses_parameterized_queries():
     assert calls[-1][1]["table"] == table_name
     # The SQL itself should use placeholders, not string interpolation
     assert "%(table)s" in calls[-1][0] or ":table" in calls[-1][0] or "table = " in calls[-1][0]
+
+
+def test_clickhouse_execute_native_arrow():
+    """Test that execute() uses native Arrow fetching when available."""
+    pa = pytest.importorskip("pyarrow")
+
+    arrow_table = pa.table({"a": [1, 2], "b": ["x", "y"]})
+    calls = []
+
+    class FakeClient:
+        def query_arrow(self, sql):
+            calls.append(("arrow", sql))
+            return arrow_table
+
+        def query(self, sql):
+            calls.append(("row", sql))
+            raise AssertionError("Should not be called when query_arrow succeeds")
+
+    adapter = ClickHouseAdapter.__new__(ClickHouseAdapter)
+    adapter.client = FakeClient()
+    adapter.database = "default"
+
+    result = adapter.execute("SELECT a, b FROM test")
+
+    # Should have used query_arrow
+    assert len(calls) == 1
+    assert calls[0][0] == "arrow"
+
+    # Result should contain Arrow data
+    reader = result.fetch_record_batch()
+    result_table = reader.read_all()
+    assert result_table.num_rows == 2
+    assert result_table.column("a").to_pylist() == [1, 2]
+
+
+def test_clickhouse_execute_fallback_to_query():
+    """Test that execute() falls back to query() when query_arrow fails."""
+    calls = []
+
+    class FakeQueryResult:
+        def __init__(self):
+            self.result_rows = [(1, "x")]
+            self.column_names = ["a", "b"]
+            self.row_count = 1
+
+    class FakeClient:
+        def query_arrow(self, sql):
+            calls.append(("arrow", sql))
+            raise Exception("Arrow not supported")
+
+        def query(self, sql):
+            calls.append(("row", sql))
+            return FakeQueryResult()
+
+    adapter = ClickHouseAdapter.__new__(ClickHouseAdapter)
+    adapter.client = FakeClient()
+    adapter.database = "default"
+
+    result = adapter.execute("SELECT a, b FROM test")
+
+    # Should have tried arrow first, then fallen back to row
+    assert len(calls) == 2
+    assert calls[0][0] == "arrow"
+    assert calls[1][0] == "row"
+
+    # Result should still work via fallback
+    assert result.fetchone() == (1, "x")
+
+
+def test_clickhouse_result_native_arrow_fetch_record_batch():
+    """Test ClickHouseResult.fetch_record_batch() with native Arrow data."""
+    pa = pytest.importorskip("pyarrow")
+
+    arrow_table = pa.table({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    result = ClickHouseResult(result=None, arrow_table=arrow_table)
+
+    reader = result.fetch_record_batch()
+    result_table = reader.read_all()
+
+    assert result_table.num_rows == 3
+    assert result_table.column("a").to_pylist() == [1, 2, 3]
+    assert result_table.column("b").to_pylist() == ["x", "y", "z"]
+
+
+def test_clickhouse_result_native_arrow_fetchone():
+    """Test ClickHouseResult.fetchone() with native Arrow data."""
+    pa = pytest.importorskip("pyarrow")
+
+    arrow_table = pa.table({"a": [1, 2], "b": ["x", "y"]})
+    result = ClickHouseResult(result=None, arrow_table=arrow_table)
+
+    assert result.fetchone() == (1, "x")
+    assert result.fetchone() == (2, "y")
+    assert result.fetchone() is None
+
+
+def test_clickhouse_result_native_arrow_fetchall():
+    """Test ClickHouseResult.fetchall() with native Arrow data."""
+    pa = pytest.importorskip("pyarrow")
+
+    arrow_table = pa.table({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    result = ClickHouseResult(result=None, arrow_table=arrow_table)
+
+    # Fetch one first, then fetchall should get remaining
+    result.fetchone()
+    remaining = result.fetchall()
+
+    assert remaining == [(2, "y"), (3, "z")]
+
+
+def test_clickhouse_result_native_arrow_empty():
+    """Test ClickHouseResult with empty native Arrow data."""
+    pa = pytest.importorskip("pyarrow")
+
+    arrow_table = pa.table({"a": pa.array([], type=pa.int64()), "b": pa.array([], type=pa.string())})
+    result = ClickHouseResult(result=None, arrow_table=arrow_table)
+
+    assert result.fetchone() is None
+    assert result.fetchall() == []
+
+    reader = result.fetch_record_batch()
+    result_table = reader.read_all()
+    assert result_table.num_rows == 0
+
+
+def test_clickhouse_executemany_native_arrow():
+    """Test that executemany() uses native Arrow fetching when available."""
+    pa = pytest.importorskip("pyarrow")
+
+    arrow_tables = [
+        pa.table({"a": [1], "b": ["x"]}),
+        pa.table({"a": [2], "b": ["y"]}),
+    ]
+    call_idx = [0]
+    calls = []
+
+    class FakeClient:
+        def query_arrow(self, sql, parameters=None):
+            calls.append(("arrow", sql, parameters))
+            result = arrow_tables[call_idx[0]]
+            call_idx[0] += 1
+            return result
+
+        def query(self, sql, parameters=None):
+            calls.append(("row", sql, parameters))
+            raise AssertionError("Should not be called when query_arrow succeeds")
+
+    adapter = ClickHouseAdapter.__new__(ClickHouseAdapter)
+    adapter.client = FakeClient()
+    adapter.database = "default"
+
+    result = adapter.executemany("SELECT %(id)s", [{"id": 1}, {"id": 2}])
+
+    # Should have used query_arrow for both calls
+    assert len(calls) == 2
+    assert all(c[0] == "arrow" for c in calls)
+    assert calls[0][2] == {"id": 1}
+    assert calls[1][2] == {"id": 2}
+
+    # Result should be the last one (Arrow)
+    reader = result.fetch_record_batch()
+    result_table = reader.read_all()
+    assert result_table.num_rows == 1
+    assert result_table.column("a").to_pylist() == [2]

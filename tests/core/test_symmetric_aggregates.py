@@ -146,31 +146,41 @@ class TestBuildSymmetricAggregateSql:
     # Error handling tests
     # ==========================================================================
 
-    def test_unsupported_agg_type(self):
-        """Test that unsupported aggregation types raise ValueError."""
-        with pytest.raises(ValueError, match="Unsupported aggregation type"):
+    def test_min_passthrough(self):
+        """Test that MIN passes through (idempotent to fan-out)."""
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="min",
+        )
+        assert sql == "MIN(amount)"
+
+    def test_max_passthrough(self):
+        """Test that MAX passes through (idempotent to fan-out)."""
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="max",
+        )
+        assert sql == "MAX(amount)"
+
+    def test_min_with_model_alias(self):
+        """Test MIN with table alias prefix."""
+        sql = build_symmetric_aggregate_sql(
+            measure_expr="amount",
+            primary_key="order_id",
+            agg_type="min",
+            model_alias="orders_cte",
+        )
+        assert sql == "MIN(orders_cte.amount)"
+
+    def test_median_raises_with_helpful_message(self):
+        """Test that MEDIAN raises ValueError with guidance."""
+        with pytest.raises(ValueError, match="do not support MEDIAN"):
             build_symmetric_aggregate_sql(
                 measure_expr="amount",
                 primary_key="order_id",
                 agg_type="median",
-            )
-
-    def test_unsupported_agg_type_min(self):
-        """Test that MIN raises ValueError (not supported in symmetric aggregates)."""
-        with pytest.raises(ValueError, match="Unsupported aggregation type"):
-            build_symmetric_aggregate_sql(
-                measure_expr="amount",
-                primary_key="order_id",
-                agg_type="min",
-            )
-
-    def test_unsupported_agg_type_max(self):
-        """Test that MAX raises ValueError (not supported in symmetric aggregates)."""
-        with pytest.raises(ValueError, match="Unsupported aggregation type"):
-            build_symmetric_aggregate_sql(
-                measure_expr="amount",
-                primary_key="order_id",
-                agg_type="max",
             )
 
     # ==========================================================================
@@ -187,7 +197,7 @@ class TestBuildSymmetricAggregateSql:
         )
 
         assert "HASH(order_id)::HUGEINT" in sql
-        assert "(1::HUGEINT << 20)" in sql
+        assert "(1::HUGEINT << 40)" in sql
 
     def test_bigquery_dialect(self):
         """Test BigQuery-specific SQL generation."""
@@ -200,7 +210,7 @@ class TestBuildSymmetricAggregateSql:
 
         assert "FARM_FINGERPRINT" in sql
         assert "CAST(order_id AS STRING)" in sql
-        assert "1048576" in sql  # 2^20 literal
+        assert "1000000000000" in sql
 
     def test_postgres_dialect(self):
         """Test PostgreSQL-specific SQL generation."""
@@ -211,8 +221,8 @@ class TestBuildSymmetricAggregateSql:
             dialect="postgres",
         )
 
-        assert "hashtext(order_id::text)::bigint" in sql
-        assert "1024" in sql  # Smaller multiplier to avoid overflow
+        assert "hashtext(order_id::text)::numeric" in sql
+        assert "1000000000000" in sql
 
     def test_postgresql_dialect_alias(self):
         """Test 'postgresql' dialect alias works same as 'postgres'."""
@@ -241,8 +251,8 @@ class TestBuildSymmetricAggregateSql:
         )
 
         assert "HASH(order_id)" in sql
-        assert "% 1000000000" in sql  # Modulo constraint
-        assert "100" in sql  # Small multiplier
+        assert "NUMBER(38, 0)" in sql
+        assert "1000000000000" in sql
 
     def test_clickhouse_dialect(self):
         """Test ClickHouse-specific SQL generation."""
@@ -255,7 +265,7 @@ class TestBuildSymmetricAggregateSql:
 
         assert "halfMD5" in sql
         assert "CAST(order_id AS String)" in sql
-        assert "1048576" in sql
+        assert "1000000000000" in sql
 
     def test_databricks_dialect(self):
         """Test Databricks-specific SQL generation."""
@@ -268,7 +278,7 @@ class TestBuildSymmetricAggregateSql:
 
         assert "xxhash64" in sql
         assert "CAST(order_id AS STRING)" in sql
-        assert "1048576" in sql
+        assert "1000000000000" in sql
 
     def test_spark_dialect(self):
         """Test Spark SQL-specific SQL generation."""

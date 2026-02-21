@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
 from functools import cache
-from numbers import Number
 from pathlib import Path
 
 import duckdb
@@ -26,6 +24,8 @@ from sidemantic.adapters.superset import SupersetAdapter
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 from sidemantic.sql.generator import SQLGenerator
 from tests.adapters.test_added_fixture_coverage import (
+    _assert_compiled_query_contract,
+    _assert_execution_result_contract,
     _materialize_execution_table,
     _pick_execution_query,
     _prepare_graph_for_execution,
@@ -169,13 +169,26 @@ def _pick_compile_query(graph):
             and metric.type not in {"cumulative", "time_comparison", "conversion", "ratio"}
         ]
         if simple_metrics:
-            return {"metrics": [f"{model.name}.{simple_metrics[0].name}"], "dimensions": []}
+            metric = simple_metrics[0]
+            return {
+                "metrics": [f"{model.name}.{metric.name}"],
+                "dimensions": [],
+                "query_kind": "metric",
+                "field_name": metric.name,
+                "metric_agg": metric.agg,
+            }
 
         simple_dimensions = [
             dimension for dimension in model.dimensions if dimension.name and "." not in dimension.name
         ]
         if simple_dimensions:
-            return {"metrics": [], "dimensions": [f"{model.name}.{simple_dimensions[0].name}"]}
+            dimension = simple_dimensions[0]
+            return {
+                "metrics": [],
+                "dimensions": [f"{model.name}.{dimension.name}"],
+                "query_kind": "dimension",
+                "field_name": dimension.name,
+            }
     return None
 
 
@@ -267,8 +280,7 @@ def test_fixture_query_compilation_coverage():
                 dimensions=query["dimensions"],
                 limit=5,
             )
-            assert "SELECT" in sql.upper()
-            assert "FROM" in sql.upper()
+            _assert_compiled_query_contract(sql, query, fixture_path)
             compiled_queries += 1
         except Exception as exc:
             compile_failures[fixture_path] = exc
@@ -289,7 +301,7 @@ def test_fixture_query_compilation_coverage():
             f"expected {expected_exception.__name__}"
         )
 
-    minimum_compile_attempts = max(1, (len(PARSEABLE_FIXTURE_CASES) * 3) // 5)
+    minimum_compile_attempts = 180
     assert attempted_queries >= minimum_compile_attempts, (
         f"Expected at least {minimum_compile_attempts} fixture compile candidates, got {attempted_queries}"
     )
@@ -334,39 +346,7 @@ def test_fixture_query_execution_coverage():
             assert column_names == [query_spec["field_name"]], (
                 f"{fixture_path}: expected output column {query_spec['field_name']}, got {column_names}"
             )
-            assert len(rows) == 1, f"{fixture_path}: expected one synthetic result row, got {len(rows)}"
-
-            value = rows[0][0]
-            if query_spec["query_kind"] == "metric":
-                metric_agg = query_spec["metric_agg"]
-                if metric_agg in {"count", "count_distinct"}:
-                    assert value == 1, f"{fixture_path}: expected {metric_agg}=1 from one synthetic row, got {value}"
-                elif metric_agg in {"stddev", "variance"}:
-                    assert value is None or isinstance(value, Number), (
-                        f"{fixture_path}: expected nullable numeric for {metric_agg}, got {type(value).__name__}"
-                    )
-                else:
-                    assert isinstance(value, Number), (
-                        f"{fixture_path}: expected numeric metric result for {metric_agg}, got {type(value).__name__}"
-                    )
-            else:
-                dimension_type = query_spec["dimension_type"]
-                if dimension_type == "time":
-                    assert isinstance(value, (date, Number, str)), (
-                        f"{fixture_path}: expected time-like result for time dimension, got {type(value).__name__}"
-                    )
-                elif dimension_type == "numeric":
-                    assert isinstance(value, Number), (
-                        f"{fixture_path}: expected numeric result for numeric dimension, got {type(value).__name__}"
-                    )
-                elif dimension_type == "boolean":
-                    assert isinstance(value, bool), (
-                        f"{fixture_path}: expected bool result for boolean dimension, got {type(value).__name__}"
-                    )
-                else:
-                    assert isinstance(value, (str, Number, bool, date)), (
-                        f"{fixture_path}: expected scalar result for categorical dimension, got {type(value).__name__}"
-                    )
+            _assert_execution_result_contract(query_spec, rows, fixture_path)
 
             executed_queries += 1
         except Exception as exc:
@@ -376,13 +356,13 @@ def test_fixture_query_execution_coverage():
 
     assert attempted_executions > 0, "No fixture produced an executable query candidate"
 
-    minimum_execution_attempts = max(1, len(PARSEABLE_FIXTURE_CASES) // 3)
+    minimum_execution_attempts = 210
     assert attempted_executions >= minimum_execution_attempts, (
         f"Expected at least {minimum_execution_attempts} executable fixture queries, got {attempted_executions}"
     )
 
     total_adapters = len({adapter_cls.__name__ for adapter_cls, _ in PARSEABLE_FIXTURE_CASES})
-    minimum_adapter_execution_coverage = max(1, (total_adapters * 3) // 4)
+    minimum_adapter_execution_coverage = 15
     assert len(adapters_with_execution) >= minimum_adapter_execution_coverage, (
         f"Expected execution coverage in at least {minimum_adapter_execution_coverage}/{total_adapters} adapters, "
         f"got {len(adapters_with_execution)}"

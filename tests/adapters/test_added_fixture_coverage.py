@@ -376,13 +376,26 @@ def _pick_compile_query(graph):
             and metric.type not in {"cumulative", "time_comparison", "conversion", "ratio"}
         ]
         if simple_metrics:
-            return {"metrics": [f"{model.name}.{simple_metrics[0].name}"], "dimensions": []}
+            metric = simple_metrics[0]
+            return {
+                "metrics": [f"{model.name}.{metric.name}"],
+                "dimensions": [],
+                "query_kind": "metric",
+                "field_name": metric.name,
+                "metric_agg": metric.agg,
+            }
 
         simple_dimensions = [
             dimension for dimension in model.dimensions if dimension.name and "." not in dimension.name
         ]
         if simple_dimensions:
-            return {"metrics": [], "dimensions": [f"{model.name}.{simple_dimensions[0].name}"]}
+            dimension = simple_dimensions[0]
+            return {
+                "metrics": [],
+                "dimensions": [f"{model.name}.{dimension.name}"],
+                "query_kind": "dimension",
+                "field_name": dimension.name,
+            }
     return None
 
 
@@ -415,6 +428,18 @@ def _extract_sql_columns(sql_expr: str | None) -> tuple[set[str], bool]:
             return set(), False
         columns.add(column.name)
     return columns, True
+
+
+def _extract_plain_sql_column(sql_expr: str | None) -> str | None:
+    if not sql_expr or "{" in sql_expr:
+        return None
+    try:
+        parsed = sqlglot.parse_one(sql_expr, read="duckdb")
+    except Exception:
+        return None
+    if isinstance(parsed, exp.Column) and parsed.name and not parsed.table and parsed.name != "*":
+        return parsed.name
+    return None
 
 
 def _parse_table_reference(table_name: str) -> tuple[str | None, str | None, str] | None:
@@ -544,11 +569,14 @@ def _pick_execution_query(graph):
                         "metrics": [f"{execution_model_name}.{metric.name}"],
                         "dimensions": [],
                         "column_types": column_types,
+                        "metric_sql_is_plain_column": False,
+                        "has_metric_filters": bool(metric.filters),
                     }
 
                 metric_columns, ok = _extract_sql_columns(metric.sql_expr)
                 if not ok:
                     continue
+                plain_metric_column = _extract_plain_sql_column(metric.sql_expr)
                 for column in metric_columns or {"id"}:
                     column_types.setdefault(column, "DOUBLE")
                 return {
@@ -566,6 +594,8 @@ def _pick_execution_query(graph):
                     "metrics": [f"{execution_model_name}.{metric.name}"],
                     "dimensions": [],
                     "column_types": column_types,
+                    "metric_sql_is_plain_column": plain_metric_column is not None,
+                    "has_metric_filters": bool(metric.filters),
                 }
             return None
 
@@ -578,6 +608,7 @@ def _pick_execution_query(graph):
                 dimension_columns, ok = _extract_sql_columns(dimension.sql_expr)
                 if not ok:
                     continue
+                plain_dimension_column = _extract_plain_sql_column(dimension.sql_expr)
                 column_types = dict(base_column_types)
                 if dimension.type == "time":
                     dimension_type = "DATE"
@@ -595,6 +626,7 @@ def _pick_execution_query(graph):
                     "query_kind": "dimension",
                     "field_name": dimension.name,
                     "dimension_type": dimension.type,
+                    "dimension_granularity": dimension.granularity,
                     "table_name": model.table,
                     "execution_table_parts": execution_table_parts,
                     "execution_table_ref": _table_parts_to_reference(execution_table_parts),
@@ -604,6 +636,7 @@ def _pick_execution_query(graph):
                     "metrics": [],
                     "dimensions": [f"{execution_model_name}.{dimension.name}"],
                     "column_types": column_types,
+                    "dimension_sql_is_plain_column": plain_dimension_column is not None,
                 }
             return None
 
@@ -644,20 +677,164 @@ def _materialize_execution_table(conn: duckdb.DuckDBPyConnection, query_spec: di
     conn.execute(f"CREATE TABLE {table_ref} ({column_defs})")
 
     insert_columns = ", ".join(_quote_identifier(column) for column in sorted(column_types))
-    values = []
+    first_row = []
+    second_row = []
     for column in sorted(column_types):
         column_type = column_types[column]
         if column_type == "DOUBLE":
-            values.append("1.0")
+            first_row.append("1.0")
+            second_row.append("2.0")
         elif column_type == "INTEGER":
-            values.append("1")
+            first_row.append("1")
+            second_row.append("2")
         elif column_type == "DATE":
-            values.append("DATE '2024-01-01'")
+            first_row.append("DATE '2024-01-01'")
+            second_row.append("DATE '2024-01-02'")
         elif column_type == "BOOLEAN":
-            values.append("TRUE")
+            first_row.append("TRUE")
+            second_row.append("FALSE")
         else:
-            values.append("'x'")
-    conn.execute(f"INSERT INTO {table_ref} ({insert_columns}) VALUES ({', '.join(values)})")
+            first_row.append("'x'")
+            second_row.append("'y'")
+    conn.execute(
+        f"INSERT INTO {table_ref} ({insert_columns}) VALUES ({', '.join(first_row)}), ({', '.join(second_row)})"
+    )
+
+
+def _assert_compiled_query_contract(sql: str, query: dict, fixture_path: str) -> None:
+    assert "FROM" in sql.upper(), f"{fixture_path}: compiled SQL missing FROM clause"
+    field_name = query["field_name"]
+    field_alias_found = False
+
+    try:
+        parsed = sqlglot.parse_one(sql, read="duckdb")
+    except Exception:
+        parsed = None
+
+    if parsed is not None:
+        select_node = parsed if isinstance(parsed, exp.Select) else parsed.find(exp.Select)
+        assert select_node is not None, f"{fixture_path}: compiled SQL missing SELECT expression"
+        select_aliases = [expression.alias_or_name for expression in select_node.expressions]
+        field_alias_found = field_name in select_aliases
+    else:
+        escaped_identifier = _quote_identifier(field_name)
+        escaped_backtick = "`" + field_name.replace("`", "``") + "`"
+        if UNQUOTED_SQL_IDENTIFIER_RE.match(field_name):
+            alias_patterns = [
+                rf"(?i)\bas\s+{re.escape(field_name)}\b",
+                rf"(?i)\bas\s+{re.escape(escaped_identifier)}",
+                rf"(?i)\bas\s+{re.escape(escaped_backtick)}",
+            ]
+        else:
+            alias_patterns = [
+                rf"(?i)\bas\s+{re.escape(escaped_identifier)}",
+                rf"(?i)\bas\s+{re.escape(escaped_backtick)}",
+            ]
+        field_alias_found = any(re.search(pattern, sql) for pattern in alias_patterns)
+
+    assert field_alias_found, f"{fixture_path}: expected compiled SQL to select alias {field_name!r}"
+
+    if query["query_kind"] != "metric":
+        return
+
+    metric_agg = (query["metric_agg"] or "").lower()
+    upper_sql = sql.upper()
+    if metric_agg == "count_distinct":
+        assert "COUNT(DISTINCT" in upper_sql, f"{fixture_path}: expected COUNT(DISTINCT ...) in compiled SQL"
+    elif metric_agg == "count":
+        assert "COUNT(" in upper_sql, f"{fixture_path}: expected COUNT(...) in compiled SQL"
+    else:
+        assert f"{metric_agg.upper()}(" in upper_sql, (
+            f"{fixture_path}: expected {metric_agg.upper()}(...) in compiled SQL"
+        )
+
+
+def _assert_execution_result_contract(query_spec: dict, rows: list[tuple], fixture_path: str) -> None:
+    assert rows, f"{fixture_path}: expected at least one row from synthetic execution"
+
+    if query_spec["query_kind"] == "metric":
+        assert len(rows) == 1, f"{fixture_path}: expected one metric row, got {len(rows)}"
+        value = rows[0][0]
+        metric_agg = query_spec["metric_agg"]
+        has_filters = query_spec.get("has_metric_filters", False)
+        metric_sql_is_plain_column = query_spec.get("metric_sql_is_plain_column", False)
+
+        if metric_agg == "count":
+            if has_filters:
+                assert isinstance(value, Number), (
+                    f"{fixture_path}: expected numeric count result with filters, got {type(value).__name__}"
+                )
+            else:
+                assert value == 2, f"{fixture_path}: expected count=2 from two synthetic rows, got {value}"
+            return
+
+        if metric_agg == "count_distinct":
+            if has_filters or not metric_sql_is_plain_column:
+                assert isinstance(value, Number), (
+                    f"{fixture_path}: expected numeric count_distinct result, got {type(value).__name__}"
+                )
+            else:
+                assert value == 2, f"{fixture_path}: expected count_distinct=2 from two synthetic rows, got {value}"
+            return
+
+        if metric_agg in {"stddev", "variance"}:
+            if has_filters or not metric_sql_is_plain_column:
+                assert value is None or isinstance(value, Number), (
+                    f"{fixture_path}: expected nullable numeric for {metric_agg}, got {type(value).__name__}"
+                )
+            else:
+                assert isinstance(value, Number) and value > 0, (
+                    f"{fixture_path}: expected positive {metric_agg} from two-point sample, got {value}"
+                )
+            return
+
+        if has_filters or not metric_sql_is_plain_column:
+            assert isinstance(value, Number), (
+                f"{fixture_path}: expected numeric metric result for {metric_agg}, got {type(value).__name__}"
+            )
+            return
+
+        if metric_agg == "sum":
+            assert value == 3.0, f"{fixture_path}: expected sum=3.0 from synthetic rows, got {value}"
+        elif metric_agg == "avg":
+            assert value == 1.5, f"{fixture_path}: expected avg=1.5 from synthetic rows, got {value}"
+        elif metric_agg == "min":
+            assert value == 1.0, f"{fixture_path}: expected min=1.0 from synthetic rows, got {value}"
+        elif metric_agg == "max":
+            assert value == 2.0, f"{fixture_path}: expected max=2.0 from synthetic rows, got {value}"
+        elif metric_agg == "median":
+            assert value == 1.5, f"{fixture_path}: expected median=1.5 from synthetic rows, got {value}"
+        else:
+            assert isinstance(value, Number), (
+                f"{fixture_path}: expected numeric metric result for {metric_agg}, got {type(value).__name__}"
+            )
+        return
+
+    values = [row[0] for row in rows]
+    assert len(values) <= 2, (
+        f"{fixture_path}: expected at most two grouped rows from synthetic execution, got {len(values)}"
+    )
+    if query_spec.get("dimension_sql_is_plain_column") and query_spec["dimension_type"] != "time":
+        assert len(values) == 2, f"{fixture_path}: expected two grouped rows for plain dimension, got {len(values)}"
+
+    dimension_type = query_spec["dimension_type"]
+    for value in values:
+        if dimension_type == "time":
+            assert isinstance(value, (date, Number, str)), (
+                f"{fixture_path}: expected time-like result for time dimension, got {type(value).__name__}"
+            )
+        elif dimension_type == "numeric":
+            assert isinstance(value, Number), (
+                f"{fixture_path}: expected numeric result for numeric dimension, got {type(value).__name__}"
+            )
+        elif dimension_type == "boolean":
+            assert isinstance(value, bool), (
+                f"{fixture_path}: expected bool result for boolean dimension, got {type(value).__name__}"
+            )
+        else:
+            assert isinstance(value, (str, Number, bool, date)), (
+                f"{fixture_path}: expected scalar result for categorical dimension, got {type(value).__name__}"
+            )
 
 
 def _prepare_graph_for_execution(graph, query_spec: dict):
@@ -736,8 +913,7 @@ def test_added_fixtures_generate_sql_for_compile_candidates():
                 dimensions=query["dimensions"],
                 limit=5,
             )
-            assert "SELECT" in sql.upper()
-            assert "FROM" in sql.upper()
+            _assert_compiled_query_contract(sql, query, fixture_path)
             compiled_queries += 1
         except Exception as exc:
             compile_failures[fixture_path] = exc
@@ -797,39 +973,7 @@ def test_added_fixtures_execute_sql_for_execution_candidates():
             assert column_names == [query_spec["field_name"]], (
                 f"{fixture_path}: expected output column {query_spec['field_name']}, got {column_names}"
             )
-            assert len(rows) == 1, f"{fixture_path}: expected one result row from synthetic execution, got {len(rows)}"
-
-            value = rows[0][0]
-            if query_spec["query_kind"] == "metric":
-                metric_agg = query_spec["metric_agg"]
-                if metric_agg in {"count", "count_distinct"}:
-                    assert value == 1, f"{fixture_path}: expected {metric_agg}=1 from one synthetic row, got {value}"
-                elif metric_agg in {"stddev", "variance"}:
-                    assert value is None or isinstance(value, Number), (
-                        f"{fixture_path}: expected nullable numeric for {metric_agg}, got {type(value).__name__}"
-                    )
-                else:
-                    assert isinstance(value, Number), (
-                        f"{fixture_path}: expected numeric metric result for {metric_agg}, got {type(value).__name__}"
-                    )
-            else:
-                dimension_type = query_spec["dimension_type"]
-                if dimension_type == "time":
-                    assert isinstance(value, (date, Number, str)), (
-                        f"{fixture_path}: expected time-like result for time dimension, got {type(value).__name__}"
-                    )
-                elif dimension_type == "numeric":
-                    assert isinstance(value, Number), (
-                        f"{fixture_path}: expected numeric result for numeric dimension, got {type(value).__name__}"
-                    )
-                elif dimension_type == "boolean":
-                    assert isinstance(value, bool), (
-                        f"{fixture_path}: expected bool result for boolean dimension, got {type(value).__name__}"
-                    )
-                else:
-                    assert isinstance(value, (str, Number, bool, date)), (
-                        f"{fixture_path}: expected scalar result for categorical dimension, got {type(value).__name__}"
-                    )
+            _assert_execution_result_contract(query_spec, rows, fixture_path)
             executed_queries += 1
         except Exception as exc:
             execution_failures[fixture_path] = exc

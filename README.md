@@ -9,6 +9,26 @@ A universal metrics layer for consistent metrics across your data stack. Compati
 
 ![Jupyter Widget Preview](preview.png)
 
+## Agent Skill
+
+Sidemantic ships an [agent skill](skills/sidemantic-modeler/) that teaches Claude Code, Codex, and other `SKILL.md`-compatible agents to build, validate, and query semantic models.
+
+**One-liner install (no clone required):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sidequery/sidemantic/main/skills/install.sh | bash
+```
+
+**npx / bunx:**
+
+```bash
+npx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
+# or
+bunx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
+```
+
+The installer downloads the skill to `~/.agents/skills/sidemantic-modeler` and symlinks it into `~/.claude/skills/`.
+
 ## How mature is Sidemantic?
 
 Sidemantic is a very ambitious and young semantic layer project. You may encounter rough patches, especially with the more exotic features like converting between semantic model formats or serving semantic layers via the included Postgres protocol server.

@@ -164,9 +164,7 @@ def test_coverage_analysis_queries_produce_same_results():
             metrics.append(Metric(name=metric_def["name"], agg=metric_def["agg"], sql=metric_def.get("sql", "*")))
 
         # Create and register model
-        model = Model(
-            name=model_def["model"]["name"], table=model_def["model"]["table"], dimensions=dimensions, metrics=metrics
-        )
+        model = Model(name=model_def["name"], table=model_def["table"], dimensions=dimensions, metrics=metrics)
         layer.add_model(model)
 
     # Update analyzer with new semantic layer

@@ -60,21 +60,21 @@ GROUP BY status
 
 Generates models like:
 ```yaml
-model:
-  name: orders
-  table: orders
-  description: Auto-generated from query analysis
-dimensions:
-  - name: status
-    sql: status
-    type: categorical
-metrics:
-  - name: count
-    agg: count
-    sql: '*'
-  - name: sum_total_amount
-    agg: sum
-    sql: total_amount
+models:
+  - name: orders
+    table: orders
+    description: Auto-generated from query analysis
+    dimensions:
+      - name: status
+        sql: status
+        type: categorical
+    metrics:
+      - name: count
+        agg: count
+        sql: '*'
+      - name: sum_total_amount
+        agg: sum
+        sql: total_amount
 ```
 
 ### Rewritten Queries

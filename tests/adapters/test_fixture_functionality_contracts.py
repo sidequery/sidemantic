@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date
 from functools import cache
 from pathlib import Path
 
@@ -144,6 +145,74 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
     "complex_or_nonportable_sql_fields": {"LookMLAdapter"},
 }
 
+EXPECTED_NO_COMPILE_ADAPTERS = {"AtScaleSMLAdapter"}
+
+EXECUTION_SEMANTIC_FIXTURE_CASES = (
+    {
+        "fixture_path": "tests/fixtures/atscale_sml/metric_order_count.yml",
+        "query_kind": "metric",
+        "metric_agg": "count",
+        "field_name": "order_count",
+        "expected_scalar": 2,
+    },
+    {
+        "fixture_path": "tests/fixtures/atscale_sml/dimension_customers.yml",
+        "query_kind": "metric",
+        "metric_agg": "count_distinct",
+        "field_name": "customer_count",
+        "expected_scalar": 2,
+    },
+    {
+        "fixture_path": "tests/fixtures/atscale_sml/metric_total_sales.yml",
+        "query_kind": "metric",
+        "metric_agg": "sum",
+        "field_name": "total_sales",
+        "expected_scalar": 3.0,
+    },
+    {
+        "fixture_path": "tests/fixtures/atscale_sml/metric_sales_median.yml",
+        "query_kind": "metric",
+        "metric_agg": "median",
+        "field_name": "sales_median",
+        "expected_scalar": 1.5,
+    },
+    {
+        "fixture_path": "tests/fixtures/rill/query_log_metrics.yaml",
+        "query_kind": "metric",
+        "metric_agg": "min",
+        "field_name": "min_query_duration_ms",
+        "expected_scalar": 1.0,
+    },
+    {
+        "fixture_path": "tests/fixtures/malloy/ga4.malloy",
+        "query_kind": "metric",
+        "metric_agg": "max",
+        "field_name": "is_new_user",
+        "expected_scalar": 2.0,
+    },
+    {
+        "fixture_path": "tests/fixtures/atscale_sml/dimension_regions.yml",
+        "query_kind": "dimension",
+        "dimension_type": "categorical",
+        "field_name": "region_id",
+        "expected_values": {"x", "y"},
+    },
+    {
+        "fixture_path": "tests/fixtures/cube/case_switch_ownership.yaml",
+        "query_kind": "dimension",
+        "dimension_type": "numeric",
+        "field_name": "id",
+        "expected_values": {1, 2},
+    },
+    {
+        "fixture_path": "tests/fixtures/atscale_sml/dimension_order_date.yml",
+        "query_kind": "dimension",
+        "dimension_type": "time",
+        "field_name": "order_date",
+        "expected_values": {date(2024, 1, 1), date(2024, 1, 2)},
+    },
+)
+
 
 def _discover_fixture_cases() -> list[tuple[type, str]]:
     root = Path("tests/fixtures")
@@ -283,6 +352,26 @@ def _classify_non_execution_fixture(graph) -> str:
     return "complex_or_nonportable_sql_fields"
 
 
+def _execute_query_spec(graph, query_spec: dict) -> tuple[list[str], list[tuple]]:
+    conn = duckdb.connect(":memory:")
+    try:
+        _materialize_execution_table(conn, query_spec)
+        graph_for_query = _prepare_graph_for_execution(graph, query_spec)
+        sql = SQLGenerator(graph_for_query).generate(
+            metrics=query_spec["metrics"],
+            dimensions=query_spec["dimensions"],
+            limit=5,
+            skip_default_time_dimensions=True,
+        )
+        result = conn.execute(sql)
+        rows = result.fetchall()
+        assert result.description is not None
+        column_names = [column[0] for column in result.description]
+        return column_names, rows
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize(
     ("adapter_cls", "fixture_path"),
     ALL_FIXTURE_CASES,
@@ -303,6 +392,7 @@ def test_fixture_query_compilation_coverage():
     compile_failures = {}
     compiled_queries = 0
     attempted_queries = 0
+    adapters_with_compile_candidates = set()
 
     for adapter_cls, fixture_path in PARSEABLE_FIXTURE_CASES:
         graph = _parse_graph(adapter_cls, fixture_path)
@@ -311,6 +401,7 @@ def test_fixture_query_compilation_coverage():
             continue
 
         attempted_queries += 1
+        adapters_with_compile_candidates.add(adapter_cls.__name__)
         try:
             sql = SQLGenerator(graph).generate(
                 metrics=query["metrics"],
@@ -338,16 +429,14 @@ def test_fixture_query_compilation_coverage():
             f"expected {expected_exception.__name__}"
         )
 
-    minimum_compile_attempts = 180
-    assert attempted_queries >= minimum_compile_attempts, (
-        f"Expected at least {minimum_compile_attempts} fixture compile candidates, got {attempted_queries}"
+    all_adapters = {adapter_cls.__name__ for adapter_cls, _ in PARSEABLE_FIXTURE_CASES}
+    adapters_without_compile_candidates = all_adapters - adapters_with_compile_candidates
+    assert adapters_without_compile_candidates == EXPECTED_NO_COMPILE_ADAPTERS, (
+        "Compile-candidate adapter coverage drifted.\n"
+        f"Expected adapters without compile candidates: {sorted(EXPECTED_NO_COMPILE_ADAPTERS)}\n"
+        f"Actual adapters without compile candidates: {sorted(adapters_without_compile_candidates)}"
     )
-
-    minimum_compile_successes = minimum_compile_attempts
-    assert compiled_queries >= minimum_compile_successes, (
-        f"Expected at least {minimum_compile_successes} compiled fixture queries, got {compiled_queries} "
-        f"(attempted {attempted_queries})"
-    )
+    assert compiled_queries == attempted_queries - len(EXPECTED_COMPILE_FAILURES)
 
 
 def test_non_executable_fixture_reason_contracts():
@@ -392,22 +481,8 @@ def test_fixture_query_execution_coverage():
 
         attempted_executions += 1
         adapters_with_execution.add(adapter_cls.__name__)
-        conn = duckdb.connect(":memory:")
         try:
-            _materialize_execution_table(conn, query_spec)
-            graph_for_query = _prepare_graph_for_execution(graph, query_spec)
-
-            sql = SQLGenerator(graph_for_query).generate(
-                metrics=query_spec["metrics"],
-                dimensions=query_spec["dimensions"],
-                limit=5,
-                skip_default_time_dimensions=True,
-            )
-            result = conn.execute(sql)
-            rows = result.fetchall()
-
-            assert result.description is not None
-            column_names = [column[0] for column in result.description]
+            column_names, rows = _execute_query_spec(graph, query_spec)
             assert column_names == [query_spec["field_name"]], (
                 f"{fixture_path}: expected output column {query_spec['field_name']}, got {column_names}"
             )
@@ -416,24 +491,59 @@ def test_fixture_query_execution_coverage():
             executed_queries += 1
         except Exception as exc:
             execution_failures[fixture_path] = exc
-        finally:
-            conn.close()
 
     assert attempted_executions > 0, "No fixture produced an executable query candidate"
-
-    minimum_execution_attempts = 210
-    assert attempted_executions >= minimum_execution_attempts, (
-        f"Expected at least {minimum_execution_attempts} executable fixture queries, got {attempted_executions}"
-    )
-
-    total_adapters = len({adapter_cls.__name__ for adapter_cls, _ in PARSEABLE_FIXTURE_CASES})
-    minimum_adapter_execution_coverage = 15
-    assert len(adapters_with_execution) >= minimum_adapter_execution_coverage, (
-        f"Expected execution coverage in at least {minimum_adapter_execution_coverage}/{total_adapters} adapters, "
-        f"got {len(adapters_with_execution)}"
+    all_adapters = {adapter_cls.__name__ for adapter_cls, _ in PARSEABLE_FIXTURE_CASES}
+    assert adapters_with_execution == all_adapters, (
+        "Execution-candidate adapter coverage drifted.\n"
+        f"Expected: {sorted(all_adapters)}\n"
+        f"Actual: {sorted(adapters_with_execution)}"
     )
 
     assert not execution_failures, "Unexpected execution failures in fixture contracts:\n" + "\n".join(
         f"{path}: {type(exc).__name__}({exc})" for path, exc in sorted(execution_failures.items())
     )
     assert executed_queries == attempted_executions
+
+
+def test_fixture_representative_execution_semantics():
+    fixture_to_adapter = {fixture_path: adapter_cls for adapter_cls, fixture_path in PARSEABLE_FIXTURE_CASES}
+
+    for case in EXECUTION_SEMANTIC_FIXTURE_CASES:
+        fixture_path = case["fixture_path"]
+        assert fixture_path in fixture_to_adapter, f"{fixture_path}: fixture missing from parseable corpus"
+
+        graph = _parse_graph(fixture_to_adapter[fixture_path], fixture_path)
+        query_spec = _pick_execution_query(graph)
+        assert query_spec is not None, f"{fixture_path}: expected execution query candidate"
+        assert query_spec["query_kind"] == case["query_kind"], (
+            f"{fixture_path}: expected {case['query_kind']} candidate, got {query_spec['query_kind']}"
+        )
+        assert query_spec["field_name"] == case["field_name"], (
+            f"{fixture_path}: expected field {case['field_name']}, got {query_spec['field_name']}"
+        )
+        if case["query_kind"] == "metric":
+            assert query_spec["metric_agg"] == case["metric_agg"], (
+                f"{fixture_path}: expected agg={case['metric_agg']}, got {query_spec['metric_agg']}"
+            )
+        else:
+            assert query_spec["dimension_type"] == case["dimension_type"], (
+                f"{fixture_path}: expected dimension_type={case['dimension_type']}, got {query_spec['dimension_type']}"
+            )
+
+        column_names, rows = _execute_query_spec(graph, query_spec)
+        assert column_names == [case["field_name"]], (
+            f"{fixture_path}: expected output column {case['field_name']}, got {column_names}"
+        )
+        _assert_execution_result_contract(query_spec, rows, fixture_path)
+
+        if case["query_kind"] == "metric":
+            assert len(rows) == 1, f"{fixture_path}: expected one result row, got {len(rows)}"
+            assert rows[0][0] == case["expected_scalar"], (
+                f"{fixture_path}: expected scalar={case['expected_scalar']}, got {rows[0][0]}"
+            )
+        else:
+            result_values = {row[0] for row in rows}
+            assert result_values == case["expected_values"], (
+                f"{fixture_path}: expected values={sorted(case['expected_values'])}, got {sorted(result_values)}"
+            )

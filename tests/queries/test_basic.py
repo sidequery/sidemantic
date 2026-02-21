@@ -2,8 +2,10 @@
 
 import duckdb
 import pytest
+import sqlglot
+from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sidemantic import Dimension, Metric, Model, Relationship, Segment, SemanticLayer
 from tests.utils import df_rows
 
 
@@ -359,6 +361,53 @@ def test_count_distinct_without_sql_uses_primary_key(layer):
     assert "count AS count_raw" not in sql
     # Final aggregation should be COUNT(DISTINCT ...)
     assert "COUNT(DISTINCT" in sql
+
+
+def test_count_distinct_with_segment_filter_without_model_placeholder(layer):
+    """Test count_distinct with segment filters that omit {model} placeholders."""
+    layer = SemanticLayer()
+
+    location = Model(
+        name="location",
+        table="dim_location",
+        primary_key="sk_location_id",
+        dimensions=[
+            Dimension(name="city", type="categorical"),
+        ],
+        metrics=[
+            Metric(name="count", agg="count_distinct"),  # No sql field
+        ],
+        segments=[
+            Segment(name="lockers_3000", sql="zipcode = '3000'"),
+        ],
+    )
+
+    layer.add_model(location)
+
+    sql = layer.compile(
+        metrics=["location.count"],
+        dimensions=["location.city"],
+        segments=["location.lockers_3000"],
+    )
+
+    # Should still use primary key for count_distinct
+    assert "sk_location_id AS count_raw" in sql
+    assert "count AS count_raw" not in sql
+
+    parsed = sqlglot.parse_one(sql)
+    cte = None
+    for cte_def in parsed.find_all(exp.CTE):
+        if cte_def.alias == "location_cte":
+            cte = cte_def
+            break
+
+    assert cte is not None
+
+    where_clause = cte.this.find(exp.Where)
+    assert where_clause is not None
+    where_sql = where_clause.sql()
+    assert "zipcode" in where_sql
+    assert "3000" in where_sql
 
 
 def test_count_distinct_with_explicit_sql(layer):

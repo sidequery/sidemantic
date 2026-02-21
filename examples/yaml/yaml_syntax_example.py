@@ -10,7 +10,7 @@ This demonstrates:
 - Querying the semantic layer with compile()
 - Running compiled SQL against DuckDB
 
-Run with: uv run examples/yaml_syntax_example.py
+Run with: uv run examples/yaml/yaml_syntax_example.py
 """
 
 from pathlib import Path

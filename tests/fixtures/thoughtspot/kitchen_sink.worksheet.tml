@@ -1,0 +1,112 @@
+guid: "worksheet-kitchen-sink"
+worksheet:
+  name: sales_worksheet_full
+  description: Full worksheet example
+  tables:
+    - name: sales
+      id: sales_table
+      fqn: ANALYTICS.PUBLIC.sales
+    - name: customers
+      id: customers_table
+      fqn: ANALYTICS.PUBLIC.customers
+    - name: regions
+      id: regions_table
+      fqn: ANALYTICS.PUBLIC.regions
+  joins:
+    - name: sales_customers
+      source: sales
+      destination: customers
+      type: LEFT_OUTER
+      on: "[sales::customer_id] = [customers::id]"
+      is_one_to_one: false
+    - name: sales_regions
+      source: sales
+      destination: regions
+      type: INNER
+      on: "[sales::region_id] = [regions::id] AND [sales::country_code] = [regions::country_code]"
+      is_one_to_one: true
+  table_paths:
+    - id: sales_path
+      table: sales
+      join_path:
+        - {}
+    - id: customers_path
+      table: customers
+      join_path:
+        - join:
+          - sales_customers
+    - id: regions_path
+      table: regions
+      join_path:
+        - join:
+          - sales_regions
+  formulas:
+    - name: net_revenue
+      expr: "[sales::gross_revenue] - [sales::discount]"
+      id: net_rev
+    - name: avg_order_value
+      expr: "[sales::gross_revenue] / [sales::order_count]"
+  worksheet_columns:
+    - name: order_id
+      description: Order identifier
+      column_id: sales_path::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: order_date
+      column_id: sales_path::order_date
+      data_type: DATE
+      custom_name: Order Date
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: DAILY
+        format_pattern: "YYYY-MM-DD"
+    - name: is_active
+      column_id: sales_path::is_active
+      data_type: BOOLEAN
+      properties:
+        column_type: ATTRIBUTE
+    - name: customer_name
+      column_id: customers_path::name
+      custom_name: Customer
+      properties:
+        column_type: ATTRIBUTE
+    - name: gross_revenue
+      column_id: sales_path::gross_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+        format_pattern: "$#,##0.00"
+    - name: net_revenue
+      formula_id: net_rev
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+    - name: avg_order_value
+      properties:
+        column_type: MEASURE
+        aggregation: AVERAGE
+    - name: distinct_customers
+      column_id: sales_path::customer_id
+      properties:
+        column_type: MEASURE
+        aggregation: COUNT_DISTINCT
+    - name: min_order_value
+      column_id: sales_path::gross_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: MIN
+    - name: max_order_value
+      column_id: sales_path::gross_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: MAX
+    - name: median_order_value
+      column_id: sales_path::gross_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: MEDIAN
+    - name: revenue_stddev
+      column_id: sales_path::gross_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: STD_DEVIATION

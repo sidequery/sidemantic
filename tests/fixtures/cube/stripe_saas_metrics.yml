@@ -1,0 +1,289 @@
+# Real-world Stripe SaaS metrics pattern
+# Based on: https://github.com/cube-js/stripe-schema
+#
+# Exercises:
+# - rolling_window with trailing: unbounded and offset: end
+# - rolling_window with trailing: 1 month and leading: -1 month
+# - Derived measures referencing other measures (ARR = MRR * 12)
+# - format: currency and format: percent
+# - shown: false on intermediate measures
+# - Multiple filtered measures (by mrr_type)
+# - Composite primary key via concatenation
+# - Cross-cube drill_members
+# - description on measures
+
+cubes:
+  - name: stripe_customers
+    sql_table: public.customers
+    description: Stripe customers
+
+    dimensions:
+      - name: id
+        sql: id
+        type: string
+        primary_key: true
+
+      - name: email
+        sql: email
+        type: string
+
+      - name: created
+        sql: created
+        type: time
+
+      - name: currency
+        sql: currency
+        type: string
+
+      - name: description
+        sql: description
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+  - name: stripe_charges
+    sql_table: public.charges
+    description: Stripe charge transactions
+
+    joins:
+      - name: stripe_customers
+        relationship: many_to_one
+        sql: "${CUBE}.customer = ${stripe_customers.id}"
+
+    dimensions:
+      - name: id
+        sql: id
+        type: string
+        primary_key: true
+
+      - name: amount
+        sql: "1.0 * COALESCE(${CUBE}.amount, 0) / 100"
+        type: number
+        format: currency
+
+      - name: amount_refunded
+        sql: "1.0 * COALESCE(${CUBE}.amount_refunded, 0) / 100"
+        type: number
+        format: currency
+
+      - name: captured
+        sql: captured
+        type: boolean
+
+      - name: created
+        sql: created
+        type: time
+
+      - name: currency
+        sql: currency
+        type: string
+
+      - name: paid
+        sql: paid
+        type: boolean
+
+      - name: refunded
+        sql: refunded
+        type: boolean
+
+      - name: failure_code
+        sql: failure_code
+        type: string
+
+      - name: status
+        sql: status
+        type: string
+
+    measures:
+      - name: count
+        type: count
+        drill_members:
+          - id
+          - amount
+          - paid
+          - refunded
+          - created
+
+      - name: refunded_count
+        type: count
+        filters:
+          - sql: "${CUBE}.refunded = 'true'"
+        drill_members:
+          - id
+          - amount
+          - paid
+          - refunded
+          - created
+
+      - name: average_charge_amount
+        sql: "${amount}"
+        type: avg
+        format: currency
+
+      - name: total_gross_amount
+        sql: "${amount}"
+        type: sum
+        format: currency
+        drill_members:
+          - id
+          - amount
+          - paid
+          - refunded
+          - created
+
+      - name: total_failed_amount
+        sql: "${amount}"
+        type: sum
+        format: currency
+        filters:
+          - sql: "${CUBE}.status = 'failed'"
+
+      - name: total_refunded_amount
+        sql: "${amount_refunded}"
+        type: sum
+        format: currency
+
+      - name: total_net_revenue
+        description: "Gross amount - failed charges amount - refunded amount"
+        sql: "${total_gross_amount} - COALESCE(${total_failed_amount}, 0) - COALESCE(${total_refunded_amount}, 0)"
+        type: number
+        format: currency
+
+  - name: stripe_saas_metrics
+    sql: "SELECT * FROM saas_customer_movements"
+    description: SaaS metrics computed from subscription movements
+
+    joins:
+      - name: stripe_customers
+        relationship: many_to_one
+        sql: "${CUBE}.stripe_customer_id = ${stripe_customers.id}"
+
+    dimensions:
+      - name: id
+        sql: "${CUBE}.dd || '-' || ${CUBE}.mrr_type || '-' || ${CUBE}.stripe_customer_id"
+        type: string
+        primary_key: true
+
+      - name: plan
+        sql: plan_name
+        type: string
+        description: Subscription plan name
+
+      - name: mrr_change_type
+        sql: "initcap(mrr_type)"
+        type: string
+        description: "The four major ways to change MRR: new, expansion, contraction, churn"
+
+      - name: time
+        sql: dd
+        type: time
+
+    measures:
+      - name: mrr
+        description: Monthly Recurring Revenue (MRR) is the monthly-normalized amounts of all active subscriptions.
+        sql: mrr
+        type: sum
+        rolling_window:
+          trailing: unbounded
+          offset: end
+        format: currency
+
+      - name: arr
+        description: Annual Run Rate (ARR) is the current value of your business projected out over the next year.
+        sql: "${mrr} * 12"
+        type: number
+        format: currency
+
+      - name: churned_mrr
+        sql: mrr
+        type: sum
+        filters:
+          - sql: "mrr_type = 'cancelled'"
+
+      - name: new_mrr
+        sql: mrr
+        type: sum
+        filters:
+          - sql: "mrr_type = 'new'"
+
+      - name: expansion_mrr
+        sql: mrr
+        type: sum
+        filters:
+          - sql: "mrr_type = 'expansion'"
+
+      - name: contraction_mrr
+        sql: mrr
+        type: sum
+        filters:
+          - sql: "mrr_type = 'contraction'"
+
+      - name: mrr_change
+        description: The MRR change for a given period.
+        sql: mrr
+        type: sum
+        format: currency
+
+      - name: new_subscriptions
+        shown: false
+        sql: mrr
+        type: count
+        filters:
+          - sql: "mrr_type = 'new'"
+
+      - name: average_selling_price
+        sql: "${new_mrr} / NULLIF(${new_subscriptions}, 0)"
+        type: number
+
+      - name: churned_movement_30days
+        shown: false
+        sql: mrr
+        type: sum
+        filters:
+          - sql: "mrr_type in ('cancelled', 'contraction')"
+        rolling_window:
+          trailing: 1 month
+          offset: end
+
+      - name: mrr_30days_ago
+        shown: false
+        sql: mrr
+        type: sum
+        rolling_window:
+          trailing: unbounded
+          leading: -1 month
+          offset: end
+
+      - name: mrr_churn_rate
+        description: The churned revenue for a given period.
+        sql: "-100 * (${churned_movement_30days}) / NULLIF(${mrr_30days_ago}, 0)"
+        type: number
+        format: percent
+
+      - name: active_customers
+        sql: |
+          CASE
+            WHEN ${CUBE}.subscription_status = 1 AND ${CUBE}.moment_active_subscriptions = 1 THEN 1
+            WHEN ${CUBE}.subscription_status = -1 AND ${CUBE}.moment_active_subscriptions = 0 THEN -1
+            ELSE 0
+          END
+        type: sum
+        rolling_window:
+          trailing: unbounded
+          offset: end
+
+      - name: arpa
+        description: Average Revenue Per Account (ARPA) is total MRR divided by the number of active customers.
+        sql: "${mrr} / NULLIF(${active_customers}, 0)"
+        type: number
+        format: currency
+
+      - name: ltv
+        description: >
+          Customer Lifetime Value (LTV) represents the average revenue that a customer generates before they churn.
+          It is equal to ARPA divided by the churn rate.
+        sql: "${arpa} / NULLIF(${mrr_churn_rate} / 100.0, 0)"
+        type: number
+        format: currency

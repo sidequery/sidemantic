@@ -50,6 +50,19 @@ class SparkResult:
 class SparkAdapter(BaseDatabaseAdapter):
     """Spark SQL database adapter using PyHive for Thrift server connections.
 
+    Note:
+        PyHive connects via the Thrift protocol and does not support native Arrow
+        data transfer. fetch_record_batch() materializes rows to Python and then
+        converts to Arrow. For Arrow optimization with Spark, consider:
+
+        1. **Spark Connect (Spark 3.4+)**: Use the databricks-sql-connector or
+           Spark Connect client which supports Arrow natively.
+        2. **Direct PySpark**: Use PySpark's DataFrame API with Arrow optimization
+           enabled via ``spark.sql.execution.arrow.pyspark.enabled``.
+
+        This adapter is best suited for light queries against remote Spark clusters
+        where the Thrift interface is the primary connection method.
+
     Example:
         >>> adapter = SparkAdapter(
         ...     host="localhost",

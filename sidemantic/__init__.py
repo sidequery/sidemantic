@@ -1,6 +1,8 @@
 """Sidemantic: Universal semantic layer - import from Cube, dbt, LookML, Hex, and more."""
 
-__version__ = "0.5.0"
+from typing import TYPE_CHECKING
+
+__version__ = "0.5.11"
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -31,6 +33,10 @@ __all__ = [
     "SemanticLayer",
     "load_from_directory",
 ]
+
+if TYPE_CHECKING:
+    from sidemantic.core.semantic_layer import SemanticLayer as SemanticLayer
+    from sidemantic.loaders import load_from_directory as load_from_directory
 
 
 def __getattr__(name):  # Lazy import to avoid importing duckdb on package import

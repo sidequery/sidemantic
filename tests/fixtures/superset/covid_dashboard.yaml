@@ -1,0 +1,219 @@
+table_name: covid_stats
+main_dttm_col: report_date
+description: Virtual dataset for COVID-19 statistics dashboard
+schema: null
+sql: |
+  SELECT
+    cs.report_date,
+    cs.country,
+    cs.province,
+    cs.confirmed,
+    cs.deaths,
+    cs.recovered,
+    cs.active,
+    cs.population,
+    cs.latitude,
+    cs.longitude
+  FROM covid_statistics cs
+  WHERE cs.report_date >= '2020-01-01'
+cache_timeout: 7200
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+uuid: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+template_params: null
+offset: 0
+version: 1.0.0
+
+metrics:
+  - metric_name: count
+    verbose_name: Record Count
+    metric_type: count
+    expression: COUNT(*)
+    description: Total number of records
+    d3format: ","
+    extra: null
+    warning_text: null
+
+  - metric_name: total_confirmed
+    verbose_name: Total Confirmed Cases
+    metric_type: sum
+    expression: SUM(confirmed)
+    description: Sum of confirmed cases
+    d3format: ",.0f"
+    extra: null
+    warning_text: null
+
+  - metric_name: total_deaths
+    verbose_name: Total Deaths
+    metric_type: sum
+    expression: SUM(deaths)
+    description: Sum of deaths
+    d3format: ",.0f"
+    extra: null
+    warning_text: null
+
+  - metric_name: total_recovered
+    verbose_name: Total Recovered
+    metric_type: sum
+    expression: SUM(recovered)
+    description: Sum of recovered cases
+    d3format: ",.0f"
+    extra: null
+    warning_text: null
+
+  - metric_name: recovery_rate
+    verbose_name: Recovery Rate
+    metric_type: null
+    expression: SUM(recovered) / NULLIF(SUM(confirmed), 0)
+    description: Ratio of recovered to confirmed cases
+    d3format: ".2%"
+    extra: null
+    warning_text: null
+
+  - metric_name: mortality_rate
+    verbose_name: Mortality Rate
+    metric_type: null
+    expression: SUM(deaths) / NULLIF(SUM(confirmed), 0)
+    description: Ratio of deaths to confirmed cases
+    d3format: ".2%"
+    extra: null
+    warning_text: Data may be underreported in some regions
+
+  - metric_name: cases_per_100k
+    verbose_name: Cases per 100K Population
+    metric_type: null
+    expression: SUM(confirmed) * 100000.0 / NULLIF(SUM(population), 0)
+    description: Confirmed cases per 100,000 population
+    d3format: ",.1f"
+    extra: null
+    warning_text: null
+
+  - metric_name: active_cases
+    verbose_name: Active Cases
+    metric_type: null
+    expression: SUM(confirmed) - SUM(deaths) - SUM(recovered)
+    description: Currently active cases
+    d3format: ",.0f"
+    extra: null
+    warning_text: null
+
+  - metric_name: avg_daily_cases
+    verbose_name: Average Daily Confirmed
+    metric_type: avg
+    expression: AVG(confirmed)
+    description: Average daily confirmed cases
+    d3format: ",.0f"
+    extra: null
+    warning_text: null
+
+  - metric_name: max_daily_deaths
+    verbose_name: Peak Daily Deaths
+    metric_type: max
+    expression: MAX(deaths)
+    description: Maximum deaths in a single report
+    d3format: ",.0f"
+    extra: null
+    warning_text: null
+
+columns:
+  - column_name: report_date
+    verbose_name: Report Date
+    is_dttm: true
+    is_active: true
+    type: DATE
+    groupby: true
+    filterable: true
+    expression: null
+    description: Date of the COVID-19 report
+    python_date_format: "%Y-%m-%d"
+
+  - column_name: country
+    verbose_name: Country/Region
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: Country or region name
+
+  - column_name: province
+    verbose_name: Province/State
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    groupby: true
+    filterable: true
+    expression: null
+    description: Province or state name
+
+  - column_name: confirmed
+    verbose_name: Confirmed Cases
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: false
+    filterable: true
+    expression: null
+    description: Number of confirmed cases
+
+  - column_name: deaths
+    verbose_name: Deaths
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: false
+    filterable: true
+    expression: null
+    description: Number of deaths
+
+  - column_name: recovered
+    verbose_name: Recovered
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: false
+    filterable: true
+    expression: null
+    description: Number of recovered cases
+
+  - column_name: active
+    verbose_name: Active Cases
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: false
+    filterable: true
+    expression: null
+    description: Number of currently active cases
+
+  - column_name: population
+    verbose_name: Population
+    is_dttm: false
+    is_active: true
+    type: BIGINT
+    groupby: false
+    filterable: true
+    expression: null
+    description: Population of region
+
+  - column_name: latitude
+    verbose_name: Latitude
+    is_dttm: false
+    is_active: true
+    type: DOUBLE PRECISION
+    groupby: false
+    filterable: false
+    expression: null
+    description: Geographic latitude
+
+  - column_name: longitude
+    verbose_name: Longitude
+    is_dttm: false
+    is_active: true
+    type: DOUBLE PRECISION
+    groupby: false
+    filterable: false
+    expression: null
+    description: Geographic longitude

@@ -1,0 +1,164 @@
+# Extends (cube inheritance) and hierarchies
+# Based on: https://github.com/cube-js/cube schema compiler fixtures
+#   - orders_ext.yml
+#   - hierarchies.yml
+#
+# Exercises:
+# - extends: for cube inheritance
+# - hierarchies: with cross-cube level references
+# - count_distinct measure type
+# - accessPolicy with role-based row-level security
+# - segments
+# - pre_aggregations on extended cube
+
+cubes:
+  - name: orders_base
+    sql_table: public.orders
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: user_id
+        sql: user_id
+        type: number
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+      - name: completed_at
+        sql: completed_at
+        type: time
+
+    measures:
+      - name: count
+        sql: id
+        type: count
+
+    joins:
+      - name: order_users
+        relationship: many_to_one
+        sql: "${CUBE}.user_id = ${order_users.id}"
+
+    segments:
+      - name: sf_users
+        description: SF users segment
+        sql: "${CUBE}.location = 'San Francisco'"
+
+    hierarchies:
+      - name: hello
+        title: World
+        levels:
+          - status
+
+    pre_aggregations:
+      - name: count_created_at
+        type: rollup
+        measures:
+          - CUBE.count
+        time_dimension: created_at
+        granularity: day
+        partition_granularity: month
+        refresh_key:
+          every: 1 hour
+        scheduled_refresh: true
+
+    accessPolicy:
+      - role: common
+        rowLevel:
+          allowAll: true
+      - role: admin
+        conditions:
+          - if: "{ security_context.isNotBlocked }"
+        rowLevel:
+          filters:
+            - member: status
+              operator: equals
+              values:
+                - completed
+
+  - name: orders_ext
+    extends: orders_base
+
+    dimensions:
+      - name: city
+        sql: city
+        type: string
+
+    measures:
+      - name: count_distinct_status
+        sql: status
+        type: count_distinct
+
+    joins:
+      - name: line_items
+        sql: "{CUBE.id} = {line_items.order_id}"
+        relationship: one_to_many
+
+    segments:
+      - name: another_status
+        description: Just another one
+        sql: "${CUBE}.status = 'Rock and Roll'"
+
+    hierarchies:
+      - name: ehlo
+        title: UnderGround
+        levels:
+          - status
+          - city
+
+    pre_aggregations:
+      - name: main_pre_aggs
+        type: rollup
+        measures:
+          - count_distinct_status
+        dimensions:
+          - city
+
+    accessPolicy:
+      - role: manager
+        memberLevel:
+          excludes:
+            - status
+
+  - name: order_users
+    sql_table: public.users
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: city
+        sql: city
+        type: string
+
+      - name: state
+        sql: state
+        type: string
+
+      - name: age
+        sql: age
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+    hierarchies:
+      - name: users_hierarchy
+        levels:
+          - age
+          - city

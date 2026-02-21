@@ -1,0 +1,40 @@
+guid: "worksheet-001"
+worksheet:
+  name: sales_worksheet
+  description: Sales worksheet
+  tables:
+    - name: orders
+    - name: customers
+  joins:
+    - name: orders_customers
+      source: orders
+      destination: customers
+      type: LEFT_OUTER
+      on: "[orders::customer_id] = [customers::id]"
+      is_one_to_one: false
+  table_paths:
+    - id: orders_path
+      table: orders
+      join_path:
+        - join:
+            - orders_customers
+  formulas:
+    - name: revenue_base
+      expr: "[orders::amount]"
+      id: revenue_formula
+  worksheet_columns:
+    - name: order_id
+      column_id: orders_path::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: order_date
+      column_id: orders_path::order_date
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: DAILY
+    - name: total_revenue
+      formula_id: revenue_formula
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+        format_pattern: "$#,##0.00"

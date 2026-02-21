@@ -1,0 +1,64 @@
+// IMDB example - based on malloy-samples imdb.malloy
+// Tests: join_many, aliased self-joins, query-as-source, concat URLs, all()
+
+source: people is duckdb.table('data/names.parquet') extend {
+  primary_key: nconst
+
+  dimension:
+    full_name is primaryName
+
+  measure:
+    person_count is count()
+}
+
+source: principals is duckdb.table('data/principals.parquet') extend {
+  join_one: people is people on nconst = people.nconst
+
+  dimension:
+    role_category is category
+
+  measure:
+    credit_count is count()
+}
+
+// Query-as-source pattern: create a genre mapping by unnesting
+query: genre_movie_map is duckdb.table('data/titles.parquet') -> {
+  group_by: tconst
+  group_by: genre is genres.value
+}
+
+source: movies is duckdb.table('data/titles.parquet') extend {
+  primary_key: tconst
+
+  // join_many: one movie has many credits
+  join_many: principals on tconst = principals.tconst
+  // Self-join alias: same principals table joined again
+  join_many: principals2 is principals on tconst = principals2.tconst
+  // Query-as-source join
+  join_many: genre_movie_map on tconst = genre_movie_map.tconst
+
+  dimension:
+    movie_url is concat('https://www.imdb.com/title/', tconst)
+    movie_image is concat('https://artifacts.flyxit.com/flyx-artifacts/', tconst, '.jpg')
+    genre is genres.value
+    title_type is titleType
+    is_adult is isAdult = 1
+    start_decade is floor(startYear / 10) * 10
+
+  measure:
+    title_count is count(tconst)
+    total_ratings is sum(numVotes / 1000.0)
+    average_rating is averageRating.avg()
+
+  view: by_genre is {
+    group_by: genre
+    aggregate: title_count, average_rating
+  }
+
+  view: top_movies is {
+    top: 10
+    group_by: primaryTitle, startYear, averageRating
+    aggregate: title_count
+    order_by: averageRating desc
+  }
+}

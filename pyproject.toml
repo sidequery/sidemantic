@@ -1,25 +1,17 @@
 [project]
 name = "sidemantic"
-version = "0.5.0"
+version = "0.5.11"
 description = "Universal semantic layer - import from Cube, dbt, LookML, Hex, and more"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
-    "sqlglot>=25.0.0",
+    "sqlglot==27.12.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
     "jinja2>=3.1.0",
-    "lkml>=1.3.7",
     "duckdb>=1.0.0",
-    "inflect>=7.0.0,<7.2.0",  # PYODIDE: <7.2 required - inflect 7.2+ needs typing-extensions>=4.13 but Pyodide has 4.11.0
     "typer>=0.9.0",
-    "textual[syntax]>=1.0.0",
-    "plotext>=5.3.2",
-    "textual-plotext>=1.0.1",
-    "mcp[cli]>=1.16.0",
-    "altair>=5.0.0",
-    "vl-convert-python>=1.0.0",
 ]
 
 [project.scripts]
@@ -33,6 +25,21 @@ dev = [
     "pandas>=2.2,<3",
     "numpy>=1.26,<3",
     "fakesnow>=0.9.0",  # For Snowflake integration tests
+    "lkml>=1.3.7",
+    "inflect>=7.0.0",
+    "antlr4-python3-runtime>=4.13.2",
+]
+workbench = [
+    "textual[syntax]>=1.0.0",
+    "plotext>=5.3.2",
+    "textual-plotext>=1.0.1",
+]
+mcp = [
+    "mcp[cli]>=1.16.0",
+]
+charts = [
+    "altair>=5.0.0",
+    "vl-convert-python>=1.0.0",
 ]
 serve = [
     "riffq>=0.1.0",
@@ -65,9 +72,33 @@ spark = [
     "pure-sasl>=0.6.2",  # Pure Python SASL for PyHive (no C deps)
     "pyarrow>=14.0.0",  # For Arrow support
 ]
+adbc = [
+    "adbc-driver-manager>=1.0.0",
+    "pyarrow>=14.0.0", # For Arrow support
+]
 lsp = [
     "lsprotocol>=2025.0.0",
     "pygls>=2.0.0",
+]
+lookml = [
+    "lkml>=1.3.7",
+]
+malloy = [
+    "antlr4-python3-runtime>=4.13.2",
+]
+metricflow = [
+    "inflect>=7.0.0",
+]
+widget = [
+    "anywidget>=0.9.0",
+    "pyarrow>=14.0.0",
+]
+# Convenience bundles
+all-databases = [
+    "sidemantic[postgres,bigquery,snowflake,clickhouse,databricks,spark,adbc]",
+]
+full = [
+    "sidemantic[workbench,mcp,charts,lsp,lookml,malloy,metricflow,widget]",
 ]
 
 [build-system]
@@ -104,6 +135,8 @@ packages = ["sidemantic"]
 "examples/multi_format_demo/hex" = "sidemantic/examples/multi_format_demo/hex"
 "examples/multi_format_demo/lookml" = "sidemantic/examples/multi_format_demo/lookml"
 "examples/multi_format_demo/demo_data.py" = "sidemantic/examples/multi_format_demo/demo_data.py"
+"sidemantic/widget/static/widget.js" = "sidemantic/widget/static/widget.js"
+"sidemantic/widget/static/widget.css" = "sidemantic/widget/static/widget.css"
 
 [tool.ruff]
 line-length = 120
@@ -130,8 +163,14 @@ prerelease = "if-necessary"
 [dependency-groups]
 dev = [
     "antlr4-python3-runtime>=4.13.2",
+    "inflect>=7.0.0",
+    "jupyterlab>=4.5.1",
+    "lkml>=1.3.7",
     "lsprotocol>=2025.0.0",
     "marimo==0.16.5",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<3",
+    "polars>=1.36.1",
     "pygls>=2.0.0",
     "pytest>=8.4.2",
     "ruff>=0.14.0",

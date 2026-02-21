@@ -1,0 +1,560 @@
+semantic_model:
+  - name: adtech_performance
+    description: Complex adtech semantic layer with multi-hop joins and cross-model metrics
+
+    datasets:
+      - name: impressions
+        source: adtech.impressions
+        primary_key: [impression_id]
+        description: Impression-level delivery events
+        fields:
+          - name: impression_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: impression_id
+          - name: impression_time
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: impression_time
+            dimension:
+              is_time: true
+          - name: campaign_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: campaign_id
+          - name: ad_group_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ad_group_id
+          - name: creative_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: creative_id
+          - name: publisher_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: publisher_id
+          - name: geo_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: geo_id
+          - name: device_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: device_id
+          - name: user_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: user_id
+          - name: is_viewable
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: is_viewable
+          - name: video_start
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: video_start
+          - name: video_complete
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: video_complete
+
+      - name: clicks
+        source: adtech.clicks
+        primary_key: [click_id]
+        description: Click-level interaction events
+        fields:
+          - name: click_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: click_id
+          - name: click_time
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: click_time
+            dimension:
+              is_time: true
+          - name: impression_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: impression_id
+          - name: campaign_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: campaign_id
+          - name: user_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: user_id
+
+      - name: conversions
+        source: adtech.conversions
+        primary_key: [conversion_id]
+        description: Conversion events attributed to clicks
+        fields:
+          - name: conversion_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: conversion_id
+          - name: conversion_time
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: conversion_time
+            dimension:
+              is_time: true
+          - name: click_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: click_id
+          - name: campaign_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: campaign_id
+          - name: conversion_type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: conversion_type
+          - name: revenue_usd
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: revenue_usd
+          - name: is_post_view
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: is_post_view
+
+      - name: spend
+        source: adtech.spend
+        primary_key: [spend_id]
+        description: Daily campaign spend and fees
+        fields:
+          - name: spend_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: spend_id
+          - name: spend_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: spend_date
+            dimension:
+              is_time: true
+          - name: campaign_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: campaign_id
+          - name: publisher_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: publisher_id
+          - name: media_cost_usd
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: media_cost_usd
+          - name: platform_fee_usd
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: platform_fee_usd
+          - name: data_fee_usd
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: data_fee_usd
+
+      - name: campaigns
+        source: adtech.campaigns
+        primary_key: [campaign_id]
+        description: Campaign metadata
+        fields:
+          - name: campaign_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: campaign_id
+          - name: advertiser_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: advertiser_id
+          - name: campaign_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: campaign_name
+          - name: objective
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: objective
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+          - name: start_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: start_date
+            dimension:
+              is_time: true
+          - name: end_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: end_date
+            dimension:
+              is_time: true
+          - name: budget_usd
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: budget_usd
+
+      - name: ad_groups
+        source: adtech.ad_groups
+        primary_key: [ad_group_id]
+        description: Ad group metadata
+        fields:
+          - name: ad_group_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ad_group_id
+          - name: campaign_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: campaign_id
+          - name: ad_group_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ad_group_name
+          - name: bid_strategy
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bid_strategy
+
+      - name: creatives
+        source: adtech.creatives
+        primary_key: [creative_id]
+        description: Creative metadata
+        fields:
+          - name: creative_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: creative_id
+          - name: ad_group_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ad_group_id
+          - name: creative_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: creative_name
+          - name: creative_format
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: creative_format
+          - name: video_length_sec
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: video_length_sec
+
+      - name: publishers
+        source: adtech.publishers
+        primary_key: [publisher_id]
+        description: Publisher metadata
+        fields:
+          - name: publisher_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: publisher_id
+          - name: publisher_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: publisher_name
+          - name: supply_channel
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: supply_channel
+
+      - name: geos
+        source: adtech.geos
+        primary_key: [geo_id]
+        description: Geographic dimensions
+        fields:
+          - name: geo_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: geo_id
+          - name: country
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: country
+          - name: region
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: region
+          - name: market_tier
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: market_tier
+
+      - name: devices
+        source: adtech.devices
+        primary_key: [device_id]
+        description: Device taxonomy
+        fields:
+          - name: device_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: device_id
+          - name: device_type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: device_type
+          - name: os_family
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: os_family
+          - name: browser_family
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: browser_family
+
+    relationships:
+      - name: impressions_to_campaigns
+        from: impressions
+        to: campaigns
+        from_columns: [campaign_id]
+        to_columns: [campaign_id]
+      - name: impressions_to_ad_groups
+        from: impressions
+        to: ad_groups
+        from_columns: [ad_group_id]
+        to_columns: [ad_group_id]
+      - name: impressions_to_creatives
+        from: impressions
+        to: creatives
+        from_columns: [creative_id]
+        to_columns: [creative_id]
+      - name: impressions_to_publishers
+        from: impressions
+        to: publishers
+        from_columns: [publisher_id]
+        to_columns: [publisher_id]
+      - name: impressions_to_geos
+        from: impressions
+        to: geos
+        from_columns: [geo_id]
+        to_columns: [geo_id]
+      - name: impressions_to_devices
+        from: impressions
+        to: devices
+        from_columns: [device_id]
+        to_columns: [device_id]
+      - name: clicks_to_impressions
+        from: clicks
+        to: impressions
+        from_columns: [impression_id]
+        to_columns: [impression_id]
+      - name: conversions_to_clicks
+        from: conversions
+        to: clicks
+        from_columns: [click_id]
+        to_columns: [click_id]
+      - name: spend_to_campaigns
+        from: spend
+        to: campaigns
+        from_columns: [campaign_id]
+        to_columns: [campaign_id]
+      - name: spend_to_publishers
+        from: spend
+        to: publishers
+        from_columns: [publisher_id]
+        to_columns: [publisher_id]
+      - name: ad_groups_to_campaigns
+        from: ad_groups
+        to: campaigns
+        from_columns: [campaign_id]
+        to_columns: [campaign_id]
+      - name: creatives_to_ad_groups
+        from: creatives
+        to: ad_groups
+        from_columns: [ad_group_id]
+        to_columns: [ad_group_id]
+
+    metrics:
+      - name: impression_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(impressions.impression_id)
+      - name: unique_reach
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT impressions.user_id)
+      - name: click_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(clicks.click_id)
+      - name: conversion_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(conversions.conversion_id)
+      - name: post_view_conversion_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(CASE WHEN conversions.is_post_view = 1 THEN 1 ELSE 0 END)
+      - name: spend_usd
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(spend.media_cost_usd)
+      - name: platform_fee_usd
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(spend.platform_fee_usd)
+      - name: data_fee_usd
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(spend.data_fee_usd)
+      - name: total_cost_usd
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(spend.media_cost_usd + spend.platform_fee_usd + spend.data_fee_usd)
+      - name: conversion_revenue_usd
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(conversions.revenue_usd)
+      - name: viewable_impression_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(CASE WHEN impressions.is_viewable = 1 THEN 1 ELSE 0 END)
+      - name: video_start_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(impressions.video_start)
+      - name: video_complete_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(impressions.video_complete)
+      - name: ctr
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(clicks.click_id) * 1.0 / NULLIF(COUNT(impressions.impression_id), 0)
+      - name: cvr
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(conversions.conversion_id) * 1.0 / NULLIF(COUNT(clicks.click_id), 0)
+      - name: cpm
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(spend.media_cost_usd) * 1000.0 / NULLIF(COUNT(impressions.impression_id), 0)
+      - name: cpc
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(spend.media_cost_usd) * 1.0 / NULLIF(COUNT(clicks.click_id), 0)
+      - name: cpa
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(spend.media_cost_usd) * 1.0 / NULLIF(COUNT(conversions.conversion_id), 0)
+      - name: roas
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(conversions.revenue_usd) * 1.0 / NULLIF(SUM(spend.media_cost_usd), 0)
+      - name: frequency
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(impressions.impression_id) * 1.0 / NULLIF(COUNT(DISTINCT impressions.user_id), 0)
+      - name: viewability_rate
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(CASE WHEN impressions.is_viewable = 1 THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(impressions.impression_id), 0)
+      - name: video_completion_rate
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(impressions.video_complete) * 1.0 / NULLIF(SUM(impressions.video_start), 0)
+      - name: effective_cost_per_mille
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(spend.media_cost_usd + spend.platform_fee_usd + spend.data_fee_usd) * 1000.0 / NULLIF(COUNT(impressions.impression_id), 0)
+      - name: gross_profit_usd
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(conversions.revenue_usd) - SUM(spend.media_cost_usd + spend.platform_fee_usd + spend.data_fee_usd)
+      - name: margin_pct
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: (SUM(conversions.revenue_usd) - SUM(spend.media_cost_usd + spend.platform_fee_usd + spend.data_fee_usd)) * 1.0 / NULLIF(SUM(conversions.revenue_usd), 0)

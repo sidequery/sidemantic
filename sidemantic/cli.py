@@ -296,12 +296,12 @@ def mcp_serve(
                 create_sql = demo_conn.execute(
                     f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'"
                 ).fetchone()[0]
-                layer.conn.execute(create_sql)
+                layer.adapter.execute(create_sql)
 
                 # Insert data if there are rows
                 if rows:
                     placeholders = ", ".join(["?" for _ in columns])
-                    layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+                    layer.adapter.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
         typer.echo(f"Starting MCP server for: {directory}", err=True)
         if db_path and db_path != ":memory:":
@@ -684,7 +684,7 @@ def preagg_recommend(
             preagg_db = _loaded_config.preagg_database if _loaded_config else None
             preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
             layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
-            adapter = layer._adapter
+            adapter = layer.adapter
             typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
             recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
         elif queries:
@@ -792,7 +792,7 @@ def preagg_apply(
             preagg_db = _loaded_config.preagg_database if _loaded_config else None
             preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
             layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
-            adapter = layer._adapter
+            adapter = layer.adapter
             typer.echo(f"Fetching query history from {adapter.dialect}...", err=True)
             recommender.fetch_and_parse_query_history(adapter, days_back=days_back, limit=limit)
         elif queries:
@@ -959,7 +959,7 @@ def refresh(
         elif mode == "engine":
             # For engine mode, use the database adapter
             temp_layer = SemanticLayer(connection=connection_str)
-            conn = temp_layer._adapter.raw_connection
+            conn = temp_layer.adapter.raw_connection
         else:
             typer.echo(f"Error: Unsupported connection type: {connection_str}", err=True)
             typer.echo(

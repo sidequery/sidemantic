@@ -206,14 +206,15 @@ class HexAdapter(BaseAdapter):
                 "count_distinct": "count_distinct",
                 "sum": "sum",
                 "avg": "avg",
-                "median": "avg",  # Approximate as avg
+                "median": "median",
                 "min": "min",
                 "max": "max",
-                "stddev": "sum",  # No direct mapping
-                "stddev_pop": "sum",
-                "variance": "sum",
-                "variance_pop": "sum",
+                "stddev": "stddev",
+                "stddev_pop": "stddev_pop",
+                "variance": "variance",
+                "variance_pop": "variance_pop",
             }
+
             agg_type = type_mapping.get(func, "count")
 
             # Get the dimension being aggregated

@@ -1,0 +1,11 @@
+models_dir: .
+
+connection:
+  type: adbc
+  driver: snowflake
+  adbc.snowflake.sql.account: ORG-ACCOUNT
+  adbc.snowflake.sql.db: YOUR_DATABASE
+  adbc.snowflake.sql.warehouse: COMPUTE_WH
+  adbc.snowflake.sql.auth_type: auth_jwt
+  adbc.snowflake.sql.client_option.jwt_private_key: snowflake_key.p8
+  username: your_service_user

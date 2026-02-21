@@ -1,0 +1,90 @@
+# Source: MetricFlow official test fixtures - user_sm_source.yaml
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/simple_manifest/semantic_models/user_sm_source.yaml
+# Tests: sub-daily time granularities (second, minute, hour),
+#   is_partition on dimensions, create_metric: true, agg_time_dimension per measure,
+#   cumulative metrics with sub-daily windows, derived metrics with offset_window/offset_to_grain
+#
+# Note: The original fixture also includes millisecond granularity on dimensions and
+# grain_to_date: hour on cumulative metrics. Both are omitted here because sidemantic's
+# Dimension model does not support 'millisecond' and Metric model does not support
+# sub-daily grain_to_date. See test_millisecond_xfail and test_subdaily_grain_to_date_xfail.
+
+semantic_models:
+  - name: users_ds_source
+    description: users_ds_source
+    model: ref('dim_users')
+
+    defaults:
+      agg_time_dimension: created_at
+
+    dimensions:
+      - name: ds
+        type: time
+        type_params:
+          time_granularity: day
+      - name: created_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: ds_partitioned
+        type: time
+        is_partition: true
+        type_params:
+          time_granularity: day
+      - name: home_state
+        type: categorical
+      - name: bio_added_ts
+        type: time
+        type_params:
+          time_granularity: second
+      - name: last_login_ts
+        type: time
+        type_params:
+          time_granularity: minute
+      - name: archived_at
+        type: time
+        type_params:
+          time_granularity: hour
+
+    entities:
+      - name: user
+        type: primary
+        expr: user_id
+
+    measures:
+      - name: new_users
+        expr: "1"
+        agg: SUM
+        create_metric: true
+      - name: archived_users
+        expr: "1"
+        agg: SUM
+        create_metric: true
+        agg_time_dimension: archived_at
+
+metrics:
+  - name: subdaily_cumulative_window_metric
+    description: cumulative window metric with a sub-daily agg time dim
+    type: cumulative
+    type_params:
+      measure: archived_users
+      cumulative_type_params:
+        window: 3 hours
+
+  - name: subdaily_offset_window_metric
+    description: offset window metric with a sub-daily agg time dim
+    type: derived
+    type_params:
+      expr: archived_users
+      metrics:
+        - name: archived_users
+          offset_window: 1 hour
+
+  - name: subdaily_offset_grain_to_date_metric
+    description: offset grain to date metric with a sub-daily agg time dim
+    type: derived
+    type_params:
+      expr: archived_users
+      metrics:
+        - name: archived_users
+          offset_to_grain: hour

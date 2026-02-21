@@ -60,18 +60,19 @@ def start_server(
     # Register database
     server._server.register_database("sidemantic")
 
-    # First, register all actual DuckDB tables
-    tbls = layer.conn.execute(
+    # First, register all actual database tables
+    tbls = layer.adapter.execute(
         "SELECT table_schema, table_name FROM information_schema.tables "
         "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
     ).fetchall()
 
     for schema_name, table_name in tbls:
         server._server.register_schema("sidemantic", schema_name)
-        cols_info = layer.conn.execute(
+        # Use parameterized query to handle names with special characters (e.g., quotes)
+        cols_info = layer.adapter.raw_connection.execute(
             "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
-            "WHERE table_schema=? AND table_name=?",
-            (schema_name, table_name),
+            "WHERE table_schema = ? AND table_name = ?",
+            [schema_name, table_name],
         ).fetchall()
         columns = []
         for col_name, data_type, is_nullable in cols_info:

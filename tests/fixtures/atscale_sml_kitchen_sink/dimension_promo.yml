@@ -1,0 +1,19 @@
+unique_name: promo_dim
+object_type: dimension
+label: Promotion
+level_attributes:
+  - unique_name: promo_id
+    dataset: dim_promos
+    name_column: promo_id
+    key_columns:
+      - promo_id
+  - unique_name: promo_name
+    dataset: dim_promos
+    name_column: promo_name
+    key_columns:
+      - promo_id
+hierarchies:
+  - unique_name: promo_hierarchy
+    levels:
+      - unique_name: promo_id
+      - unique_name: promo_name

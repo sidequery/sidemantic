@@ -7,7 +7,21 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.mcp_server import create_chart, get_models, initialize_layer, list_models, run_query
+pytest.importorskip("mcp")  # Skip if mcp extra not installed
+
+from sidemantic.mcp_server import (
+    catalog_resource,
+    compile_query,
+    create_chart,
+    get_models,
+    get_semantic_graph,
+    initialize_layer,
+    list_models,
+    list_segments,
+    run_query,
+    run_sql,
+    validate_query,
+)
 
 
 @pytest.fixture
@@ -17,11 +31,12 @@ def demo_layer():
     tmpdir = tempfile.mkdtemp()
     tmpdir_path = Path(tmpdir)
 
-    # Create a simple model file
+    # Create a model file with segments and a second model
     model_yaml = """
 models:
   - name: orders
     table: orders_table
+    description: "All customer orders"
     dimensions:
       - name: order_id
         sql: order_id
@@ -33,13 +48,24 @@ models:
         sql: order_date
         type: time
         granularity: day
+      - name: status
+        sql: status
+        type: categorical
     metrics:
       - name: total_revenue
         agg: sum
         sql: amount
+        description: "Total revenue from orders"
       - name: order_count
         agg: count_distinct
         sql: order_id
+    segments:
+      - name: completed_orders
+        sql: "{model}.status = 'completed'"
+        description: "Only completed orders"
+      - name: high_value
+        sql: "{model}.amount > 100"
+        description: "Orders over 100"
 """
     model_file = tmpdir_path / "orders.yml"
     model_file.write_text(model_yaml)
@@ -47,21 +73,22 @@ models:
     # Initialize the layer
     layer = initialize_layer(str(tmpdir_path), db_path=":memory:")
 
-    # Create the table with some test data
-    layer.conn.execute("""
+    # Create the table with some test data using adapter interface
+    layer.adapter.execute("""
         CREATE TABLE orders_table (
             id INTEGER,
             order_id VARCHAR,
             customer_name VARCHAR,
             order_date DATE,
-            amount DECIMAL
+            amount DECIMAL,
+            status VARCHAR
         )
     """)
-    layer.conn.execute("""
+    layer.adapter.execute("""
         INSERT INTO orders_table VALUES
-            (1, '1', 'Alice', '2024-01-01', 100),
-            (2, '2', 'Bob', '2024-01-02', 200),
-            (3, '3', 'Alice', '2024-01-03', 150)
+            (1, '1', 'Alice', '2024-01-01', 100, 'completed'),
+            (2, '2', 'Bob', '2024-01-02', 200, 'completed'),
+            (3, '3', 'Alice', '2024-01-03', 150, 'pending')
     """)
 
     yield layer
@@ -79,11 +106,12 @@ def test_list_models(demo_layer):
     assert len(models) == 1
     assert models[0]["name"] == "orders"
     assert models[0]["table"] == "orders_table"
-    assert len(models[0]["dimensions"]) == 3
+    assert len(models[0]["dimensions"]) == 4
     assert len(models[0]["metrics"]) == 2
     assert "order_id" in models[0]["dimensions"]
     assert "customer_name" in models[0]["dimensions"]
     assert "order_date" in models[0]["dimensions"]
+    assert "status" in models[0]["dimensions"]
     assert "total_revenue" in models[0]["metrics"]
     assert "order_count" in models[0]["metrics"]
 
@@ -98,11 +126,12 @@ def test_get_models(demo_layer):
     assert model["table"] == "orders_table"
 
     # Check dimensions
-    assert len(model["dimensions"]) == 3
+    assert len(model["dimensions"]) == 4
     dim_names = [d["name"] for d in model["dimensions"]]
     assert "order_id" in dim_names
     assert "customer_name" in dim_names
     assert "order_date" in dim_names
+    assert "status" in dim_names
 
     # Check metrics
     assert len(model["metrics"]) == 2
@@ -316,3 +345,208 @@ def test_create_chart_time_series(demo_layer):
         json.dumps(result)
     except TypeError as e:
         pytest.fail(f"Time series chart result is not JSON serializable: {e}")
+
+
+# --- Tests for new tools ---
+
+
+def test_compile_query(demo_layer):
+    """Test compile_query returns SQL without executing."""
+    result = compile_query(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.total_revenue"],
+        limit=5,
+    )
+
+    assert "sql" in result
+    assert "SELECT" in result["sql"].upper()
+    assert "SUM" in result["sql"].upper()
+    assert "LIMIT" in result["sql"].upper()
+    # Should NOT have rows or row_count
+    assert "rows" not in result
+    assert "row_count" not in result
+
+
+def test_compile_query_with_offset(demo_layer):
+    """Test compile_query with offset for pagination."""
+    result = compile_query(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.total_revenue"],
+        limit=10,
+        offset=20,
+    )
+
+    assert "sql" in result
+    assert "OFFSET" in result["sql"].upper()
+
+
+def test_run_sql_simple(demo_layer):
+    """Test run_sql with a simple semantic query."""
+    result = run_sql("SELECT total_revenue, customer_name FROM orders")
+
+    assert "sql" in result
+    assert "original_sql" in result
+    assert "rows" in result
+    assert "row_count" in result
+    assert result["row_count"] == 2  # Alice and Bob
+    assert result["original_sql"] == "SELECT total_revenue, customer_name FROM orders"
+
+
+def test_run_sql_with_filter(demo_layer):
+    """Test run_sql with WHERE clause."""
+    result = run_sql("SELECT total_revenue, customer_name FROM orders WHERE customer_name = 'Alice'")
+
+    assert result["row_count"] == 1
+    assert "WHERE" in result["sql"].upper()
+
+
+def test_run_sql_with_time_granularity(demo_layer):
+    """Test run_sql with time granularity suffix."""
+    result = run_sql("SELECT order_date__month, total_revenue FROM orders")
+
+    assert result["row_count"] > 0
+    assert "DATE_TRUNC" in result["sql"].upper()
+
+
+def test_validate_query_valid(demo_layer):
+    """Test validate_query with valid references."""
+    result = validate_query(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.total_revenue"],
+    )
+
+    assert result["valid"] is True
+    assert result["errors"] == []
+
+
+def test_validate_query_invalid_model(demo_layer):
+    """Test validate_query with nonexistent model."""
+    result = validate_query(
+        dimensions=["nonexistent.foo"],
+        metrics=["orders.total_revenue"],
+    )
+
+    assert result["valid"] is False
+    assert len(result["errors"]) > 0
+    assert any("nonexistent" in e for e in result["errors"])
+
+
+def test_validate_query_invalid_dimension(demo_layer):
+    """Test validate_query with nonexistent dimension."""
+    result = validate_query(
+        dimensions=["orders.nonexistent_dim"],
+        metrics=["orders.total_revenue"],
+    )
+
+    assert result["valid"] is False
+    assert len(result["errors"]) > 0
+
+
+def test_validate_query_invalid_metric(demo_layer):
+    """Test validate_query with nonexistent metric."""
+    result = validate_query(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.nonexistent_metric"],
+    )
+
+    assert result["valid"] is False
+    assert len(result["errors"]) > 0
+
+
+def test_list_segments(demo_layer):
+    """Test list_segments returns all segments."""
+    segments = list_segments()
+
+    assert len(segments) == 2
+
+    seg_names = [s["name"] for s in segments]
+    assert "completed_orders" in seg_names
+    assert "high_value" in seg_names
+
+    # Check structure
+    completed = next(s for s in segments if s["name"] == "completed_orders")
+    assert completed["model"] == "orders"
+    assert completed["qualified_name"] == "orders.completed_orders"
+    assert "sql" in completed
+    assert "description" in completed
+
+
+def test_get_semantic_graph(demo_layer):
+    """Test get_semantic_graph returns full graph overview."""
+    result = get_semantic_graph()
+
+    assert "models" in result
+    assert "joinable_pairs" in result
+    assert len(result["models"]) == 1
+
+    model = result["models"][0]
+    assert model["name"] == "orders"
+    assert "dimensions" in model
+    assert "metrics" in model
+    assert "segments" in model
+    assert "completed_orders" in model["segments"]
+    assert model["primary_key"] == "id"
+
+
+def test_get_models_enriched(demo_layer):
+    """Test that get_models returns enriched model data."""
+    models = get_models(["orders"])
+    model = models[0]
+
+    # Check new fields
+    assert model["primary_key"] == "id"
+    assert model["description"] == "All customer orders"
+
+    # Check segments are included
+    assert "segments" in model
+    assert len(model["segments"]) == 2
+
+    # Check metric description is included
+    revenue = next(m for m in model["metrics"] if m["name"] == "total_revenue")
+    assert revenue["description"] == "Total revenue from orders"
+
+
+def test_run_query_with_offset(demo_layer):
+    """Test run_query with offset for pagination."""
+    result = run_query(
+        dimensions=["orders.customer_name"],
+        metrics=["orders.total_revenue"],
+        order_by=["orders.customer_name"],
+        limit=1,
+        offset=1,
+    )
+
+    assert result["row_count"] == 1
+    assert "OFFSET" in result["sql"].upper()
+
+
+def test_run_query_ungrouped(demo_layer):
+    """Test run_query with ungrouped=True returns raw rows."""
+    result = run_query(
+        dimensions=["orders.customer_name", "orders.order_date"],
+        ungrouped=True,
+    )
+
+    # Should return 3 raw rows (no aggregation)
+    assert result["row_count"] == 3
+
+
+def test_catalog_resource(demo_layer):
+    """Test catalog_resource returns valid JSON catalog metadata."""
+    result = catalog_resource()
+
+    catalog = json.loads(result)
+    assert "tables" in catalog
+    assert "columns" in catalog
+    assert "constraints" in catalog
+    assert "key_column_usage" in catalog
+
+    # Check that orders table is present
+    table_names = [t["table_name"] for t in catalog["tables"]]
+    assert "orders" in table_names
+
+    # Check that columns include dimensions and metrics
+    order_cols = [c for c in catalog["columns"] if c["table_name"] == "orders"]
+    col_names = [c["column_name"] for c in order_cols]
+    assert "customer_name" in col_names
+    assert "total_revenue" in col_names

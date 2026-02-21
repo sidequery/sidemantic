@@ -1,5 +1,7 @@
 """SQL generation using SQLGlot builder API."""
 
+import logging
+
 import sqlglot
 from sqlglot import exp, select
 
@@ -54,6 +56,37 @@ class SQLGenerator:
         date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
         return date_trunc.sql(dialect=self.dialect)
 
+    def _build_interval(self, num: str, unit: str) -> str:
+        """Build dialect-specific INTERVAL expression.
+
+        Args:
+            num: Numeric value (e.g., "7")
+            unit: Time unit (e.g., "days")
+
+        Returns:
+            SQL INTERVAL expression appropriate for the dialect
+        """
+        if self.dialect == "bigquery":
+            # BigQuery: INTERVAL 7 DAY (no quotes, singular unit)
+            singular_unit = unit.upper().rstrip("S")
+            return f"INTERVAL {num} {singular_unit}"
+        else:
+            # Standard SQL: INTERVAL '7 days'
+            return f"INTERVAL '{num} {unit}'"
+
+    def _quote_alias(self, name: str) -> str:
+        """Quote an identifier for use as a SQL alias.
+
+        Handles names with dots or other special characters by quoting them.
+
+        Args:
+            name: The identifier name (e.g., "auctions.bid_request_cnt_wow")
+
+        Returns:
+            Properly quoted identifier for the dialect (e.g., '"auctions.bid_request_cnt_wow"')
+        """
+        return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+
     def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
         """Auto-include default_time_dimension from models if not already present.
 
@@ -90,7 +123,12 @@ class SQLGenerator:
                     continue
                 models_checked.add(model_name)
 
-                model = self.graph.get_model(model_name)
+                # Try to get model - may not exist if this is a graph-level metric
+                # with a dotted name (not model.measure format)
+                try:
+                    model = self.graph.get_model(model_name)
+                except KeyError:
+                    model = None
                 if model and model.default_time_dimension:
                     # Only add if this model doesn't already have a time dimension
                     if model_name not in models_with_time_dims:
@@ -128,6 +166,10 @@ class SQLGenerator:
         Returns:
             CREATE VIEW SQL statement
         """
+        import re
+
+        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", view_name):
+            raise ValueError(f"Invalid view name: {view_name}")
         query_sql = self.generate(metrics, dimensions, filters, order_by, limit)
         return f"CREATE VIEW {view_name} AS\n{query_sql}"
 
@@ -144,6 +186,7 @@ class SQLGenerator:
         ungrouped: bool = False,
         use_preaggregations: bool = False,
         aliases: dict[str, str] | None = None,
+        skip_default_time_dimensions: bool = False,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -159,6 +202,7 @@ class SQLGenerator:
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
             aliases: Custom aliases for fields (dict mapping field reference to alias)
+            skip_default_time_dimensions: If True, don't auto-include default_time_dimension
 
         Returns:
             SQL query string
@@ -171,7 +215,8 @@ class SQLGenerator:
         aliases = aliases or {}
 
         # Auto-include default_time_dimension from metrics if not already present
-        dimensions = self._apply_default_time_dimensions(metrics, dimensions)
+        if not skip_default_time_dimensions:
+            dimensions = self._apply_default_time_dimensions(metrics, dimensions)
 
         # Resolve segments to SQL filters
         segment_filters = self._resolve_segments(segments)
@@ -225,9 +270,18 @@ class SQLGenerator:
             if "." in m:
                 # model.measure format
                 model_name, measure_name = m.split(".")
-                model = self.graph.get_model(model_name)
-                if model:
-                    metric = model.get_metric(measure_name)
+                try:
+                    model = self.graph.get_model(model_name)
+                    if model:
+                        metric = model.get_metric(measure_name)
+                except KeyError:
+                    pass
+                # Fall back to graph-level metric with dotted name
+                if not metric:
+                    try:
+                        metric = self.graph.get_metric(m)
+                    except KeyError:
+                        pass
             else:
                 # Just metric name - try graph-level metric
                 try:
@@ -267,7 +321,7 @@ class SQLGenerator:
                 metrics=metrics,
                 dimensions=dimensions,
                 filters=filters,
-                segments=segments,
+                segments=None,  # Already resolved into filters above
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
@@ -330,7 +384,7 @@ class SQLGenerator:
                         model_name = column.table.replace("_cte", "")
                         models_with_filters.add(model_name)
             except Exception:
-                pass
+                logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
         # Extract columns needed for metric-level filters (before building CTEs)
         metric_filter_cols_by_model = self._extract_metric_filter_columns(metrics)
@@ -412,6 +466,33 @@ class SQLGenerator:
         Raises:
             ValueError: If segment not found
         """
+
+        def qualify_unaliased_columns(filter_sql: str, model_alias: str) -> str:
+            """Qualify unaliased columns in segment filters with model alias."""
+            try:
+                parsed = sqlglot.parse_one(filter_sql, dialect=self.dialect)
+            except Exception:
+                return filter_sql
+
+            def visit(node: exp.Expression) -> None:
+                if isinstance(node, exp.Subquery):
+                    return
+
+                if isinstance(node, exp.Column) and not node.table:
+                    node.set("table", model_alias)
+
+                for arg in node.args.values():
+                    if isinstance(arg, exp.Expression):
+                        visit(arg)
+                    elif isinstance(arg, list):
+                        for item in arg:
+                            if isinstance(item, exp.Expression):
+                                visit(item)
+
+            visit(parsed)
+
+            return parsed.sql(dialect=self.dialect)
+
         filters = []
         for seg_ref in segments:
             # Parse model.segment format
@@ -430,9 +511,25 @@ class SQLGenerator:
             # Get SQL expression with model alias replaced
             # Use model_cte as the alias (consistent with CTE naming)
             filter_sql = segment.get_sql(f"{model_name}_cte")
+            filter_sql = qualify_unaliased_columns(filter_sql, f"{model_name}_cte")
             filters.append(filter_sql)
 
         return filters
+
+    def _extract_models_from_sql(self, sql_expr: str) -> set[str]:
+        """Extract referenced model names from qualified column references."""
+        models: set[str] = set()
+        try:
+            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            for column in parsed.find_all(exp.Column):
+                if not column.table:
+                    continue
+                model_name = column.table.replace("_cte", "")
+                if model_name in self.graph.models:
+                    models.add(model_name)
+        except Exception:
+            pass
+        return models
 
     def _find_required_models(
         self, metrics: list[str], dimensions: list[str], filters: list[str] | None = None
@@ -475,6 +572,16 @@ class SQLGenerator:
                             # Derived or untyped metrics with sql - auto-detect dependencies
                             for ref_metric in metric.get_dependencies(self.graph):
                                 collect_models_from_metric(ref_metric)
+                            # Inline SQL expression metrics (e.g., SUM(orders.amount))
+                            # can have empty dependencies, so also parse model refs directly.
+                            if metric.sql:
+                                for model_name in self._extract_models_from_sql(metric.sql):
+                                    add_model(model_name)
+                        elif metric.agg and metric.sql:
+                            # Graph-level simple aggregations can qualify fields
+                            # (e.g., SUM(orders.amount)); include those models.
+                            for model_name in self._extract_models_from_sql(metric.sql):
+                                add_model(model_name)
                 except KeyError:
                     pass
 
@@ -503,8 +610,7 @@ class SQLGenerator:
                             model_name = column.table.replace("_cte", "")
                             add_model(model_name)
                 except Exception:
-                    # If parsing fails, skip this filter for model extraction
-                    pass
+                    logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
         return models
 
@@ -512,6 +618,11 @@ class SQLGenerator:
         self, filters: list[str], all_models: set[str]
     ) -> tuple[dict[str, list[str]], list[str]]:
         """Classify filters into those that can be pushed down vs those that must stay in main query.
+
+        Compound AND expressions are split into individual conjuncts first so that
+        ``orders.status = 'active' AND items.category = 'A'`` gets decomposed into
+        two single-model filters that can each be pushed down, rather than being kept
+        as an un-pushable cross-model filter.
 
         Args:
             filters: List of filter expressions
@@ -525,7 +636,18 @@ class SQLGenerator:
         pushdown_filters = {model: [] for model in all_models}
         main_query_filters = []
 
+        # Flatten compound AND expressions into individual conjuncts so each
+        # part can be classified independently.
+        flat_parts: list[str] = []
         for filter_expr in filters:
+            try:
+                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                conjuncts = list(parsed.flatten() if isinstance(parsed, exp.And) else [parsed])
+                flat_parts.extend(c.sql(dialect=self.dialect) for c in conjuncts)
+            except Exception:
+                flat_parts.append(filter_expr)
+
+        for filter_expr in flat_parts:
             # Parse filter expression with SQLGlot
             try:
                 parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
@@ -594,8 +716,28 @@ class SQLGenerator:
                     for col in parsed.find_all(exp.Column):
                         if col.table and col.table.replace("_cte", "") == model_name:
                             columns_by_model[model_name].add(col.name)
+                        elif not col.table:
+                            columns_by_model[model_name].add(col.name)
                 except Exception:
-                    pass
+                    logging.debug("Failed to parse metric filter: %s", aliased_filter, exc_info=True)
+
+        def add_sql_columns(sql_expr: str, default_model_name: str | None = None):
+            """Extract column refs from SQL and track them per model."""
+            try:
+                parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+                for col in parsed.find_all(exp.Column):
+                    if col.table:
+                        model_name = col.table.replace("_cte", "")
+                        if model_name in self.graph.models:
+                            if model_name not in columns_by_model:
+                                columns_by_model[model_name] = set()
+                            columns_by_model[model_name].add(col.name)
+                    elif default_model_name:
+                        if default_model_name not in columns_by_model:
+                            columns_by_model[default_model_name] = set()
+                        columns_by_model[default_model_name].add(col.name)
+            except Exception:
+                pass
 
         def extract_from_measure_ref(metric_ref: str):
             """Extract filter columns from a model.measure reference."""
@@ -620,15 +762,7 @@ class SQLGenerator:
                         # This handles inline SQL like: COUNT(CASE WHEN {model}.status = 'approved' THEN 1 END)
                         if measure.sql:
                             aliased_sql = measure.sql.replace("{model}", f"{model_name}_cte")
-                            try:
-                                parsed = sqlglot.parse_one(aliased_sql, dialect=self.dialect)
-                                for col in parsed.find_all(exp.Column):
-                                    if col.table and col.table.replace("_cte", "") == model_name:
-                                        if model_name not in columns_by_model:
-                                            columns_by_model[model_name] = set()
-                                        columns_by_model[model_name].add(col.name)
-                            except Exception:
-                                pass
+                            add_sql_columns(aliased_sql, model_name)
                         # Also check dependencies
                         deps = measure.get_dependencies(self.graph, model_name)
                         for dep in deps:
@@ -672,6 +806,11 @@ class SQLGenerator:
                             extract_from_metric(dep_metric)
                         except KeyError:
                             pass
+
+            # Also parse metric SQL directly so inline aggregate expressions
+            # contribute required columns (critical for graph-level metrics).
+            if metric.sql:
+                add_sql_columns(metric.sql)
 
         for metric_ref in metrics:
             if "." in metric_ref:
@@ -724,7 +863,7 @@ class SQLGenerator:
                         if col.table and col.table.replace("_cte", "") == model_name:
                             needed.add(col.name)
                 except Exception:
-                    pass
+                    logging.debug("Failed to parse filter for column extraction: %s", filter_expr, exc_info=True)
 
         # Dimensions referenced in ORDER BY
         if order_by:
@@ -781,22 +920,24 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
-        # Include this model's primary key (always needed for joins/grouping)
-        if model.primary_key and model.primary_key not in columns_added:
-            select_cols.append(f"{model.primary_key} AS {model.primary_key}")
-            columns_added.add(model.primary_key)
+        # Include this model's primary key columns (always needed for joins/grouping)
+        for pk_col in model.primary_key_columns:
+            if pk_col not in columns_added:
+                select_cols.append(f"{pk_col} AS {pk_col}")
+                columns_added.add(pk_col)
 
         # Include foreign keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
             if relationship.type == "many_to_one":
-                fk = relationship.sql_expr
-                # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
-                should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
-                if should_include and fk not in columns_added:
-                    select_cols.append(f"{fk} AS {fk}")
-                    columns_added.add(fk)
-                    # Mark FK as "needed" so it's not duplicated as a dimension
-                    needed_dimensions.discard(fk)
+                # Handle multi-column foreign keys
+                for fk in relationship.foreign_key_columns:
+                    # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
+                    should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
+                    if should_include and fk not in columns_added:
+                        select_cols.append(f"{fk} AS {fk}")
+                        columns_added.add(fk)
+                        # Mark FK as "needed" so it's not duplicated as a dimension
+                        needed_dimensions.discard(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_joins:
@@ -812,6 +953,18 @@ class SQLGenerator:
                         # For has_many/has_one, foreign_key is the FK column in THIS model
                         fk = other_join.foreign_key or other_join.sql_expr
                         if fk not in columns_added:
+                            select_cols.append(f"{fk} AS {fk}")
+                            columns_added.add(fk)
+
+            for other_model_name, other_model in self.graph.models.items():
+                if other_model_name not in all_models:
+                    continue
+                for other_join in other_model.relationships:
+                    if other_join.type != "many_to_many" or other_join.through != model_name:
+                        continue
+                    junction_self_fk, junction_related_fk = other_join.junction_keys()
+                    for fk in (junction_self_fk, junction_related_fk):
+                        if fk and fk not in columns_added:
                             select_cols.append(f"{fk} AS {fk}")
                             columns_added.add(fk)
 
@@ -858,6 +1011,23 @@ class SQLGenerator:
                 if alias not in columns_added:
                     select_cols.append(f"{dim_sql} AS {alias}")
                     columns_added.add(alias)
+
+        # Add raw columns referenced by inline aggregate SQL (if they are not dimensions/measures)
+        if metric_filter_columns:
+            for col_name in metric_filter_columns:
+                if col_name in columns_added:
+                    continue
+                dim = model.get_dimension(col_name)
+                if dim:
+                    dim_sql = replace_model_placeholder(dim.sql_expr)
+                    select_cols.append(f"{dim_sql} AS {col_name}")
+                    columns_added.add(col_name)
+                    continue
+                if model.get_metric(col_name):
+                    continue
+                raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
+                select_cols.append(f"{raw_expr} AS {col_name}")
+                columns_added.add(col_name)
 
         # Add measure columns (raw, not aggregated in CTE)
         # Collect all measures needed for metrics
@@ -937,11 +1107,15 @@ class SQLGenerator:
             measure = model.get_metric(measure_name)
             if measure:
                 # Build the base SQL expression for the measure
-                if measure.agg == "count" and not measure.sql:
+                if measure.agg == "count" and (not measure.sql or measure.sql == "*"):
                     base_sql = "1"
                 elif measure.agg == "count_distinct" and not measure.sql:
-                    pk = model.primary_key or "id"
-                    base_sql = pk
+                    pk_cols = model.primary_key_columns
+                    if len(pk_cols) == 1:
+                        base_sql = pk_cols[0]
+                    else:
+                        # For composite keys, concatenate columns for uniqueness
+                        base_sql = "CONCAT(" + ", '|', ".join(f"CAST({c} AS VARCHAR)" for c in pk_cols) + ")"
                 else:
                     base_sql = replace_model_placeholder(measure.sql_expr)
 
@@ -1026,11 +1200,13 @@ class SQLGenerator:
         for other_model in other_models:
             try:
                 join_path = self.graph.find_relationship_path(base_model_name, other_model)
-                # Check if first hop is one-to-many
-                if join_path and join_path[0].relationship == "one_to_many":
+                if not join_path:
+                    continue
+                # Check all hops: any one_to_many in the path creates fan-out
+                has_fanout = any(hop.relationship == "one_to_many" for hop in join_path)
+                if has_fanout:
                     one_to_many_count += 1
-                elif join_path and join_path[0].relationship == "many_to_one":
-                    # Track models with many-to-one from base perspective
+                elif join_path[0].relationship == "many_to_one":
                     many_to_one_models.append(other_model)
             except (ValueError, KeyError):
                 pass
@@ -1156,12 +1332,13 @@ class SQLGenerator:
                 metrics_by_model[model_name].append(metric_ref)
 
         if len(metrics_by_model) < 2:
-            # Shouldn't happen, but fall back to regular generation
+            # Shouldn't happen, but fall back to regular generation.
+            # Segments already resolved into filters by caller, pass None.
             return self.generate(
                 metrics=metrics,
                 dimensions=dimensions,
                 filters=filters,
-                segments=segments,
+                segments=None,
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
@@ -1172,6 +1349,12 @@ class SQLGenerator:
         segment_filters = self._resolve_segments(segments or [])
         all_filters = (filters or []) + segment_filters
 
+        # Partition filters by model so sub-queries only get relevant filters.
+        # Cross-model filters (referencing models outside the sub-query) would
+        # produce invalid SQL referencing CTEs that don't exist.
+        all_model_names = set(metrics_by_model.keys())
+        pushdown_by_model, shared_filters = self._classify_filters_for_pushdown(all_filters, all_model_names)
+
         # Generate a pre-aggregated CTE for each metric model
         preagg_ctes = []
         cte_names = []
@@ -1180,13 +1363,16 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             cte_names.append(cte_name)
 
+            # Only pass filters relevant to this model's sub-query
+            model_filters = pushdown_by_model.get(model_name, [])
+
             # Generate sub-query for this model's metrics at the dimension grain
             # We call generate() recursively but it won't trigger pre-aggregation
             # again because each sub-query has metrics from only one model
             sub_query = self.generate(
                 metrics=model_metrics,
                 dimensions=dimensions,
-                filters=all_filters,
+                filters=model_filters,
                 segments=None,  # Already resolved
                 order_by=None,
                 limit=None,
@@ -1252,12 +1438,10 @@ class SQLGenerator:
                 for dim_ref, gran in parsed_dims:
                     dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
                     col_name = f"{dim_name}__{gran}" if gran else dim_name
-                    # Use COALESCE to handle NULLs in join condition
-                    # Actually for FULL OUTER JOIN, we need to compare the actual columns
-                    # and handle NULLs with IS NOT DISTINCT FROM or COALESCE-based comparison
-                    join_conditions.append(
-                        f"COALESCE({cte_names[0]}.{col_name}, '') = COALESCE({cte_name}.{col_name}, '')"
-                    )
+                    # NULL-safe equality that works for all column types
+                    lhs = exp.Column(this=col_name, table=cte_names[0])
+                    rhs = exp.Column(this=col_name, table=cte_name)
+                    join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self.dialect))
 
                 join_clause = " AND ".join(join_conditions)
                 join_clauses.append(f"FULL OUTER JOIN {cte_name} ON {join_clause}")
@@ -1267,6 +1451,32 @@ class SQLGenerator:
         from_str = from_clause + "\n" + "\n".join(join_clauses)
 
         final_query = f"SELECT\n  {select_str}\nFROM {from_str}"
+
+        # Apply shared filters (cross-model or metric-level) on the outer query.
+        # Rewrite table references from model/model_cte to model_preagg using
+        # sqlglot AST rewriting so we don't accidentally mangle column names
+        # that happen to contain a model name as a substring.
+        if shared_filters:
+            preagg_table_map = {}
+            for model_name in metrics_by_model:
+                preagg_table_map[model_name] = f"{model_name}_preagg"
+                preagg_table_map[f"{model_name}_cte"] = f"{model_name}_preagg"
+
+            rewritten = []
+            for f in shared_filters:
+                try:
+                    parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                    for col in parsed.find_all(exp.Column):
+                        if col.table and col.table in preagg_table_map:
+                            col.set("table", exp.to_identifier(preagg_table_map[col.table]))
+                    rewritten.append(parsed.sql(dialect=self.dialect))
+                except Exception:
+                    # Parsing failed, fall back to the raw filter expression.
+                    # This is best-effort: the filter may reference CTE names
+                    # that don't exist on the outer query, but that will surface
+                    # as a clear SQL error rather than silently dropping the filter.
+                    rewritten.append(f)
+            final_query += f"\nWHERE {' AND '.join(rewritten)}"
 
         # Add ORDER BY
         if order_by:
@@ -1421,7 +1631,12 @@ class SQLGenerator:
                             # Use symmetric aggregates to prevent double-counting
                             # Get primary key for this model
                             model_obj = self.graph.get_model(model_name)
-                            pk = model_obj.primary_key or "id"
+                            pk_cols = model_obj.primary_key_columns
+                            # For composite keys, concatenate columns for hashing
+                            if len(pk_cols) == 1:
+                                pk = pk_cols[0]
+                            else:
+                                pk = "CONCAT(" + ", '|', ".join(f"CAST({c} AS VARCHAR)" for c in pk_cols) + ")"
 
                             agg_expr = build_symmetric_aggregate_sql(
                                 measure_expr=f"{measure_name}_raw",
@@ -1472,7 +1687,17 @@ class SQLGenerator:
 
                         left_table = jp.from_model + "_cte"
                         right_table = jp.to_model + "_cte"
-                        join_cond = f"{left_table}.{jp.from_entity} = {right_table}.{jp.to_entity}"
+                        # Validate column counts match for composite keys
+                        if len(jp.from_columns) != len(jp.to_columns):
+                            raise ValueError(
+                                f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
+                                f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
+                            )
+                        # Build join condition for single or multi-column keys
+                        join_conditions = [
+                            f"{left_table}.{fk} = {right_table}.{pk}" for fk, pk in zip(jp.from_columns, jp.to_columns)
+                        ]
+                        join_cond = " AND ".join(join_conditions)
 
                         # Use INNER JOIN if this model has filters applied, otherwise LEFT JOIN
                         join_type = "inner" if jp.to_model in models_with_filters else "left"
@@ -1609,6 +1834,12 @@ class SQLGenerator:
     def _calculate_lag_offset(self, comparison_type: str | None, time_granularity: str | None) -> int:
         """Calculate LAG offset based on comparison type and time dimension granularity.
 
+        LAG is row-based, so offsets for sub-period granularities are approximate:
+        MoM at day grain uses 30 (months vary 28-31), YoY at day grain uses 365
+        (ignores leap years), QoQ at day grain uses 90 (quarters vary 90-92).
+        For exact period comparisons, use matching granularity (e.g., monthly grain
+        for MoM) or a date-based self-join approach.
+
         Args:
             comparison_type: Type of comparison (yoy, mom, wow, dod, qoq)
             time_granularity: Time dimension granularity (day, week, month, quarter, year)
@@ -1674,6 +1905,23 @@ class SQLGenerator:
             return f"COALESCE({sql_expr}, {fill_value})"
         return sql_expr
 
+    def _rewrite_model_refs_to_ctes(self, sql_expr: str) -> str:
+        """Rewrite qualified model refs (model.col) to CTE refs (model_cte.col)."""
+        try:
+            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            for col in parsed.find_all(exp.Column):
+                if not col.table:
+                    continue
+                model_name = col.table.replace("_cte", "")
+                if model_name in self.graph.models:
+                    col.set("table", exp.to_identifier(f"{model_name}_cte"))
+            return parsed.sql(dialect=self.dialect)
+        except Exception:
+            rewritten = sql_expr
+            for model_name in self.graph.models:
+                rewritten = rewritten.replace(f"{model_name}.", f"{model_name}_cte.")
+            return rewritten
+
     def _build_measure_aggregation_sql(self, model_name: str, measure) -> str:
         """Build SQL aggregation expression for a measure.
 
@@ -1699,8 +1947,12 @@ class SQLGenerator:
         # Simple aggregation - filters are already applied in CTE's raw column
         if agg_func == "COUNT_DISTINCT":
             return f"COUNT(DISTINCT {raw_col})"
-        else:
-            return f"{agg_func}({raw_col})"
+        if agg_func == "COUNT":
+            # Always use COUNT(raw_col) to avoid fan-out overcounting in multi-model joins.
+            # The CTE projects a non-NULL raw column for matching rows, so COUNT(raw_col)
+            # is equivalent to COUNT(*) for single-model queries but correct for joins.
+            return f"COUNT({raw_col})"
+        return f"{agg_func}({raw_col})"
 
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.
@@ -1728,6 +1980,21 @@ class SQLGenerator:
             denom_expr = self._build_measure_aggregation_sql(denom_model, denom_measure_obj)
 
             return f"({num_expr}) / NULLIF({denom_expr}, 0)"
+
+        elif metric.agg:
+            # Graph-level simple aggregations (e.g., SUM(orders.amount))
+            # need CTE-qualified references.
+            inner_expr = metric.sql or "*"
+            if inner_expr != "*":
+                inner_expr = self._rewrite_model_refs_to_ctes(inner_expr)
+
+            if metric.agg == "count":
+                if inner_expr == "*":
+                    return "COUNT(*)"
+                return f"COUNT({inner_expr})"
+            if metric.agg == "count_distinct":
+                return f"COUNT(DISTINCT {inner_expr})"
+            return f"{metric.agg.upper()}({inner_expr})"
 
         elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
             # Parse formula and replace metric references (handles both typed "derived" and untyped metrics with sql)
@@ -1777,6 +2044,9 @@ class SQLGenerator:
                                 replacement = f"{cte_alias}.{measure.name}_raw"
                                 formula = formula.replace(pattern, replacement)
 
+                # Also rewrite any explicit model refs in the expression
+                # (e.g., orders.amount -> orders_cte.amount) for graph metrics.
+                formula = self._rewrite_model_refs_to_ctes(formula)
                 return formula
 
             # Auto-detect dependencies from expression using graph for resolution
@@ -1907,11 +2177,21 @@ class SQLGenerator:
         # conversion_events: filter for conversion_event
         # Join on entity where conversion is within window
 
+        import re as _re
+
         window_parts = metric.conversion_window.split() if metric.conversion_window else ["7", "days"]
         window_num, window_unit = (
             window_parts[0],
             window_parts[1] if len(window_parts) > 1 else "days",
         )
+
+        # Validate conversion metric fields to prevent SQL injection
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
+            raise ValueError(f"Invalid entity identifier: {metric.entity}")
+        if not _re.match(r"^\d+$", window_num):
+            raise ValueError(f"Invalid window number: {window_num}")
+        if not _re.match(r"^[a-zA-Z]+$", window_unit):
+            raise ValueError(f"Invalid window unit: {window_unit}")
 
         # Find dimension that represents event type
         event_type_dim = None
@@ -1932,33 +2212,94 @@ class SQLGenerator:
         else:
             from_clause = model.table
 
+        # Resolve dimension columns for GROUP BY support.
+        # Each entry is (alias, sql_expr) where sql_expr uses the dimension's
+        # actual SQL expression and applies DATE_TRUNC for time granularity.
+        dim_entries: list[tuple[str, str]] = []
+        for dim_ref in dimensions:
+            dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
+            # Parse granularity suffix (e.g., "event_date__month")
+            if "__" in dim_name:
+                base_dim, gran = dim_name.rsplit("__", 1)
+            else:
+                base_dim, gran = dim_name, None
+            dim_obj = model.get_dimension(base_dim)
+            if not dim_obj:
+                continue
+            sql_col = dim_obj.sql_expr
+            if gran and dim_obj.type == "time":
+                sql_col = self._date_trunc(gran, sql_col)
+                alias = f"{base_dim}__{gran}"
+            else:
+                alias = base_dim
+            dim_entries.append((alias, sql_col))
+
+        dim_aliases = [alias for alias, _ in dim_entries]
+
+        # Build extra SELECT columns for dimensions
+        extra_base_cols = ""
+        extra_conv_cols = ""
+        extra_conversions_cols = ""
+        if dim_entries:
+            base_col_list = ",\n    ".join(f"{sql_col} AS {alias}" for alias, sql_col in dim_entries)
+            extra_base_cols = f",\n    {base_col_list}"
+            extra_conv_cols = extra_base_cols
+            conv_col_list = ",\n    ".join(f"base.{alias}" for alias in dim_aliases)
+            extra_conversions_cols = f",\n    {conv_col_list}"
+
+        # Build LEFT JOIN condition (entity + dimensions)
+        join_on_parts = ["base_events.entity = conversions.entity"]
+        for alias in dim_aliases:
+            join_on_parts.append(f"base_events.{alias} IS NOT DISTINCT FROM conversions.{alias}")
+        join_condition = "\n  AND ".join(join_on_parts)
+
+        # Build final SELECT, GROUP BY, ORDER BY, LIMIT
+        dim_select = ""
+        group_by = ""
+        if dim_aliases:
+            dim_select_list = ",\n  ".join(f"base_events.{alias} AS {alias}" for alias in dim_aliases)
+            dim_select = f"  {dim_select_list},\n"
+            group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
+
+        order_clause = ""
+        if order_by:
+            order_fields = []
+            for field in order_by:
+                field_name = field.split(".", 1)[1] if "." in field else field
+                order_fields.append(field_name)
+            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"\nLIMIT {limit}"
+
         sql = f"""
 WITH base_events AS (
   SELECT
     {metric.entity} AS entity,
-    {timestamp_dim} AS event_time
+    {timestamp_dim} AS event_time{extra_base_cols}
   FROM {from_clause}
-  WHERE {event_type_dim} = '{metric.base_event}'
+  WHERE {event_type_dim} = '{metric.base_event.replace("'", "''")}'
 ),
 conversion_events AS (
   SELECT
     {metric.entity} AS entity,
-    {timestamp_dim} AS event_time
+    {timestamp_dim} AS event_time{extra_conv_cols}
   FROM {from_clause}
-  WHERE {event_type_dim} = '{metric.conversion_event}'
+  WHERE {event_type_dim} = '{metric.conversion_event.replace("'", "''")}'
 ),
 conversions AS (
   SELECT DISTINCT
-    base.entity
+    base.entity{extra_conversions_cols}
   FROM base_events base
   JOIN conversion_events conv
     ON base.entity = conv.entity
-    AND conv.event_time BETWEEN base.event_time AND base.event_time + INTERVAL '{window_num} {window_unit}'
+    AND conv.event_time BETWEEN base.event_time AND base.event_time + {self._build_interval(window_num, window_unit)}
 )
 SELECT
-  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {metric.name}
+{dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {metric.name}
 FROM base_events
-LEFT JOIN conversions ON base_events.entity = conversions.entity
+LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 """
 
         return sql.strip()
@@ -2007,9 +2348,18 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
             else:
                 # model.measure format - check if it's a metric on the model
                 model_name, measure_name = m.split(".", 1)
-                model = self.graph.get_model(model_name)
-                if model:
-                    metric = model.get_metric(measure_name)
+                try:
+                    model = self.graph.get_model(model_name)
+                    if model:
+                        metric = model.get_metric(measure_name)
+                except KeyError:
+                    pass
+                # Fall back to graph-level metric with dotted name
+                if not metric:
+                    try:
+                        metric = self.graph.get_metric(m)
+                    except KeyError:
+                        pass
 
             # Classify metric by type
             if metric and metric.type == "cumulative":
@@ -2086,18 +2436,33 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                     alias = m
             select_exprs.append(f"base.{alias}")
 
+        # Track cumulative window expressions for inclusion in LAG CTE path
+        cumulative_window_entries = []  # (window_expr, alias)
+
         # Add cumulative metrics with window functions
         for m in cumulative_metrics:
             # Handle both qualified (model.measure) and unqualified references
+            metric = None
             if "." in m:
                 model_name, measure_name = m.split(".", 1)
-                model = self.graph.get_model(model_name)
-                metric = model.get_metric(measure_name) if model else None
-                # Use just the measure name as the alias (not model.measure)
-                metric_alias = measure_name
+                try:
+                    model = self.graph.get_model(model_name)
+                    metric = model.get_metric(measure_name) if model else None
+                except KeyError:
+                    pass
+                # Fall back to graph-level metric with dotted name
+                if not metric:
+                    try:
+                        metric = self.graph.get_metric(m)
+                    except KeyError:
+                        pass
+                # Use just the measure name as alias if it's model.measure, otherwise full name
+                # Quote to handle any special characters
+                metric_alias = self._quote_alias(measure_name if metric and "." not in metric.name else m)
             else:
                 metric = self.graph.get_metric(m)
-                metric_alias = m
+                # Quote to handle dotted metric names
+                metric_alias = self._quote_alias(m)
             if not metric or (not metric.sql and not metric.window_expression):
                 continue
 
@@ -2130,6 +2495,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
                 window_expr = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame}) AS {metric_alias}"
                 select_exprs.append(window_expr)
+                cumulative_window_entries.append((window_expr, metric_alias))
                 continue
 
             # Option A: Use agg + sql (supports AVG, COUNT, etc.)
@@ -2196,6 +2562,7 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {metric_alias}"
 
             select_exprs.append(window_expr)
+            cumulative_window_entries.append((window_expr, metric_alias))
 
         # Add time comparison metrics with LAG window functions
         # Note: We'll handle these with a CTE approach similar to offset_ratio_metrics
@@ -2226,6 +2593,11 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 lag_selects.append(f"base.{alias}")
                 lag_cte_columns.append(alias)
 
+            # Include cumulative window expressions in the LAG CTE
+            for cum_expr, cum_alias in cumulative_window_entries:
+                lag_selects.append(cum_expr)
+                lag_cte_columns.append(cum_alias)
+
             # Add LAG expressions for each time comparison metric
             for m in time_comparison_metrics:
                 metric = self.graph.get_metric(m)
@@ -2252,6 +2624,22 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 if not time_dim:
                     raise ValueError(f"Time comparison metric {m} requires a time dimension")
 
+                # Partition by non-time dimensions to avoid cross-group leakage.
+                partition_cols = []
+                for partition_dim_ref, partition_gran in parsed_dims:
+                    partition_dim_name = (
+                        partition_dim_ref.split(".")[1] if "." in partition_dim_ref else partition_dim_ref
+                    )
+                    partition_alias = partition_dim_name
+                    if partition_gran:
+                        partition_alias = f"{partition_alias}__{partition_gran}"
+                    partition_col = f"base.{partition_alias}"
+                    if partition_col != time_dim and partition_col not in partition_cols:
+                        partition_cols.append(partition_col)
+                partition_clause = ""
+                if partition_cols:
+                    partition_clause = f"PARTITION BY {', '.join(partition_cols)} "
+
                 # Get base metric alias
                 base_ref = metric.base_metric
                 if "." in base_ref:
@@ -2262,8 +2650,11 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 # Calculate LAG offset
                 lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
 
-                # Add LAG for base metric
-                lag_selects.append(f"LAG(base.{base_alias}, {lag_offset}) OVER (ORDER BY {time_dim}) AS {m}_prev_value")
+                # Add LAG for base metric (quote alias to handle dotted names)
+                prev_value_alias = self._quote_alias(f"{m}_prev_value")
+                lag_selects.append(
+                    f"LAG(base.{base_alias}, {lag_offset}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_value_alias}"
+                )
 
             # Add LAG expressions for each offset ratio metric
             for m in offset_ratio_metrics:
@@ -2289,11 +2680,31 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 if not time_dim:
                     raise ValueError(f"Offset ratio metric {m} requires a time dimension")
 
+                # Partition by non-time dimensions to avoid cross-group leakage.
+                partition_cols = []
+                for partition_dim_ref, partition_gran in parsed_dims:
+                    partition_dim_name = (
+                        partition_dim_ref.split(".")[1] if "." in partition_dim_ref else partition_dim_ref
+                    )
+                    partition_alias = partition_dim_name
+                    if partition_gran:
+                        partition_alias = f"{partition_alias}__{partition_gran}"
+                    partition_col = f"base.{partition_alias}"
+                    if partition_col != time_dim and partition_col not in partition_cols:
+                        partition_cols.append(partition_col)
+                partition_clause = ""
+                if partition_cols:
+                    partition_clause = f"PARTITION BY {', '.join(partition_cols)} "
+
                 # Get denominator alias
                 denom_alias = metric.denominator.split(".")[1] if "." in metric.denominator else metric.denominator
 
                 # Add LAG for denominator - reference base.denom_alias since it's from inner query
-                lag_selects.append(f"LAG(base.{denom_alias}) OVER (ORDER BY {time_dim}) AS {m}_prev_denom")
+                # Quote alias to handle dotted names
+                prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
+                lag_selects.append(
+                    f"LAG(base.{denom_alias}) OVER ({partition_clause}ORDER BY {time_dim}) AS {prev_denom_alias}"
+                )
 
             # Build intermediate CTE - inner_query already has all the columns we need
             # We need to add "base." prefix since we're wrapping inner_query in a FROM (inner_query) AS base
@@ -2320,14 +2731,18 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
                 else:
                     base_alias = base_ref
 
+                # Quote aliases to handle dotted metric names
+                prev_value_col = self._quote_alias(f"{m}_prev_value")
+                final_alias = self._quote_alias(m)
+
                 # Build calculation based on calculation type
                 calc_type = metric.calculation or "percent_change"
                 if calc_type == "difference":
-                    expr = f"({base_alias} - {m}_prev_value) AS {m}"
+                    expr = f"({base_alias} - {prev_value_col}) AS {final_alias}"
                 elif calc_type == "percent_change":
-                    expr = f"(({base_alias} - {m}_prev_value) / NULLIF({m}_prev_value, 0) * 100) AS {m}"
+                    expr = f"(({base_alias} - {prev_value_col}) / NULLIF({prev_value_col}, 0) * 100) AS {final_alias}"
                 elif calc_type == "ratio":
-                    expr = f"({base_alias} / NULLIF({m}_prev_value, 0)) AS {m}"
+                    expr = f"({base_alias} / NULLIF({prev_value_col}, 0)) AS {final_alias}"
                 else:
                     raise ValueError(f"Unknown calculation type: {calc_type}")
 
@@ -2341,8 +2756,12 @@ LEFT JOIN conversions ON base_events.entity = conversions.entity
 
                 num_alias = metric.numerator.split(".")[1] if "." in metric.numerator else metric.numerator
 
+                # Quote aliases to handle dotted metric names
+                prev_denom_col = self._quote_alias(f"{m}_prev_denom")
+                final_alias = self._quote_alias(m)
+
                 # Calculate ratio using the lagged value
-                offset_expr = f"{num_alias} / NULLIF({m}_prev_denom, 0) AS {m}"
+                offset_expr = f"{num_alias} / NULLIF({prev_denom_col}, 0) AS {final_alias}"
                 final_selects.append(offset_expr)
 
             # Build final query

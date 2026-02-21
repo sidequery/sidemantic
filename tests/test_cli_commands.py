@@ -30,6 +30,7 @@ models:
 
 
 def test_workbench_calls_runner(monkeypatch, tmp_path):
+    pytest.importorskip("textual")
     called = {}
 
     def fake_run_workbench(directory, demo_mode=False, connection=None):
@@ -49,6 +50,7 @@ def test_workbench_calls_runner(monkeypatch, tmp_path):
 
 
 def test_validate_calls_runner(monkeypatch, tmp_path):
+    pytest.importorskip("textual")
     called = {}
 
     def fake_run_validation(directory, verbose=False):
@@ -100,7 +102,19 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     assert called["password"] == "p"
 
 
+def test_cli_source_uses_public_adapter():
+    """cli.py should not reference ._adapter anywhere."""
+    import os
+
+    cli_path = os.path.join(os.path.dirname(__file__), "..", "sidemantic", "cli.py")
+    with open(cli_path) as f:
+        content = f.read()
+
+    assert "._adapter" not in content, "CLI should use .adapter, not ._adapter"
+
+
 def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
+    pytest.importorskip("mcp")
     called = {}
 
     def fake_initialize_layer(directory, db_path=None):

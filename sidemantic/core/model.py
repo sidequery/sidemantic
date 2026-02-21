@@ -29,8 +29,11 @@ class Model(BaseModel):
     # Relationships
     relationships: list[Relationship] = Field(default_factory=list, description="Relationships to other models")
 
-    # Primary key (required)
-    primary_key: str = Field(default="id", description="Primary key column")
+    # Primary key (required) - can be single column or list for composite keys
+    primary_key: str | list[str] = Field(default="id", description="Primary key column(s)")
+
+    # Unique key constraints
+    unique_keys: list[list[str]] | None = Field(None, description="Unique key constraints (each is a list of columns)")
 
     dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
     metrics: list[Metric] = Field(default_factory=list, description="Measure definitions")
@@ -47,6 +50,9 @@ class Model(BaseModel):
         None, description="Default time granularity when using default_time_dimension"
     )
 
+    # Arbitrary metadata (ai_context, custom_extensions, etc.)
+    meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
+
     def __init__(self, **data):
         super().__init__(**data)
 
@@ -57,6 +63,13 @@ class Model(BaseModel):
 
     def __hash__(self) -> int:
         return hash(self.name)
+
+    @property
+    def primary_key_columns(self) -> list[str]:
+        """Get primary key as list of columns (normalizes single string to list)."""
+        if isinstance(self.primary_key, str):
+            return [self.primary_key]
+        return self.primary_key
 
     def get_dimension(self, name: str) -> Dimension | None:
         """Get dimension by name."""

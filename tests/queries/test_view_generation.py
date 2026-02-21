@@ -79,6 +79,52 @@ def test_view_can_be_queried():
     assert rows[0][1] == 300  # total revenue
 
 
+def test_view_name_sql_injection_rejected():
+    """generate_view should reject view names containing SQL injection."""
+    import pytest
+
+    model = Model(
+        name="orders",
+        sql="SELECT 1 AS id, 100 AS amount",
+        primary_key="id",
+        dimensions=[Dimension(name="id", sql="id", type="categorical")],
+        metrics=[Metric(name="total", agg="sum", sql="amount")],
+    )
+    graph = SemanticGraph()
+    graph.add_model(model)
+    gen = SQLGenerator(graph)
+
+    with pytest.raises(ValueError, match="Invalid view name"):
+        gen.generate_view(
+            view_name="my_view; DROP TABLE users--",
+            metrics=["orders.total"],
+            dimensions=["orders.id"],
+        )
+
+
+def test_view_name_with_spaces_rejected():
+    """generate_view should reject view names with spaces."""
+    import pytest
+
+    model = Model(
+        name="orders",
+        sql="SELECT 1 AS id, 100 AS amount",
+        primary_key="id",
+        dimensions=[Dimension(name="id", sql="id", type="categorical")],
+        metrics=[Metric(name="total", agg="sum", sql="amount")],
+    )
+    graph = SemanticGraph()
+    graph.add_model(model)
+    gen = SQLGenerator(graph)
+
+    with pytest.raises(ValueError, match="Invalid view name"):
+        gen.generate_view(
+            view_name="my view",
+            metrics=["orders.total"],
+            dimensions=["orders.id"],
+        )
+
+
 def test_join_view_against_other_tables():
     """Test that view can be joined against arbitrary SQL."""
     # Setup semantic layer

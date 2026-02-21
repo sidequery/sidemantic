@@ -67,6 +67,12 @@ class MotherDuckAdapter(BaseDatabaseAdapter):
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
         """Get columns for a table."""
+        import re
+
+        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", table_name):
+            raise ValueError(f"Invalid table name: {table_name}")
+        if schema and not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", schema):
+            raise ValueError(f"Invalid schema name: {schema}")
         schema_filter = f"AND table_schema = '{schema}'" if schema else ""
         result = self.conn.execute(
             f"""

@@ -382,6 +382,176 @@ class SemanticLayer:
             use_preaggregations=use_preaggs,
         )
 
+    def explain(
+        self,
+        metrics: list[str] | None = None,
+        dimensions: list[str] | None = None,
+        filters: list[str] | None = None,
+        segments: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        dialect: str | None = None,
+        ungrouped: bool = False,
+        parameters: dict[str, any] | None = None,
+        use_preaggregations: bool | None = None,
+    ):
+        """Explain query routing, showing whether pre-aggregations are used and why.
+
+        Same parameters as compile(). Returns a QueryPlan with structured
+        information about the routing decision and per-candidate check details.
+
+        Example::
+
+            plan = layer.explain(
+                metrics=["events.event_count"],
+                dimensions=["events.event_type"],
+            )
+            print(plan)
+        """
+        from sidemantic.core.preagg_matcher import PreAggregationMatcher
+        from sidemantic.core.query_plan import QueryPlan
+
+        metrics = metrics or []
+        dimensions = dimensions or []
+
+        # Compile the actual SQL (respects use_preaggregations setting)
+        sql = self.compile(
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            segments=segments,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            dialect=dialect,
+            ungrouped=ungrouped,
+            parameters=parameters,
+            use_preaggregations=use_preaggregations,
+        )
+
+        use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+
+        # Extract model names from metric/dimension references
+        model_names = set()
+        for ref in list(metrics) + list(dimensions):
+            if "." in ref:
+                model_name = ref.split(".", 1)[0]
+                # Strip granularity suffix from dimension (e.g., "events" from "events.date__month")
+                if model_name:
+                    model_names.add(model_name)
+
+        # Strip model prefixes from metrics and dimensions for matcher
+        bare_metrics = []
+        for m in metrics:
+            bare_metrics.append(m.split(".", 1)[1] if "." in m else m)
+
+        bare_dims = []
+        time_granularity = None
+        for d in dimensions:
+            dim_name = d.split(".", 1)[1] if "." in d else d
+            # Check for granularity suffix (e.g., "order_date__month")
+            if "__" in dim_name:
+                base, gran = dim_name.rsplit("__", 1)
+                bare_dims.append(base)
+                time_granularity = gran
+            else:
+                bare_dims.append(dim_name)
+
+        bare_filters = []
+        if filters:
+            for f in filters:
+                # Strip any model prefix from filters
+                for mn in model_names:
+                    f = f.replace(f"{mn}.", "")
+                bare_filters.append(f)
+
+        # Check preconditions for preagg routing
+        if not use_preaggs:
+            return QueryPlan(
+                sql=sql,
+                model=next(iter(model_names), None),
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason="pre-aggregations not enabled (use_preaggregations=False)",
+            )
+
+        if len(model_names) != 1:
+            return QueryPlan(
+                sql=sql,
+                model=None,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason=f"multi-model query ({', '.join(sorted(model_names))}), preaggs only work for single-model queries",
+            )
+
+        if ungrouped:
+            return QueryPlan(
+                sql=sql,
+                model=next(iter(model_names)),
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason="ungrouped query, preaggs require aggregation",
+            )
+
+        model_name = next(iter(model_names))
+        try:
+            model = self.get_model(model_name)
+        except KeyError:
+            return QueryPlan(
+                sql=sql,
+                model=model_name,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason=f"model '{model_name}' not found",
+            )
+
+        if not model.pre_aggregations:
+            return QueryPlan(
+                sql=sql,
+                model=model_name,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason="model has no pre-aggregations defined",
+            )
+
+        # Run the matcher explanation
+        matcher = PreAggregationMatcher(model)
+        candidates = matcher.explain_matching(
+            metrics=bare_metrics,
+            dimensions=bare_dims,
+            time_granularity=time_granularity,
+            filters=bare_filters,
+        )
+
+        selected = next((c for c in candidates if c.selected), None)
+        if selected:
+            return QueryPlan(
+                sql=sql,
+                model=model_name,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=True,
+                selected_preagg=selected.name,
+                routing_reason=f"matched '{selected.name}' (score: {selected.score})",
+                candidates=candidates,
+            )
+        else:
+            return QueryPlan(
+                sql=sql,
+                model=model_name,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason="no pre-aggregation matched the query",
+                candidates=candidates,
+            )
+
     def get_model(self, name: str) -> Model:
         """Get model by name.
 

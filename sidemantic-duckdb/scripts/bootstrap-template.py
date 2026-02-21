@@ -49,7 +49,7 @@ def replace(file_name: str, to_find: str, to_replace: str) -> None:
     Returns:
         None
     """
-    with open(file_name, "r", encoding="utf8") as file:
+    with open(file_name, encoding="utf8") as file:
         filedata = file.readlines()
 
     new_filedata = []
@@ -63,9 +63,7 @@ def replace(file_name: str, to_find: str, to_replace: str) -> None:
             to_find,
             to_replace,
         )
-        modified_line = modified_line.replace(
-            to_find.capitalize(), to_camel_case(to_replace)
-        )
+        modified_line = modified_line.replace(to_find.capitalize(), to_camel_case(to_replace))
         modified_line = modified_line.replace(
             to_find.upper(),
             to_replace.upper(),
@@ -134,7 +132,7 @@ def replace_placeholders(file_name: str) -> None:
     Returns:
         None
     """
-    with open(file_name, "r", encoding="utf8") as file:
+    with open(file_name, encoding="utf8") as file:
         filedata = file.read()
 
     # Remove all placeholders
@@ -146,9 +144,7 @@ def replace_placeholders(file_name: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        raise Exception(
-            "usage: python3 bootstrap-template.py <name_for_extension_in_snake_case>"
-        )
+        raise Exception("usage: python3 bootstrap-template.py <name_for_extension_in_snake_case>")
 
     name_extension = sys.argv[1]
 
@@ -183,9 +179,7 @@ if __name__ == "__main__":
 
     # rename files
     os.rename(f"test/sql/{string_to_find}.test", f"test/sql/{string_to_replace}.test")
-    os.rename(
-        f"src/{string_to_find}_extension.cpp", f"src/{string_to_replace}_extension.cpp"
-    )
+    os.rename(f"src/{string_to_find}_extension.cpp", f"src/{string_to_replace}_extension.cpp")
     os.rename(
         f"src/include/{string_to_find}_extension.hpp",
         f"src/include/{string_to_replace}_extension.hpp",

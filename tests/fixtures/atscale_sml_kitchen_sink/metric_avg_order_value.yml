@@ -1,0 +1,4 @@
+unique_name: avg_order_value
+object_type: metric_calc
+expression: total_amount / order_count
+format: currency

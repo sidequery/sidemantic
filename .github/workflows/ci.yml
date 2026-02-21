@@ -50,7 +50,7 @@ jobs:
         run: uv run pytest -v --cov=sidemantic --cov-report=term-missing
 
       - name: Update JSON Schema if needed
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
         run: |
           uv run python scripts/generate_schema.py
           if ! git diff --exit-code sidemantic-schema.json; then

@@ -1,6 +1,6 @@
 ---
 name: sidemantic-modeler
-description: "Build, validate, and manage semantic models using Sidemantic. Use when asked to create a semantic layer, define metrics/dimensions, model a database schema, generate models from SQL queries, import from Cube/dbt/LookML, or set up analytics definitions. Covers YAML and Python model creation, reverse-engineering models from existing queries, cross-model relationships, complex metrics (ratio, derived, cumulative, time comparison, conversion), and validation."
+description: "Build, validate, and manage semantic models using Sidemantic. Use when asked to create a semantic layer, define metrics/dimensions, model a database schema, generate models from SQL queries, import from Cube/dbt/LookML, or set up analytics definitions. Prioritizes CLI-first workflows, with YAML and optional Python API usage for advanced automation."
 license: Apache-2.0
 metadata:
   author: sidemantic
@@ -13,12 +13,14 @@ Build semantic layers that map physical database tables to business-friendly dim
 
 ## Quick Start
 
-### 2-Minute First Success (recommended onboarding path)
+### 2-Minute First Success (CLI-first onboarding path)
 
 ```bash
 uv add sidemantic duckdb
 
-cat > models.yml <<'YAML'
+mkdir -p models
+
+cat > models/orders.yml <<'YAML'
 models:
   - name: orders
     table: orders
@@ -26,10 +28,6 @@ models:
     dimensions:
       - name: status
         type: categorical
-      - name: order_date
-        type: time
-        sql: created_at
-        granularity: day
     metrics:
       - name: revenue
         agg: sum
@@ -38,27 +36,13 @@ models:
         agg: count
 YAML
 
-uv run python - <<'PY'
-import duckdb
-from sidemantic import SemanticLayer
-
-con = duckdb.connect("data.duckdb")
-con.execute("""
-create or replace table orders as
-select * from (
-  values
-    (1, 'completed', timestamp '2026-01-01', 120.0),
-    (2, 'pending',   timestamp '2026-01-02', 80.0)
-) as t(order_id, status, created_at, order_amount)
-""")
-con.close()
-
-layer = SemanticLayer.from_yaml("models.yml", connection="duckdb:///data.duckdb")
-print(layer.sql("select revenue, status from orders").fetchall())
-PY
+uv run sidemantic validate models/ --verbose
+uv run sidemantic info models/
+uv run sidemantic query models/ -c duckdb:///data.duckdb \
+  "SELECT revenue, status FROM orders ORDER BY revenue DESC LIMIT 5"
 ```
 
-If setup is correct, this prints two grouped rows (`completed` and `pending`) with revenue values.
+Assumes an `orders` table already exists in `data.duckdb` with `status` and `order_amount` columns.
 
 ### YAML (preferred for file-based models)
 
@@ -91,7 +75,7 @@ layer = SemanticLayer.from_yaml("models.yml", connection="duckdb:///data.duckdb"
 result = layer.sql("SELECT revenue, status FROM orders")
 ```
 
-### Python API
+### Python API (advanced, optional)
 
 ```python
 from sidemantic import Model, Dimension, Metric, SemanticLayer
@@ -127,7 +111,7 @@ sidemantic migrator --queries queries/ --generate-models output/
 sidemantic migrator models/ --queries queries/ --verbose
 ```
 
-### Python API
+### Python API (advanced/automation only)
 
 ```python
 from sidemantic import SemanticLayer
@@ -181,7 +165,7 @@ migrator.print_report(report, verbose=True)
 4. Run coverage check to verify queries can be rewritten through the semantic layer
 5. Iterate until coverage is high
 
-For the full Migrator API (data classes, all methods, edge cases), load `references/generation.md`.
+For the full Migrator API (all methods, outputs, edge cases), load `references/generation.md`.
 
 ## Core Workflow
 
@@ -275,6 +259,18 @@ sidemantic info models/
 
 ### Step 7: Test with queries
 
+```bash
+# Validate and inspect without writing code
+uv run sidemantic validate models/ --verbose
+uv run sidemantic info models/
+
+# Execute semantic SQL through CLI
+uv run sidemantic query models/ -c duckdb:///data.duckdb \
+  "SELECT revenue, status FROM orders WHERE status = 'completed'"
+```
+
+Python API (optional):
+
 ```python
 # Structured query API
 result = layer.query(
@@ -309,6 +305,13 @@ models:
 
 Segments are model-scoped and used as `model.segment` references at query time:
 
+```bash
+uv run sidemantic query models/ -c duckdb:///data.duckdb \
+  "SELECT revenue, status FROM orders WHERE completed_orders"
+```
+
+Python API (optional):
+
 ```python
 result = layer.query(
     metrics=["orders.revenue"],
@@ -319,7 +322,14 @@ result = layer.query(
 
 ## Loading from Other Formats
 
-Use `load_from_directory` for auto-detection:
+CLI-first:
+
+```bash
+uv run sidemantic info path/to/models/
+uv run sidemantic validate path/to/models/ --verbose
+```
+
+Python API (optional):
 
 ```python
 from sidemantic import SemanticLayer, load_from_directory

@@ -12,6 +12,13 @@ migrator = Migrator(layer, connection=db_connection)  # connection is optional
 
 When `connection` is provided, the Migrator queries `information_schema` for primary keys, foreign keys, and column metadata, improving inference accuracy.
 
+CLI-first for normal usage:
+
+```bash
+sidemantic migrator --queries queries/ --generate-models output/
+sidemantic migrator models/ --queries queries/ --verbose
+```
+
 ### Core Methods
 
 #### `analyze_queries(queries: list[str]) -> MigrationReport`
@@ -97,46 +104,12 @@ Writes each rewritten query to `query_{n}.sql`.
 
 Console coverage report: total/parseable/rewritable counts, missing models/dimensions/metrics. With `--verbose`, per-query details.
 
-### Data Classes
+### Report fields you actually use
 
-```python
-@dataclass
-class QueryAnalysis:
-    query: str
-    tables: set[str]
-    table_aliases: dict[str, str]           # alias -> table_name
-    columns: dict[str, set[str]]            # table -> columns
-    aggregations: list[tuple[str, str, str]] # (agg_type, column, table)
-    aggregation_aliases: dict[tuple, str]    # (agg_type, col, table) -> alias
-    derived_metrics: list[tuple[str, str, str]]
-    cross_model_derived_metrics: list[dict]
-    cumulative_metrics: list[dict]
-    group_by_columns: set[tuple[str, str]]   # (table, column)
-    time_dimensions: list[tuple[str, str, str]] # (table, column, granularity)
-    joins: list[tuple]
-    relationships: list[tuple]               # (from_model, to_model, rel_type, fk, pk)
-    filters: list[str]
-    having_clauses: list[str]
-    order_by: list[str]
-    limit: int | None
-    can_rewrite: bool
-    missing_models: set[str]
-    missing_dimensions: set[tuple[str, str]]
-    missing_metrics: set[tuple[str, str, str]]
-    suggested_rewrite: str | None
-    parse_error: str | None
-
-@dataclass
-class MigrationReport:
-    total_queries: int
-    parseable_queries: int
-    rewritable_queries: int
-    query_analyses: list[QueryAnalysis]
-    missing_models: set[str]
-    missing_dimensions: dict[str, set[str]]
-    missing_metrics: dict[str, set[tuple[str, str]]]
-    coverage_percentage: float
-```
+`MigrationReport` fields most useful in practice:
+- `total_queries`, `parseable_queries`, `rewritable_queries`, `coverage_percentage`
+- `missing_models`, `missing_dimensions`, `missing_metrics`
+- `query_analyses` for per-query failures and suggested rewrites
 
 ## CLI Commands
 

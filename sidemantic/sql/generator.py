@@ -2543,6 +2543,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Build inner query with base aggregations
         # Dedupe base_metrics to avoid duplicate column names
         base_metrics = list(dict.fromkeys(base_metrics))
+        base_metric_aliases = {metric_ref_alias(m) for m in base_metrics}
 
         inner_query = self.generate(
             metrics=base_metrics,
@@ -2590,6 +2591,10 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
                 formula = metric_obj.sql
                 dependencies = sorted(metric_obj.get_dependencies(self.graph, resolved_context), key=len, reverse=True)
+                if not dependencies:
+                    # Dependency-free expression metrics are already materialized
+                    # in the inner query (when needed), so reuse the alias.
+                    return metric_column(canon_ref)
                 for dependency in dependencies:
                     dep_expr = build_time_comparison_base_expression(dependency, resolved_context, visited.copy())
                     if "." in dependency:
@@ -2636,6 +2641,8 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Add expression metrics that depend on cumulative/derived chains.
         for plan in regular_expression_metric_plans.values():
             metric_ref = plan["metric_ref"]
+            if metric_ref_alias(metric_ref) in base_metric_aliases:
+                continue
             metric_expr = build_time_comparison_base_expression(metric_ref, plan["metric_context"])
             select_exprs.append(f"{metric_expr} AS {sql_identifier(metric_ref_alias(metric_ref))}")
 
@@ -2797,6 +2804,8 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 metric_ref = plan["metric_ref"]
                 metric_expr = build_time_comparison_base_expression(metric_ref, plan["metric_context"])
                 metric_expr_alias = metric_ref_alias(metric_ref)
+                if metric_expr_alias in lag_cte_columns:
+                    continue
                 lag_selects.append(f"{metric_expr} AS {sql_identifier(metric_expr_alias)}")
                 lag_cte_columns.append(metric_expr_alias)
 
@@ -2859,11 +2868,12 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     lag_selects.append(f"{base_expr} AS {sql_identifier(base_alias)}")
                     lag_cte_columns.append(base_alias)
 
-                lag_input_expr = (
-                    build_time_comparison_base_expression(base_ref, base_context)
-                    if base_is_expression
-                    else metric_column(base_ref)
-                )
+                if base_is_expression and base_alias in base_metric_aliases:
+                    lag_input_expr = metric_column(base_ref)
+                elif base_is_expression:
+                    lag_input_expr = build_time_comparison_base_expression(base_ref, base_context)
+                else:
+                    lag_input_expr = metric_column(base_ref)
 
                 # Calculate LAG offset
                 lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)

@@ -278,7 +278,6 @@ ADDED_EXPECTED_NO_EXECUTION_QUERY_FIXTURES = {
     "tests/fixtures/lookml/pylookml_aggregate_tables.model.lkml",
     "tests/fixtures/lookml/pylookml_manifest.lkml",
     "tests/fixtures/lookml/pylookml_sql_preamble.view.lkml",
-    "tests/fixtures/lookml/segment_attribution_conversion.view.lkml",
     "tests/fixtures/lookml/segment_attribution_manifest.lkml",
     "tests/fixtures/lookml/segment_attribution_model.model.lkml",
     "tests/fixtures/malloy/bigquery_jobs_config.malloy",
@@ -295,7 +294,6 @@ ADDED_EXPECTED_NO_EXECUTION_QUERY_FIXTURES = {
     "tests/fixtures/rill/bids_explore.yaml",
     "tests/fixtures/rill/nyc_trips_dashboard.yaml",
     "tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml",
-    "tests/fixtures/thoughtspot/tpch_worksheet.worksheet.tml",
 }
 
 
@@ -412,29 +410,45 @@ def _normalize_identifier(identifier: str, fallback: str) -> str:
     return normalized
 
 
-def _extract_sql_columns(sql_expr: str | None) -> tuple[set[str], bool]:
-    if not sql_expr or "{" in sql_expr:
-        return set(), False
+def _normalize_sql_expr_for_analysis(sql_expr: str | None) -> str:
+    if not sql_expr:
+        return ""
+    normalized = re.sub(r"\{model\}\.", "", sql_expr, flags=re.IGNORECASE)
+    normalized = re.sub(r"\{model\}", "", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def _extract_sql_columns(sql_expr: str | None) -> tuple[set[str], str | None, bool]:
+    normalized_expr = _normalize_sql_expr_for_analysis(sql_expr)
+    if not normalized_expr or "${" in normalized_expr or "{%" in normalized_expr or "{" in normalized_expr:
+        return set(), None, False
     try:
-        parsed = sqlglot.parse_one(sql_expr, read="duckdb")
+        parsed = sqlglot.parse_one(normalized_expr, read="duckdb")
     except Exception:
-        return set(), False
+        return set(), None, False
 
     columns = set()
+    qualifier = None
     for column in parsed.find_all(exp.Column):
         if not column.name or column.name == "*":
-            return set(), False
+            return set(), None, False
         if column.table:
-            return set(), False
+            if not UNQUOTED_SQL_IDENTIFIER_RE.match(column.table):
+                return set(), None, False
+            if qualifier is None:
+                qualifier = column.table
+            elif qualifier != column.table:
+                return set(), None, False
         columns.add(column.name)
-    return columns, True
+    return columns, qualifier, True
 
 
 def _extract_plain_sql_column(sql_expr: str | None) -> str | None:
-    if not sql_expr or "{" in sql_expr:
+    normalized_expr = _normalize_sql_expr_for_analysis(sql_expr)
+    if not normalized_expr or "${" in normalized_expr or "{%" in normalized_expr or "{" in normalized_expr:
         return None
     try:
-        parsed = sqlglot.parse_one(sql_expr, read="duckdb")
+        parsed = sqlglot.parse_one(normalized_expr, read="duckdb")
     except Exception:
         return None
     if isinstance(parsed, exp.Column) and parsed.name and not parsed.table and parsed.name != "*":
@@ -530,11 +544,9 @@ def _execution_table_for_model(model) -> tuple[tuple[str | None, str | None, str
 
 def _pick_execution_query(graph):
     for model in graph.models.values():
-        if any(field.sql_expr and "${" in field.sql_expr for field in [*model.metrics, *model.dimensions]):
-            continue
         execution_table_parts, requires_table_override = _execution_table_for_model(model)
         execution_model_name, requires_model_override = _execution_model_name(model.name)
-        requires_sql_override = bool(model.sql)
+        base_requires_sql_override = bool(model.sql)
 
         primary_keys = model.primary_key if isinstance(model.primary_key, list) else [model.primary_key]
         if any(not isinstance(pk, str) or not pk.strip() for pk in primary_keys):
@@ -547,6 +559,17 @@ def _pick_execution_query(graph):
                     continue
                 if not metric.agg or metric.type in {"cumulative", "time_comparison", "conversion", "ratio"}:
                     continue
+                if metric.sql_expr and ("${" in metric.sql_expr or "{%" in metric.sql_expr):
+                    continue
+                if metric.filters:
+                    has_templated_filter = any(
+                        "${" in filter_sql or "{%" in filter_sql for filter_sql in metric.filters
+                    )
+                    has_table_qualified_filter = any(
+                        re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\.", filter_sql) for filter_sql in metric.filters
+                    )
+                    if has_templated_filter or has_table_qualified_filter:
+                        continue
                 if metric.agg not in {"count", "count_distinct"} and metric.sql_expr and "'" in metric.sql_expr:
                     continue
 
@@ -565,7 +588,8 @@ def _pick_execution_query(graph):
                         "execution_table_ref": _table_parts_to_reference(execution_table_parts),
                         "requires_table_override": requires_table_override,
                         "requires_model_override": requires_model_override,
-                        "requires_sql_override": requires_sql_override,
+                        "requires_sql_override": base_requires_sql_override,
+                        "sql_expression_qualifier": None,
                         "metrics": [f"{execution_model_name}.{metric.name}"],
                         "dimensions": [],
                         "column_types": column_types,
@@ -573,7 +597,7 @@ def _pick_execution_query(graph):
                         "has_metric_filters": bool(metric.filters),
                     }
 
-                metric_columns, ok = _extract_sql_columns(metric.sql_expr)
+                metric_columns, metric_qualifier, ok = _extract_sql_columns(metric.sql_expr)
                 if not ok:
                     continue
                 plain_metric_column = _extract_plain_sql_column(metric.sql_expr)
@@ -590,7 +614,8 @@ def _pick_execution_query(graph):
                     "execution_table_ref": _table_parts_to_reference(execution_table_parts),
                     "requires_table_override": requires_table_override,
                     "requires_model_override": requires_model_override,
-                    "requires_sql_override": requires_sql_override,
+                    "requires_sql_override": base_requires_sql_override or metric_qualifier is not None,
+                    "sql_expression_qualifier": metric_qualifier,
                     "metrics": [f"{execution_model_name}.{metric.name}"],
                     "dimensions": [],
                     "column_types": column_types,
@@ -603,9 +628,11 @@ def _pick_execution_query(graph):
             for dimension in model.dimensions:
                 if not dimension.name or "." in dimension.name:
                     continue
+                if dimension.sql_expr and ("${" in dimension.sql_expr or "{%" in dimension.sql_expr):
+                    continue
                 if dimension.sql_expr and "'" in dimension.sql_expr:
                     continue
-                dimension_columns, ok = _extract_sql_columns(dimension.sql_expr)
+                dimension_columns, dimension_qualifier, ok = _extract_sql_columns(dimension.sql_expr)
                 if not ok:
                     continue
                 plain_dimension_column = _extract_plain_sql_column(dimension.sql_expr)
@@ -632,7 +659,8 @@ def _pick_execution_query(graph):
                     "execution_table_ref": _table_parts_to_reference(execution_table_parts),
                     "requires_table_override": requires_table_override,
                     "requires_model_override": requires_model_override,
-                    "requires_sql_override": requires_sql_override,
+                    "requires_sql_override": base_requires_sql_override or dimension_qualifier is not None,
+                    "sql_expression_qualifier": dimension_qualifier,
                     "metrics": [],
                     "dimensions": [f"{execution_model_name}.{dimension.name}"],
                     "column_types": column_types,
@@ -640,7 +668,7 @@ def _pick_execution_query(graph):
                 }
             return None
 
-        if requires_sql_override:
+        if base_requires_sql_override:
             candidate = pick_dimension_candidate() or pick_metric_candidate()
         else:
             candidate = pick_metric_candidate() or pick_dimension_candidate()
@@ -848,8 +876,15 @@ def _prepare_graph_for_execution(graph, query_spec: dict):
     graph_for_query = deepcopy(graph)
     source_model_name = query_spec["model_name"]
     execution_model_name = query_spec["execution_model_name"]
+    sql_expression_qualifier = query_spec.get("sql_expression_qualifier")
 
     model = graph_for_query.models[source_model_name]
+    if sql_expression_qualifier:
+        qualifier_pattern = re.compile(rf"(?i)\b{re.escape(sql_expression_qualifier)}\.")
+        for field in [*model.metrics, *model.dimensions]:
+            if field.sql:
+                field.sql = qualifier_pattern.sub("", field.sql)
+
     if query_spec.get("requires_table_override"):
         model.table = query_spec["execution_table_ref"]
     if query_spec.get("requires_sql_override"):

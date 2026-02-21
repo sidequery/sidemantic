@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from functools import cache
 from pathlib import Path
 
@@ -127,6 +128,22 @@ EXPECTED_LOW_SIGNAL_FIXTURES = {
     "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
 }
 
+NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
+    "metadata_only_no_models": {
+        "AtScaleSMLAdapter",
+        "CubeAdapter",
+        "HolisticsAdapter",
+        "LookMLAdapter",
+        "MetricFlowAdapter",
+        "OmniAdapter",
+        "RillAdapter",
+        "ThoughtSpotAdapter",
+    },
+    "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter"},
+    "semantic_only_no_sources": {"AtScaleSMLAdapter", "LookMLAdapter", "MalloyAdapter", "OmniAdapter"},
+    "complex_or_nonportable_sql_fields": {"LookMLAdapter"},
+}
+
 
 def _discover_fixture_cases() -> list[tuple[type, str]]:
     root = Path("tests/fixtures")
@@ -246,6 +263,26 @@ def _assert_graph_contracts(fixture_path: str, graph) -> None:
             )
 
 
+def _classify_non_execution_fixture(graph) -> str:
+    if not graph.models:
+        return "metadata_only_no_models"
+
+    models = list(graph.models.values())
+    if not any((model.table or model.sql) for model in models):
+        return "semantic_only_no_sources"
+
+    if all(len(model.dimensions) == 0 and len(model.metrics) == 0 for model in models):
+        return "source_fragments_without_fields"
+
+    all_fields = [field for model in models for field in [*model.metrics, *model.dimensions]]
+    if all_fields and all(
+        field.sql_expr and ("${" in field.sql_expr or "{%" in field.sql_expr) for field in all_fields
+    ):
+        return "templated_fields_only"
+
+    return "complex_or_nonportable_sql_fields"
+
+
 @pytest.mark.parametrize(
     ("adapter_cls", "fixture_path"),
     ALL_FIXTURE_CASES,
@@ -311,6 +348,34 @@ def test_fixture_query_compilation_coverage():
         f"Expected at least {minimum_compile_successes} compiled fixture queries, got {compiled_queries} "
         f"(attempted {attempted_queries})"
     )
+
+
+def test_non_executable_fixture_reason_contracts():
+    reason_counts: Counter[str] = Counter()
+
+    for adapter_cls, fixture_path in PARSEABLE_FIXTURE_CASES:
+        graph = _parse_graph(adapter_cls, fixture_path)
+        if _pick_execution_query(graph):
+            continue
+
+        reason = _classify_non_execution_fixture(graph)
+        reason_counts[reason] += 1
+
+        if reason == "templated_fields_only":
+            # No current fixtures should be blocked solely by templating after candidate-selection hardening.
+            raise AssertionError(f"{fixture_path}: expected at least one non-templated fallback execution candidate")
+
+        expected_adapters = NON_EXECUTION_REASON_ALLOWED_ADAPTERS[reason]
+        assert adapter_cls.__name__ in expected_adapters, (
+            f"{fixture_path}: reason={reason} unexpected for adapter {adapter_cls.__name__}; "
+            f"expected adapters={sorted(expected_adapters)}"
+        )
+
+        if reason == "complex_or_nonportable_sql_fields":
+            # Ensure complex cases still have compile-time functionality coverage.
+            assert _pick_compile_query(graph) is not None, (
+                f"{fixture_path}: non-executable complex fixture should still have a compile candidate"
+            )
 
 
 def test_fixture_query_execution_coverage():

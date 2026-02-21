@@ -1,0 +1,26 @@
+.git
+.github
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+__pycache__
+*.egg-info
+*.pyc
+
+# Rust/DuckDB extension builds (not needed for Python image)
+sidemantic-rs/
+sidemantic-duckdb/
+
+# Docs and examples not needed at runtime
+docs/
+examples/superset_demo/
+examples/rill_demo/
+examples/cube_demo/
+
+# Dev/test artifacts
+Dockerfile.test
+docker-compose.yml
+*.md
+!README.md
+.context/

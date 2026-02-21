@@ -422,6 +422,7 @@ def serve(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
     ),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    host: str = typer.Option(None, "--host", "-H", help="Host/IP to bind to (overrides config, default 127.0.0.1)"),
     port: int = typer.Option(None, "--port", "-p", help="Port to listen on (overrides config)"),
     username: str = typer.Option(None, "--username", "-u", help="Username for authentication (overrides config)"),
     password: str = typer.Option(None, "--password", help="Password for authentication (overrides config)"),
@@ -482,7 +483,8 @@ def serve(
         # Use connection from config
         connection_str = build_connection_string(_loaded_config)
 
-    # Resolve port, username, password from args or config
+    # Resolve host, port, username, password from args or config
+    host_resolved = host or (_loaded_config.pg_server.host if _loaded_config else "127.0.0.1")
     port_resolved = port if port is not None else (_loaded_config.pg_server.port if _loaded_config else 5433)
     username_resolved = username or (_loaded_config.pg_server.username if _loaded_config else None)
     password_resolved = password or (_loaded_config.pg_server.password if _loaded_config else None)
@@ -535,7 +537,7 @@ def serve(
                 layer.conn.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
     # Start the server
-    start_server(layer, port=port_resolved, username=username_resolved, password=password_resolved)
+    start_server(layer, host=host_resolved, port=port_resolved, username=username_resolved, password=password_resolved)
 
 
 @app.command(hidden=True)

@@ -10,6 +10,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey, RefreshResult
 from sidemantic.core.preagg_recommender import PreAggRecommendation, PreAggregationRecommender, QueryPattern
+from sidemantic.core.query_plan import PreaggCandidate, PreaggCheck, QueryPlan
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 
@@ -25,7 +26,10 @@ __all__ = [
     "PreAggregation",
     "PreAggregationRecommender",
     "PreAggRecommendation",
+    "PreaggCandidate",
+    "PreaggCheck",
     "QueryPattern",
+    "QueryPlan",
     "RefreshKey",
     "RefreshResult",
     "Relationship",

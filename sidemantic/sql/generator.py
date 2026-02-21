@@ -1,5 +1,7 @@
 """SQL generation using SQLGlot builder API."""
 
+import logging
+
 import sqlglot
 from sqlglot import exp, select
 
@@ -53,6 +55,24 @@ class SQLGenerator:
         col = sqlglot.parse_one(column_expr, into=exp.Column, dialect=self.dialect)
         date_trunc = exp.DateTrunc(this=col, unit=exp.Literal.string(granularity))
         return date_trunc.sql(dialect=self.dialect)
+
+    def _build_interval(self, num: str, unit: str) -> str:
+        """Build dialect-specific INTERVAL expression.
+
+        Args:
+            num: Numeric value (e.g., "7")
+            unit: Time unit (e.g., "days")
+
+        Returns:
+            SQL INTERVAL expression appropriate for the dialect
+        """
+        if self.dialect == "bigquery":
+            # BigQuery: INTERVAL 7 DAY (no quotes, singular unit)
+            singular_unit = unit.upper().rstrip("S")
+            return f"INTERVAL {num} {singular_unit}"
+        else:
+            # Standard SQL: INTERVAL '7 days'
+            return f"INTERVAL '{num} {unit}'"
 
     def _quote_alias(self, name: str) -> str:
         """Quote an identifier for use as a SQL alias.
@@ -146,6 +166,10 @@ class SQLGenerator:
         Returns:
             CREATE VIEW SQL statement
         """
+        import re
+
+        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", view_name):
+            raise ValueError(f"Invalid view name: {view_name}")
         query_sql = self.generate(metrics, dimensions, filters, order_by, limit)
         return f"CREATE VIEW {view_name} AS\n{query_sql}"
 
@@ -360,7 +384,7 @@ class SQLGenerator:
                         model_name = column.table.replace("_cte", "")
                         models_with_filters.add(model_name)
             except Exception:
-                pass
+                logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
         # Extract columns needed for metric-level filters (before building CTEs)
         metric_filter_cols_by_model = self._extract_metric_filter_columns(metrics)
@@ -586,8 +610,7 @@ class SQLGenerator:
                             model_name = column.table.replace("_cte", "")
                             add_model(model_name)
                 except Exception:
-                    # If parsing fails, skip this filter for model extraction
-                    pass
+                    logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
         return models
 
@@ -696,7 +719,7 @@ class SQLGenerator:
                         elif not col.table:
                             columns_by_model[model_name].add(col.name)
                 except Exception:
-                    pass
+                    logging.debug("Failed to parse metric filter: %s", aliased_filter, exc_info=True)
 
         def add_sql_columns(sql_expr: str, default_model_name: str | None = None):
             """Extract column refs from SQL and track them per model."""
@@ -840,7 +863,7 @@ class SQLGenerator:
                         if col.table and col.table.replace("_cte", "") == model_name:
                             needed.add(col.name)
                 except Exception:
-                    pass
+                    logging.debug("Failed to parse filter for column extraction: %s", filter_expr, exc_info=True)
 
         # Dimensions referenced in ORDER BY
         if order_by:
@@ -1811,6 +1834,12 @@ class SQLGenerator:
     def _calculate_lag_offset(self, comparison_type: str | None, time_granularity: str | None) -> int:
         """Calculate LAG offset based on comparison type and time dimension granularity.
 
+        LAG is row-based, so offsets for sub-period granularities are approximate:
+        MoM at day grain uses 30 (months vary 28-31), YoY at day grain uses 365
+        (ignores leap years), QoQ at day grain uses 90 (quarters vary 90-92).
+        For exact period comparisons, use matching granularity (e.g., monthly grain
+        for MoM) or a date-based self-join approach.
+
         Args:
             comparison_type: Type of comparison (yoy, mom, wow, dod, qoq)
             time_granularity: Time dimension granularity (day, week, month, quarter, year)
@@ -1919,9 +1948,10 @@ class SQLGenerator:
         if agg_func == "COUNT_DISTINCT":
             return f"COUNT(DISTINCT {raw_col})"
         if agg_func == "COUNT":
-            if measure.filters or (measure.sql and measure.sql != "*"):
-                return f"COUNT({raw_col})"
-            return "COUNT(*)"
+            # Always use COUNT(raw_col) to avoid fan-out overcounting in multi-model joins.
+            # The CTE projects a non-NULL raw column for matching rows, so COUNT(raw_col)
+            # is equivalent to COUNT(*) for single-model queries but correct for joins.
+            return f"COUNT({raw_col})"
         return f"{agg_func}({raw_col})"
 
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
@@ -2147,11 +2177,21 @@ class SQLGenerator:
         # conversion_events: filter for conversion_event
         # Join on entity where conversion is within window
 
+        import re as _re
+
         window_parts = metric.conversion_window.split() if metric.conversion_window else ["7", "days"]
         window_num, window_unit = (
             window_parts[0],
             window_parts[1] if len(window_parts) > 1 else "days",
         )
+
+        # Validate conversion metric fields to prevent SQL injection
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
+            raise ValueError(f"Invalid entity identifier: {metric.entity}")
+        if not _re.match(r"^\d+$", window_num):
+            raise ValueError(f"Invalid window number: {window_num}")
+        if not _re.match(r"^[a-zA-Z]+$", window_unit):
+            raise ValueError(f"Invalid window unit: {window_unit}")
 
         # Find dimension that represents event type
         event_type_dim = None
@@ -2239,14 +2279,14 @@ WITH base_events AS (
     {metric.entity} AS entity,
     {timestamp_dim} AS event_time{extra_base_cols}
   FROM {from_clause}
-  WHERE {event_type_dim} = '{metric.base_event}'
+  WHERE {event_type_dim} = '{metric.base_event.replace("'", "''")}'
 ),
 conversion_events AS (
   SELECT
     {metric.entity} AS entity,
     {timestamp_dim} AS event_time{extra_conv_cols}
   FROM {from_clause}
-  WHERE {event_type_dim} = '{metric.conversion_event}'
+  WHERE {event_type_dim} = '{metric.conversion_event.replace("'", "''")}'
 ),
 conversions AS (
   SELECT DISTINCT
@@ -2254,7 +2294,7 @@ conversions AS (
   FROM base_events base
   JOIN conversion_events conv
     ON base.entity = conv.entity
-    AND conv.event_time BETWEEN base.event_time AND base.event_time + INTERVAL '{window_num} {window_unit}'
+    AND conv.event_time BETWEEN base.event_time AND base.event_time + {self._build_interval(window_num, window_unit)}
 )
 SELECT
 {dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {metric.name}
@@ -2396,6 +2436,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     alias = m
             select_exprs.append(f"base.{alias}")
 
+        # Track cumulative window expressions for inclusion in LAG CTE path
+        cumulative_window_entries = []  # (window_expr, alias)
+
         # Add cumulative metrics with window functions
         for m in cumulative_metrics:
             # Handle both qualified (model.measure) and unqualified references
@@ -2452,6 +2495,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 frame = metric.window_frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
                 window_expr = f"{metric.window_expression} OVER (ORDER BY {order_col} {frame}) AS {metric_alias}"
                 select_exprs.append(window_expr)
+                cumulative_window_entries.append((window_expr, metric_alias))
                 continue
 
             # Option A: Use agg + sql (supports AVG, COUNT, etc.)
@@ -2518,6 +2562,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 window_expr = f"{agg_func}({base_col}) OVER (ORDER BY {time_dim} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {metric_alias}"
 
             select_exprs.append(window_expr)
+            cumulative_window_entries.append((window_expr, metric_alias))
 
         # Add time comparison metrics with LAG window functions
         # Note: We'll handle these with a CTE approach similar to offset_ratio_metrics
@@ -2547,6 +2592,11 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     alias = m
                 lag_selects.append(f"base.{alias}")
                 lag_cte_columns.append(alias)
+
+            # Include cumulative window expressions in the LAG CTE
+            for cum_expr, cum_alias in cumulative_window_entries:
+                lag_selects.append(cum_expr)
+                lag_cte_columns.append(cum_alias)
 
             # Add LAG expressions for each time comparison metric
             for m in time_comparison_metrics:

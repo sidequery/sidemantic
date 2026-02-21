@@ -49,9 +49,9 @@ def build_symmetric_aggregate_sql(
     if dialect == "bigquery":
 
         def hash_func(col):
-            return f"FARM_FINGERPRINT(CAST({col} AS STRING))"
+            return f"CAST(FARM_FINGERPRINT(CAST({col} AS STRING)) AS BIGNUMERIC)"
 
-        multiplier = "1000000000000"  # 1e12: safely above typical measure values
+        multiplier = "1000000000000"  # 1e12: BIGNUMERIC avoids INT64 overflow
     elif dialect in ("postgres", "postgresql"):
         # Cast to numeric (arbitrary precision) to avoid bigint overflow
         def hash_func(col):

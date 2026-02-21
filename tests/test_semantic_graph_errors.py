@@ -162,3 +162,49 @@ def test_no_auto_register_regular_metrics():
 
     # But should be accessible via model
     assert len(model.metrics) == 2
+
+
+def test_adjacency_not_built_on_add():
+    """Adjacency should not be rebuilt on every add_model."""
+    from sidemantic.core.relationship import Relationship
+
+    graph = SemanticGraph()
+
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
+        ],
+    )
+    customers = Model(name="customers", table="customers", primary_key="id")
+
+    graph.add_model(orders)
+    graph.add_model(customers)
+
+    assert graph._adjacency_dirty is True
+
+
+def test_adjacency_built_on_find_path():
+    """find_relationship_path should trigger lazy adjacency rebuild."""
+    from sidemantic.core.relationship import Relationship
+
+    graph = SemanticGraph()
+
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        relationships=[
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
+        ],
+    )
+    customers = Model(name="customers", table="customers", primary_key="id")
+
+    graph.add_model(orders)
+    graph.add_model(customers)
+
+    path = graph.find_relationship_path("orders", "customers")
+    assert len(path) == 1
+    assert graph._adjacency_dirty is False

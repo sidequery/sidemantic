@@ -348,5 +348,66 @@ def test_rolling_count(timeseries_db, layer):
     assert df["rolling_3day_count"].iloc[4] == 3
 
 
+def test_cumulative_with_time_comparison(layer):
+    """Cumulative window expressions must appear in LAG CTE output."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+    from tests.utils import fetch_dicts
+
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT '2024-01'::VARCHAR AS month, 100 AS revenue
+            UNION ALL SELECT '2024-02', 150
+            UNION ALL SELECT '2024-03', 120
+            UNION ALL SELECT '2024-04', 180
+        """,
+        primary_key="month",
+        dimensions=[Dimension(name="month", sql="month", type="time")],
+        metrics=[Metric(name="revenue", agg="sum", sql="revenue")],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+
+    graph.add_metric(
+        Metric(
+            name="revenue_mom",
+            type="time_comparison",
+            base_metric="sales.revenue",
+            comparison_type="mom",
+            calculation="difference",
+        )
+    )
+
+    graph.add_metric(
+        Metric(
+            name="running_revenue",
+            type="cumulative",
+            sql="sales.revenue",
+        )
+    )
+
+    gen = SQLGenerator(graph)
+    sql = gen.generate(
+        metrics=["running_revenue", "revenue_mom"],
+        dimensions=["sales.month"],
+    )
+
+    assert "running_revenue" in sql
+    assert "revenue_mom" in sql
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    records = fetch_dicts(result)
+    conn.close()
+
+    assert len(records) == 4
+    assert records[0]["running_revenue"] == 100
+    assert records[1]["running_revenue"] == 250
+    assert records[0]["revenue_mom"] is None
+    assert records[1]["revenue_mom"] == 50
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

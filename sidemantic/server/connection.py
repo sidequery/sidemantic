@@ -2,7 +2,6 @@
 
 import logging
 
-import pyarrow as pa
 import riffq
 
 from sidemantic.core.semantic_layer import SemanticLayer
@@ -69,11 +68,11 @@ class SemanticLayerConnection(riffq.BaseConnection):
             reader = result.fetch_record_batch()
             self.send_reader(reader, callback)
 
-        except Exception as exc:
+        except Exception:
             logging.exception("Error executing query")
-            # Return error to client
-            batch = self.arrow_batch([pa.array(["ERROR"]), pa.array([str(exc)])], ["error", "message"])
-            self.send_reader(batch, callback)
+            # Raise to let riffq send a proper PG ErrorResponse to the client.
+            # Returning errors as data rows confuses BI tools that expect PG protocol errors.
+            raise
 
     def _try_handle_system_query(self, sql: str, sql_lower: str, callback) -> bool:
         """Try to handle PostgreSQL system queries. Returns True if handled."""
@@ -96,7 +95,8 @@ class SemanticLayerConnection(riffq.BaseConnection):
         if "information_schema.tables" in sql_lower:
             schemas_tables = []
             for model_name in self.layer.graph.models.keys():
-                schemas_tables.append(f"('semantic_layer', '{model_name}')")
+                safe_name = model_name.replace("'", "''")
+                schemas_tables.append(f"('semantic_layer', '{safe_name}')")
             if self.layer.graph.metrics:
                 schemas_tables.append("('semantic_layer', 'metrics')")
 

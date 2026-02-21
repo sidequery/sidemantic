@@ -49,5 +49,7 @@ def auto_register_metric(metric):
             try:
                 layer.add_metric(metric)
             except Exception:
-                # Ignore errors (metric might already exist or validation might fail)
-                pass
+                # Best-effort: metric might already exist or validation might fail during init
+                import logging
+
+                logging.debug("Auto-registration of metric %s failed", metric.name, exc_info=True)

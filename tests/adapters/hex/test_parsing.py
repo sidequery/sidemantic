@@ -572,5 +572,64 @@ def test_hex_export_with_filters():
         temp_path.unlink()
 
 
+def test_hex_median_maps_to_median():
+    """Median should map to agg='median', not fall through to default."""
+    hex_def = {
+        "id": "test_model",
+        "base_sql_table": "test_table",
+        "dimensions": [{"id": "val", "type": "number"}],
+        "measures": [
+            {"id": "med_val", "func": "median", "of": "val"},
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        yaml.dump(hex_def, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = HexAdapter()
+        graph = adapter.parse(temp_path)
+        model = graph.models["test_model"]
+        assert model.get_metric("med_val").agg == "median"
+    finally:
+        temp_path.unlink()
+
+
+def test_hex_statistical_funcs_map_to_native_agg():
+    """stddev/variance functions should map to native agg types, not silently become count."""
+    hex_def = {
+        "id": "test_model",
+        "base_sql_table": "test_table",
+        "dimensions": [{"id": "val", "type": "number"}],
+        "measures": [
+            {"id": "std_val", "func": "stddev", "of": "val"},
+            {"id": "std_pop_val", "func": "stddev_pop", "of": "val"},
+            {"id": "var_val", "func": "variance", "of": "val"},
+            {"id": "var_pop_val", "func": "variance_pop", "of": "val"},
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        yaml.dump(hex_def, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = HexAdapter()
+        graph = adapter.parse(temp_path)
+        model = graph.models["test_model"]
+
+        assert model.get_metric("std_val").agg == "stddev"
+        assert model.get_metric("std_pop_val").agg == "stddev_pop"
+        assert model.get_metric("var_val").agg == "variance"
+        assert model.get_metric("var_pop_val").agg == "variance_pop"
+
+        # All should have the column reference as sql
+        assert model.get_metric("std_val").sql == "val"
+        assert model.get_metric("var_val").sql == "val"
+    finally:
+        temp_path.unlink()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

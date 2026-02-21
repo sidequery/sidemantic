@@ -33,9 +33,22 @@ class Metric(BaseModel):
         auto_register_metric(self)
 
     # Basic aggregation (for simple measures)
-    agg: Literal["sum", "count", "count_distinct", "avg", "min", "max", "median"] | None = Field(
-        None, description="Aggregation function (for simple measures)"
-    )
+    agg: (
+        Literal[
+            "sum",
+            "count",
+            "count_distinct",
+            "avg",
+            "min",
+            "max",
+            "median",
+            "stddev",
+            "stddev_pop",
+            "variance",
+            "variance_pop",
+        ]
+        | None
+    ) = Field(None, description="Aggregation function (for simple measures)")
     sql: str | None = Field(None, description="SQL expression or formula (accepts 'expr' as alias)")
 
     @model_validator(mode="before")

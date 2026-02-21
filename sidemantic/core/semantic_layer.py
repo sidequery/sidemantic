@@ -128,10 +128,12 @@ class SemanticLayer:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - clear current layer."""
+        """Context manager exit - clear current layer and close adapter."""
         from .registry import set_current_layer
 
         set_current_layer(None)
+        if hasattr(self.adapter, "close"):
+            self.adapter.close()
 
     @property
     def conn(self):

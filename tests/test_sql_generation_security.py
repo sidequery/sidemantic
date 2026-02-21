@@ -293,3 +293,157 @@ def test_safe_eval_arithmetic_operations_work():
     assert processor._safe_eval("2 ** 3") == 8
     assert processor._safe_eval("-(5 + 3)") == -8
     assert processor._safe_eval("(10 + 5) * 2") == 30
+
+
+def test_conversion_invalid_entity_rejected():
+    """Conversion metric rejects entity names with SQL injection."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    events = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="event_id", type="numeric"),
+            Dimension(name="user_id", type="numeric"),
+            Dimension(name="event_type", type="categorical"),
+            Dimension(name="event_time", type="time"),
+        ],
+        metrics=[
+            Metric(
+                name="conv",
+                type="conversion",
+                entity="user_id; DROP TABLE--",
+                base_event="signup",
+                conversion_event="purchase",
+                conversion_window="7 days",
+            ),
+        ],
+    )
+    graph = SemanticGraph()
+    graph.add_model(events)
+    gen = SQLGenerator(graph)
+
+    with pytest.raises(ValueError, match="Invalid entity"):
+        gen.generate(metrics=["events.conv"], dimensions=["events.event_time"])
+
+
+def test_conversion_invalid_window_rejected():
+    """Conversion metric rejects window values with SQL injection."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    events = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="event_id", type="numeric"),
+            Dimension(name="user_id", type="numeric"),
+            Dimension(name="event_type", type="categorical"),
+            Dimension(name="event_time", type="time"),
+        ],
+        metrics=[
+            Metric(
+                name="conv",
+                type="conversion",
+                entity="user_id",
+                base_event="signup",
+                conversion_event="purchase",
+                conversion_window="7;DROP days",
+            ),
+        ],
+    )
+    graph = SemanticGraph()
+    graph.add_model(events)
+    gen = SQLGenerator(graph)
+
+    with pytest.raises(ValueError, match="Invalid window"):
+        gen.generate(metrics=["events.conv"], dimensions=["events.event_time"])
+
+
+def test_conversion_event_name_quotes_escaped():
+    """Conversion metric escapes single quotes in event names."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    events = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="event_id", type="numeric"),
+            Dimension(name="user_id", type="numeric"),
+            Dimension(name="event_type", type="categorical"),
+            Dimension(name="event_time", type="time"),
+        ],
+        metrics=[
+            Metric(
+                name="conv",
+                type="conversion",
+                entity="user_id",
+                base_event="sign'up",
+                conversion_event="pur'chase",
+                conversion_window="7 days",
+            ),
+        ],
+    )
+    graph = SemanticGraph()
+    graph.add_model(events)
+    gen = SQLGenerator(graph)
+
+    sql = gen.generate(metrics=["events.conv"], dimensions=["events.event_time"])
+    assert "sign''up" in sql
+    assert "pur''chase" in sql
+
+
+def test_count_fanout_uses_column_reference():
+    """COUNT metric uses column reference instead of COUNT(*) to prevent fan-out."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[Dimension(name="region", type="categorical")],
+        metrics=[Metric(name="order_count", agg="count", sql="order_id")],
+    )
+    graph = SemanticGraph()
+    graph.add_model(orders)
+    gen = SQLGenerator(graph)
+
+    sql = gen.generate(metrics=["orders.order_count"], dimensions=["orders.region"])
+    assert "COUNT(*)" not in sql
+
+
+def test_build_interval_duckdb():
+    """_build_interval produces correct DuckDB INTERVAL syntax."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    graph = SemanticGraph()
+    gen = SQLGenerator(graph, dialect="duckdb")
+    assert gen._build_interval("7", "days") == "INTERVAL '7 days'"
+
+
+def test_build_interval_bigquery():
+    """_build_interval produces correct BigQuery INTERVAL syntax."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    graph = SemanticGraph()
+    gen = SQLGenerator(graph, dialect="bigquery")
+    assert gen._build_interval("7", "days") == "INTERVAL 7 DAY"
+    assert gen._build_interval("3", "months") == "INTERVAL 3 MONTH"
+
+
+def test_build_interval_postgres():
+    """_build_interval produces correct Postgres INTERVAL syntax."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    graph = SemanticGraph()
+    gen = SQLGenerator(graph, dialect="postgres")
+    assert gen._build_interval("30", "days") == "INTERVAL '30 days'"

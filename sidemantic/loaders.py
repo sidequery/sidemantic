@@ -114,7 +114,9 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 all_models.update(graph.models)
             except Exception as e:
                 # Skip files that fail to parse
-                print(f"Warning: Could not parse {file_path}: {e}")
+                import logging
+
+                logging.warning("Could not parse %s: %s", file_path, e)
 
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)

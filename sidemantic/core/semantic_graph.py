@@ -68,7 +68,7 @@ class SemanticGraph:
                     if metric.name not in self.metrics:
                         self.metrics[metric.name] = metric
 
-        self.build_adjacency()
+        self._adjacency_dirty = True
 
     def add_metric(self, measure: Metric) -> None:
         """Add a measure to the graph.
@@ -279,6 +279,10 @@ class SemanticGraph:
         """
         if from_model == to_model:
             return []
+
+        if getattr(self, "_adjacency_dirty", True):
+            self.build_adjacency()
+            self._adjacency_dirty = False
 
         if from_model not in self.models:
             raise KeyError(f"Model {from_model} not found")

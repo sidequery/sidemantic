@@ -2,10 +2,16 @@
 
 DuckDB natively supports [Hive-partitioned parquet](https://duckdb.org/docs/data/partitioning/hive_partitioning) directories. Sidemantic works with them by using the `sql` field on a model with `read_parquet(..., hive_partitioning=true)`.
 
-## Quick Start
+## Examples
 
+**Basic**: Read and query Hive-partitioned parquet files.
 ```bash
 uv run python examples/hive_parquet/hive_parquet_example.py
+```
+
+**Pre-aggregations**: Materialize rollup tables in DuckDB on top of parquet, with automatic query routing.
+```bash
+uv run python examples/hive_parquet/hive_parquet_preagg_example.py
 ```
 
 ## How It Works
@@ -65,6 +71,52 @@ models:
 ```
 
 Partition columns (`year`, `month`) become regular columns you can use as dimensions and filter on.
+
+## Pre-Aggregations on Parquet
+
+For large parquet datasets, you can materialize rollup tables in DuckDB so dashboards don't need to scan raw files on every query. Define pre-aggregations on the model:
+
+```python
+from sidemantic.core.pre_aggregation import PreAggregation
+
+events = Model(
+    name="events",
+    sql="SELECT * FROM read_parquet('data/events/**/*.parquet', hive_partitioning=true)",
+    dimensions=[...],
+    metrics=[...],
+    pre_aggregations=[
+        PreAggregation(
+            name="daily_by_type",
+            measures=["event_count", "total_amount"],
+            dimensions=["event_type"],
+            time_dimension="event_date",
+            granularity="day",
+        ),
+    ],
+)
+```
+
+Then materialize and enable routing:
+
+```python
+layer = SemanticLayer(preagg_schema="preagg", use_preaggregations=True)
+layer.add_model(events)
+layer.adapter.execute("CREATE SCHEMA IF NOT EXISTS preagg")
+
+for preagg in events.pre_aggregations:
+    source_sql = preagg.generate_materialization_sql(events)
+    table_name = preagg.get_table_name(model_name="events", schema="preagg")
+    preagg.refresh(
+        connection=layer.adapter.raw_connection,
+        source_sql=source_sql,
+        table_name=table_name,
+        mode="full",
+    )
+```
+
+Queries that match a pre-aggregation are automatically routed to the materialized table. The generated SQL includes `used_preagg=true` in the instrumentation comment so you can verify routing is working.
+
+See `hive_parquet_preagg_example.py` for the full working example.
 
 ## S3 / GCS / HTTP
 

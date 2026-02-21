@@ -389,7 +389,7 @@ impl<'a> SqlGenerator<'a> {
     /// Expand a derived metric expression, replacing metric references with their SQL
     fn expand_derived_metric(&self, expr: &str, default_model: &str) -> Result<String> {
         // Simple implementation: look for metric names and expand them
-        // A more robust implementation would use sqlparser to parse the expression
+        // A more robust implementation would use polyglot-sql to parse the expression
         let model = self.graph.get_model(default_model).ok_or_else(|| {
             let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
             SidemanticError::model_not_found(default_model, &available)

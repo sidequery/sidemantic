@@ -126,6 +126,8 @@ jobs:
 
       - name: Run cargo test
         run: cargo test
+        env:
+          RUST_MIN_STACK: 16777216
 
   duckdb-extension:
     name: DuckDB Extension

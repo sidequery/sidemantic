@@ -26,9 +26,7 @@ use nom::{
     IResult,
 };
 
-use sqlparser::ast::{Expr, FunctionArgExpr, SelectItem};
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::Parser;
+use polyglot_sql::{DialectType, Expression};
 
 use crate::core::{
     Aggregation, Dimension, DimensionType, Metric, MetricType, Model, Relationship,
@@ -239,7 +237,7 @@ fn simple_metric(input: &str) -> IResult<&str, Statement> {
     let (input, expr) = take_while(|c| c != ';')(input)?;
     let (input, _) = opt(char(';'))(input)?;
 
-    // Parse the expression using sqlparser to extract aggregation
+    // Parse the expression using polyglot-sql to extract aggregation
     let props = parse_metric_expression(name.trim(), expr.trim());
     Ok((input, Statement::Metric(props)))
 }
@@ -277,21 +275,21 @@ fn parse_metric_expression(name: &str, expr: &str) -> HashMap<String, String> {
 
     // Try to parse as SQL and extract aggregation
     let sql = format!("SELECT {expr}");
-    let dialect = GenericDialect {};
 
-    if let Ok(statements) = Parser::parse_sql(&dialect, &sql) {
-        if let Some(sqlparser::ast::Statement::Query(query)) = statements.into_iter().next() {
-            if let sqlparser::ast::SetExpr::Select(select) = *query.body {
-                if let Some(SelectItem::UnnamedExpr(parsed_expr)) =
-                    select.projection.into_iter().next()
-                {
-                    if let Some((agg, inner_expr)) = extract_aggregation(&parsed_expr) {
-                        props.insert("agg".to_string(), agg);
-                        if !inner_expr.is_empty() {
-                            props.insert("sql".to_string(), inner_expr);
-                        }
-                        return props;
+    if let Ok(expressions) = polyglot_sql::parse(&sql, DialectType::Generic) {
+        if let Some(Expression::Select(select)) = expressions.into_iter().next() {
+            if let Some(parsed_expr) = select.expressions.into_iter().next() {
+                // Unwrap alias if present
+                let parsed_expr = match parsed_expr {
+                    Expression::Alias(a) => a.this,
+                    other => other,
+                };
+                if let Some((agg, inner_expr)) = extract_aggregation(&parsed_expr) {
+                    props.insert("agg".to_string(), agg);
+                    if !inner_expr.is_empty() {
+                        props.insert("sql".to_string(), inner_expr);
                     }
+                    return props;
                 }
             }
         }
@@ -304,11 +302,31 @@ fn parse_metric_expression(name: &str, expr: &str) -> HashMap<String, String> {
     props
 }
 
-/// Extract aggregation function and inner expression from SQL AST
-fn extract_aggregation(expr: &Expr) -> Option<(String, String)> {
+/// Generate a SQL string from a polyglot-sql expression
+fn generate_expr_str(expr: &Expression) -> String {
+    polyglot_sql::generate(expr, DialectType::Generic).unwrap_or_default()
+}
+
+/// Extract aggregation function and inner expression from polyglot-sql AST
+fn extract_aggregation(expr: &Expression) -> Option<(String, String)> {
     match expr {
-        Expr::Function(func) => {
-            let func_name = func.name.to_string().to_lowercase();
+        // Typed aggregate variants
+        Expression::Sum(f) => Some(("sum".to_string(), generate_expr_str(&f.this))),
+        Expression::Avg(f) => Some(("avg".to_string(), generate_expr_str(&f.this))),
+        Expression::Min(f) => Some(("min".to_string(), generate_expr_str(&f.this))),
+        Expression::Max(f) => Some(("max".to_string(), generate_expr_str(&f.this))),
+        Expression::Count(f) => {
+            if f.star {
+                Some(("count".to_string(), String::new()))
+            } else if let Some(ref inner) = f.this {
+                Some(("count".to_string(), generate_expr_str(inner)))
+            } else {
+                Some(("count".to_string(), String::new()))
+            }
+        }
+        // Generic aggregate function
+        Expression::AggregateFunction(f) => {
+            let func_name = f.name.to_lowercase();
             let agg = match func_name.as_str() {
                 "sum" => "sum",
                 "count" => "count",
@@ -318,31 +336,30 @@ fn extract_aggregation(expr: &Expr) -> Option<(String, String)> {
                 "count_distinct" => "count_distinct",
                 _ => return None,
             };
-
-            // Extract the inner expression from function arguments
-            let inner = match &func.args {
-                sqlparser::ast::FunctionArguments::None => String::new(),
-                sqlparser::ast::FunctionArguments::Subquery(_) => return None,
-                sqlparser::ast::FunctionArguments::List(arg_list) => {
-                    if arg_list.args.is_empty() {
-                        String::new()
-                    } else {
-                        match &arg_list.args[0] {
-                            sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
-                                e.to_string()
-                            }
-                            sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => {
-                                String::new() // COUNT(*)
-                            }
-                            sqlparser::ast::FunctionArg::Unnamed(
-                                FunctionArgExpr::QualifiedWildcard(_),
-                            ) => String::new(),
-                            _ => return None,
-                        }
-                    }
-                }
+            let inner = if f.args.is_empty() {
+                String::new()
+            } else {
+                generate_expr_str(&f.args[0])
             };
-
+            Some((agg.to_string(), inner))
+        }
+        // Generic function (parser might use this for aggregate functions)
+        Expression::Function(f) => {
+            let func_name = f.name.to_lowercase();
+            let agg = match func_name.as_str() {
+                "sum" => "sum",
+                "count" => "count",
+                "avg" | "average" => "avg",
+                "min" => "min",
+                "max" => "max",
+                "count_distinct" => "count_distinct",
+                _ => return None,
+            };
+            let inner = if f.args.is_empty() || matches!(f.args[0], Expression::Star(_)) {
+                String::new()
+            } else {
+                generate_expr_str(&f.args[0])
+            };
             Some((agg.to_string(), inner))
         }
         _ => None,

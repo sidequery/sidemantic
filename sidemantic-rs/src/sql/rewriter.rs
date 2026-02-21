@@ -278,8 +278,7 @@ impl<'a> QueryRewriter<'a> {
                     }));
                 }
 
-                let col_expr =
-                    Expression::qualified_column(alias, metric.sql_expr().to_string());
+                let col_expr = Expression::qualified_column(alias, metric.sql_expr().to_string());
 
                 let make_agg = |this: Expression| AggFunc {
                     this,
@@ -293,9 +292,7 @@ impl<'a> QueryRewriter<'a> {
                 };
 
                 match agg {
-                    crate::core::Aggregation::Sum => {
-                        Expression::Sum(Box::new(make_agg(col_expr)))
-                    }
+                    crate::core::Aggregation::Sum => Expression::Sum(Box::new(make_agg(col_expr))),
                     crate::core::Aggregation::Count => Expression::Count(Box::new(CountFunc {
                         this: Some(col_expr),
                         star: false,
@@ -314,15 +311,9 @@ impl<'a> QueryRewriter<'a> {
                             original_name: None,
                         }))
                     }
-                    crate::core::Aggregation::Avg => {
-                        Expression::Avg(Box::new(make_agg(col_expr)))
-                    }
-                    crate::core::Aggregation::Min => {
-                        Expression::Min(Box::new(make_agg(col_expr)))
-                    }
-                    crate::core::Aggregation::Max => {
-                        Expression::Max(Box::new(make_agg(col_expr)))
-                    }
+                    crate::core::Aggregation::Avg => Expression::Avg(Box::new(make_agg(col_expr))),
+                    crate::core::Aggregation::Min => Expression::Min(Box::new(make_agg(col_expr))),
+                    crate::core::Aggregation::Max => Expression::Max(Box::new(make_agg(col_expr))),
                     crate::core::Aggregation::Median => {
                         Expression::Median(Box::new(make_agg(col_expr)))
                     }
@@ -586,9 +577,7 @@ impl<'a> QueryRewriter<'a> {
             };
             if !self.is_aggregation(expr) {
                 // Use positional reference
-                group_by_exprs.push(Expression::Literal(Literal::Number(
-                    (i + 1).to_string(),
-                )));
+                group_by_exprs.push(Expression::Literal(Literal::Number((i + 1).to_string())));
             }
         }
 

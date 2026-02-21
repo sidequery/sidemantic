@@ -258,3 +258,70 @@ class TestSemanticLayerExplain:
 
         assert plan.used_preaggregation is False
         assert "multi-model" in plan.routing_reason
+
+    def test_explain_cross_model_filter_with_in_detected(self):
+        """IN filters referencing another model should trigger multi-model detection."""
+        layer = make_layer_with_preaggs()
+
+        from sidemantic import Relationship
+
+        customers = Model(
+            name="customers",
+            table="customers",
+            primary_key="customer_id",
+            dimensions=[
+                Dimension(name="status", type="categorical", sql="status"),
+            ],
+            metrics=[Metric(name="customer_count", agg="count")],
+        )
+        layer.add_model(customers)
+
+        events = layer.get_model("events")
+        events.relationships = [
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
+        ]
+
+        plan = layer.explain(
+            metrics=["events.event_count"],
+            dimensions=["events.event_type"],
+            filters=["customers.status IN ('vip')"],
+        )
+
+        assert plan.used_preaggregation is False
+        assert "multi-model" in plan.routing_reason
+
+    def test_explain_includes_segment_filters_for_preagg_matching(self):
+        """Segment predicates should be considered when evaluating pre-agg eligibility."""
+        from sidemantic import Segment
+
+        layer = SemanticLayer(use_preaggregations=True)
+        layer.add_model(
+            Model(
+                name="events",
+                table="events",
+                primary_key="event_id",
+                dimensions=[
+                    Dimension(name="event_type", type="categorical", sql="event_type"),
+                    Dimension(name="status", type="categorical", sql="status"),
+                ],
+                metrics=[Metric(name="event_count", agg="count")],
+                segments=[Segment(name="active_only", sql="{model}.status = 'active'")],
+                pre_aggregations=[
+                    PreAggregation(
+                        name="by_type",
+                        measures=["event_count"],
+                        dimensions=["event_type"],
+                    )
+                ],
+            )
+        )
+
+        plan = layer.explain(
+            metrics=["events.event_count"],
+            dimensions=["events.event_type"],
+            segments=["events.active_only"],
+        )
+
+        assert plan.used_preaggregation is False
+        assert plan.selected_preagg is None
+        assert "no pre-aggregation matched" in plan.routing_reason

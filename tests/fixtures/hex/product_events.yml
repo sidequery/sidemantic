@@ -1,0 +1,117 @@
+id: product_events
+base_sql_table: analytics.product_events
+description: Product event tracking with visibility controls
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: user_id
+    type: number
+    visibility: public
+
+  - id: event_name
+    type: string
+    visibility: public
+    description: Name of the tracked event
+
+  - id: event_timestamp
+    type: timestamp_tz
+    visibility: public
+    description: When the event occurred
+
+  - id: event_date
+    type: date
+    expr_sql: DATE(event_timestamp)
+    visibility: public
+    description: Date of the event
+
+  - id: session_id
+    type: string
+    visibility: internal
+    description: Internal session identifier
+
+  - id: device_type
+    type: string
+    visibility: public
+    description: Device type (mobile, desktop, tablet)
+
+  - id: raw_payload
+    type: other
+    visibility: private
+    description: Raw JSON event payload (internal only)
+
+  - id: is_conversion
+    type: boolean
+    expr_calc: event_name = 'purchase_completed'
+    visibility: public
+    description: Whether this event is a conversion
+
+  - id: page_url
+    type: string
+    visibility: internal
+    description: Page URL where event occurred
+
+measures:
+  - id: total_events
+    func: count
+    visibility: public
+    description: Total number of events
+
+  - id: unique_users
+    func: count_distinct
+    of: user_id
+    visibility: public
+    description: Distinct users who triggered events
+
+  - id: unique_sessions
+    func: count_distinct
+    of: session_id
+    visibility: internal
+    description: Distinct sessions (internal metric)
+
+  - id: conversion_count
+    func: count
+    filters:
+      - is_conversion
+    visibility: public
+    description: Number of conversion events
+
+  - id: conversion_rate
+    func_sql: CAST(SUM(CASE WHEN event_name = 'purchase_completed' THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(DISTINCT session_id), 0)
+    visibility: public
+    description: Conversion rate per session
+
+  - id: events_per_session
+    func_calc: total_events / unique_sessions
+    visibility: internal
+    description: Average events per session
+
+  - id: daily_active_users
+    func: count_distinct
+    of: user_id
+    semi_additive: last
+    visibility: public
+    description: Daily active users (non-additive across days)
+
+  - id: min_event_time
+    func: min
+    of: event_timestamp
+    visibility: internal
+    description: Earliest event timestamp
+
+  - id: max_event_time
+    func: max
+    of: event_timestamp
+    visibility: internal
+    description: Latest event timestamp
+
+relations:
+  - id: users
+    type: many_to_one
+    join_sql: user_id = ${users}.id
+
+  - id: sessions
+    type: many_to_one
+    join_sql: session_id = ${sessions}.id

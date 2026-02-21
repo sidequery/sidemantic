@@ -1,0 +1,76 @@
+# Source: MetricFlow official test fixtures - multi_hop_join_manifest
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/multi_hop_join_manifest/
+# Tests: multi-hop entity joins (3+ hops via bridge table), minimal semantic models
+#   (some with no measures), dimension-only models, bridge tables
+
+semantic_models:
+  - name: account_month_txns
+    description: account_month_txns
+    model: ref('account_month_txns')
+
+    defaults:
+      agg_time_dimension: ds
+
+    measures:
+      - name: txn_count
+        agg: sum
+        create_metric: true
+
+    dimensions:
+      - name: ds
+        type: time
+        type_params:
+          time_granularity: day
+      - name: account_month
+        type: categorical
+
+    entities:
+      - name: account_id
+        type: primary
+
+  - name: bridge_table
+    description: bridge_table linking accounts to customers
+    model: ref('bridge_table')
+
+    dimensions:
+      - name: extra_dim
+        type: categorical
+
+    entities:
+      - name: account_id
+        type: primary
+      - name: customer_id
+        type: foreign
+
+  - name: customer_table
+    description: customer_table
+    model: ref('customer_table')
+
+    dimensions:
+      - name: customer_name
+        type: categorical
+      - name: customer_atomic_weight
+        type: categorical
+
+    entities:
+      - name: customer_id
+        type: primary
+
+  - name: third_hop_table
+    description: third_hop_table for 3+ hop joins
+    model: ref('third_hop_table')
+
+    dimensions:
+      - name: value
+        type: categorical
+
+    entities:
+      - name: customer_third_hop_id
+        type: primary
+
+metrics:
+  - name: txn_count
+    description: Transaction count metric
+    type: simple
+    type_params:
+      measure: txn_count

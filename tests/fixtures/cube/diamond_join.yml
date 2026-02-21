@@ -1,0 +1,100 @@
+# Diamond join pattern
+# Based on: https://cube.dev/docs/product/data-modeling/syntax
+#
+# Exercises:
+# - Diamond join: A -> B -> D, A -> C -> D
+# - Path-qualified dimension references ({b.d.id}, {c.d.id})
+# - All one_to_one relationships
+# - Join path disambiguation
+
+cubes:
+  - name: a
+    sql: |
+      SELECT 1 AS id UNION ALL
+      SELECT 2 AS id UNION ALL
+      SELECT 3 AS id
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: d_via_b
+        sql: "{b.d.id}"
+        type: number
+
+      - name: d_via_c
+        sql: "{c.d.id}"
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+    joins:
+      - name: b
+        sql: "{a.id} = {b.id}"
+        relationship: one_to_one
+
+      - name: c
+        sql: "{a.id} = {c.id}"
+        relationship: one_to_one
+
+  - name: b
+    sql: |
+      SELECT 1 AS id UNION ALL
+      SELECT 2 AS id UNION ALL
+      SELECT 3 AS id
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+    measures:
+      - name: count
+        type: count
+
+    joins:
+      - name: d
+        sql: "{b.id} = {d.id}"
+        relationship: one_to_one
+
+  - name: c
+    sql: |
+      SELECT 1 AS id UNION ALL
+      SELECT 2 AS id UNION ALL
+      SELECT 3 AS id
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+    measures:
+      - name: count
+        type: count
+
+    joins:
+      - name: d
+        sql: "{c.id} = {d.id}"
+        relationship: one_to_one
+
+  - name: d
+    sql: |
+      SELECT 1 AS id UNION ALL
+      SELECT 2 AS id UNION ALL
+      SELECT 3 AS id
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+    measures:
+      - name: count
+        type: count

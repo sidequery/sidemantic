@@ -1,0 +1,215 @@
+# Multi-stage calculations with time_shift
+# Based on: https://cube.dev/docs/product/data-modeling/concepts/multi-stage-calculations
+#         and https://github.com/cube-js/cube schema compiler fixtures
+#
+# Exercises:
+# - multi_stage: true on measures
+# - time_shift with type: prior and interval: 1 year
+# - rolling_window with type: to_date and granularity (YTD)
+# - group_by for percent-of-total calculations
+# - type: rank measures with order_by and reduce_by
+# - type: switch dimensions with values array
+# - case/switch/when/else on measures
+# - meta on dimensions
+
+cubes:
+  - name: calendar_orders
+    sql_table: public.orders
+
+    joins:
+      - name: custom_calendar
+        sql: "{CUBE}.created_at = {custom_calendar.date_val}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: user_id
+        sql: user_id
+        type: number
+
+      - name: status
+        sql: status
+        type: string
+        meta:
+          addDesc: The status of order
+          moreNum: 42
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: count_shifted
+        type: count
+        multi_stage: true
+        sql: "{count}"
+        time_shift:
+          - time_dimension: created_at
+            interval: 1 year
+            type: prior
+
+      - name: completed_count
+        type: count
+        filters:
+          - sql: "{CUBE}.status = 'completed'"
+
+      - name: completed_percentage
+        sql: "({completed_count} / NULLIF({count}, 0)) * 100.0"
+        type: number
+        format: percent
+
+      - name: total
+        sql: id
+        type: count
+        rolling_window:
+          trailing: unbounded
+
+  - name: prior_date
+    sql: |
+      SELECT '2023-04-01'::TIMESTAMP AS time, 1000 AS revenue UNION ALL
+      SELECT '2024-01-01'::TIMESTAMP AS time, 1000 AS revenue UNION ALL
+      SELECT '2025-06-01'::TIMESTAMP AS time, 1000 AS revenue
+
+    dimensions:
+      - name: time
+        sql: time
+        type: time
+
+    measures:
+      - name: revenue
+        sql: revenue
+        type: sum
+
+      - name: revenue_ytd
+        sql: revenue
+        type: sum
+        rolling_window:
+          type: to_date
+          granularity: year
+
+      - name: revenue_prior_year
+        multi_stage: true
+        sql: "{revenue}"
+        type: number
+        time_shift:
+          - time_dimension: time
+            interval: 1 year
+            type: prior
+
+      - name: revenue_prior_year_ytd
+        multi_stage: true
+        sql: "{revenue_ytd}"
+        type: number
+        time_shift:
+          - time_dimension: time
+            interval: 1 year
+            type: prior
+
+  - name: percent_of_total
+    sql: |
+      SELECT 1 AS id, 1000 AS revenue, 'A' AS product, 'USA' AS country UNION ALL
+      SELECT 2 AS id, 2000 AS revenue, 'B' AS product, 'USA' AS country UNION ALL
+      SELECT 3 AS id, 3000 AS revenue, 'A' AS product, 'Austria' AS country
+
+    dimensions:
+      - name: product
+        sql: product
+        type: string
+
+      - name: country
+        sql: country
+        type: string
+
+    measures:
+      - name: revenue
+        sql: revenue
+        format: currency
+        type: sum
+
+      - name: country_revenue
+        multi_stage: true
+        sql: "{revenue}"
+        format: currency
+        type: sum
+        group_by:
+          - country
+
+      - name: country_revenue_percentage
+        multi_stage: true
+        sql: "{revenue} / NULLIF({country_revenue}, 0)"
+        type: number
+
+  - name: ranking
+    sql: |
+      SELECT 1 AS id, 1000 AS revenue, 'A' AS product, 'USA' AS country UNION ALL
+      SELECT 2 AS id, 2000 AS revenue, 'B' AS product, 'USA' AS country
+
+    dimensions:
+      - name: product
+        sql: product
+        type: string
+
+      - name: country
+        sql: country
+        type: string
+
+    measures:
+      - name: revenue
+        sql: revenue
+        format: currency
+        type: sum
+
+      - name: product_rank
+        multi_stage: true
+        order_by:
+          - sql: "{revenue}"
+            dir: asc
+        reduce_by:
+          - product
+        type: rank
+
+  - name: orders_with_switch
+    sql: |
+      SELECT 1 AS id, 100 AS amount_usd UNION ALL
+      SELECT 2 AS id, 200 AS amount_usd
+
+    dimensions:
+      - name: currency
+        type: switch
+        values:
+          - USD
+          - EUR
+          - GBP
+
+    measures:
+      - name: amount_usd
+        sql: amount_usd
+        type: sum
+
+      - name: amount_eur
+        sql: "${amount_usd} * 0.9"
+        type: number
+
+      - name: amount_gbp
+        sql: "${amount_usd} * 0.8"
+        type: number
+
+      - name: amount_in_currency
+        multi_stage: true
+        case:
+          switch: "{currency}"
+          when:
+            - value: EUR
+              sql: "{amount_eur}"
+            - value: GBP
+              sql: "{amount_gbp}"
+          else:
+            sql: "{amount_usd}"
+        type: number

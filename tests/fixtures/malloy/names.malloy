@@ -1,0 +1,68 @@
+// Names example - based on malloy-samples names.malloy
+// Tests: rename with backticks, pick/when for bucketing, floor-based decade,
+//        source-from-query (cohort), extend of ID ref (names_with_cohort),
+//        having, derived measures with all()
+
+source: names is duckdb.table('usa_names.parquet') extend {
+  primary_key: id
+
+  rename: year_born is `year`
+
+  dimension:
+    decade is floor(year_born / 10) * 10
+    gender_label is
+      pick 'Female' when gender = 'F'
+      pick 'Male' when gender = 'M'
+      else 'Other'
+
+  measure:
+    population is `number`.sum()
+    name_count is count()
+    births_per_100k is floor(population / all(population) * 100000)
+
+  view: by_decade is {
+    group_by: decade
+    aggregate: population
+  }
+
+  view: by_state is {
+    group_by: state
+    aggregate: population
+  }
+
+  view: top_names is {
+    top: 10
+    group_by: name
+    aggregate: population
+    order_by: population desc
+  }
+}
+
+// Cohort pattern: source from query pipeline
+source: cohort is names -> {
+  group_by: gender, state, year_born
+  aggregate: cohort_size is population
+} extend {
+  measure: population is cohort_size.sum()
+}
+
+// Extended source with cross-source join
+source: names_with_cohort is names extend {
+  join_one: cohort on
+    gender = cohort.gender
+    and state = cohort.state
+    and year_born = cohort.year_born
+
+  dimension:
+    is_popular is population > 1000
+
+  measure:
+    total_population is population
+
+  view: gender_neutral_names is {
+    group_by: name
+    aggregate: population
+    having: population > 100
+    limit: 10
+  }
+}

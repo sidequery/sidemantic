@@ -1,0 +1,164 @@
+# Views with includes/excludes/prefix/alias
+# Based on: https://cube.dev/docs/product/data-modeling/reference/view
+#         and https://github.com/cube-js/cube schema compiler fixtures
+#
+# Exercises:
+# - views: top-level section alongside cubes:
+# - join_path through cubes
+# - includes: "*" wildcard
+# - excludes: list
+# - prefix: true for namespacing
+# - alias for renaming members
+# - Multi-level join_path (base_orders.line_items.products)
+
+cubes:
+  - name: base_orders
+    sql_table: public.orders
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: created_date
+        sql: created_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_amount
+        sql: amount
+        type: sum
+
+      - name: average_order_value
+        sql: amount
+        type: avg
+
+    joins:
+      - name: line_items
+        sql: "${CUBE}.id = ${line_items.order_id}"
+        relationship: one_to_many
+
+      - name: users
+        sql: "${CUBE}.user_id = ${users.id}"
+        relationship: many_to_one
+
+  - name: line_items
+    sql_table: public.line_items
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: order_id
+        sql: order_id
+        type: number
+
+      - name: product_id
+        sql: product_id
+        type: number
+
+      - name: quantity
+        sql: quantity
+        type: number
+
+      - name: price
+        sql: price
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_amount
+        sql: price
+        type: sum
+
+    joins:
+      - name: products
+        sql: "${CUBE}.product_id = ${products.id}"
+        relationship: many_to_one
+
+  - name: products
+    sql_table: public.products
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: category
+        sql: category
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+  - name: users
+    sql_table: public.users
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: name
+        sql: name
+        type: string
+
+      - name: city
+        sql: city
+        type: string
+
+      - name: company
+        sql: company
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+views:
+  - name: orders_view
+    cubes:
+      - join_path: base_orders
+        includes:
+          - status
+          - created_date
+          - total_amount
+          - count
+          - average_order_value
+
+      - join_path: base_orders.line_items.products
+        includes:
+          - name: name
+            alias: product
+
+      - join_path: base_orders.users
+        prefix: true
+        includes: "*"
+        excludes:
+          - company
+
+  - name: minimal_orders_view
+    cubes:
+      - join_path: base_orders
+        includes:
+          - count
+          - status

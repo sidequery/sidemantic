@@ -71,6 +71,7 @@
     "vscode:prepublish": "bun run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test": "bun test",
     "package": "vsce package"
   },
   "devDependencies": {

@@ -146,22 +146,28 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         """Fetch result as PyArrow RecordBatchReader."""
         return result.fetch_record_batch()
 
+    @staticmethod
+    def _case_match(column: str, value: str) -> str:
+        """Build a WHERE condition matching both uppercase and original case.
+
+        Snowflake stores unquoted identifiers as uppercase, but quoted identifiers
+        preserve their original case. This matches both in a single query.
+        """
+        upper = value.upper()
+        if upper == value:
+            return f"{column} = '{value}'"
+        return f"{column} IN ('{upper}', '{value}')"
+
     def get_tables(self) -> list[dict]:
         """List all tables in the database/schema."""
         if self.schema:
-            # Validate schema to prevent SQL injection
             validate_identifier(self.schema, "schema")
+            schema_match = self._case_match("table_schema", self.schema)
             sql = f"""
                 SELECT table_name, table_schema as schema
                 FROM information_schema.tables
-                WHERE table_schema = '{self.schema}'
+                WHERE {schema_match}
                     AND table_type = 'BASE TABLE'
-            """
-        elif self.database:
-            sql = """
-                SELECT table_name, table_schema as schema
-                FROM information_schema.tables
-                WHERE table_type = 'BASE TABLE'
             """
         else:
             sql = """
@@ -175,19 +181,40 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         return [{"table_name": row[0], "schema": row[1]} for row in rows]
 
     def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
-        """Get column information for a table."""
-        # Validate identifiers to prevent SQL injection
-        validate_identifier(table_name, "table name")
-        schema = schema or self.schema
+        """Get column information for a table.
+
+        Handles cross-database lookups: if table_name contains a database qualifier
+        (e.g., "other_db.my_schema.my_table"), queries that database's information_schema.
+        """
+        # Parse potential database.schema.table or schema.table references
+        parts = table_name.split(".")
+        db_prefix = ""
+        if len(parts) == 3:
+            validate_identifier(parts[0], "database")
+            validate_identifier(parts[1], "schema")
+            validate_identifier(parts[2], "table name")
+            db_prefix = f"{parts[0].upper()}."
+            schema = parts[1]
+            table_name = parts[2]
+        elif len(parts) == 2:
+            validate_identifier(parts[0], "schema")
+            validate_identifier(parts[1], "table name")
+            schema = parts[0]
+            table_name = parts[1]
+        else:
+            validate_identifier(table_name, "table name")
+            schema = schema or self.schema
+
         if schema:
             validate_identifier(schema, "schema")
 
-        schema_filter = f"AND table_schema = '{schema}'" if schema else ""
+        table_match = self._case_match("table_name", table_name)
+        schema_filter = f"AND {self._case_match('table_schema', schema)}" if schema else ""
 
         sql = f"""
             SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = '{table_name}' {schema_filter}
+            FROM {db_prefix}information_schema.columns
+            WHERE {table_match} {schema_filter}
         """
         result = self.execute(sql)
         rows = result.fetchall()

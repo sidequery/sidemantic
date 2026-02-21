@@ -174,10 +174,24 @@ class SemanticLayer:
         if existing is not None:
             if existing is model:
                 return
-            if existing.model_dump() == model.model_dump():
+            existing_dump = existing.model_dump()
+            new_dump = model.model_dump()
+            if existing_dump == new_dump:
                 return
+            # When both models use auto_dimensions, the existing model has
+            # introspected dimensions that the new model doesn't yet. Compare
+            # excluding dimensions to preserve idempotent add_model behavior.
+            if existing.auto_dimensions and model.auto_dimensions:
+                existing_dump.pop("dimensions", None)
+                new_dump.pop("dimensions", None)
+                if existing_dump == new_dump:
+                    return
 
         self._normalize_model_table(model)
+
+        # Auto-introspect dimensions from DB schema if requested
+        if model.auto_dimensions:
+            self._introspect_dimensions(model)
 
         errors = validate_model(model)
         if errors:
@@ -246,6 +260,136 @@ class SemanticLayer:
             elif row:
                 catalogs.add(row[0])
         return catalogs
+
+    def _introspect_dimensions(self, model: Model) -> None:
+        """Auto-discover dimensions from database schema.
+
+        Queries the database for column metadata and creates Dimension objects
+        for columns that don't already have explicit definitions.
+
+        Args:
+            model: Model to introspect dimensions for
+        """
+        from sidemantic.core.dimension import Dimension
+
+        existing_dim_names = {dim.name for dim in model.dimensions}
+        pk_columns = set(model.primary_key_columns)
+
+        columns = self._get_model_columns(model)
+        if not columns:
+            return
+
+        for col in columns:
+            col_name = col["column_name"]
+
+            # Skip columns that already have explicit dimensions
+            if col_name in existing_dim_names:
+                continue
+
+            # Skip primary key columns
+            if col_name in pk_columns:
+                continue
+
+            dim_type, granularity = self._map_db_type(col["data_type"])
+            dim = Dimension(name=col_name, type=dim_type, granularity=granularity)
+            model.dimensions.append(dim)
+
+    def _get_model_columns(self, model: Model) -> list[dict]:
+        """Get column metadata for a model's backing table or SQL.
+
+        Returns:
+            List of dicts with 'column_name' and 'data_type' keys
+        """
+        if model.table:
+            # Parse table reference: "table", "schema.table", or "catalog.schema.table"
+            parts = model.table.split(".")
+            if len(parts) >= 3:
+                # catalog.schema.table -- use last two parts
+                schema, table_name = parts[-2], parts[-1]
+            elif len(parts) == 2:
+                schema, table_name = parts
+            else:
+                schema, table_name = None, parts[-1]
+            try:
+                return self.adapter.get_columns(table_name, schema=schema)
+            except Exception:
+                return []
+        elif model.sql:
+            # For SQL-based models, run a LIMIT 0 query to get column types
+            try:
+                result = self.adapter.execute(f"SELECT * FROM ({model.sql}) AS _introspect LIMIT 0")
+                # DuckDB returns column info via .description
+                if hasattr(result, "description") and result.description:
+                    return [
+                        {
+                            "column_name": desc[0],
+                            "data_type": str(desc[1]) if len(desc) > 1 and desc[1] is not None else "VARCHAR",
+                        }
+                        for desc in result.description
+                    ]
+            except Exception:
+                return []
+        return []
+
+    @staticmethod
+    def _map_db_type(db_type: str) -> tuple[str, str | None]:
+        """Map a database column type to a sidemantic dimension type and granularity.
+
+        Args:
+            db_type: Database column type string (e.g., 'VARCHAR', 'TIMESTAMP', 'INTEGER')
+
+        Returns:
+            Tuple of (dimension_type, granularity). Granularity is only set for time types.
+        """
+        upper = db_type.upper()
+
+        # Strip precision/length info: "VARCHAR(255)" -> "VARCHAR", "DECIMAL(10,2)" -> "DECIMAL"
+        base_type = upper.split("(")[0].strip()
+
+        # Also handle array/complex types: "INTEGER[]" -> "INTEGER"
+        base_type = base_type.rstrip("[]")
+
+        time_types = {
+            "DATE": "day",
+            "TIMESTAMP": "second",
+            "TIMESTAMPTZ": "second",
+            "TIMESTAMP WITH TIME ZONE": "second",
+            "TIMESTAMP WITHOUT TIME ZONE": "second",
+            "DATETIME": "second",
+            "TIME": "second",
+            "TIMETZ": "second",
+        }
+        if base_type in time_types:
+            return "time", time_types[base_type]
+
+        boolean_types = {"BOOLEAN", "BOOL"}
+        if base_type in boolean_types:
+            return "boolean", None
+
+        numeric_types = {
+            "INTEGER",
+            "INT",
+            "INT2",
+            "INT4",
+            "INT8",
+            "BIGINT",
+            "SMALLINT",
+            "TINYINT",
+            "HUGEINT",
+            "FLOAT",
+            "FLOAT4",
+            "FLOAT8",
+            "DOUBLE",
+            "DECIMAL",
+            "NUMERIC",
+            "REAL",
+            "NUMBER",
+        }
+        if base_type in numeric_types:
+            return "numeric", None
+
+        # Everything else (VARCHAR, TEXT, CHAR, STRING, ENUM, BLOB, JSON, etc.)
+        return "categorical", None
 
     def add_metric(self, measure: Metric) -> None:
         """Add a measure to the semantic layer.
@@ -381,6 +525,183 @@ class SemanticLayer:
             parameters=parameters,
             use_preaggregations=use_preaggs,
         )
+
+    def explain(
+        self,
+        metrics: list[str] | None = None,
+        dimensions: list[str] | None = None,
+        filters: list[str] | None = None,
+        segments: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        dialect: str | None = None,
+        ungrouped: bool = False,
+        parameters: dict[str, any] | None = None,
+        use_preaggregations: bool | None = None,
+    ):
+        """Explain query routing, showing whether pre-aggregations are used and why.
+
+        Same parameters as compile(). Returns a QueryPlan with structured
+        information about the routing decision and per-candidate check details.
+
+        Example::
+
+            plan = layer.explain(
+                metrics=["events.event_count"],
+                dimensions=["events.event_type"],
+            )
+            print(plan)
+        """
+        from sidemantic.core.preagg_matcher import PreAggregationMatcher
+        from sidemantic.core.query_plan import QueryPlan
+
+        metrics = metrics or []
+        dimensions = dimensions or []
+
+        # Compile the actual SQL (respects use_preaggregations setting)
+        sql = self.compile(
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            segments=segments,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            dialect=dialect,
+            ungrouped=ungrouped,
+            parameters=parameters,
+            use_preaggregations=use_preaggregations,
+        )
+
+        use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
+
+        # Extract model names from metric/dimension/filter references
+        model_names = set()
+        for ref in list(metrics) + list(dimensions):
+            if "." in ref:
+                model_name = ref.split(".", 1)[0]
+                if model_name:
+                    model_names.add(model_name)
+
+        # Also extract model names from filters (e.g., "customers.status = 'vip'")
+        import re
+
+        for f in filters or []:
+            # Match "model.column" patterns before operators
+            for match in re.finditer(r"(\w+)\.(\w+)\s*[=<>!]", f):
+                model_names.add(match.group(1))
+
+        # Strip model prefixes from metrics and dimensions for matcher
+        bare_metrics = []
+        for m in metrics:
+            bare_metrics.append(m.split(".", 1)[1] if "." in m else m)
+
+        bare_dims = []
+        time_granularity = None
+        for d in dimensions:
+            dim_name = d.split(".", 1)[1] if "." in d else d
+            # Check for granularity suffix (e.g., "order_date__month")
+            if "__" in dim_name:
+                base, gran = dim_name.rsplit("__", 1)
+                bare_dims.append(base)
+                time_granularity = gran
+            else:
+                bare_dims.append(dim_name)
+
+        bare_filters = []
+        if filters:
+            for f in filters:
+                # Strip any model prefix from filters
+                for mn in model_names:
+                    f = f.replace(f"{mn}.", "")
+                bare_filters.append(f)
+
+        # Check preconditions for preagg routing
+        if not use_preaggs:
+            return QueryPlan(
+                sql=sql,
+                model=next(iter(model_names), None),
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason="pre-aggregations not enabled (use_preaggregations=False)",
+            )
+
+        if len(model_names) != 1:
+            return QueryPlan(
+                sql=sql,
+                model=None,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason=f"multi-model query ({', '.join(sorted(model_names))}), preaggs only work for single-model queries",
+            )
+
+        if ungrouped:
+            return QueryPlan(
+                sql=sql,
+                model=next(iter(model_names)),
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason="ungrouped query, preaggs require aggregation",
+            )
+
+        model_name = next(iter(model_names))
+        try:
+            model = self.get_model(model_name)
+        except KeyError:
+            return QueryPlan(
+                sql=sql,
+                model=model_name,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason=f"model '{model_name}' not found",
+            )
+
+        if not model.pre_aggregations:
+            return QueryPlan(
+                sql=sql,
+                model=model_name,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason="model has no pre-aggregations defined",
+            )
+
+        # Run the matcher explanation
+        matcher = PreAggregationMatcher(model)
+        candidates = matcher.explain_matching(
+            metrics=bare_metrics,
+            dimensions=bare_dims,
+            time_granularity=time_granularity,
+            filters=bare_filters,
+        )
+
+        selected = next((c for c in candidates if c.selected), None)
+        if selected:
+            return QueryPlan(
+                sql=sql,
+                model=model_name,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=True,
+                selected_preagg=selected.name,
+                routing_reason=f"matched '{selected.name}' (score: {selected.score})",
+                candidates=candidates,
+            )
+        else:
+            return QueryPlan(
+                sql=sql,
+                model=model_name,
+                metrics=bare_metrics,
+                dimensions=bare_dims,
+                used_preaggregation=False,
+                routing_reason="no pre-aggregation matched the query",
+                candidates=candidates,
+            )
 
     def get_model(self, name: str) -> Model:
         """Get model by name.

@@ -1,10 +1,13 @@
 """Pre-aggregation query matching logic."""
 
+from __future__ import annotations
+
 import re
 
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import PreAggregation
+from sidemantic.core.query_plan import PreaggCandidate, PreaggCheck
 
 # Time granularity hierarchy (coarser to finer)
 GRANULARITY_HIERARCHY = {
@@ -344,3 +347,169 @@ class PreAggregationMatcher:
                 score -= abs(query_level - preagg_level) * 5
 
         return score
+
+    def explain_query(
+        self,
+        preagg: PreAggregation,
+        query_metrics: list[str],
+        query_dimensions: list[str],
+        query_granularity: str | None = None,
+        filters: list[str] | None = None,
+    ) -> PreaggCandidate:
+        """Evaluate a pre-aggregation with detailed check results.
+
+        Same logic as can_satisfy_query but returns structured check details
+        instead of a boolean.
+        """
+        checks: list[PreaggCheck] = []
+
+        # 1. Dimension subset check
+        preagg_dims = set(preagg.dimensions or [])
+        query_dims = set(query_dimensions)
+        if preagg.time_dimension:
+            query_dims.discard(preagg.time_dimension)
+
+        dims_ok = query_dims.issubset(preagg_dims)
+        if dims_ok:
+            if query_dims:
+                checks.append(
+                    PreaggCheck(
+                        "dimensions",
+                        True,
+                        f"query {{{', '.join(sorted(query_dims))}}} subset of preagg {{{', '.join(sorted(preagg_dims))}}}",
+                    )
+                )
+            else:
+                checks.append(PreaggCheck("dimensions", True, "no non-time dimensions required"))
+        else:
+            missing = query_dims - preagg_dims
+            checks.append(
+                PreaggCheck(
+                    "dimensions",
+                    False,
+                    f"query needs {{{', '.join(sorted(missing))}}} not in preagg {{{', '.join(sorted(preagg_dims))}}}",
+                )
+            )
+
+        # 2. Measure derivability check
+        measures_ok = True
+        measure_details = []
+        for metric_name in query_metrics:
+            metric = self.model.get_metric(metric_name)
+            if not metric:
+                measure_details.append(f"{metric_name} (not found)")
+                measures_ok = False
+            elif not self._is_measure_derivable(metric, preagg):
+                agg = metric.agg or "complex"
+                if agg == "count_distinct":
+                    measure_details.append(f"{metric_name} (count_distinct not derivable from preagg)")
+                elif agg == "avg":
+                    measure_details.append(f"{metric_name} (avg needs companion count measure)")
+                elif metric.name not in (preagg.measures or []):
+                    measure_details.append(f"{metric_name} (not in preagg measures)")
+                else:
+                    measure_details.append(f"{metric_name} (not derivable)")
+                measures_ok = False
+            else:
+                agg = metric.agg or "complex"
+                measure_details.append(f"{metric_name} ({agg})")
+
+        if query_metrics:
+            checks.append(
+                PreaggCheck(
+                    "measures",
+                    measures_ok,
+                    f"{', '.join(measure_details)}{'' if measures_ok else ''}",
+                )
+            )
+        else:
+            checks.append(PreaggCheck("measures", True, "no metrics required"))
+
+        # 3. Granularity compatibility check
+        if query_granularity and preagg.granularity:
+            gran_ok = self._is_granularity_compatible(query_granularity, preagg.granularity)
+            if gran_ok:
+                if query_granularity == preagg.granularity:
+                    detail = f"{query_granularity} (exact match)"
+                else:
+                    detail = f"query {query_granularity} rollable from preagg {preagg.granularity}"
+            else:
+                detail = f"query {query_granularity} cannot roll up from preagg {preagg.granularity}"
+            checks.append(PreaggCheck("granularity", gran_ok, detail))
+        else:
+            checks.append(PreaggCheck("granularity", True, "not constrained"))
+
+        # 4. Filter compatibility check
+        filters = filters or []
+        if filters:
+            filter_columns = self._extract_filter_columns(filters)
+            available_columns = set(preagg.dimensions or [])
+            if preagg.time_dimension:
+                available_columns.add(preagg.time_dimension)
+
+            missing_cols = {col for col in filter_columns if col not in available_columns}
+            filters_ok = len(missing_cols) == 0
+            if filters_ok:
+                checks.append(
+                    PreaggCheck(
+                        "filters",
+                        True,
+                        f"filter columns {{{', '.join(sorted(filter_columns))}}} all available",
+                    )
+                )
+            else:
+                checks.append(
+                    PreaggCheck(
+                        "filters",
+                        False,
+                        f"filter columns {{{', '.join(sorted(missing_cols))}}} not in preagg",
+                    )
+                )
+        else:
+            checks.append(PreaggCheck("filters", True, "none"))
+
+        matched = all(c.passed for c in checks)
+        score = self._score_match(preagg, query_dimensions, query_granularity) if matched else None
+
+        return PreaggCandidate(
+            name=preagg.name,
+            matched=matched,
+            score=score,
+            selected=False,
+            checks=checks,
+        )
+
+    def explain_matching(
+        self,
+        metrics: list[str] | None = None,
+        dimensions: list[str] | None = None,
+        time_granularity: str | None = None,
+        filters: list[str] | None = None,
+    ) -> list[PreaggCandidate]:
+        """Evaluate all pre-aggregation candidates with detailed explanations.
+
+        Returns a list of PreaggCandidate, one per pre-aggregation defined on the
+        model, with the best match marked as selected.
+        """
+        metrics = metrics or []
+        dimensions = dimensions or []
+        filters = filters or []
+
+        candidates = []
+        for preagg in self.model.pre_aggregations:
+            candidate = self.explain_query(
+                preagg=preagg,
+                query_metrics=metrics,
+                query_dimensions=dimensions,
+                query_granularity=time_granularity,
+                filters=filters,
+            )
+            candidates.append(candidate)
+
+        # Mark the best match as selected
+        matched = [(c, c.score) for c in candidates if c.matched and c.score is not None]
+        if matched:
+            matched.sort(key=lambda x: x[1], reverse=True)
+            matched[0][0].selected = True
+
+        return candidates

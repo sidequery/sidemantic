@@ -1,5 +1,8 @@
 """Auto-discovery loaders for semantic layer definitions."""
 
+import logging
+import runpy
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,7 +29,6 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.gooddata import GoodDataAdapter
     from sidemantic.adapters.hex import HexAdapter
-    from sidemantic.adapters.holistics import HolisticsAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.omni import OmniAdapter
@@ -55,6 +57,9 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         if not file_path.is_file():
             continue
 
+        if _try_load_python_file(file_path, directory, all_models):
+            continue
+
         # Detect format and parse
         adapter = None
         suffix = file_path.suffix.lower()
@@ -79,6 +84,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
             elif '"datasets"' in content and ('"dataSourceTableId"' in content or '"data_source_table_id"' in content):
                 adapter = GoodDataAdapter()
         elif suffix == ".aml":
+            from sidemantic.adapters.holistics import HolisticsAdapter
+
             adapter = HolisticsAdapter()
         elif suffix == ".tml":
             adapter = ThoughtSpotAdapter()
@@ -132,8 +139,6 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 all_parameters.update(graph.parameters)
             except Exception as e:
                 # Skip files that fail to parse
-                import logging
-
                 logging.warning("Could not parse %s: %s", file_path, e)
 
     # Infer cross-model relationships based on naming conventions
@@ -175,6 +180,111 @@ def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dic
         if model.name not in layer.graph.models:
             layer.add_model(model)
     layer.graph.build_adjacency()
+
+
+def _looks_like_python_semantic_definition(file_path: Path) -> bool:
+    """Return True if a Python file appears to contain semantic definitions."""
+    name = file_path.name.lower()
+    if name == "sidemantic.py" or name.endswith(".sidemantic.py"):
+        return True
+
+    if file_path.suffix.lower() != ".py":
+        return False
+
+    try:
+        content = file_path.read_text()
+    except Exception:
+        return False
+
+    if "sidemantic" not in content.lower():
+        return False
+
+    return any(
+        token in content
+        for token in (
+            "Model(",
+            "SemanticLayer(",
+            "SemanticGraph(",
+            "Dimension(",
+            "Metric(",
+        )
+    )
+
+
+def _extract_models_from_python_namespace(namespace: dict, fallback_models: dict) -> dict:
+    """Extract model definitions from executed Python globals."""
+    from sidemantic.core.model import Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.core.semantic_layer import SemanticLayer
+
+    extracted = dict(fallback_models)
+    visited: set[int] = set()
+
+    def collect(candidate: object) -> None:
+        candidate_id = id(candidate)
+        if candidate_id in visited:
+            return
+        visited.add(candidate_id)
+
+        if isinstance(candidate, Model):
+            extracted[candidate.name] = candidate
+            return
+        if isinstance(candidate, SemanticLayer):
+            extracted.update(candidate.graph.models)
+            return
+        if isinstance(candidate, SemanticGraph):
+            extracted.update(candidate.models)
+            return
+        if isinstance(candidate, dict):
+            for nested in candidate.values():
+                collect(nested)
+            return
+        if isinstance(candidate, (list, tuple, set)):
+            for nested in candidate:
+                collect(nested)
+
+    for key, value in namespace.items():
+        if key.startswith("__"):
+            continue
+        collect(value)
+
+    return extracted
+
+
+def _try_load_python_file(file_path: Path, directory: Path, all_models: dict) -> bool:
+    """Load semantic definitions from a Python file if it looks like Sidemantic code."""
+    if not _looks_like_python_semantic_definition(file_path):
+        return False
+
+    from sidemantic.core.semantic_layer import SemanticLayer
+
+    captured_layer = SemanticLayer(auto_register=True)
+    namespace: dict = {}
+
+    script_dir = str(file_path.parent)
+    sys.path.insert(0, script_dir)
+    try:
+        with captured_layer:
+            namespace = runpy.run_path(str(file_path))
+    except Exception as e:
+        logging.warning("Could not parse %s: %s", file_path, e)
+        return False
+    finally:
+        if sys.path and sys.path[0] == script_dir:
+            sys.path.pop(0)
+
+    models = _extract_models_from_python_namespace(namespace, captured_layer.graph.models)
+    if not models:
+        return False
+
+    for model in models.values():
+        if not hasattr(model, "_source_format"):
+            model._source_format = "Python"
+        if not hasattr(model, "_source_file"):
+            model._source_file = str(file_path.relative_to(directory))
+
+    all_models.update(models)
+    return True
 
 
 def _try_load_sml(layer: "SemanticLayer", directory: Path, all_models: dict) -> bool:

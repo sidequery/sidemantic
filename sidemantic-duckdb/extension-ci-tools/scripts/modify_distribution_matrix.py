@@ -2,8 +2,8 @@
 
 import argparse
 import json
-import sys
 import logging
+import sys
 
 # Define command-line arguments
 parser = argparse.ArgumentParser(description="Filter a JSON file based on excluded duckdb_arch values and select an OS")
@@ -11,7 +11,11 @@ parser.add_argument("--input", required=True, help="Input JSON file path")
 parser.add_argument("--exclude", required=True, help="Semicolon-separated list of excluded duckdb_arch values")
 parser.add_argument("--output", help="Output JSON file path")
 parser.add_argument("--pretty", action="store_true", help="Pretty print the output JSON")
-parser.add_argument("--reduced_ci_mode", required=True, help="Set to default/enabled/disabled, when enabled, filters out redundant archs for testing")
+parser.add_argument(
+    "--reduced_ci_mode",
+    required=True,
+    help="Set to default/enabled/disabled, when enabled, filters out redundant archs for testing",
+)
 parser.add_argument("--select_os", help="Select an OS to include in the output JSON")
 parser.add_argument("--deploy_matrix", action="store_true", help="Create a merged list used in deploy step")
 args = parser.parse_args()
@@ -38,17 +42,23 @@ else:
     raise Exception("Unknown reduced_ci_mode value: " + reduced_ci_mode + " - must be auto/enabled/disabled.")
 
 # Read the input JSON file
-with open(input_json_file_path, "r") as json_file:
+with open(input_json_file_path) as json_file:
     data = json.load(json_file)
+
 
 def should_run(config, reduced_ci_mode):
     return not reduced_ci_mode or config["run_in_reduced_ci_mode"]
+
 
 # Function to filter entries based on duckdb_arch values
 def filter_entries(data, arch_values):
     for os, config in data.items():
         if "include" in config:
-            config["include"] = [entry for entry in config["include"] if (entry["duckdb_arch"] not in arch_values and should_run(entry, reduced_ci_mode))]
+            config["include"] = [
+                entry
+                for entry in config["include"]
+                if (entry["duckdb_arch"] not in arch_values and should_run(entry, reduced_ci_mode))
+            ]
         if not config["include"]:
             del config["include"]
 
@@ -66,8 +76,8 @@ if select_os:
             filtered_data = filtered_data[os]
             found = True
             break
-    if found == False:
-        logging.warning('A selection OS was provided but not found')
+    if not found:
+        logging.warning("A selection OS was provided but not found")
         filtered_data = []
 
 # When deploy_matrix is specified, we only output a single merged include list with all the duckdb_archs

@@ -409,5 +409,177 @@ def test_cumulative_with_time_comparison(layer):
     assert records[1]["revenue_mom"] == 50
 
 
+def test_time_comparison_over_derived_cumulative_chain():
+    """Time comparison should support cumulative -> derived dependency chains."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+    from tests.utils import fetch_dicts
+
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT
+                month_start,
+                CASE WHEN month_start < DATE '2024-01-01' THEN 100 ELSE 200 END AS gbv,
+                CASE WHEN month_start < DATE '2024-01-01' THEN 10 ELSE 20 END AS bookings
+            FROM generate_series(
+                DATE '2023-01-01',
+                DATE '2024-03-01',
+                INTERVAL 1 MONTH
+            ) AS t(month_start)
+        """,
+        primary_key="month_start",
+        dimensions=[Dimension(name="month_start", sql="month_start", type="time")],
+        metrics=[
+            Metric(name="gbv", agg="sum", sql="gbv"),
+            Metric(name="bookings", agg="sum", sql="bookings"),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(Metric(name="ytd_gbv", type="cumulative", sql="sales.gbv", grain_to_date="year"))
+    graph.add_metric(Metric(name="ytd_bookings", type="cumulative", sql="sales.bookings", grain_to_date="year"))
+    graph.add_metric(Metric(name="ytd_abv", type="derived", sql="ytd_gbv / ytd_bookings"))
+    graph.add_metric(
+        Metric(
+            name="yoy_ytd_abv_growth",
+            type="time_comparison",
+            base_metric="ytd_abv",
+            comparison_type="yoy",
+            calculation="percent_change",
+        )
+    )
+
+    gen = SQLGenerator(graph)
+    sql = gen.generate(
+        metrics=["ytd_abv", "yoy_ytd_abv_growth"],
+        dimensions=["sales.month_start__month"],
+        order_by=["sales.month_start__month"],
+    )
+
+    conn = duckdb.connect(":memory:")
+    records = fetch_dicts(conn.execute(sql))
+    conn.close()
+
+    assert len(records) == 15
+    results_2024 = [r for r in records if r["month_start__month"].year == 2024]
+    assert len(results_2024) == 3
+    assert all(abs(float(r["ytd_abv"]) - 10.0) < 1e-9 for r in results_2024)
+    assert all(abs(float(r["yoy_ytd_abv_growth"])) < 1e-9 for r in results_2024)
+
+
+def test_time_comparison_over_ratio_cumulative_chain():
+    """Time comparison should support cumulative -> ratio dependency chains."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+    from tests.utils import fetch_dicts
+
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT
+                month_start,
+                CASE WHEN month_start < DATE '2024-01-01' THEN 100 ELSE 200 END AS gbv,
+                CASE WHEN month_start < DATE '2024-01-01' THEN 10 ELSE 20 END AS bookings
+            FROM generate_series(
+                DATE '2023-01-01',
+                DATE '2024-03-01',
+                INTERVAL 1 MONTH
+            ) AS t(month_start)
+        """,
+        primary_key="month_start",
+        dimensions=[Dimension(name="month_start", sql="month_start", type="time")],
+        metrics=[
+            Metric(name="gbv", agg="sum", sql="gbv"),
+            Metric(name="bookings", agg="sum", sql="bookings"),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(Metric(name="ytd_gbv", type="cumulative", sql="sales.gbv", grain_to_date="year"))
+    graph.add_metric(Metric(name="ytd_bookings", type="cumulative", sql="sales.bookings", grain_to_date="year"))
+    graph.add_metric(Metric(name="ytd_abv_ratio", type="ratio", numerator="ytd_gbv", denominator="ytd_bookings"))
+    graph.add_metric(
+        Metric(
+            name="yoy_ytd_abv_ratio_growth",
+            type="time_comparison",
+            base_metric="ytd_abv_ratio",
+            comparison_type="yoy",
+            calculation="percent_change",
+        )
+    )
+
+    gen = SQLGenerator(graph)
+    sql = gen.generate(
+        metrics=["ytd_abv_ratio", "yoy_ytd_abv_ratio_growth"],
+        dimensions=["sales.month_start__month"],
+        order_by=["sales.month_start__month"],
+    )
+
+    conn = duckdb.connect(":memory:")
+    records = fetch_dicts(conn.execute(sql))
+    conn.close()
+
+    assert len(records) == 15
+    results_2024 = [r for r in records if r["month_start__month"].year == 2024]
+    assert len(results_2024) == 3
+    assert all(abs(float(r["ytd_abv_ratio"]) - 10.0) < 1e-9 for r in results_2024)
+    assert all(abs(float(r["yoy_ytd_abv_ratio_growth"])) < 1e-9 for r in results_2024)
+
+
+def test_time_comparison_with_dependency_free_expression_metric():
+    """Dependency-free expression metrics should not be recomputed in outer window queries."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    sales = Model(
+        name="sales",
+        sql="""
+            SELECT
+                month_start,
+                CASE WHEN month_start < DATE '2024-01-01' THEN 100 ELSE 200 END AS gbv,
+                CASE WHEN month_start < DATE '2024-01-01' THEN 10 ELSE 20 END AS bookings,
+                CASE WHEN month_start < DATE '2024-01-01' THEN 50 ELSE 75 END AS revenue
+            FROM generate_series(
+                DATE '2023-01-01',
+                DATE '2024-03-01',
+                INTERVAL 1 MONTH
+            ) AS t(month_start)
+        """,
+        primary_key="month_start",
+        dimensions=[Dimension(name="month_start", sql="month_start", type="time")],
+        metrics=[
+            Metric(name="gbv", agg="sum", sql="gbv"),
+            Metric(name="bookings", agg="sum", sql="bookings"),
+            Metric(name="revenue", agg="sum", sql="revenue"),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(sales)
+    graph.add_metric(Metric(name="abv_inline", sql="SUM(sales.gbv) / NULLIF(SUM(sales.bookings), 0)"))
+    graph.add_metric(Metric(name="ytd_revenue", type="cumulative", sql="sales.revenue", grain_to_date="year"))
+    graph.add_metric(
+        Metric(
+            name="yoy_ytd_revenue_growth",
+            type="time_comparison",
+            base_metric="ytd_revenue",
+            comparison_type="yoy",
+            calculation="percent_change",
+        )
+    )
+
+    gen = SQLGenerator(graph)
+    sql = gen.generate(
+        metrics=["abv_inline", "ytd_revenue", "yoy_ytd_revenue_growth"],
+        dimensions=["sales.month_start__month"],
+        order_by=["sales.month_start__month"],
+    )
+
+    assert sql.count(" AS abv_inline") == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

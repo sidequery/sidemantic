@@ -1,0 +1,60 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'docker-entrypoint.sh'
+      - '.dockerignore'
+      - 'sidemantic/**'
+      - 'pyproject.toml'
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'docker-entrypoint.sh'
+      - '.dockerignore'
+      - 'sidemantic/**'
+      - 'pyproject.toml'
+
+jobs:
+  docker:
+    name: Docker build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t sidemantic .
+
+      - name: Start server (demo mode)
+        run: |
+          docker run -d --name sidemantic-test -p 5433:5433 sidemantic --demo
+          for i in $(seq 1 30); do
+            if docker logs sidemantic-test 2>&1 | grep -q "Listening on"; then
+              echo "Server ready"
+              break
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 1
+          done
+
+      - name: Verify server logs
+        run: docker logs sidemantic-test 2>&1
+
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Test basic query
+        run: PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c "SELECT 1 AS test"
+
+      - name: Test semantic layer query
+        run: PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c "SELECT * FROM semantic_layer.customers LIMIT 3"
+
+      - name: Test aggregation query
+        run: PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c "SELECT region, customer_count FROM semantic_layer.customers GROUP BY region"
+
+      - name: Stop server
+        if: always()
+        run: docker stop sidemantic-test || true

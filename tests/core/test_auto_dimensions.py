@@ -250,3 +250,43 @@ def test_map_db_type():
     # Unknown types default to categorical
     assert m("JSON") == ("categorical", None)
     assert m("BLOB") == ("categorical", None)
+
+
+def test_auto_dimensions_idempotent_add(layer):
+    """Adding two identical auto_dimensions models is idempotent."""
+    model1 = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        auto_dimensions=True,
+        metrics=[Metric(name="revenue", sql="SUM(amount)")],
+    )
+    layer.add_model(model1)
+
+    # Second add with a fresh instance (same definition) should not raise
+    model2 = Model(
+        name="orders",
+        table="orders",
+        primary_key="order_id",
+        auto_dimensions=True,
+        metrics=[Metric(name="revenue", sql="SUM(amount)")],
+    )
+    layer.add_model(model2)  # should be a no-op
+
+
+def test_auto_dimensions_non_string_type_metadata(layer):
+    """SQL-based models handle non-string type metadata in .description."""
+    # DuckDB description returns string types, but other adapters may not.
+    # This test verifies that str() coercion works for the SQL introspection path.
+    model = Model(
+        name="coercion_test",
+        sql="SELECT 1 AS id, 'hello' AS name, CURRENT_DATE AS dt",
+        primary_key="id",
+        auto_dimensions=True,
+        metrics=[Metric(name="cnt", sql="COUNT(*)")],
+    )
+    layer.add_model(model)
+
+    dim_names = {d.name for d in model.dimensions}
+    assert "name" in dim_names
+    assert "dt" in dim_names

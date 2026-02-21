@@ -174,8 +174,18 @@ class SemanticLayer:
         if existing is not None:
             if existing is model:
                 return
-            if existing.model_dump() == model.model_dump():
+            existing_dump = existing.model_dump()
+            new_dump = model.model_dump()
+            if existing_dump == new_dump:
                 return
+            # When both models use auto_dimensions, the existing model has
+            # introspected dimensions that the new model doesn't yet. Compare
+            # excluding dimensions to preserve idempotent add_model behavior.
+            if existing.auto_dimensions and model.auto_dimensions:
+                existing_dump.pop("dimensions", None)
+                new_dump.pop("dimensions", None)
+                if existing_dump == new_dump:
+                    return
 
         self._normalize_model_table(model)
 
@@ -291,9 +301,12 @@ class SemanticLayer:
             List of dicts with 'column_name' and 'data_type' keys
         """
         if model.table:
-            # Parse schema.table reference
+            # Parse table reference: "table", "schema.table", or "catalog.schema.table"
             parts = model.table.split(".")
-            if len(parts) == 2:
+            if len(parts) >= 3:
+                # catalog.schema.table -- use last two parts
+                schema, table_name = parts[-2], parts[-1]
+            elif len(parts) == 2:
                 schema, table_name = parts
             else:
                 schema, table_name = None, parts[-1]
@@ -308,7 +321,10 @@ class SemanticLayer:
                 # DuckDB returns column info via .description
                 if hasattr(result, "description") and result.description:
                     return [
-                        {"column_name": desc[0], "data_type": desc[1] if len(desc) > 1 else "VARCHAR"}
+                        {
+                            "column_name": desc[0],
+                            "data_type": str(desc[1]) if len(desc) > 1 and desc[1] is not None else "VARCHAR",
+                        }
                         for desc in result.description
                     ]
             except Exception:

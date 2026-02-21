@@ -1,0 +1,44 @@
+guid: "table-001"
+table:
+  name: orders
+  description: Order facts
+  db: analytics
+  schema: public
+  db_table: orders
+  connection:
+    name: prod
+  columns:
+    - name: id
+      db_column_name: id
+      data_type: INT64
+      properties:
+        column_type: ATTRIBUTE
+    - name: customer_id
+      db_column_name: customer_id
+      data_type: INT64
+      properties:
+        column_type: ATTRIBUTE
+    - name: status
+      db_column_name: status
+      data_type: VARCHAR
+      properties:
+        column_type: ATTRIBUTE
+    - name: order_date
+      db_column_name: order_date
+      data_type: DATE
+      properties:
+        column_type: ATTRIBUTE
+        default_date_bucket: DAILY
+    - name: amount
+      db_column_name: amount
+      data_type: DOUBLE
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+        format_pattern: "$#,##0.00"
+    - name: order_count
+      db_column_name: id
+      data_type: INT64
+      properties:
+        column_type: MEASURE
+        aggregation: COUNT

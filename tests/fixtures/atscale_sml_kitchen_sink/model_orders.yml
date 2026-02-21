@@ -1,0 +1,65 @@
+unique_name: order_model
+object_type: model
+label: Order Model
+description: Orders with promos and customers
+relationships:
+  - unique_name: orders_customer
+    from:
+      dataset: fact_orders
+      join_columns:
+        - customer_id
+    to:
+      dimension: customer_dim
+      level: customer_id
+  - unique_name: orders_order_date
+    from:
+      dataset: fact_orders
+      join_columns:
+        - order_date
+    to:
+      dimension: order_date_dim
+      level: order_date
+  - unique_name: orders_promo
+    from:
+      dataset: fact_orders
+      join_columns:
+        - promo_id
+    to:
+      dimension: promo_dim
+      level: promo_id
+    m2m: true
+dimensions:
+  - customer_dim
+  - order_date_dim
+  - promo_dim
+  - order_status_dim
+metrics:
+  - unique_name: total_amount
+  - unique_name: order_count
+  - unique_name: unique_customers
+  - unique_name: total_amount_distinct
+  - unique_name: amount_stddev
+  - unique_name: amount_median
+  - unique_name: amount_p90
+  - unique_name: avg_order_value
+aggregates:
+  - unique_name: orders_rollup
+    label: Orders Rollup
+    metrics:
+      - unique_name: total_amount
+      - unique_name: order_count
+    attributes:
+      - name: order_year
+      - name: promo_name
+drillthroughs:
+  - unique_name: Order Details
+    attributes:
+      - name: customer_name
+        dimension: customer_dim
+      - name: order_date
+        dimension: order_date_dim
+      - name: promo_name
+        dimension: promo_dim
+    metrics:
+      - total_amount
+      - order_count

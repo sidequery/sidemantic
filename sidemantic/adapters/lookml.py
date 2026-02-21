@@ -3,14 +3,21 @@
 import re
 from pathlib import Path
 
-import lkml
-
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+
+
+def _import_lkml():
+    """Lazily import lkml, raising a clear error if not installed."""
+    try:
+        import lkml
+    except ImportError:
+        raise ImportError('LookML support requires lkml. Install with: pip install "sidemantic[lookml]"') from None
+    return lkml
 
 
 class LookMLAdapter(BaseAdapter):
@@ -63,6 +70,8 @@ class LookMLAdapter(BaseAdapter):
             file_path: Path to .lkml file
             graph: Semantic graph to add models to
         """
+        lkml = _import_lkml()
+
         with open(file_path) as f:
             content = f.read()
 
@@ -88,6 +97,8 @@ class LookMLAdapter(BaseAdapter):
             file_path: Path to .lkml file
             graph: Semantic graph to add relationships to
         """
+        lkml = _import_lkml()
+
         with open(file_path) as f:
             content = f.read()
 
@@ -852,6 +863,7 @@ class LookMLAdapter(BaseAdapter):
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Use lkml to dump to LookML format
+        lkml = _import_lkml()
         with open(output_path, "w") as f:
             lookml_str = lkml.dump(data)
             f.write(lookml_str)

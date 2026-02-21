@@ -634,7 +634,11 @@ function render({ model, el }) {
     const activeRange =
       brushSelection && brushSelection.length === 2 ? brushSelection : dateRange;
     const metricTotals = model.get("metric_totals") || {};
-    const metricSeriesDataRaw = model.get("metric_series_data");
+    const transport = model.get("transport") || "base64";
+    const metricSeriesDataRaw =
+      transport === "binary"
+        ? model.get("metric_series_data_binary")
+        : model.get("metric_series_data");
 
     // Show skeletons while loading
     if (
@@ -657,9 +661,13 @@ function render({ model, el }) {
       }
 
       // Extract dates from rows (assuming first column or __time column)
-      const timeCol = Object.keys(rows[0] || {}).find(
-        (k) => k.includes("time") || k.includes("date") || k === "__time"
-      );
+      const config = model.get("config") || {};
+      const preferredTimeCol = config.time_series_column;
+      const timeCol =
+        preferredTimeCol ||
+        Object.keys(rows[0] || {}).find(
+          (k) => k.includes("time") || k.includes("date") || k === "__time"
+        );
       const dates = timeCol ? rows.map((r) => formatDate(r[timeCol])) : [];
 
       metricsColEl.innerHTML = "";
@@ -698,7 +706,11 @@ function render({ model, el }) {
 
   function renderDimensions() {
     const dimensionsConfig = model.get("dimensions_config") || [];
-    const dimensionData = model.get("dimension_data") || {};
+    const transport = model.get("transport") || "base64";
+    const dimensionData =
+      transport === "binary"
+        ? model.get("dimension_data_binary") || {}
+        : model.get("dimension_data") || {};
     const selectedMetric = model.get("selected_metric") || "";
     const filters = getFilters();
 

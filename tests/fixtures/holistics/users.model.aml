@@ -1,0 +1,39 @@
+Model users {
+  type: 'table'
+  label: "Users"
+  description: "User records"
+  table_name: 'public.users'
+
+  dimension id {
+    label: 'User ID'
+    type: 'number'
+    primary_key: true
+    format: '#,##0'
+    definition: @sql {{ #SOURCE.id }};;
+  }
+
+  dimension email {
+    label: 'Email'
+    type: 'text'
+  }
+
+  dimension created_at {
+    label: 'Created At'
+    type: 'datetime'
+  }
+
+  measure user_count {
+    label: 'User Count'
+    type: 'number'
+    definition: @sql {{ id }};;
+    aggregation_type: 'count'
+  }
+
+  measure avg_age {
+    label: 'Avg Age'
+    type: 'number'
+    definition: @sql {{ age }};;
+    aggregation_type: 'avg'
+    format: '#,##0.00'
+  }
+}

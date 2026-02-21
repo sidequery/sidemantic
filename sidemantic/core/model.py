@@ -118,9 +118,13 @@ class Model(BaseModel):
 
         path = [dimension_name]
 
-        # Walk up the parent chain
+        # Walk up the parent chain with cycle detection
         current = dim
+        visited = {dimension_name}
         while current and current.parent:
+            if current.parent in visited:
+                break
+            visited.add(current.parent)
             path.insert(0, current.parent)
             current = self.get_dimension(current.parent)
 

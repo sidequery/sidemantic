@@ -26,6 +26,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.gooddata import GoodDataAdapter
     from sidemantic.adapters.hex import HexAdapter
+    from sidemantic.adapters.holistics import HolisticsAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
     from sidemantic.adapters.omni import OmniAdapter
@@ -75,6 +76,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = GoodDataAdapter()
             elif '"datasets"' in content and ('"dataSourceTableId"' in content or '"data_source_table_id"' in content):
                 adapter = GoodDataAdapter()
+        elif suffix == ".aml":
+            adapter = HolisticsAdapter()
         elif suffix == ".tml":
             adapter = ThoughtSpotAdapter()
         elif suffix in (".yml", ".yaml"):

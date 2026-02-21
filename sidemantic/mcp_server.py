@@ -1,6 +1,7 @@
 """MCP server for Sidemantic semantic layer."""
 
 import json
+from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -41,10 +42,17 @@ def get_layer() -> SemanticLayer:
 def _convert_to_json_compatible(value: Any) -> Any:
     """Convert value to JSON-compatible type.
 
-    Handles Decimal and other non-JSON-serializable types from database results.
+    Handles Decimal, date, datetime, and other non-JSON-serializable types
+    from database results.
     """
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.isoformat()
     return value
 
 

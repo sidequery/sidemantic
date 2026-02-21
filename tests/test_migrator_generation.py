@@ -399,7 +399,7 @@ def test_generate_rewritten_query_multi_table():
 
     # Should resolve aliases to real table names in SELECT
     assert "customers.region" in sql
-    assert "orders.order_id_count" in sql
+    assert "orders.count" in sql
 
 
 def test_generate_rewritten_query_left_join():
@@ -835,3 +835,191 @@ def test_information_schema_column_inference():
     assert "amount" in analysis.columns["orders"]
 
     con.close()
+
+
+def test_generate_models_resolves_aliases_in_aggregations():
+    """Test that aggregations with table aliases resolve to real table names."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        """
+        SELECT
+            c.region,
+            SUM(o.total_amount) as total_revenue,
+            COUNT(DISTINCT o.customer_id) as unique_customers
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.region
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    # Metrics should land on 'orders', not on alias 'o'
+    assert "o" not in models
+    assert "orders" in models
+
+    orders = models["orders"]
+    metric_names = {m["name"] for m in orders.get("metrics", [])}
+    assert "total_revenue" in metric_names or "sum_total_amount" in metric_names
+    assert "customer_id_count" in metric_names or "unique_customers" in metric_names
+
+    # Dimensions should land on 'customers', not on alias 'c'
+    assert "c" not in models
+    assert "customers" in models
+
+    customers = models["customers"]
+    dim_names = {d["name"] for d in customers.get("dimensions", [])}
+    assert "region" in dim_names
+
+
+def test_generate_models_resolves_aliases_in_time_dimensions():
+    """Test that time dimensions with table aliases resolve to real table names."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        """
+        SELECT
+            DATE_TRUNC('month', o.order_date) as month,
+            SUM(o.amount) as revenue
+        FROM orders o
+        JOIN customers c ON o.customer_id = c.id
+        GROUP BY DATE_TRUNC('month', o.order_date)
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    assert "orders" in models
+    orders = models["orders"]
+
+    # order_date should be a time dimension on the orders model
+    dims = {d["name"]: d for d in orders.get("dimensions", [])}
+    assert "order_date" in dims
+    assert dims["order_date"]["type"] == "time"
+
+
+def test_generate_models_resolves_aliases_in_derived_metrics():
+    """Test that derived metrics with table aliases resolve to real table names."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        """
+        SELECT
+            c.region,
+            SUM(o.total_amount) / COUNT(*) as avg_order_value
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.region
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+
+    # Derived metric should land on 'orders', not on alias 'o'
+    assert "orders" in models
+    orders = models["orders"]
+    metric_names = {m["name"] for m in orders.get("metrics", [])}
+    assert "avg_order_value" in metric_names
+
+
+def test_cross_model_derived_metric_detection():
+    """Test that derived metrics spanning multiple tables are detected as cross-model."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        """
+        SELECT
+            c.segment,
+            SUM(o.amount) / COUNT(DISTINCT c.id) AS revenue_per_customer
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.segment
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    # Should be detected as cross-model, NOT stored in derived_metrics
+    assert len(analysis.derived_metrics) == 0
+    assert len(analysis.cross_model_derived_metrics) == 1
+
+    cm = analysis.cross_model_derived_metrics[0]
+    assert cm["name"] == "revenue_per_customer"
+    assert len(cm["agg_parts"]) == 2
+
+    # Verify the tables are correctly resolved
+    tables = {p["table_name"] for p in cm["agg_parts"]}
+    assert tables == {"orders", "customers"}
+
+
+def test_generate_graph_metrics():
+    """Test generating graph-level metric definitions from cross-model derived metrics."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        # Single-table aggregations to create base metrics
+        "SELECT status, SUM(amount) AS revenue FROM orders GROUP BY status",
+        "SELECT segment, COUNT(DISTINCT id) AS customer_count FROM customers GROUP BY segment",
+        # Cross-model derived metric
+        """
+        SELECT
+            c.segment,
+            SUM(o.amount) / COUNT(DISTINCT c.id) AS revenue_per_customer
+        FROM customers c
+        JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.segment
+        """,
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    models = analyzer.generate_models(report)
+    graph_metrics = analyzer.generate_graph_metrics(report, models)
+
+    # Should produce one graph-level metric
+    assert len(graph_metrics) == 1
+    gm = graph_metrics[0]
+    assert gm["name"] == "revenue_per_customer"
+    assert gm["type"] == "derived"
+
+    # The sql should reference model.metric_name, not raw aggregations
+    assert "orders." in gm["sql"]
+    assert "customers." in gm["sql"]
+    # Should not contain raw SQL aggregation functions
+    assert "SUM(" not in gm["sql"]
+    assert "COUNT(" not in gm["sql"]
+
+
+def test_single_model_derived_stays_on_model():
+    """Test that single-model derived metrics still go to derived_metrics, not cross_model."""
+    layer = SemanticLayer(auto_register=False)
+    analyzer = Migrator(layer)
+
+    queries = [
+        """
+        SELECT
+            status,
+            SUM(amount) / COUNT(*) AS avg_order_value
+        FROM orders
+        GROUP BY status
+        """
+    ]
+
+    report = analyzer.analyze_queries(queries)
+    analysis = report.query_analyses[0]
+
+    # Single-model derived metric should stay in derived_metrics
+    assert len(analysis.derived_metrics) == 1
+    assert analysis.derived_metrics[0][0] == "avg_order_value"
+
+    # Should NOT be in cross_model_derived_metrics
+    assert len(analysis.cross_model_derived_metrics) == 0

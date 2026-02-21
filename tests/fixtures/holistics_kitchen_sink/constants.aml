@@ -1,0 +1,16 @@
+const net_amount_sql = @sql {{ amount }} - {{ discount }};;
+const order_label = 'Order ID'
+const money_format = '$#,##0.00'
+
+Func format_currency(amount: Number = 0) {
+  const multiplier = 100
+  amount / multiplier
+}
+
+Func greeting(name: 'John' | 'Alice') {
+  if (name == 'John') {
+    'Hello John'
+  } else {
+    'Hello there'
+  }
+}

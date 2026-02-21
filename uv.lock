@@ -3225,6 +3225,7 @@ name = "sidemantic"
 version = "0.5.11"
 source = { editable = "." }
 dependencies = [
+    { name = "antlr4-python3-runtime" },
     { name = "duckdb" },
     { name = "jinja2" },
     { name = "pydantic" },
@@ -3358,6 +3359,7 @@ dev = [
 requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'adbc'", specifier = ">=1.0.0" },
     { name = "altair", marker = "extra == 'charts'", specifier = ">=5.0.0" },
+    { name = "antlr4-python3-runtime", specifier = ">=4.13.2" },
     { name = "antlr4-python3-runtime", marker = "extra == 'dev'", specifier = ">=4.13.2" },
     { name = "antlr4-python3-runtime", marker = "extra == 'malloy'", specifier = ">=4.13.2" },
     { name = "anywidget", marker = "extra == 'widget'", specifier = ">=0.9.0" },

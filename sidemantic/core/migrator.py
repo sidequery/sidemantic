@@ -25,6 +25,9 @@ class QueryAnalysis:
     derived_metrics: list[tuple[str, str, str]] = field(
         default_factory=list
     )  # (name/alias, sql_expression, table) for calculated metrics
+    cross_model_derived_metrics: list[dict] = field(
+        default_factory=list
+    )  # Cross-model derived metrics: [{"name", "sql", "agg_parts": [{"sql", "agg_type", "col_name", "table_name"}]}]
     cumulative_metrics: list[dict] = field(default_factory=list)  # Cumulative/window function metrics with params
     aggregations_in_derived: set[tuple[str, str, str]] = field(
         default_factory=set
@@ -408,6 +411,8 @@ class Migrator:
                     if isinstance(col, exp.Column):
                         col_name = col.name
                         table_name = col.table if col.table else None
+                        if table_name and table_name in analysis.table_aliases:
+                            table_name = analysis.table_aliases[table_name]
                     elif isinstance(col, exp.Star):
                         col_name = "*"
                     elif isinstance(col, exp.Distinct):
@@ -415,6 +420,8 @@ class Migrator:
                             distinct_col = col.expressions[0]
                             col_name = distinct_col.name
                             table_name = distinct_col.table if distinct_col.table else None
+                            if table_name and table_name in analysis.table_aliases:
+                                table_name = analysis.table_aliases[table_name]
                             agg_name = "count_distinct"
                         else:
                             col_name = str(col)
@@ -426,6 +433,15 @@ class Migrator:
                         if columns:
                             first_col = columns[0]
                             table_name = first_col.table if first_col.table else None
+                            if table_name and table_name in analysis.table_aliases:
+                                table_name = analysis.table_aliases[table_name]
+
+                    # Normalize COUNT(column) to COUNT(*) since they are
+                    # semantically equivalent for non-nullable columns (the
+                    # common case).  This prevents duplicate metrics and
+                    # coverage gaps when analysts write COUNT(id) vs COUNT(*).
+                    if agg_name == "count" and col_name != "*":
+                        col_name = "*"
 
                     # Infer table if not found
                     if not table_name and len(analysis.tables) == 1:
@@ -487,21 +503,62 @@ class Migrator:
                     for agg in aggs:
                         derived_agg_sql.add(str(agg))
 
-                    # Determine the table - try to infer from aggregations
-                    table_name = ""
+                    # Collect ALL tables referenced by aggregations
+                    tables_in_expr = set()
+                    agg_parts = []
                     for agg in aggs:
+                        agg_table = ""
+                        agg_col = "*"
                         for col in agg.find_all(exp.Column):
                             if col.table:
-                                table_name = col.table
-                                break
-                        if table_name:
-                            break
+                                agg_table = analysis.table_aliases.get(col.table, col.table)
+                            if col.name:
+                                agg_col = col.name
 
-                    # If no table found and single table query, use that table
-                    if not table_name and len(analysis.tables) == 1:
-                        table_name = list(analysis.tables)[0]
+                        # Determine agg type from the AST node
+                        if isinstance(agg, exp.Count):
+                            if isinstance(agg.this, exp.Distinct):
+                                agg_type_name = "count_distinct"
+                            else:
+                                agg_type_name = "count"
+                                agg_col = "*"  # normalize COUNT(col) -> COUNT(*)
+                        elif isinstance(agg, exp.Sum):
+                            agg_type_name = "sum"
+                        elif isinstance(agg, exp.Avg):
+                            agg_type_name = "avg"
+                        elif isinstance(agg, exp.Min):
+                            agg_type_name = "min"
+                        elif isinstance(agg, exp.Max):
+                            agg_type_name = "max"
+                        else:
+                            agg_type_name = type(agg).__name__.lower()
 
-                    analysis.derived_metrics.append((metric_name, metric_sql, table_name))
+                        agg_parts.append(
+                            {
+                                "sql": str(agg),
+                                "agg_type": agg_type_name,
+                                "col_name": agg_col,
+                                "table_name": agg_table,
+                            }
+                        )
+                        if agg_table:
+                            tables_in_expr.add(agg_table)
+
+                    if len(tables_in_expr) > 1:
+                        # Cross-model derived metric: store for graph-level generation
+                        analysis.cross_model_derived_metrics.append(
+                            {
+                                "name": metric_name,
+                                "sql": metric_sql,
+                                "agg_parts": agg_parts,
+                            }
+                        )
+                    else:
+                        # Single-model: existing behavior
+                        table_name = tables_in_expr.pop() if tables_in_expr else ""
+                        if not table_name and len(analysis.tables) == 1:
+                            table_name = list(analysis.tables)[0]
+                        analysis.derived_metrics.append((metric_name, metric_sql, table_name))
 
         # Mark which aggregations are part of derived metrics (for query rewriting)
         # Store this info so we can filter during rewriting but keep for model generation
@@ -760,6 +817,8 @@ class Migrator:
             if isinstance(column_expr, exp.Column) and unit_expr:
                 col_name = column_expr.name
                 table_name = column_expr.table if column_expr.table else ""
+                if table_name and table_name in analysis.table_aliases:
+                    table_name = analysis.table_aliases[table_name]
                 granularity = str(unit_expr).lower().strip("'\"")
 
                 if not table_name and len(analysis.tables) == 1:
@@ -776,6 +835,8 @@ class Migrator:
             if isinstance(column_expr, exp.Column):
                 col_name = column_expr.name
                 table_name = column_expr.table if column_expr.table else ""
+                if table_name and table_name in analysis.table_aliases:
+                    table_name = analysis.table_aliases[table_name]
                 granularity = str(part_expr).lower()
 
                 if not table_name and len(analysis.tables) == 1:
@@ -831,6 +892,8 @@ class Migrator:
                 elif isinstance(col_expr, exp.Column):
                     col_name = col_expr.name
                     table_name = col_expr.table if col_expr.table else ""
+                    if table_name and table_name in analysis.table_aliases:
+                        table_name = analysis.table_aliases[table_name]
                 elif isinstance(col_expr, exp.Star):
                     col_name = "*"
                     table_name = ""
@@ -842,6 +905,8 @@ class Migrator:
                     columns = list(col_expr.find_all(exp.Column))
                     if columns:
                         table_name = columns[0].table if columns[0].table else ""
+                        if table_name and table_name in analysis.table_aliases:
+                            table_name = analysis.table_aliases[table_name]
 
                 # Infer table if not found
                 if not table_name and len(analysis.tables) == 1:
@@ -1255,6 +1320,7 @@ class Migrator:
         table_derived_metrics = defaultdict(list)  # (name, sql_expression)
         table_cumulative_metrics = defaultdict(list)  # cumulative metric dicts
         table_relationships = defaultdict(list)  # (to_model, type, foreign_key, primary_key)
+        metric_alias_counts: dict[tuple, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         metric_aliases = {}  # (table, agg_type, col_name) -> alias
 
         for analysis in report.query_analyses:
@@ -1287,9 +1353,10 @@ class Migrator:
                     agg_tuple = (agg_type, col_name, table_name)
                     if agg_tuple not in analysis.aggregations_in_cumulative:
                         table_metrics[table_name].add((agg_type, col_name))
-                        # Track alias if one exists
+                        # Track alias frequency (most common alias wins)
                         if agg_tuple in analysis.aggregation_aliases:
-                            metric_aliases[(table_name, agg_type, col_name)] = analysis.aggregation_aliases[agg_tuple]
+                            alias = analysis.aggregation_aliases[agg_tuple]
+                            metric_alias_counts[(table_name, agg_type, col_name)][alias] += 1
 
             # Track derived metrics
             for metric_name, metric_sql, table_name in analysis.derived_metrics:
@@ -1311,6 +1378,10 @@ class Migrator:
                 if from_model and to_model:
                     # Store relationship on the from_model
                     table_relationships[from_model].append((to_model, rel_type, fk_col, pk_col))
+
+        # Resolve metric aliases: pick the most common alias for each aggregation
+        for key, alias_counts in metric_alias_counts.items():
+            metric_aliases[key] = max(alias_counts, key=alias_counts.get)
 
         # Generate model definitions
         for table in sorted(all_tables):
@@ -1473,6 +1544,61 @@ class Migrator:
             models[model_name] = model_def
 
         return models
+
+    def generate_graph_metrics(self, report: MigrationReport, models: dict[str, dict]) -> list[dict]:
+        """Generate graph-level metric definitions for cross-model derived metrics.
+
+        When a derived expression like ``SUM(o.amount) / COUNT(DISTINCT c.id)``
+        references aggregations from multiple tables, it cannot belong to a single
+        model.  This method converts those expressions into graph-level metrics
+        whose ``sql`` field uses ``model.metric_name`` references.
+
+        Args:
+            report: Coverage report (same one passed to generate_models)
+            models: Model definitions returned by generate_models()
+
+        Returns:
+            List of graph-level metric dicts ready for ``Metric(**m)`` construction.
+        """
+        # Build reverse lookup: (table, agg_type, col_name) -> metric_name
+        metric_lookup: dict[tuple[str, str, str], str] = {}
+        for model_name, model_def in models.items():
+            for m in model_def.get("metrics", []):
+                if m.get("type"):
+                    continue  # skip derived/cumulative
+                metric_lookup[(model_name, m["agg"], m.get("sql", "*"))] = m["name"]
+
+        seen: set[str] = set()
+        graph_metrics: list[dict] = []
+
+        for analysis in report.query_analyses:
+            if analysis.parse_error:
+                continue
+            for cm in analysis.cross_model_derived_metrics:
+                if cm["name"] in seen:
+                    continue
+                seen.add(cm["name"])
+
+                sql_expr = cm["sql"]
+                all_resolved = True
+                for part in cm["agg_parts"]:
+                    key = (part["table_name"], part["agg_type"], part["col_name"])
+                    resolved_name = metric_lookup.get(key)
+                    if resolved_name:
+                        sql_expr = sql_expr.replace(part["sql"], f"{part['table_name']}.{resolved_name}")
+                    else:
+                        all_resolved = False
+
+                if all_resolved:
+                    graph_metrics.append(
+                        {
+                            "name": cm["name"],
+                            "type": "derived",
+                            "sql": sql_expr,
+                        }
+                    )
+
+        return graph_metrics
 
     def write_model_files(self, models: dict[str, dict], output_dir: str) -> None:
         """Write model definitions to YAML files.

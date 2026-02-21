@@ -531,6 +531,41 @@ def test_run_query_ungrouped(demo_layer):
     assert result["row_count"] == 3
 
 
+def test_run_query_temporal_json_serialization(demo_layer):
+    """Test that date/datetime values in query results are converted to ISO strings."""
+    result = run_query(
+        dimensions=["orders.order_date"],
+        metrics=["orders.total_revenue"],
+    )
+
+    assert result["row_count"] > 0
+    for row in result["rows"]:
+        for key, value in row.items():
+            assert not isinstance(value, (Decimal,)), f"Found Decimal value for {key}"
+
+    # The entire result must be JSON serializable
+    try:
+        json.dumps(result)
+    except TypeError as e:
+        pytest.fail(f"Result with date values is not JSON serializable: {e}")
+
+    # Date values should be ISO format strings
+    for row in result["rows"]:
+        if "order_date" in row:
+            assert isinstance(row["order_date"], str), f"Expected ISO string, got {type(row['order_date'])}"
+
+
+def test_run_sql_temporal_json_serialization(demo_layer):
+    """Test that run_sql converts temporal values to ISO strings."""
+    result = run_sql("SELECT order_date__month, total_revenue FROM orders")
+
+    assert result["row_count"] > 0
+    try:
+        json.dumps(result)
+    except TypeError as e:
+        pytest.fail(f"run_sql result with temporal values is not JSON serializable: {e}")
+
+
 def test_catalog_resource(demo_layer):
     """Test catalog_resource returns valid JSON catalog metadata."""
     result = catalog_resource()

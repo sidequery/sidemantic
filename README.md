@@ -1,17 +1,53 @@
 # Sidemantic
 
-SQL-first semantic layer for consistent metrics across your data stack.
+SQL-first semantic layer for consistent metrics across your data stack. Compatible with many other semantic model formats.
 
 - **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, Snowflake Cortex, Malloy, ThoughtSpot TML (YAML; mature, REST API export/import, OSI participant)
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL
 
-[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF)
+[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB download)
+
+![Jupyter Widget Preview](preview.png)
+
+## Should I use Sidemantic
+
+As you might notice, Sidemantic is a very ambitious and young semantic layer project. You will likely encounter some rough patches, especially with the more exotic features like converting between semantic model formats.
+
+For the time being it is recommended to use one of the formats that Sidemantic can read as your source of truth.
+
+Issue reports are much appreciated if you try out Sidemantic and hit a snag 🫡
 
 ## Quickstart
 
 Install:
 ```bash
 uv add sidemantic
+```
+
+Malloy support (uv):
+```bash
+uv add "sidemantic[malloy]"
+```
+
+Notebook widget (uv):
+```bash
+uv add "sidemantic[widget]" jupyterlab
+uv run jupyter lab
+```
+
+Marimo (uv):
+```bash
+uv add "sidemantic[widget]" marimo
+uv run marimo edit
+```
+
+```python
+import duckdb
+from sidemantic.widget import MetricsExplorer
+
+conn = duckdb.connect(":memory:")
+conn.execute("create table t as select 1 as value, 'a' as category, date '2024-01-01' as d")
+MetricsExplorer(conn.table("t"), time_dimension="d")
 ```
 
 Define models in SQL, YAML, or Python:

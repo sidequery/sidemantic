@@ -675,23 +675,29 @@ class MetricFlowAdapter(BaseAdapter):
         Returns:
             Resolved model name or None if no match found
         """
-        import inflect
-
-        p = inflect.engine()
-
         # Try exact match (case-sensitive)
         if entity_name in model_names:
             return entity_name
 
-        # Try pluralization
-        plural = p.plural(entity_name)
-        if plural in model_names:
-            return plural
+        # Try pluralization/singularization if inflect is available
+        try:
+            import inflect
 
-        # Try singularization
-        singular = p.singular_noun(entity_name)
-        if singular and singular in model_names:
-            return singular
+            p = inflect.engine()
+
+            plural = p.plural(entity_name)
+            if plural in model_names:
+                return plural
+
+            singular = p.singular_noun(entity_name)
+            if singular and singular in model_names:
+                return singular
+        except ImportError:
+            # Without inflect, try basic s-suffix heuristics
+            if entity_name + "s" in model_names:
+                return entity_name + "s"
+            if entity_name.endswith("s") and entity_name[:-1] in model_names:
+                return entity_name[:-1]
 
         # Try case-insensitive match
         entity_lower = entity_name.lower()

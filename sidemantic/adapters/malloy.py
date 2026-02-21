@@ -8,10 +8,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from antlr4 import CommonTokenStream, InputStream
-
 from sidemantic.adapters.base import BaseAdapter
-from sidemantic.adapters.malloy_grammar import MalloyLexer, MalloyParser, MalloyParserVisitor
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -19,8 +16,19 @@ from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 
+try:
+    from antlr4 import CommonTokenStream, InputStream
 
-class MalloyModelVisitor(MalloyParserVisitor):
+    from sidemantic.adapters.malloy_grammar import MalloyLexer, MalloyParser, MalloyParserVisitor
+
+    _ANTLR4_AVAILABLE = True
+except ImportError:
+    _ANTLR4_AVAILABLE = False
+    MalloyParserVisitor = object  # type: ignore[assignment,misc]
+    MalloyParser = None  # type: ignore[assignment]
+
+
+class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
     """Visitor that extracts semantic model information from Malloy AST."""
 
     def __init__(self):
@@ -679,7 +687,14 @@ class MalloyAdapter(BaseAdapter):
 
         Returns:
             Semantic graph with imported models
+
+        Raises:
+            ImportError: If antlr4-python3-runtime is not installed
         """
+        if not _ANTLR4_AVAILABLE:
+            raise ImportError(
+                'Malloy support requires antlr4-python3-runtime. Install with: pip install "sidemantic[malloy]"'
+            )
         graph = SemanticGraph()
         source_path = Path(source)
 
@@ -808,6 +823,20 @@ class MalloyAdapter(BaseAdapter):
         with open(output_path, "w") as f:
             f.write("\n".join(lines))
 
+    def _strip_model_prefix(self, sql: str) -> str:
+        """Strip {model}. prefix from SQL expression.
+
+        Malloy doesn't need table qualifiers for column references within a source,
+        so we remove the {model}. placeholder that sidemantic uses internally.
+
+        Args:
+            sql: SQL expression that may contain {model}. prefixes
+
+        Returns:
+            SQL expression with {model}. prefixes removed
+        """
+        return sql.replace("{model}.", "")
+
     def _export_source(self, model: Model) -> list[str]:
         """Export a model to Malloy source definition.
 
@@ -837,14 +866,39 @@ class MalloyAdapter(BaseAdapter):
             lines.append(f"  primary_key: {model.primary_key}")
 
         # Dimensions
-        if model.dimensions:
+        # Skip dimensions that match the primary key (Malloy auto-exposes the PK column).
+        # Skip passthrough dimensions (sql == name) since Malloy auto-exposes underlying
+        # table columns. Only export dimensions with actual transformations.
+        dims_to_export: list[tuple[Dimension, str]] = []
+        for dim in model.dimensions:
+            if dim.name == model.primary_key:
+                continue
+            sql = self._strip_model_prefix(dim.sql or dim.name).strip()
+            # Skip passthrough dimensions - Malloy auto-exposes table columns
+            if sql == dim.name:
+                continue
+            dims_to_export.append((dim, sql))
+
+        if dims_to_export:
             lines.append("")
             lines.append("  dimension:")
-            for dim in model.dimensions:
+            for dim, sql in dims_to_export:
                 if dim.description:
                     lines.append(f"    # desc: {dim.description}")
-                sql = dim.sql or dim.name
-                lines.append(f"    {dim.name} is {sql}")
+                # For time dimensions with granularity, use Malloy's time truncation syntax
+                # But only if the SQL doesn't already contain a truncation function
+                if dim.type == "time" and dim.granularity:
+                    sql_lower = sql.lower()
+                    already_has_truncation = (
+                        "date_trunc" in sql_lower or "::date" in sql_lower or sql_lower.endswith(f".{dim.granularity}")
+                    )
+                    if not already_has_truncation:
+                        # Append Malloy time accessor: .second, .minute, .hour, .day, .week, .month, .quarter, .year
+                        lines.append(f"    {dim.name} is {sql}.{dim.granularity}")
+                    else:
+                        lines.append(f"    {dim.name} is {sql}")
+                else:
+                    lines.append(f"    {dim.name} is {sql}")
 
         # Measures
         if model.metrics:
@@ -881,13 +935,15 @@ class MalloyAdapter(BaseAdapter):
         # Simple aggregation
         if metric.agg:
             if metric.sql:
-                expr = f"{metric.agg}({metric.sql})"
+                sql = self._strip_model_prefix(metric.sql)
+                expr = f"{metric.agg}({sql})"
             else:
                 expr = f"{metric.agg}()"
 
             # Add filter if present
             if metric.filters:
-                filter_str = ", ".join(metric.filters)
+                filters = [self._strip_model_prefix(f) for f in metric.filters]
+                filter_str = ", ".join(filters)
                 expr = f"{expr} {{ where: {filter_str} }}"
 
             return expr
@@ -898,6 +954,6 @@ class MalloyAdapter(BaseAdapter):
 
         # Fallback to sql
         if metric.sql:
-            return metric.sql
+            return self._strip_model_prefix(metric.sql)
 
         return "count()"

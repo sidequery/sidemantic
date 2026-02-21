@@ -97,6 +97,44 @@ def _convert_to_json_compatible(value: Any) -> Any:
     return value
 
 
+def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str | None:
+    related_name = rel.name
+    related_model = models.get(related_name)
+    if not related_model:
+        return None
+
+    if rel.type == "many_to_one":
+        fk = rel.foreign_key or f"{related_name}_id"
+        pk = rel.primary_key or related_model.primary_key
+        return f"{model_name}.{fk} = {related_name}.{pk}"
+
+    if rel.type in ("one_to_many", "one_to_one"):
+        if not rel.foreign_key:
+            return None
+        pk = models[model_name].primary_key
+        return f"{related_name}.{rel.foreign_key} = {model_name}.{pk}"
+
+    if rel.type == "many_to_many":
+        if rel.through:
+            junction_model = models.get(rel.through)
+            if not junction_model:
+                return None
+            junction_self_fk, junction_related_fk = rel.junction_keys()
+            if not junction_self_fk or not junction_related_fk:
+                return None
+            base_pk = models[model_name].primary_key
+            related_pk = rel.primary_key or related_model.primary_key
+            return (
+                f"{model_name}.{base_pk} = {rel.through}.{junction_self_fk} "
+                f"AND {rel.through}.{junction_related_fk} = {related_name}.{related_pk}"
+            )
+        if rel.foreign_key:
+            base_pk = models[model_name].primary_key
+            return f"{model_name}.{base_pk} = {related_name}.{rel.foreign_key}"
+
+    return None
+
+
 # Create MCP server
 mcp = FastMCP("sidemantic")
 
@@ -219,6 +257,15 @@ def get_models(model_names: list[str]) -> list[dict[str, Any]]:
                 rel_info["foreign_key"] = rel.foreign_key
             if rel.primary_key:
                 rel_info["primary_key"] = rel.primary_key
+            if rel.through:
+                rel_info["through"] = rel.through
+            if rel.through_foreign_key:
+                rel_info["through_foreign_key"] = rel.through_foreign_key
+            if rel.related_foreign_key:
+                rel_info["related_foreign_key"] = rel.related_foreign_key
+            join_condition = _format_join_condition(model_name, rel, layer.graph.models)
+            if join_condition:
+                rel_info["join_condition"] = join_condition
             rels.append(rel_info)
 
         detail = {
@@ -312,8 +359,8 @@ def run_query(
         limit=limit,
     )
 
-    # Execute query
-    result = layer.conn.execute(sql)
+    # Execute query via adapter (works with all database backends)
+    result = layer.adapter.execute(sql)
 
     # Convert to list of dicts with JSON-compatible values
     rows = result.fetchall()
@@ -420,7 +467,7 @@ def create_chart(
         limit=limit,
     )
 
-    result = layer.conn.execute(sql)
+    result = layer.adapter.execute(sql)
     rows = result.fetchall()
     columns = [desc[0] for desc in result.description]
     row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]

@@ -27,8 +27,11 @@ def merge_model(child: Model, parent: Model) -> Model:
     # Start with parent's data
     merged_data = parent.model_dump(exclude={"name"})
 
-    # Override with child's data (excluding None values and extends)
-    child_data = child.model_dump(exclude_none=True, exclude={"extends"})
+    # Override with child's explicitly set data (excluding extends).
+    # Using include=model_fields_set instead of exclude_none so that
+    # a child can explicitly set a field to None to clear a parent value.
+    child_fields = child.model_fields_set - {"extends"}
+    child_data = child.model_dump(include=child_fields)
 
     # Merge lists (dimensions, metrics, relationships, segments)
     # Child's items are added to parent's items
@@ -85,8 +88,9 @@ def merge_metric(child: Metric, parent: Metric) -> Metric:
     # Start with parent's data
     merged_data = parent.model_dump(exclude={"name"})
 
-    # Override with child's data (excluding None values and extends)
-    child_data = child.model_dump(exclude_none=True, exclude={"extends"})
+    # Override with child's explicitly set data (excluding extends).
+    child_fields = child.model_fields_set - {"extends"}
+    child_data = child.model_dump(include=child_fields)
 
     # Handle list fields - merge arrays
     for field in ["filters", "drill_fields"]:

@@ -166,11 +166,24 @@ class TestEdgeCases:
             assert dim.type == "boolean", f"{dim_name} should be boolean type"
 
 
+def _is_passthrough_dimension(dim, primary_key: str) -> bool:
+    """Check if a dimension is a passthrough (sql == name) that won't be exported."""
+    if dim.name == primary_key:
+        return True
+    sql = (dim.sql or dim.name).replace("{model}.", "").strip()
+    return sql == dim.name
+
+
 class TestExportRoundtrip:
     """Test export and roundtrip functionality."""
 
     def test_edge_cases_roundtrip(self):
-        """Test that edge cases can be exported and re-parsed."""
+        """Test that edge cases can be exported and re-parsed.
+
+        Note: Passthrough dimensions (where sql == name) are not exported to Malloy
+        because Malloy auto-exposes table columns. We only compare non-passthrough
+        dimensions in the roundtrip check.
+        """
         import tempfile
 
         adapter = MalloyAdapter()
@@ -196,8 +209,17 @@ class TestExportRoundtrip:
                 model1 = graph1.get_model(model_name)
                 model2 = graph2.get_model(model_name)
 
-                # Compare dimension count
-                assert len(model2.dimensions) == len(model1.dimensions), f"Dimension count mismatch for {model_name}"
+                # Compare dimension count (excluding passthrough dimensions which are skipped in export)
+                # Malloy auto-exposes table columns, so we don't export `name is name` patterns
+                dims1_non_passthrough = [
+                    d for d in model1.dimensions if not _is_passthrough_dimension(d, model1.primary_key)
+                ]
+                dims2_non_passthrough = [
+                    d for d in model2.dimensions if not _is_passthrough_dimension(d, model2.primary_key)
+                ]
+                assert len(dims2_non_passthrough) == len(dims1_non_passthrough), (
+                    f"Dimension count mismatch for {model_name}"
+                )
 
                 # Compare metric count
                 assert len(model2.metrics) == len(model1.metrics), f"Metric count mismatch for {model_name}"

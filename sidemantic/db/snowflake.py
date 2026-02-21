@@ -27,20 +27,29 @@ class SnowflakeResult:
         return self.cursor.fetchall()
 
     def fetch_record_batch(self) -> Any:
-        """Convert result to PyArrow RecordBatchReader."""
+        """Convert result to PyArrow RecordBatchReader.
+
+        Uses native Arrow fetching when available for better performance.
+        Falls back to row-by-row conversion for older connector versions.
+        """
         import pyarrow as pa
 
-        # Fetch all rows and convert to Arrow
-        rows = self.cursor.fetchall()
-        if not rows:
-            # Empty result
-            schema = pa.schema([(desc[0], pa.string()) for desc in self._description])
-            return pa.RecordBatchReader.from_batches(schema, [])
-
-        # Build Arrow table from rows
-        columns = {desc[0]: [row[i] for row in rows] for i, desc in enumerate(self._description)}
-        table = pa.table(columns)
-        return pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+        # Try native Arrow fetching first (available since snowflake-connector-python 2.4.0)
+        try:
+            arrow_table = self.cursor.fetch_arrow_all()
+            if arrow_table is None or arrow_table.num_rows == 0:
+                schema = pa.schema([(desc[0], pa.string()) for desc in self._description])
+                return pa.RecordBatchReader.from_batches(schema, [])
+            return pa.RecordBatchReader.from_batches(arrow_table.schema, arrow_table.to_batches())
+        except Exception:
+            # Fallback for older connector versions or unsupported result types
+            rows = self.cursor.fetchall()
+            if not rows:
+                schema = pa.schema([(desc[0], pa.string()) for desc in self._description])
+                return pa.RecordBatchReader.from_batches(schema, [])
+            columns = {desc[0]: [row[i] for row in rows] for i, desc in enumerate(self._description)}
+            table = pa.table(columns)
+            return pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
 
     @property
     def description(self):

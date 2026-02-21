@@ -1,0 +1,40 @@
+semantic_model:
+  - name: simple_analytics
+    description: Simple analytics model
+
+    datasets:
+      - name: events
+        source: analytics.events
+        primary_key: [event_id]
+        description: User events
+        fields:
+          - name: event_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: event_id
+          - name: user_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: user_id
+          - name: event_type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: event_type
+          - name: event_time
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: event_time
+            dimension:
+              is_time: true
+
+    metrics:
+      - name: event_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(*)
+        description: Total event count

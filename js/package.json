@@ -1,0 +1,15 @@
+{
+  "name": "sidemantic-widget-js",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild widget.js --bundle --format=esm --outfile=../sidemantic/widget/static/widget.js --minify",
+    "watch": "esbuild widget.js --bundle --format=esm --outfile=../sidemantic/widget/static/widget.js --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  },
+  "dependencies": {
+    "apache-arrow": "^17.0.0"
+  }
+}

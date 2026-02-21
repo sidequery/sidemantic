@@ -27,21 +27,29 @@ class DatabricksResult:
         return self.cursor.fetchall()
 
     def fetch_record_batch(self) -> Any:
-        """Convert result to PyArrow RecordBatchReader."""
+        """Convert result to PyArrow RecordBatchReader.
+
+        Uses native Arrow fetching when available for better performance.
+        Falls back to row-by-row conversion when Arrow support is unavailable.
+        """
         import pyarrow as pa
 
-        # Databricks cursor may support Arrow format directly
-        # For now, convert from standard result
-        rows = self.cursor.fetchall()
-        if not rows:
-            # Empty result
-            schema = pa.schema([(desc[0], pa.string()) for desc in self._description])
-            return pa.RecordBatchReader.from_batches(schema, [])
-
-        # Build Arrow table from rows
-        columns = {desc[0]: [row[i] for row in rows] for i, desc in enumerate(self._description)}
-        table = pa.table(columns)
-        return pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+        # Try native Arrow fetching first (databricks-sql-connector supports this)
+        try:
+            arrow_table = self.cursor.fetchall_arrow()
+            if arrow_table is None or arrow_table.num_rows == 0:
+                schema = pa.schema([(desc[0], pa.string()) for desc in self._description])
+                return pa.RecordBatchReader.from_batches(schema, [])
+            return pa.RecordBatchReader.from_batches(arrow_table.schema, arrow_table.to_batches())
+        except (AttributeError, Exception):
+            # Fallback for connections without Arrow support (e.g., PyArrow not installed)
+            rows = self.cursor.fetchall()
+            if not rows:
+                schema = pa.schema([(desc[0], pa.string()) for desc in self._description])
+                return pa.RecordBatchReader.from_batches(schema, [])
+            columns = {desc[0]: [row[i] for row in rows] for i, desc in enumerate(self._description)}
+            table = pa.table(columns)
+            return pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
 
     @property
     def description(self):

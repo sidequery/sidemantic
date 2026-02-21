@@ -169,8 +169,21 @@ def test_malloy_adapter_export():
         output_path.unlink()
 
 
+def _is_passthrough_dimension(dim, primary_key: str) -> bool:
+    """Check if a dimension is a passthrough (sql == name) that won't be exported."""
+    if dim.name == primary_key:
+        return True
+    sql = (dim.sql or dim.name).replace("{model}.", "").strip()
+    return sql == dim.name
+
+
 def test_malloy_adapter_roundtrip():
-    """Test that parse -> export -> parse produces equivalent models."""
+    """Test that parse -> export -> parse produces equivalent models.
+
+    Note: Passthrough dimensions (where sql == name) are not exported to Malloy
+    because Malloy auto-exposes table columns. We only compare non-passthrough
+    dimensions in the roundtrip check.
+    """
     import tempfile
 
     adapter = MalloyAdapter()
@@ -193,12 +206,22 @@ def test_malloy_adapter_roundtrip():
         # Compare key attributes
         assert flights1.name == flights2.name
         assert flights1.primary_key == flights2.primary_key
-        assert len(flights1.dimensions) == len(flights2.dimensions)
+
+        # Compare non-passthrough dimensions only (passthroughs are not exported)
+        dims1_non_passthrough = [
+            d for d in flights1.dimensions if not _is_passthrough_dimension(d, flights1.primary_key)
+        ]
+        dims2_non_passthrough = [
+            d for d in flights2.dimensions if not _is_passthrough_dimension(d, flights2.primary_key)
+        ]
+        assert len(dims1_non_passthrough) == len(dims2_non_passthrough)
+
+        # Compare metrics (all metrics are exported)
         assert len(flights1.metrics) == len(flights2.metrics)
 
-        # Check dimension names match
-        dim_names1 = {d.name for d in flights1.dimensions}
-        dim_names2 = {d.name for d in flights2.dimensions}
+        # Check non-passthrough dimension names match
+        dim_names1 = {d.name for d in dims1_non_passthrough}
+        dim_names2 = {d.name for d in dims2_non_passthrough}
         assert dim_names1 == dim_names2
 
         # Check metric names match

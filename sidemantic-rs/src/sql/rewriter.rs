@@ -544,19 +544,9 @@ impl<'a> QueryRewriter<'a> {
             | Expression::Avg(_)
             | Expression::Min(_)
             | Expression::Max(_)
-            | Expression::Median(_) => true,
-            Expression::AggregateFunction(f) => {
-                matches!(
-                    f.name.to_uppercase().as_str(),
-                    "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" | "MEDIAN"
-                )
-            }
-            Expression::Function(f) => {
-                matches!(
-                    f.name.to_uppercase().as_str(),
-                    "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" | "MEDIAN" | "COUNT_DISTINCT"
-                )
-            }
+            | Expression::Median(_)
+            | Expression::AggregateFunction(_) => true,
+            Expression::Function(f) => is_aggregate_function_name(&f.name),
             _ => false,
         }
     }
@@ -594,6 +584,37 @@ impl<'a> QueryRewriter<'a> {
             comments: vec![],
         }
     }
+}
+
+/// Check if a function name is a known SQL aggregate
+fn is_aggregate_function_name(name: &str) -> bool {
+    matches!(
+        name.to_uppercase().as_str(),
+        // Standard SQL aggregates
+        "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" | "MEDIAN"
+        | "COUNT_DISTINCT"
+        // Statistical
+        | "STDDEV" | "STDDEV_POP" | "STDDEV_SAMP"
+        | "VARIANCE" | "VAR_POP" | "VAR_SAMP"
+        | "CORR" | "COVAR_POP" | "COVAR_SAMP"
+        | "REGR_SLOPE" | "REGR_INTERCEPT" | "REGR_COUNT" | "REGR_R2"
+        | "REGR_AVGX" | "REGR_AVGY" | "REGR_SXX" | "REGR_SYY" | "REGR_SXY"
+        // Percentile / ordered-set
+        | "PERCENTILE_CONT" | "PERCENTILE_DISC" | "MODE"
+        // Boolean
+        | "BOOL_AND" | "BOOL_OR" | "EVERY"
+        // Bitwise
+        | "BIT_AND" | "BIT_OR" | "BIT_XOR"
+        // Collection / string
+        | "ARRAY_AGG" | "STRING_AGG" | "GROUP_CONCAT" | "LISTAGG"
+        | "COLLECT_LIST" | "COLLECT_SET"
+        // Approximate
+        | "APPROX_COUNT_DISTINCT" | "APPROX_PERCENTILE" | "HLL_COUNT_DISTINCT"
+        | "APPROX_TOP_COUNT"
+        // Misc
+        | "ANY_VALUE" | "FIRST_VALUE" | "LAST_VALUE"
+        | "NTH_VALUE" | "XMLAGG" | "JSON_ARRAYAGG" | "JSON_OBJECTAGG"
+    )
 }
 
 /// Build a TableRef from a possibly-qualified table name

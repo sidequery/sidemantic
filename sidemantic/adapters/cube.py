@@ -396,6 +396,17 @@ class CubeAdapter(BaseAdapter):
 
         preagg_type = preagg_def.get("type", "rollup")
 
+        # Normalize Cube camelCase type names to Sidemantic snake_case
+        preagg_type_mapping = {
+            "rollupJoin": "rollup_join",
+            "rollupLambda": "lambda",
+            "rollup_join": "rollup_join",
+            "original_sql": "original_sql",
+            "rollup": "rollup",
+            "lambda": "lambda",
+        }
+        preagg_type = preagg_type_mapping.get(preagg_type, preagg_type)
+
         # Extract measures - strip CUBE prefix if present
         measures = []
         for measure_ref in preagg_def.get("measures") or []:

@@ -240,16 +240,19 @@ def test_roundtrip_real_bsl_example():
 
 
 def test_bsl_flights_with_joins():
-    """Test BSL flights example with joins roundtrips correctly."""
+    """Test BSL flights example with joins roundtrips correctly (full 5-model version)."""
     adapter = BSLAdapter()
 
     # Import original
     graph1 = adapter.parse("tests/fixtures/bsl/flights.yml")
 
-    # Verify joins imported
+    # Verify joins imported (3 joins on flights: carriers, aircraft, origin_airport)
     flights = graph1.models["flights"]
-    assert len(flights.relationships) == 1
-    assert flights.relationships[0].name == "carriers"
+    assert len(flights.relationships) == 3
+    rel_names = {r.name for r in flights.relationships}
+    assert "carriers" in rel_names
+    assert "aircraft" in rel_names
+    assert "airports" in rel_names
 
     # Export and re-import
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -261,9 +264,11 @@ def test_bsl_flights_with_joins():
 
         # Verify joins preserved
         flights2 = graph2.models["flights"]
-        assert len(flights2.relationships) == 1
-        assert flights2.relationships[0].name == "carriers"
-        assert flights2.relationships[0].type == "many_to_one"
+        assert len(flights2.relationships) == 3
+        rel_names2 = {r.name for r in flights2.relationships}
+        assert "carriers" in rel_names2
+        carriers_rel = next(r for r in flights2.relationships if r.name == "carriers")
+        assert carriers_rel.type == "many_to_one"
 
     finally:
         temp_path.unlink(missing_ok=True)

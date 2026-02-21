@@ -1,0 +1,85 @@
+// Query-type model without explicit type property (should be inferred).
+// Exercises query model inference and ratio detection.
+
+const session_timeout_minutes = 30
+
+Model kitchen_user_sessions {
+  description: 'Sessionized user activity'
+  query: @sql
+    select
+      user_id,
+      session_id,
+      started_at,
+      ended_at,
+      page_count,
+      extract(epoch from ended_at - started_at) as duration_secs
+    from {{ ref('sessions') }}
+    where started_at >= current_date - interval '90 days'
+  ;;
+
+  dimension session_id {
+    type: 'text'
+    primary_key: true
+    definition: @sql {{ #SOURCE.session_id }};;
+  }
+
+  dimension user_id {
+    type: 'number'
+  }
+
+  dimension started_at {
+    type: 'datetime'
+    label: 'Session Start'
+    definition: @sql {{ started_at }};;
+  }
+
+  dimension ended_at {
+    type: 'datetime'
+    label: 'Session End'
+    definition: @sql {{ ended_at }};;
+  }
+
+  dimension duration_secs {
+    type: 'number'
+    label: 'Duration (seconds)'
+    format: '#,##0'
+  }
+
+  dimension page_count {
+    type: 'number'
+    label: 'Pages Viewed'
+    format: '#,##0'
+  }
+
+  measure session_count {
+    label: 'Total Sessions'
+    definition: @sql {{ session_id }};;
+    aggregation_type: 'count'
+  }
+
+  measure unique_session_users {
+    label: 'Unique Users'
+    definition: @sql {{ user_id }};;
+    aggregation_type: 'count distinct'
+  }
+
+  measure avg_duration {
+    label: 'Avg Session Duration'
+    definition: @sql {{ duration_secs }};;
+    aggregation_type: 'avg'
+    format: '#,##0.0'
+  }
+
+  measure total_pages {
+    label: 'Total Page Views'
+    definition: @sql {{ page_count }};;
+    aggregation_type: 'sum'
+  }
+
+  measure pages_per_session {
+    label: 'Pages per Session'
+    definition: @sql {{ total_pages }} / NULLIF({{ session_count }}, 0);;
+    aggregation_type: 'custom'
+    format: '#,##0.00'
+  }
+}

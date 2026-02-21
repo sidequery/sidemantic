@@ -1840,3 +1840,481 @@ class TestSupplyChainFixture:
                 has_custom_ext = True
                 break
         assert has_custom_ext or hasattr(graph, "custom_extensions")
+
+
+# =============================================================================
+# OSI OFFICIAL TPC-DS MODEL (Apache 2.0 / CC BY)
+# Source: https://github.com/open-semantic-interchange/OSI
+# =============================================================================
+
+
+class TestTpcdsOsiOfficialFixture:
+    """Tests for the official TPC-DS example from the OSI repository.
+
+    This is the canonical example from open-semantic-interchange/OSI. It exercises:
+    5 datasets, 4 relationships, 5 metrics, ai_context with synonyms at every level,
+    custom_extensions for SALESFORCE and DBT vendors, composite PKs, unique_keys,
+    and a version field.
+    """
+
+    @pytest.fixture
+    def graph(self):
+        adapter = OSIAdapter()
+        return adapter.parse("tests/fixtures/osi/tpcds_osi_official.yaml")
+
+    def test_parses_without_errors(self, graph):
+        """Official OSI fixture parses cleanly."""
+        assert isinstance(graph, SemanticGraph)
+
+    def test_dataset_count(self, graph):
+        """All 5 datasets are loaded."""
+        assert len(graph.models) == 5
+        expected = {"store_sales", "customer", "date_dim", "store", "item"}
+        assert set(graph.models.keys()) == expected
+
+    def test_metric_count(self, graph):
+        """All 5 metrics are loaded."""
+        assert len(graph.metrics) == 5
+        expected = {
+            "total_sales",
+            "total_profit",
+            "customer_lifetime_value",
+            "sales_by_brand",
+            "store_productivity",
+        }
+        assert set(graph.metrics.keys()) == expected
+
+    def test_composite_primary_key(self, graph):
+        """store_sales has composite PK [ss_item_sk, ss_ticket_number]."""
+        store_sales = graph.models["store_sales"]
+        assert store_sales.primary_key == ["ss_item_sk", "ss_ticket_number"]
+
+    def test_unique_keys(self, graph):
+        """store_sales has unique_keys matching its composite PK."""
+        store_sales = graph.models["store_sales"]
+        assert store_sales.unique_keys == [["ss_item_sk", "ss_ticket_number"]]
+
+    def test_single_column_pks(self, graph):
+        """Dimension tables have single-column primary keys stored as strings."""
+        assert graph.models["customer"].primary_key == "c_customer_sk"
+        assert graph.models["date_dim"].primary_key == "d_date_sk"
+        assert graph.models["store"].primary_key == "s_store_sk"
+        assert graph.models["item"].primary_key == "i_item_sk"
+
+    def test_source_tables(self, graph):
+        """Each dataset maps to the correct tpcds.public.* source."""
+        assert graph.models["store_sales"].table == "tpcds.public.store_sales"
+        assert graph.models["customer"].table == "tpcds.public.customer"
+        assert graph.models["date_dim"].table == "tpcds.public.date_dim"
+        assert graph.models["store"].table == "tpcds.public.store"
+        assert graph.models["item"].table == "tpcds.public.item"
+
+    def test_store_sales_field_count(self, graph):
+        """store_sales has 8 fields."""
+        assert len(graph.models["store_sales"].dimensions) == 8
+
+    def test_date_dim_field_count(self, graph):
+        """date_dim has 5 fields (d_date_sk, d_date, d_year, d_quarter_name, d_month_name)."""
+        assert len(graph.models["date_dim"].dimensions) == 5
+
+    def test_customer_field_count(self, graph):
+        """customer has 6 fields (includes computed customer_full_name)."""
+        assert len(graph.models["customer"].dimensions) == 6
+
+    def test_item_field_count(self, graph):
+        """item has 6 fields."""
+        assert len(graph.models["item"].dimensions) == 6
+
+    def test_store_field_count(self, graph):
+        """store has 6 fields."""
+        assert len(graph.models["store"].dimensions) == 6
+
+    def test_relationships_count(self, graph):
+        """store_sales has 4 relationships (date_dim, customer, item, store)."""
+        store_sales = graph.models["store_sales"]
+        assert len(store_sales.relationships) == 4
+
+    def test_relationship_targets(self, graph):
+        """Relationships point to the correct dimension tables."""
+        store_sales = graph.models["store_sales"]
+        targets = {r.name for r in store_sales.relationships}
+        assert targets == {"customer", "date_dim", "store", "item"}
+
+    def test_relationship_foreign_keys(self, graph):
+        """Each relationship has the correct foreign key."""
+        store_sales = graph.models["store_sales"]
+        rel_map = {r.name: r for r in store_sales.relationships}
+        assert rel_map["customer"].foreign_key == "ss_customer_sk"
+        assert rel_map["date_dim"].foreign_key == "ss_sold_date_sk"
+        assert rel_map["store"].foreign_key == "ss_store_sk"
+        assert rel_map["item"].foreign_key == "ss_item_sk"
+
+    def test_relationship_primary_keys(self, graph):
+        """Each relationship references the correct PK on the target."""
+        store_sales = graph.models["store_sales"]
+        rel_map = {r.name: r for r in store_sales.relationships}
+        assert rel_map["customer"].primary_key == "c_customer_sk"
+        assert rel_map["date_dim"].primary_key == "d_date_sk"
+        assert rel_map["store"].primary_key == "s_store_sk"
+        assert rel_map["item"].primary_key == "i_item_sk"
+
+    def test_all_relationships_many_to_one(self, graph):
+        """All relationships are many_to_one (fact -> dimension)."""
+        store_sales = graph.models["store_sales"]
+        for rel in store_sales.relationships:
+            assert rel.type == "many_to_one"
+
+    def test_dimension_tables_have_no_relationships(self, graph):
+        """Dimension tables have no outbound relationships."""
+        for name in ["customer", "date_dim", "store", "item"]:
+            assert len(graph.models[name].relationships) == 0
+
+    def test_time_dimension_d_date(self, graph):
+        """date_dim.d_date is recognized as time dimension."""
+        d_date = graph.models["date_dim"].get_dimension("d_date")
+        assert d_date is not None
+        assert d_date.type == "time"
+
+    def test_time_dimensions_d_year_quarter_month(self, graph):
+        """d_year, d_quarter_name, d_month_name are also time dimensions."""
+        date_dim = graph.models["date_dim"]
+        for name in ["d_year", "d_quarter_name", "d_month_name"]:
+            dim = date_dim.get_dimension(name)
+            assert dim is not None
+            assert dim.type == "time", f"{name} should be time"
+
+    def test_computed_field_customer_full_name(self, graph):
+        """customer_full_name uses ANSI_SQL concatenation."""
+        customer = graph.models["customer"]
+        full_name = customer.get_dimension("customer_full_name")
+        assert full_name is not None
+        assert full_name.sql == "c_first_name || ' ' || c_last_name"
+
+    def test_ai_context_on_datasets(self, graph):
+        """All datasets have ai_context with synonyms."""
+        for name in ["store_sales", "customer", "date_dim", "store", "item"]:
+            model = graph.models[name]
+            assert model.meta is not None, f"{name} should have meta"
+            assert "ai_context" in model.meta, f"{name} should have ai_context"
+            assert "synonyms" in model.meta["ai_context"], f"{name} should have synonyms"
+
+    def test_ai_context_store_sales_synonyms(self, graph):
+        """store_sales has expected synonym list."""
+        ss = graph.models["store_sales"]
+        synonyms = ss.meta["ai_context"]["synonyms"]
+        assert "sales transactions" in synonyms
+        assert "POS data" in synonyms
+        assert "retail sales" in synonyms
+
+    def test_ai_context_on_fields(self, graph):
+        """Fields with ai_context have their synonyms preserved."""
+        ss = graph.models["store_sales"]
+        ss_item = ss.get_dimension("ss_item_sk")
+        assert ss_item.meta is not None
+        assert "product" in ss_item.meta["ai_context"]["synonyms"]
+
+    def test_ai_context_on_metrics(self, graph):
+        """Metrics have ai_context with synonyms."""
+        total_sales = graph.metrics["total_sales"]
+        assert total_sales.meta is not None
+        assert "total revenue" in total_sales.meta["ai_context"]["synonyms"]
+
+    def test_metric_total_sales(self, graph):
+        """total_sales metric parses correctly."""
+        metric = graph.metrics["total_sales"]
+        assert metric.description == "Total sales revenue across all transactions"
+
+    def test_metric_customer_lifetime_value(self, graph):
+        """customer_lifetime_value (ratio with COUNT DISTINCT) parses."""
+        metric = graph.metrics["customer_lifetime_value"]
+        assert metric.description is not None
+        assert "lifetime" in metric.description.lower()
+
+    def test_metric_store_productivity(self, graph):
+        """store_productivity (division with NULLIF) parses."""
+        metric = graph.metrics["store_productivity"]
+        assert "employee" in metric.description.lower()
+
+    @pytest.mark.xfail(reason="OSI adapter does not parse semantic_model-level custom_extensions")
+    def test_custom_extensions_salesforce_dbt(self, graph):
+        """custom_extensions for SALESFORCE and DBT vendors are captured."""
+        has_custom_ext = False
+        for model in graph.models.values():
+            if model.meta and "custom_extensions" in model.meta:
+                has_custom_ext = True
+                break
+        assert has_custom_ext or hasattr(graph, "custom_extensions")
+
+
+# =============================================================================
+# MDB-ENGINE MOVIES MODEL (MIT license)
+# Source: https://github.com/ranfysvalle02/mdb-engine
+# =============================================================================
+
+
+class TestMdbMoviesFixture:
+    """Tests for the mdb-engine movies fixture.
+
+    This fixture has 5 datasets, 3 metrics, and relationships in non-standard format
+    (left_dataset/right_dataset/cardinality instead of from/to/from_columns/to_columns).
+    The adapter parses datasets and metrics but silently skips the non-standard relationships.
+    """
+
+    @pytest.fixture
+    def graph(self):
+        adapter = OSIAdapter()
+        return adapter.parse("tests/fixtures/osi/mdb_movies.yaml")
+
+    def test_parses_without_errors(self, graph):
+        """Fixture parses cleanly despite non-standard relationship format."""
+        assert isinstance(graph, SemanticGraph)
+
+    def test_dataset_count(self, graph):
+        """All 5 datasets are loaded."""
+        assert len(graph.models) == 5
+        expected = {"actor", "movie", "director", "genre", "user_preference"}
+        assert set(graph.models.keys()) == expected
+
+    def test_metric_count(self, graph):
+        """All 3 metrics are loaded."""
+        assert len(graph.metrics) == 3
+        expected = {"movies_watched", "favorite_count", "genre_diversity"}
+        assert set(graph.metrics.keys()) == expected
+
+    def test_nonstandard_relationships_skipped(self, graph):
+        """Non-standard relationships (left_dataset/right_dataset) are silently skipped."""
+        for model in graph.models.values():
+            assert len(model.relationships) == 0
+
+    def test_actor_fields(self, graph):
+        """actor has 3 fields: actor_name, notable_roles, birth_year."""
+        actor = graph.models["actor"]
+        assert len(actor.dimensions) == 3
+        dim_names = {d.name for d in actor.dimensions}
+        assert dim_names == {"actor_name", "notable_roles", "birth_year"}
+
+    def test_actor_birth_year_is_time(self, graph):
+        """birth_year is marked as a time dimension."""
+        actor = graph.models["actor"]
+        birth_year = actor.get_dimension("birth_year")
+        assert birth_year.type == "time"
+
+    def test_movie_fields(self, graph):
+        """movie has 4 fields: title, year, rating, plot."""
+        movie = graph.models["movie"]
+        assert len(movie.dimensions) == 4
+        dim_names = {d.name for d in movie.dimensions}
+        assert dim_names == {"title", "year", "rating", "plot"}
+
+    def test_movie_year_is_time(self, graph):
+        """year is marked as a time dimension."""
+        movie = graph.models["movie"]
+        year_dim = movie.get_dimension("year")
+        assert year_dim.type == "time"
+
+    def test_director_fields(self, graph):
+        """director has 2 fields: director_name, style."""
+        director = graph.models["director"]
+        assert len(director.dimensions) == 2
+
+    def test_genre_fields(self, graph):
+        """genre has 1 field: genre_name."""
+        genre = graph.models["genre"]
+        assert len(genre.dimensions) == 1
+
+    def test_user_preference_fields(self, graph):
+        """user_preference has 2 fields: preference_type, target_name."""
+        up = graph.models["user_preference"]
+        assert len(up.dimensions) == 2
+
+    def test_primary_keys(self, graph):
+        """Each dataset has the correct single-column primary key."""
+        assert graph.models["actor"].primary_key == "actor_id"
+        assert graph.models["movie"].primary_key == "movie_id"
+        assert graph.models["director"].primary_key == "director_id"
+        assert graph.models["genre"].primary_key == "genre_id"
+        assert graph.models["user_preference"].primary_key == "preference_id"
+
+    def test_source_tables(self, graph):
+        """Datasets map to mdb_engine.ai_chat.* sources."""
+        assert graph.models["actor"].table == "mdb_engine.ai_chat.actor"
+        assert graph.models["movie"].table == "mdb_engine.ai_chat.movie"
+        assert graph.models["director"].table == "mdb_engine.ai_chat.director"
+        assert graph.models["genre"].table == "mdb_engine.ai_chat.genre"
+        assert graph.models["user_preference"].table == "mdb_engine.ai_chat.user_preference"
+
+    def test_ai_context_on_all_datasets(self, graph):
+        """All datasets have ai_context with synonyms."""
+        for name in ["actor", "movie", "director", "genre", "user_preference"]:
+            model = graph.models[name]
+            assert model.meta is not None, f"{name} should have meta"
+            assert "ai_context" in model.meta
+            assert "synonyms" in model.meta["ai_context"]
+
+    def test_actor_synonyms_extensive(self, graph):
+        """actor has extensive synonym list (19 entries)."""
+        actor = graph.models["actor"]
+        synonyms = actor.meta["ai_context"]["synonyms"]
+        assert len(synonyms) >= 15
+        assert "actor" in synonyms
+        assert "A-lister" in synonyms
+
+    def test_genre_synonyms_include_genre_names(self, graph):
+        """genre synonyms include actual genre names (drama, comedy, etc.)."""
+        genre = graph.models["genre"]
+        synonyms = genre.meta["ai_context"]["synonyms"]
+        assert "drama" in synonyms
+        assert "comedy" in synonyms
+        assert "sci-fi" in synonyms
+
+    def test_field_level_ai_context(self, graph):
+        """Fields have ai_context synonyms preserved."""
+        actor = graph.models["actor"]
+        actor_name = actor.get_dimension("actor_name")
+        assert actor_name.meta is not None
+        assert "full name" in actor_name.meta["ai_context"]["synonyms"]
+
+    def test_metric_movies_watched(self, graph):
+        """movies_watched metric parses (COUNT DISTINCT)."""
+        metric = graph.metrics["movies_watched"]
+        assert metric.description is not None
+
+    def test_metric_favorite_count(self, graph):
+        """favorite_count metric with FILTER clause parses."""
+        metric = graph.metrics["favorite_count"]
+        assert metric.description is not None
+
+    def test_metric_genre_diversity(self, graph):
+        """genre_diversity metric parses (COUNT DISTINCT)."""
+        metric = graph.metrics["genre_diversity"]
+        assert metric.description is not None
+
+    def test_metric_ai_context(self, graph):
+        """Metrics have ai_context with synonyms."""
+        for name in ["movies_watched", "favorite_count", "genre_diversity"]:
+            metric = graph.metrics[name]
+            assert metric.meta is not None, f"{name} should have meta"
+            assert "ai_context" in metric.meta
+
+
+# =============================================================================
+# MDB-ENGINE MEMBER KNOWLEDGE MODEL (MIT license)
+# Source: https://github.com/ranfysvalle02/mdb-engine
+# =============================================================================
+
+
+class TestMdbMemberKnowledgeFixture:
+    """Tests for the mdb-engine member_knowledge auto-scaffolded fixture.
+
+    This fixture has 8 datasets (actor, movie, director, genre, person, concept,
+    event, user_preference), no metrics (empty list), and non-standard relationships
+    nested inside the semantic_model entry. Each dataset has a single field
+    (except user_preference with 2).
+    """
+
+    @pytest.fixture
+    def graph(self):
+        adapter = OSIAdapter()
+        return adapter.parse("tests/fixtures/osi/mdb_member_knowledge.yaml")
+
+    def test_parses_without_errors(self, graph):
+        """Fixture parses cleanly despite non-standard relationship format."""
+        assert isinstance(graph, SemanticGraph)
+
+    def test_dataset_count(self, graph):
+        """All 8 datasets are loaded."""
+        assert len(graph.models) == 8
+        expected = {
+            "actor",
+            "movie",
+            "director",
+            "genre",
+            "person",
+            "concept",
+            "event",
+            "user_preference",
+        }
+        assert set(graph.models.keys()) == expected
+
+    def test_no_metrics(self, graph):
+        """Empty metrics list results in no graph-level metrics."""
+        assert len(graph.metrics) == 0
+
+    def test_nonstandard_relationships_skipped(self, graph):
+        """Non-standard relationships are silently skipped."""
+        for model in graph.models.values():
+            assert len(model.relationships) == 0
+
+    def test_single_field_datasets(self, graph):
+        """Most datasets have exactly 1 field (the *_name field)."""
+        single_field_datasets = ["actor", "movie", "director", "genre", "person", "concept", "event"]
+        for name in single_field_datasets:
+            model = graph.models[name]
+            assert len(model.dimensions) == 1, f"{name} should have 1 field, got {len(model.dimensions)}"
+
+    def test_user_preference_has_two_fields(self, graph):
+        """user_preference has 2 fields: preference_type, target_name."""
+        up = graph.models["user_preference"]
+        assert len(up.dimensions) == 2
+        dim_names = {d.name for d in up.dimensions}
+        assert dim_names == {"preference_type", "target_name"}
+
+    def test_primary_keys(self, graph):
+        """Each dataset has the expected primary key."""
+        expected_pks = {
+            "actor": "actor_id",
+            "movie": "movie_id",
+            "director": "director_id",
+            "genre": "genre_id",
+            "person": "person_id",
+            "concept": "concept_id",
+            "event": "event_id",
+            "user_preference": "preference_id",
+        }
+        for name, expected_pk in expected_pks.items():
+            assert graph.models[name].primary_key == expected_pk, f"{name} PK mismatch"
+
+    def test_source_tables(self, graph):
+        """Datasets map to mdb_engine.ai_chat.* sources."""
+        for name in ["actor", "movie", "director", "genre", "person", "concept", "event"]:
+            assert graph.models[name].table == f"mdb_engine.ai_chat.{name}"
+        assert graph.models["user_preference"].table == "mdb_engine.ai_chat.user_preference"
+
+    def test_ai_context_on_all_datasets(self, graph):
+        """All 8 datasets have ai_context with synonyms."""
+        for name in graph.models:
+            model = graph.models[name]
+            assert model.meta is not None, f"{name} should have meta"
+            assert "ai_context" in model.meta
+            assert "synonyms" in model.meta["ai_context"]
+
+    def test_field_ai_context(self, graph):
+        """Fields have ai_context with synonyms."""
+        actor = graph.models["actor"]
+        actor_name = actor.get_dimension("actor_name")
+        assert actor_name.meta is not None
+        assert "name" in actor_name.meta["ai_context"]["synonyms"]
+
+    def test_concept_dataset(self, graph):
+        """concept dataset exists with expected structure (unique to this fixture)."""
+        concept = graph.models["concept"]
+        assert concept.table == "mdb_engine.ai_chat.concept"
+        assert concept.primary_key == "concept_id"
+        dim = concept.get_dimension("concept_name")
+        assert dim is not None
+        assert dim.sql == "name"
+
+    def test_person_dataset(self, graph):
+        """person dataset exists with expected structure (unique to this fixture)."""
+        person = graph.models["person"]
+        assert person.table == "mdb_engine.ai_chat.person"
+        assert person.primary_key == "person_id"
+        dim = person.get_dimension("person_name")
+        assert dim is not None
+        assert dim.sql == "name"
+
+    def test_event_dataset(self, graph):
+        """event dataset exists with expected structure (unique to this fixture)."""
+        event = graph.models["event"]
+        assert event.table == "mdb_engine.ai_chat.event"
+        assert event.primary_key == "event_id"

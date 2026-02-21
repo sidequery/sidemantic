@@ -1,0 +1,177 @@
+# Source: dbt-labs/metricflow (Apache 2.0)
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/ambiguous_resolution_manifest/
+# Tests: mixed month/year grain semantic models, derived metrics across different grains,
+#   metric-level time_granularity, cumulative with non-day grain, nested derived on
+#   heterogeneous/homogeneous grain parents, metric_time filters inside derived inputs
+
+semantic_models:
+  - name: monthly_measures_source
+    description: Contains measures with a month grain.
+    model: ref('fct_monthly_measures')
+    defaults:
+      agg_time_dimension: creation_time
+    measures:
+      - name: monthly_measure_0
+        agg: sum
+      - name: monthly_measure_1
+        agg: sum
+    dimensions:
+      - name: creation_time
+        type: time
+        type_params:
+          time_granularity: month
+    entities:
+      - name: monthly_measure_entity
+        type: primary
+
+  - name: yearly_measure_source
+    description: Contains measures with a year grain.
+    model: ref('fct_yearly_measures')
+    defaults:
+      agg_time_dimension: creation_time
+    measures:
+      - name: yearly_measure_0
+        agg: sum
+    dimensions:
+      - name: creation_time
+        type: time
+        type_params:
+          time_granularity: year
+    entities:
+      - name: yearly_measure_entity
+        type: primary
+
+metrics:
+  - name: monthly_metric_0
+    description: A metric with a month grain.
+    type: simple
+    type_params:
+      measure: monthly_measure_0
+
+  - name: monthly_metric_1
+    description: A metric with a month grain.
+    type: simple
+    type_params:
+      measure: monthly_measure_1
+
+  - name: yearly_metric_0
+    description: A metric with a year grain.
+    type: simple
+    type_params:
+      measure: yearly_measure_0
+
+  - name: derived_metric_with_same_parent_time_grains
+    description: A derived metric based on metrics with a month grain.
+    type: derived
+    type_params:
+      expr: monthly_metric_0 + monthly_metric_1
+      metrics:
+        - name: monthly_metric_0
+        - name: monthly_metric_1
+
+  - name: derived_metric_with_different_parent_time_grains
+    description: A derived metric based on metrics with month and year grains.
+    type: derived
+    type_params:
+      expr: monthly_metric_0 + yearly_metric_0
+      metrics:
+        - name: monthly_metric_0
+        - name: yearly_metric_0
+
+  - name: metric_derived_from_heterogeneous_derived_metric
+    description: Derived metric based on another derived with mixed-grain parents.
+    type: derived
+    type_params:
+      expr: derived_metric_with_different_parent_time_grains
+      metrics:
+        - name: derived_metric_with_different_parent_time_grains
+
+  - name: metric_derived_from_homogeneous_derived_metric
+    description: Derived metric based on another derived with same-grain parents.
+    type: derived
+    type_params:
+      expr: derived_metric_with_same_parent_time_grains
+      metrics:
+        - name: derived_metric_with_same_parent_time_grains
+
+  - name: accumulate_last_2_months_metric
+    description: Cumulative metric restricted to querying by grain of defining measure.
+    type: cumulative
+    type_params:
+      measure: monthly_measure_0
+      cumulative_type_params:
+        window: 2 months
+
+  - name: derived_metric_with_common_filtered_metric_0
+    description: Derived metrics with same metric + filter (0)
+    type: derived
+    type_params:
+      expr: monthly_metric_0
+      metrics:
+        - name: monthly_metric_0
+          filter: "{{ TimeDimension('metric_time') }} = '2020-01-01'"
+
+  - name: derived_metric_with_common_filtered_metric_1
+    description: Derived metrics with same metric + filter (1)
+    type: derived
+    type_params:
+      expr: monthly_metric_0
+      metrics:
+        - name: monthly_metric_0
+          filter: "{{ TimeDimension('metric_time') }} = '2020-01-01'"
+
+  - name: simple_metric_with_default_time_granularity
+    description: Simple metric with time granularity set to quarter
+    type: simple
+    type_params:
+      measure: monthly_measure_1
+    time_granularity: quarter
+
+  - name: derived_metric_with_time_granularity
+    description: Derived metric with time granularity set to year
+    type: derived
+    time_granularity: year
+    type_params:
+      expr: simple_metric_with_default_time_granularity * 2
+      metrics:
+        - name: simple_metric_with_default_time_granularity
+
+  - name: derived_metric_without_time_granularity
+    description: Derived metric without explicit time granularity
+    type: derived
+    type_params:
+      expr: simple_metric_with_default_time_granularity * monthly_metric_0
+      metrics:
+        - name: simple_metric_with_default_time_granularity
+        - name: monthly_metric_0
+
+  - name: simple_metric_with_default_time_granularity_and_metric_time_filter
+    description: Simple metric with time granularity and metric_time filter
+    type: simple
+    type_params:
+      measure: monthly_measure_1
+    time_granularity: quarter
+    filter: |
+      {{ TimeDimension('metric_time') }} > '2020-01-01'
+
+  - name: derived_metric_with_time_granularity_and_outer_metric_time_filter
+    description: Derived metric with time granularity and outer filter
+    type: derived
+    time_granularity: year
+    type_params:
+      expr: simple_metric_with_default_time_granularity * 2
+      metrics:
+        - name: simple_metric_with_default_time_granularity
+    filter: |
+      {{ TimeDimension('metric_time') }} > '2020-01-01'
+
+  - name: derived_metric_with_time_granularity_and_inner_metric_time_filter
+    description: Derived metric with time granularity and inner filter on input
+    type: derived
+    time_granularity: year
+    type_params:
+      expr: simple_metric_with_default_time_granularity_and_metric_time_filter * 2
+      metrics:
+        - name: simple_metric_with_default_time_granularity_and_metric_time_filter
+          filter: |
+            {{ TimeDimension('metric_time') }} = '2020-01-01'

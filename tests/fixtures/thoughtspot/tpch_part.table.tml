@@ -1,0 +1,89 @@
+# Source: thoughtspot/ps_tools (MIT license)
+# https://github.com/thoughtspot/ps_tools
+guid: 8c8ba964-8406-649c-f125-232652e0acdb
+table:
+  name: PART
+  db: NaN
+  schema: NaN
+  db_table: PART
+  connection:
+    name: SF Trial
+  columns:
+  - name: P_RETAILPRICE
+    db_column_name: P_RETAILPRICE
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DOUBLE
+  - name: P_BRAND
+    db_column_name: P_BRAND
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: P_COMMENT
+    db_column_name: P_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: P_CONTAINER
+    db_column_name: P_CONTAINER
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: P_MFGR
+    db_column_name: P_MFGR
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: P_NAME
+    db_column_name: P_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: P_TYPE
+    db_column_name: P_TYPE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: P_PARTKEY
+    db_column_name: P_PARTKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  - name: P_SIZE
+    db_column_name: P_SIZE
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  joins_with:
+  - name: PART_PARTSUPP
+    destination:
+      name: PARTSUPP
+    "on": "[PART::P_PARTKEY] = [PARTSUPP (SNOWFLAKE_SAMPLE_DATA.PARTSUPP)_6B817DCE0643423D9B2F2A75D5677A4B::PS_PARTKEY]"
+    type: INNER

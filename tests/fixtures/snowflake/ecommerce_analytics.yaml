@@ -1,0 +1,336 @@
+# Source: piushkaushik/Snowflake_Cortex_Analyst
+# File: semantic_model_updated.yaml
+# License: Unlicense (public domain)
+# URL: https://github.com/piushkaushik/Snowflake_Cortex_Analyst
+#
+# Features exercised: 2 tables, facts field, computed metrics (derived ratios),
+# use_as_onboarding_question on verified_queries, TIMESTAMP_NTZ data type,
+# synonyms on facts and metrics
+
+name: 'ecommerce_analytics_model'
+description: 'Semantic model for e-commerce web and app analytics data with uppercase column names'
+comments: 'This model combines web data and app data for comprehensive analytics using actual uppercase column names'
+
+tables:
+  - name: 'web_analytics'
+    description: 'Web analytics data including revenue, visits, and user behavior metrics'
+    base_table:
+      database: 'OPTIMIZER'
+      schema: 'DATA'
+      table: 'WEB_DATA'
+    
+    dimensions:
+      - name: 'product_name'
+        synonyms: ['product', 'item', 'product name', 'products']
+        description: 'Name of the product'
+        expr: 'PRODUCT_NAME'
+        data_type: 'TEXT'
+      
+      - name: 'device_type'
+        synonyms: ['device', 'platform', 'device type', 'devices']
+        description: 'Type of device used (mobile, desktop, tablet)'
+        expr: 'DEVICE_TYPE'
+        data_type: 'TEXT'
+      
+      - name: 'marketing_channel'
+        synonyms: ['channel', 'marketing channel', 'traffic source', 'acquisition channel']
+        description: 'Marketing channel or traffic source'
+        expr: 'MARKETING_CHANNEL'
+        data_type: 'TEXT'
+      
+      - name: 'payment_method'
+        synonyms: ['payment', 'payment type', 'payment option']
+        description: 'Payment method used for transactions'
+        expr: 'PAYMENT_METHOD'
+        data_type: 'TEXT'
+    
+    time_dimensions:
+      - name: 'date'
+        synonyms: ['day', 'transaction date', 'order date', 'time', 'when']
+        description: 'Date of the transaction or event'
+        expr: 'DATE'
+        data_type: 'TIMESTAMP_NTZ'
+    
+    facts:
+      - name: 'revenue'
+        synonyms: ['sales', 'total revenue', 'income', 'earnings', 'money']
+        description: 'Total revenue generated from web transactions'
+        expr: 'REVENUE'
+        data_type: 'FLOAT'
+      
+      - name: 'units'
+        synonyms: ['quantity', 'units sold', 'products sold', 'items']
+        description: 'Number of units sold'
+        expr: 'UNITS'
+        data_type: 'FLOAT'
+      
+      - name: 'visits'
+        synonyms: ['sessions', 'website visits', 'site visits', 'traffic']
+        description: 'Number of visits to the website'
+        expr: 'VISITS'
+        data_type: 'FLOAT'
+      
+      - name: 'unique_visitors'
+        synonyms: ['unique users', 'distinct visitors', 'unique people']
+        description: 'Number of unique visitors to the website'
+        expr: 'UNIQUE_VISITORS'
+        data_type: 'FLOAT'
+      
+      - name: 'orders'
+        synonyms: ['transactions', 'purchases', 'completed orders']
+        description: 'Number of completed orders from web'
+        expr: 'ORDER'
+        data_type: 'FLOAT'
+      
+      - name: 'checkouts'
+        synonyms: ['checkout events', 'purchase attempts', 'checkout process']
+        description: 'Number of checkout events initiated'
+        expr: 'CHECKOUTS'
+        data_type: 'FLOAT'
+      
+      - name: 'product_views'
+        synonyms: ['page views', 'product page views', 'item views']
+        description: 'Number of product page views'
+        expr: 'PRODUCT_VIEWS'
+        data_type: 'FLOAT'
+      
+      - name: 'cart_add'
+        synonyms: ['add to cart', 'cart additions', 'items added']
+        description: 'Number of items added to shopping cart'
+        expr: 'CART_ADD'
+        data_type: 'FLOAT'
+      
+      - name: 'cart_abandon'
+        synonyms: ['cart abandonment', 'abandoned carts', 'incomplete purchases']
+        description: 'Number of abandoned shopping carts'
+        expr: 'CART_ABANDON'
+        data_type: 'FLOAT'
+      
+      - name: 'site_search'
+        synonyms: ['search', 'site searches', 'search queries']
+        description: 'Number of site search events'
+        expr: 'SITE_SEARCH'
+        data_type: 'FLOAT'
+      
+      - name: 'time_spent_per_visit'
+        synonyms: ['session duration', 'time on site', 'visit duration']
+        description: 'Average time spent per visit in minutes'
+        expr: 'TIME_SPENT_PER_VISIT'
+        data_type: 'FLOAT'
+      
+      - name: 'order_first_touch'
+        synonyms: ['first touch orders', 'initial attribution orders']
+        description: 'Orders attributed to first touch'
+        expr: 'ORDER_FIRST_TOUCH'
+        data_type: 'FLOAT'
+      
+      - name: 'order_last_touch'
+        synonyms: ['last touch orders', 'final attribution orders']
+        description: 'Orders attributed to last touch'
+        expr: 'ORDER_LAST_TOUCH'
+        data_type: 'FLOAT'
+    
+    metrics:
+      - name: 'conversion_rate'
+        synonyms: ['CR', 'order rate', 'purchase rate']
+        description: 'Conversion rate calculated as orders divided by visits'
+        expr: 'SUM(ORDER) / SUM(VISITS)'
+        data_type: 'FLOAT'
+      
+      - name: 'average_order_value'
+        synonyms: ['AOV', 'avg order value', 'order value']
+        description: 'Average order value calculated as revenue divided by orders'
+        expr: 'SUM(REVENUE) / SUM(ORDER)'
+        data_type: 'FLOAT'
+      
+      - name: 'cart_abandonment_rate'
+        synonyms: ['abandonment rate', 'cart abandon rate']
+        description: 'Cart abandonment rate'
+        expr: 'SUM(CART_ABANDON) / SUM(CART_ADD)'
+        data_type: 'FLOAT'
+      
+      - name: 'add_to_cart_rate'
+        synonyms: ['ATC rate', 'cart addition rate']
+        description: 'Add to cart rate as percentage'
+        expr: 'SUM(CART_ADD) / SUM(PRODUCT_VIEWS)'
+        data_type: 'FLOAT'
+
+  - name: 'app_analytics'
+    description: 'Mobile app analytics data including user behavior, installs, and performance metrics'
+    base_table:
+      database: 'OPTIMIZER'
+      schema: 'DATA'
+      table: 'APP_DATA'
+    
+    dimensions:
+      - name: 'product_name_app'
+        synonyms: ['product', 'item', 'app product', 'mobile product']
+        description: 'Name of the product in mobile app'
+        expr: 'PRODUCT_NAME'
+        data_type: 'TEXT'
+      
+      - name: 'operating_system'
+        synonyms: ['OS', 'platform', 'mobile OS', 'system']
+        description: 'Operating system of the mobile device (iOS, Android)'
+        expr: 'OPERATING_SYSTEM'
+        data_type: 'TEXT'
+      
+      - name: 'device_type_app'
+        synonyms: ['device', 'mobile device', 'app device', 'phone type']
+        description: 'Type of mobile device used for the app'
+        expr: 'DEVICE_TYPE'
+        data_type: 'TEXT'
+      
+      - name: 'marketing_channel_app'
+        synonyms: ['app channel', 'acquisition channel', 'install source']
+        description: 'Marketing channel for app user acquisition'
+        expr: 'MARKETING_CHANNEL'
+        data_type: 'TEXT'
+      
+      - name: 'payment_method_app'
+        synonyms: ['app payment', 'mobile payment', 'payment type']
+        description: 'Payment method used in mobile app'
+        expr: 'PAYMENT_METHOD'
+        data_type: 'TEXT'
+    
+    time_dimensions:
+      - name: 'date_app'
+        synonyms: ['app date', 'mobile date', 'transaction date']
+        description: 'Date of the app event or transaction'
+        expr: 'DATE'
+        data_type: 'TIMESTAMP_NTZ'
+    
+    facts:
+      - name: 'revenue_app'
+        synonyms: ['app revenue', 'mobile revenue', 'in-app revenue']
+        description: 'Total revenue generated through the mobile app'
+        expr: 'REVENUE'
+        data_type: 'FLOAT'
+      
+      - name: 'users'
+        synonyms: ['app users', 'mobile users', 'active users']
+        description: 'Number of active app users'
+        expr: 'USERS'
+        data_type: 'FLOAT'
+      
+      - name: 'launches'
+        synonyms: ['app launches', 'app opens', 'app sessions']
+        description: 'Number of times the app was launched'
+        expr: 'LAUNCHES'
+        data_type: 'FLOAT'
+      
+      - name: 'installs'
+        synonyms: ['app installs', 'downloads', 'installations']
+        description: 'Number of app installations'
+        expr: 'INSTALLS'
+        data_type: 'FLOAT'
+      
+      - name: 'orders_app'
+        synonyms: ['app orders', 'mobile orders', 'in-app purchases']
+        description: 'Number of orders completed through the app'
+        expr: 'ORDERS'
+        data_type: 'FLOAT'
+      
+      - name: 'visits_app'
+        synonyms: ['app sessions', 'app visits', 'mobile sessions']
+        description: 'Number of app visits or sessions'
+        expr: 'VISITS'
+        data_type: 'FLOAT'
+      
+      - name: 'checkouts_app'
+        synonyms: ['app checkouts', 'mobile checkouts']
+        description: 'Number of checkout events in the app'
+        expr: 'CHECKOUTS'
+        data_type: 'FLOAT'
+      
+      - name: 'crashes'
+        synonyms: ['app crashes', 'crash events', 'app failures']
+        description: 'Number of app crash events'
+        expr: 'CRASHES'
+        data_type: 'FLOAT'
+      
+      - name: 'upgrades'
+        synonyms: ['app upgrades', 'premium upgrades', 'subscription upgrades']
+        description: 'Number of app upgrades or premium subscriptions'
+        expr: 'UPGRADES'
+        data_type: 'FLOAT'
+      
+      - name: 'units_app'
+        synonyms: ['app units', 'mobile units', 'items sold']
+        description: 'Number of units sold through the app'
+        expr: 'UNITS'
+        data_type: 'FLOAT'
+      
+      - name: 'product_views_app'
+        synonyms: ['app product views', 'mobile product views']
+        description: 'Number of product views in the app'
+        expr: 'PRODUCT_VIEWS'
+        data_type: 'FLOAT'
+      
+      - name: 'unique_visitors_app'
+        synonyms: ['unique app users', 'distinct app visitors']
+        description: 'Number of unique app visitors'
+        expr: 'UNIQUE_VISITORS'
+        data_type: 'FLOAT'
+      
+      - name: 'site_search_app'
+        synonyms: ['app search', 'in-app search', 'mobile search']
+        description: 'Number of search events within the app'
+        expr: 'SITE_SEARCH'
+        data_type: 'FLOAT'
+    
+    metrics:
+      - name: 'app_conversion_rate'
+        synonyms: ['mobile CR', 'app CVR', 'mobile conversion']
+        description: 'App conversion rate calculated as orders divided by visits'
+        expr: 'SUM(ORDERS) / SUM(VISITS)'
+        data_type: 'FLOAT'
+      
+      - name: 'app_average_order_value'
+        synonyms: ['mobile AOV', 'app AOV', 'mobile order value']
+        description: 'Average order value in the mobile app'
+        expr: 'SUM(REVENUE) / SUM(ORDERS)'
+        data_type: 'FLOAT'
+      
+      - name: 'crash_rate'
+        synonyms: ['app crash rate', 'stability rate']
+        description: 'App crash rate per session'
+        expr: 'SUM(CRASHES) / SUM(LAUNCHES)'
+        data_type: 'FLOAT'
+      
+      - name: 'install_to_launch_rate'
+        synonyms: ['activation rate', 'launch rate']
+        description: 'Rate of installs that result in app launches'
+        expr: 'SUM(LAUNCHES) / SUM(INSTALLS)'
+        data_type: 'FLOAT'
+
+verified_queries:
+  - name: 'total_revenue_by_channel'
+    question: 'What is the total revenue by marketing channel?'
+    sql: 'SELECT MARKETING_CHANNEL, SUM(REVENUE) as total_revenue FROM WEB_DATA GROUP BY MARKETING_CHANNEL ORDER BY total_revenue DESC'
+    use_as_onboarding_question: true
+  
+  - name: 'app_installs_count'
+    question: 'How many app installs do we have?'
+    sql: 'SELECT SUM(INSTALLS) as total_installs FROM APP_DATA'
+    use_as_onboarding_question: true
+  
+  - name: 'device_type_revenue'
+    question: 'What is the revenue by device type?'
+    sql: 'SELECT DEVICE_TYPE, SUM(REVENUE) as device_revenue FROM WEB_DATA GROUP BY DEVICE_TYPE ORDER BY device_revenue DESC'
+    use_as_onboarding_question: true
+  
+  - name: 'web_vs_app_revenue'
+    question: 'Compare web vs app revenue performance'
+    sql: 'SELECT ''Web'' as source, SUM(REVENUE) as total_revenue FROM WEB_DATA UNION ALL SELECT ''App'' as source, SUM(REVENUE) as total_revenue FROM APP_DATA'
+    use_as_onboarding_question: true
+  
+  - name: 'conversion_rates_by_device'
+    question: 'Show me conversion rates by device type'
+    sql: 'SELECT DEVICE_TYPE, ROUND(SUM(ORDER) / SUM(VISITS) * 100, 2) as conversion_rate_percent FROM WEB_DATA GROUP BY DEVICE_TYPE ORDER BY conversion_rate_percent DESC'
+    use_as_onboarding_question: true
+  
+  - name: 'top_products_by_revenue'
+    question: 'What are the top 5 products by revenue?'
+    sql: 'SELECT PRODUCT_NAME, SUM(REVENUE) as total_revenue FROM WEB_DATA GROUP BY PRODUCT_NAME ORDER BY total_revenue DESC LIMIT 5'
+    use_as_onboarding_question: true

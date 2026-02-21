@@ -1,0 +1,185 @@
+# Source: vbalalian/estore-analytics (MIT license)
+# https://github.com/vbalalian/estore-analytics/blob/main/omni/BigQuery/omni_dbt_marts/dim_user_rfm.view.yaml
+# Reference this view as omni_dbt_marts__dim_user_rfm
+schema_label: ""
+#This description was pulled from dbt.
+description: |
+  RFM segmentation dimension. Contains only RFM-specific scores and segments. Join to dim_users on user_id for lifecycle metrics (revenue, purchase history, etc.).
+
+schema: omni_dbt_marts
+table_name: dim_user_rfm
+
+dimensions:
+  recency_score:
+    #This description was pulled from dbt.
+    description: Recency score of the user
+
+  frequency_score:
+    #This description was pulled from dbt.
+    description: Frequency score of the user
+
+  monetary_score:
+    #This description was pulled from dbt.
+    description: Monetary score of the user
+
+  rfm_score:
+    #This description was pulled from dbt.
+    description: Total RFM score calculated as the sum of recency, frequency, and
+      monetary scores
+
+  rfm_segment:
+    sql: rfm_segment
+    label: RFM Segment
+    #This description was pulled from dbt.
+    description: Segmentation based on Recency, Frequency, and Monetary scores
+
+  user_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Foreign key to dim_users
+
+measures:
+  count:
+    label: Dim User RFM Count
+    format: BIGNUMBER_0
+    aggregate_type: count
+
+#The info below was pulled from your dbt repository and is read-only.
+dbt:
+  name: dim_user_rfm
+  target_schema: estore
+  description: |
+    RFM segmentation dimension. Contains only RFM-specific scores and segments. Join to dim_users on user_id for lifecycle metrics (revenue, purchase history, etc.).
+  config:
+    schema: marts
+    materialized: table
+  code: |-
+    {{ config(
+        materialized = 'table',
+        cluster_by = ['rfm_score','recency_score','frequency_score','monetary_score']
+    ) }}
+
+    with
+
+    source_dim_users as (
+
+        select * from {{ ref('dim_users') }}
+
+    ),
+
+    ranked_users as (
+
+        select
+
+            user_id,
+            days_since_last_purchase,
+            purchase_count,
+            total_revenue,
+            percent_rank() over (order by purchase_count) as freq_percentile
+
+        from source_dim_users
+        where purchase_count > 0
+
+    ),
+
+    rfm_scores as (
+        select
+
+            user_id,
+            days_since_last_purchase,
+            purchase_count,
+            round(total_revenue, 2) as total_revenue,
+
+            ntile(5) over (order by days_since_last_purchase desc) as recency_score,
+
+            case
+                when freq_percentile < 0.2 then 1
+                when freq_percentile < 0.4 then 2
+                when freq_percentile < 0.6 then 3
+                when freq_percentile < 0.8 then 4
+                else 5
+            end as frequency_score,
+
+            ntile(5) over (order by total_revenue) as monetary_score
+
+        from ranked_users
+    ),
+
+    final_rfm_scores as (
+
+        select
+
+            user_id,
+            recency_score,
+            frequency_score,
+            monetary_score,
+
+            (recency_score + frequency_score + monetary_score) as rfm_score
+
+        from rfm_scores
+
+    ),
+
+    rfm_labeled as (
+
+        select
+
+            user_id,
+            recency_score,
+            frequency_score,
+            monetary_score,
+            rfm_score,
+
+            case
+                when
+                    recency_score >= 4
+                    and frequency_score >= 4
+                    and monetary_score >= 4
+                    then 'Champions'
+                when
+                    recency_score <= 2
+                    and frequency_score >= 4
+                    and monetary_score >= 4
+                    then 'At Risk'
+                when
+                    recency_score >= 4 and frequency_score >= 3
+                    then 'Loyal Customers'
+                when
+                    recency_score >= 3 and frequency_score >= 3
+                    then 'Potential Loyalists'
+                when
+                    recency_score >= 4 and frequency_score < 3
+                    then 'Recent Customers'
+                when recency_score = 3 and frequency_score < 3 then 'Promising'
+                when
+                    recency_score <= 2 and frequency_score >= 3
+                    then 'About To Sleep'
+                when
+                    recency_score <= 2
+                    and frequency_score <= 2
+                    and monetary_score <= 2
+                    then 'Lost'
+                else 'Needs Attention'
+            end as rfm_segment
+
+        from final_rfm_scores
+
+    ),
+
+    final_users_rfm as (
+
+        select
+
+            user_id,
+            recency_score,
+            frequency_score,
+            monetary_score,
+            rfm_score,
+            rfm_segment
+
+        from rfm_labeled
+
+    )
+
+    select * from final_users_rfm
+  referenced_by: [ snap_user_rfm, metrics_rfm_segments ]

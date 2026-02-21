@@ -1,0 +1,97 @@
+// Source: malloydata/malloy-samples (MIT License)
+// File: bigquery/the_met/the_met.malloy
+// Features: inline source-in-join, symmetric aggregates
+
+source: met_objects is bigquery.table('bigquery-public-data.the_met.objects') extend {
+  // eliminate some bad data
+  where: object_begin_date < 2031 & > -8000
+
+  join_one: images is bigquery.table('bigquery-public-data.the_met.images') extend { primary_key: object_id } with object_id
+
+  measure:
+    object_count is count()
+    image_count is images.count()
+
+  dimension:
+    object_era is floor(object_begin_date / 100) * 100
+    image_thumb is replace(images.original_image_url, 'original', 'web-thumb')
+
+  # list_detail
+  view: by_classification is {
+    group_by: classification
+    aggregate: object_count
+  }
+
+  view: by_department is {
+    group_by: department
+    aggregate: object_count
+  }
+
+  view: by_artist is {
+    group_by: artist_display_name
+    aggregate:
+      object_count
+      image_count
+  }
+
+  view: by_object_date is {
+    group_by: object_begin_date
+    aggregate: object_count
+  }
+
+  # bar_chart
+  view: by_object_era is {
+    order_by: 1 desc
+    group_by: object_era
+    aggregate: object_count
+  }
+
+  view: image_list is {
+    group_by:
+      images.title
+      images.original_image_url
+      image_thumb
+  }
+
+  # list_detail
+  view: by_country is {
+    group_by: country
+    aggregate: object_count
+  }
+
+  # list
+  view: random_image_list is {
+    limit: 20
+    where: image_thumb != null
+    group_by:
+      image_thumb
+      x is 1
+  }
+
+  view: over_view_dashboard is {
+    aggregate: object_count
+    nest: department_dashboard is {
+      group_by: department
+      aggregate: object_count
+      aggregate: image_count
+      nest: by_country
+      nest: by_object_era
+      nest: by_classification
+      nest: random_image_list
+    }
+  }
+
+  view: department_dashboard is {
+    where: department = 'Photographs' and object_begin_date > 1900
+    aggregate:
+      artist_count is count(artist_display_name)
+      object_count
+     image_count
+    nest: by_artist is {
+      limit: 30
+      group_by: artist_display_name
+      aggregate: object_count
+      nest: random_image_list
+    }
+  }
+}

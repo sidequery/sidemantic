@@ -1,0 +1,33 @@
+# Source: https://github.com/cube-js/cube/blob/master/packages/cubejs-schema-compiler/test/unit/fixtures/switch-dimension.yml
+# License: Apache 2.0 / MIT (cube-js/cube)
+#
+# Features tested: type: switch dimension with values list (enum-like dimension)
+
+cubes:
+  - name: orders
+    sql: SELECT * FROM orders
+
+    measures:
+      - name: count
+        sql: id
+        type: count
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: number
+        sql: number
+        type: number
+
+      - name: currency
+        type: switch
+        values:
+          - USD
+          - EUR
+          - GBP
+
+      - name: status
+        sql: status
+        type: string

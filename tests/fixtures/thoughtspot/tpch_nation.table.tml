@@ -1,0 +1,49 @@
+# Source: thoughtspot/ps_tools (MIT license)
+# https://github.com/thoughtspot/ps_tools
+guid: f11cad3d-01e1-15d0-85fd-38230c4e4d87
+table:
+  name: NATION
+  db: NaN
+  schema: NaN
+  db_table: NATION
+  connection:
+    name: SF Trial
+  columns:
+  - name: N_COMMENT
+    db_column_name: N_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: N_NAME
+    db_column_name: N_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: N_NATIONKEY
+    db_column_name: N_NATIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  - name: N_REGIONKEY
+    db_column_name: N_REGIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  joins_with:
+  - name: NATION_REGION
+    destination:
+      name: REGION
+    "on": "[NATION::N_REGIONKEY] = [REGION (SNOWFLAKE_SAMPLE_DATA.REGION)_127332B1C91945D585EDC9AD981E4EBD::R_REGIONKEY]"
+    type: INNER

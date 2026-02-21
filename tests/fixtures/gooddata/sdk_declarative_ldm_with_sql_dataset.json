@@ -1,0 +1,696 @@
+{
+  "ldm": {
+    "datasets": [
+      {
+        "grain": [
+          {
+            "id": "campaign_channel_id",
+            "type": "attribute"
+          }
+        ],
+        "id": "campaign_channels",
+        "references": [
+          {
+            "identifier": {
+              "id": "campaigns",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sources": [
+              {
+                "column": "campaign_id",
+                "target": {
+                  "id": "campaigns.campaign_id",
+                  "type": "attribute"
+                },
+                "dataType": "INT"
+              }
+            ]
+          }
+        ],
+        "title": "Campaign channels",
+        "description": "Campaign channels",
+        "attributes": [
+          {
+            "id": "campaign_channel_id",
+            "labels": [],
+            "sourceColumn": "campaign_channel_id",
+            "title": "Campaign channel id",
+            "sourceColumnDataType": "STRING",
+            "description": "Campaign channel id",
+            "tags": [
+              "Campaign channels"
+            ],
+            "isNullable": false
+          },
+          {
+            "id": "campaign_channels.category",
+            "labels": [],
+            "sourceColumn": "category",
+            "title": "Category",
+            "sourceColumnDataType": "STRING",
+            "description": "Category",
+            "tags": [
+              "Campaign channels"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "type",
+            "labels": [],
+            "sourceColumn": "type",
+            "title": "Type",
+            "sourceColumnDataType": "STRING",
+            "description": "Type",
+            "tags": [
+              "Campaign channels"
+            ],
+            "isNullable": true
+          }
+        ],
+        "facts": [
+          {
+            "id": "budget",
+            "sourceColumn": "budget",
+            "title": "Budget",
+            "sourceColumnDataType": "NUMERIC",
+            "description": "Budget",
+            "tags": [
+              "Campaign channels"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "spend",
+            "sourceColumn": "spend",
+            "title": "Spend",
+            "sourceColumnDataType": "NUMERIC",
+            "description": "Spend",
+            "tags": [
+              "Campaign channels"
+            ],
+            "isNullable": true
+          }
+        ],
+        "dataSourceTableId": {
+          "dataSourceId": "demo-test-ds",
+          "id": "campaign_channels",
+          "type": "dataSource",
+          "path": [
+            "demo",
+            "campaign_channels"
+          ]
+        },
+        "tags": [
+          "Campaign channels"
+        ]
+      },
+      {
+        "grain": [
+          {
+            "id": "campaigns.campaign_id",
+            "type": "attribute"
+          }
+        ],
+        "id": "campaigns",
+        "references": [],
+        "title": "Campaigns",
+        "description": "Campaigns",
+        "attributes": [
+          {
+            "id": "campaign_name",
+            "labels": [],
+            "sourceColumn": "campaign_name",
+            "title": "Campaign name",
+            "sourceColumnDataType": "STRING",
+            "description": "Campaign name",
+            "tags": [
+              "Campaigns"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "campaigns.campaign_id",
+            "labels": [],
+            "sourceColumn": "campaign_id",
+            "title": "Campaign id",
+            "sourceColumnDataType": "INT",
+            "description": "Campaign id",
+            "tags": [
+              "Campaigns"
+            ],
+            "isNullable": false
+          }
+        ],
+        "facts": [],
+        "dataSourceTableId": {
+          "dataSourceId": "demo-test-ds",
+          "id": "campaigns",
+          "type": "dataSource",
+          "path": [
+            "demo",
+            "campaigns"
+          ]
+        },
+        "tags": [
+          "Campaigns"
+        ]
+      },
+      {
+        "grain": [
+          {
+            "id": "customers.customer_id",
+            "type": "attribute"
+          }
+        ],
+        "id": "customers",
+        "references": [],
+        "title": "Customers",
+        "description": "Customers",
+        "attributes": [
+          {
+            "id": "customers.customer_id",
+            "labels": [],
+            "sourceColumn": "customer_id",
+            "title": "Customer id",
+            "sourceColumnDataType": "INT",
+            "description": "Customer id",
+            "tags": [
+              "Customers"
+            ],
+            "isNullable": false
+          },
+          {
+            "id": "customers.customer_name",
+            "labels": [],
+            "sourceColumn": "customer_name",
+            "title": "Customer name",
+            "sourceColumnDataType": "STRING",
+            "description": "Customer name",
+            "tags": [
+              "Customers"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "customers.region",
+            "labels": [],
+            "sourceColumn": "region",
+            "title": "Region",
+            "sourceColumnDataType": "STRING",
+            "description": "Region",
+            "tags": [
+              "Customers"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "customers.state",
+            "labels": [
+              {
+                "id": "geo__state__location",
+                "sourceColumn": "geo__state__location",
+                "title": "Location",
+                "sourceColumnDataType": "STRING",
+                "description": "Location",
+                "tags": [
+                  "Customers"
+                ],
+                "valueType": "GEO",
+                "isNullable": true
+              }
+            ],
+            "sourceColumn": "state",
+            "title": "State",
+            "sourceColumnDataType": "STRING",
+            "description": "State",
+            "tags": [
+              "Customers"
+            ],
+            "isNullable": true
+          }
+        ],
+        "facts": [],
+        "dataSourceTableId": {
+          "dataSourceId": "demo-test-ds",
+          "id": "customers",
+          "type": "dataSource",
+          "path": [
+            "demo",
+            "customers"
+          ]
+        },
+        "tags": [
+          "Customers"
+        ]
+      },
+      {
+        "grain": [
+          {
+            "id": "order_lines.order_line_id",
+            "type": "attribute"
+          }
+        ],
+        "id": "order_lines",
+        "references": [
+          {
+            "identifier": {
+              "id": "campaigns",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sources": [
+              {
+                "column": "campaign_id",
+                "target": {
+                  "id": "campaigns.campaign_id",
+                  "type": "attribute"
+                },
+                "dataType": "INT"
+              }
+            ]
+          },
+          {
+            "identifier": {
+              "id": "customers",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sources": [
+              {
+                "column": "customer_id",
+                "target": {
+                  "id": "customers.customer_id",
+                  "type": "attribute"
+                },
+                "dataType": "INT"
+              }
+            ]
+          },
+          {
+            "identifier": {
+              "id": "date",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sources": [
+              {
+                "column": "date",
+                "target": {
+                  "id": "date",
+                  "type": "date"
+                },
+                "dataType": "DATE"
+              }
+            ]
+          },
+          {
+            "identifier": {
+              "id": "products",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sources": [
+              {
+                "column": "product_id",
+                "target": {
+                  "id": "products.product_id",
+                  "type": "attribute"
+                },
+                "dataType": "INT"
+              }
+            ]
+          }
+        ],
+        "title": "Order lines",
+        "description": "Order lines",
+        "attributes": [
+          {
+            "id": "order_lines.order_id",
+            "labels": [],
+            "sourceColumn": "order_id",
+            "title": "Order id",
+            "sourceColumnDataType": "STRING",
+            "description": "Order id",
+            "tags": [
+              "Order lines"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "order_lines.order_line_id",
+            "labels": [],
+            "sourceColumn": "order_line_id",
+            "title": "Order line id",
+            "sourceColumnDataType": "STRING",
+            "description": "Order line id",
+            "tags": [
+              "Order lines"
+            ],
+            "isNullable": false
+          },
+          {
+            "id": "order_lines.order_status",
+            "labels": [],
+            "sourceColumn": "order_status",
+            "title": "Order status",
+            "sourceColumnDataType": "STRING",
+            "description": "Order status",
+            "tags": [
+              "Order lines"
+            ],
+            "isNullable": true
+          }
+        ],
+        "facts": [
+          {
+            "id": "order_lines.price",
+            "sourceColumn": "price",
+            "title": "Price",
+            "sourceColumnDataType": "NUMERIC",
+            "description": "Price",
+            "tags": [
+              "Order lines"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "order_lines.quantity",
+            "sourceColumn": "quantity",
+            "title": "Quantity",
+            "sourceColumnDataType": "NUMERIC",
+            "description": "Quantity",
+            "tags": [
+              "Order lines"
+            ],
+            "isNullable": true
+          }
+        ],
+        "dataSourceTableId": {
+          "dataSourceId": "demo-test-ds",
+          "id": "order_lines",
+          "type": "dataSource",
+          "path": [
+            "demo",
+            "order_lines"
+          ]
+        },
+        "tags": [
+          "Order lines"
+        ],
+        "workspaceDataFilterColumns": [
+          {
+            "dataType": "STRING",
+            "name": "wdf__region"
+          },
+          {
+            "dataType": "STRING",
+            "name": "wdf__state"
+          }
+        ]
+      },
+      {
+        "grain": [
+          {
+            "id": "products.product_id",
+            "type": "attribute"
+          }
+        ],
+        "id": "products",
+        "references": [],
+        "title": "Products",
+        "description": "Products",
+        "attributes": [
+          {
+            "id": "product_name",
+            "labels": [],
+            "sourceColumn": "product_name",
+            "title": "Product name",
+            "sourceColumnDataType": "STRING",
+            "description": "Product name",
+            "tags": [
+              "Products"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "products.category",
+            "labels": [],
+            "sourceColumn": "category",
+            "title": "Category",
+            "sourceColumnDataType": "STRING",
+            "description": "Category",
+            "tags": [
+              "Products"
+            ],
+            "isNullable": true
+          },
+          {
+            "id": "products.product_id",
+            "labels": [],
+            "sourceColumn": "product_id",
+            "title": "Product id",
+            "sourceColumnDataType": "INT",
+            "description": "Product id",
+            "tags": [
+              "Products"
+            ],
+            "isNullable": false
+          }
+        ],
+        "facts": [],
+        "dataSourceTableId": {
+          "dataSourceId": "demo-test-ds",
+          "id": "products",
+          "type": "dataSource",
+          "path": [
+            "demo",
+            "products"
+          ]
+        },
+        "tags": [
+          "Products"
+        ]
+      },
+      {
+        "grain": [],
+        "id": "Customers_sql_dataset_with_WDF",
+        "references": [],
+        "title": "Customers sql dataset with WDF",
+        "description": "Customers sql dataset with WDF",
+        "tags": [
+          "Customers sql dataset with WDF"
+        ],
+        "attributes": [
+          {
+            "id": "Customers_sql_dataset_with_WDF.customer_id",
+            "labels": [],
+            "sourceColumn": "customer_id",
+            "title": "Customer id",
+            "sourceColumnDataType": "INT",
+            "description": "Customer id",
+            "tags": [
+              "Customers sql dataset with WDF"
+            ]
+          },
+          {
+            "id": "Customers_sql_dataset_with_WDF.customer_name",
+            "labels": [],
+            "sourceColumn": "customer_name",
+            "title": "Customer name",
+            "sourceColumnDataType": "STRING",
+            "description": "Customer name",
+            "tags": [
+              "Customers sql dataset with WDF"
+            ]
+          },
+          {
+            "id": "Customers_sql_dataset_with_WDF.region",
+            "labels": [],
+            "sourceColumn": "region",
+            "title": "Region",
+            "sourceColumnDataType": "STRING",
+            "description": "Region",
+            "tags": [
+              "Customers sql dataset with WDF"
+            ]
+          },
+          {
+            "id": "Customers_sql_dataset_with_WDF.state",
+            "labels": [],
+            "sourceColumn": "state",
+            "title": "State",
+            "sourceColumnDataType": "STRING",
+            "description": "State",
+            "tags": [
+              "Customers sql dataset with WDF"
+            ]
+          }
+        ],
+        "facts": [],
+        "sql": {
+          "dataSourceId": "demo-test-ds",
+          "statement": "SELECT * FROM v_wdf_customers"
+        },
+        "workspaceDataFilterColumns": [
+          {
+            "dataType": "STRING",
+            "name": "wdf__region"
+          }
+        ]
+      },
+      {
+        "grain": [],
+        "id": "Order_lines_duplicate_sql_dataset",
+        "references": [
+          {
+            "identifier": {
+              "id": "date",
+              "type": "dataset"
+            },
+            "multivalue": false,
+            "sources": [
+              {
+                "column": "date",
+                "target": {
+                  "id": "date",
+                  "type": "date"
+                },
+                "dataType": "DATE"
+              }
+            ]
+          }
+        ],
+        "title": "Order lines duplicate sql dataset",
+        "description": "Order lines duplicate sql dataset",
+        "tags": [
+          "Order lines duplicate sql dataset"
+        ],
+        "attributes": [
+          {
+            "id": "Order_lines_duplicate_sql_dataset.campaign_id",
+            "labels": [],
+            "sourceColumn": "campaign_id",
+            "title": "Campaign id",
+            "sourceColumnDataType": "INT",
+            "description": "Campaign id",
+            "tags": [
+              "Order lines duplicate sql dataset"
+            ]
+          },
+          {
+            "id": "Order_lines_duplicate_sql_dataset.customer_id",
+            "labels": [],
+            "sourceColumn": "customer_id",
+            "title": "Customer id",
+            "sourceColumnDataType": "INT",
+            "description": "Customer id",
+            "tags": [
+              "Order lines duplicate sql dataset"
+            ]
+          },
+          {
+            "id": "Order_lines_duplicate_sql_dataset.order_id",
+            "labels": [],
+            "sourceColumn": "order_id",
+            "title": "Order id",
+            "sourceColumnDataType": "STRING",
+            "description": "Order id",
+            "tags": [
+              "Order lines duplicate sql dataset"
+            ]
+          },
+          {
+            "id": "Order_lines_duplicate_sql_dataset.order_line_id",
+            "labels": [],
+            "sourceColumn": "order_line_id",
+            "title": "Order line id",
+            "sourceColumnDataType": "STRING",
+            "description": "Order line id",
+            "tags": [
+              "Order lines duplicate sql dataset"
+            ]
+          },
+          {
+            "id": "Order_lines_duplicate_sql_dataset.order_status",
+            "labels": [],
+            "sourceColumn": "order_status",
+            "title": "Order status",
+            "sourceColumnDataType": "STRING",
+            "description": "Order status",
+            "tags": [
+              "Order lines duplicate sql dataset"
+            ]
+          },
+          {
+            "id": "Order_lines_duplicate_sql_dataset.product_id",
+            "labels": [],
+            "sourceColumn": "product_id",
+            "title": "Product id",
+            "sourceColumnDataType": "INT",
+            "description": "Product id",
+            "tags": [
+              "Order lines duplicate sql dataset"
+            ]
+          }
+        ],
+        "facts": [
+          {
+            "id": "Order_lines_duplicate_sql_dataset.price",
+            "sourceColumn": "price",
+            "title": "Price",
+            "sourceColumnDataType": "NUMERIC",
+            "description": "Price",
+            "tags": [
+              "Order lines duplicate sql dataset"
+            ]
+          },
+          {
+            "id": "Order_lines_duplicate_sql_dataset.quantity",
+            "sourceColumn": "quantity",
+            "title": "Quantity",
+            "sourceColumnDataType": "NUMERIC",
+            "description": "Quantity",
+            "tags": [
+              "Order lines duplicate sql dataset"
+            ]
+          }
+        ],
+        "sql": {
+          "dataSourceId": "demo-test-ds",
+          "statement": "SELECT * FROM order_lines"
+        }
+      }
+    ],
+    "dateInstances": [
+      {
+        "granularities": [
+          "MINUTE",
+          "HOUR",
+          "DAY",
+          "WEEK",
+          "MONTH",
+          "QUARTER",
+          "YEAR",
+          "MINUTE_OF_HOUR",
+          "HOUR_OF_DAY",
+          "DAY_OF_WEEK",
+          "DAY_OF_MONTH",
+          "DAY_OF_YEAR",
+          "WEEK_OF_YEAR",
+          "MONTH_OF_YEAR",
+          "QUARTER_OF_YEAR"
+        ],
+        "granularitiesFormatting": {
+          "titleBase": "",
+          "titlePattern": "%titleBase - %granularityTitle"
+        },
+        "id": "date",
+        "title": "Date",
+        "tags": [
+          "Date"
+        ]
+      }
+    ]
+  }
+}

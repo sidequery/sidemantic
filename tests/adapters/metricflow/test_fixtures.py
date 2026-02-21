@@ -629,3 +629,702 @@ class TestUnsupportedFeatures:
         """Parsing a cumulative metric with grain_to_date: hour fails validation."""
         adapter = MetricFlowAdapter()
         adapter.parse(FIXTURES / "sub_daily_grain_to_date_hour.yml")
+
+
+# =============================================================================
+# Simple manifest metrics: 85+ metrics from MetricFlow canonical test suite
+# =============================================================================
+
+
+class TestSimpleManifestMetrics:
+    """Tests for the full simple_manifest metrics fixture (Apache 2.0, dbt-labs/metricflow).
+
+    Covers: offset_window, offset_to_grain, nested derived, fill_nulls_with,
+    conversion with constant_properties, metric-level time_granularity,
+    metric filters referencing other metrics, percentile flavors, median,
+    sum_boolean, period_agg, join_to_timespine, alias reuse.
+    """
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "simple_manifest_metrics.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors."""
+        assert graph is not None
+
+    def test_model_exists(self, graph):
+        """The bookings_source semantic model is imported."""
+        assert "bookings_source" in graph.models
+
+    def test_measure_count(self, graph):
+        """All 14 measures are imported from the semantic model."""
+        model = graph.models["bookings_source"]
+        assert len(model.metrics) == 14
+
+    def test_simple_metrics_parsed(self, graph):
+        """Simple metrics are parsed as untyped with measure references."""
+        bookings = graph.get_metric("bookings")
+        assert bookings is not None
+        assert bookings.type is None
+        assert bookings.sql == "bookings"
+
+        bookers = graph.get_metric("bookers")
+        assert bookers is not None
+        assert bookers.type is None
+
+    def test_simple_metric_with_filter(self, graph):
+        """Simple metric with Dimension filter parses with filter captured."""
+        instant_bv = graph.get_metric("instant_booking_value")
+        assert instant_bv is not None
+        assert instant_bv.type is None
+        assert instant_bv.filters is not None
+        assert len(instant_bv.filters) > 0
+
+    def test_simple_metric_with_entity_filter(self, graph):
+        """Simple metric with Entity filter parses correctly."""
+        non_null = graph.get_metric("booking_value_for_non_null_listing_id")
+        assert non_null is not None
+        assert non_null.filters is not None
+
+    def test_fill_nulls_with_measure_dict(self, graph):
+        """Simple metric with fill_nulls_with as dict measure parses."""
+        metric = graph.get_metric("bookings_fill_nulls_with_0_without_time_spine")
+        assert metric is not None
+        assert metric.type is None
+
+    def test_join_to_timespine_measure_dict(self, graph):
+        """Simple metric with join_to_timespine parses."""
+        metric = graph.get_metric("bookings_join_to_time_spine")
+        assert metric is not None
+
+    def test_metric_level_time_granularity(self, graph):
+        """Metric with time_granularity field parses (field not captured but no error)."""
+        metric = graph.get_metric("largest_listing")
+        assert metric is not None
+
+    def test_metric_filter_referencing_other_metric(self, graph):
+        """Metric with filter referencing another metric via Metric() parses."""
+        metric = graph.get_metric("active_listings")
+        assert metric is not None
+        assert metric.filters is not None
+        assert "Metric(" in metric.filters[0]
+
+    def test_cumulative_with_period_agg(self, graph):
+        """Cumulative metric with period_agg parses correctly."""
+        t2mr = graph.get_metric("trailing_2_months_revenue")
+        assert t2mr is not None
+        assert t2mr.type == "cumulative"
+        assert t2mr.window == "2 month"
+
+    def test_cumulative_all_time(self, graph):
+        """Cumulative metric with no window (all time) parses."""
+        bat = graph.get_metric("bookings_all_time")
+        assert bat is not None
+        assert bat.type == "cumulative"
+        assert bat.window is None
+
+    def test_cumulative_grain_to_date(self, graph):
+        """Cumulative metric with grain_to_date parses."""
+        mtd = graph.get_metric("revenue_mtd")
+        assert mtd is not None
+        assert mtd.type == "cumulative"
+        assert mtd.grain_to_date == "month"
+
+    def test_cumulative_with_filter(self, graph):
+        """Cumulative metric with filter parses."""
+        metric = graph.get_metric("trailing_2_months_revenue_with_filter")
+        assert metric is not None
+        assert metric.type == "cumulative"
+        assert metric.filters is not None
+
+    def test_derived_basic(self, graph):
+        """Basic derived metric parses with expression."""
+        fees = graph.get_metric("booking_fees")
+        assert fees is not None
+        assert fees.type == "derived"
+        assert fees.sql == "booking_value * 0.05"
+
+    def test_derived_multi_input(self, graph):
+        """Derived metric with multiple inputs parses."""
+        fees_per = graph.get_metric("booking_fees_per_booker")
+        assert fees_per is not None
+        assert fees_per.type == "derived"
+        assert "bookers" in fees_per.sql
+
+    def test_derived_with_offset_window(self, graph):
+        """Derived metric with offset_window on input parses."""
+        growth = graph.get_metric("bookings_growth_2_weeks")
+        assert growth is not None
+        assert growth.type == "derived"
+
+    def test_derived_offset_to_grain(self, graph):
+        """Derived metric with offset_to_grain parses."""
+        metric = graph.get_metric("bookings_all_time_at_start_of_month")
+        assert metric is not None
+        assert metric.type == "derived"
+
+    def test_derived_nested(self, graph):
+        """Nested derived metric (derived referencing derived) parses."""
+        nested = graph.get_metric("booking_value_sub_instant_add_10")
+        assert nested is not None
+        assert nested.type == "derived"
+        assert "booking_value_sub_instant" in nested.sql
+
+    def test_derived_with_alias(self, graph):
+        """Derived metric with alias on input parses."""
+        pct = graph.get_metric("non_referred_bookings_pct")
+        assert pct is not None
+        assert pct.type == "derived"
+        assert "ref_bookings" in pct.sql
+
+    def test_derived_with_filtered_input(self, graph):
+        """Derived metric with filter on input metric parses."""
+        delayed = graph.get_metric("double_counted_delayed_bookings")
+        assert delayed is not None
+        assert delayed.type == "derived"
+
+    def test_derived_mom_yoy(self, graph):
+        """Month-over-month and year-over-year derived metrics parse."""
+        mom = graph.get_metric("bookings_mom")
+        assert mom is not None
+        assert mom.type == "derived"
+
+        yoy = graph.get_metric("bookings_yoy")
+        assert yoy is not None
+        assert yoy.type == "derived"
+
+    def test_derived_offset_once_twice(self, graph):
+        """Nested offset (offset_once -> offset_twice) parses."""
+        once = graph.get_metric("bookings_offset_once")
+        assert once is not None
+        assert once.type == "derived"
+
+        twice = graph.get_metric("bookings_offset_twice")
+        assert twice is not None
+        assert twice.type == "derived"
+
+    def test_derived_shared_aliases(self, graph):
+        """Derived metrics with shared alias names parse independently."""
+        a = graph.get_metric("derived_shared_alias_1a")
+        assert a is not None
+        assert a.type == "derived"
+        assert "shared_alias" in a.sql
+
+        b = graph.get_metric("derived_shared_alias_2")
+        assert b is not None
+
+    def test_derived_fill_nulls(self, graph):
+        """Derived metrics with fill_nulls inputs parse."""
+        metric = graph.get_metric("bookings_growth_2_weeks_fill_nulls_with_0")
+        assert metric is not None
+        assert metric.type == "derived"
+
+    def test_ratio_basic(self, graph):
+        """Basic ratio metric parses with numerator and denominator."""
+        ratio = graph.get_metric("bookings_per_booker")
+        assert ratio is not None
+        assert ratio.type == "ratio"
+        assert ratio.numerator == "bookings"
+        assert ratio.denominator == "bookers"
+
+    def test_ratio_with_filter(self, graph):
+        """Ratio metric with filter on numerator parses."""
+        ratio = graph.get_metric("instant_booking_fraction_of_max_value")
+        assert ratio is not None
+        assert ratio.type == "ratio"
+
+    def test_ratio_with_alias(self, graph):
+        """Ratio metric with alias on numerator parses."""
+        ratio = graph.get_metric("instant_booking_value_ratio")
+        assert ratio is not None
+        assert ratio.type == "ratio"
+        assert ratio.numerator == "booking_value"
+        assert ratio.denominator == "booking_value"
+
+    def test_ratio_with_metric_filter(self, graph):
+        """Ratio metric with Metric() filter parses."""
+        ratio = graph.get_metric("popular_listing_bookings_per_booker")
+        assert ratio is not None
+        assert ratio.type == "ratio"
+        assert ratio.filters is not None
+
+    def test_conversion_metrics_skipped(self, graph):
+        """Conversion metrics are skipped (unsupported type)."""
+        assert "visit_buy_conversion_rate_7days" not in graph.metrics
+        assert "visit_buy_conversion_rate" not in graph.metrics
+        assert "visit_buy_conversions" not in graph.metrics
+        assert "visit_buy_conversion_rate_by_session" not in graph.metrics
+
+    def test_total_metric_count(self, graph):
+        """Verify total number of parsed metrics (simple + cumulative + derived + ratio, excluding conversion)."""
+        # Conversion metrics are skipped, so we count only supported types
+        assert len(graph.metrics) >= 50
+
+
+# =============================================================================
+# Simple manifest buys_source: conversion tracking semantic model
+# =============================================================================
+
+
+class TestSimpleManifestBuysSource:
+    """Tests for the buys_source fixture (Apache 2.0, dbt-labs/metricflow)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "simple_manifest_buys_source.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors."""
+        assert graph is not None
+
+    def test_model_exists(self, graph):
+        """The buys_source semantic model is imported."""
+        assert "buys_source" in graph.models
+
+    def test_measure_count(self, graph):
+        """All 3 measures are imported."""
+        model = graph.models["buys_source"]
+        assert len(model.metrics) == 3
+
+    def test_count_aggregation(self, graph):
+        """Count aggregation on buys measure."""
+        model = graph.models["buys_source"]
+        buys = model.get_metric("buys")
+        assert buys.agg == "count"
+        assert buys.sql == "1"
+
+    def test_count_distinct_aggregation(self, graph):
+        """Count distinct on buyers measure."""
+        model = graph.models["buys_source"]
+        buyers = model.get_metric("buyers")
+        assert buyers.agg == "count_distinct"
+        assert buyers.sql == "user_id"
+
+    def test_monthly_agg_time_dimension(self, graph):
+        """buys_month measure uses ds_month as agg_time_dimension."""
+        model = graph.models["buys_source"]
+        buys_month = model.get_metric("buys_month")
+        assert buys_month is not None
+
+    def test_dual_time_dimensions(self, graph):
+        """Day and month time dimensions coexist."""
+        model = graph.models["buys_source"]
+        ds = model.get_dimension("ds")
+        assert ds.type == "time"
+        assert ds.granularity == "day"
+
+        ds_month = model.get_dimension("ds_month")
+        assert ds_month.type == "time"
+        assert ds_month.granularity == "month"
+
+    def test_foreign_entities(self, graph):
+        """Foreign entities create relationships."""
+        model = graph.models["buys_source"]
+        rel_names = {r.name for r in model.relationships}
+        assert "user" in rel_names
+        assert "session_id" in rel_names
+
+
+# =============================================================================
+# Simple manifest saved queries: saved queries with order_by, limit, exports
+# =============================================================================
+
+
+class TestSimpleManifestSavedQueries:
+    """Tests for the saved_queries fixture (Apache 2.0, dbt-labs/metricflow)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "simple_manifest_saved_queries.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors (saved_queries key is ignored gracefully)."""
+        assert graph is not None
+
+    def test_model_exists(self, graph):
+        """The placeholder semantic model is imported."""
+        assert "sales_for_saved_queries" in graph.models
+
+    def test_saved_queries_not_in_metrics(self, graph):
+        """saved_queries are not parsed into graph.metrics (not yet supported)."""
+        assert "p0_booking" not in graph.metrics
+        assert "p0_booking_with_order_by_and_limit" not in graph.metrics
+
+
+# =============================================================================
+# SCD listings: validity_params from upstream test suite
+# =============================================================================
+
+
+class TestSCDListings:
+    """Tests for the scd_listings fixture (Apache 2.0, dbt-labs/metricflow)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "scd_listings.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors."""
+        assert graph is not None
+
+    def test_model_exists(self, graph):
+        """The listings semantic model is imported."""
+        assert "listings" in graph.models
+
+    def test_validity_params_start(self, graph):
+        """Dimension with validity_params is_start parses with expr."""
+        model = graph.models["listings"]
+        window_start = model.get_dimension("window_start")
+        assert window_start.type == "time"
+        assert window_start.granularity == "day"
+        assert window_start.sql == "active_from"
+
+    def test_validity_params_end(self, graph):
+        """Dimension with validity_params is_end parses with expr."""
+        model = graph.models["listings"]
+        window_end = model.get_dimension("window_end")
+        assert window_end.type == "time"
+        assert window_end.sql == "active_to"
+
+    def test_categorical_dimensions(self, graph):
+        """All 3 categorical dimensions parse."""
+        model = graph.models["listings"]
+        for dim_name in ("country", "is_lux", "capacity"):
+            assert model.get_dimension(dim_name).type == "categorical"
+
+    def test_natural_entity(self, graph):
+        """Natural entity (listing) does not create a foreign relationship."""
+        model = graph.models["listings"]
+        rel_names = {r.name for r in model.relationships}
+        assert "listing" not in rel_names
+
+    def test_foreign_entity(self, graph):
+        """Foreign entity (user) creates many_to_one relationship."""
+        model = graph.models["listings"]
+        user_rel = next(r for r in model.relationships if r.name == "user")
+        assert user_rel.type == "many_to_one"
+        assert user_rel.foreign_key == "user_id"
+
+
+# =============================================================================
+# SCD metrics: metrics on SCD dimensions
+# =============================================================================
+
+
+class TestSCDMetrics:
+    """Tests for the scd_metrics fixture (Apache 2.0, dbt-labs/metricflow)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "scd_metrics.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors."""
+        assert graph is not None
+
+    def test_simple_metric(self, graph):
+        """Simple metric on SCD model parses."""
+        bookings = graph.get_metric("bookings")
+        assert bookings is not None
+        assert bookings.type is None
+        assert bookings.sql == "bookings"
+
+    def test_metric_with_scd_dimension_filter(self, graph):
+        """Metric with filter on SCD dimension (capacity) parses."""
+        family = graph.get_metric("family_bookings")
+        assert family is not None
+        assert family.filters is not None
+        assert "capacity" in family.filters[0]
+
+    def test_metric_with_boolean_or_scd_filter(self, graph):
+        """Metric with boolean OR filter on SCD dimension parses."""
+        lux = graph.get_metric("potentially_lux_bookings")
+        assert lux is not None
+        assert lux.filters is not None
+        assert "is_lux" in lux.filters[0]
+
+
+# =============================================================================
+# Ambiguous resolution manifest: mixed month/year grain
+# =============================================================================
+
+
+class TestAmbiguousResolutionManifest:
+    """Tests for the ambiguous_resolution_manifest fixture (Apache 2.0, dbt-labs/metricflow)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "ambiguous_resolution_manifest.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors."""
+        assert graph is not None
+
+    def test_monthly_model(self, graph):
+        """Monthly measures source with month-grain time dimension."""
+        assert "monthly_measures_source" in graph.models
+        model = graph.models["monthly_measures_source"]
+        assert len(model.metrics) == 2
+        ct = model.get_dimension("creation_time")
+        assert ct.type == "time"
+        assert ct.granularity == "month"
+
+    def test_yearly_model(self, graph):
+        """Yearly measure source with year-grain time dimension."""
+        assert "yearly_measure_source" in graph.models
+        model = graph.models["yearly_measure_source"]
+        assert len(model.metrics) == 1
+        ct = model.get_dimension("creation_time")
+        assert ct.granularity == "year"
+
+    def test_simple_metrics(self, graph):
+        """Simple metrics on monthly and yearly measures parse."""
+        assert "monthly_metric_0" in graph.metrics
+        assert "monthly_metric_1" in graph.metrics
+        assert "yearly_metric_0" in graph.metrics
+
+    def test_derived_same_grain(self, graph):
+        """Derived metric combining same-grain (monthly) parents."""
+        metric = graph.get_metric("derived_metric_with_same_parent_time_grains")
+        assert metric.type == "derived"
+        assert "monthly_metric_0" in metric.sql
+        assert "monthly_metric_1" in metric.sql
+
+    def test_derived_different_grains(self, graph):
+        """Derived metric combining different-grain (month + year) parents."""
+        metric = graph.get_metric("derived_metric_with_different_parent_time_grains")
+        assert metric.type == "derived"
+        assert "monthly_metric_0" in metric.sql
+        assert "yearly_metric_0" in metric.sql
+
+    def test_nested_derived_heterogeneous(self, graph):
+        """Nested derived from heterogeneous-grain derived metric."""
+        metric = graph.get_metric("metric_derived_from_heterogeneous_derived_metric")
+        assert metric.type == "derived"
+
+    def test_nested_derived_homogeneous(self, graph):
+        """Nested derived from homogeneous-grain derived metric."""
+        metric = graph.get_metric("metric_derived_from_homogeneous_derived_metric")
+        assert metric.type == "derived"
+
+    def test_cumulative_non_day_grain(self, graph):
+        """Cumulative metric on monthly measure with 2-month window."""
+        metric = graph.get_metric("accumulate_last_2_months_metric")
+        assert metric.type == "cumulative"
+        assert metric.window == "2 months"
+
+    def test_metric_level_time_granularity(self, graph):
+        """Metric with time_granularity: quarter parses."""
+        metric = graph.get_metric("simple_metric_with_default_time_granularity")
+        assert metric is not None
+
+    def test_derived_with_time_granularity(self, graph):
+        """Derived metric with time_granularity: year parses."""
+        metric = graph.get_metric("derived_metric_with_time_granularity")
+        assert metric.type == "derived"
+
+    def test_derived_with_filtered_input(self, graph):
+        """Derived metric with TimeDimension filter on input parses."""
+        metric = graph.get_metric("derived_metric_with_common_filtered_metric_0")
+        assert metric.type == "derived"
+
+    def test_total_metric_count(self, graph):
+        """All metrics from the ambiguous resolution manifest are parsed."""
+        # 5 simple + 9 derived + 1 cumulative + 1 derived w/o time_gran = 16
+        assert len(graph.metrics) == 16
+
+
+# =============================================================================
+# Extended date manifest: monthly grain, cross-grain ratios
+# =============================================================================
+
+
+class TestExtendedDateManifest:
+    """Tests for the extended_date_manifest fixture (Apache 2.0, dbt-labs/metricflow)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "extended_date_manifest.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors."""
+        assert graph is not None
+
+    def test_all_models(self, graph):
+        """All 3 semantic models are imported."""
+        assert "monthly_bookings_source" in graph.models
+        assert "extended_bookings_source" in graph.models
+        assert "listings_extended_source" in graph.models
+
+    def test_monthly_grain_model(self, graph):
+        """Monthly bookings source has month-grain time dimension."""
+        model = graph.models["monthly_bookings_source"]
+        ds = model.get_dimension("ds")
+        assert ds.type == "time"
+        assert ds.granularity == "month"
+
+    def test_daily_grain_model(self, graph):
+        """Extended bookings source has day-grain time dimension."""
+        model = graph.models["extended_bookings_source"]
+        ds = model.get_dimension("ds")
+        assert ds.type == "time"
+        assert ds.granularity == "day"
+
+    def test_listings_dimension_with_expr(self, graph):
+        """Listings extended source dimension has expr."""
+        model = graph.models["listings_extended_source"]
+        ds = model.get_dimension("ds")
+        assert ds.sql == "listing_creation_ds"
+
+    def test_cumulative_daily_window(self, graph):
+        """Cumulative metric with 7-day window on daily measure."""
+        metric = graph.get_metric("weekly_bookers")
+        assert metric.type == "cumulative"
+        assert metric.window == "7 days"
+
+    def test_derived_offset_on_monthly(self, graph):
+        """Derived metric with offset_window on monthly measure."""
+        metric = graph.get_metric("bookings_last_month")
+        assert metric.type == "derived"
+
+    def test_cumulative_monthly_window(self, graph):
+        """Cumulative metric with 3-month window on monthly measure."""
+        metric = graph.get_metric("trailing_3_months_bookings")
+        assert metric.type == "cumulative"
+        assert metric.window == "3 month"
+
+    def test_cross_grain_ratio(self, graph):
+        """Ratio metric with daily numerator and monthly denominator."""
+        metric = graph.get_metric("monthly_bookings_to_daily_bookings")
+        assert metric.type == "ratio"
+        assert metric.numerator == "bookings"
+        assert metric.denominator == "bookings_monthly"
+
+    def test_foreign_entities_across_models(self, graph):
+        """Foreign entity linking monthly bookings to listings."""
+        model = graph.models["monthly_bookings_source"]
+        rel_names = {r.name for r in model.relationships}
+        assert "listing" in rel_names
+
+
+# =============================================================================
+# Cyclic join manifest: bidirectional entity links
+# =============================================================================
+
+
+class TestCyclicJoinManifest:
+    """Tests for the cyclic_join_manifest fixture (Apache 2.0, dbt-labs/metricflow)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "cyclic_join_manifest.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors."""
+        assert graph is not None
+
+    def test_both_models(self, graph):
+        """Both listings_latest and listings_latest_cyclic are imported."""
+        assert "listings_latest" in graph.models
+        assert "listings_latest_cyclic" in graph.models
+
+    def test_listings_latest_measures(self, graph):
+        """listings_latest has a sum measure."""
+        model = graph.models["listings_latest"]
+        listings = model.get_metric("listings")
+        assert listings.agg == "sum"
+        assert listings.sql == "1"
+
+    def test_listings_latest_dimensions(self, graph):
+        """listings_latest has time and categorical dimensions."""
+        model = graph.models["listings_latest"]
+        ds = model.get_dimension("ds")
+        assert ds.type == "time"
+        assert ds.sql == "created_at"
+
+        country = model.get_dimension("country_latest")
+        assert country.type == "categorical"
+        assert country.sql == "country"
+
+    def test_cyclic_model_no_measures(self, graph):
+        """listings_latest_cyclic has no measures (dimension-only)."""
+        model = graph.models["listings_latest_cyclic"]
+        assert len(model.metrics) == 0
+
+    def test_cyclic_model_dimension(self, graph):
+        """listings_latest_cyclic has a categorical dimension with expr."""
+        model = graph.models["listings_latest_cyclic"]
+        cap = model.get_dimension("capacity_latest")
+        assert cap.type == "categorical"
+        assert cap.sql == "capacity"
+
+    def test_unique_entity_not_relationship(self, graph):
+        """Unique entity (cyclic_entity) does not create a foreign relationship."""
+        model = graph.models["listings_latest"]
+        rel_names = {r.name for r in model.relationships}
+        assert "cyclic_entity" not in rel_names
+
+    def test_primary_key(self, graph):
+        """Both models have listing_id as primary key."""
+        assert graph.models["listings_latest"].primary_key == "listing_id"
+        assert graph.models["listings_latest_cyclic"].primary_key == "listing_id"
+
+
+# =============================================================================
+# Name edge case manifest: metric=dimension and metric=entity name collisions
+# =============================================================================
+
+
+class TestNameEdgeCaseManifest:
+    """Tests for the name_edge_case_manifest fixture (Apache 2.0, dbt-labs/metricflow)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = MetricFlowAdapter()
+        return adapter.parse(FIXTURES / "name_edge_case_manifest.yaml")
+
+    def test_parse_succeeds(self, graph):
+        """Fixture parses without errors."""
+        assert graph is not None
+
+    def test_model_exists(self, graph):
+        """The bookings_source semantic model is imported."""
+        assert "bookings_source" in graph.models
+
+    def test_measure(self, graph):
+        """booking_value measure is parsed."""
+        model = graph.models["bookings_source"]
+        bv = model.get_metric("booking_value")
+        assert bv.agg == "sum"
+
+    def test_metric_same_name_as_dimension(self, graph):
+        """Metric named 'homonymous_metric_and_dimension' coexists with dimension of same name."""
+        metric = graph.get_metric("homonymous_metric_and_dimension")
+        assert metric is not None
+        assert metric.type is None  # Simple -> untyped
+
+        model = graph.models["bookings_source"]
+        dim = model.get_dimension("homonymous_metric_and_dimension")
+        assert dim is not None
+        assert dim.type == "categorical"
+
+    def test_metric_same_name_as_entity(self, graph):
+        """Metric named 'homonymous_metric_and_entity' parses alongside entity of same name."""
+        metric = graph.get_metric("homonymous_metric_and_entity")
+        assert metric is not None
+        assert metric.type is None
+
+    def test_dummy_expressions(self, graph):
+        """Dimension and entity with string literal expressions parse."""
+        model = graph.models["bookings_source"]
+        dim = model.get_dimension("homonymous_metric_and_dimension")
+        assert dim.sql == "'dummy_dimension_value'"

@@ -1,0 +1,427 @@
+# Source: thoughtspot/ps_tools (MIT license)
+# https://github.com/thoughtspot/ps_tools
+guid: ""
+worksheet:
+  name: SF Dashboard
+  tables:
+  - name: CUSTOMER
+  - name: REGION
+  - name: ORDERS
+  - name: LINEITEM
+  - name: NATION
+  - name: PARTSUPP
+  - name: PART
+  - name: SUPPLIER
+  joins:
+  - name: CUSTOMER_NATION
+    source: CUSTOMER
+    destination: NATION
+    type: INNER
+    is_one_to_one: false
+  - name: CUSTOMER_ORDERS
+    source: CUSTOMER
+    destination: ORDERS
+    type: INNER
+    is_one_to_one: false
+  - name: LINEITEM_PART
+    source: LINEITEM
+    destination: PART
+    type: INNER
+    is_one_to_one: false
+  - name: LINEITEM_SUPPLIER
+    source: LINEITEM
+    destination: SUPPLIER
+    type: INNER
+    is_one_to_one: false
+  - name: NATION_REGION
+    source: NATION
+    destination: REGION
+    type: INNER
+    is_one_to_one: false
+  - name: ORDERS_LINEITEM
+    source: ORDERS
+    destination: LINEITEM
+    type: INNER
+    is_one_to_one: false
+  - name: PART_PARTSUPP
+    source: PART
+    destination: PARTSUPP
+    type: INNER
+    is_one_to_one: false
+  table_paths:
+  - id: CUSTOMER_1
+    table: CUSTOMER
+    join_path:
+    - {}
+  - id: REGION_1
+    table: REGION
+    join_path:
+    - join:
+      - CUSTOMER_NATION
+      - NATION_REGION
+  - id: ORDERS_1
+    table: ORDERS
+    join_path:
+    - join:
+      - CUSTOMER_ORDERS
+  - id: LINEITEM_1
+    table: LINEITEM
+    join_path:
+    - join:
+      - CUSTOMER_ORDERS
+      - ORDERS_LINEITEM
+  - id: NATION_1
+    table: NATION
+    join_path:
+    - join:
+      - CUSTOMER_NATION
+  - id: PARTSUPP_1
+    table: PARTSUPP
+    join_path:
+    - join:
+      - ORDERS_LINEITEM
+      - LINEITEM_PART
+      - PART_PARTSUPP
+  - id: PART_1
+    table: PART
+    join_path:
+    - join:
+      - CUSTOMER_ORDERS
+      - ORDERS_LINEITEM
+      - LINEITEM_PART
+  - id: SUPPLIER_1
+    table: SUPPLIER
+    join_path:
+    - join:
+      - CUSTOMER_ORDERS
+      - ORDERS_LINEITEM
+      - LINEITEM_SUPPLIER
+  formulas:
+  - name: COGS
+    expr: "[ORDERS_1::O_TOTALPRICE]- [ORDERS_1::Calculation_396316787159064930]"
+    was_auto_generated: false
+  - name: Region Grouping
+    expr: "if( [REGION_1::R_NAME] = 'AMERICA' ) then 'USA' ELSE 'OTHER' "
+    was_auto_generated: false
+  - name: Profit
+    expr: "[ORDERS_1::O_TOTALPRICE]* 0.25"
+    was_auto_generated: false
+  worksheet_columns:
+  - name: C_ACCTBAL
+    column_id: CUSTOMER_1::C_ACCTBAL
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: Calculation_396316787159064930
+    column_id: ORDERS_1::Calculation_396316787159064930
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: O_TOTALPRICE
+    column_id: ORDERS_1::O_TOTALPRICE
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: L_DISCOUNT
+    column_id: LINEITEM_1::L_DISCOUNT
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: L_EXTENDEDPRICE
+    column_id: LINEITEM_1::L_EXTENDEDPRICE
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: L_QUANTITY
+    column_id: LINEITEM_1::L_QUANTITY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: L_TAX
+    column_id: LINEITEM_1::L_TAX
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: PS_SUPPLYCOST
+    column_id: PARTSUPP_1::PS_SUPPLYCOST
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: P_RETAILPRICE
+    column_id: PART_1::P_RETAILPRICE
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: S_ACCTBAL
+    column_id: SUPPLIER_1::S_ACCTBAL
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: C_ADDRESS
+    column_id: CUSTOMER_1::C_ADDRESS
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: C_COMMENT
+    column_id: CUSTOMER_1::C_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: C_MKTSEGMENT
+    column_id: CUSTOMER_1::C_MKTSEGMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: C_NAME
+    column_id: CUSTOMER_1::C_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: C_PHONE
+    column_id: CUSTOMER_1::C_PHONE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: Calculation_396316787158536545
+    column_id: REGION_1::Calculation_396316787158536545
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: R_COMMENT
+    column_id: REGION_1::R_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: R_NAME
+    column_id: REGION_1::R_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: O_CLERK
+    column_id: ORDERS_1::O_CLERK
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: O_COMMENT
+    column_id: ORDERS_1::O_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: O_ORDERPRIORITY
+    column_id: ORDERS_1::O_ORDERPRIORITY
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: O_ORDERSTATUS
+    column_id: ORDERS_1::O_ORDERSTATUS
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: L_COMMENT
+    column_id: LINEITEM_1::L_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: L_LINESTATUS
+    column_id: LINEITEM_1::L_LINESTATUS
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: L_RETURNFLAG
+    column_id: LINEITEM_1::L_RETURNFLAG
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: L_SHIPINSTRUCT
+    column_id: LINEITEM_1::L_SHIPINSTRUCT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: L_SHIPMODE
+    column_id: LINEITEM_1::L_SHIPMODE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: N_COMMENT
+    column_id: NATION_1::N_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: N_NAME
+    column_id: NATION_1::N_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: PS_COMMENT
+    column_id: PARTSUPP_1::PS_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: P_BRAND
+    column_id: PART_1::P_BRAND
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: P_COMMENT
+    column_id: PART_1::P_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: P_CONTAINER
+    column_id: PART_1::P_CONTAINER
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: P_MFGR
+    column_id: PART_1::P_MFGR
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: P_NAME
+    column_id: PART_1::P_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: P_TYPE
+    column_id: PART_1::P_TYPE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: S_ADDRESS
+    column_id: SUPPLIER_1::S_ADDRESS
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: S_COMMENT
+    column_id: SUPPLIER_1::S_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: S_NAME
+    column_id: SUPPLIER_1::S_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: S_PHONE
+    column_id: SUPPLIER_1::S_PHONE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: C_CUSTKEY
+    column_id: CUSTOMER_1::C_CUSTKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: C_NATIONKEY
+    column_id: CUSTOMER_1::C_NATIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: R_REGIONKEY
+    column_id: REGION_1::R_REGIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: O_CUSTKEY
+    column_id: ORDERS_1::O_CUSTKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: O_ORDERKEY
+    column_id: ORDERS_1::O_ORDERKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: O_SHIPPRIORITY
+    column_id: ORDERS_1::O_SHIPPRIORITY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: L_LINENUMBER
+    column_id: LINEITEM_1::L_LINENUMBER
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: L_ORDERKEY
+    column_id: LINEITEM_1::L_ORDERKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: L_PARTKEY
+    column_id: LINEITEM_1::L_PARTKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: L_SUPPKEY
+    column_id: LINEITEM_1::L_SUPPKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: N_NATIONKEY
+    column_id: NATION_1::N_NATIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: N_REGIONKEY
+    column_id: NATION_1::N_REGIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: PS_AVAILQTY
+    column_id: PARTSUPP_1::PS_AVAILQTY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: PS_PARTKEY
+    column_id: PARTSUPP_1::PS_PARTKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: PS_SUPPKEY
+    column_id: PARTSUPP_1::PS_SUPPKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: P_PARTKEY
+    column_id: PART_1::P_PARTKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: P_SIZE
+    column_id: PART_1::P_SIZE
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: S_NATIONKEY
+    column_id: SUPPLIER_1::S_NATIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: S_SUPPKEY
+    column_id: SUPPLIER_1::S_SUPPKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+  - name: O_ORDERDATE
+    column_id: ORDERS_1::O_ORDERDATE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: L_COMMITDATE
+    column_id: LINEITEM_1::L_COMMITDATE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: L_RECEIPTDATE
+    column_id: LINEITEM_1::L_RECEIPTDATE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  - name: L_SHIPDATE
+    column_id: LINEITEM_1::L_SHIPDATE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+  properties:
+    is_bypass_rls: false
+    join_progressive: true

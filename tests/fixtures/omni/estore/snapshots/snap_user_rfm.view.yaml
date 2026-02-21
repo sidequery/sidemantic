@@ -1,0 +1,72 @@
+# Source: vbalalian/estore-analytics (MIT license)
+# https://github.com/vbalalian/estore-analytics/blob/main/omni/BigQuery/omni_dbt_snapshots/snap_user_rfm.view.yaml
+# Reference this view as omni_dbt_snapshots__snap_user_rfm
+schema_label: ""
+#This description was pulled from dbt.
+description: |
+  SCD Type 2 snapshot tracking changes to user RFM segments over time. Enables segment migration analysis to understand how customers move between segments (e.g., Champion → At Risk → Lost).
+
+schema: omni_dbt_snapshots
+table_name: snap_user_rfm
+
+dimensions:
+  days_since_last_purchase: {}
+  purchase_count: {}
+  total_revenue: {}
+
+  user_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Unique identifier for each user
+
+  recency_score:
+    #This description was pulled from dbt.
+    description: Recency score (1-5) based on days since last purchase
+
+  frequency_score:
+    #This description was pulled from dbt.
+    description: Frequency score (1-5) based on purchase count
+
+  monetary_score:
+    #This description was pulled from dbt.
+    description: Monetary score (1-5) based on total revenue
+
+  rfm_score:
+    #This description was pulled from dbt.
+    description: Composite RFM score (sum of recency, frequency, monetary scores)
+
+  rfm_segment:
+    #This description was pulled from dbt.
+    description: RFM segment classification (Champions, At Risk, Loyal Customers, etc.)
+
+  dbt_scd_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Surrogate key for the snapshot record
+
+  dbt_updated_at:
+    #This description was pulled from dbt.
+    description: Timestamp when the snapshot record was last updated
+
+  dbt_valid_from:
+    #This description was pulled from dbt.
+    description: Timestamp when this version of the record became valid
+
+  dbt_valid_to:
+    #This description was pulled from dbt.
+    description: Timestamp when this version was superseded (null if current)
+
+measures:
+  count:
+    aggregate_type: count
+
+#The info below was pulled from your dbt repository and is read-only.
+dbt:
+  name: snap_user_rfm
+  target_schema: estore
+  description: |
+    SCD Type 2 snapshot tracking changes to user RFM segments over time. Enables segment migration analysis to understand how customers move between segments (e.g., Champion → At Risk → Lost).
+  config:
+    schema: snapshots
+    materialized: snapshot
+  code: select * from {{ ref('dim_user_rfm') }}

@@ -1,0 +1,278 @@
+# Source: vbalalian/estore-analytics (MIT license)
+# https://github.com/vbalalian/estore-analytics/blob/main/omni/BigQuery/omni_dbt_marts/fct_events.view.yaml
+# Reference this view as omni_dbt_marts__fct_events
+schema_label: ""
+#This description was pulled from dbt.
+description: |
+  Fact table for user events. Extracted from staging events data.
+
+schema: omni_dbt_marts
+table_name: fct_events
+
+dimensions:
+  event_time:
+    #This description was pulled from dbt.
+    description: Timestamp when the event occurred
+
+  event_date:
+    #This description was pulled from dbt.
+    description: Date when the event occurred
+
+  event_type:
+    #This description was pulled from dbt.
+    description: Type of the event (e.g., view, cart, purchase)
+    all_values: [ view, cart, purchase ]
+
+  user_session:
+    #This description was pulled from dbt.
+    description: Original identifier for the session during which the event occurred
+
+  brand:
+    #This description was pulled from dbt.
+    description: Brand of the product associated with the event (if applicable)
+
+  category_code:
+    #This description was pulled from dbt.
+    description: Category code associated with the product (if applicable)
+
+  price:
+    format: currency
+    #This description was pulled from dbt.
+    description: Price of the product associated with the event (if applicable)
+
+  quantity:
+    format: number
+    #This description was pulled from dbt.
+    description: Quantity of the product involved in the event (set to 1 for
+      downstream aggregations)
+
+  is_purchase:
+    #This description was pulled from dbt.
+    description: Indicator if the event is a purchase event (1 for purchase, 0 otherwise)
+
+  is_cart_add:
+    #This description was pulled from dbt.
+    description: Indicator if the event is an add-to-cart event (1 for add-to-cart,
+      0 otherwise)
+
+  is_view:
+    #This description was pulled from dbt.
+    description: Indicator if the event is a view event (1 for view, 0 otherwise)
+
+  revenue:
+    format: currency
+    #This description was pulled from dbt.
+    description: Revenue generated from the event (price * quantity for purchase
+      events, 0 otherwise)
+
+  user_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Identifier for the user who generated the event
+
+  product_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Identifier for the product associated with the event (if applicable)
+
+  category_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Category id associated with the product (if applicable)
+
+  event_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Unique identifier for the event
+    primary_key: true
+
+measures:
+  count:
+    label: Total Events
+    aggregate_type: count
+
+  sum_revenue:
+    sql: ${omni_dbt_marts__fct_events.revenue}
+    label: Total Revenue
+    format: BIGUSDCURRENCY_2
+    description: Sum of revenue from purchase events
+    aggregate_type: sum
+    synonyms: [ sales ]
+
+  avg_revenue_per_event:
+    sql: ${omni_dbt_marts__fct_events.revenue}
+    label: Avg Revenue per Event
+    format: BIGUSDCURRENCY_2
+    aggregate_type: average
+
+  avg_price:
+    sql: ${omni_dbt_marts__fct_events.price}
+    label: Avg Price
+    format: CURRENCY_2
+    aggregate_type: average
+
+  purchase_count:
+    label: Purchase Count
+    format: BIG
+    description: Total purchase events
+    aggregate_type: count
+    filters:
+      is_purchase:
+        is: 1
+
+  cart_add_count:
+    label: Cart Add Count
+    format: BIGNUMBER_0
+    description: Total add-to-cart events
+    aggregate_type: count
+    filters:
+      is_cart_add:
+        is: 1
+
+  view_count:
+    label: View Count
+    format: BIGNUMBER_0
+    description: Total view events
+    aggregate_type: count
+    filters:
+      is_view:
+        is: 1
+
+  unique_users:
+    sql: ${omni_dbt_marts__fct_events.user_id}
+    label: Unique Users
+    format: BIGNUMBER_0
+    aggregate_type: count_distinct
+
+  unique_products:
+    sql: ${omni_dbt_marts__fct_events.product_id}
+    label: Unique Products
+    format: BIGNUMBER_0
+    aggregate_type: count_distinct
+
+  unique_sessions:
+    sql: ${omni_dbt_marts__fct_events.user_session}
+    label: Unique Sessions
+    format: BIGNUMBER_0
+    aggregate_type: count_distinct
+
+  purchase_rate:
+    sql: sum(${omni_dbt_marts__fct_events.is_purchase}) / nullif(count(*), 0)
+    label: Purchase Rate (%)
+    format: PERCENT
+    description: Percentage of events that are purchases
+
+  cart_add_rate:
+    sql: sum(${omni_dbt_marts__fct_events.is_cart_add}) / nullif(count(*), 0)
+    label: Cart Add Rate (%)
+    format: PERCENT
+    description: Percentage of events that are cart additions
+
+  avg_events_per_session:
+    sql: CASE WHEN ${omni_dbt_marts__fct_events.unique_sessions} = 0 THEN NULL ELSE
+      COALESCE(${omni_dbt_marts__fct_events.view_count}, 0) /
+      ${omni_dbt_marts__fct_events.unique_sessions} END
+    label: Avg Views per Session
+
+#The info below was pulled from your dbt repository and is read-only.
+dbt:
+  name: fct_events
+  target_schema: estore
+  description: |
+    Fact table for user events. Extracted from staging events data.
+  config:
+    schema: marts
+    materialized: incremental
+  code: |-
+    {{ config(
+        materialized="incremental",
+        unique_key="event_id",
+        partition_by={
+        "field": "event_date", 
+        "data_type": "date",
+        "granularity": "day"
+        },
+        incremental_strategy="insert_overwrite"
+    ) }}
+
+    with
+
+    stg_events as (
+
+        select * from {{ ref('stg_events') }}
+
+        {% if is_incremental() %}
+
+            where
+                stg_events.event_date
+                >= (select max(t.event_date) from {{ this }} as t)
+
+        {% endif %}
+
+    ),
+
+    numbered as (
+
+        select
+            *,
+            row_number() over (
+                order by event_time, user_id, user_session, product_id
+            ) as _row_num
+
+        from stg_events
+    ),
+
+    final_events as (
+
+        select
+
+            event_time,
+            event_date,
+            event_type,
+            user_id,
+            user_session,
+            product_id,
+            brand,
+            category_code,
+            category_id,
+            price,
+            1 as quantity,
+
+            case
+                when event_type = 'purchase'
+                    then 1
+                else 0
+            end as is_purchase,
+
+            case
+                when event_type = 'cart'
+                    then 1
+                else 0
+            end as is_cart_add,
+
+            case
+                when event_type = 'view'
+                    then 1
+                else 0
+            end as is_view,
+
+            case
+                when event_type = 'purchase'
+                    then price
+            end as revenue,
+
+            {{ dbt_utils.generate_surrogate_key([
+                'event_time',
+                'event_type',
+                'user_id',
+                'product_id',
+                'user_session',
+                '_row_num'
+            ]) }} as event_id
+
+        from numbered
+
+    )
+
+    select * from final_events
+  referenced_by: [ dim_users, dim_products, fct_sessions, dim_categories ]

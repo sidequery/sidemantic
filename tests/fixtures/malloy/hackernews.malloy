@@ -1,0 +1,145 @@
+// Source: malloydata/malloy-samples (MIT License)
+// File: bigquery/hackernews/hackernews.malloy
+// Features: rename:, regex pick, top:, view refinement with +, run:
+
+source: stories is bigquery.table('bigquery-public-data.hacker_news.full') extend {
+  rename:
+    poster is `by`
+    post_type is `type`
+
+  dimension:
+    post_time is timestamp_seconds!timestamp(`time`)
+    site is regexp_extract(
+      regexp_extract(url, r'^http://([^\\/]*)\\/'),
+      r'([^\\.]+\\.[^\\.]+(?:\\.[A-Za-z][A-Za-z])?)$'
+    )
+
+  dimension: safe_score is ifnull(score, 0)
+  dimension: score_class is safe_score ?
+      pick 'blah' when < 5
+      pick 'hmmm' when < 10
+      pick 'oooh' when < 100
+      else 'wow'
+
+  dimension:
+    threshold is 10
+    is_interesting is safe_score >= threshold
+
+  dimension:
+    faang is title ?
+      pick 'Facebook' when ~ r'(Facebook|Instagram|Whatsapp)'
+      pick 'Apple' when ~ r'(Apple|iPhone|IOS|Macbook)'
+      pick 'Amazon' when ~ r'(Amazon|AWS)'
+      pick 'Netflix' when ~ r'Netflix'
+      pick 'Google' when ~ r'(Google|GOOG|Alphabet|GCloud|Chrome)'
+      else 'OTHER'
+
+
+  measure:
+    post_count is count()
+    interesting_post_count is post_count { where: is_interesting }
+    percent_interesting is floor(interesting_post_count / post_count * 100)
+    first_post_date is min(post_time).day
+
+  view: by_date is {
+    group_by: posted_month is post_time.month
+    aggregate: post_count
+  }
+
+  # line_chart
+  view: posts_over_time is {
+    group_by: posted_month is post_time.month
+    aggregate: post_count
+  }
+
+  view: percent_interesting_over_time is {
+    group_by: posted_year is post_time.year
+    aggregate: percent_interesting
+  }
+
+  view: stories_by_month is {
+    where: post_type = 'story'
+    nest: by_date
+  }
+
+  view: jobs_by_month is {
+    where: post_type = 'job'
+    nest: by_date
+  }
+
+  view: by_post_type is {
+    group_by: post_type
+    aggregate: post_count
+  }
+
+  # bar_chart
+  view: by_score_class is {
+    group_by: score_class
+    aggregate: post_count
+  }
+
+  view: top_posters is {
+    top: 10
+    where: poster != null
+    group_by: poster
+    aggregate: interesting_post_count, post_count
+  }
+
+  view: top_sites is {
+    top: 10
+    where: site != null
+    group_by: site
+    aggregate: post_count
+  }
+
+  view: recent_stories is {
+    top: 100
+    where: post_type = 'story'
+    order_by: post_time desc
+    group_by:
+      post_time
+      poster
+      score
+      title
+      post_type
+      url
+  }
+
+  view: term_dashboard is {
+    # line_chart
+    nest: by_date_and_type is {
+      group_by: posted_month is post_time.month
+      aggregate: post_count
+      group_by: post_type
+    }
+    nest:
+      top_posters
+      top_sites
+      recent_stories + {limit: 20}
+  }
+
+  view: poster_dashboard is top_posters + {        -- reuses and refines the top_posters query
+    where: post_type = 'story'
+    aggregate:
+      percent_interesting
+      first_post_date
+    nest:
+      posts_over_time
+      percent_interesting_over_time
+      by_score_class
+      top_sites
+    nest: best_stories is recent_stories + {               -- reuses and refines the stories query
+      top: 10
+      order_by: score desc
+    }
+  }
+}
+
+query: data_stories is stories -> term_dashboard + {where: title ~ '%Data%' | '% data%'}
+
+
+run: stories -> posts_over_time + { 
+  where: is_interesting and faang != 'OTHER'
+  group_by: faang
+  limit: 100000 
+}

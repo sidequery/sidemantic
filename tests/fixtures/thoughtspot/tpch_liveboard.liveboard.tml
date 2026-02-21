@@ -1,0 +1,41 @@
+# Source: thoughtspot/ps_tools (MIT license)
+# https://github.com/thoughtspot/ps_tools
+guid: 01ea41b2-e8b0-4197-906c-2442b1813b9d
+liveboard:
+  name: Snowflake (Tableau)
+  visualizations:
+  - id: Viz_1
+    answer:
+      name: Total Count S Phone by S Name
+      tables:
+      - id: Snowflake WS (Manual)
+        name: Snowflake WS (Manual)
+      search_query: "[S Name] count [S Phone]"
+      answer_columns:
+      - name: S Name
+      - name: Number of S Phone
+      table:
+        table_columns:
+        - column_id: S Name
+          show_headline: false
+        - column_id: Number of S Phone
+          show_headline: false
+        ordered_column_ids:
+        - S Name
+        - Number of S Phone
+        client_state: ""
+        client_state_v2: "{\"tableVizPropVersion\": \"V1\"}"
+      chart:
+        type: COLUMN
+        chart_columns:
+        - column_id: S Name
+        - column_id: Number of S Phone
+        axis_configs:
+        - x:
+          - S Name
+          "y":
+          - Number of S Phone
+        client_state: ""
+        client_state_v2: "{\"version\": \"V4DOT2\",\"chartProperties\": {\"responsiveLayoutPreference\": \"AUTO_OFF\",\"chartSpecific\": {}},\"axisProperties\": [{\"id\": \"90f61acc-28fa-43d4-9d89-1a141185a860\",\"properties\": {\"axisType\": \"Y\",\"linkedColumns\": [\"Number of S Phone\"],\"isOpposite\": false}},{\"id\": \"3191edaa-38e7-4e53-829e-6de463fa10a1\",\"properties\": {\"axisType\": \"X\",\"linkedColumns\": [\"S Name\"]}}],\"systemSeriesColors\": [{\"serieName\": \"Number of S Phone\",\"color\": \"#06BF7F\"}]}"
+      display_mode: CHART_MODE
+    viz_guid: ab917cf2-a13a-4e8c-b182-347af47ea667

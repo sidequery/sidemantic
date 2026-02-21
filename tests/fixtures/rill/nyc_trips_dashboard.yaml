@@ -1,0 +1,56 @@
+# Source: rilldata/rill-nyc-taxi (Apache 2.0)
+# https://github.com/rilldata/rill-nyc-taxi/blob/main/dashboards/trips_dashboard.yaml
+# Features: legacy format with title: instead of display_name, label: on measures/dims,
+#   available_time_zones, valid_percent_of_total, arithmetic ratio expressions
+
+title: nyc_trips_dashboard
+model: nyc_trips_model2
+timeseries: request_datetime
+default_time_range: P14D
+measures:
+  - label: Total Trips
+    expression: count(*)
+    name: total_records
+    format_preset: humanize
+    valid_percent_of_total: true
+  - label: Avg Distance Traveled (mi)
+    expression: avg(trip_miles)
+    name: sum(trip_miles)
+    format_preset: humanize
+    valid_percent_of_total: true
+  - label: Avg Speed (mph)
+    expression: sum(trip_miles)/(sum(trip_time)/3600)
+    name: avg_speed
+    format_preset: humanize
+    valid_percent_of_total: true
+  - label: Avg Fare
+    expression: sum(driver_pay)/count(*)
+    name: avg_fare
+    description: Avg fare paid to driver
+    format_preset: currency_usd
+    valid_percent_of_total: false
+  - label: Percent Tip
+    expression: 1.0*sum(tips)/sum(driver_pay)
+    name: percent_tip
+    description: Percent of fare paid as a tip
+    format_preset: percentage
+    valid_percent_of_total: false
+dimensions:
+  - name: pickup_zone
+    label: Pickup_zone
+    column: pickup_zone
+    description: ""
+  - name: pickup_borough
+    label: Pickup_borough
+    column: pickup_borough
+    description: ""
+  - name: dropoff_zone
+    label: Dropoff_zone
+    column: dropoff_zone
+    description: ""
+  - name: dropoff_borough
+    label: Dropoff_borough
+    column: dropoff_borough
+    description: ""
+available_time_zones:
+  - America/New_York

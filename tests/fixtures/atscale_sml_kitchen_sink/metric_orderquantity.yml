@@ -1,0 +1,8 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+unique_name: orderquantity
+object_type: metric
+label: Order Quantity
+calculation_method: sum
+dataset: factinternetsales
+column: orderquantity
+format: standard

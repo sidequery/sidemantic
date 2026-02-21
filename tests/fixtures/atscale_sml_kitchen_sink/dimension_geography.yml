@@ -1,0 +1,58 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Geography dimension with a row_security relationship (see row-security.md).
+unique_name: Geography Dimension
+object_type: dimension
+label: Geography Dimension
+type: standard
+
+hierarchies:
+  - unique_name: geography_hierarchy
+    label: Geography Hierarchy
+    levels:
+      - unique_name: CountryCity
+      - unique_name: StateCity
+      - unique_name: City
+        secondary_attributes:
+          - unique_name: zip_code
+            label: Zip Code
+            dataset: dim_geo_country
+            name_column: zip_code
+            key_columns:
+              - zip_code
+
+level_attributes:
+  - unique_name: CountryCity
+    label: Country
+    dataset: dim_geo_country
+    name_column: country
+    key_columns:
+      - country
+
+  - unique_name: StateCity
+    label: State
+    dataset: dim_geo_country
+    name_column: state
+    key_columns:
+      - country
+      - state
+
+  - unique_name: City
+    label: City
+    dataset: dim_geo_country
+    name_column: city
+    key_columns:
+      - country
+      - state
+      - city
+
+relationships:
+  - unique_name: GeographyDimension_CountrySecurity
+    from:
+      hierarchy: geography_hierarchy
+      level: CountryCity
+      dataset: dim_geo_country
+      join_columns:
+        - country
+    to:
+      row_security: Country Security Filter
+    type: embedded

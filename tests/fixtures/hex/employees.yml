@@ -1,0 +1,137 @@
+id: employees
+base_sql_table: hr.employees
+description: Employee directory with self-referential manager hierarchy
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: full_name
+    type: string
+    expr_sql: first_name || ' ' || last_name
+    description: Full name from first and last
+
+  - id: first_name
+    type: string
+
+  - id: last_name
+    type: string
+
+  - id: email
+    type: string
+    description: Corporate email address
+
+  - id: department
+    type: string
+    description: Department name
+
+  - id: title
+    type: string
+    description: Job title
+
+  - id: manager_id
+    type: number
+    description: ID of direct manager (self-referential)
+
+  - id: salary
+    type: number
+    description: Annual salary in dollars
+
+  - id: hire_date
+    type: date
+    description: Date of hire
+
+  - id: termination_date
+    type: date
+    description: Date of termination if applicable
+
+  - id: is_active
+    type: boolean
+    expr_sql: termination_date IS NULL
+    description: Whether employee is currently active
+
+  - id: tenure_years
+    type: number
+    expr_calc: DATEDIFF('year', hire_date, COALESCE(termination_date, CURRENT_DATE))
+    description: Years of employment
+
+  - id: is_senior
+    type: boolean
+    expr_calc: DATEDIFF('year', hire_date, CURRENT_DATE) >= 5
+    description: Whether employee has 5+ years tenure
+
+  - id: salary_band
+    type: string
+    expr_sql: |
+      CASE
+        WHEN salary < 50000 THEN 'entry'
+        WHEN salary < 100000 THEN 'mid'
+        WHEN salary < 150000 THEN 'senior'
+        ELSE 'executive'
+      END
+    description: Salary band classification
+
+measures:
+  - id: headcount
+    func: count
+    description: Total employee count
+
+  - id: active_headcount
+    func: count
+    filters:
+      - is_active
+    description: Currently active employees
+
+  - id: total_salary
+    func: sum
+    of: salary
+    description: Total annual salary expenditure
+
+  - id: avg_salary
+    func: avg
+    of: salary
+    description: Average annual salary
+
+  - id: median_salary
+    func: median
+    of: salary
+    description: Median annual salary
+
+  - id: salary_stddev
+    func: stddev
+    of: salary
+    description: Standard deviation of salaries
+
+  - id: senior_active_headcount
+    func: count
+    filters:
+      - is_active
+      - is_senior
+    description: Active employees with 5+ years tenure
+
+  - id: engineering_salary
+    func: sum
+    of: salary
+    filters:
+      - expr_sql: department = 'Engineering'
+      - is_active
+    description: Total salary for active engineering staff
+
+  - id: avg_tenure
+    func_calc: total_salary / headcount
+    description: Average salary approximation via calc
+
+  - id: cost_per_head
+    func_sql: SUM(salary) / NULLIF(COUNT(CASE WHEN termination_date IS NULL THEN 1 END), 0)
+    description: Average salary among active employees
+
+relations:
+  - id: employees
+    target: employees
+    type: many_to_one
+    join_sql: manager_id = ${employees}.id
+
+  - id: departments
+    type: one_to_one
+    join_sql: department = ${departments}.name

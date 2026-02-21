@@ -1,0 +1,158 @@
+id: inventory
+base_sql_table: warehouse.inventory_snapshots
+description: Daily inventory snapshots with stock levels and valuations
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: product_id
+    type: number
+
+  - id: warehouse_id
+    type: number
+
+  - id: sku
+    type: string
+    description: Product stock-keeping unit
+
+  - id: snapshot_date
+    type: date
+    description: Date of the inventory snapshot
+
+  - id: quantity_on_hand
+    type: number
+    description: Units currently in stock
+
+  - id: unit_cost
+    type: number
+    description: Cost per unit in dollars
+
+  - id: inventory_value
+    type: number
+    expr_sql: quantity_on_hand * unit_cost
+    description: Total value of on-hand inventory
+
+  - id: reorder_point
+    type: number
+    description: Minimum stock before reorder triggered
+
+  - id: is_below_reorder
+    type: boolean
+    expr_sql: quantity_on_hand < reorder_point
+    description: Whether stock is below reorder threshold
+
+  - id: days_of_supply
+    type: number
+    expr_calc: quantity_on_hand / NULLIF(avg_daily_demand, 0)
+    description: Estimated days until stockout
+
+  - id: category
+    description: Product category inferred from SKU prefix
+    expr_sql: SPLIT_PART(sku, '-', 1)
+
+  - id: last_received_at
+    type: timestamp_naive
+    description: When the last shipment was received
+
+measures:
+  - id: total_units
+    func: sum
+    of: quantity_on_hand
+    description: Total units across all products
+
+  - id: total_inventory_value
+    func: sum
+    of: inventory_value
+    description: Total dollar value of inventory
+
+  - id: avg_unit_cost
+    func: avg
+    of: unit_cost
+    description: Average cost per unit
+
+  - id: median_unit_cost
+    func: median
+    of: unit_cost
+    description: Median cost per unit
+
+  - id: cost_variance
+    func: variance
+    of: unit_cost
+    description: Variance in unit costs across products
+
+  - id: cost_variance_pop
+    func: variance_pop
+    of: unit_cost
+    description: Population variance in unit costs
+
+  - id: cost_stddev
+    func: stddev
+    of: unit_cost
+    description: Standard deviation of unit costs
+
+  - id: cost_stddev_pop
+    func: stddev_pop
+    of: unit_cost
+    description: Population standard deviation of unit costs
+
+  - id: unique_products
+    func: count_distinct
+    of: product_id
+    description: Distinct product count
+
+  - id: unique_warehouses
+    func: count_distinct
+    of: warehouse_id
+    description: Distinct warehouse count
+
+  - id: min_stock
+    func: min
+    of: quantity_on_hand
+    description: Minimum stock level across snapshots
+
+  - id: max_stock
+    func: max
+    of: quantity_on_hand
+    description: Maximum stock level across snapshots
+
+  - id: low_stock_items
+    func: count
+    filters:
+      - is_below_reorder
+    description: Products below reorder point
+
+  - id: high_value_low_stock
+    func: count
+    filters:
+      - is_below_reorder
+      - expr_sql: unit_cost >= 100
+    description: Expensive products that are also below reorder point
+
+  - id: snapshot_inventory_value
+    func: sum
+    of: inventory_value
+    semi_additive: last
+    description: Latest snapshot inventory value (non-additive across dates)
+
+  - id: turnover_ratio
+    func_sql: SUM(quantity_on_hand) / NULLIF(AVG(quantity_on_hand), 0)
+    description: Inventory turnover approximation
+
+  - id: weighted_avg_cost
+    func_sql: SUM(quantity_on_hand * unit_cost) / NULLIF(SUM(quantity_on_hand), 0)
+    description: Weighted average cost across all inventory
+
+  - id: inventory_health
+    func_calc: total_units / unique_products
+    description: Average units per product
+
+relations:
+  - id: products
+    type: many_to_one
+    join_sql: product_id = ${products}.id
+
+  - id: warehouses
+    type: many_to_one
+    join_sql: warehouse_id = ${warehouses}.id

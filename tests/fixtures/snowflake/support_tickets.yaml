@@ -1,0 +1,179 @@
+# Source: Snowflake-Labs/sfguide-snowflake-cortex-analyst-slack-app
+# File: data/support_tickets_semantic_model.yaml
+# License: Apache-2.0
+# URL: https://github.com/Snowflake-Labs/sfguide-snowflake-cortex-analyst-slack-app
+#
+# Features exercised: rich sample_values on TEXT dimensions, synonyms,
+# 5 dimensions (no facts/metrics), verified_queries with __table placeholders
+
+name: support_tickets_analyst
+tables:
+  - name: SUPPORT_TICKETS
+    description: A logical table capturing support tickets data.
+    base_table:
+      database: DASH_DB
+      schema: DASH_SCHEMA
+      table: SUPPORT_TICKETS
+
+    dimensions:
+      - name: TICKET_ID
+        synonyms:
+          - "ticket_id"
+          - "ticket id"
+          - "ticket number"
+          - "ticket_number"
+        description: A unique id for a support ticket
+        expr: TICKET_ID
+        data_type: TEXT
+        sample_values:
+          - TR0098
+          - TR1024
+          - TR1060
+          - TR1134
+          - TR1189
+          - TR1194
+          - TR120
+          - TR121
+          - TR1220
+          - TR1087
+      - name: CUSTOMER_NAME
+        synonyms:
+          - "customer_name"
+          - "customer name"
+          - "name of the customer"
+          - "customer's name"
+        description: Name of the customer
+        expr: CUSTOMER_NAME
+        data_type: TEXT
+        sample_values:
+          - Nicole
+          - Megan
+          - Gregory
+          - Carol
+          - Jeffrey
+          - Raymond
+          - Patricia
+          - Laura
+          - Helen
+          - Andrew
+      - name: CUSTOMER_EMAIL
+        synonyms:
+          - "customer_email"
+          - "customer email"
+          - "email address of the customer"
+          - "customer's email"
+          - "email address"
+        description: Email address of the customer
+        expr: CUSTOMER_EMAIL
+        data_type: TEXT
+        sample_values:
+          - Nicole.C@notebook.com
+          - Megan.C@clock.com
+          - Gregory.G@keyboard.com
+          - Carol.N@cup.com
+          - Jeffrey.H@book.com
+          - Raymond.P@book.com
+          - Patricia.M@camera.com
+          - Laura.S@bottle.com
+          - Justin.M@remote.com
+          - David.J@book.com
+      - name: SERVICE_TYPE
+        synonyms:
+          - "service_type"
+          - "service type"
+          - "phone service"
+          - "phone service type"
+          - "phone service type of the customer"
+        description: Phone service type
+        expr: SERVICE_TYPE
+        data_type: TEXT
+        sample_values:
+          - Cellular
+          - Business Internet
+          - Home Internet
+      - name: REQUEST
+        synonyms:
+          - "request"
+          - "feedback"
+          - "phone service request"
+          - "phone service feedback"
+          - "phone service request of the customer"
+        description: 
+        expr: REQUEST
+        data_type: TEXT
+        sample_values:
+          - I traveled to Japan for two weeks and kept my data usage to a minimum.
+            However, I was charged $90 in international fees. These charges were not
+            communicated to me, and I request a detailed breakdown and a refund. Thank
+            you for your prompt assistance.
+          - I noticed a $90 fee for international roaming on my bill from my trip
+            to Africa. These charges were unexpected and not clearly explained. Please
+            issue a refund.
+          - After a recent trip to Europe, I was surprised to see an extra $85 in
+            international fees on my bill. These charges were not communicated to
+            me, and I believe they are unjustified. I request a detailed breakdown
+            and a refund. Thank you for your assistance.
+          - I traveled to Africa recently and was charged $110 for international roaming.
+            These charges were not explained beforehand. Please refund this amount.
+          - Dear customer service, I would like to add a new line to my cell phone
+            plan. Can you please activate it within 7 days? Please let me know if
+            any additional steps are necessary. Thank you for your assistance.
+          - My data speeds have been significantly slower than usual. Please provide
+            assistance in troubleshooting this problem. I have noticed a drastic drop
+            in data speeds lately. Could you please look into this and provide a solution?
+            Please address the slow data speeds I am experiencing. It is affecting
+            my ability to work efficiently.
+          - I traveled to Europe and was charged $125 for international voice calls.
+            These charges were not communicated to me before my trip. Please refund
+            these fees.
+          - I would like to add an additional line to my existing plan. Can you provide
+            information on the process and any associated fees? Could you assist me
+            in adding a new line to my account? I need it activated as soon as possible.
+            I wish to add another line to my plan for a family member. Please confirm
+            the steps required for this.
+          - I would like to request the addition of a new line to my existing cell
+            phone plan. I kindly ask that the new line be activated within 14 days
+            of this request. Please let me know if there are any additional steps
+            or information needed to facilitate this process. Thank you for your prompt
+            attention to this matter.
+          - Dear customer service, I am requesting the closure of my account linked
+            to this email effective June 2024. I have been satisfied with the service
+            but will no longer need it. Please confirm receipt and let me know if
+            there are any additional steps I need to take. Thank you for your attention.
+      - name: CONTACT_PREFERENCE
+        synonyms:
+          - "contact_preference"
+          - "contact preference"
+          - "contact preference of the customer"
+        description: Contact preference of the customer
+        expr: CONTACT_PREFERENCE
+        data_type: TEXT
+        sample_values:
+          - Text Message
+          - Email
+verified_queries:
+  - name: "Total tickets by service type"
+    question: "Can you show me a breakdown of customer support tickets by service type - cellular vs business internet?"
+    verified_at: 1727453135
+    verified_by: Dash
+    sql: "
+      SELECT
+        service_type,
+        COUNT(DISTINCT ticket_id) AS ticket_count
+      FROM __support_tickets
+      WHERE
+        service_type IN ('Cellular', 'Business Internet')
+      GROUP BY
+        service_type
+    "
+  - name: "Unique customers with cellular service and email contact preference"
+    question: "How many unique customers have raised a support ticket with a 'Cellular' service type and have 'Email' as their contact preference?"
+    verified_at: 1727453135
+    verified_by: Dash
+    sql: "
+      SELECT
+        COUNT(DISTINCT customer_email) AS unique_customers
+      FROM __support_tickets
+      WHERE
+        service_type = 'Cellular' AND contact_preference = 'Email'
+    "

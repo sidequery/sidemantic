@@ -1,0 +1,324 @@
+# Source: vbalalian/estore-analytics (MIT license)
+# https://github.com/vbalalian/estore-analytics/blob/main/omni/BigQuery/omni_dbt_marts/fct_sessions.view.yaml
+# Reference this view as omni_dbt_marts__fct_sessions
+schema_label: ""
+#This description was pulled from dbt.
+description: |
+  Session fact table that applies a 1-hour inactivity timeout to split sessions spanning unreasonably long periods. 2.16% of sessions in the raw data span up to 6 months due to session IDs being reused without an inactivity timeout. This model detects gaps >3600 seconds between consecutive events within a session and assigns new session IDs at each timeout boundary.
+
+schema: omni_dbt_marts
+table_name: fct_sessions
+
+dimensions:
+  session_start_time:
+    #This description was pulled from dbt.
+    description: Timestamp of the first event in the session
+
+  session_start_date:
+    #This description was pulled from dbt.
+    description: Date of the first event in the session, used for partitioning
+
+  session_end_time:
+    #This description was pulled from dbt.
+    description: Timestamp of the last event in the session
+
+  unique_product_count:
+    #This description was pulled from dbt.
+    description: Number of unique products interacted with during the session
+
+  cart_additions:
+    #This description was pulled from dbt.
+    description: Total number of add-to-cart events during the session
+
+  purchase_count:
+    #This description was pulled from dbt.
+    description: Total number of purchase events during the session
+
+  view_count:
+    #This description was pulled from dbt.
+    description: Total number of view events during the session
+
+  reached_view:
+    #This description was pulled from dbt.
+    description: Indicator (1/0) if the session included at least one view event
+
+  reached_cart:
+    #This description was pulled from dbt.
+    description: Indicator (1/0) if the session included at least one add-to-cart event
+
+  reached_purchase:
+    #This description was pulled from dbt.
+    description: Indicator (1/0) if the session included at least one purchase event
+
+  event_count:
+    #This description was pulled from dbt.
+    description: Total number of events (page views, cart additions, purchases) that
+      occurred during the session
+
+  total_revenue:
+    #This description was pulled from dbt.
+    description: Revenue generated in the session. NULL for non-purchasing sessions
+      (expected behavior). For purchasing sessions, represents the transaction
+      value
+
+  session_length:
+    #This description was pulled from dbt.
+    description: Duration of the session in seconds
+
+  funnel_stage:
+    description: "Indicates the furthest stage reached in the conversion funnel
+      during the session. Values: 'view' (product viewed), 'cart' (item added to
+      cart), 'purchase' (transaction completed), or 'no_activity' for sessions
+      that didn't reach any stage"
+    all_values: [ purchase, cart, view, no_activity ]
+
+  session_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: |
+      Cleaned session identifier. Original session ID if no timeout occurred, or original_id + '_timeout_' + occurrence_number for split sessions.
+
+  user_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Identifier for the user who initiated the session
+
+  is_converting_session:
+    sql: CASE WHEN ${omni_dbt_marts__fct_sessions.purchase_count} > 0 THEN 1 ELSE 0
+      END
+    description: "Binary indicator: 1 if the session resulted in at least one
+      purchase, 0 otherwise"
+
+  session_quality_tier:
+    sql: CASE WHEN ${omni_dbt_marts__fct_sessions.session_length} < 150 OR
+      ${omni_dbt_marts__fct_sessions.event_count} < 3 THEN 'Low' WHEN
+      ${omni_dbt_marts__fct_sessions.session_length} <= 600 AND
+      ${omni_dbt_marts__fct_sessions.event_count} <= 10 THEN 'Medium' ELSE
+      'High' END
+    description: "Categorizes sessions into quality tiers based on engagement
+      (session length + event count). Low: <150 sec or <3 events; Medium:
+      150-600 sec and 3-10 events; High: >600 sec or >10 events"
+
+  session_length_bucket:
+    sql: CASE WHEN ${omni_dbt_marts__fct_sessions.session_length} <= 60 THEN 'Very
+      Short (0-60s)' WHEN ${omni_dbt_marts__fct_sessions.session_length} <= 300
+      THEN 'Short (61-300s)' WHEN ${omni_dbt_marts__fct_sessions.session_length}
+      <= 600 THEN 'Medium (301-600s)' ELSE 'Long (600+s)' END
+    description: "Categorizes sessions by duration into buckets: Very Short (0-60s),
+      Short (61-300s), Medium (301-600s), Long (600+s)"
+
+measures:
+  count:
+    aggregate_type: count
+
+  total_events:
+    sql: ${omni_dbt_marts__fct_sessions.event_count}
+    label: Total Events
+    aggregate_type: sum
+
+  sessions_reached_view:
+    sql: ${omni_dbt_marts__fct_sessions.reached_view}
+    label: Sessions Reached View
+    description: Count of sessions that included at least one product view
+    aggregate_type: sum
+
+  sessions_reached_cart:
+    sql: ${omni_dbt_marts__fct_sessions.reached_cart}
+    label: Sessions Reached Cart
+    description: Count of sessions that included at least one add-to-cart event
+    aggregate_type: sum
+
+  sessions_reached_purchase:
+    sql: ${omni_dbt_marts__fct_sessions.reached_purchase}
+    label: Sessions Reached Purchase
+    description: Count of sessions that included at least one purchase
+    aggregate_type: sum
+
+  conversion_rate:
+    sql: SUM(CASE WHEN ${omni_dbt_marts__fct_sessions.purchase_count} > 0 THEN 1
+      ELSE 0 END) / COUNT(*)
+    label: Conversion Rate
+    format: PERCENT
+    description: Percentage of sessions that resulted in at least one purchase.
+      Calculated as (sessions with purchases / total sessions) * 100
+
+  revenue_per_session:
+    sql: SUM(${omni_dbt_marts__fct_sessions.total_revenue}) / COUNT(*)
+    description: Average revenue generated per session, including non-purchasing
+      sessions. Calculated as total revenue / session count
+
+  view_to_cart_rate:
+    sql: SUM(CASE WHEN ${omni_dbt_marts__fct_sessions.reached_cart} > 0 THEN 1 ELSE
+      0 END) / NULLIF(SUM(CASE WHEN ${omni_dbt_marts__fct_sessions.reached_view}
+      > 0 THEN 1 ELSE 0 END), 0)
+    label: View to Cart Rate
+    format: PERCENT
+    description: Percentage of sessions that reached the view stage and proceeded to
+      add items to cart. Calculated as (sessions reached cart / sessions reached
+      view) * 100
+
+  cart_to_purchase_rate:
+    sql: SUM(CASE WHEN ${omni_dbt_marts__fct_sessions.reached_purchase} > 0 THEN 1
+      ELSE 0 END) / NULLIF(SUM(CASE WHEN
+      ${omni_dbt_marts__fct_sessions.reached_cart} > 0 THEN 1 ELSE 0 END), 0)
+    label: Cart to Purchase Rate
+    format: PERCENT
+    description: Percentage of sessions that reached the cart stage and completed a
+      purchase. Calculated as (sessions reached purchase / sessions reached
+      cart) * 100
+
+  avg_revenue_per_purchasing_session:
+    sql: SUM(CASE WHEN ${omni_dbt_marts__fct_sessions.purchase_count} > 0 THEN
+      ${omni_dbt_marts__fct_sessions.total_revenue} ELSE 0 END) /
+      NULLIF(SUM(CASE WHEN ${omni_dbt_marts__fct_sessions.purchase_count} > 0
+      THEN 1 ELSE 0 END), 0)
+    description: Average revenue for sessions that resulted in at least one
+      purchase. Excludes non-purchasing sessions from the average
+
+#The info below was pulled from your dbt repository and is read-only.
+dbt:
+  name: fct_sessions
+  target_schema: estore
+  description: |
+    Session fact table that applies a 1-hour inactivity timeout to split sessions spanning unreasonably long periods. 2.16% of sessions in the raw data span up to 6 months due to session IDs being reused without an inactivity timeout. This model detects gaps >3600 seconds between consecutive events within a session and assigns new session IDs at each timeout boundary.
+  config:
+    schema: marts
+    materialized: table
+  code: |-
+    {{ config(
+        materialized = 'table',
+        partition_by = {
+            "field": "session_start_date",
+            "data_type": "date",
+            "granularity": "day"
+        },
+        cluster_by = ['user_id', 'session_start_date']
+    ) }}
+
+    with
+
+    events as (
+        select
+            event_time,
+            user_session,
+            user_id,
+            product_id,
+            is_cart_add,
+            is_purchase,
+            is_view,
+            revenue
+        from {{ ref('fct_events') }}
+    ),
+
+    events_with_gaps as (
+        select
+            event_time,
+            user_session,
+            user_id,
+            product_id,
+            is_cart_add,
+            is_purchase,
+            is_view,
+            revenue,
+            datetime_diff(
+                event_time,
+                lag(event_time) over (
+                    partition by user_session
+                    order by event_time
+                ),
+                second
+            ) as seconds_since_prev_event
+        from events
+    ),
+
+    timeout_flags as (
+        select
+            event_time,
+            user_session,
+            user_id,
+            product_id,
+            is_cart_add,
+            is_purchase,
+            is_view,
+            revenue,
+            case
+                when
+                    seconds_since_prev_event
+                    > {{ var('session_timeout_seconds') }}
+                    then 1
+                else 0
+            end as is_timeout
+        from events_with_gaps
+    ),
+
+    sub_sessions as (
+        select
+            event_time,
+            user_session,
+            user_id,
+            product_id,
+            is_cart_add,
+            is_purchase,
+            is_view,
+            revenue,
+            sum(is_timeout) over (
+                partition by user_session
+                order by event_time
+                rows between unbounded preceding and current row
+            ) as timeout_occurrence
+        from timeout_flags
+    ),
+
+    events_with_cleaned_id as (
+        select
+            event_time,
+            user_id,
+            product_id,
+            is_cart_add,
+            is_purchase,
+            is_view,
+            revenue,
+            case
+                when timeout_occurrence = 0 then user_session
+                else concat(
+                    user_session,
+                    '_timeout_',
+                    cast(timeout_occurrence as string)
+                )
+            end as cleaned_session_id
+        from sub_sessions
+    ),
+
+    cleaned_sessions as (
+        select
+            cleaned_session_id as session_id,
+            min(event_time) as session_start_time,
+            date(min(event_time)) as session_start_date,
+            max(user_id) as user_id,
+            max(event_time) as session_end_time,
+            count(*) as event_count,
+            count(distinct product_id) as unique_product_count,
+            sum(is_cart_add) as cart_additions,
+            sum(is_purchase) as purchase_count,
+            sum(is_view) as view_count,
+            sum(revenue) as total_revenue,
+            datetime_diff(max(event_time), min(event_time), second)
+                as session_length,
+
+            case when sum(is_view) > 0 then 1 else 0 end as reached_view,
+            case when sum(is_cart_add) > 0 then 1 else 0 end as reached_cart,
+            case when sum(is_purchase) > 0 then 1 else 0 end as reached_purchase,
+
+            case
+                when sum(is_purchase) > 0 then 'purchase'
+                when sum(is_cart_add) > 0 then 'cart'
+                when sum(is_view) > 0 then 'view'
+                else 'no_activity'
+            end as funnel_stage
+
+        from events_with_cleaned_id
+        group by cleaned_session_id
+    )
+
+    select * from cleaned_sessions
+  referenced_by: [ dim_users, metrics_conversion_rates ]

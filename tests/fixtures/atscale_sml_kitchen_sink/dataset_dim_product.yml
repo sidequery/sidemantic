@@ -1,0 +1,18 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Product dimension dataset.
+unique_name: dimproduct
+object_type: dataset
+label: Dim Product
+connection_id: core_connection
+table: dim_product
+columns:
+  - name: productkey
+    data_type: int
+  - name: product_name
+    data_type: string
+  - name: color
+    data_type: string
+  - name: size
+    data_type: string
+  - name: weight
+    data_type: "decimal(8,2)"

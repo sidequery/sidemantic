@@ -442,3 +442,235 @@ def test_thoughtspot_auto_detect_loader():
         load_from_directory(layer, tmpdir)
 
         assert "orders" in layer.graph.models
+
+
+# =============================================================================
+# TPC-H FIXTURES (from thoughtspot/ps_tools, MIT license)
+# =============================================================================
+
+
+def test_import_tpch_customer_table():
+    """Parse TPC-H CUSTOMER table with joins_with containing qualified destination refs."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/tpch_customer.table.tml")
+
+    assert "CUSTOMER" in graph.models
+    model = graph.models["CUSTOMER"]
+
+    # 5 ATTRIBUTE columns -> dimensions, 3 MEASURE columns -> metrics
+    assert len(model.dimensions) == 5
+    assert len(model.metrics) == 3
+
+    # Verify dimension types from db_column_properties
+    for dim_name in ("C_ADDRESS", "C_COMMENT", "C_MKTSEGMENT", "C_NAME", "C_PHONE"):
+        dim = model.get_dimension(dim_name)
+        assert dim is not None, f"Missing dimension {dim_name}"
+        assert dim.type == "categorical"
+
+    # Verify measure aggregations
+    acctbal = model.get_metric("C_ACCTBAL")
+    assert acctbal is not None
+    assert acctbal.agg == "sum"
+
+    custkey = model.get_metric("C_CUSTKEY")
+    assert custkey is not None
+    assert custkey.agg == "sum"
+
+    # 2 joins_with relationships (NATION, ORDERS)
+    assert len(model.relationships) == 2
+    rels = {r.name: r for r in model.relationships}
+    assert "NATION" in rels
+    assert rels["NATION"].foreign_key == "C_NATIONKEY"
+    assert rels["NATION"].primary_key == "N_NATIONKEY"
+    assert "ORDERS" in rels
+    assert rels["ORDERS"].foreign_key == "C_CUSTKEY"
+    assert rels["ORDERS"].primary_key == "O_CUSTKEY"
+
+
+def test_import_tpch_lineitem_table():
+    """Parse TPC-H LINEITEM table: mixed types, date columns, two joins."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/tpch_lineitem.table.tml")
+
+    assert "LINEITEM" in graph.models
+    model = graph.models["LINEITEM"]
+
+    # 5 VARCHAR + 3 DATE = 8 dims; 4 DOUBLE + 4 INT64 = 8 metrics
+    assert len(model.dimensions) == 8
+    assert len(model.metrics) == 8
+
+    # DATE columns detected as time dims with day granularity
+    for date_col in ("L_COMMITDATE", "L_RECEIPTDATE", "L_SHIPDATE"):
+        dim = model.get_dimension(date_col)
+        assert dim is not None, f"Missing date dimension {date_col}"
+        assert dim.type == "time"
+        assert dim.granularity == "day"
+
+    # DOUBLE measures
+    for metric_name in ("L_DISCOUNT", "L_EXTENDEDPRICE", "L_QUANTITY", "L_TAX"):
+        metric = model.get_metric(metric_name)
+        assert metric is not None, f"Missing metric {metric_name}"
+        assert metric.agg == "sum"
+
+    # 2 joins: PART and SUPPLIER
+    assert len(model.relationships) == 2
+    rels = {r.name: r for r in model.relationships}
+    assert rels["PART"].foreign_key == "L_PARTKEY"
+    assert rels["PART"].primary_key == "P_PARTKEY"
+    assert rels["SUPPLIER"].foreign_key == "L_SUPPKEY"
+    assert rels["SUPPLIER"].primary_key == "S_SUPPKEY"
+
+
+def test_import_tpch_orders_table():
+    """Parse TPC-H ORDERS table: date column, calculated field name, one join."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/tpch_orders.table.tml")
+
+    assert "ORDERS" in graph.models
+    model = graph.models["ORDERS"]
+
+    # O_ORDERDATE is a DATE -> time dimension
+    order_date = model.get_dimension("O_ORDERDATE")
+    assert order_date is not None
+    assert order_date.type == "time"
+    assert order_date.granularity == "day"
+
+    # Tableau-generated calculated field name preserved
+    calc = model.get_metric("Calculation_396316787159064930")
+    assert calc is not None
+    assert calc.agg == "sum"
+
+    # O_TOTALPRICE measure
+    total_price = model.get_metric("O_TOTALPRICE")
+    assert total_price is not None
+    assert total_price.agg == "sum"
+
+    # Single join to LINEITEM
+    assert len(model.relationships) == 1
+    rel = model.relationships[0]
+    assert rel.name == "LINEITEM"
+    assert rel.foreign_key == "O_ORDERKEY"
+    assert rel.primary_key == "L_ORDERKEY"
+
+
+def test_import_tpch_region_table():
+    """Parse TPC-H REGION table: no joins, includes Tableau calc column."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/tpch_region.table.tml")
+
+    assert "REGION" in graph.models
+    model = graph.models["REGION"]
+
+    # No joins
+    assert len(model.relationships) == 0
+
+    # Tableau calc field preserved as categorical dimension
+    calc = model.get_dimension("Calculation_396316787158536545")
+    assert calc is not None
+    assert calc.type == "categorical"
+
+    # R_REGIONKEY is a MEASURE
+    regionkey = model.get_metric("R_REGIONKEY")
+    assert regionkey is not None
+    assert regionkey.agg == "sum"
+
+
+def test_import_tpch_supplier_table():
+    """Parse TPC-H SUPPLIER table: no joins, mix of measures and attributes."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/tpch_supplier.table.tml")
+
+    assert "SUPPLIER" in graph.models
+    model = graph.models["SUPPLIER"]
+    assert len(model.relationships) == 0
+    assert len(model.dimensions) == 4  # S_ADDRESS, S_COMMENT, S_NAME, S_PHONE
+    assert len(model.metrics) == 3  # S_ACCTBAL, S_NATIONKEY, S_SUPPKEY
+
+
+def test_import_tpch_partsupp_table():
+    """Parse TPC-H PARTSUPP table: all measures, no joins, no attributes except PS_COMMENT."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/tpch_partsupp.table.tml")
+
+    assert "PARTSUPP" in graph.models
+    model = graph.models["PARTSUPP"]
+    assert len(model.relationships) == 0
+    assert len(model.dimensions) == 1  # PS_COMMENT only
+    assert len(model.metrics) == 4  # PS_SUPPLYCOST, PS_AVAILQTY, PS_PARTKEY, PS_SUPPKEY
+
+    comment = model.get_dimension("PS_COMMENT")
+    assert comment is not None
+    assert comment.type == "categorical"
+
+
+def test_import_tpch_worksheet():
+    """Parse TPC-H 8-table worksheet: 7 joins, 8 table_paths, 3 formulas, 63 columns."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/tpch_worksheet.worksheet.tml")
+
+    assert "SF Dashboard" in graph.models
+    model = graph.models["SF Dashboard"]
+
+    # 7 joins produce 7 relationships
+    assert len(model.relationships) == 7
+    rel_names = {r.name for r in model.relationships}
+    for expected in ("NATION", "ORDERS", "PART", "SUPPLIER", "REGION", "LINEITEM", "PARTSUPP"):
+        assert expected in rel_names, f"Missing relationship {expected}"
+
+    # Worksheet joins lack ON clauses, so sql is None and table is the base table
+    assert model.sql is None
+    assert model.table == "CUSTOMER"
+
+    # 63 worksheet_columns (all column_id-based); formulas exist but have no
+    # corresponding worksheet_column entries, so they are not materialized
+    total_columns = len(model.dimensions) + len(model.metrics)
+    assert total_columns == 63
+    assert len(model.dimensions) == 34
+    assert len(model.metrics) == 29
+
+    # Verify dimensions resolve table_path ids to table names
+    c_name = model.get_dimension("C_NAME")
+    assert c_name is not None
+    assert c_name.sql == "CUSTOMER.C_NAME"
+
+    r_name = model.get_dimension("R_NAME")
+    assert r_name is not None
+    assert r_name.sql == "REGION.R_NAME"
+
+    s_name = model.get_dimension("S_NAME")
+    assert s_name is not None
+    assert s_name.sql == "SUPPLIER.S_NAME"
+
+    # Verify metrics from different source tables
+    o_totalprice = model.get_metric("O_TOTALPRICE")
+    assert o_totalprice is not None
+    assert o_totalprice.agg == "sum"
+    assert o_totalprice.sql == "ORDERS.O_TOTALPRICE"
+
+    l_extprice = model.get_metric("L_EXTENDEDPRICE")
+    assert l_extprice is not None
+    assert l_extprice.agg == "sum"
+    assert l_extprice.sql == "LINEITEM.L_EXTENDEDPRICE"
+
+    # Metrics spanning all 8 source tables via table_path resolution
+    assert model.get_metric("C_ACCTBAL").sql == "CUSTOMER.C_ACCTBAL"
+    assert model.get_metric("PS_SUPPLYCOST").sql == "PARTSUPP.PS_SUPPLYCOST"
+    assert model.get_metric("P_RETAILPRICE").sql == "PART.P_RETAILPRICE"
+    assert model.get_metric("S_ACCTBAL").sql == "SUPPLIER.S_ACCTBAL"
+
+    # Date columns from ORDERS and LINEITEM tables
+    assert model.get_dimension("O_ORDERDATE") is not None
+    assert model.get_dimension("L_SHIPDATE") is not None
+    assert model.get_dimension("L_COMMITDATE") is not None
+    assert model.get_dimension("L_RECEIPTDATE") is not None
+
+    # Tableau-generated calc field names are preserved
+    assert model.get_dimension("Calculation_396316787158536545") is not None
+    assert model.get_metric("Calculation_396316787159064930") is not None
+
+
+def test_import_tpch_liveboard_skipped():
+    """Liveboard TML files are not tables/worksheets and should produce no models."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml")
+    assert len(graph.models) == 0

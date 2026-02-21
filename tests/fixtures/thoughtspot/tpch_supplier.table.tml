@@ -1,0 +1,67 @@
+# Source: thoughtspot/ps_tools (MIT license)
+# https://github.com/thoughtspot/ps_tools
+guid: cd1b0a5f-4e4d-859d-1eac-32009f1587be
+table:
+  name: SUPPLIER
+  db: NaN
+  schema: NaN
+  db_table: SUPPLIER
+  connection:
+    name: SF Trial
+  columns:
+  - name: S_ACCTBAL
+    db_column_name: S_ACCTBAL
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DOUBLE
+  - name: S_ADDRESS
+    db_column_name: S_ADDRESS
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: S_COMMENT
+    db_column_name: S_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: S_NAME
+    db_column_name: S_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: S_PHONE
+    db_column_name: S_PHONE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: S_NATIONKEY
+    db_column_name: S_NATIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  - name: S_SUPPKEY
+    db_column_name: S_SUPPKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64

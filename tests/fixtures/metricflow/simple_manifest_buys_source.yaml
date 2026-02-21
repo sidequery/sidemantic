@@ -1,0 +1,38 @@
+# Source: dbt-labs/metricflow (Apache 2.0)
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/simple_manifest/semantic_models/buys_source.yaml
+# Tests: conversion tracking semantic model with monthly agg_time_dimension,
+#   count aggregation, count_distinct, session_id as foreign entity
+
+semantic_models:
+  - name: buys_source
+    description: buys_source
+    model: ref('fct_buys')
+    defaults:
+      agg_time_dimension: ds
+    measures:
+      - name: buys
+        expr: 1
+        agg: count
+      - name: buys_month
+        expr: 1
+        agg: count
+        agg_time_dimension: ds_month
+      - name: buyers
+        expr: user_id
+        agg: count_distinct
+    dimensions:
+      - name: ds
+        type: time
+        type_params:
+          time_granularity: day
+      - name: ds_month
+        type: time
+        type_params:
+          time_granularity: month
+    primary_entity: buy
+    entities:
+      - name: user
+        type: foreign
+        expr: user_id
+      - name: session_id
+        type: foreign

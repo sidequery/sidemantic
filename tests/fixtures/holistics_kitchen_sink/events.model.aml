@@ -1,0 +1,75 @@
+// Model that infers type from presence/absence of query vs table_name,
+// uses the 'metric' keyword instead of 'measure', and exercises
+// AQL pipe chains, @now macro, count_if, and unary/binary expressions.
+
+Model kitchen_events {
+  table_name: 'analytics.events'
+  description: 'Tracking events from the application'
+
+  dimension event_id {
+    type: 'number'
+    primary_key: true
+  }
+
+  dimension event_name {
+    type: 'text'
+    label: 'Event Name'
+    description: 'The name of the tracked event'
+  }
+
+  dimension user_id {
+    type: 'number'
+    definition: @sql {{ #SOURCE.user_id }};;
+  }
+
+  dimension occurred_at {
+    type: 'datetime'
+    definition: @sql {{ occurred_at }};;
+  }
+
+  dimension duration_seconds {
+    type: 'number'
+    definition: @sql {{ duration_ms }} / 1000;;
+  }
+
+  dimension is_error {
+    type: 'truefalse'
+    label: 'Is Error Event'
+    definition: @sql {{ event_name }} = 'error';;
+  }
+
+  metric event_count {
+    label: 'Total Events'
+    aggregation_type: 'count'
+  }
+
+  metric unique_users {
+    label: 'Unique Users'
+    definition: @sql {{ user_id }};;
+    aggregation_type: 'count_distinct'
+  }
+
+  metric error_count {
+    label: 'Error Count'
+    definition: @aql duration_seconds | count_if(is_error);;
+    aggregation_type: 'custom'
+  }
+
+  metric avg_duration_aql {
+    label: 'Average Duration (AQL)'
+    definition: @aql duration_seconds | avg();;
+    aggregation_type: 'custom'
+  }
+
+  metric latest_timestamp {
+    label: 'Latest Timestamp'
+    definition: @aql @now;;
+    aggregation_type: 'custom'
+  }
+
+  metric events_per_user {
+    label: 'Events per User'
+    definition: @sql {{ event_count }} / {{ unique_users }};;
+    aggregation_type: 'custom'
+  }
+}

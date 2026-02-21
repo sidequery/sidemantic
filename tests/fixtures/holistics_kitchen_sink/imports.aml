@@ -1,0 +1,34 @@
+// Exercises use-statement aliasing and multi-segment module paths.
+// The adapter resolves aliased names through the use_map.
+
+use finance { refunds as order_refunds }
+
+Model kitchen_refund_summary {
+  type: 'query'
+  description: 'Summarized refund data using aliased import'
+  query: @sql
+    select
+      order_id,
+      count(*) as refund_count,
+      sum(amount) as refund_total
+    from {{ ref('refunds') }}
+    group by order_id
+  ;;
+
+  dimension order_id {
+    type: 'number'
+    primary_key: true
+  }
+
+  dimension refund_count {
+    type: 'number'
+    label: 'Number of Refunds'
+  }
+
+  measure total_refund_amount {
+    label: 'Total Refund Amount'
+    definition: @sql {{ refund_total }};;
+    aggregation_type: 'sum'
+    format: '$#,##0.00'
+  }
+}

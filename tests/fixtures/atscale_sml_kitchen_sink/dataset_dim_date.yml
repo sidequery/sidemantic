@@ -1,0 +1,18 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Date dimension dataset used by role-playing relationships.
+unique_name: dimdate
+object_type: dataset
+label: Dim Date
+connection_id: core_connection
+table: dim_date
+columns:
+  - name: datekey
+    data_type: int
+  - name: full_date
+    data_type: date
+  - name: calendar_year
+    data_type: int
+  - name: calendar_month
+    data_type: int
+  - name: day_of_month
+    data_type: int

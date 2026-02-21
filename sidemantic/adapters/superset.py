@@ -122,7 +122,7 @@ class SupersetAdapter(BaseAdapter):
 
         # Determine dimension type
         is_dttm = col_def.get("is_dttm", False)
-        sql_type = col_def.get("type", "")
+        sql_type = col_def.get("type") or ""
 
         dim_type = "categorical"
         granularity = None

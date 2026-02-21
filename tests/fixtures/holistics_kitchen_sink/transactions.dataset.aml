@@ -1,0 +1,45 @@
+// Dataset exercising one_to_many relationships in dataset context,
+// inline Relationship typed blocks, mixed relationship patterns,
+// and dataset-level dimensions/metrics with AQL expressions.
+
+Dataset kitchen_transactions {
+  label: 'Transactions Dataset'
+  description: 'Dataset combining buyers, sellers, and orders with diverse relationship patterns'
+  data_source_name: 'warehouse'
+  models: [kitchen_orders, kitchen_buyers, kitchen_sellers, kitchen_events]
+
+  relationships: [
+    Relationship {
+      type: 'one_to_many'
+      from: r(kitchen_buyers.person_id)
+      to: r(kitchen_orders.customer_id)
+    },
+    RelationshipConfig {
+      active: true
+      rel: Relationship {
+        type: 'many_to_one'
+        from: r(kitchen_events.user_id)
+        to: r(kitchen_buyers.person_id)
+      }
+    },
+    rel(kitchen_orders.product_id > kitchen_products.product_id, true)
+  ]
+
+  dimension total_buyer_orders {
+    label: 'Total Buyer Orders'
+    type: 'number'
+    definition: @aql count(kitchen_orders.order_id);;
+  }
+
+  metric avg_order_amount {
+    label: 'Average Order Amount'
+    type: 'number'
+    definition: @aql sum(kitchen_orders.amount) / count(kitchen_orders.order_id);;
+  }
+
+  metric buyer_event_ratio {
+    label: 'Events per Buyer'
+    type: 'number'
+    definition: @aql count(kitchen_events.event_id) / count_distinct(kitchen_buyers.person_id);;
+  }
+}

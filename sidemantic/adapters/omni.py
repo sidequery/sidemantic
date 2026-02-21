@@ -79,7 +79,7 @@ class OmniAdapter(BaseAdapter):
         with open(file_path) as f:
             view = yaml.safe_load(f)
 
-        if not view:
+        if not view or not isinstance(view, dict):
             return None
 
         # Get view name from filename or name field

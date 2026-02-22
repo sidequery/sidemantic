@@ -1,0 +1,8 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+unique_name: salesamount
+object_type: metric
+label: Sales Amount
+calculation_method: sum
+dataset: factinternetsales
+column: salesamount
+format: standard

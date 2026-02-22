@@ -1,0 +1,361 @@
+# Source: https://github.com/ranfysvalle02/mdb-engine
+# License: MIT
+# ---------------------------------------------------------------------------
+# Member Berry -- OSI Semantic Model (Movie Knowledge)
+# ---------------------------------------------------------------------------
+# A movie-enthusiast knowledge model for cognitive memory.
+# Tracks actors, movies, directors, genres, and user viewing preferences.
+# Enables entity resolution so graph extraction maps natural language
+# ("Tom Hanks", "Nolan", "drama") to typed nodes (actor:tom_hanks, etc.).
+#
+# 5 datasets  |  5 relationships  |  3 metrics  |  120+ synonyms
+#
+# Loaded by mdb-engine via osi_config.models_path in manifest.json.
+# ---------------------------------------------------------------------------
+
+semantic_model:
+  - name: movie_knowledge
+    description: >
+      Movie enthusiast knowledge model for cognitive memory. Tracks actors,
+      movies, directors, genres, and user viewing preferences. Powers entity
+      resolution during graph extraction and co-star network traversal.
+    ai_context:
+      synonyms:
+        - movie database
+        - film library
+        - cinema knowledge
+        - movie collection
+        - filmography
+        - movie memories
+
+    # -----------------------------------------------------------------------
+    # DATASETS
+    # -----------------------------------------------------------------------
+    datasets:
+
+      # --- Actors ----------------------------------------------------------
+      - name: actor
+        source: mdb_engine.ai_chat.actor
+        primary_key: [actor_id]
+        fields:
+          - name: actor_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: name
+            ai_context:
+              synonyms: [name, full name, star name, performer name]
+          - name: notable_roles
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: notable_roles
+            ai_context:
+              synonyms: [roles, famous roles, known for, filmography]
+          - name: birth_year
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: birth_year
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms: [born, year of birth, age]
+        ai_context:
+          synonyms:
+            - actor
+            - actress
+            - star
+            - performer
+            - cast member
+            - lead actor
+            - lead actress
+            - supporting actor
+            - supporting actress
+            - co-star
+            - leading man
+            - leading lady
+            - thespian
+            - Hollywood star
+            - movie star
+            - film star
+            - talent
+            - celebrity
+            - A-lister
+
+      # --- Movies ----------------------------------------------------------
+      - name: movie
+        source: mdb_engine.ai_chat.movie
+        primary_key: [movie_id]
+        fields:
+          - name: title
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: title
+            ai_context:
+              synonyms: [movie title, film title, name, movie name]
+          - name: year
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: year
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms: [release year, year released, came out, released in]
+          - name: rating
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: rating
+            ai_context:
+              synonyms: [score, rating, stars, review score, imdb rating]
+          - name: plot
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: plot
+            ai_context:
+              synonyms: [plot, synopsis, summary, storyline, description, about]
+        ai_context:
+          synonyms:
+            - movie
+            - film
+            - picture
+            - flick
+            - feature
+            - motion picture
+            - feature film
+            - blockbuster
+            - indie film
+            - classic
+            - cinema
+            - show
+            - release
+            - title
+            - screening
+
+      # --- Directors -------------------------------------------------------
+      - name: director
+        source: mdb_engine.ai_chat.director
+        primary_key: [director_id]
+        fields:
+          - name: director_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: name
+            ai_context:
+              synonyms: [name, director name, filmmaker name]
+          - name: style
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: style
+            ai_context:
+              synonyms: [style, vision, approach, signature, aesthetic]
+        ai_context:
+          synonyms:
+            - director
+            - filmmaker
+            - auteur
+            - helmer
+            - showrunner
+            - film director
+            - movie director
+            - directed by
+            - made by
+
+      # --- Genres ----------------------------------------------------------
+      - name: genre
+        source: mdb_engine.ai_chat.genre
+        primary_key: [genre_id]
+        fields:
+          - name: genre_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: name
+            ai_context:
+              synonyms: [name, genre name, type name]
+        ai_context:
+          synonyms:
+            - genre
+            - type
+            - category
+            - style
+            - kind
+            - classification
+            - drama
+            - comedy
+            - thriller
+            - horror
+            - sci-fi
+            - science fiction
+            - action
+            - romance
+            - adventure
+            - mystery
+            - fantasy
+            - animation
+            - documentary
+            - war film
+            - crime film
+            - western
+            - noir
+            - romantic comedy
+            - rom-com
+
+      # --- User Preferences ------------------------------------------------
+      - name: user_preference
+        source: mdb_engine.ai_chat.user_preference
+        primary_key: [preference_id]
+        fields:
+          - name: preference_type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: type
+            ai_context:
+              synonyms: [type, preference, like, dislike, favorite]
+          - name: target_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: target
+            ai_context:
+              synonyms: [target, what, which, subject]
+        ai_context:
+          synonyms:
+            - preference
+            - favorite
+            - favourite
+            - like
+            - love
+            - enjoy
+            - prefer
+            - taste
+            - guilty pleasure
+            - comfort pick
+            - go-to
+            - top pick
+
+    # -----------------------------------------------------------------------
+    # RELATIONSHIPS
+    # -----------------------------------------------------------------------
+    relationships:
+
+      - name: starred_in
+        left_dataset: actor
+        right_dataset: movie
+        cardinality: many_to_many
+        ai_context:
+          synonyms:
+            - starred in
+            - acted in
+            - appeared in
+            - was in
+            - played in
+            - cast in
+            - performed in
+            - featured in
+
+      - name: directed
+        left_dataset: director
+        right_dataset: movie
+        cardinality: one_to_many
+        ai_context:
+          synonyms:
+            - directed
+            - made
+            - helmed
+            - created
+            - filmed
+            - shot
+
+      - name: genre_of
+        left_dataset: movie
+        right_dataset: genre
+        cardinality: many_to_many
+        ai_context:
+          synonyms:
+            - genre
+            - type of movie
+            - categorized as
+            - classified as
+            - kind of film
+
+      - name: co_starred_with
+        left_dataset: actor
+        right_dataset: actor
+        cardinality: many_to_many
+        ai_context:
+          synonyms:
+            - co-starred with
+            - appeared with
+            - acted alongside
+            - worked with
+            - shared the screen with
+            - paired with
+
+      - name: favorite_of
+        left_dataset: user_preference
+        right_dataset: actor
+        cardinality: many_to_many
+        ai_context:
+          synonyms:
+            - favorite actor
+            - preferred actor
+            - best actor
+            - top actor
+            - most-watched actor
+
+    # -----------------------------------------------------------------------
+    # METRICS
+    # -----------------------------------------------------------------------
+    metrics:
+
+      - name: movies_watched
+        description: Number of movies the user has watched or mentioned
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: "COUNT(DISTINCT movie_id)"
+        type: count
+        ai_context:
+          synonyms:
+            - movies watched
+            - films seen
+            - watch count
+            - how many movies
+            - total movies
+
+      - name: favorite_count
+        description: Number of items marked as favorites
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: "COUNT(*) FILTER (WHERE preference_type = 'favorite')"
+        type: count
+        ai_context:
+          synonyms:
+            - favorites
+            - number of favorites
+            - how many favorites
+            - favorite count
+
+      - name: genre_diversity
+        description: Number of distinct genres in watched movies
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: "COUNT(DISTINCT genre_id)"
+        type: count
+        ai_context:
+          synonyms:
+            - genre diversity
+            - genre variety
+            - how many genres
+            - range of genres
+            - genre spread

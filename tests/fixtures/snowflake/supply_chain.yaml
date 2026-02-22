@@ -1,0 +1,51 @@
+# Source: Snowflake-Labs/sfguide-snowflake-cortex-analyst-slack-app
+# File: data/supply_chain_semantic_model.yaml
+# License: Apache-2.0
+# URL: https://github.com/Snowflake-Labs/sfguide-snowflake-cortex-analyst-slack-app
+#
+# Features exercised: single-table model, measures (not facts), custom_instructions,
+# synonyms, verified_queries
+
+name: supply_chain_analyst
+
+tables:
+  - name: supply_chain
+    description: Average shipping time in days of tire orders for each vendor.
+
+    base_table:
+      database: dash_db
+      schema: dash_schema
+      table: supply_chain
+
+    dimensions:
+      - name: supplier_vendor_name
+        synonyms: ["vendor", "supplier", "supplier name", "seller", "seller name"]
+        description: The name of the vendor that shipped the order. All orders are tire orders.
+        expr: supplier_vendor_name
+        data_type: text
+        unique: false
+
+    measures:
+      - name: average_shipping_time
+        expr: average_shipping_time
+        description: The average number of days it took to ship the order for each vendor.
+        synonyms: ["average shipping time", "average shipping duration", "average shipping days"]
+        data_type: number
+
+verified_queries:
+  - name: "compare average shipping time snowtires vs others"
+    question: "What's the average shipping time for tires from Snowtires Automotive compared to average of our other suppliers?"
+    sql: "
+select DISTINCT(supplier_vendor_name), average_shipping_time from DASH_DB.DASH_SCHEMA.SUPPLY_CHAIN where supplier_vendor_name='Snowtires Automotive'
+union
+select 'Other Suppliers' AS supplier_vendor_name, avg(average_shipping_time) from (select DISTINCT(supplier_vendor_name), average_shipping_time from DASH_DB.DASH_SCHEMA.SUPPLY_CHAIN where supplier_vendor_name <> 'Snowtires Automotive');    "
+
+  - name: "compare average shipping time tirepro vs. others"
+    question: "What's the average shipping time for tires from TirePro compared to average of our other suppliers?"
+    sql: "
+select DISTINCT(supplier_vendor_name), average_shipping_time from DASH_DB.DASH_SCHEMA.SUPPLY_CHAIN where supplier_vendor_name='TirePro'
+union
+select 'Other Suppliers' AS supplier_vendor_name, avg(average_shipping_time) from (select DISTINCT(supplier_vendor_name), average_shipping_time from DASH_DB.DASH_SCHEMA.SUPPLY_CHAIN where supplier_vendor_name <> 'TirePro');
+    "
+
+custom_instructions: "Ensure that all numeric columns are rounded to 2 decimal points in the output."

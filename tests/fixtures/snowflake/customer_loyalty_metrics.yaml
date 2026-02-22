@@ -1,0 +1,316 @@
+# Source: aamanlamba/tasty-bytes-cortex-analyst
+# File: semantic-view/harmonized_customer_metrics.yaml
+# License: MIT
+# URL: https://github.com/aamanlamba/tasty-bytes-cortex-analyst
+#
+# Features exercised: facts field with access_modifier, ARRAY data type dimension,
+# module_custom_instructions, NUMBER(38,0) and NUMBER(38,4) precision types,
+# VARCHAR(16777216) data types, use_as_onboarding_question, verified_by/verified_at
+
+name: HARMONIZEDCUSTOMERMETRICSSEMANTICVIEW
+description: Semantic View to answer questions on Tasty Bytes customer metrics
+tables:
+  - name: CUSTOMER_LOYALTY_METRICS_V
+    description: This view provides a comprehensive overview of customer loyalty metrics, including customer demographics, total sales, and a list of unique locations visited by each customer, enabling analysis of customer behavior and loyalty program effectiveness.
+    base_table:
+      database: TASTY_BYTES
+      schema: HARMONIZED
+      table: CUSTOMER_LOYALTY_METRICS_V
+    dimensions:
+      - name: CITY
+        description: The city where the customer is located.
+        expr: CITY
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - Boston
+          - Mumbai
+          - Cairo
+      - name: COUNTRY
+        description: The country where the customer is located.
+        expr: COUNTRY
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - Egypt
+          - India
+          - United States
+      - name: CUSTOMER_ID
+        description: Unique identifier for a customer in the loyalty program.
+        expr: CUSTOMER_ID
+        data_type: NUMBER(38,0)
+        sample_values:
+          - '110913'
+          - '130576'
+          - '90298'
+      - name: E_MAIL
+        description: The email address of the customer.
+        expr: E_MAIL
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - Anna.Sanchez@hotmail.com
+          - Grace.Kline@hotmail.com
+          - Dahlia.Buchanan@ymail.com
+      - name: FIRST_NAME
+        description: The first name of the customer.
+        expr: FIRST_NAME
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - Thaddeus
+          - Deshawn
+          - Madelynn
+      - name: LAST_NAME
+        description: The customer's last name.
+        expr: LAST_NAME
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - Baker
+          - Allison
+          - Farmer
+      - name: PHONE_NUMBER
+        description: The phone number associated with a customer's loyalty program account.
+        expr: PHONE_NUMBER
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - 131-847-6052
+          - 642-785-8671
+          - 606-217-4474
+      - name: VISITED_LOCATION_IDS_ARRAY
+        description: Array of unique location IDs visited by a customer.
+        expr: VISITED_LOCATION_IDS_ARRAY
+        data_type: ARRAY
+        sample_values:
+          - |-
+            [
+              6.673000000000000e+03,
+              6.716000000000000e+03,
+              6.756000000000000e+03,
+              6.649000000000000e+03,
+              9.930000000000000e+03,
+              6.775000000000000e+03,
+              1.365800000000000e+04,
+              8.942000000000000e+03,
+              6.803000000000000e+03,
+              1.267100000000000e+04,
+              1.143300000000000e+04,
+              6.743000000000000e+03,
+              9.942000000000000e+03,
+              8.996000000000000e+03,
+              8.955000000000000e+03,
+              6.584000000000000e+03,
+              6.735000000000000e+03,
+              6.848000000000000e+03,
+              6.701000000000000e+03,
+              6.715000000000000e+03,
+              1.475600000000000e+04,
+              6.829000000000000e+03,
+              6.773000000000000e+03,
+              8.958000000000000e+03,
+              6.713000000000000e+03,
+              9.937000000000000e+03,
+              6.725000000000000e+03,
+              1.314800000000000e+04,
+              1.462600000000000e+04,
+              6.657000000000000e+03,
+              9.945000000000000e+03,
+              6.600000000000000e+03,
+              6.832000000000000e+03,
+              6.794000000000000e+03,
+              6.638000000000000e+03,
+              8.992000000000000e+03,
+              6.820000000000000e+03,
+              1.143500000000000e+04,
+              6.573000000000000e+03,
+              6.680000000000000e+03,
+              6.807000000000000e+03,
+              8.944000000000000e+03,
+              6.576000000000000e+03,
+              6.817000000000000e+03,
+              6.776000000000000e+03,
+              6.728000000000000e+03,
+              6.796000000000000e+03,
+              6.605000000000000e+03,
+              9.007000000000000e+03,
+              9.954000000000000e+03,
+              6.577000000000000e+03,
+              6.768000000000000e+03,
+              1.404800000000000e+04,
+              9.000000000000000e+03,
+              8.947000000000000e+03,
+              6.763000000000000e+03,
+              1.235500000000000e+04,
+              6.769000000000000e+03,
+              6.771000000000000e+03,
+              1.465700000000000e+04,
+              6.640000000000000e+03
+            ]
+          - |-
+            [
+              6.847000000000000e+03,
+              6.861000000000000e+03,
+              8.968000000000000e+03,
+              1.143700000000000e+04,
+              6.653000000000000e+03,
+              6.577000000000000e+03,
+              6.850000000000000e+03,
+              6.836000000000000e+03,
+              6.672000000000000e+03,
+              6.727000000000000e+03,
+              9.008000000000000e+03,
+              6.821000000000000e+03,
+              6.725000000000000e+03,
+              6.630000000000000e+03,
+              6.835000000000000e+03,
+              6.686000000000000e+03,
+              8.946000000000000e+03,
+              6.618000000000000e+03,
+              6.834000000000000e+03,
+              6.747000000000000e+03,
+              6.714000000000000e+03,
+              8.967000000000000e+03,
+              6.777000000000000e+03,
+              6.856000000000000e+03,
+              1.324000000000000e+04,
+              6.605000000000000e+03,
+              6.573000000000000e+03,
+              1.193200000000000e+04,
+              6.701000000000000e+03,
+              6.820000000000000e+03,
+              1.061400000000000e+04,
+              1.215000000000000e+04,
+              6.789000000000000e+03,
+              1.170200000000000e+04,
+              8.977000000000000e+03,
+              8.960000000000000e+03,
+              6.639000000000000e+03,
+              1.235700000000000e+04,
+              1.404800000000000e+04,
+              6.839000000000000e+03,
+              6.717000000000000e+03,
+              1.280300000000000e+04,
+              6.646000000000000e+03,
+              1.061000000000000e+04,
+              1.267200000000000e+04,
+              6.665000000000000e+03,
+              6.752000000000000e+03,
+              6.620000000000000e+03,
+              1.471100000000000e+04,
+              6.813000000000000e+03,
+              8.989000000000000e+03,
+              6.681000000000000e+03,
+              6.587000000000000e+03,
+              6.642000000000000e+03,
+              6.767000000000000e+03,
+              1.267000000000000e+04,
+              6.740000000000000e+03,
+              6.657000000000000e+03,
+              9.951000000000000e+03,
+              6.843000000000000e+03,
+              6.804000000000000e+03,
+              9.932000000000000e+03,
+              8.975000000000000e+03,
+              6.608000000000000e+03,
+              1.107600000000000e+04,
+              6.628000000000000e+03,
+              6.807000000000000e+03
+            ]
+          - |-
+            [
+              5.254000000000000e+03,
+              1.531900000000000e+04,
+              1.309900000000000e+04,
+              1.539900000000000e+04,
+              3.763000000000000e+03,
+              3.770000000000000e+03,
+              8.440000000000000e+03,
+              1.542900000000000e+04,
+              1.536000000000000e+04,
+              1.871000000000000e+03,
+              1.537600000000000e+04,
+              1.529600000000000e+04,
+              1.227100000000000e+04,
+              2.373000000000000e+03,
+              2.575000000000000e+03,
+              2.164000000000000e+03,
+              1.541500000000000e+04,
+              1.539000000000000e+04,
+              1.529000000000000e+04,
+              1.540800000000000e+04,
+              5.260000000000000e+03,
+              1.525300000000000e+04,
+              3.501000000000000e+03,
+              1.287000000000000e+03,
+              3.739000000000000e+03,
+              1.525800000000000e+04,
+              5.258000000000000e+03,
+              1.542600000000000e+04,
+              1.527400000000000e+04,
+              1.538800000000000e+04,
+              3.746000000000000e+03,
+              1.544400000000000e+04,
+              1.537000000000000e+04,
+              1.543700000000000e+04,
+              5.245000000000000e+03,
+              3.482000000000000e+03,
+              3.769000000000000e+03,
+              5.244000000000000e+03,
+              1.982000000000000e+03,
+              2.972000000000000e+03,
+              1.530800000000000e+04,
+              1.922000000000000e+03,
+              1.540500000000000e+04,
+              1.548900000000000e+04,
+              9.652000000000000e+03
+            ]
+    facts:
+      - name: TOTAL_SALES
+        description: The total sales amount generated by each customer.
+        expr: TOTAL_SALES
+        data_type: NUMBER(38,4)
+        access_modifier: public_access
+        sample_values:
+          - '1745.7500'
+          - '2809.5000'
+          - '3302.0000'
+verified_queries:
+  - name: How many unique customers are tracked in our loyalty program?
+    question: How many unique customers are tracked in our loyalty program?
+    sql: |-
+      SELECT
+        COUNT(DISTINCT customer_id)
+      FROM
+        customer_loyalty_metrics_v
+    use_as_onboarding_question: false
+    verified_by: Aaman Lamba
+    verified_at: 1764945263
+  - name: Which countries generate the least to most total sales revenue?
+    question: Which countries generate the least to most total sales revenue?
+    sql: |-
+      SELECT
+        country,
+        SUM(total_sales)
+      FROM
+        customer_loyalty_metrics_v
+      GROUP BY
+        country
+      ORDER BY
+        SUM(total_sales)
+    use_as_onboarding_question: false
+    verified_by: Aaman Lamba
+    verified_at: 1764945276
+  - name: Which countries have the highest number of customers in our loyalty program?
+    question: Which countries have the highest number of customers in our loyalty program?
+    sql: |-
+      SELECT
+        country,
+        COUNT(DISTINCT customer_id)
+      FROM
+        customer_loyalty_metrics_v
+      GROUP BY
+        country
+      ORDER BY
+        COUNT(DISTINCT customer_id) DESC NULLS LAST
+    use_as_onboarding_question: false
+    verified_by: Aaman Lamba
+    verified_at: 1764945919
+module_custom_instructions:
+  sql_generation: round all numeric columns to 2 decimal points
+  question_categorization: Answer all questions related to customer metrics and no other

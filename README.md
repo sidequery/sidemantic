@@ -1,19 +1,15 @@
 # Sidemantic
 
-SQL-first semantic layer for consistent metrics across your data stack. Compatible with many other semantic model formats.
+The universal metrics layer for consistent metrics across your data stack. Compatible with 15+ semantic model formats.
 
-- **Formats:** Sidemantic, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
-- **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL
+- **Supported Formats:** Sidemantic (YAML, Python or SQL), Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
+- **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL (also via ADBC)
 
-[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB download)
+[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/repository/docker/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
 ![Jupyter Widget Preview](preview.png)
 
-## Should I use Sidemantic
-
-Sidemantic is a very ambitious and young semantic layer project. You may encounter rough patches, especially with the more exotic features like converting between semantic model formats.
-
-Issue reports are much appreciated if you try out Sidemantic and hit a snag 🫡
+The installer downloads the skill to `~/.agents/skills/sidemantic-modeler` and symlinks it into `~/.claude/skills/`.
 
 ## Quickstart
 
@@ -251,6 +247,44 @@ load_from_directory(layer, "my_models/")  # Auto-detects formats
 | ClickHouse | ✅ | `uv add sidemantic[clickhouse]` |
 | Databricks | ✅ | `uv add sidemantic[databricks]` |
 | Spark SQL | ✅ | `uv add sidemantic[spark]` |
+
+## Docker
+
+The published image is [`sidequery/sidemantic`](https://hub.docker.com/r/sidequery/sidemantic) on Docker Hub. Mount your models directory as a volume at `/app/models`:
+
+```bash
+docker run -p 5433:5433 -v ./models:/app/models sidequery/sidemantic
+```
+
+Demo mode (built-in sample data, no volume needed):
+
+```bash
+docker run -p 5433:5433 sidequery/sidemantic --demo
+```
+
+See [`examples/docker/`](examples/docker/) for MCP mode, env vars, building from source, and integration test services.
+
+## Agent Skill
+
+Sidemantic ships an [agent skill](skills/sidemantic-modeler/) that teaches Claude Code, Codex, and other `SKILL.md`-compatible agents to build, validate, and query semantic models.
+
+**One-liner install (no clone required):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sidequery/sidemantic/main/skills/install.sh | bash
+```
+
+**npx / bunx:**
+
+```bash
+npx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
+# or
+bunx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
+```
+
+## How mature is Sidemantic?
+
+Sidemantic is an ambitious but young semantic layer project. You could encounter rough patches, especially with the more exotic features like converting between semantic model formats or serving semantic layers via the included Postgres protocol server.
 
 ## Testing
 

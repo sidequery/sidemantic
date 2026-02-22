@@ -1,0 +1,47 @@
+# Source: rilldata/rill (Apache 2.0)
+# https://github.com/rilldata/rill/blob/main/runtime/testruntime/testdata/ad_bids/dashboards/ad_bids_mini_metrics_with_policy.yaml
+# Features: security.row_filter, security.exclude, special characters in measure names,
+#   dimension without name (skipped), upper() expression
+
+type: metrics_view
+model: ad_bids_mini
+display_name: Ad bids
+description:
+
+timeseries: timestamp
+smallest_time_grain: ""
+
+dimensions:
+  - name: publisher_dim
+    display_name: Publisher
+    expression: upper(publisher)
+    description: ""
+  - display_name: Domain
+    column: domain
+    description: ""
+
+measures:
+  - name: bid's number
+    display_name: "Number of bids"
+    expression: count(*)
+    format_preset: humanize
+  - name: total volume
+    display_name: "Total volume"
+    expression: sum(volume)
+    format_preset: humanize
+  - name: total impressions
+    display_name: "Total impressions"
+    expression: sum(impressions)
+    format_preset: humanize
+  - name: total click"s
+    display_name: "Total clicks"
+    expression: sum(clicks)
+    format_preset: humanize
+
+security:
+  access: true
+  row_filter: "domain = '{{ .user.domain }}'"
+  exclude:
+    - if: "'{{ .user.domain }}' != 'msn.com'"
+      names:
+        - total volume

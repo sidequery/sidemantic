@@ -1,0 +1,43 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Time dimension used by role-playing relationships (Order Date / Ship Date).
+# Includes constraint_translation_rank on DayMonth level attribute.
+unique_name: Date Dimension
+object_type: dimension
+label: Date Dimension
+type: time
+
+hierarchies:
+  - unique_name: date_hierarchy
+    label: Date Hierarchy
+    filter_empty: "yes"
+    levels:
+      - unique_name: DateYear
+      - unique_name: DateMonth
+      - unique_name: DayMonth
+
+level_attributes:
+  - unique_name: DateYear
+    label: Year
+    dataset: dimdate
+    name_column: calendar_year
+    key_columns:
+      - calendar_year
+    time_unit: year
+
+  - unique_name: DateMonth
+    label: Month
+    dataset: dimdate
+    name_column: calendar_month
+    key_columns:
+      - calendar_year
+      - calendar_month
+    time_unit: month
+
+  - unique_name: DayMonth
+    label: Day
+    dataset: dimdate
+    name_column: full_date
+    key_columns:
+      - datekey
+    time_unit: day
+    constraint_translation_rank: 1

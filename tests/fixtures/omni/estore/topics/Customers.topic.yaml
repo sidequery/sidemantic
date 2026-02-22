@@ -1,0 +1,7 @@
+# Source: vbalalian/estore-analytics (MIT license)
+# https://github.com/vbalalian/estore-analytics/blob/main/omni/BigQuery/Customers.topic.yaml
+base_view: omni_dbt_marts__dim_users
+label: Customers
+
+joins:
+  omni_dbt_marts__dim_user_rfm: {}

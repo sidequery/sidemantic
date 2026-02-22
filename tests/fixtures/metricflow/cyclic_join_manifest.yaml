@@ -1,0 +1,47 @@
+# Source: dbt-labs/metricflow (Apache 2.0)
+# https://github.com/dbt-labs/metricflow/blob/main/metricflow-semantics/metricflow_semantics/test_helpers/semantic_manifest_yamls/cyclic_join_manifest/
+# Tests: bidirectional entity links creating join cycles, unique entity type,
+#   create_metric shorthand, two semantic models sharing primary/unique keys
+
+semantic_models:
+  - name: listings_latest
+    description: listings_latest
+    model: ref('dim_listings_latest')
+    defaults:
+      agg_time_dimension: ds
+    measures:
+      - name: listings
+        expr: 1
+        agg: sum
+        create_metric: true
+    dimensions:
+      - name: ds
+        type: time
+        expr: created_at
+        type_params:
+          time_granularity: day
+      - name: country_latest
+        type: categorical
+        expr: country
+    entities:
+      - name: listing
+        type: primary
+        expr: listing_id
+      - name: cyclic_entity
+        type: unique
+        expr: listing_id
+
+  - name: listings_latest_cyclic
+    description: This can create a join cycle with listings_latest since they share primary/unique keys.
+    model: ref('dim_listings_latest')
+    dimensions:
+      - name: capacity_latest
+        type: categorical
+        expr: capacity
+    entities:
+      - name: listing
+        type: primary
+        expr: listing_id
+      - name: cyclic_entity
+        type: unique
+        expr: listing_id

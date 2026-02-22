@@ -1,0 +1,43 @@
+# Source: thoughtspot/ps_tools (MIT license)
+# https://github.com/thoughtspot/ps_tools
+guid: 1fcd1fa0-8999-a4ae-8a44-a1eccac48e46
+table:
+  name: REGION
+  db: NaN
+  schema: NaN
+  db_table: REGION
+  connection:
+    name: SF Trial
+  columns:
+  - name: Calculation_396316787158536545
+    db_column_name: Calculation_396316787158536545
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: R_COMMENT
+    db_column_name: R_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: R_NAME
+    db_column_name: R_NAME
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: R_REGIONKEY
+    db_column_name: R_REGIONKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64

@@ -1,0 +1,3 @@
+# Source: vbalalian/estore-analytics (MIT license)
+# https://github.com/vbalalian/estore-analytics/blob/main/omni/BigQuery/model.yaml
+included_schemas: [ omni_dbt_marts, omni_dbt_snapshots ]

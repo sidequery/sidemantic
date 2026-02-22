@@ -1,0 +1,6 @@
+// Source: malloydata/malloy-samples (MIT License)
+// File: bigquery/ga4/config.malloy
+// Features: simple table source config
+
+// Update this source to point to your own GA4 export table in BigQuery:
+source: events_table is bigquery.table('bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*')

@@ -1,0 +1,256 @@
+# Source: https://github.com/ranfysvalle02/mdb-engine
+# License: MIT
+# ---------------------------------------------------------------------------
+# member -- Auto-Scaffolded OSI Semantic Model
+# ---------------------------------------------------------------------------
+# Generated from graph_config.node_types: actor, movie, director, genre, person, concept, event
+#
+# This is a starter model. Customize it by:
+#   - Adding more fields to each dataset
+#   - Expanding ai_context.synonyms for better entity resolution
+#   - Adding relationships between datasets
+#   - Defining metrics for query routing
+# ---------------------------------------------------------------------------
+
+semantic_model:
+- name: member_knowledge
+  description: Auto-scaffolded OSI semantic model for 'member'. Generated from graph_config.node_types.
+    Edit this model to add fields, synonyms, metrics, and relationships.
+  ai_context:
+    synonyms:
+    - member
+    - member
+    - member knowledge
+  datasets:
+  - name: actor
+    source: mdb_engine.ai_chat.actor
+    primary_key:
+    - actor_id
+    fields:
+    - name: actor_name
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: name
+      ai_context:
+        synonyms:
+        - name
+        - actor name
+        - full name
+    ai_context:
+      synonyms:
+      - actor
+      - actress
+      - star
+      - performer
+      - cast member
+      - lead
+      - co-star
+      - movie star
+  - name: movie
+    source: mdb_engine.ai_chat.movie
+    primary_key:
+    - movie_id
+    fields:
+    - name: movie_name
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: name
+      ai_context:
+        synonyms:
+        - name
+        - movie name
+        - full name
+    ai_context:
+      synonyms:
+      - movie
+      - film
+      - picture
+      - flick
+      - feature
+      - motion picture
+      - title
+      - release
+  - name: director
+    source: mdb_engine.ai_chat.director
+    primary_key:
+    - director_id
+    fields:
+    - name: director_name
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: name
+      ai_context:
+        synonyms:
+        - name
+        - director name
+        - full name
+    ai_context:
+      synonyms:
+      - director
+      - filmmaker
+      - auteur
+      - helmer
+      - directed by
+  - name: genre
+    source: mdb_engine.ai_chat.genre
+    primary_key:
+    - genre_id
+    fields:
+    - name: genre_name
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: name
+      ai_context:
+        synonyms:
+        - name
+        - genre name
+        - full name
+    ai_context:
+      synonyms:
+      - genre
+      - type
+      - category
+      - style
+      - kind
+  - name: person
+    source: mdb_engine.ai_chat.person
+    primary_key:
+    - person_id
+    fields:
+    - name: person_name
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: name
+      ai_context:
+        synonyms:
+        - name
+        - person name
+        - full name
+    ai_context:
+      synonyms:
+      - person
+      - individual
+      - someone
+      - user
+      - human
+      - character
+  - name: concept
+    source: mdb_engine.ai_chat.concept
+    primary_key:
+    - concept_id
+    fields:
+    - name: concept_name
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: name
+      ai_context:
+        synonyms:
+        - name
+        - concept name
+        - full name
+    ai_context:
+      synonyms:
+      - concept
+      - idea
+      - notion
+      - topic
+      - theme
+      - subject
+  - name: event
+    source: mdb_engine.ai_chat.event
+    primary_key:
+    - event_id
+    fields:
+    - name: event_name
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: name
+      ai_context:
+        synonyms:
+        - name
+        - event name
+        - full name
+    ai_context:
+      synonyms:
+      - event
+      - occurrence
+      - happening
+      - incident
+      - occasion
+  - name: user_preference
+    source: mdb_engine.ai_chat.user_preference
+    primary_key:
+    - preference_id
+    fields:
+    - name: preference_type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      ai_context:
+        synonyms:
+        - type
+        - preference
+        - category
+    - name: target_name
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: target
+      ai_context:
+        synonyms:
+        - target
+        - what
+        - subject
+    ai_context:
+      synonyms:
+      - preference
+      - favorite
+      - like
+      - taste
+      - favorites
+      - reviews
+      - watchlist
+      - nostalgia
+      - preferences
+      - actors
+      - directors
+      - experiences
+  relationships:
+  - name: starred_in
+    left_dataset: actor
+    right_dataset: movie
+    cardinality: many_to_many
+    ai_context:
+      synonyms:
+      - starred in
+      - acted in
+      - appeared in
+      - was in
+  - name: directed
+    left_dataset: director
+    right_dataset: movie
+    cardinality: one_to_many
+    ai_context:
+      synonyms:
+      - directed
+      - made
+      - helmed
+      - created
+  - name: genre_of
+    left_dataset: movie
+    right_dataset: genre
+    cardinality: many_to_many
+    ai_context:
+      synonyms:
+      - genre
+      - type of
+      - categorized as
+  metrics: []

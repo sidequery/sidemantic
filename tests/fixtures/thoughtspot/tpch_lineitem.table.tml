@@ -1,0 +1,150 @@
+# Source: thoughtspot/ps_tools (MIT license)
+# https://github.com/thoughtspot/ps_tools
+guid: 63b3192a-225d-f789-5429-6176534bf711
+table:
+  name: LINEITEM
+  db: NaN
+  schema: NaN
+  db_table: LINEITEM
+  connection:
+    name: SF Trial
+  columns:
+  - name: L_DISCOUNT
+    db_column_name: L_DISCOUNT
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DOUBLE
+  - name: L_EXTENDEDPRICE
+    db_column_name: L_EXTENDEDPRICE
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DOUBLE
+  - name: L_QUANTITY
+    db_column_name: L_QUANTITY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DOUBLE
+  - name: L_TAX
+    db_column_name: L_TAX
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DOUBLE
+  - name: L_COMMENT
+    db_column_name: L_COMMENT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: L_LINESTATUS
+    db_column_name: L_LINESTATUS
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: L_RETURNFLAG
+    db_column_name: L_RETURNFLAG
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: L_SHIPINSTRUCT
+    db_column_name: L_SHIPINSTRUCT
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: L_SHIPMODE
+    db_column_name: L_SHIPMODE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: VARCHAR
+  - name: L_LINENUMBER
+    db_column_name: L_LINENUMBER
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  - name: L_ORDERKEY
+    db_column_name: L_ORDERKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  - name: L_PARTKEY
+    db_column_name: L_PARTKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  - name: L_SUPPKEY
+    db_column_name: L_SUPPKEY
+    properties:
+      column_type: MEASURE
+      aggregation: SUM
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: INT64
+  - name: L_COMMITDATE
+    db_column_name: L_COMMITDATE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DATE
+  - name: L_RECEIPTDATE
+    db_column_name: L_RECEIPTDATE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DATE
+  - name: L_SHIPDATE
+    db_column_name: L_SHIPDATE
+    properties:
+      column_type: ATTRIBUTE
+      aggregation: COUNT
+      index_type: DONT_INDEX
+    db_column_properties:
+      data_type: DATE
+  joins_with:
+  - name: LINEITEM_PART
+    destination:
+      name: PART
+    "on": "[LINEITEM::L_PARTKEY] = [PART (SNOWFLAKE_SAMPLE_DATA.PART)_1D2460E30A52486581CFDADD82FCB789::P_PARTKEY]"
+    type: INNER
+  - name: LINEITEM_SUPPLIER
+    destination:
+      name: SUPPLIER
+    "on": "[LINEITEM::L_SUPPKEY] = [SUPPLIER (SNOWFLAKE_SAMPLE_DATA.SUPPLIER)_CE83B5217CF24F6DB697964DC85F1FEC::S_SUPPKEY]"
+    type: INNER

@@ -1,0 +1,72 @@
+# Source: https://github.com/cube-js/cube/blob/master/packages/cubejs-testing/birdbox-fixtures/rbac/model/cubes/policy_overlap_test.yaml
+# License: Apache 2.0 / MIT (cube-js/cube)
+#
+# Features tested: two-dimensional access_policy on views, role-based member_level + row_level filters
+
+cubes:
+  # Base cube with no access policy
+  - name: policy_overlap_base
+    sql_table: public.line_items
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      # Member "a" - only covered by Policy 1
+      - name: member_a
+        sql: order_id
+        type: number
+
+      # Member "b" - covered by both Policy 1 and Policy 2
+      - name: member_b
+        sql: product_id
+        type: number
+
+      # Member "c" - only covered by Policy 2
+      - name: member_c
+        sql: quantity
+        type: number
+
+    measures:
+      - name: count
+        type: count
+
+views:
+  # View with two-dimensional access policies
+  - name: policy_overlap_test
+    cubes:
+      - join_path: policy_overlap_base
+        includes: "*"
+
+    access_policy:
+      # Policy 1: covers members a, b with row filter R1 (id < 500)
+      - role: "*"
+        member_level:
+          includes:
+            - id
+            - count
+            - member_a
+            - member_b
+        row_level:
+          filters:
+            - member: id
+              operator: lt
+              values:
+                - "500"
+
+      # Policy 2: covers members b, c with row filter R2 (id >= 500)
+      - role: "policy2_role"
+        member_level:
+          includes:
+            - id
+            - count
+            - member_b
+            - member_c
+        row_level:
+          filters:
+            - member: id
+              operator: gte
+              values:
+                - "500"

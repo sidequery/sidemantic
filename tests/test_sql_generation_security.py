@@ -130,8 +130,9 @@ def test_conversion_metrics_use_correct_model(layer):
     # Should find events model (which has the conversion metric), not users
     sql = layer.compile(metrics=["events.conversion_rate"], dimensions=["events.timestamp__month"])
 
-    # Should reference events_table, not users_table
-    assert "events_table" in sql or "events" in sql.lower()
+    # Should reference events_table and never users_table
+    assert "FROM events_table" in sql
+    assert "users_table" not in sql
 
 
 def test_conversion_metrics_handle_table_backed_models(layer):
@@ -165,8 +166,9 @@ def test_conversion_metrics_handle_table_backed_models(layer):
 
     sql = layer.compile(metrics=["events.conversion_rate"], dimensions=["events.timestamp__month"])
 
-    # Should reference events_table directly, not (None)
-    assert "FROM events_table" in sql or "FROM (None)" not in sql
+    # Should reference events_table directly, never (None)
+    assert "FROM events_table" in sql
+    assert "FROM (None)" not in sql
 
 
 def test_derived_metric_substitution_uses_word_boundaries(layer):
@@ -194,33 +196,32 @@ def test_derived_metric_substitution_uses_word_boundaries(layer):
 
     sql = layer.compile(metrics=["orders.net_revenue"], dimensions=["orders.region"])
 
-    # Should have correct references, not mangled
-    # gross_revenue should stay as gross_revenue, not become gross_(SUM(...))
-    assert "gross_revenue" in sql or "GROSS_REVENUE" in sql
+    # Should substitute both dependencies without mangling names
+    assert "SUM(orders_cte.gross_revenue_raw)" in sql
+    assert "SUM(orders_cte.revenue_raw)" in sql
 
 
-def test_end_to_end_duckdb_coverage():
-    """Test that end-to-end tests actually run queries, not just pass.
+def test_model_ref_rewrite_matches_cte_identifier_quoting(layer):
+    """CTE ref rewriting should follow the same identifier quoting as CTE definitions."""
+    layer.dialect = "postgres"
+    orders = Model(
+        name="ORDERS",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="amount", type="numeric"),
+        ],
+        metrics=[
+            Metric(name="inline_total", type="derived", sql="SUM(ORDERS.amount)"),
+        ],
+    )
+    layer.add_model(orders)
 
-    Bug: test_with_data.py had all tests as TODO with 'pass', no real verification.
-    Fix: Implemented real tests with data verification.
-    """
-    # This is tested in test_with_data.py - just verify that file has real tests
-    import os
+    sql = layer.compile(metrics=["ORDERS.inline_total"])
 
-    test_file = os.path.join(os.path.dirname(__file__), "test_with_data.py")
-    assert os.path.exists(test_file), "test_with_data.py should exist"
-
-    # Read the file and verify it doesn't just have 'pass' statements
-    with open(test_file) as f:
-        content = f.read()
-
-    # Count actual assertion statements vs pass statements
-    assertion_count = content.count("assert ")
-    pass_count = content.count("\n    pass")
-
-    # Should have more assertions than passes (real tests, not TODOs)
-    assert assertion_count > pass_count, "test_with_data.py should have real tests, not just pass statements"
+    assert "WITH ORDERS_cte AS" in sql
+    assert "SUM(ORDERS_cte.amount) AS inline_total" in sql
+    assert 'SUM("ORDERS_cte".amount) AS inline_total' not in sql
 
 
 def test_count_metrics_with_filters(layer):
@@ -416,6 +417,62 @@ def test_count_fanout_uses_column_reference():
 
     sql = gen.generate(metrics=["orders.order_count"], dimensions=["orders.region"])
     assert "COUNT(*)" not in sql
+    assert "COUNT(orders_cte.order_count_raw) AS order_count" in sql
+
+
+def test_conversion_metric_executes_with_expected_rate(layer):
+    """Conversion metric should execute and return a deterministic monthly rate."""
+    events = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="event_id", type="numeric"),
+            Dimension(name="user_id", type="numeric"),
+            Dimension(name="event_type", type="categorical"),
+            Dimension(name="timestamp", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(
+                name="conversion_rate",
+                type="conversion",
+                entity="user_id",
+                base_event="signup",
+                conversion_event="purchase",
+                conversion_window="30 days",
+            ),
+        ],
+    )
+    layer.add_model(events)
+
+    layer.conn.execute(
+        """
+        CREATE TABLE events_table (
+            event_id INTEGER,
+            user_id INTEGER,
+            event_type VARCHAR,
+            timestamp TIMESTAMP
+        )
+        """
+    )
+    layer.conn.execute(
+        """
+        INSERT INTO events_table VALUES
+            (1, 1, 'signup', '2024-01-01'),
+            (2, 1, 'purchase', '2024-01-05'),
+            (3, 2, 'signup', '2024-01-02'),
+            (4, 3, 'signup', '2024-01-03'),
+            (5, 3, 'purchase', '2024-02-20')
+        """
+    )
+
+    sql = layer.compile(metrics=["events.conversion_rate"], dimensions=["events.timestamp__month"])
+    rows = layer.conn.execute(sql).fetchall()
+
+    assert len(rows) == 1
+    month_value, conversion_rate = rows[0]
+    assert month_value is not None
+    assert conversion_rate == pytest.approx(1.0 / 3.0, abs=1e-6)
 
 
 def test_build_interval_duckdb():

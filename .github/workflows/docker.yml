@@ -1,0 +1,91 @@
+name: Docker
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Publish to PyPI"]
+    types: [completed]
+
+env:
+  IMAGE: sidequery/sidemantic
+
+jobs:
+  docker:
+    name: Docker build, test, and push
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start server (demo mode)
+        run: |
+          docker run -d --name sidemantic-test -p 5433:5433 ${{ env.IMAGE }}:test --demo
+          for i in $(seq 1 30); do
+            if docker logs sidemantic-test 2>&1 | grep -q "Listening on"; then
+              echo "Server ready"
+              break
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 1
+          done
+
+      - name: Verify server logs
+        run: docker logs sidemantic-test 2>&1
+
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Test connection
+        run: PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c "SELECT 1 AS test"
+
+      - name: Test metric aggregation (products)
+        run: |
+          PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c \
+            "SELECT category, product_count, avg_price, total_catalog_value FROM semantic_layer.products GROUP BY category ORDER BY category"
+
+      - name: Test metric aggregation (customers)
+        run: |
+          PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c \
+            "SELECT region, customer_count FROM semantic_layer.customers GROUP BY region ORDER BY region"
+
+      - name: Stop server
+        if: always()
+        run: docker stop sidemantic-test || true
+
+      - name: Push to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          cache-from: type=gha

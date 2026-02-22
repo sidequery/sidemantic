@@ -1,0 +1,12 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Security mapping dataset for row_security example.
+unique_name: user_country_mapping
+object_type: dataset
+label: User Country Mapping
+connection_id: core_connection
+table: user_country_mapping
+columns:
+  - name: username
+    data_type: string
+  - name: country
+    data_type: string

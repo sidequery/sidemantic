@@ -1,0 +1,18 @@
+# Derived from Apache 2.0 licensed SML spec: github.com/semanticdatalayer/sml
+# Geography dimension dataset with country column for row security.
+unique_name: dim_geo_country
+object_type: dataset
+label: Dim Geography
+connection_id: core_connection
+table: dim_geography
+columns:
+  - name: geo_key
+    data_type: int
+  - name: country
+    data_type: string
+  - name: state
+    data_type: string
+  - name: city
+    data_type: string
+  - name: zip_code
+    data_type: string

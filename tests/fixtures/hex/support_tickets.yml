@@ -1,0 +1,197 @@
+id: support_tickets
+base_sql_query: |
+  SELECT
+    t.id,
+    t.customer_id,
+    t.agent_id,
+    t.subject,
+    t.priority,
+    t.channel,
+    t.status,
+    t.created_at,
+    t.first_response_at,
+    t.resolved_at,
+    t.satisfaction_score,
+    t.is_escalated,
+    EXTRACT(EPOCH FROM (t.first_response_at - t.created_at)) / 60.0 AS response_time_minutes,
+    EXTRACT(EPOCH FROM (t.resolved_at - t.created_at)) / 3600.0 AS resolution_time_hours
+  FROM support.tickets t
+  WHERE t.created_at >= '2020-01-01'
+description: Support ticket data with response time calculations
+
+dimensions:
+  - id: id
+    type: number
+    unique: true
+
+  - id: customer_id
+    type: number
+
+  - id: agent_id
+    type: number
+
+  - id: subject
+    type: string
+    description: Ticket subject line
+
+  - id: priority
+    type: string
+    description: Ticket priority (low, medium, high, critical)
+
+  - id: channel
+    type: string
+    description: Submission channel (email, chat, phone, web)
+
+  - id: status
+    type: string
+    description: Current status (open, pending, resolved, closed)
+
+  - id: created_at
+    type: timestamp_tz
+    description: When the ticket was created
+
+  - id: first_response_at
+    type: timestamp_tz
+    description: When the first agent response was sent
+
+  - id: resolved_at
+    type: timestamp_naive
+    description: When the ticket was resolved
+
+  - id: satisfaction_score
+    type: number
+    description: Customer satisfaction rating 1-5
+
+  - id: is_escalated
+    type: boolean
+    description: Whether ticket was escalated to a senior agent
+
+  - id: response_time_minutes
+    type: number
+    description: Minutes to first response
+
+  - id: resolution_time_hours
+    type: number
+    description: Hours to resolution
+
+  - id: is_resolved
+    type: boolean
+    expr_sql: status IN ('resolved', 'closed')
+    description: Whether the ticket has been resolved or closed
+
+  - id: is_critical
+    type: boolean
+    expr_sql: priority = 'critical'
+
+  - id: sla_met
+    type: boolean
+    expr_sql: |
+      CASE
+        WHEN priority = 'critical' THEN response_time_minutes <= 15
+        WHEN priority = 'high' THEN response_time_minutes <= 60
+        WHEN priority = 'medium' THEN response_time_minutes <= 240
+        ELSE response_time_minutes <= 480
+      END
+    description: Whether the SLA was met based on priority
+
+measures:
+  - id: ticket_count
+    func: count
+    description: Total number of tickets
+
+  - id: resolved_tickets
+    func: count
+    filters:
+      - is_resolved
+    description: Number of resolved tickets
+
+  - id: escalated_tickets
+    func: count
+    filters:
+      - is_escalated
+    description: Number of escalated tickets
+
+  - id: critical_escalated_tickets
+    func: count
+    filters:
+      - is_critical
+      - is_escalated
+    description: Critical tickets that were also escalated
+
+  - id: unique_customers
+    func: count_distinct
+    of: customer_id
+    description: Distinct customers who submitted tickets
+
+  - id: unique_agents
+    func: count_distinct
+    of: agent_id
+    description: Distinct agents who handled tickets
+
+  - id: avg_response_time
+    func: avg
+    of: response_time_minutes
+    description: Average first response time in minutes
+
+  - id: median_response_time
+    func: median
+    of: response_time_minutes
+    description: Median first response time in minutes
+
+  - id: avg_resolution_time
+    func: avg
+    of: resolution_time_hours
+    description: Average resolution time in hours
+
+  - id: avg_satisfaction
+    func: avg
+    of: satisfaction_score
+    description: Average satisfaction score
+
+  - id: min_satisfaction
+    func: min
+    of: satisfaction_score
+    description: Lowest satisfaction score
+
+  - id: max_satisfaction
+    func: max
+    of: satisfaction_score
+    description: Highest satisfaction score
+
+  - id: resolution_rate
+    func_sql: |
+      CAST(COUNT(CASE WHEN status IN ('resolved', 'closed') THEN 1 END) AS DOUBLE)
+      / NULLIF(COUNT(*), 0)
+    description: Percentage of tickets that reached resolution
+
+  - id: sla_compliance_rate
+    func_sql: |
+      CAST(SUM(CASE
+        WHEN priority = 'critical' AND response_time_minutes <= 15 THEN 1
+        WHEN priority = 'high' AND response_time_minutes <= 60 THEN 1
+        WHEN priority = 'medium' AND response_time_minutes <= 240 THEN 1
+        WHEN priority IN ('low') AND response_time_minutes <= 480 THEN 1
+        ELSE 0
+      END) AS DOUBLE) / NULLIF(COUNT(*), 0)
+    description: Percentage of tickets meeting SLA targets
+
+  - id: tickets_per_agent
+    func_calc: ticket_count / unique_agents
+    description: Average tickets handled per agent
+
+  - id: p95_response_time
+    func_sql: PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY response_time_minutes)
+    description: 95th percentile response time
+
+relations:
+  - id: customers
+    type: many_to_one
+    join_sql: customer_id = ${customers}.id
+
+  - id: agents
+    type: many_to_one
+    join_sql: agent_id = ${agents}.id
+
+  - id: organizations
+    type: many_to_one
+    join_sql: customer_id = ${customers}.id AND ${customers}.org_id = ${organizations}.id

@@ -1,0 +1,43 @@
+# Source: https://github.com/cube-js/cube/blob/master/packages/cubejs-testing/birdbox-fixtures/rbac/model/views/views.yaml
+# License: Apache 2.0 / MIT (cube-js/cube)
+#
+# Features tested: views with access_policy (role, row_level filters, allow_all), joined views
+# NOTE: This file contains ONLY views (no cubes section). The adapter should handle this gracefully.
+
+views:
+  - name: line_items_view_price_gt_200
+    cubes:
+      - join_path: line_items
+        includes: "*"
+    access_policy:
+      - role: "*"
+        row_level:
+          filters:
+            - member: "${CUBE}.price_dim"
+              operator: gt
+              values:
+                - 200
+
+  - name: line_items_view_joined_orders
+    cubes:
+      - join_path: line_items
+        includes: "*"
+      - join_path: line_items.orders
+        prefix: true
+        includes: "*"
+
+  - name: line_items_view_no_policy
+    cubes:
+      - join_path: line_items
+        includes: "*"
+
+  - name: orders_view
+    cubes:
+      - join_path: orders
+        includes: "*"
+    access_policy:
+      - role: admin
+        member_level:
+          includes: "*"
+        row_level:
+          allow_all: true

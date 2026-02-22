@@ -1,0 +1,171 @@
+// Source: malloydata/bigquery_jobs (MIT License)
+// File: jobs.malloy
+// Features: named imports from, chained type casts ::, %{ } SQL interpolation
+
+import { jobs_tbl, tables_tbl, table_storage_tbl } from 'bigquery_jobs_config.malloy'
+
+source: jobs is jobs_tbl extend {
+  rename: 
+    bytes_billed is total_bytes_billed
+    bytes_processed is total_bytes_processed
+    slot_ms is total_slot_ms
+    sql_query is query
+    
+  dimension: 
+    billed_gb is bytes_billed / (1024*1024*1024)
+    is_query is job_type = 'QUERY'
+    slot_seconds is (slot_ms/1000)
+    elapsed_seconds is (unix_millis!(end_time)::number - unix_millis!(start_time)::number)/1000
+    query_hash is to_base64!(md5!(sql_query))::string
+    is_service_account is user_email ~ r'gserviceaccount'
+
+  measure:
+    job_count is count()
+    query_count is job_count {where: is_query }
+    distinct_query_count is count(sql_query)
+    total_billed_gb is billed_gb.sum()
+    total_slot_seconds is slot_ms.sum()/1000
+    total_slot_minutes is total_slot_seconds/60
+    user_count is count(user_email)
+    time_range is concat(min(start_time)::date:: string, ' to ',  max(start_time)::date::string)
+    # percent
+    percent_cached_query is query_count {where: cache_hit} / nullif(query_count,0)
+    stage_count is timeline.count()
+    # percent
+    percent_of_gb_billed is total_billed_gb/nullif(all(total_billed_gb),0)
+    # percent
+    percent_of_queries is query_count/nullif(all(query_count),0)
+
+  view: metrics is {
+    aggregate:
+      total_billed_gb
+      percent_of_gb_billed
+      query_count  
+      total_slot_minutes
+      user_count
+      percent_cached_query
+  }
+
+  view: cached is {
+    group_by: cache_hit
+    aggregate: query_count, total_billed_gb
+  }
+
+  view: query_detail is {
+    where: is_query
+    group_by: 
+      job_id
+      user_email
+      start_time
+      billed_gb
+      slot_seconds 
+      elapsed_seconds
+    nest: data_sets_list is {
+      group_by: referenced_tables.dataset_id
+    }
+    aggregate: 
+      stage_count
+  }
+
+  view: by_email is {
+    group_by: user_email
+    aggregate: 
+      # number ="#0.00"
+      total_billed_gb
+      query_count 
+  }
+
+  view: by_dataset_list is {
+    group_by: referenced_tables.dataset_id
+  }
+
+  view: by_query is {
+    group_by: query_hash
+    aggregate: 
+      total_billed_gb
+      percent_of_gb_billed
+      query_count  
+      total_slot_minutes
+      user_count
+      percent_cached_query
+    nest: 
+      # list
+      by_email is {group_by: user_email}
+      # list
+      by_dataset is {
+        group_by: referenced_tables.dataset_id 
+        where: referenced_tables.dataset_id != null
+      }
+  }
+
+  # line_chart
+  view: queries_over_time is {
+    group_by: `date` is start_time.week
+    aggregate:
+      query_count
+  }
+
+  # line_chart
+  view: users_over_time is {
+    group_by: `date` is start_time.week
+    aggregate:
+      user_count
+  }
+  # line_chart
+  view: gb_billed_over_time is {
+    group_by: `date` is start_time.week
+    aggregate:
+      total_billed_gb
+  }
+  # line_chart
+  view: slot_time_over_time is {
+    group_by: `date` is start_time.week
+    aggregate:
+      total_slot_seconds
+  }
+}
+
+source: table_query_stats is jobs -> {
+  group_by:
+    referenced_tables.project_id
+    referenced_tables.dataset_id
+    referenced_tables.table_id
+} + metrics extend {}
+
+source: table_storage is table_storage_tbl extend {}
+
+source: tables is tables_tbl extend {
+  join_one: table_query_stats on
+    table_catalog = table_query_stats.project_id
+    and table_schema = table_query_stats.dataset_id
+    and table_name = table_query_stats.table_id
+
+  join_one: table_storage on
+    table_catalog = table_storage.project_id
+    and table_schema = table_storage.table_schema
+    and table_name = table_storage.table_name
+
+  view: metrics is {
+    aggregate:
+      total_logical_bytes is table_storage.total_logical_bytes.sum()
+      total_rows is table_storage.total_rows.sum()
+      total_billed_gb is table_query_stats.total_billed_gb.sum()
+      query_count is table_query_stats.query_count.sum()
+  }
+
+  view: table_usage_metrics is {
+    group_by:
+      table_name
+  } + metrics
+
+  view: hot_tables is table_usage_metrics + {
+    order_by: total_billed_gb desc
+    limit: 10
+  }
+
+  view: cold_tables is table_usage_metrics + {
+    order_by: total_billed_gb asc, total_logical_bytes desc
+    limit: 10
+  }
+}
+

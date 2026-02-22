@@ -1,0 +1,106 @@
+# Source: vbalalian/estore-analytics (MIT license)
+# https://github.com/vbalalian/estore-analytics/blob/main/omni/BigQuery/omni_dbt_marts/dim_categories.view.yaml
+# Reference this view as omni_dbt_marts__dim_categories
+schema_label: ""
+#This description was pulled from dbt.
+description: |
+  Dimension table for product categories. Extracted from staging events data.
+
+schema: omni_dbt_marts
+table_name: dim_categories
+
+dimensions:
+  category_code:
+    #This description was pulled from dbt.
+    description: All hierarchical category codes associated with the product
+      category, separated by commas
+
+  category_lvl_1:
+    #This description was pulled from dbt.
+    description: First level of hierarchical category (e.g. electronics.smartphone
+      returns electronics)
+
+  category_lvl_2:
+    #This description was pulled from dbt.
+    description: Second level of hierarchical category (e.g. electronics.smartphone
+      returns smartphone)
+
+  category_lvl_3:
+    #This description was pulled from dbt.
+    description: Third level of hierarchical category (if applicable)
+
+  category_lvl_4:
+    #This description was pulled from dbt.
+    description: Fourth level of hierarchical category (if applicable)
+
+  raw_category_id:
+    format: ID
+    #This description was pulled from dbt.
+    description: Original unique identifier for the product category
+    primary_key: true
+
+measures:
+  count:
+    aggregate_type: count
+
+#The info below was pulled from your dbt repository and is read-only.
+dbt:
+  name: dim_categories
+  target_schema: estore
+  description: |
+    Dimension table for product categories. Extracted from staging events data.
+  config:
+    schema: marts
+    materialized: incremental
+  code: |-
+    {{ config(
+        materialized = 'incremental',
+        unique_key = 'raw_category_id',
+        cluster_by = ['category_lvl_1'],
+        incremental_strategy = 'merge',
+        on_schema_change = 'sync_all_columns'
+    ) }}
+
+    with
+
+    {{ incremental_max_date_cte('fct_events') }}
+
+    source as (
+
+        select * from {{ ref('fct_events') }}
+        {{ incremental_date_filter() }}
+
+    ),
+
+    grouped as (
+
+        select
+
+            category_id,
+            any_value(category_code) as category_code
+
+        from source
+
+        where category_id is not null
+
+        group by category_id
+
+    ),
+
+    final as (
+
+        select
+
+            category_id as raw_category_id,
+            category_code,
+            split(category_code, '.')[safe_offset(0)] as category_lvl_1,
+            split(category_code, '.')[safe_offset(1)] as category_lvl_2,
+            split(category_code, '.')[safe_offset(2)] as category_lvl_3,
+            split(category_code, '.')[safe_offset(3)] as category_lvl_4
+
+        from grouped
+
+    )
+
+    select * from final
+  referenced_by: [ dim_products ]

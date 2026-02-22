@@ -1,0 +1,136 @@
+# Source: https://github.com/metazense/datazense (MIT license)
+# File: semantic_model_healthcare.yml
+# Tests: 6 models, join chains, cost metrics, encounter type rates, compound arithmetic, with: join syntax
+
+organizations:
+  table: organizations_tbl
+  primary_key: id
+
+  dimensions:
+    id: _.id
+    name: _.name
+    city: _.city
+    state: _.state
+
+  measures:
+    org_count: _.count()
+
+payers:
+  table: payers_tbl
+  primary_key: id
+
+  dimensions:
+    id: _.id
+    name: _.name
+
+  measures:
+    payer_count: _.count()
+    total_amount_covered: _.amount_covered.sum()
+    total_amount_uncovered: _.amount_uncovered.sum()
+
+patients:
+  table: patients_tbl
+  primary_key: id
+
+  dimensions:
+    id: _.id
+    gender: _.gender
+    race: _.race
+    ethnicity: _.ethnicity
+    city: _.city
+    state: _.state
+    county: _.county
+
+  measures:
+    patient_count: _.count()
+    avg_income: _.income.mean()
+    avg_healthcare_expenses: _.healthcare_expenses.mean()
+    avg_healthcare_coverage: _.healthcare_coverage.mean()
+    total_healthcare_expenses: _.healthcare_expenses.sum()
+
+encounters:
+  table: encounters_tbl
+  time_dimension: start_time
+
+  dimensions:
+    encounter_class: _.encounter_class
+    code: _.code
+    description: _.description
+    reason_code: _.reason_code
+    reason_description: _.reason_description
+
+  measures:
+    encounter_count: _.count()
+    total_claim_cost: _.total_claim_cost.sum()
+    avg_claim_cost: _.total_claim_cost.mean()
+    total_base_cost: _.base_encounter_cost.sum()
+    avg_base_cost: _.base_encounter_cost.mean()
+    total_payer_coverage: _.payer_coverage.sum()
+    avg_payer_coverage: _.payer_coverage.mean()
+    total_out_of_pocket: (_.total_claim_cost - _.payer_coverage).sum()
+    avg_out_of_pocket: (_.total_claim_cost - _.payer_coverage).mean()
+    emergency_count: (_.encounter_class == "emergency").sum()
+    inpatient_count: (_.encounter_class == "inpatient").sum()
+    ambulatory_count: (_.encounter_class == "ambulatory").sum()
+    wellness_count: (_.encounter_class == "wellness").sum()
+
+  joins:
+    patient:
+      model: patients
+      type: one
+      with: _.patient_id
+    organization:
+      model: organizations
+      type: one
+      with: _.organization_id
+    payer:
+      model: payers
+      type: one
+      with: _.payer_id
+
+conditions:
+  table: conditions_tbl
+
+  dimensions:
+    code: _.code
+    description: _.description
+
+  measures:
+    condition_count: _.count()
+
+  joins:
+    patient:
+      model: patients
+      type: one
+      with: _.patient_id
+    encounter:
+      model: encounters
+      type: one
+      with: _.encounter_id
+
+medications:
+  table: medications_tbl
+
+  dimensions:
+    code: _.code
+    description: _.description
+    reason_code: _.reason_code
+    reason_description: _.reason_description
+
+  measures:
+    medication_count: _.count()
+    total_medication_cost: _.total_cost.sum()
+    avg_medication_cost: _.total_cost.mean()
+    total_base_medication_cost: _.base_cost.sum()
+    avg_dispenses: _.dispenses.mean()
+    total_dispenses: _.dispenses.sum()
+
+  joins:
+    patient:
+      model: patients
+      type: one
+      with: _.patient_id
+    encounter:
+      model: encounters
+      type: one
+      with: _.encounter_id

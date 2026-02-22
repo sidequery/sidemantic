@@ -8,6 +8,7 @@ from sqlglot import exp, select
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
+from sidemantic.sql.aggregation_detection import sql_has_aggregate
 
 
 class SQLGenerator:
@@ -769,6 +770,10 @@ class SQLGenerator:
                             if "." in dep:
                                 extract_from_measure_ref(dep)
                             else:
+                                local_dep = model.get_metric(dep)
+                                if local_dep:
+                                    extract_from_measure_ref(f"{model_name}.{dep}")
+                                    continue
                                 try:
                                     dep_metric = self.graph.get_metric(dep)
                                     extract_from_metric(dep_metric)
@@ -1012,26 +1017,20 @@ class SQLGenerator:
                     select_cols.append(f"{dim_sql} AS {alias}")
                     columns_added.add(alias)
 
-        # Add raw columns referenced by inline aggregate SQL (if they are not dimensions/measures)
-        if metric_filter_columns:
-            for col_name in metric_filter_columns:
-                if col_name in columns_added:
-                    continue
-                dim = model.get_dimension(col_name)
-                if dim:
-                    dim_sql = replace_model_placeholder(dim.sql_expr)
-                    select_cols.append(f"{dim_sql} AS {col_name}")
-                    columns_added.add(col_name)
-                    continue
-                if model.get_metric(col_name):
-                    continue
-                raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
-                select_cols.append(f"{raw_expr} AS {col_name}")
-                columns_added.add(col_name)
-
         # Add measure columns (raw, not aggregated in CTE)
         # Collect all measures needed for metrics
         measures_needed = set()
+        extra_metric_sql_columns: set[str] = set()
+
+        def collect_sql_columns_for_model(sql_expr: str) -> None:
+            try:
+                parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+                for col in parsed.find_all(exp.Column):
+                    if col.table and col.table.replace("_cte", "") != model_name:
+                        continue
+                    extra_metric_sql_columns.add(col.name)
+            except Exception:
+                logging.debug("Failed to parse metric SQL for columns: %s", sql_expr, exc_info=True)
 
         def collect_measures_from_metric(metric_ref: str, visited: set[str] | None = None):
             """Recursively collect measures needed from a metric.
@@ -1056,6 +1055,14 @@ class SQLGenerator:
                     # It's for this model - check if it's a derived measure
                     measure = model.get_metric(measure_name)
                     if measure:
+                        if (
+                            not measure.type
+                            and not measure.agg
+                            and measure.sql
+                            and sql_has_aggregate(measure.sql, self.dialect)
+                        ):
+                            collect_sql_columns_for_model(measure.sql)
+                            return
                         if measure.type in ("derived", "ratio") or (
                             not measure.type and not measure.agg and measure.sql
                         ):
@@ -1073,6 +1080,14 @@ class SQLGenerator:
                 # First check if it's a measure on the current model
                 measure = model.get_metric(metric_ref)
                 if measure:
+                    if (
+                        not measure.type
+                        and not measure.agg
+                        and measure.sql
+                        and sql_has_aggregate(measure.sql, self.dialect)
+                    ):
+                        collect_sql_columns_for_model(measure.sql)
+                        return
                     if measure.type in ("derived", "ratio") or (not measure.type and not measure.agg and measure.sql):
                         # Derived/ratio measure - get its dependencies
                         for dep in measure.get_dependencies(self.graph, model_name):
@@ -1094,14 +1109,31 @@ class SQLGenerator:
         for metric_ref in metrics:
             collect_measures_from_metric(metric_ref)
 
+        all_metric_columns = set(metric_filter_columns or set()) | extra_metric_sql_columns
+
+        # Add raw columns referenced by inline aggregate SQL (if they are not dimensions/measures)
+        for col_name in all_metric_columns:
+            if col_name in columns_added:
+                continue
+            dim = model.get_dimension(col_name)
+            if dim:
+                dim_sql = replace_model_placeholder(dim.sql_expr)
+                select_cols.append(f"{dim_sql} AS {col_name}")
+                columns_added.add(col_name)
+                continue
+            if model.get_metric(col_name):
+                continue
+            raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
+            select_cols.append(f"{raw_expr} AS {col_name}")
+            columns_added.add(col_name)
+
         # Also include measure columns referenced in metric_filter_columns (for derived metrics
         # with inline SQL aggregations like "SUM(quantity * unit_price) / COUNT(DISTINCT order_id)")
-        if metric_filter_columns:
-            for col_name in metric_filter_columns:
-                # Check if this column is a measure (not a dimension)
-                measure = model.get_metric(col_name)
-                if measure and measure.agg and col_name not in measures_needed:
-                    measures_needed.add(col_name)
+        for col_name in all_metric_columns:
+            # Check if this column is a measure (not a dimension)
+            measure = model.get_metric(col_name)
+            if measure and measure.agg and col_name not in measures_needed:
+                measures_needed.add(col_name)
 
         for measure_name in measures_needed:
             measure = model.get_metric(measure_name)
@@ -2035,12 +2067,7 @@ class SQLGenerator:
 
             # Check if this is a SQL expression metric (has inline aggregations)
             # These metrics already contain complete SQL and shouldn't have dependencies replaced
-            try:
-                parsed = sqlglot.parse_one(formula, read=self.dialect)
-                agg_types = (exp.Sum, exp.Avg, exp.Count, exp.Min, exp.Max, exp.Median)
-                has_inline_agg = any(parsed.find_all(*agg_types))
-            except Exception:
-                has_inline_agg = False
+            has_inline_agg = sql_has_aggregate(formula, self.dialect)
 
             if has_inline_agg:
                 # This is a SQL expression metric with inline aggregations.
@@ -2095,8 +2122,11 @@ class SQLGenerator:
                     measure = model.get_metric(measure_name)
 
                     if measure:
-                        # Use helper that applies metric-level filters
-                        metric_sql = self._build_measure_aggregation_sql(model_name, measure)
+                        if measure.agg:
+                            # Use helper that applies metric-level filters
+                            metric_sql = self._build_measure_aggregation_sql(model_name, measure)
+                        else:
+                            metric_sql = self._build_metric_sql(measure, model_name)
                     else:
                         raise ValueError(f"Measure {metric_name} not found")
                 else:

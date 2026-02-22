@@ -3,6 +3,8 @@
 import sqlglot
 from sqlglot import expressions as exp
 
+from sidemantic.sql.aggregation_detection import sql_has_aggregate
+
 
 def extract_column_references(sql_expr: str) -> set[str]:
     """Extract all column references from a SQL expression.
@@ -57,18 +59,12 @@ def extract_metric_dependencies(metric_obj, graph=None, model_context=None) -> s
             return deps
 
         # Check if this is an expression metric with inline aggregations
-        # (e.g., SUM(x) / SUM(y), COUNT(DISTINCT col) * 1.0)
-        # These don't have measure dependencies - the aggregations are inline
-        try:
-            parsed = sqlglot.parse_one(metric_obj.sql)
-            # Check if the expression contains any aggregation functions
-            agg_types = (exp.Sum, exp.Avg, exp.Count, exp.Min, exp.Max, exp.Median)
-            has_inline_agg = any(parsed.find_all(*agg_types))
-            if has_inline_agg and not metric_obj.type:
-                # Expression metric with inline aggregations - no measure dependencies
-                return deps
-        except Exception:
-            pass
+        # (e.g., SUM(x) / SUM(y), COUNT(DISTINCT col) * 1.0).
+        # Keep these dependency-free: the aggregations are inline, not metric references.
+        # Use the shared detector so behavior is consistent across parser call sites.
+        if not metric_obj.type and sql_has_aggregate(metric_obj.sql):
+            # Expression metric with inline aggregations - no measure dependencies
+            return deps
 
         # Extract column references from expression
         refs = extract_column_references(metric_obj.sql)

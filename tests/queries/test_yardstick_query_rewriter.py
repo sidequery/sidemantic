@@ -1890,3 +1890,41 @@ FROM nullable_sales;
 
     # Guardrail: expression-dimension correlation should bind against outer projection alias.
     assert "IS NOT DISTINCT FROM (region_bucket)" in rewritten
+
+
+def test_yardstick_default_alias_not_applied_with_non_semantic_join(tmp_path):
+    sql_file = tmp_path / "sales.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW sales_v AS
+SELECT year, region, SUM(amount) AS MEASURE revenue
+FROM sales;
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE sales (year INT, region TEXT, amount DOUBLE)")
+    layer.adapter.execute(
+        """
+INSERT INTO sales VALUES
+    (2022, 'US', 100), (2022, 'EU', 50),
+    (2023, 'US', 150), (2023, 'EU', 75);
+"""
+    )
+    layer.adapter.execute("CREATE TABLE region_labels (region TEXT, label TEXT)")
+    layer.adapter.execute("INSERT INTO region_labels VALUES ('US', 'Core'), ('EU', 'Edge')")
+    load_from_directory(layer, tmp_path)
+
+    query = """
+SEMANTIC SELECT
+    year,
+    label,
+    AGGREGATE(revenue) AS revenue
+FROM sales_v AS s
+JOIN region_labels AS l ON s.region = l.region
+"""
+    rewriter = QueryRewriter(layer.graph, dialect=layer.adapter.dialect)
+    rewritten = rewriter.rewrite(query)
+
+    # Guardrail: unaliased non-semantic columns should not be forced onto the semantic alias.
+    assert "S.LABEL" not in rewritten.upper()

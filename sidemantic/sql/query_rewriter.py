@@ -58,7 +58,13 @@ class QueryRewriter:
         sql = sql.strip()
 
         if self._looks_like_yardstick_query(sql):
-            return self._rewrite_yardstick_query(sql)
+            try:
+                return self._rewrite_yardstick_query(sql, strict=strict)
+            except Exception:
+                if strict:
+                    raise
+                # Keep non-strict passthrough behavior when Yardstick rewrite cannot be applied safely.
+                return sql
 
         # Handle multiple statements (some PostgreSQL clients send these)
         if ";" in sql:
@@ -118,13 +124,13 @@ class QueryRewriter:
 
         return False
 
-    def _rewrite_yardstick_query(self, sql: str) -> str:
+    def _rewrite_yardstick_query(self, sql: str, strict: bool = True) -> str:
         """Rewrite Yardstick-style SQL (`SEMANTIC`, `AGGREGATE`, `AT`) to plain SQL."""
         transformed_sql, calls = self._replace_yardstick_aggregate_calls(sql)
 
         # SEMANTIC prefix without AGGREGATE: fall back to normal SQL rewrite path.
         if not calls:
-            return self.rewrite(transformed_sql)
+            return self.rewrite(transformed_sql, strict=strict)
 
         try:
             parsed = sqlglot.parse_one(transformed_sql, dialect=self.dialect)
@@ -167,8 +173,9 @@ class QueryRewriter:
         if not source_models:
             raise ValueError("Yardstick query must reference at least one known semantic model in FROM/JOIN")
 
-        # If the query references a single model, unqualified columns map to that model.
-        default_alias = next(iter(source_models)) if len(source_models) == 1 else None
+        # Only default-qualify unaliased columns when this scope truly has a single source relation.
+        single_model_scope = len(source_models) == 1 and self._has_single_source_relation(select_scope)
+        default_alias = next(iter(source_models)) if single_model_scope else None
         select_scope = self._expand_yardstick_dimension_references(
             select_scope,
             source_models=source_models,
@@ -176,7 +183,7 @@ class QueryRewriter:
             placeholder_names=placeholder_names,
         )
 
-        if default_alias and len(source_models) == 1:
+        if default_alias and single_model_scope:
             qualified_projections: list[exp.Expression] = []
             for projection in select_scope.expressions:
                 expr_obj = projection.this if isinstance(projection, exp.Alias) else projection
@@ -230,7 +237,7 @@ class QueryRewriter:
                 select_scope.set("distinct", exp.Distinct())
 
         group_clause = select_scope.args.get("group")
-        if group_clause and default_alias and len(source_models) == 1:
+        if group_clause and default_alias and single_model_scope:
             group_clause.set(
                 "expressions",
                 [
@@ -258,6 +265,7 @@ class QueryRewriter:
                 projection_aliases=projection_aliases,
                 outer_where=outer_where,
                 default_alias=default_alias,
+                single_model_scope=single_model_scope,
             )
 
         replacement_expr_cache = {
@@ -424,6 +432,13 @@ class QueryRewriter:
             add_table(join.this)
 
         return alias_to_model
+
+    def _has_single_source_relation(self, select: exp.Select) -> bool:
+        """Return True only when SELECT scope has exactly one FROM relation and no JOINs."""
+        from_clause = select.args.get("from")
+        if not from_clause or from_clause.this is None:
+            return False
+        return len(select.args.get("joins") or []) == 0
 
     def _parse_relation_factor(self, relation_sql: str) -> exp.Expression:
         probe = sqlglot.parse_one(f"SELECT 1 FROM {relation_sql}", dialect=self.dialect)
@@ -660,6 +675,7 @@ class QueryRewriter:
         projection_aliases: dict[str, str],
         outer_where: exp.Where | None,
         default_alias: str | None,
+        single_model_scope: bool,
     ) -> str:
         model_alias, model_name, measure_name = self._resolve_yardstick_measure_call(call.argument_sql, source_models)
         return self._build_yardstick_measure_sql(
@@ -672,6 +688,7 @@ class QueryRewriter:
             projection_aliases=projection_aliases,
             outer_where=outer_where,
             default_alias=default_alias,
+            single_model_scope=single_model_scope,
             visiting=set(),
         )
 
@@ -686,6 +703,7 @@ class QueryRewriter:
         projection_aliases: dict[str, str],
         outer_where: exp.Where | None,
         default_alias: str | None,
+        single_model_scope: bool,
         visiting: set[tuple[str, str]],
     ) -> str:
         model = self.graph.get_model(model_name)
@@ -724,6 +742,7 @@ class QueryRewriter:
                     projection_aliases=projection_aliases,
                     outer_where=outer_where,
                     default_alias=default_alias,
+                    single_model_scope=single_model_scope,
                     visiting=visiting.copy(),
                 )
                 return sqlglot.parse_one(dep_sql, dialect=self.dialect)
@@ -744,6 +763,7 @@ class QueryRewriter:
             default_alias=default_alias,
             source_models=source_models,
             projection_aliases=projection_aliases,
+            single_model_scope=single_model_scope,
         )
         active_dimensions, modifier_predicates, include_visible = self._apply_yardstick_modifiers(
             modifiers=modifiers,
@@ -751,7 +771,7 @@ class QueryRewriter:
             model_alias=model_alias,
             model_name=model_name,
             default_alias=default_alias,
-            single_model=(len(source_models) == 1),
+            single_model=single_model_scope,
         )
 
         predicates = list(modifier_predicates)
@@ -760,23 +780,23 @@ class QueryRewriter:
 
         if include_visible and outer_where is not None:
             visible_expr = outer_where.this.copy()
-            if default_alias and len(source_models) == 1:
+            if default_alias and single_model_scope:
                 visible_expr = self._qualify_unaliased_columns(visible_expr, default_alias)
             visible_expr = self._rewrite_tables(
                 visible_expr,
                 table_mapping={model_alias: "_inner", model_name: "_inner"},
-                default_table="_inner" if len(source_models) == 1 else None,
+                default_table="_inner" if single_model_scope else None,
             )
             predicates.append(visible_expr.sql(dialect=self.dialect))
 
         for measure_filter in measure.filters or []:
             filter_expr = sqlglot.parse_one(measure_filter, dialect=self.dialect)
-            if default_alias and len(source_models) == 1:
+            if default_alias and single_model_scope:
                 filter_expr = self._qualify_unaliased_columns(filter_expr, default_alias)
             filter_expr = self._rewrite_tables(
                 filter_expr,
                 table_mapping={model_alias: "_inner", model_name: "_inner"},
-                default_table="_inner" if len(source_models) == 1 else None,
+                default_table="_inner" if single_model_scope else None,
             )
             predicates.append(filter_expr.sql(dialect=self.dialect))
 
@@ -867,6 +887,7 @@ class QueryRewriter:
         default_alias: str | None,
         source_models: dict[str, str],
         projection_aliases: dict[str, str],
+        single_model_scope: bool,
     ) -> list[dict[str, str]]:
         context_dimensions: list[dict[str, str]] = []
         model = self.graph.get_model(model_name)
@@ -874,7 +895,7 @@ class QueryRewriter:
         for group_expr in group_expressions:
             outer_base_expr = group_expr.copy()
             expr_obj = group_expr.copy()
-            if default_alias and len(source_models) == 1:
+            if default_alias and single_model_scope:
                 expr_obj = self._qualify_unaliased_columns(expr_obj, default_alias)
 
             columns = list(expr_obj.find_all(exp.Column))
@@ -890,14 +911,14 @@ class QueryRewriter:
                     continue
                 for column in inner_base_expr.find_all(exp.Column):
                     column.set("table", exp.to_identifier(model_alias))
-            if not tables and len(source_models) > 1:
+            if not tables and not single_model_scope:
                 continue
 
             outer_expr = self._rewrite_tables(outer_base_expr, table_mapping={model_name: model_alias})
             inner_expr = self._rewrite_tables(
                 inner_base_expr,
                 table_mapping={model_alias: "_inner", model_name: "_inner"},
-                default_table="_inner" if len(source_models) == 1 else None,
+                default_table="_inner" if single_model_scope else None,
             )
             signature = self._expr_signature_without_tables(inner_base_expr)
             outer_sql = outer_expr.sql(dialect=self.dialect)

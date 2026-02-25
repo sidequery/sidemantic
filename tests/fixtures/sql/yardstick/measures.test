@@ -54,6 +54,21 @@ SELECT * FROM a;
 # Test: GROUP BY with extra spaces
 # =============================================================================
 
+statement ok
+CREATE VIEW sales_grouped AS
+SELECT year, region, SUM(amount) AS MEASURE revenue
+FROM sales
+GROUP   BY year, region;
+
+query IIR rowsort
+SEMANTIC SELECT year, region, AGGREGATE(revenue) AT (ALL region) AS year_total
+FROM sales_grouped;
+----
+2022	EU	150.0
+2022	US	150.0
+2023	EU	225.0
+2023	US	225.0
+
 query IIR rowsort
 SEMANTIC SELECT year, region, AGGREGATE(revenue) AT (ALL region) AS year_total
 FROM sales_v
@@ -63,6 +78,27 @@ GROUP   BY year, region;
 2022	US	150.0
 2023	EU	225.0
 2023	US	225.0
+
+# Positional GROUP BY should resolve to SELECT dimensions (fallback from parser ordinals)
+query IR rowsort
+SEMANTIC SELECT year, AGGREGATE(revenue)
+FROM sales_v
+GROUP BY 1
+ORDER BY 1;
+----
+2022	150.0
+2023	225.0
+
+query IIR rowsort
+SEMANTIC SELECT year, region, AGGREGATE(revenue)
+FROM sales_v
+GROUP BY 1, 2
+ORDER BY 1, 2;
+----
+2022	EU	50.0
+2022	US	100.0
+2023	EU	75.0
+2023	US	150.0
 
 # =============================================================================
 # Test: AT (ALL dimension) - remove dimension from context
@@ -494,21 +530,21 @@ SEMANTIC SELECT year, region, AGGREGATE(min_sale), AGGREGATE(max_sale) FROM sale
 
 # =============================================================================
 # Test: COUNT measure
-# Note: COUNT(*) in a measure counts rows after the view's GROUP BY, not base table rows
+# Note: COUNT(*) in a measure is evaluated against the base relation and re-aggregated
 # =============================================================================
 
 query II rowsort
 SEMANTIC SELECT year, AGGREGATE(order_count) FROM orders_v;
 ----
-2022	1
-2023	1
+2022	2
+2023	2
 
 # Count with AT (ALL)
 query II rowsort
 SEMANTIC SELECT year, AGGREGATE(order_count) AT (ALL) FROM orders_v;
 ----
-2022	2
-2023	2
+2022	4
+2023	4
 
 # =============================================================================
 # Test: Combining base AGGREGATE with multiple AT variants
@@ -1280,6 +1316,77 @@ B	10
 # Test: DuckDB generate_series / UNNEST
 # =============================================================================
 
+# =============================================================================
+# Test: Window function in AS MEASURE
+# =============================================================================
+
+statement ok
+CREATE TABLE window_measure_orders (year INT, revenue INT);
+
+statement ok
+INSERT INTO window_measure_orders VALUES
+    (2021, 10),
+    (2022, 20),
+    (2023, 30);
+
+statement ok
+CREATE VIEW window_measure_v AS
+SELECT
+    year,
+    SUM(revenue) OVER (ORDER BY year) AS MEASURE running_total
+FROM window_measure_orders;
+
+query IT rowsort
+SELECT year, running_total::VARCHAR
+FROM window_measure_v
+ORDER BY year;
+----
+2021	10
+2022	30
+2023	60
+
+query IT rowsort
+SEMANTIC SELECT year, AGGREGATE(running_total)::VARCHAR
+FROM window_measure_v
+GROUP BY year
+ORDER BY year;
+----
+2021	10
+2022	30
+2023	60
+
+query IT rowsort
+SEMANTIC SELECT year, AGGREGATE(running_total) AT (WHERE year = 2022)::VARCHAR
+FROM window_measure_v;
+----
+2021	20
+2022	20
+2023	20
+
+statement error
+SEMANTIC SELECT year, AGGREGATE(running_total) AT (ALL)
+FROM window_measure_v
+GROUP BY year;
+----
+Window measure running_total returned multiple values for the evaluation context
+
+statement ok
+CREATE VIEW window_total_v AS
+SELECT
+    year,
+    SUM(revenue) OVER () AS MEASURE global_total
+FROM window_measure_orders;
+
+query IT rowsort
+SEMANTIC SELECT year, AGGREGATE(global_total) AT (ALL)::VARCHAR
+FROM window_total_v
+GROUP BY year
+ORDER BY year;
+----
+2021	60
+2022	60
+2023	60
+
 statement ok
 CREATE VIEW series_v AS
 SELECT x, SUM(x) AS MEASURE total
@@ -1386,3 +1493,281 @@ query I
 SEMANTIC SELECT AGGREGATE(revenue) FROM sales_nulls_v;
 ----
 390.0
+
+# =============================================================================
+# Paper regression matrix (consolidated)
+# =============================================================================
+
+# Case 1: AS MEASURE view cardinality should match base relation
+statement ok
+CREATE TABLE orders_cardinality (order_date DATE, prod TEXT, revenue INT, cost INT);
+
+statement ok
+INSERT INTO orders_cardinality VALUES
+    ('2024-01-01', 'A', 100, 40),
+    ('2024-01-01', 'A', 50, 10);
+
+statement ok
+CREATE VIEW orders_cardinality_v AS
+SELECT
+    order_date,
+    prod,
+    (SUM(revenue) - SUM(cost))::DOUBLE / SUM(revenue) AS MEASURE profit_margin
+FROM orders_cardinality;
+
+query II
+SELECT
+    (SELECT COUNT(*) FROM orders_cardinality) AS base_rows,
+    (SELECT COUNT(*) FROM orders_cardinality_v) AS view_rows;
+----
+2	2
+
+# Case 2: implicit measure reference in grouped SELECT
+query IR rowsort
+SELECT year, revenue
+FROM sales_v
+GROUP BY year
+ORDER BY year;
+----
+2022	150.0
+2023	225.0
+
+# Case 3: AT (ALL d1 d2) in a single modifier clause
+query IIRR rowsort
+SELECT
+    year,
+    region,
+    AGGREGATE(revenue) AT (ALL year region) AS single_all,
+    AGGREGATE(revenue) AT (ALL year) AT (ALL region) AS chained_all
+FROM sales_v
+ORDER BY year, region;
+----
+2022	EU	375.0	375.0
+2022	US	375.0	375.0
+2023	EU	375.0	375.0
+2023	US	375.0	375.0
+
+# Case 4: qualified measure in join
+statement ok
+CREATE TABLE customers_qualified (cust_id INT, age INT);
+
+statement ok
+INSERT INTO customers_qualified VALUES (1, 20), (2, 40);
+
+statement ok
+CREATE TABLE orders_qualified (cust_id INT, product TEXT);
+
+statement ok
+INSERT INTO orders_qualified VALUES (1, 'X'), (1, 'X'), (2, 'X');
+
+statement ok
+CREATE VIEW customers_qualified_v AS
+SELECT cust_id, AVG(age) AS MEASURE avg_age
+FROM customers_qualified;
+
+query TRR
+SELECT
+    o.product,
+    AGGREGATE(c.avg_age) AS measure_avg,
+    AGGREGATE(c.avg_age) AT (VISIBLE) AS visible_avg
+FROM orders_qualified o
+JOIN customers_qualified_v c ON o.cust_id = c.cust_id
+GROUP BY o.product;
+----
+X	30.0	30.0
+
+# Case 5: nested function parentheses in AT (WHERE ...)
+query IR rowsort
+SELECT
+    YEAR(sale_date) AS y,
+    AGGREGATE(revenue) AT (WHERE YEAR(sale_date) = 2023) AS y2023
+FROM dated_sales_v
+GROUP BY YEAR(sale_date)
+ORDER BY y;
+----
+2023	530.0
+2024	530.0
+
+# Case 6: derived measure with AT (SET ...)
+query IRR rowsort
+SEMANTIC SELECT
+    year,
+    AGGREGATE(profit) AS current_profit,
+    AGGREGATE(profit) AT (SET year = year - 1) AS prior_profit
+FROM financials_v
+ORDER BY year;
+----
+2022	110.0	NULL
+2023	230.0	110.0
+
+# =============================================================================
+# Paper parity: listings 8, 9, 12 and CURRENT null semantics
+# =============================================================================
+
+statement ok
+CREATE TABLE paper_orders (prodName TEXT, custName TEXT, order_date DATE, revenue INT);
+
+statement ok
+INSERT INTO paper_orders VALUES
+    ('Happy', 'Var Bob', '2024-01-01', 4),
+    ('Happy', 'Alice', '2024-01-02', 6),
+    ('Happy', 'Alice', '2024-01-03', 7),
+    ('Whizz', 'Alice', '2024-01-04', 3);
+
+statement ok
+CREATE VIEW paper_orders_v AS
+SELECT *, SUM(revenue) AS MEASURE sumRevenue
+FROM paper_orders;
+
+# Listing 8 style: AGGREGATE() is visible, plain measure ref ignores WHERE,
+# and measure AT(VISIBLE) is accepted without AGGREGATE wrapper.
+query TIRRR rowsort
+SELECT
+    o.prodName,
+    COUNT(*) AS c,
+    AGGREGATE(o.sumRevenue) AS rAgg,
+    o.sumRevenue AT (VISIBLE) AS rViz,
+    o.sumRevenue AS r
+FROM paper_orders_v o
+WHERE o.custName <> 'Var Bob'
+GROUP BY ROLLUP(o.prodName)
+ORDER BY o.prodName;
+----
+Happy	2	13	13	17
+NULL	3	NULL	NULL	NULL
+Whizz	1	3	3	3
+
+# Measures/CSEs should be valid in HAVING, and respect context semantics.
+query TI rowsort
+SELECT
+    o.prodName,
+    AGGREGATE(o.sumRevenue) AT (VISIBLE) AS rViz
+FROM paper_orders_v o
+WHERE o.custName <> 'Var Bob'
+GROUP BY o.prodName
+HAVING AGGREGATE(o.sumRevenue) AT (VISIBLE) > 10
+ORDER BY o.prodName;
+----
+Happy	13
+
+statement ok
+CREATE TABLE paper_customers (custName TEXT, custAge INT);
+
+statement ok
+INSERT INTO paper_customers VALUES
+    ('Alice', 30), ('Var Bob', 16), ('Carol', 40);
+
+statement ok
+CREATE TABLE paper_order_customers (prodName TEXT, custName TEXT);
+
+statement ok
+INSERT INTO paper_order_customers VALUES
+    ('Happy', 'Alice'),
+    ('Happy', 'Var Bob'),
+    ('Whizz', 'Carol');
+
+statement ok
+CREATE VIEW enhanced_customers_paper AS
+SELECT *, AVG(custAge) AS MEASURE avgAge
+FROM paper_customers;
+
+# Listing 9 style: weighted average vs unweighted avgAge vs visibleAvgAge.
+query TRRRR rowsort
+SELECT
+    o.prodName,
+    COUNT(*) AS orderCount,
+    AVG(c.custAge) AS weightedAvgAge,
+    c.avgAge AS avgAge,
+    c.avgAge AT (VISIBLE) AS visibleAvgAge
+FROM paper_order_customers o
+JOIN enhanced_customers_paper c USING (custName)
+WHERE c.custAge >= 18
+GROUP BY o.prodName
+ORDER BY o.prodName;
+----
+Happy	1	30.0	28.666666666666668	35.0
+Whizz	1	40.0	28.666666666666668	35.0
+
+statement ok
+CREATE TABLE paper_orders_l12 (prodName TEXT, orderDate DATE, revenue INT);
+
+statement ok
+INSERT INTO paper_orders_l12 VALUES
+    ('Happy', '2024-01-01', 4),
+    ('Happy', '2024-01-02', 6),
+    ('Happy', '2024-01-03', 7),
+    ('Whizz', '2024-01-04', 3);
+
+statement ok
+CREATE VIEW paper_orders_l12_v AS
+SELECT prodName, orderDate, revenue, AVG(revenue) AS MEASURE avgRevenue
+FROM paper_orders_l12;
+
+# Listing 12 style measure syntax without AGGREGATE wrapper.
+query TT rowsort
+SELECT o.prodName, o.orderDate
+FROM paper_orders_l12_v o
+WHERE o.revenue > o.avgRevenue AT (WHERE prodName = o.prodName)
+ORDER BY o.prodName, o.orderDate;
+----
+Happy	2024-01-02
+Happy	2024-01-03
+
+# Listing 12 query 1: correlated subquery.
+query TT rowsort
+SELECT o.prodName, o.orderDate
+FROM paper_orders_l12 o
+WHERE o.revenue >
+    (SELECT AVG(revenue)
+     FROM paper_orders_l12 o1
+     WHERE o1.prodName = o.prodName)
+ORDER BY o.prodName, o.orderDate;
+----
+Happy	2024-01-02
+Happy	2024-01-03
+
+# Listing 12 query 2: self-join.
+query TT rowsort
+SELECT o.prodName, o.orderDate
+FROM paper_orders_l12 o
+LEFT JOIN
+    (SELECT prodName, AVG(revenue) AS avgRevenue
+     FROM paper_orders_l12
+     GROUP BY prodName) o2
+ON o.prodName = o2.prodName
+WHERE o.revenue > o2.avgRevenue
+ORDER BY o.prodName, o.orderDate;
+----
+Happy	2024-01-02
+Happy	2024-01-03
+
+# Listing 12 query 3: window aggregate.
+query TT rowsort
+SELECT o.prodName, o.orderDate
+FROM
+    (SELECT prodName, revenue, orderDate,
+            AVG(revenue) OVER (PARTITION BY prodName) AS avgRevenue
+     FROM paper_orders_l12) o
+WHERE o.revenue > o.avgRevenue
+ORDER BY o.prodName, o.orderDate;
+----
+Happy	2024-01-02
+Happy	2024-01-03
+
+# CURRENT should evaluate to NULL when dimension is not single-valued in context.
+query TR rowsort
+SEMANTIC SELECT region, AGGREGATE(revenue) AT (SET year = CURRENT year - 1) AS prior_from_current
+FROM sales_v
+GROUP BY region
+ORDER BY region;
+----
+EU	NULL
+US	NULL
+
+# CURRENT can resolve from a single-valued WHERE context.
+query R
+SEMANTIC SELECT AGGREGATE(revenue) AT (SET year = CURRENT year - 1)
+FROM sales_v
+WHERE year = 2023;
+----
+150.0

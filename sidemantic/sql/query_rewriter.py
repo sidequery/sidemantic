@@ -19,6 +19,7 @@ class _YardstickAggregateCall:
     placeholder: str
     argument_sql: str
     modifiers: list[str]
+    include_visible_default: bool
 
 
 class QueryRewriter:
@@ -90,8 +91,20 @@ class QueryRewriter:
             # In non-strict mode, pass through non-SELECT queries
             return sql
 
-        # In non-strict mode, pass through queries that don't reference semantic models
-        if not strict and not self._references_semantic_model(parsed):
+        if self._contains_implicit_yardstick_measure_query(parsed):
+            try:
+                return self._rewrite_yardstick_query(sql, strict=strict, allow_plain_measures=True)
+            except Exception:
+                if strict:
+                    raise
+                return sql
+
+        # Projection-only SQL (no root FROM/CTE) should pass through unless Yardstick paths above matched.
+        if parsed.args.get("from") is None and parsed.args.get("with") is None:
+            if any(isinstance(expr, exp.Star) for expr in parsed.expressions):
+                if strict:
+                    raise ValueError("SELECT * requires a FROM clause with a single table")
+                return sql
             return sql
 
         # Check if this is a CTE-based query or has subqueries
@@ -101,6 +114,9 @@ class QueryRewriter:
         if has_ctes or has_subquery_in_from:
             # Handle CTEs and subqueries
             return self._rewrite_with_ctes_or_subqueries(parsed)
+
+        if not self._references_semantic_model(parsed):
+            return sql
 
         # Otherwise, treat as simple semantic layer query
         return self._rewrite_simple_query(parsed)
@@ -118,18 +134,159 @@ class QueryRewriter:
         if tokens[0].text.upper() == "SEMANTIC":
             return True
 
+        if self._contains_yardstick_curly_measure_reference(sql, tokens):
+            return True
+
         for i in range(len(tokens) - 1):
             if tokens[i].text.upper() == "AGGREGATE" and tokens[i + 1].token_type == TokenType.L_PAREN:
                 return True
+            # Support Yardstick `measure AT (...)` syntax without AGGREGATE wrapper.
+            if tokens[i].token_type == TokenType.VAR and tokens[i + 1].text.upper() == "AT":
+                if i + 2 < len(tokens) and tokens[i + 2].token_type == TokenType.L_PAREN:
+                    return True
+            if (
+                i + 3 < len(tokens)
+                and tokens[i].token_type == TokenType.VAR
+                and tokens[i + 1].token_type == TokenType.DOT
+                and tokens[i + 2].token_type == TokenType.VAR
+                and tokens[i + 3].text.upper() == "AT"
+            ):
+                if i + 4 < len(tokens) and tokens[i + 4].token_type == TokenType.L_PAREN:
+                    return True
 
         return False
 
-    def _rewrite_yardstick_query(self, sql: str, strict: bool = True) -> str:
+    def _is_yardstick_identifier_token(self, token) -> bool:
+        return token.token_type in {TokenType.VAR, TokenType.IDENTIFIER, TokenType.SCHEMA}
+
+    def _is_yardstick_curly_measure_inner(self, inner_tokens: list) -> bool:
+        if not inner_tokens:
+            return False
+
+        expect_identifier = True
+        for token in inner_tokens:
+            if expect_identifier:
+                if not self._is_yardstick_identifier_token(token):
+                    return False
+            else:
+                if token.token_type != TokenType.DOT:
+                    return False
+            expect_identifier = not expect_identifier
+        return not expect_identifier
+
+    def _contains_yardstick_curly_measure_reference(self, sql: str, tokens: list) -> bool:
+        i = 0
+        while i < len(tokens):
+            if tokens[i].token_type != TokenType.L_BRACE:
+                i += 1
+                continue
+
+            depth = 1
+            j = i + 1
+            while j < len(tokens):
+                if tokens[j].token_type == TokenType.L_BRACE:
+                    depth += 1
+                elif tokens[j].token_type == TokenType.R_BRACE:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+
+            if depth != 0:
+                raise ValueError("Invalid Yardstick measure reference: unclosed '{...}'")
+
+            inner_tokens = tokens[i + 1 : j]
+            if self._is_yardstick_curly_measure_inner(inner_tokens):
+                return True
+            i = j + 1
+
+        return False
+
+    def _expand_yardstick_curly_measure_references(self, sql: str) -> str:
+        """Expand Yardstick `{measure}` shorthand into plain measure references."""
+        tokens = sqlglot.tokenize(sql, read=self.dialect)
+        rewritten_parts: list[str] = []
+        cursor = 0
+        i = 0
+
+        while i < len(tokens):
+            if tokens[i].token_type != TokenType.L_BRACE:
+                i += 1
+                continue
+
+            depth = 1
+            j = i + 1
+            while j < len(tokens):
+                if tokens[j].token_type == TokenType.L_BRACE:
+                    depth += 1
+                elif tokens[j].token_type == TokenType.R_BRACE:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+
+            if depth != 0:
+                raise ValueError("Invalid Yardstick measure reference: unclosed '{...}'")
+
+            inner_tokens = tokens[i + 1 : j]
+            if self._is_yardstick_curly_measure_inner(inner_tokens):
+                rewritten_parts.append(sql[cursor : tokens[i].start])
+                inner_start = inner_tokens[0].start
+                inner_end = inner_tokens[-1].end + 1
+                rewritten_parts.append(sql[inner_start:inner_end].strip())
+                cursor = tokens[j].end + 1
+
+            i = j + 1
+
+        rewritten_parts.append(sql[cursor:])
+        return "".join(rewritten_parts)
+
+    def _contains_implicit_yardstick_measure_query(self, parsed: exp.Select) -> bool:
+        """Return True when query references plain measure columns in Yardstick contexts."""
+        for select_scope in parsed.find_all(exp.Select):
+            source_models = self._extract_source_models_from_select(select_scope)
+            if not source_models:
+                continue
+            if not any(self._is_yardstick_model(model_name) for model_name in source_models.values()):
+                continue
+
+            single_model_scope = len(source_models) == 1 and self._has_single_source_relation(select_scope)
+            default_alias = next(iter(source_models)) if single_model_scope else None
+            placeholder_names: set[str] = set()
+
+            candidate_expressions: list[exp.Expression] = list(select_scope.expressions)
+            having_clause = select_scope.args.get("having")
+            if having_clause:
+                candidate_expressions.append(having_clause.this)
+            order_clause = select_scope.args.get("order")
+            if order_clause:
+                candidate_expressions.extend(order_expr.this for order_expr in order_clause.expressions)
+
+            for candidate_expr in candidate_expressions:
+                for column in candidate_expr.find_all(exp.Column):
+                    if self._resolve_implicit_yardstick_measure_reference(
+                        column,
+                        source_models=source_models,
+                        default_alias=default_alias,
+                        single_model_scope=single_model_scope,
+                        placeholder_names=placeholder_names,
+                    ):
+                        return True
+
+        return False
+
+    def _is_yardstick_model(self, model_name: str) -> bool:
+        model = self.graph.get_model(model_name)
+        metadata = model.metadata or {}
+        return isinstance(metadata, dict) and "yardstick" in metadata
+
+    def _rewrite_yardstick_query(self, sql: str, strict: bool = True, allow_plain_measures: bool = False) -> str:
         """Rewrite Yardstick-style SQL (`SEMANTIC`, `AGGREGATE`, `AT`) to plain SQL."""
+        sql = self._expand_yardstick_curly_measure_references(sql)
         transformed_sql, calls = self._replace_yardstick_aggregate_calls(sql)
 
         # SEMANTIC prefix without AGGREGATE: fall back to normal SQL rewrite path.
-        if not calls:
+        if not calls and not allow_plain_measures:
             return self.rewrite(transformed_sql, strict=strict)
 
         try:
@@ -151,16 +308,55 @@ class QueryRewriter:
                     cte.set(
                         "this",
                         self._rewrite_yardstick_select_scope(
-                            cte_select, call_map=call_map, placeholder_names=placeholder_names
+                            cte_select,
+                            call_map=call_map,
+                            placeholder_names=placeholder_names,
+                            allow_plain_measures=allow_plain_measures,
                         ),
                     )
 
-        rewritten = self._rewrite_yardstick_select_scope(parsed, call_map=call_map, placeholder_names=placeholder_names)
+        rewritten = self._rewrite_yardstick_select_scope(
+            parsed,
+            call_map=call_map,
+            placeholder_names=placeholder_names,
+            allow_plain_measures=allow_plain_measures,
+        )
         return rewritten.sql(dialect=self.dialect)
 
     def _rewrite_yardstick_select_scope(
-        self, select_scope: exp.Select, call_map: dict[str, _YardstickAggregateCall], placeholder_names: set[str]
+        self,
+        select_scope: exp.Select,
+        call_map: dict[str, _YardstickAggregateCall],
+        placeholder_names: set[str],
+        allow_plain_measures: bool = False,
     ) -> exp.Select:
+        initial_placeholders = {
+            column.name
+            for column in select_scope.find_all(exp.Column)
+            if not column.table and column.name in placeholder_names
+        }
+        if not initial_placeholders and not allow_plain_measures:
+            return select_scope
+
+        source_models = self._extract_source_models_from_select(select_scope)
+        if not source_models:
+            if initial_placeholders:
+                raise ValueError("Yardstick query must reference at least one known semantic model in FROM/JOIN")
+            return select_scope
+
+        # Only default-qualify unaliased columns when this scope truly has a single source relation.
+        single_model_scope = len(source_models) == 1 and self._has_single_source_relation(select_scope)
+        default_alias = next(iter(source_models)) if single_model_scope else None
+
+        select_scope = self._inject_implicit_yardstick_measure_calls(
+            select_scope=select_scope,
+            source_models=source_models,
+            default_alias=default_alias,
+            single_model_scope=single_model_scope,
+            call_map=call_map,
+            placeholder_names=placeholder_names,
+        )
+
         scope_placeholders = {
             column.name
             for column in select_scope.find_all(exp.Column)
@@ -169,13 +365,6 @@ class QueryRewriter:
         if not scope_placeholders:
             return select_scope
 
-        source_models = self._extract_source_models_from_select(select_scope)
-        if not source_models:
-            raise ValueError("Yardstick query must reference at least one known semantic model in FROM/JOIN")
-
-        # Only default-qualify unaliased columns when this scope truly has a single source relation.
-        single_model_scope = len(source_models) == 1 and self._has_single_source_relation(select_scope)
-        default_alias = next(iter(source_models)) if single_model_scope else None
         select_scope = self._expand_yardstick_dimension_references(
             select_scope,
             source_models=source_models,
@@ -237,6 +426,8 @@ class QueryRewriter:
                 select_scope.set("distinct", exp.Distinct())
 
         group_clause = select_scope.args.get("group")
+        if group_clause:
+            self._resolve_yardstick_group_ordinals(group_clause, select_scope.expressions)
         if group_clause and default_alias and single_model_scope:
             group_clause.set(
                 "expressions",
@@ -245,7 +436,17 @@ class QueryRewriter:
                     for group_expr in group_clause.expressions
                 ],
             )
-        group_expressions = list(group_clause.expressions) if group_clause else []
+            for group_key in ("rollup", "cube", "grouping_sets"):
+                grouped_exprs = group_clause.args.get(group_key)
+                if grouped_exprs:
+                    group_clause.set(
+                        group_key,
+                        [
+                            self._qualify_unaliased_columns(group_expr.copy(), default_alias)
+                            for group_expr in grouped_exprs
+                        ],
+                    )
+        group_expressions = self._collect_yardstick_group_expressions(group_clause) if group_clause else []
         outer_where = select_scope.args.get("where")
         projection_aliases: dict[str, str] = {}
         for projection in select_scope.expressions:
@@ -279,6 +480,33 @@ class QueryRewriter:
 
         rewritten = select_scope.transform(replace_placeholder)
         return self._rewrite_source_model_relations(rewritten)
+
+    def _collect_yardstick_group_expressions(self, group_clause: exp.Group) -> list[exp.Expression]:
+        expressions: list[exp.Expression] = []
+        expressions.extend(group_clause.expressions)
+        for group_key in ("rollup", "cube", "grouping_sets"):
+            grouped_exprs = group_clause.args.get(group_key)
+            if grouped_exprs:
+                expressions.extend(grouped_exprs)
+        return expressions
+
+    def _resolve_yardstick_group_ordinals(self, group_clause: exp.Group, projections: list[exp.Expression]) -> None:
+        resolved: list[exp.Expression] = []
+        for group_expr in group_clause.expressions:
+            if isinstance(group_expr, exp.Literal) and not group_expr.is_string:
+                try:
+                    ordinal = int(group_expr.this)
+                except ValueError:
+                    resolved.append(group_expr)
+                    continue
+
+                if 1 <= ordinal <= len(projections):
+                    projection = projections[ordinal - 1]
+                    projection_expr = projection.this if isinstance(projection, exp.Alias) else projection
+                    resolved.append(projection_expr.copy())
+                    continue
+            resolved.append(group_expr)
+        group_clause.set("expressions", resolved)
 
     def _alias_unaliased_yardstick_dimension_expressions(
         self,
@@ -331,6 +559,8 @@ class QueryRewriter:
         cursor = 0
         i = 0
         has_semantic_prefix = False
+        has_any_at_syntax = False
+        plain_aggregate_calls_without_at = 0
 
         if tokens and tokens[0].text.upper() == "SEMANTIC":
             cursor = tokens[0].end + 1
@@ -338,6 +568,34 @@ class QueryRewriter:
                 cursor += 1
             i = 1
             has_semantic_prefix = True
+
+        def parse_at_chain(start_idx: int, default_end_idx: int) -> tuple[list[str], int]:
+            modifiers: list[str] = []
+            end_idx = default_end_idx
+            k = start_idx
+            while (
+                k + 1 < len(tokens) and tokens[k].text.upper() == "AT" and tokens[k + 1].token_type == TokenType.L_PAREN
+            ):
+                m_open = k + 1
+                depth = 0
+                m_close = m_open
+                while m_close < len(tokens):
+                    if tokens[m_close].token_type == TokenType.L_PAREN:
+                        depth += 1
+                    elif tokens[m_close].token_type == TokenType.R_PAREN:
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    m_close += 1
+                if m_close >= len(tokens):
+                    raise ValueError("Invalid AT (...) modifier: unclosed parenthesis")
+
+                mod_start = tokens[m_open].end + 1
+                mod_end = tokens[m_close].start
+                modifiers.append(sql[mod_start:mod_end].strip())
+                end_idx = m_close
+                k = m_close + 1
+            return modifiers, end_idx
 
         while i < len(tokens):
             token = tokens[i]
@@ -347,6 +605,18 @@ class QueryRewriter:
                 and tokens[i + 1].token_type == TokenType.L_PAREN
             ):
                 func_start = token.start
+                if (
+                    i >= 2
+                    and tokens[i - 1].token_type == TokenType.DOT
+                    and tokens[i - 2].token_type
+                    in {
+                        TokenType.VAR,
+                        TokenType.SCHEMA,
+                    }
+                ):
+                    # Support qualified function syntax like `schema.AGGREGATE(...)`.
+                    # The qualifier is syntactic noise for Yardstick resolution.
+                    func_start = tokens[i - 2].start
                 j = i + 1
                 depth = 0
                 while j < len(tokens):
@@ -364,40 +634,21 @@ class QueryRewriter:
                 arg_end = tokens[j].start
                 argument_sql = sql[arg_start:arg_end].strip()
 
-                end_idx = j
-                modifiers: list[str] = []
-                k = j + 1
-                while (
-                    k + 1 < len(tokens)
-                    and tokens[k].text.upper() == "AT"
-                    and tokens[k + 1].token_type == TokenType.L_PAREN
-                ):
-                    m_open = k + 1
-                    depth = 0
-                    m_close = m_open
-                    while m_close < len(tokens):
-                        if tokens[m_close].token_type == TokenType.L_PAREN:
-                            depth += 1
-                        elif tokens[m_close].token_type == TokenType.R_PAREN:
-                            depth -= 1
-                            if depth == 0:
-                                break
-                        m_close += 1
-                    if m_close >= len(tokens):
-                        raise ValueError("Invalid AT (...) modifier: unclosed parenthesis")
+                modifiers, end_idx = parse_at_chain(j + 1, j)
 
-                    mod_start = tokens[m_open].end + 1
-                    mod_end = tokens[m_close].start
-                    modifiers.append(sql[mod_start:mod_end].strip())
-                    end_idx = m_close
-                    k = m_close + 1
-
-                if not has_semantic_prefix and not modifiers:
-                    raise ValueError("AGGREGATE(...) without AT (...) requires the SEMANTIC prefix")
+                if modifiers:
+                    has_any_at_syntax = True
+                else:
+                    plain_aggregate_calls_without_at += 1
 
                 placeholder = f"__ysagg_{len(calls)}"
                 calls.append(
-                    _YardstickAggregateCall(placeholder=placeholder, argument_sql=argument_sql, modifiers=modifiers)
+                    _YardstickAggregateCall(
+                        placeholder=placeholder,
+                        argument_sql=argument_sql,
+                        modifiers=modifiers,
+                        include_visible_default=True,
+                    )
                 )
 
                 segments.append(sql[cursor:func_start])
@@ -406,7 +657,56 @@ class QueryRewriter:
                 i = end_idx + 1
                 continue
 
+            # Support Yardstick's `measure AT (...)` syntax without AGGREGATE wrapper.
+            # Examples: `avg_revenue AT (VISIBLE)`, `o.avg_revenue AT (WHERE ...)`.
+            if token.token_type == TokenType.VAR:
+                measure_start = None
+                measure_end = None
+                at_index = None
+                if (
+                    i + 2 < len(tokens)
+                    and tokens[i + 1].text.upper() == "AT"
+                    and tokens[i + 2].token_type == TokenType.L_PAREN
+                ):
+                    measure_start = i
+                    measure_end = i
+                    at_index = i + 1
+                elif (
+                    i + 4 < len(tokens)
+                    and tokens[i + 1].token_type == TokenType.DOT
+                    and tokens[i + 2].token_type == TokenType.VAR
+                    and tokens[i + 3].text.upper() == "AT"
+                    and tokens[i + 4].token_type == TokenType.L_PAREN
+                ):
+                    measure_start = i
+                    measure_end = i + 2
+                    at_index = i + 3
+
+                if measure_start is not None and measure_end is not None and at_index is not None:
+                    argument_sql = sql[tokens[measure_start].start : tokens[measure_end].end + 1].strip()
+                    modifiers, end_idx = parse_at_chain(at_index, measure_end)
+                    if modifiers:
+                        has_any_at_syntax = True
+                        placeholder = f"__ysagg_{len(calls)}"
+                        calls.append(
+                            _YardstickAggregateCall(
+                                placeholder=placeholder,
+                                argument_sql=argument_sql,
+                                modifiers=modifiers,
+                                include_visible_default=False,
+                            )
+                        )
+
+                        segments.append(sql[cursor : tokens[measure_start].start])
+                        segments.append(placeholder)
+                        cursor = tokens[end_idx].end + 1
+                        i = end_idx + 1
+                        continue
+
             i += 1
+
+        if plain_aggregate_calls_without_at and not has_semantic_prefix and not has_any_at_syntax:
+            raise ValueError("AGGREGATE(...) without AT (...) requires the SEMANTIC prefix")
 
         segments.append(sql[cursor:])
         return "".join(segments), calls
@@ -510,6 +810,128 @@ class QueryRewriter:
         for column in normalized.find_all(exp.Column):
             column.set("table", None)
         return normalized.sql(dialect=self.dialect).lower()
+
+    def _resolve_implicit_yardstick_measure_reference(
+        self,
+        column: exp.Column,
+        source_models: dict[str, str],
+        default_alias: str | None,
+        single_model_scope: bool,
+        placeholder_names: set[str],
+    ) -> str | None:
+        if not column.name or column.name in placeholder_names:
+            return None
+
+        if column.table:
+            if column.table not in source_models:
+                return None
+            model_name = source_models[column.table]
+            if not self._is_yardstick_model(model_name):
+                return None
+            model = self.graph.get_model(model_name)
+            if not model.get_metric(column.name):
+                return None
+            return f"{column.table}.{column.name}"
+
+        if default_alias and single_model_scope:
+            model_name = source_models[default_alias]
+            if not self._is_yardstick_model(model_name):
+                return None
+            model = self.graph.get_model(model_name)
+            if model.get_metric(column.name):
+                return column.name
+            return None
+
+        candidate_aliases = [
+            alias
+            for alias, model_name in source_models.items()
+            if self._is_yardstick_model(model_name)
+            and self.graph.get_model(model_name).get_metric(column.name) is not None
+        ]
+        if len(candidate_aliases) != 1:
+            return None
+        return f"{candidate_aliases[0]}.{column.name}"
+
+    def _inject_implicit_yardstick_measure_calls(
+        self,
+        select_scope: exp.Select,
+        source_models: dict[str, str],
+        default_alias: str | None,
+        single_model_scope: bool,
+        call_map: dict[str, _YardstickAggregateCall],
+        placeholder_names: set[str],
+    ) -> exp.Select:
+        rewritten = select_scope.copy()
+
+        def next_placeholder() -> str:
+            idx = len(call_map)
+            while True:
+                placeholder = f"__ysagg_{idx}"
+                if placeholder not in placeholder_names:
+                    return placeholder
+                idx += 1
+
+        def register_implicit_measure_call(argument_sql: str) -> str:
+            placeholder = next_placeholder()
+            call_map[placeholder] = _YardstickAggregateCall(
+                placeholder=placeholder,
+                argument_sql=argument_sql,
+                modifiers=[],
+                include_visible_default=False,
+            )
+            placeholder_names.add(placeholder)
+            return placeholder
+
+        def maybe_replace_column(node: exp.Expression) -> exp.Expression:
+            if not isinstance(node, exp.Column):
+                return node
+
+            argument_sql = self._resolve_implicit_yardstick_measure_reference(
+                node,
+                source_models=source_models,
+                default_alias=default_alias,
+                single_model_scope=single_model_scope,
+                placeholder_names=placeholder_names,
+            )
+            if not argument_sql:
+                return node
+
+            placeholder = register_implicit_measure_call(argument_sql)
+            return exp.column(placeholder)
+
+        rewritten_projections: list[exp.Expression] = []
+        for projection in rewritten.expressions:
+            if isinstance(projection, exp.Alias):
+                projection.set("this", projection.this.transform(maybe_replace_column))
+                rewritten_projections.append(projection)
+                continue
+
+            if isinstance(projection, exp.Column):
+                argument_sql = self._resolve_implicit_yardstick_measure_reference(
+                    projection,
+                    source_models=source_models,
+                    default_alias=default_alias,
+                    single_model_scope=single_model_scope,
+                    placeholder_names=placeholder_names,
+                )
+                if argument_sql:
+                    placeholder = register_implicit_measure_call(argument_sql)
+                    rewritten_projections.append(exp.alias_(exp.column(placeholder), projection.name, quoted=False))
+                    continue
+
+            rewritten_projections.append(projection.transform(maybe_replace_column))
+        rewritten.set("expressions", rewritten_projections)
+
+        having_clause = rewritten.args.get("having")
+        if having_clause:
+            having_clause.set("this", having_clause.this.transform(maybe_replace_column))
+
+        order_clause = rewritten.args.get("order")
+        if order_clause:
+            for order_expr in order_clause.expressions:
+                order_expr.set("this", order_expr.this.transform(maybe_replace_column))
+
+        return rewritten
 
     def _resolve_yardstick_dimension_expression(
         self,
@@ -683,6 +1105,7 @@ class QueryRewriter:
             model_name=model_name,
             measure_name=measure_name,
             modifiers=call.modifiers,
+            include_visible_default=call.include_visible_default,
             source_models=source_models,
             group_expressions=group_expressions,
             projection_aliases=projection_aliases,
@@ -698,6 +1121,7 @@ class QueryRewriter:
         model_name: str,
         measure_name: str,
         modifiers: list[str],
+        include_visible_default: bool,
         source_models: dict[str, str],
         group_expressions: list[exp.Expression],
         projection_aliases: dict[str, str],
@@ -737,6 +1161,7 @@ class QueryRewriter:
                     model_name=model_name,
                     measure_name=ref_name,
                     modifiers=modifiers,
+                    include_visible_default=include_visible_default,
                     source_models=source_models,
                     group_expressions=group_expressions,
                     projection_aliases=projection_aliases,
@@ -765,19 +1190,33 @@ class QueryRewriter:
             projection_aliases=projection_aliases,
             single_model_scope=single_model_scope,
         )
-        active_dimensions, modifier_predicates, include_visible = self._apply_yardstick_modifiers(
+        (
+            active_dimensions,
+            where_modifier_predicates,
+            set_modifier_predicates,
+            include_visible,
+        ) = self._apply_yardstick_modifiers(
             modifiers=modifiers,
             context_dimensions=context_dimensions,
             model_alias=model_alias,
             model_name=model_name,
             default_alias=default_alias,
             single_model=single_model_scope,
+            include_visible_default=include_visible_default,
+            fixed_context_signatures=self._extract_fixed_context_signatures_from_where(
+                outer_where=outer_where,
+                default_alias=default_alias,
+                single_model=single_model_scope,
+                model_alias=model_alias,
+                model_name=model_name,
+            ),
         )
 
-        predicates = list(modifier_predicates)
+        correlation_predicates: list[str] = []
         for dim in active_dimensions:
-            predicates.append(f"({dim['inner_sql']}) IS NOT DISTINCT FROM ({dim['outer_sql']})")
+            correlation_predicates.append(f"({dim['inner_sql']}) IS NOT DISTINCT FROM ({dim['outer_sql']})")
 
+        base_predicates = list(where_modifier_predicates)
         if include_visible and outer_where is not None:
             visible_expr = outer_where.this.copy()
             if default_alias and single_model_scope:
@@ -787,7 +1226,7 @@ class QueryRewriter:
                 table_mapping={model_alias: "_inner", model_name: "_inner"},
                 default_table="_inner" if single_model_scope else None,
             )
-            predicates.append(visible_expr.sql(dialect=self.dialect))
+            base_predicates.append(visible_expr.sql(dialect=self.dialect))
 
         for measure_filter in measure.filters or []:
             filter_expr = sqlglot.parse_one(measure_filter, dialect=self.dialect)
@@ -798,29 +1237,26 @@ class QueryRewriter:
                 table_mapping={model_alias: "_inner", model_name: "_inner"},
                 default_table="_inner" if single_model_scope else None,
             )
-            predicates.append(filter_expr.sql(dialect=self.dialect))
+            base_predicates.append(filter_expr.sql(dialect=self.dialect))
 
+        predicates = list(base_predicates) + list(set_modifier_predicates) + list(correlation_predicates)
         where_clause = f" WHERE {' AND '.join(predicates)}" if predicates else ""
         source_sql = f"({model.sql})" if model.sql else model.table
 
-        # Yardstick count(*) semantics count grouped rows at model grain, not raw base rows.
-        if measure.agg == "count" and (not measure.sql or measure.sql == "*"):
-            grouped_dim_sql: list[str] = []
-            for dimension in model.dimensions:
-                dim_sql = self._rewrite_yardstick_measure_expression(
-                    dimension.sql_expr,
-                    model_alias=model_alias,
-                    model_name=model_name,
-                    target_alias="_inner",
-                )
-                grouped_dim_sql.append(dim_sql)
-            if grouped_dim_sql:
-                distinct_projection = ", ".join(grouped_dim_sql)
-                return (
-                    "(SELECT COUNT(*) FROM ("
-                    f"SELECT DISTINCT {distinct_projection} FROM {source_sql} AS _inner{where_clause}"
-                    ") AS _ys_count_rows)"
-                )
+        if measure.sql and not measure.agg and self._is_window_measure_expression(measure.sql):
+            pre_where_clause = f" WHERE {' AND '.join(base_predicates)}" if base_predicates else ""
+            post_predicates = list(set_modifier_predicates) + list(correlation_predicates)
+            post_where_clause = f" WHERE {' AND '.join(post_predicates)}" if post_predicates else ""
+            window_value_subquery = (
+                f"SELECT _inner.*, {agg_expr} AS __ys_window_value FROM {source_sql} AS _inner{pre_where_clause}"
+            )
+            return (
+                "(SELECT CASE "
+                "WHEN COUNT(*) = 0 THEN NULL "
+                "WHEN COUNT(DISTINCT __ys_window_value) = 1 THEN MIN(__ys_window_value) "
+                f"ELSE error('Window measure {measure_name} returned multiple values for the evaluation context') END "
+                f"FROM ({window_value_subquery}) AS _inner{post_where_clause})"
+            )
 
         return f"(SELECT {agg_expr} FROM {source_sql} AS _inner{where_clause})"
 
@@ -879,6 +1315,10 @@ class QueryRewriter:
         )
         return parsed.sql(dialect=self.dialect)
 
+    def _is_window_measure_expression(self, sql_expr: str) -> bool:
+        parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+        return any(isinstance(node, exp.Window) for node in parsed.walk())
+
     def _build_yardstick_context_dimensions(
         self,
         group_expressions: list[exp.Expression],
@@ -891,61 +1331,88 @@ class QueryRewriter:
     ) -> list[dict[str, str]]:
         context_dimensions: list[dict[str, str]] = []
         model = self.graph.get_model(model_name)
+        seen_signatures: set[str] = set()
 
-        for group_expr in group_expressions:
-            outer_base_expr = group_expr.copy()
-            expr_obj = group_expr.copy()
-            if default_alias and single_model_scope:
-                expr_obj = self._qualify_unaliased_columns(expr_obj, default_alias)
+        for raw_group_expr in group_expressions:
+            expanded_group_expressions = self._expand_group_expression_for_yardstick_context(raw_group_expr)
+            for group_expr in expanded_group_expressions:
+                outer_base_expr = group_expr.copy()
+                expr_obj = group_expr.copy()
+                if default_alias and single_model_scope:
+                    expr_obj = self._qualify_unaliased_columns(expr_obj, default_alias)
 
-            columns = list(expr_obj.find_all(exp.Column))
-            if not columns:
-                continue
-
-            inner_base_expr = expr_obj.copy()
-            tables = {column.table for column in columns if column.table}
-            if tables and not tables.issubset({model_alias, model_name}):
-                # Multi-fact join case: if grouped by another alias's same-named dimensions,
-                # map those columns onto this model alias so each measure correlates correctly.
-                if not all(model.get_dimension(column.name) for column in columns):
+                columns = list(expr_obj.find_all(exp.Column))
+                if not columns:
                     continue
-                for column in inner_base_expr.find_all(exp.Column):
-                    column.set("table", exp.to_identifier(model_alias))
-            if not tables and not single_model_scope:
-                continue
 
-            outer_expr = self._rewrite_tables(outer_base_expr, table_mapping={model_name: model_alias})
-            inner_expr = self._rewrite_tables(
-                inner_base_expr,
-                table_mapping={model_alias: "_inner", model_name: "_inner"},
-                default_table="_inner" if single_model_scope else None,
-            )
-            signature = self._expr_signature_without_tables(inner_base_expr)
-            outer_sql = outer_expr.sql(dialect=self.dialect)
-            projection_alias = projection_aliases.get(signature)
-            unsafe_aliases: set[str] = set()
-            for dimension in model.dimensions:
-                dim_expr = dimension.sql_expr
-                try:
-                    parsed_dim = sqlglot.parse_one(dim_expr, dialect=self.dialect)
-                    if isinstance(parsed_dim, exp.Column) and parsed_dim.name.lower() == dimension.name.lower():
-                        unsafe_aliases.add(dimension.name.lower())
-                except Exception:
-                    if dim_expr.strip().lower() == dimension.name.lower():
-                        unsafe_aliases.add(dimension.name.lower())
+                inner_base_expr = expr_obj.copy()
+                tables = {column.table for column in columns if column.table}
+                if tables and not tables.issubset({model_alias, model_name}):
+                    # Multi-fact join case: if grouped by another alias's same-named dimensions,
+                    # map those columns onto this model alias so each measure correlates correctly.
+                    if not all(model.get_dimension(column.name) for column in columns):
+                        continue
+                    for column in inner_base_expr.find_all(exp.Column):
+                        column.set("table", exp.to_identifier(model_alias))
+                if not tables and not single_model_scope:
+                    continue
 
-            if projection_alias and projection_alias.lower() not in unsafe_aliases:
-                outer_sql = exp.to_identifier(projection_alias).sql(dialect=self.dialect)
+                outer_expr = self._rewrite_tables(outer_base_expr, table_mapping={model_name: model_alias})
+                inner_expr = self._rewrite_tables(
+                    inner_base_expr,
+                    table_mapping={model_alias: "_inner", model_name: "_inner"},
+                    default_table="_inner" if single_model_scope else None,
+                )
+                signature = self._expr_signature_without_tables(inner_base_expr)
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                outer_sql = outer_expr.sql(dialect=self.dialect)
+                projection_alias = projection_aliases.get(signature)
+                unsafe_aliases: set[str] = set()
+                for dimension in model.dimensions:
+                    dim_expr = dimension.sql_expr
+                    try:
+                        parsed_dim = sqlglot.parse_one(dim_expr, dialect=self.dialect)
+                        if isinstance(parsed_dim, exp.Column) and parsed_dim.name.lower() == dimension.name.lower():
+                            unsafe_aliases.add(dimension.name.lower())
+                    except Exception:
+                        if dim_expr.strip().lower() == dimension.name.lower():
+                            unsafe_aliases.add(dimension.name.lower())
 
-            context_dimensions.append(
-                {
-                    "signature": signature,
-                    "outer_sql": outer_sql,
-                    "inner_sql": inner_expr.sql(dialect=self.dialect),
-                }
-            )
+                if projection_alias and projection_alias.lower() not in unsafe_aliases:
+                    outer_sql = exp.to_identifier(projection_alias).sql(dialect=self.dialect)
+
+                context_dimensions.append(
+                    {
+                        "signature": signature,
+                        "outer_sql": outer_sql,
+                        "inner_sql": inner_expr.sql(dialect=self.dialect),
+                    }
+                )
 
         return context_dimensions
+
+    def _expand_group_expression_for_yardstick_context(self, group_expr: exp.Expression) -> list[exp.Expression]:
+        if isinstance(group_expr, (exp.Rollup, exp.Cube)):
+            expanded: list[exp.Expression] = []
+            for sub_expr in group_expr.expressions:
+                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
+            return expanded
+
+        if isinstance(group_expr, exp.GroupingSets):
+            expanded: list[exp.Expression] = []
+            for sub_expr in group_expr.expressions:
+                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
+            return expanded
+
+        if isinstance(group_expr, exp.Tuple):
+            expanded: list[exp.Expression] = []
+            for sub_expr in group_expr.expressions:
+                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
+            return expanded
+
+        return [group_expr]
 
     def _split_set_modifier(self, modifier_sql: str) -> tuple[str, str]:
         tokens = sqlglot.tokenize(modifier_sql, read=self.dialect)
@@ -1002,12 +1469,173 @@ class QueryRewriter:
 
         return parts
 
-    def _strip_current_keyword(self, sql_expr: str) -> str:
+    def _split_all_modifier_targets(self, modifier_sql: str) -> list[str]:
+        """Split `ALL` modifier targets, supporting single-clause multi-dimension syntax."""
+        tokens = sqlglot.tokenize(modifier_sql, read=self.dialect)
+        if not tokens or tokens[0].text.upper() != "ALL":
+            return []
+        if len(tokens) == 1:
+            return []
+
+        raw_targets = modifier_sql[tokens[1].start :].strip()
+
+        # For complex arithmetic/boolean expressions, keep legacy single-expression behavior.
+        unsafe_top_level_ops = {"+", "-", "*", "/", "%", "AND", "OR", "=", "<>", "!=", "<", ">", "<=", ">="}
+        depth = 0
+        for token in tokens[1:]:
+            if token.token_type == TokenType.L_PAREN:
+                depth += 1
+                continue
+            if token.token_type == TokenType.R_PAREN:
+                depth -= 1
+                continue
+            if depth == 0 and token.text.upper() in unsafe_top_level_ops:
+                return [raw_targets]
+
+        targets: list[str] = []
+        idx = 1
+        while idx < len(tokens):
+            if tokens[idx].token_type == TokenType.COMMA:
+                idx += 1
+                continue
+
+            start_idx = idx
+            if idx + 1 < len(tokens) and tokens[idx + 1].token_type == TokenType.L_PAREN:
+                # Function-style dimension (e.g., MONTH(order_date)).
+                depth = 0
+                idx += 1
+                while idx < len(tokens):
+                    if tokens[idx].token_type == TokenType.L_PAREN:
+                        depth += 1
+                    elif tokens[idx].token_type == TokenType.R_PAREN:
+                        depth -= 1
+                        if depth == 0:
+                            idx += 1
+                            break
+                    idx += 1
+                if depth != 0:
+                    return [raw_targets]
+            else:
+                # Identifier-style dimension, optionally qualified (table.column).
+                idx += 1
+                while idx + 1 < len(tokens) and tokens[idx].token_type == TokenType.DOT:
+                    idx += 2
+
+            end_idx = idx - 1
+            target_sql = modifier_sql[tokens[start_idx].start : tokens[end_idx].end + 1].strip()
+            if target_sql:
+                targets.append(target_sql)
+
+            if idx < len(tokens) and tokens[idx].token_type != TokenType.COMMA:
+                next_text = tokens[idx].text
+                # Allow space-separated target lists when next token looks like an expression start.
+                if not (next_text[:1].isalpha() or next_text[:1] in {"_", '"', "`"}):
+                    return [raw_targets]
+
+        return targets or [raw_targets]
+
+    def _extract_fixed_context_signatures_from_where(
+        self,
+        outer_where: exp.Where | None,
+        default_alias: str | None,
+        single_model: bool,
+        model_alias: str,
+        model_name: str,
+    ) -> set[str]:
+        """Extract dimensions fixed to a literal by conjunctive outer WHERE predicates."""
+        if outer_where is None:
+            return set()
+
+        where_expr = outer_where.this.copy()
+        if default_alias and single_model:
+            where_expr = self._qualify_unaliased_columns(where_expr, default_alias)
+        where_expr = self._rewrite_tables(where_expr, table_mapping={model_name: model_alias})
+
+        signatures: set[str] = set()
+        stack: list[exp.Expression] = [where_expr]
+        while stack:
+            condition = stack.pop()
+            if isinstance(condition, exp.And):
+                stack.append(condition.this)
+                stack.append(condition.expression)
+                continue
+            if not isinstance(condition, exp.EQ):
+                continue
+            left = condition.this
+            right = condition.expression
+            if isinstance(right, exp.Literal):
+                signatures.add(self._expr_signature_without_tables(left))
+            elif isinstance(left, exp.Literal):
+                signatures.add(self._expr_signature_without_tables(right))
+
+        return signatures
+
+    def _rewrite_current_keyword(
+        self,
+        sql_expr: str,
+        context_dimensions: list[dict[str, str]],
+        fixed_context_signatures: set[str] | None = None,
+    ) -> str:
+        """Rewrite CURRENT references to context-aware expressions.
+
+        CURRENT <dim> resolves to <dim> only when that dimension is present in the
+        current context. Otherwise it resolves to NULL (ambiguous context).
+        """
         tokens = sqlglot.tokenize(sql_expr, read=self.dialect)
         if not tokens:
             return sql_expr
-        kept = [token.text for token in tokens if token.text.upper() != "CURRENT"]
-        return " ".join(kept)
+
+        context_signatures = {dim["signature"] for dim in context_dimensions}
+        if fixed_context_signatures:
+            context_signatures |= fixed_context_signatures
+        parts: list[str] = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token.text.upper() != "CURRENT":
+                parts.append(token.text)
+                i += 1
+                continue
+
+            if i + 1 >= len(tokens):
+                i += 1
+                continue
+
+            start_idx = i + 1
+            end_idx = start_idx
+
+            if start_idx + 1 < len(tokens) and tokens[start_idx + 1].token_type == TokenType.L_PAREN:
+                depth = 0
+                j = start_idx + 1
+                while j < len(tokens):
+                    if tokens[j].token_type == TokenType.L_PAREN:
+                        depth += 1
+                    elif tokens[j].token_type == TokenType.R_PAREN:
+                        depth -= 1
+                        if depth == 0:
+                            end_idx = j
+                            break
+                    j += 1
+            else:
+                end_idx = start_idx
+                while end_idx + 2 < len(tokens) and tokens[end_idx + 1].token_type == TokenType.DOT:
+                    end_idx += 2
+
+            target_sql = sql_expr[tokens[start_idx].start : tokens[end_idx].end + 1].strip()
+
+            replacement = "NULL"
+            try:
+                target_expr = sqlglot.parse_one(target_sql, dialect=self.dialect)
+                signature = self._expr_signature_without_tables(target_expr)
+                if signature in context_signatures:
+                    replacement = target_sql
+            except Exception:
+                replacement = "NULL"
+
+            parts.append(replacement)
+            i = end_idx + 1
+
+        return " ".join(parts)
 
     def _apply_yardstick_modifiers(
         self,
@@ -1017,15 +1645,17 @@ class QueryRewriter:
         model_name: str,
         default_alias: str | None,
         single_model: bool,
-    ) -> tuple[list[dict[str, str]], list[str], bool]:
+        include_visible_default: bool,
+        fixed_context_signatures: set[str] | None = None,
+    ) -> tuple[list[dict[str, str]], list[str], list[str], bool]:
         expanded_modifiers: list[str] = []
         for modifier in modifiers:
             expanded_modifiers.extend(self._split_compound_yardstick_modifier(modifier))
 
         active_dimensions = list(context_dimensions)
-        predicates: list[str] = []
+        where_predicates: list[str] = []
         set_predicates: dict[str, str] = {}
-        include_visible = False
+        include_visible = include_visible_default
         has_set = False
         has_all_global = False
         removed_signatures: set[str] = set()
@@ -1037,6 +1667,8 @@ class QueryRewriter:
                 continue
             if tokens[0].text.upper() == "SET":
                 has_set = True
+        if has_set:
+            include_visible = False
         if len(expanded_modifiers) == 1:
             tokens = sqlglot.tokenize(expanded_modifiers[0], read=self.dialect)
             single_where_modifier = bool(tokens and tokens[0].text.upper() == "WHERE")
@@ -1052,7 +1684,7 @@ class QueryRewriter:
                 if len(tokens) == 1:
                     active_dimensions = []
                     set_predicates.clear()
-                    predicates.clear()
+                    where_predicates.clear()
                     include_visible = False
                     has_all_global = True
                     continue
@@ -1060,14 +1692,14 @@ class QueryRewriter:
                 if has_all_global:
                     continue
 
-                target_sql = modifier[tokens[1].start :].strip()
-                target_expr = sqlglot.parse_one(target_sql, dialect=self.dialect)
-                if default_alias and single_model:
-                    target_expr = self._qualify_unaliased_columns(target_expr, default_alias)
-                target_signature = self._expr_signature_without_tables(target_expr)
-                active_dimensions = [d for d in active_dimensions if d["signature"] != target_signature]
-                removed_signatures.add(target_signature)
-                set_predicates.pop(target_signature, None)
+                for target_sql in self._split_all_modifier_targets(modifier):
+                    target_expr = sqlglot.parse_one(target_sql, dialect=self.dialect)
+                    if default_alias and single_model:
+                        target_expr = self._qualify_unaliased_columns(target_expr, default_alias)
+                    target_signature = self._expr_signature_without_tables(target_expr)
+                    active_dimensions = [d for d in active_dimensions if d["signature"] != target_signature]
+                    removed_signatures.add(target_signature)
+                    set_predicates.pop(target_signature, None)
                 continue
 
             if modifier_type == "WHERE":
@@ -1075,14 +1707,15 @@ class QueryRewriter:
                     continue
                 where_sql = modifier[tokens[0].end + 1 :].strip()
                 where_expr = sqlglot.parse_one(where_sql, dialect=self.dialect)
-                if default_alias and single_model:
-                    where_expr = self._qualify_unaliased_columns(where_expr, default_alias)
+                # In AT(WHERE ...), unqualified columns belong to the inner evaluation context.
+                # Keep explicitly-qualified outer aliases untouched so predicates can correlate
+                # (e.g. `prod_name = o.prod_name` from paper listing-style queries).
                 where_expr = self._rewrite_tables(
                     where_expr,
-                    table_mapping={model_alias: "_inner", model_name: "_inner"},
+                    table_mapping={model_name: "_inner"},
                     default_table="_inner" if single_model else None,
                 )
-                predicates.append(where_expr.sql(dialect=self.dialect))
+                where_predicates.append(where_expr.sql(dialect=self.dialect))
                 # Single WHERE modifier evaluates in a non-correlated context.
                 if single_where_modifier:
                     active_dimensions = []
@@ -1091,9 +1724,47 @@ class QueryRewriter:
             if modifier_type == "SET":
                 if has_all_global:
                     continue
-                left_sql, right_sql = self._split_set_modifier(modifier)
+                try:
+                    left_sql, right_sql = self._split_set_modifier(modifier)
+                except ValueError:
+                    # Support Yardstick predicate-style SET forms like:
+                    # AT (SET region IN ('North', 'South'))
+                    set_predicate_sql = modifier[tokens[0].end + 1 :].strip()
+                    set_predicate_expr = sqlglot.parse_one(set_predicate_sql, dialect=self.dialect)
+
+                    if default_alias and single_model:
+                        set_predicate_expr = self._qualify_unaliased_columns(set_predicate_expr, default_alias)
+
+                    target_signatures: list[str] = []
+                    if isinstance(set_predicate_expr, exp.In):
+                        target_signatures.append(self._expr_signature_without_tables(set_predicate_expr.this))
+                    else:
+                        raise ValueError(f"Unsupported SET modifier: {modifier}")
+
+                    if any(signature in removed_signatures for signature in target_signatures):
+                        continue
+
+                    for signature in target_signatures:
+                        active_dimensions = [d for d in active_dimensions if d["signature"] != signature]
+                        set_predicates.pop(signature, None)
+
+                    set_inner_predicate = self._rewrite_tables(
+                        set_predicate_expr,
+                        table_mapping={model_name: "_inner"},
+                        default_table="_inner" if single_model else None,
+                    )
+                    where_predicates.append(set_inner_predicate.sql(dialect=self.dialect))
+                    continue
+
                 left_expr = sqlglot.parse_one(left_sql, dialect=self.dialect)
-                right_expr = sqlglot.parse_one(self._strip_current_keyword(right_sql), dialect=self.dialect)
+                right_expr = sqlglot.parse_one(
+                    self._rewrite_current_keyword(
+                        right_sql,
+                        context_dimensions,
+                        fixed_context_signatures=fixed_context_signatures,
+                    ),
+                    dialect=self.dialect,
+                )
 
                 if default_alias and single_model:
                     left_expr = self._qualify_unaliased_columns(left_expr, default_alias)
@@ -1127,8 +1798,7 @@ class QueryRewriter:
 
             raise ValueError(f"Unsupported AT modifier: {modifier}")
 
-        predicates.extend(set_predicates.values())
-        return active_dimensions, predicates, include_visible
+        return active_dimensions, where_predicates, list(set_predicates.values()), include_visible
 
     def _has_subquery_in_from(self, select: exp.Select) -> bool:
         """Check if FROM clause contains a subquery."""

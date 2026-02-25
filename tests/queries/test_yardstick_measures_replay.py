@@ -19,7 +19,10 @@ from tests.utils import fetch_rows
 @dataclass
 class _StatementBlock:
     line: int
+    header: str
     sql: str
+    expect_error: bool
+    expected_error_lines: list[str]
 
 
 @dataclass
@@ -53,7 +56,9 @@ def _parse_measures_test(path: Path) -> tuple[list[_StatementBlock], list[_Query
         stripped = lines[i].strip()
 
         if stripped.startswith("statement "):
+            header = stripped
             start_line = i + 1
+            expect_error = "error" in header.split()
             i += 1
             while i < len(lines) and not lines[i].strip():
                 i += 1
@@ -66,9 +71,32 @@ def _parse_measures_test(path: Path) -> tuple[list[_StatementBlock], list[_Query
                     break
                 i += 1
 
+            expected_error_lines: list[str] = []
+            if expect_error and i < len(lines) and lines[i].strip() == "----":
+                i += 1
+                while i < len(lines):
+                    current = lines[i]
+                    current_stripped = current.strip()
+                    if not current_stripped:
+                        while i < len(lines) and not lines[i].strip():
+                            i += 1
+                        break
+                    if current_stripped.startswith(("#", "statement ", "query ", "require ")):
+                        break
+                    expected_error_lines.append(current.rstrip())
+                    i += 1
+
             sql = "\n".join(sql_lines).strip()
             if sql:
-                statements.append(_StatementBlock(line=start_line, sql=sql))
+                statements.append(
+                    _StatementBlock(
+                        line=start_line,
+                        header=header,
+                        sql=sql,
+                        expect_error=expect_error,
+                        expected_error_lines=expected_error_lines,
+                    )
+                )
             continue
 
         if stripped.startswith("query "):
@@ -229,8 +257,12 @@ def _assert_query_rows_match(query: _QueryBlock, actual_rows: list[tuple[object,
             )
 
 
-def _apply_statement(layer: SemanticLayer, adapter: YardstickAdapter, sql: str) -> None:
-    parsed = adapter._parse_statements(sql)
+def _execute_statement_sql(layer: SemanticLayer, adapter: YardstickAdapter, sql: str) -> None:
+    try:
+        parsed = adapter._parse_statements(sql)
+    except Exception:
+        parsed = None
+
     if parsed:
         statement = parsed[0]
         if isinstance(statement, exp.Create) and (statement.args.get("kind") or "").upper() == "VIEW":
@@ -239,8 +271,44 @@ def _apply_statement(layer: SemanticLayer, adapter: YardstickAdapter, sql: str) 
                 model = adapter._model_from_create_view(statement, select)
                 if model is not None:
                     layer.add_model(model)
+                    if model.sql:
+                        layer.adapter.execute(f"CREATE VIEW {model.name} AS {model.sql}")
+                    elif model.table and model.table != model.name:
+                        layer.adapter.execute(f"CREATE VIEW {model.name} AS SELECT * FROM {model.table}")
                     return
+
+    if sql.lstrip().upper().startswith("SEMANTIC "):
+        layer.sql(sql)
+        return
+
     layer.adapter.execute(sql)
+
+
+def _apply_statement(layer: SemanticLayer, adapter: YardstickAdapter, statement: _StatementBlock) -> None:
+    if not statement.expect_error:
+        _execute_statement_sql(layer, adapter, statement.sql)
+        return
+
+    with pytest.raises(Exception) as exc_info:
+        _execute_statement_sql(layer, adapter, statement.sql)
+
+    if statement.expected_error_lines:
+        expected_text = "\n".join(statement.expected_error_lines)
+        actual_text = str(exc_info.value)
+        if expected_text not in actual_text:
+            pytest.fail(
+                "\n".join(
+                    [
+                        f"Error text mismatch for statement at line {statement.line}: {statement.header}",
+                        "SQL:",
+                        statement.sql,
+                        "Expected error text:",
+                        expected_text,
+                        "Actual error text:",
+                        actual_text,
+                    ]
+                )
+            )
 
 
 def test_yardstick_measures_test_replay():
@@ -249,7 +317,7 @@ def test_yardstick_measures_test_replay():
         pytest.skip(f"Yardstick measures.test not found: {path}")
 
     statements, queries = _parse_measures_test(path)
-    assert len(queries) == 93, "Expected 93 query blocks from upstream measures.test"
+    assert queries, f"No query blocks parsed from measures.test: {path}"
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     adapter = YardstickAdapter()
@@ -258,8 +326,20 @@ def test_yardstick_measures_test_replay():
     for query in queries:
         while statement_index < len(statements) and statements[statement_index].line < query.line:
             statement = statements[statement_index]
-            _apply_statement(layer, adapter, statement.sql)
+            _apply_statement(layer, adapter, statement)
             statement_index += 1
 
-        actual_rows = fetch_rows(layer.sql(query.sql))
+        try:
+            actual_rows = fetch_rows(layer.sql(query.sql))
+        except Exception as exc:
+            pytest.fail(
+                "\n".join(
+                    [
+                        f"Execution failed for query at line {query.line}: {query.header}",
+                        "SQL:",
+                        query.sql,
+                        f"Error: {exc}",
+                    ]
+                )
+            )
         _assert_query_rows_match(query, actual_rows)

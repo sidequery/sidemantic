@@ -104,6 +104,70 @@ INSERT INTO fact_returns VALUES
     return layer
 
 
+@pytest.fixture
+def yardstick_paper_layer(tmp_path):
+    sql_file = tmp_path / "paper.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW paper_orders_v AS
+SELECT *, SUM(revenue) AS MEASURE sumRevenue
+FROM paper_orders;
+
+CREATE VIEW enhanced_customers_paper AS
+SELECT *, AVG(custAge) AS MEASURE avgAge
+FROM paper_customers;
+
+CREATE VIEW paper_orders_l12_v AS
+SELECT prodName, orderDate, revenue, AVG(revenue) AS MEASURE avgRevenue
+FROM paper_orders_l12;
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE paper_orders (prodName TEXT, custName TEXT, order_date DATE, revenue INT)")
+    layer.adapter.execute(
+        """
+INSERT INTO paper_orders VALUES
+    ('Happy', 'Var Bob', '2024-01-01', 4),
+    ('Happy', 'Alice', '2024-01-02', 6),
+    ('Happy', 'Alice', '2024-01-03', 7),
+    ('Whizz', 'Alice', '2024-01-04', 3);
+"""
+    )
+
+    layer.adapter.execute("CREATE TABLE paper_customers (custName TEXT, custAge INT)")
+    layer.adapter.execute(
+        """
+INSERT INTO paper_customers VALUES
+    ('Alice', 30), ('Var Bob', 16), ('Carol', 40);
+"""
+    )
+
+    layer.adapter.execute("CREATE TABLE paper_order_customers (prodName TEXT, custName TEXT)")
+    layer.adapter.execute(
+        """
+INSERT INTO paper_order_customers VALUES
+    ('Happy', 'Alice'),
+    ('Happy', 'Var Bob'),
+    ('Whizz', 'Carol');
+"""
+    )
+
+    layer.adapter.execute("CREATE TABLE paper_orders_l12 (prodName TEXT, orderDate DATE, revenue INT)")
+    layer.adapter.execute(
+        """
+INSERT INTO paper_orders_l12 VALUES
+    ('Happy', '2024-01-01', 4),
+    ('Happy', '2024-01-02', 6),
+    ('Happy', '2024-01-03', 7),
+    ('Whizz', '2024-01-04', 3);
+"""
+    )
+
+    load_from_directory(layer, tmp_path)
+    return layer
+
+
 def test_yardstick_semantic_aggregate_identity(yardstick_layer):
     result = yardstick_layer.sql(
         """
@@ -122,6 +186,20 @@ FROM sales_v
         (2023, "EU"): 75.0,
         (2023, "US"): 150.0,
     }
+
+
+def test_yardstick_schema_qualified_aggregate_function(yardstick_layer):
+    result = yardstick_layer.sql(
+        """
+SEMANTIC SELECT
+    year,
+    schema.AGGREGATE(revenue) AS revenue
+FROM sales_v
+GROUP BY year
+"""
+    )
+    rows = fetch_dicts(result)
+    assert [(row["year"], float(row["revenue"])) for row in rows] == [(2022, 150.0), (2023, 225.0)]
 
 
 def test_yardstick_at_all_dimension(yardstick_layer):
@@ -216,6 +294,33 @@ FROM sales_yearly
     assert current_values == {2022: None, 2023: 150.0}
 
 
+def test_yardstick_current_keyword_ambiguous_context_returns_null(yardstick_layer):
+    result = yardstick_layer.sql(
+        """
+SEMANTIC SELECT
+    region,
+    AGGREGATE(revenue) AT (SET year = CURRENT year - 1) AS prior_from_current
+FROM sales_v
+GROUP BY region
+"""
+    )
+    rows = fetch_dicts(result)
+    assert {row["region"]: row["prior_from_current"] for row in rows} == {"EU": None, "US": None}
+
+
+def test_yardstick_current_keyword_single_valued_where_context(yardstick_layer):
+    result = yardstick_layer.sql(
+        """
+SEMANTIC SELECT
+    AGGREGATE(revenue) AT (SET year = CURRENT year - 1) AS prior_from_current
+FROM sales_yearly
+WHERE year = 2023
+"""
+    )
+    rows = fetch_dicts(result)
+    assert [float(row["prior_from_current"]) for row in rows] == [150.0]
+
+
 def test_yardstick_at_visible(yardstick_layer):
     result = yardstick_layer.sql(
         """
@@ -232,6 +337,211 @@ WHERE region = 'US'
     assert values == {(2022, "US"): 100.0, (2023, "US"): 150.0}
 
 
+def test_yardstick_measure_at_visible_without_aggregate(yardstick_layer):
+    result = yardstick_layer.sql(
+        """
+SEMANTIC SELECT
+    year,
+    revenue AT (VISIBLE) AS visible_revenue
+FROM sales_v
+WHERE region = 'US'
+GROUP BY year
+"""
+    )
+    rows = fetch_dicts(result)
+    values = {row["year"]: float(row["visible_revenue"]) for row in rows}
+    assert values == {2022: 100.0, 2023: 150.0}
+
+
+def test_yardstick_measure_at_where_in_predicate(tmp_path):
+    sql_file = tmp_path / "orders.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW orders_v AS
+SELECT
+    prod_name,
+    order_date,
+    revenue,
+    AVG(revenue) AS MEASURE avg_revenue
+FROM orders;
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE orders (prod_name TEXT, order_date DATE, revenue DOUBLE)")
+    layer.adapter.execute(
+        """
+INSERT INTO orders VALUES
+    ('A', '2024-01-01', 10), ('A', '2024-01-02', 20),
+    ('B', '2024-01-01', 30), ('B', '2024-01-02', 40);
+"""
+    )
+    load_from_directory(layer, tmp_path)
+
+    result = layer.sql(
+        """
+SEMANTIC SELECT
+    o.prod_name,
+    o.order_date,
+    o.revenue
+FROM orders_v AS o
+WHERE o.revenue > o.avg_revenue AT (WHERE prod_name = o.prod_name)
+"""
+    )
+    rows = fetch_dicts(result)
+    values = {(row["prod_name"], row["order_date"].isoformat(), float(row["revenue"])) for row in rows}
+    assert values == {("A", "2024-01-02", 20.0), ("B", "2024-01-02", 40.0)}
+
+
+def test_yardstick_plain_measure_reference_with_where_context(yardstick_layer):
+    rows = fetch_dicts(
+        yardstick_layer.sql(
+            """
+SELECT
+    year,
+    revenue AS plain_revenue
+FROM sales_v
+WHERE region = 'US'
+GROUP BY year
+ORDER BY year
+"""
+        )
+    )
+    assert [(row["year"], float(row["plain_revenue"])) for row in rows] == [
+        (2022, 150.0),
+        (2023, 225.0),
+    ]
+
+
+def test_yardstick_curly_measure_reference_without_semantic_prefix(yardstick_layer):
+    rows = fetch_dicts(
+        yardstick_layer.sql(
+            """
+SELECT
+    year,
+    {revenue} AS revenue
+FROM sales_v
+WHERE region = 'US'
+GROUP BY year
+ORDER BY year
+"""
+        )
+    )
+    assert [(row["year"], float(row["revenue"])) for row in rows] == [
+        (2022, 150.0),
+        (2023, 225.0),
+    ]
+
+
+def test_yardstick_mixed_non_semantic_at_routing(yardstick_layer):
+    result = yardstick_layer.sql(
+        """
+SELECT
+    year,
+    AGGREGATE(revenue) AS agg_revenue,
+    revenue AT (VISIBLE) AS visible_revenue,
+    revenue AS plain_revenue
+FROM sales_v
+WHERE region = 'US'
+GROUP BY year
+ORDER BY year
+"""
+    )
+    rows = fetch_dicts(result)
+    assert [
+        (row["year"], float(row["agg_revenue"]), float(row["visible_revenue"]), float(row["plain_revenue"]))
+        for row in rows
+    ] == [
+        (2022, 100.0, 100.0, 150.0),
+        (2023, 150.0, 150.0, 225.0),
+    ]
+
+
+def test_yardstick_listing8_rollup_parity(yardstick_paper_layer):
+    rows = fetch_dicts(
+        yardstick_paper_layer.sql(
+            """
+SELECT
+    o.prodName,
+    COUNT(*) AS c,
+    AGGREGATE(o.sumRevenue) AS rAgg,
+    o.sumRevenue AT (VISIBLE) AS rViz,
+    o.sumRevenue AS r
+FROM paper_orders_v o
+WHERE o.custName <> 'Var Bob'
+GROUP BY ROLLUP(o.prodName)
+ORDER BY o.prodName
+"""
+        )
+    )
+    assert [
+        (
+            row["prodName"],
+            int(row["c"]),
+            None if row["rAgg"] is None else float(row["rAgg"]),
+            None if row["rViz"] is None else float(row["rViz"]),
+            None if row["r"] is None else float(row["r"]),
+        )
+        for row in rows
+    ] == [
+        ("Happy", 2, 13.0, 13.0, 17.0),
+        ("Whizz", 1, 3.0, 3.0, 3.0),
+        (None, 3, None, None, None),
+    ]
+
+
+def test_yardstick_listing9_join_parity(yardstick_paper_layer):
+    rows = fetch_dicts(
+        yardstick_paper_layer.sql(
+            """
+SELECT
+    o.prodName,
+    COUNT(*) AS orderCount,
+    AVG(c.custAge) AS weightedAvgAge,
+    c.avgAge AS avgAge,
+    c.avgAge AT (VISIBLE) AS visibleAvgAge
+FROM paper_order_customers o
+JOIN enhanced_customers_paper c USING (custName)
+WHERE c.custAge >= 18
+GROUP BY o.prodName
+ORDER BY o.prodName
+"""
+        )
+    )
+    assert [
+        (
+            row["prodName"],
+            int(row["orderCount"]),
+            float(row["weightedAvgAge"]),
+            float(row["avgAge"]),
+            float(row["visibleAvgAge"]),
+        )
+        for row in rows
+    ] == [
+        ("Happy", 1, 30.0, 28.666666666666668, 35.0),
+        ("Whizz", 1, 40.0, 28.666666666666668, 35.0),
+    ]
+
+
+def test_yardstick_listing12_wrapperless_measure_at_where(yardstick_paper_layer):
+    rows = fetch_dicts(
+        yardstick_paper_layer.sql(
+            """
+SELECT
+    o.prodName,
+    o.orderDate
+FROM paper_orders_l12_v o
+WHERE o.revenue > o.avgRevenue AT (WHERE prodName = o.prodName)
+ORDER BY o.prodName, o.orderDate
+"""
+        )
+    )
+    assert [(row["prodName"], row["orderDate"].isoformat()) for row in rows] == [
+        ("Happy", "2024-01-02"),
+        ("Happy", "2024-01-03"),
+    ]
+
+
 def test_yardstick_chained_at(yardstick_layer):
     result = yardstick_layer.sql(
         """
@@ -244,6 +554,23 @@ FROM sales_v
     rows = fetch_dicts(result)
     values = {row["year"]: float(row["grand_total"]) for row in rows}
     assert values == {2022: 375.0, 2023: 375.0}
+
+
+def test_yardstick_single_clause_all_multiple_dimensions_matches_chained(yardstick_layer):
+    result = yardstick_layer.sql(
+        """
+SEMANTIC SELECT
+    year,
+    region,
+    AGGREGATE(revenue) AT (ALL year region) AS single_all,
+    AGGREGATE(revenue) AT (ALL year) AT (ALL region) AS chained_all
+FROM sales_v
+"""
+    )
+    rows = fetch_dicts(result)
+    for row in rows:
+        assert float(row["single_all"]) == pytest.approx(375.0)
+        assert float(row["single_all"]) == pytest.approx(float(row["chained_all"]))
 
 
 def test_yardstick_multiple_aggregate_calls_in_expression(yardstick_layer):
@@ -318,6 +645,24 @@ WHERE year = 2023
     )
     rows = fetch_dicts(result)
     assert rows == [{"year": 2023, "prior_year": 150.0}]
+
+
+def test_yardstick_set_in_predicate_form(yardstick_layer):
+    result = yardstick_layer.sql(
+        """
+SEMANTIC SELECT
+    year,
+    AGGREGATE(revenue) AS total_revenue,
+    AGGREGATE(revenue) AT (SET region IN ('US')) AS us_only
+FROM sales_v
+"""
+    )
+    rows = fetch_dicts(result)
+    values = {row["year"]: (float(row["total_revenue"]), float(row["us_only"])) for row in rows}
+    assert values == {
+        2022: (150.0, 100.0),
+        2023: (225.0, 150.0),
+    }
 
 
 def test_yardstick_set_then_all_overrides_set(yardstick_layer):
@@ -697,13 +1042,13 @@ INSERT INTO sales VALUES
 
     by_year = fetch_dicts(layer.sql("SEMANTIC SELECT year, AGGREGATE(order_count) AS order_count FROM orders_v"))
     by_year_values = {row["year"]: int(row["order_count"]) for row in by_year}
-    assert by_year_values == {2022: 1, 2023: 1}
+    assert by_year_values == {2022: 2, 2023: 2}
 
     all_years = fetch_dicts(
         layer.sql("SEMANTIC SELECT year, AGGREGATE(order_count) AT (ALL) AS order_count FROM orders_v")
     )
     all_values = {row["year"]: int(row["order_count"]) for row in all_years}
-    assert all_values == {2022: 2, 2023: 2}
+    assert all_values == {2022: 4, 2023: 4}
 
 
 def test_yardstick_semantic_with_cte(yardstick_layer):
@@ -1095,6 +1440,25 @@ GROUP   BY year, region
         (2023, "EU"): 225.0,
         (2023, "US"): 225.0,
     }
+
+
+def test_yardstick_group_by_positional_ordinal(yardstick_layer):
+    result = fetch_dicts(
+        yardstick_layer.sql(
+            """
+SEMANTIC SELECT
+    year,
+    AGGREGATE(revenue) AS revenue
+FROM sales_v
+GROUP BY 1
+ORDER BY 1
+"""
+        )
+    )
+    assert [(row["year"], float(row["revenue"])) for row in result] == [
+        (2022, 150.0),
+        (2023, 225.0),
+    ]
 
 
 def test_yardstick_multiple_measures_with_different_modifiers(tmp_path):
@@ -1623,6 +1987,81 @@ INSERT INTO products_str VALUES
         ("Clot", 250.0),
         ("Elec", 1300.0),
     }
+
+
+def test_yardstick_window_measure_direct_and_at_where(tmp_path):
+    sql_file = tmp_path / "window.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW running_v AS
+SELECT
+    year,
+    SUM(amount) OVER (ORDER BY year) AS MEASURE running_total
+FROM window_sales;
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE window_sales (year INT, amount DOUBLE)")
+    layer.adapter.execute("INSERT INTO window_sales VALUES (2022, 100), (2023, 150), (2024, 200)")
+    load_from_directory(layer, tmp_path)
+
+    direct_rows = fetch_dicts(
+        layer.sql(
+            """
+SEMANTIC SELECT
+    year,
+    AGGREGATE(running_total) AS running_total
+FROM running_v
+GROUP BY year
+"""
+        )
+    )
+    assert {row["year"]: float(row["running_total"]) for row in direct_rows} == {
+        2022: 100.0,
+        2023: 250.0,
+        2024: 450.0,
+    }
+
+    where_rows = fetch_dicts(
+        layer.sql(
+            """
+SEMANTIC SELECT
+    AGGREGATE(running_total) AT (WHERE year = 2024) AS running_total_2024
+FROM running_v
+"""
+        )
+    )
+    assert [float(row["running_total_2024"]) for row in where_rows] == [200.0]
+
+
+def test_yardstick_window_measure_at_all_raises_on_ambiguous_context(tmp_path):
+    sql_file = tmp_path / "window.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW running_v AS
+SELECT
+    year,
+    SUM(amount) OVER (ORDER BY year) AS MEASURE running_total
+FROM window_sales;
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE window_sales (year INT, amount DOUBLE)")
+    layer.adapter.execute("INSERT INTO window_sales VALUES (2022, 100), (2023, 150), (2024, 200)")
+    load_from_directory(layer, tmp_path)
+
+    with pytest.raises(Exception):
+        layer.sql(
+            """
+SEMANTIC SELECT
+    year,
+    AGGREGATE(running_total) AT (ALL) AS running_total_all
+FROM running_v
+GROUP BY year
+"""
+        )
 
 
 def test_yardstick_derived_measure_with_at_all(yardstick_layer):

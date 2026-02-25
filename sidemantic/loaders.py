@@ -97,14 +97,18 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         elif suffix in (".yml", ".yaml"):
             # Try to detect which format by reading the file
             content = file_path.read_text()
-            # Check for Sidemantic format first (explicit models: key)
-            if "models:" in content:
-                adapter = SidemanticAdapter()
+            # Check for MetricFlow before Sidemantic native since
+            # "semantic_models:" contains "models:" as a substring
+            if "semantic_models:" in content:
+                adapter = MetricFlowAdapter()
             elif "semantic_model:" in content and "datasets:" in content:
                 adapter = OSIAdapter()
             elif "cubes:" in content or "views:" in content and "measures:" in content:
                 adapter = CubeAdapter()
-            elif "semantic_models:" in content or "metrics:" in content and "type: " in content:
+            # Check for Sidemantic native format (explicit models: key)
+            elif "models:" in content:
+                adapter = SidemanticAdapter()
+            elif "metrics:" in content and "type: " in content:
                 adapter = MetricFlowAdapter()
             elif "base_sql_table:" in content and "measures:" in content:
                 adapter = HexAdapter()

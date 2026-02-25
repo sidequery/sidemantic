@@ -984,7 +984,15 @@ class QueryRewriter:
             return None
 
         dimension_sql = dimension.sql_expr.strip()
+
+        # Replace {model} placeholder (used by LookML adapter) with table alias
+        dimension_sql = dimension_sql.replace('{model}', table_alias)
+
+        # If the resolved SQL is just the column name (possibly table-qualified),
+        # no expansion is needed and the original column reference should be preserved
         if dimension_sql.lower() == column.name.lower():
+            return None
+        if dimension_sql.lower() == f'{table_alias}.{column.name}'.lower():
             return None
 
         expr = sqlglot.parse_one(dimension_sql, dialect=self.dialect)
@@ -1161,7 +1169,9 @@ class QueryRewriter:
         )
         if is_derived_formula and measure.sql:
             visiting.add(visit_key)
-            formula_expr = sqlglot.parse_one(measure.sql, dialect=self.dialect)
+            # Replace {model} placeholder (used by LookML adapter) with model alias
+            _formula_sql = measure.sql.replace('{model}', model_alias)
+            formula_expr = sqlglot.parse_one(_formula_sql, dialect=self.dialect)
 
             def replace_measure_refs(node: exp.Expression) -> exp.Expression:
                 if not isinstance(node, exp.Column):
@@ -1246,7 +1256,9 @@ class QueryRewriter:
             base_predicates.append(visible_expr.sql(dialect=self.dialect))
 
         for measure_filter in measure.filters or []:
-            filter_expr = sqlglot.parse_one(measure_filter, dialect=self.dialect)
+            # Replace {model} placeholder (used by LookML adapter) with inner alias
+            _filter_sql = measure_filter.replace('{model}', '_inner')
+            filter_expr = sqlglot.parse_one(_filter_sql, dialect=self.dialect)
             if default_alias and single_model_scope:
                 filter_expr = self._qualify_unaliased_columns(filter_expr, default_alias)
             filter_expr = self._rewrite_tables(
@@ -1320,6 +1332,8 @@ class QueryRewriter:
     def _rewrite_yardstick_measure_expression(
         self, sql_expr: str, model_alias: str, model_name: str, target_alias: str
     ) -> str:
+        # Replace {model} placeholder (used by LookML adapter) with target alias
+        sql_expr = sql_expr.replace('{model}', target_alias)
         parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
         parsed = self._rewrite_tables(
             parsed,
@@ -1333,7 +1347,8 @@ class QueryRewriter:
         return parsed.sql(dialect=self.dialect)
 
     def _is_window_measure_expression(self, sql_expr: str) -> bool:
-        parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+        # Strip {model} placeholder to avoid parse errors
+        parsed = sqlglot.parse_one(sql_expr.replace('{model}', '__model'), dialect=self.dialect)
         return any(isinstance(node, exp.Window) for node in parsed.walk())
 
     def _build_yardstick_context_dimensions(

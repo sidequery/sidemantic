@@ -58,3 +58,17 @@ def test_time_comparison_metric_dependencies():
     metric = Metric(name="revenue_yoy", type="time_comparison", base_metric="revenue", comparison_type="yoy")
     deps = metric.get_dependencies()
     assert deps == {"revenue"}
+
+
+def test_inline_aggregate_expression_has_no_metric_dependencies():
+    """Untyped expressions with inline aggregations should not become metric deps."""
+    metric = Metric(name="revenue_per_order", sql="SUM(amount) / NULLIF(COUNT(DISTINCT order_id), 0)")
+    deps = metric.get_dependencies()
+    assert deps == set()
+
+
+def test_inline_mode_aggregate_expression_has_no_metric_dependencies():
+    """Anonymous aggregate functions (e.g. MODE) should not be treated as metric deps."""
+    metric = Metric(name="most_common_value", sql="MODE(value)")
+    deps = metric.get_dependencies()
+    assert deps == set()

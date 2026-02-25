@@ -224,6 +224,31 @@ def test_model_ref_rewrite_matches_cte_identifier_quoting(layer):
     assert 'SUM("ORDERS_cte".amount) AS inline_total' not in sql
 
 
+def test_inline_aggregate_dependency_alias_uses_identifier_quoting(layer):
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", type="numeric"),
+            Dimension(name="amount", type="numeric"),
+            Dimension(name="order total", type="categorical", sql='"order total"'),
+        ],
+        metrics=[
+            Metric(
+                name="inline_total",
+                sql='SUM("order total") + 0',
+            ),
+        ],
+    )
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["orders.inline_total"])
+
+    assert 'AS "order total"' in sql
+    assert "AS order total" not in sql
+
+
 def test_count_metrics_with_filters(layer):
     """Test COUNT metrics work correctly with filters.
 

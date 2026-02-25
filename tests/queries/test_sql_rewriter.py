@@ -330,6 +330,12 @@ def test_rewriter_non_strict_mode(layer):
     # Invalid SQL should pass through in non-strict mode
     assert rewriter.rewrite("SELECT FROM WHERE", strict=False) == "SELECT FROM WHERE"
 
+    # Yardstick-like queries that fail rewrite validation should also pass through.
+    assert (
+        rewriter.rewrite("SELECT AGGREGATE(revenue) FROM orders", strict=False)
+        == "SELECT AGGREGATE(revenue) FROM orders"
+    )
+
     # Non-SELECT queries should pass through
     assert rewriter.rewrite("INSERT INTO foo VALUES (1)", strict=False) == "INSERT INTO foo VALUES (1)"
 

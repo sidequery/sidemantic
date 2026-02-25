@@ -1,0 +1,1 @@
+"""Yardstick adapter tests."""

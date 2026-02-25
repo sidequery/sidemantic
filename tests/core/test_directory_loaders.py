@@ -76,3 +76,28 @@ Model(name="sessions", table="sessions", primary_key="id")
 
     assert "sessions" in target_layer.graph.models
     assert target_layer.graph.models["sessions"].table == "sessions"
+
+
+def test_load_from_directory_detects_yardstick_sql(tmp_path):
+    """Load Yardstick SQL definitions using AS MEASURE syntax."""
+    sql_file = tmp_path / "sales.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW sales_v AS
+SELECT
+    year,
+    region,
+    SUM(amount) AS
+    MEASURE revenue
+FROM sales;
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "sales_v" in layer.graph.models
+    sales = layer.graph.models["sales_v"]
+    assert sales.get_metric("revenue") is not None
+    assert getattr(sales, "_source_format", None) == "Yardstick"
+    assert getattr(sales, "_source_file", None) == "sales.sql"

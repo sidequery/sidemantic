@@ -38,6 +38,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.snowflake import SnowflakeAdapter
     from sidemantic.adapters.superset import SupersetAdapter
     from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
+    from sidemantic.adapters.yardstick import YardstickAdapter
 
     directory = Path(directory)
     if not directory.exists():
@@ -71,8 +72,12 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
             adapter = MalloyAdapter()
         elif suffix == ".sql":
-            # Sidemantic SQL files (pure SQL or with YAML frontmatter)
-            adapter = SidemanticAdapter()
+            content = file_path.read_text()
+            if _looks_like_yardstick_sql(content):
+                adapter = YardstickAdapter()
+            else:
+                # Sidemantic SQL files (pure SQL or with YAML frontmatter)
+                adapter = SidemanticAdapter()
         elif suffix == ".json":
             content = file_path.read_text()
             if '"ldm"' in content and '"datasets"' in content:
@@ -369,3 +374,29 @@ def _infer_relationships(models: dict) -> None:
                                 Relationship(name=model_name, type="one_to_many", foreign_key=dimension.name)
                             )
                     break
+
+
+def _looks_like_yardstick_sql(content: str) -> bool:
+    """Return True when SQL contains Yardstick `AS MEASURE <alias>` syntax."""
+    if "measure" not in content.lower():
+        return False
+
+    from sqlglot import tokenize
+    from sqlglot.tokens import TokenType
+
+    try:
+        tokens = tokenize(content, read="duckdb")
+    except Exception:
+        return False
+
+    token_count = len(tokens)
+
+    for i in range(token_count - 2):
+        if tokens[i].token_type != TokenType.ALIAS:
+            continue
+        if tokens[i + 1].text.upper() != "MEASURE":
+            continue
+        if tokens[i + 2].token_type in (TokenType.VAR, TokenType.IDENTIFIER, TokenType.STRING):
+            return True
+
+    return False

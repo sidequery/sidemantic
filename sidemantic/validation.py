@@ -1,7 +1,9 @@
 """Validation and error handling for semantic layer."""
 
-import re
-from typing import TYPE_CHECKING
+from functools import lru_cache
+from typing import TYPE_CHECKING, Literal, get_args, get_origin
+
+from sidemantic.sql.aggregation_detection import sql_has_aggregate
 
 if TYPE_CHECKING:
     from sidemantic.core.metric import Metric
@@ -33,16 +35,22 @@ class ModelValidationError(ValidationError):
     pass
 
 
-def _sql_has_aggregation(sql: str) -> bool:
-    try:
-        import sqlglot
-        from sqlglot import exp
+def _extract_literal_strings(annotation) -> set[str]:
+    if get_origin(annotation) is Literal:
+        return {value for value in get_args(annotation) if isinstance(value, str)}
 
-        parsed = sqlglot.parse_one(sql, read="duckdb")
-        agg_classes = (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max, exp.Median)
-        return any(parsed.find_all(*agg_classes))
-    except Exception:
-        return bool(re.search(r"\b(sum|count|avg|min|max|median)\s*\(", sql, re.IGNORECASE))
+    values = set()
+    for arg in get_args(annotation):
+        values.update(_extract_literal_strings(arg))
+    return values
+
+
+@lru_cache(maxsize=1)
+def _valid_measure_aggs() -> set[str]:
+    from sidemantic.core.metric import Metric
+
+    annotation = Metric.model_fields["agg"].annotation
+    return _extract_literal_strings(annotation)
 
 
 def validate_model(model: "Model") -> list[str]:
@@ -83,14 +91,17 @@ def validate_model(model: "Model") -> list[str]:
         if measure.type in ["derived", "ratio", "cumulative", "time_comparison", "conversion"]:
             continue
 
-        if measure.agg in ["sum", "count", "count_distinct", "avg", "min", "max", "median"]:
+        valid_aggs = _valid_measure_aggs()
+
+        if measure.agg in valid_aggs:
             continue
-        if measure.agg is None and measure.sql and _sql_has_aggregation(measure.sql):
+        if measure.agg is None and measure.sql and sql_has_aggregate(measure.sql):
             continue
-        if measure.agg not in ["sum", "count", "count_distinct", "avg", "min", "max", "median"]:
+        if measure.agg not in valid_aggs:
+            valid_aggs_str = ", ".join(sorted(valid_aggs))
             errors.append(
                 f"Model '{model.name}': measure '{measure.name}' has invalid aggregation '{measure.agg}'. "
-                f"Must be one of: sum, count, count_distinct, avg, min, max, median"
+                f"Must be one of: {valid_aggs_str}"
             )
 
     return errors

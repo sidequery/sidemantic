@@ -1139,13 +1139,13 @@ class SQLGenerator:
             dim = model.get_dimension(col_name)
             if dim:
                 dim_sql = replace_model_placeholder(dim.sql_expr)
-                select_cols.append(f"{dim_sql} AS {col_name}")
+                select_cols.append(f"{dim_sql} AS {self._quote_alias(col_name)}")
                 columns_added.add(col_name)
                 continue
             if model.get_metric(col_name):
                 continue
             raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
-            select_cols.append(f"{raw_expr} AS {col_name}")
+            select_cols.append(f"{raw_expr} AS {self._quote_alias(col_name)}")
             columns_added.add(col_name)
 
         # Also include measure columns referenced in metric_filter_columns (for derived metrics

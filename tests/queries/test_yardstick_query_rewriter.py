@@ -2367,3 +2367,19 @@ JOIN region_labels AS l ON s.region = l.region
 
     # Guardrail: unaliased non-semantic columns should not be forced onto the semantic alias.
     assert "S.LABEL" not in rewritten.upper()
+
+
+def test_yardstick_subquery_placeholder_rewrite_stays_in_inner_scope(yardstick_layer):
+    rows = fetch_dicts(
+        yardstick_layer.sql(
+            """
+SEMANTIC SELECT * FROM (
+    SELECT AGGREGATE(revenue) AS total_revenue
+    FROM sales_v
+) AS scoped
+"""
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["total_revenue"] == pytest.approx(375.0)

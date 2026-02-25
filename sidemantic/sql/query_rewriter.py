@@ -299,29 +299,24 @@ class QueryRewriter:
 
         call_map = {call.placeholder: call for call in calls}
         placeholder_names = set(call_map)
+        rewritten_root: exp.Expression = parsed
+        # Rewrite innermost SELECT scopes first so nested Yardstick placeholders are
+        # resolved in their own FROM/JOIN context before outer scopes are processed.
+        for select_scope in reversed(list(parsed.find_all(exp.Select))):
+            rewritten_scope = self._rewrite_yardstick_select_scope(
+                select_scope,
+                call_map=call_map,
+                placeholder_names=placeholder_names,
+                allow_plain_measures=allow_plain_measures,
+            )
+            if rewritten_scope is select_scope:
+                continue
+            if select_scope.parent:
+                select_scope.replace(rewritten_scope)
+            else:
+                rewritten_root = rewritten_scope
 
-        with_clause = parsed.args.get("with")
-        if with_clause:
-            for cte in with_clause.expressions:
-                cte_select = cte.this
-                if isinstance(cte_select, exp.Select):
-                    cte.set(
-                        "this",
-                        self._rewrite_yardstick_select_scope(
-                            cte_select,
-                            call_map=call_map,
-                            placeholder_names=placeholder_names,
-                            allow_plain_measures=allow_plain_measures,
-                        ),
-                    )
-
-        rewritten = self._rewrite_yardstick_select_scope(
-            parsed,
-            call_map=call_map,
-            placeholder_names=placeholder_names,
-            allow_plain_measures=allow_plain_measures,
-        )
-        return rewritten.sql(dialect=self.dialect)
+        return rewritten_root.sql(dialect=self.dialect)
 
     def _rewrite_yardstick_select_scope(
         self,
@@ -332,7 +327,7 @@ class QueryRewriter:
     ) -> exp.Select:
         initial_placeholders = {
             column.name
-            for column in select_scope.find_all(exp.Column)
+            for column in self._columns_without_nested_scopes(select_scope)
             if not column.table and column.name in placeholder_names
         }
         if not initial_placeholders and not allow_plain_measures:
@@ -359,7 +354,7 @@ class QueryRewriter:
 
         scope_placeholders = {
             column.name
-            for column in select_scope.find_all(exp.Column)
+            for column in self._columns_without_nested_scopes(select_scope)
             if not column.table and column.name in placeholder_names
         }
         if not scope_placeholders:
@@ -778,10 +773,32 @@ class QueryRewriter:
     def _expression_contains_yardstick_placeholder(
         self, expression: exp.Expression, placeholder_names: set[str]
     ) -> bool:
-        for column in expression.find_all(exp.Column):
+        for column in self._columns_without_nested_scopes(expression):
             if not column.table and column.name in placeholder_names:
                 return True
         return False
+
+    def _columns_without_nested_scopes(self, expression: exp.Expression) -> list[exp.Column]:
+        columns: list[exp.Column] = []
+
+        def visit(node: exp.Expression, is_root: bool = False) -> None:
+            if isinstance(node, exp.Column):
+                columns.append(node)
+                return
+
+            if not is_root and isinstance(node, (exp.Select, exp.Subquery)):
+                return
+
+            for arg in node.args.values():
+                if isinstance(arg, exp.Expression):
+                    visit(arg)
+                elif isinstance(arg, list):
+                    for item in arg:
+                        if isinstance(item, exp.Expression):
+                            visit(item)
+
+        visit(expression, is_root=True)
+        return columns
 
     def _qualify_unaliased_columns(self, expression: exp.Expression, table_alias: str) -> exp.Expression:
         qualified = expression.copy()

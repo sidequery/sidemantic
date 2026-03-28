@@ -71,16 +71,17 @@ class CubeAdapter(BaseAdapter):
         source_path = Path(source)
         pending_views: list[dict] = []
         pending_hierarchies: dict[str, list[dict]] = {}
+        pending_extends: dict[str, str] = {}  # child_name -> parent_name
 
         if source_path.is_dir():
             # Parse all YAML files in directory
             for yaml_file in source_path.rglob("*.yml"):
-                self._parse_file(yaml_file, graph, pending_views, pending_hierarchies)
+                self._parse_file(yaml_file, graph, pending_views, pending_hierarchies, pending_extends)
             for yaml_file in source_path.rglob("*.yaml"):
-                self._parse_file(yaml_file, graph, pending_views, pending_hierarchies)
+                self._parse_file(yaml_file, graph, pending_views, pending_hierarchies, pending_extends)
         else:
             # Parse single file
-            self._parse_file(source_path, graph, pending_views, pending_hierarchies)
+            self._parse_file(source_path, graph, pending_views, pending_hierarchies, pending_extends)
 
         # Resolve extends (inheritance) after all cubes are parsed
         from sidemantic.core.inheritance import resolve_model_inheritance
@@ -88,20 +89,31 @@ class CubeAdapter(BaseAdapter):
         if any(m.extends for m in graph.models.values()):
             graph.models = resolve_model_inheritance(graph.models)
 
-        # Apply hierarchies after inheritance so inherited dimensions are available
-        for model_name, hierarchy_defs in pending_hierarchies.items():
-            model = graph.models.get(model_name)
-            if not model:
-                continue
-            for h_def in hierarchy_defs:
+        # Apply hierarchies after inheritance so inherited dimensions are available.
+        # Also propagate parent hierarchies to child cubes via extends_map.
+        def _apply_hierarchies(model: Model, h_defs: list[dict]) -> None:
+            for h_def in h_defs:
                 levels = h_def.get("levels", [])
                 for i in range(1, len(levels)):
                     child_name = levels[i]
                     parent_name = levels[i - 1]
                     if "." not in parent_name and "." not in child_name:
                         child_dim = model.get_dimension(child_name)
-                        if child_dim:
+                        if child_dim and not child_dim.parent:
                             child_dim.parent = parent_name
+
+        # Apply explicit hierarchies
+        for model_name, hierarchy_defs in pending_hierarchies.items():
+            model = graph.models.get(model_name)
+            if model:
+                _apply_hierarchies(model, hierarchy_defs)
+
+        # Propagate parent hierarchies to child cubes that inherited dimensions
+        for child_name, parent_name in pending_extends.items():
+            if parent_name in pending_hierarchies:
+                child_model = graph.models.get(child_name)
+                if child_model:
+                    _apply_hierarchies(child_model, pending_hierarchies[parent_name])
 
         # Parse views after all cubes are loaded and inheritance resolved
         for view_def in pending_views:
@@ -117,6 +129,7 @@ class CubeAdapter(BaseAdapter):
         graph: SemanticGraph,
         pending_views: list[dict],
         pending_hierarchies: dict[str, list[dict]],
+        pending_extends: dict[str, str],
     ) -> None:
         """Parse a single Cube YAML file.
 
@@ -125,6 +138,7 @@ class CubeAdapter(BaseAdapter):
             graph: Semantic graph to add models to
             pending_views: List to accumulate view definitions for deferred parsing
             pending_hierarchies: Dict to accumulate hierarchy definitions per cube for deferred application
+            pending_extends: Dict to track extends relationships (child -> parent)
         """
         with open(file_path) as f:
             data = yaml.safe_load(f)
@@ -143,6 +157,10 @@ class CubeAdapter(BaseAdapter):
                 h_defs = cube_def.get("hierarchies")
                 if h_defs:
                     pending_hierarchies[model.name] = h_defs
+                # Track extends for hierarchy propagation
+                ext = cube_def.get("extends")
+                if ext:
+                    pending_extends[model.name] = ext
 
         # Collect views for deferred parsing (need all cubes loaded first)
         for view_def in data.get("views") or []:
@@ -670,6 +688,9 @@ class CubeAdapter(BaseAdapter):
             cube_alias = cube_spec.get("alias")
             prefix_str = f"{cube_alias or target_name}_" if prefix else ""
 
+            # Build alias map for renaming dependent references
+            alias_map: dict[str, str] = {}
+
             if includes == "*":
                 dims = [d for d in target.dimensions if d.name not in excludes]
                 mets = [m for m in target.metrics if m.name not in excludes]
@@ -686,6 +707,8 @@ class CubeAdapter(BaseAdapter):
                     elif isinstance(inc, dict):
                         orig = inc.get("name", "")
                         alias = inc.get("alias", orig)
+                        if alias != orig:
+                            alias_map[orig] = alias
                         d = target.get_dimension(orig)
                         if d:
                             dims.append(d.model_copy(update={"name": alias}))
@@ -694,6 +717,19 @@ class CubeAdapter(BaseAdapter):
                             mets.append(m.model_copy(update={"name": alias}))
             else:
                 continue
+
+            # Apply alias map to dependent references (parent, drill_fields)
+            if alias_map:
+                dims = [
+                    d.model_copy(update={"parent": alias_map[d.parent]}) if d.parent and d.parent in alias_map else d
+                    for d in dims
+                ]
+                mets = [
+                    m.model_copy(update={"drill_fields": [alias_map.get(f, f) for f in m.drill_fields]})
+                    if m.drill_fields and any(f in alias_map for f in m.drill_fields)
+                    else m
+                    for m in mets
+                ]
 
             if prefix_str:
                 # Prefix names and update dependent references (parent, drill_fields)

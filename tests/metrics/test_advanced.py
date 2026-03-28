@@ -570,25 +570,26 @@ def test_wow_percent_change_partitions_by_dimension():
 
 
 def test_multistep_conversion_funnel():
-    """Test N-step conversion funnel metric with BOOL_OR aggregation pattern."""
+    """Test N-step conversion funnel metric with timestamp-aware chronological ordering."""
     events = Model(
         name="events",
         sql="""
-            SELECT 1 AS person_id, 'Application Installed' AS event
-            UNION ALL SELECT 1, 'note.opened'
-            UNION ALL SELECT 1, 'note.created'
-            UNION ALL SELECT 1, 'git.sync'
-            UNION ALL SELECT 2, 'Application Installed'
-            UNION ALL SELECT 2, 'note.opened'
-            UNION ALL SELECT 2, 'note.created'
-            UNION ALL SELECT 3, 'Application Installed'
-            UNION ALL SELECT 3, 'note.opened'
-            UNION ALL SELECT 4, 'Application Installed'
+            SELECT 1 AS person_id, 'Application Installed' AS event, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'note.opened', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 1, 'note.created', '2024-01-03'::TIMESTAMP
+            UNION ALL SELECT 1, 'git.sync', '2024-01-04'::TIMESTAMP
+            UNION ALL SELECT 2, 'Application Installed', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 2, 'note.opened', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'note.created', '2024-01-03'::TIMESTAMP
+            UNION ALL SELECT 3, 'Application Installed', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'note.opened', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 4, 'Application Installed', '2024-01-01'::TIMESTAMP
         """,
         primary_key="person_id",
         dimensions=[
             Dimension(name="person_id", sql="person_id", type="categorical"),
             Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
         ],
     )
 
@@ -638,15 +639,16 @@ def test_multistep_conversion_2_steps_via_steps_list():
     events = Model(
         name="events",
         sql="""
-            SELECT 1 AS user_id, 'signup' AS event
-            UNION ALL SELECT 1, 'purchase'
-            UNION ALL SELECT 2, 'signup'
-            UNION ALL SELECT 3, 'signup'
+            SELECT 1 AS user_id, 'signup' AS event, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'purchase', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', '2024-01-01'::TIMESTAMP
         """,
         primary_key="user_id",
         dimensions=[
             Dimension(name="user_id", sql="user_id", type="categorical"),
             Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
         ],
     )
 
@@ -742,14 +744,15 @@ def test_conversion_metric_steps_and_base_event():
     events = Model(
         name="events",
         sql="""
-            SELECT 1 AS person_id, 'install' AS event
-            UNION ALL SELECT 1, 'activate'
-            UNION ALL SELECT 2, 'install'
+            SELECT 1 AS person_id, 'install' AS event, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'activate', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'install', '2024-01-01'::TIMESTAMP
         """,
         primary_key="person_id",
         dimensions=[
             Dimension(name="person_id", sql="person_id", type="categorical"),
             Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
         ],
     )
 
@@ -777,7 +780,7 @@ def test_conversion_metric_steps_and_base_event():
     result = conn.execute(sql)
     rows = df_rows(result)
 
-    # steps takes precedence: uses BOOL_OR pattern
+    # steps takes precedence: uses timestamp-aware pattern
     assert rows[0][0] == 2  # total_entities
     assert rows[0][1] == 2  # step_1_count (install)
     assert rows[0][2] == 1  # step_2_count (activate)
@@ -819,18 +822,19 @@ def test_multistep_funnel_monotonic_counts():
     events = Model(
         name="events",
         sql="""
-            SELECT 1 AS person_id, 'install' AS event
-            UNION ALL SELECT 1, 'activate'
-            UNION ALL SELECT 1, 'purchase'
-            UNION ALL SELECT 2, 'install'
-            UNION ALL SELECT 2, 'activate'
-            UNION ALL SELECT 3, 'install'
-            UNION ALL SELECT 5, 'purchase'
+            SELECT 1 AS person_id, 'install' AS event, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'activate', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 1, 'purchase', '2024-01-03'::TIMESTAMP
+            UNION ALL SELECT 2, 'install', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 2, 'activate', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 3, 'install', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 5, 'purchase', '2024-01-01'::TIMESTAMP
         """,
         primary_key="person_id",
         dimensions=[
             Dimension(name="person_id", sql="person_id", type="categorical"),
             Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
         ],
     )
 
@@ -875,16 +879,17 @@ def test_multistep_funnel_total_excludes_non_entrants():
     events = Model(
         name="events",
         sql="""
-            SELECT 1 AS uid, 'signup' AS event
-            UNION ALL SELECT 1, 'purchase'
-            UNION ALL SELECT 2, 'signup'
-            UNION ALL SELECT 3, 'browse'
-            UNION ALL SELECT 4, 'browse'
+            SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'purchase', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'browse', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 4, 'browse', '2024-01-01'::TIMESTAMP
         """,
         primary_key="uid",
         dimensions=[
             Dimension(name="uid", sql="uid", type="categorical"),
             Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
         ],
     )
 
@@ -911,5 +916,117 @@ def test_multistep_funnel_total_excludes_non_entrants():
 
     # total_entities should be 2 (only users 1 and 2 who signed up), NOT 4
     assert rows[0][0] == 2  # total_entities = step 1 entrants
+    assert rows[0][1] == 2  # step_1_count
+    assert rows[0][2] == 1  # step_2_count (only user 1 purchased)
+
+
+def test_multistep_funnel_chronological_order_enforced():
+    """Test that funnel steps must occur in chronological order.
+
+    An entity that does step 2 before step 1 should NOT count as having
+    completed step 2 in the funnel, even if both events exist.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'purchase', '2024-01-05'::TIMESTAMP
+            UNION ALL SELECT 2, 'purchase', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', '2024-01-10'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', '2024-01-01'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="ordered_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["ordered_funnel"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # User 1: signup(Jan 1) -> purchase(Jan 5) = chronological, counts
+    # User 2: purchase(Jan 1) -> signup(Jan 10) = REVERSED, does NOT count for step 2
+    # User 3: signup(Jan 1) only = step 1 only
+    # total_entities = 3 (all have signup)
+    # step_1_count = 3
+    # step_2_count = 1 (only user 1 has purchase AFTER signup)
+    assert rows[0][0] == 3  # total_entities
+    assert rows[0][1] == 3  # step_1_count
+    assert rows[0][2] == 1  # step_2_count (only user 1, NOT user 2)
+
+
+def test_multistep_funnel_qualified_filters():
+    """Test that model-qualified filters work with multistep funnels.
+
+    Filters like 'events.region = ...' should be normalized to 'region = ...'
+    for SQL-backed models using FROM (<sql>) AS t.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event, 'US' AS region, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'purchase', 'US', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', 'US', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', 'EU', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'purchase', 'EU', '2024-01-02'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="region", sql="region", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="regional_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    # Use model-qualified filter: events.region = 'US'
+    sql = generator.generate(
+        metrics=["regional_funnel"],
+        dimensions=[],
+        filters=["events.region = 'US'"],
+    )
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # Only US users: user 1 (signup + purchase), user 2 (signup only)
+    # User 3 is EU, filtered out
+    assert rows[0][0] == 2  # total_entities (US users with signup)
     assert rows[0][1] == 2  # step_1_count
     assert rows[0][2] == 1  # step_2_count (only user 1 purchased)

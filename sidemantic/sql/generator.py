@@ -75,6 +75,32 @@ class SQLGenerator:
             # Standard SQL: INTERVAL '7 days'
             return f"INTERVAL '{num} {unit}'"
 
+    def _strip_model_prefixes(self, filters: list[str], model_name: str) -> list[str]:
+        """Strip model name prefixes from filter column references.
+
+        Conversion and retention CTEs query the raw table directly, so qualified
+        references like ``events.region`` need to become just ``region``.
+
+        Args:
+            filters: List of filter SQL expressions
+            model_name: Model name whose prefix should be stripped
+
+        Returns:
+            Filters with model prefixes removed
+        """
+        result = []
+        for f in filters:
+            try:
+                parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                for column in parsed.find_all(exp.Column):
+                    tbl = column.table
+                    if tbl and tbl.replace("_cte", "") == model_name:
+                        column.set("table", None)
+                result.append(parsed.sql(dialect=self.dialect))
+            except Exception:
+                result.append(f)
+        return result
+
     def _quote_alias(self, name: str) -> str:
         """Quote an identifier for use as a SQL alias.
 
@@ -2413,7 +2439,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
     ) -> str:
         """Generate SQL for N-step conversion funnel metrics.
 
-        Uses per-entity BOOL_OR aggregation for each step, then sums in the outer query.
+        Uses timestamp-aware chronological ordering: for each entity, tracks
+        the earliest timestamp at which each step was satisfied (via MIN/CASE),
+        then gates each step on occurring after all prior steps.
 
         Args:
             metric: The Metric object with steps defined
@@ -2454,16 +2482,37 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         if not model:
             raise ValueError(f"No model found for conversion metric {metric_name}")
 
+        # Find timestamp dimension: prefer model.default_time_dimension, fall back to first time dim
+        timestamp_dim = None
+        if model.default_time_dimension:
+            timestamp_dim = model.get_dimension(model.default_time_dimension)
+        if not timestamp_dim:
+            for dim in model.dimensions:
+                if dim.type == "time":
+                    timestamp_dim = dim
+                    break
+
+        if not timestamp_dim:
+            raise ValueError(
+                f"Multi-step conversion funnel requires a time dimension on model '{model.name}' "
+                "to enforce chronological step ordering"
+            )
+
+        ts_sql = timestamp_dim.sql_expr
+
         # Build FROM clause
         if model.sql:
             from_clause = f"({model.sql}) AS t"
         else:
             from_clause = model.table
 
+        # Normalize filters: strip model name prefixes so they work inside CTEs
+        normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+
         # Build WHERE filter clause
         filter_clause = ""
-        if filters:
-            filter_clause = "\n  WHERE " + " AND ".join(filters)
+        if normalized_filters:
+            filter_clause = "\n  WHERE " + " AND ".join(normalized_filters)
 
         # Resolve dimension columns for GROUP BY support
         dim_entries: list[tuple[str, str]] = []
@@ -2486,10 +2535,12 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         dim_aliases = [alias for alias, _ in dim_entries]
 
-        # Build inner CTE: per-entity BOOL_OR for each step
+        # Build inner CTE: per-entity MIN timestamp for each step.
+        # MIN(CASE WHEN step_expr THEN timestamp END) captures the earliest time
+        # the step was satisfied, enabling chronological ordering in the outer query.
         step_cols = []
         for i, step_expr in enumerate(metric.steps, 1):
-            step_cols.append(f"BOOL_OR({step_expr}) AS step_{i}")
+            step_cols.append(f"MIN(CASE WHEN {step_expr} THEN {ts_sql} END) AS step_{i}_ts")
 
         inner_select_parts = [f"{metric.entity} AS entity"]
         if dim_entries:
@@ -2505,16 +2556,20 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         group_by_inner = ",\n    ".join(group_by_inner_parts)
 
         # Build outer SELECT: total entities (only step 1 entrants) + sum of each step.
-        # Gate each step on completion of all prior steps for monotonic funnels.
+        # Gate each step on chronological order: step_N_ts must be >= step_(N-1)_ts.
         outer_select_parts = []
         if dim_aliases:
             for alias in dim_aliases:
                 outer_select_parts.append(f"{alias}")
-        outer_select_parts.append("SUM(step_1::int) AS total_entities")
+        outer_select_parts.append("SUM(CASE WHEN step_1_ts IS NOT NULL THEN 1 ELSE 0 END) AS total_entities")
         for i in range(1, len(metric.steps) + 1):
-            # Each step requires all prior steps to be true
-            gate_expr = " AND ".join(f"step_{j}" for j in range(1, i + 1))
-            outer_select_parts.append(f"SUM(({gate_expr})::int) AS step_{i}_count")
+            # Each step requires all prior steps to have been completed in chronological order
+            conditions = ["step_1_ts IS NOT NULL"]
+            for j in range(2, i + 1):
+                conditions.append(f"step_{j}_ts IS NOT NULL")
+                conditions.append(f"step_{j}_ts >= step_{j - 1}_ts")
+            gate_expr = " AND ".join(conditions)
+            outer_select_parts.append(f"SUM(CASE WHEN {gate_expr} THEN 1 ELSE 0 END) AS step_{i}_count")
         outer_select = ",\n  ".join(outer_select_parts)
 
         # Build GROUP BY, ORDER BY, LIMIT for outer query

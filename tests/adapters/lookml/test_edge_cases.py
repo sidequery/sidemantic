@@ -153,6 +153,120 @@ def test_lookml_sql_always_where_segment():
     assert "deleted" in sql_where_seg.sql
 
 
+def test_lookml_always_filter_strips_view_qualifier():
+    """Test that always_filter strips view qualifiers from field names."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # always_filter: { filters: [fact_orders.created_date: "last 365 days"] }
+    fact_orders = graph.get_model("fact_orders")
+    seg = fact_orders.get_segment("_always_filter_orders_fact_orders.created_date")
+    assert seg is not None
+    # Should reference {model}.created_date, NOT {model}.fact_orders.created_date
+    assert "fact_orders.created_date" not in seg.sql
+    assert "created_date" in seg.sql
+
+
+def test_lookml_refinement_preserves_base_scalars():
+    """Test that refinements don't overwrite base view's table, PK, or description."""
+    import tempfile
+
+    lkml_content = """
+view: orders {
+  sql_table_name: analytics.orders ;;
+  description: "All customer orders"
+
+  dimension: order_id {
+    type: number
+    primary_key: yes
+    sql: ${TABLE}.order_id ;;
+  }
+
+  measure: count {
+    type: count
+  }
+}
+
+view: +orders {
+  dimension: new_status {
+    type: string
+    sql: ${TABLE}.new_status ;;
+  }
+}
+"""
+    adapter = LookMLAdapter()
+    with tempfile.NamedTemporaryFile(suffix=".lkml", mode="w", delete=False) as f:
+        f.write(lkml_content)
+        f.flush()
+
+        graph = adapter.parse(Path(f.name))
+
+        orders = graph.get_model("orders")
+        # Base scalars must survive the refinement merge
+        assert orders.table == "analytics.orders"
+        assert orders.primary_key == "order_id"
+        assert orders.description == "All customer orders"
+        # Refinement's dimension should be merged in
+        assert orders.get_dimension("new_status") is not None
+        # Original dimensions preserved
+        assert orders.get_dimension("order_id") is not None
+
+
+def test_lookml_join_sql_on_with_explore_alias():
+    """Test that sql_on referencing explore alias (not view name) still works."""
+    import tempfile
+
+    lkml_content = """
+view: fact_orders {
+  sql_table_name: analytics.orders ;;
+
+  dimension: id {
+    type: number
+    primary_key: yes
+    sql: ${TABLE}.id ;;
+  }
+
+  dimension: customer_id {
+    type: number
+    sql: ${TABLE}.customer_id ;;
+  }
+}
+
+view: dim_customers {
+  sql_table_name: analytics.customers ;;
+
+  dimension: id {
+    type: number
+    primary_key: yes
+    sql: ${TABLE}.id ;;
+  }
+}
+
+explore: orders {
+  from: fact_orders
+
+  join: dim_customers {
+    type: left_outer
+    relationship: many_to_one
+    sql_on: ${orders.customer_id} = ${dim_customers.id} ;;
+  }
+}
+"""
+    adapter = LookMLAdapter()
+    with tempfile.NamedTemporaryFile(suffix=".lkml", mode="w", delete=False) as f:
+        f.write(lkml_content)
+        f.flush()
+
+        graph = adapter.parse(Path(f.name))
+
+        fact_orders = graph.get_model("fact_orders")
+        rel_names = [r.name for r in fact_orders.relationships]
+        # Join should NOT be silently dropped just because sql_on uses explore alias
+        assert "dim_customers" in rel_names
+        cust_rel = next(r for r in fact_orders.relationships if r.name == "dim_customers")
+        assert cust_rel.foreign_key == "customer_id"
+
+
 def test_lookml_explore_meta():
     """Test that explore label/group_label are stored in model meta."""
     adapter = LookMLAdapter()

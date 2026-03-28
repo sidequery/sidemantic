@@ -409,18 +409,32 @@ class LookMLAdapter(BaseAdapter):
             elif isinstance(extends_list, str):
                 extends = extends_list
 
-        return Model(
-            name=name,
-            table=table,
-            sql=sql,
-            description=view_def.get("description"),
-            extends=extends,
-            primary_key=primary_key,
-            dimensions=dimensions,
-            metrics=measures,
-            segments=segments,
-            meta=model_meta or None,
-        )
+        # Build kwargs conditionally so that unset scalars don't appear in
+        # model_fields_set. This matters for refinements: merge_model treats
+        # every field in model_fields_set as an explicit child override, so
+        # passing table=None or primary_key="id" would erase the base view's
+        # real values.
+        model_kwargs: dict = {
+            "name": name,
+            "dimensions": dimensions,
+            "metrics": measures,
+            "segments": segments,
+        }
+        if table is not None:
+            model_kwargs["table"] = table
+        if sql is not None:
+            model_kwargs["sql"] = sql
+        desc = view_def.get("description")
+        if desc is not None:
+            model_kwargs["description"] = desc
+        if extends is not None:
+            model_kwargs["extends"] = extends
+        if primary_key != "id":
+            model_kwargs["primary_key"] = primary_key
+        if model_meta:
+            model_kwargs["meta"] = model_meta
+
+        return Model(**model_kwargs)
 
     def _parse_dimension(self, dim_def: dict, dimension_sql_lookup: dict[str, str] | None = None) -> Dimension | None:
         """Parse LookML dimension.
@@ -932,51 +946,50 @@ class LookMLAdapter(BaseAdapter):
         if always_filter:
             existing_names = {s.name for s in base_model.segments}
             filter_items = always_filter.get("filters") or always_filter.get("filters__all") or []
+
+            def _add_always_filter_segment(field: str, value: str) -> None:
+                # Strip view qualifier (e.g. "fact_orders.created_date" -> "created_date")
+                # so _convert_lookml_filter_to_sql doesn't produce {model}.view.col
+                bare_field = field.rsplit(".", 1)[-1] if "." in field else field
+                filter_sql = self._convert_lookml_filter_to_sql(bare_field, str(value))
+                segment_name = f"_always_filter_{explore_name}_{field}"
+                if filter_sql and segment_name not in existing_names:
+                    base_model.segments.append(
+                        Segment(
+                            name=segment_name,
+                            sql=filter_sql,
+                            description=f"Always filter: {field}",
+                        )
+                    )
+                    existing_names.add(segment_name)
+
             for item in filter_items:
                 if isinstance(item, list):
                     for filter_dict in item:
                         if isinstance(filter_dict, dict):
                             for field, value in filter_dict.items():
-                                filter_sql = self._convert_lookml_filter_to_sql(field, str(value))
-                                segment_name = f"_always_filter_{explore_name}_{field}"
-                                if filter_sql and segment_name not in existing_names:
-                                    base_model.segments.append(
-                                        Segment(
-                                            name=segment_name,
-                                            sql=filter_sql,
-                                            description=f"Always filter: {field}",
-                                        )
-                                    )
-                                    existing_names.add(segment_name)
+                                _add_always_filter_segment(field, value)
                 elif isinstance(item, dict):
                     field = item.get("field")
                     value = item.get("value")
                     if field and value:
-                        filter_sql = self._convert_lookml_filter_to_sql(field, str(value))
-                        segment_name = f"_always_filter_{explore_name}_{field}"
-                        if filter_sql and segment_name not in existing_names:
-                            base_model.segments.append(
-                                Segment(
-                                    name=segment_name,
-                                    sql=filter_sql,
-                                    description=f"Always filter: {field}",
-                                )
-                            )
-                            existing_names.add(segment_name)
+                        _add_always_filter_segment(field, value)
 
         # Parse joins
         for join_def in explore_def.get("joins") or []:
-            relationship = self._parse_join(join_def, base_model_name)
+            relationship = self._parse_join(join_def, base_model_name, explore_name)
             if relationship:
                 # Add relationship to the base model
                 base_model.relationships.append(relationship)
 
-    def _parse_join(self, join_def: dict, base_model_name: str) -> Relationship | None:
+    def _parse_join(self, join_def: dict, base_model_name: str, explore_name: str | None = None) -> Relationship | None:
         """Parse a join definition into a Relationship.
 
         Args:
             join_def: Join definition from explore
             base_model_name: Name of the base model in the explore
+            explore_name: Optional explore alias (for from: aliased explores where
+                sql_on may reference the explore name instead of the view name)
 
         Returns:
             Relationship or None if parsing fails
@@ -1014,6 +1027,13 @@ class LookMLAdapter(BaseAdapter):
             matches = re.findall(r"\$\{(\w+)\.(\w+)\}", sql_on)
             models_in_sql = {m for m, c in matches}
 
+            # Build set of names that represent the base model in sql_on.
+            # With from: aliasing (explore: orders { from: fact_orders }), the
+            # sql_on may reference either the view name or the explore alias.
+            base_aliases = {base_model_name}
+            if explore_name and explore_name != base_model_name:
+                base_aliases.add(explore_name)
+
             # Check if this is a direct relationship between base_model and join_name
             # For many_to_one: base_model must be in sql_on (it has the FK)
             # For one_to_many: join_name must be in sql_on (it has the FK)
@@ -1021,11 +1041,11 @@ class LookMLAdapter(BaseAdapter):
             # (e.g., orders -> regions via customers.region_id = regions.id where orders isn't present)
             # Skip these as sidemantic will compute the path through intermediate models
             if relationship_type == "many_to_one":
-                if base_model_name not in models_in_sql:
+                if not (base_aliases & models_in_sql):
                     return None
                 # Base model has the FK (e.g., orders.customer_id -> customers.id)
                 for model, column in matches:
-                    if model == base_model_name:
+                    if model in base_aliases:
                         foreign_key = column
                         break
             elif relationship_type in ("one_to_many", "one_to_one"):

@@ -93,6 +93,18 @@ source: all_join_types is duckdb.table('main.parquet') extend {
   join_cross: join_target_c
 }
 
+// Join direction modifiers
+source: directed_joins is duckdb.table('main.parquet') extend {
+  primary_key: id
+
+  dimension: id is id
+
+  measure: main_count is count()
+
+  join_one: join_target_a left on id = join_target_a.id
+  join_many: join_target_b inner on id = join_target_b.id
+}
+
 // Empty-ish source (no dimensions or measures beyond PK)
 source: bare_minimum is duckdb.table('bare.parquet') extend {
   primary_key: id

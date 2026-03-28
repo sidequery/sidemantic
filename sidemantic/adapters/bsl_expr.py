@@ -293,8 +293,10 @@ def bsl_filter_to_sql(expr: str) -> str:
             return result
     except SyntaxError:
         pass
-    # Fallback for unparseable expressions
-    return re.sub(r"_\.(\w+)", r"\1", str(expr))
+    raise ValueError(
+        f"Cannot translate BSL filter expression to SQL: {expr!r}. "
+        "Supported: comparisons, &/|, ~, isin/notin/between/isnull/notnull."
+    )
 
 
 def _sql_to_bsl_expr(sql: str, agg: str | None) -> str:
@@ -305,7 +307,7 @@ def _sql_to_bsl_expr(sql: str, agg: str | None) -> str:
     the adapter stores and reuses the original expression instead.
     """
     # Simple column + aggregation (the common case for cross-format)
-    if not any(f" {op} " in sql for op in ["+", "-", "*", "/", "%", "=", "!=", "<", ">", "<="]):
+    if not any(f" {op} " in sql for op in ["+", "-", "*", "/", "%", "=", "!=", "<", ">", "<=", ">="]):
         base = f"_.{sql}"
         if agg:
             method = AGG_TO_METHOD_MAP.get(agg)
@@ -313,13 +315,17 @@ def _sql_to_bsl_expr(sql: str, agg: str | None) -> str:
                 return f"{base}.{method}()"
         return base
 
-    # Compound or comparison SQL: prefix column-like tokens with _.
-    parts = re.split(r"(\s*(?:[+\-*/%]|[<>!=]=?)\s*)", sql)
+    # Compound or comparison SQL: prefix column-like tokens with _.,
+    # and convert SQL operators to Python equivalents
+    sql_to_py_op = {"=": "==", "<>": "!="}
+    parts = re.split(r"(\s*(?:[+\-*/%]|[<>!=]=?|<>)\s*)", sql)
     bsl_parts = []
     for part in parts:
         stripped = part.strip()
         if re.match(r"^[a-zA-Z_]\w*(\.\w+)*$", stripped):
             bsl_parts.append(f"_.{stripped}")
+        elif stripped in sql_to_py_op:
+            bsl_parts.append(part.replace(stripped, sql_to_py_op[stripped]))
         else:
             bsl_parts.append(part)
     inner = "".join(bsl_parts)

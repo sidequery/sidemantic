@@ -943,13 +943,15 @@ class TestBSLBooleanExpressions:
 
     def test_sql_to_bsl_expr_comparison(self):
         result = _sql_to_bsl_expr("encounter_class = 'emergency'", "sum")
-        assert "(_.encounter_class" in result
-        assert ".sum()" in result
+        assert result == "(_.encounter_class == 'emergency').sum()"
 
     def test_sql_to_bsl_expr_comparison_mean(self):
         result = _sql_to_bsl_expr("shared_match_flag = 'Y'", "avg")
-        assert "(_.shared_match_flag" in result
-        assert ".mean()" in result
+        assert result == "(_.shared_match_flag == 'Y').mean()"
+
+    def test_sql_to_bsl_expr_gte(self):
+        result = _sql_to_bsl_expr("a >= 5", "sum")
+        assert result == "(_.a >= 5).sum()"
 
 
 class TestBSLAdapterHealthcare:

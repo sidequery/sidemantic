@@ -445,10 +445,10 @@ class MetricFlowAdapter(BaseAdapter):
         """
         result = {"name": model.name}
 
-        if model.table:
-            result["model"] = f"ref('{model.table.split('.')[-1]}')"
-        elif model.sql:
+        if model.sql:
             result["sql"] = model.sql
+        elif model.table:
+            result["model"] = f"ref('{model.table.split('.')[-1]}')"
 
         if model.description:
             result["description"] = model.description

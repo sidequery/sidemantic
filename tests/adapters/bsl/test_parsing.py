@@ -1053,12 +1053,11 @@ class TestBSLAdapterFilter:
         assert "bsl_filter" in flights.metadata
         assert "year" in flights.metadata["bsl_filter"]
 
-        # Filter baked into model.sql as subquery, table cleared for export safety
+        # Filter baked into model.sql as subquery; table kept for migrator
         assert flights.sql is not None
         assert "WHERE" in flights.sql
         assert "year > 2020" in flights.sql
-        assert flights.table is None
-        assert flights.metadata["bsl_table"] == "flights_tbl"
+        assert flights.table == "flights_tbl"
 
     def test_filter_preserved_in_cross_format_export(self):
         """Filtered BSL model preserves filter when exported to Cube."""

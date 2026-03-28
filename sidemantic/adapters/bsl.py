@@ -182,22 +182,20 @@ class BSLAdapter(BaseAdapter):
 
         # Model-level filter -> bake into model.sql as a filtered subquery
         # so the filter is always applied (matches BSL semantics).
-        # Clear table when sql is set so exporters (Cube, MetricFlow, etc.)
-        # don't silently drop the filter by preferring table over sql.
+        # Keep model.table for migrator indexing; generator and exporters
+        # that check model.sql first will use the filtered subquery.
         model_sql = None
-        model_table = table
         metadata = None
         filter_expr = model_def.get("filter")
         if filter_expr:
             filter_str = str(filter_expr)
             filter_sql = bsl_filter_to_sql(filter_str)
             model_sql = f"SELECT * FROM {table} WHERE {filter_sql}"
-            model_table = None
-            metadata = {"bsl_filter": filter_str, "bsl_table": table}
+            metadata = {"bsl_filter": filter_str}
 
         return Model(
             name=name,
-            table=model_table,
+            table=table,
             sql=model_sql,
             description=description,
             primary_key=primary_key,
@@ -359,10 +357,7 @@ class BSLAdapter(BaseAdapter):
         """Export a Sidemantic Model to BSL format."""
         model_def = {}
 
-        # Restore original table name from metadata for filtered models
-        if model.metadata and "bsl_table" in model.metadata:
-            model_def["table"] = model.metadata["bsl_table"]
-        elif model.table:
+        if model.table:
             model_def["table"] = model.table
 
         if model.description:

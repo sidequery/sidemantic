@@ -887,6 +887,16 @@ class TestBSLCompoundExpressions:
         assert result.column == "a * 100"
         assert result.aggregation == "sum"
 
+    def test_parse_nested_arithmetic_preserves_grouping(self):
+        result = parse_bsl_expr("(_.a - (_.b + _.c)).sum()")
+        assert result.column == "a - (b + c)"
+        assert result.aggregation == "sum"
+
+    def test_parse_nested_arithmetic_left_grouping(self):
+        result = parse_bsl_expr("((_.a - _.b) * _.c).sum()")
+        assert result.column == "(a - b) * c"
+        assert result.aggregation == "sum"
+
     def test_bsl_to_sql_compound(self):
         sql, agg, date_part = bsl_to_sql("(_.total_claim_cost - _.payer_coverage).sum()")
         assert sql == "total_claim_cost - payer_coverage"

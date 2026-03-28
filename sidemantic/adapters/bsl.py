@@ -477,10 +477,9 @@ class BSLAdapter(BaseAdapter):
             "type": type_mapping.get(rel.type, "one"),
         }
 
-        # Use with: shorthand when only foreign_key is set (no explicit primary_key)
-        if rel.foreign_key and not rel.primary_key:
-            fk = rel.foreign_key if isinstance(rel.foreign_key, str) else rel.foreign_key[0]
-            join_def["with"] = f"_.{fk}"
+        # Use with: shorthand for single-column FK without explicit primary_key
+        if rel.foreign_key and not rel.primary_key and isinstance(rel.foreign_key, str):
+            join_def["with"] = f"_.{rel.foreign_key}"
         else:
             if rel.foreign_key:
                 join_def["left_on"] = rel.foreign_key

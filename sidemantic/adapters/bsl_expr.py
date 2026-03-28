@@ -136,7 +136,8 @@ def _expr_to_sql(node: ast.AST) -> str | None:
 def _binop_to_sql(node: ast.BinOp) -> str | None:
     """Convert a BinOp AST node to a SQL expression string.
 
-    (_.a - _.b) -> "a - b"
+    Wraps nested BinOp children in parens to preserve grouping:
+    (_.a - (_.b + _.c)) -> "a - (b + c)"
     """
     left = _expr_to_sql(node.left)
     right = _expr_to_sql(node.right)
@@ -144,6 +145,11 @@ def _binop_to_sql(node: ast.BinOp) -> str | None:
 
     if left is None or right is None or op is None:
         return None
+
+    if isinstance(node.left, ast.BinOp):
+        left = f"({left})"
+    if isinstance(node.right, ast.BinOp):
+        right = f"({right})"
 
     return f"{left} {op} {right}"
 

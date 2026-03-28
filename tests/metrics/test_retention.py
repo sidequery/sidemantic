@@ -316,3 +316,234 @@ def test_retention_week_granularity():
     assert week_data[0][4] == 100.0
     assert week_data[1][4] == 100.0
     assert week_data[2][4] == 50.0
+
+
+def test_retention_model_placeholder_expansion_sql_model():
+    """Test that {model} placeholders in cohort_event/activity_event are expanded to table alias."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS ts
+            UNION ALL SELECT 1, 'login', '2024-01-02'::DATE
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[],
+    )
+
+    retention = Metric(
+        name="retention",
+        type="retention",
+        entity="uid",
+        cohort_event="{model}.event = 'signup'",
+        activity_event="{model}.event IS NOT NULL",
+        periods=1,
+        retention_granularity="day",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["retention"], dimensions=[])
+
+    # {model} should be replaced with 't' (SQL subquery alias)
+    assert "{model}" not in sql
+    assert "t.event = 'signup'" in sql
+    assert "t.event IS NOT NULL" in sql
+
+    # Should still execute correctly
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+    assert len(rows) > 0
+
+
+def test_retention_model_placeholder_expansion_table_model():
+    """Test that {model} placeholders are stripped for table-backed models."""
+    conn = duckdb.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE test_events AS
+        SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS ts
+        UNION ALL SELECT 1, 'login', '2024-01-02'::DATE
+    """)
+
+    events = Model(
+        name="events",
+        table="test_events",
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[],
+    )
+
+    retention = Metric(
+        name="retention",
+        type="retention",
+        entity="uid",
+        cohort_event="{model}.event = 'signup'",
+        activity_event="{model}.event IS NOT NULL",
+        periods=1,
+        retention_granularity="day",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["retention"], dimensions=[])
+
+    # {model}. should be stripped for table-backed models
+    assert "{model}" not in sql
+    assert "event = 'signup'" in sql
+
+    result = conn.execute(sql)
+    rows = df_rows(result)
+    assert len(rows) > 0
+
+
+def test_retention_periods_zero_raises_validation_error():
+    """Test that periods=0 raises a validation error instead of silently becoming 28."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS ts
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[],
+    )
+
+    retention = Metric(
+        name="retention",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        periods=0,
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="Invalid periods value"):
+        generator.generate(metrics=["retention"], dimensions=[])
+
+
+def test_retention_yaml_retention_granularity_key():
+    """Test that YAML with retention_granularity: week parses correctly."""
+    import os
+    import tempfile
+
+    from sidemantic.adapters.sidemantic import SidemanticAdapter
+
+    yaml_content = """
+models:
+  - name: events
+    table: events
+    dimensions:
+      - name: user_id
+        type: categorical
+      - name: ts
+        type: time
+    metrics:
+      - name: weekly_retention
+        type: retention
+        entity: user_id
+        cohort_event: "event = 'signup'"
+        retention_granularity: week
+        periods: 4
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        f.write(yaml_content)
+        tmp_path = f.name
+
+    try:
+        adapter = SidemanticAdapter()
+        graph = adapter.parse(tmp_path)
+        model = graph.get_model("events")
+        metric = model.get_metric("weekly_retention")
+        assert metric.retention_granularity == "week"
+        assert metric.periods == 4
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_retention_yaml_granularity_fallback():
+    """Test that YAML with granularity: month also parses for retention metrics."""
+    import os
+    import tempfile
+
+    from sidemantic.adapters.sidemantic import SidemanticAdapter
+
+    yaml_content = """
+metrics:
+  - name: monthly_retention
+    type: retention
+    entity: user_id
+    cohort_event: "event = 'signup'"
+    granularity: month
+    periods: 12
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        f.write(yaml_content)
+        tmp_path = f.name
+
+    try:
+        adapter = SidemanticAdapter()
+        graph = adapter.parse(tmp_path)
+        metric = graph.get_metric("monthly_retention")
+        assert metric.retention_granularity == "month"
+        assert metric.periods == 12
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_retention_export_roundtrip_retention_granularity():
+    """Test that export uses retention_granularity key and roundtrips correctly."""
+    import os
+    import tempfile
+
+    from sidemantic.adapters.sidemantic import SidemanticAdapter
+
+    # Create a graph with a retention metric
+    graph = SemanticGraph()
+    retention = Metric(
+        name="weekly_retention",
+        type="retention",
+        entity="user_id",
+        cohort_event="event = 'signup'",
+        retention_granularity="week",
+        periods=4,
+    )
+    graph.add_metric(retention)
+
+    # Export
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        tmp_path = f.name
+
+    try:
+        adapter = SidemanticAdapter()
+        adapter.export(graph, tmp_path)
+
+        # Re-parse and verify
+        graph2 = adapter.parse(tmp_path)
+        metric = graph2.get_metric("weekly_retention")
+        assert metric.retention_granularity == "week"
+        assert metric.periods == 4
+    finally:
+        os.unlink(tmp_path)

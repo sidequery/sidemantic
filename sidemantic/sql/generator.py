@@ -2310,10 +2310,19 @@ class SQLGenerator:
         if not model:
             raise ValueError(f"No model found for retention metric {metric_name}")
 
-        # Defaults
-        periods = metric.periods or 28
-        granularity = metric.retention_granularity or "day"
+        # Defaults (use `is not None` to avoid converting 0 to the default)
+        periods = metric.periods if metric.periods is not None else 28
+        granularity = metric.retention_granularity if metric.retention_granularity is not None else "day"
         activity_event = metric.activity_event or "TRUE"
+
+        # Replace {model} placeholders in event predicates with actual table alias
+        table_alias = "t" if model.sql else ""
+        if table_alias:
+            cohort_event = metric.cohort_event.replace("{model}", table_alias)
+            activity_event = activity_event.replace("{model}", table_alias)
+        else:
+            cohort_event = metric.cohort_event.replace("{model}.", "")
+            activity_event = activity_event.replace("{model}.", "")
 
         # Validate entity identifier
         if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
@@ -2385,7 +2394,7 @@ class SQLGenerator:
         sql = f"""WITH cohorts AS (
   SELECT {metric.entity}, MIN({trunc_expr}) AS cohort_date
   FROM {from_clause}
-  WHERE {metric.cohort_event}{filter_clause}
+  WHERE {cohort_event}{filter_clause}
   GROUP BY {metric.entity}
 ),
 activity AS (

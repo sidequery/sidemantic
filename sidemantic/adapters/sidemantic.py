@@ -301,7 +301,7 @@ class SidemanticAdapter(BaseAdapter):
                 cohort_event=measure_def.get("cohort_event"),
                 activity_event=measure_def.get("activity_event"),
                 periods=measure_def.get("periods"),
-                retention_granularity=measure_def.get("granularity")
+                retention_granularity=(measure_def.get("retention_granularity") or measure_def.get("granularity"))
                 if measure_def.get("type") == "retention"
                 else None,
                 # Cumulative/window parameters
@@ -423,7 +423,9 @@ class SidemanticAdapter(BaseAdapter):
             cohort_event=metric_def.get("cohort_event"),
             activity_event=metric_def.get("activity_event"),
             periods=metric_def.get("periods"),
-            retention_granularity=metric_def.get("granularity") if metric_type == "retention" else None,
+            retention_granularity=(metric_def.get("retention_granularity") or metric_def.get("granularity"))
+            if metric_type == "retention"
+            else None,
             window=metric_def.get("window"),
             grain_to_date=metric_def.get("grain_to_date"),
             window_expression=metric_def.get("window_expression"),
@@ -593,7 +595,7 @@ class SidemanticAdapter(BaseAdapter):
                 if measure.periods is not None:
                     measure_def["periods"] = measure.periods
                 if measure.retention_granularity:
-                    measure_def["granularity"] = measure.retention_granularity
+                    measure_def["retention_granularity"] = measure.retention_granularity
                 # Cumulative/window parameters
                 if measure.window:
                     measure_def["window"] = measure.window
@@ -682,7 +684,7 @@ class SidemanticAdapter(BaseAdapter):
         if measure.periods is not None:
             result["periods"] = measure.periods
         if measure.retention_granularity:
-            result["granularity"] = measure.retention_granularity
+            result["retention_granularity"] = measure.retention_granularity
         if measure.sql:
             result["sql"] = measure.sql
             # Auto-detect and export dependencies for derived measures

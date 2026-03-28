@@ -145,5 +145,143 @@ def test_adapter_validation():
     assert len(errors) == 0
 
 
+def test_dimension_window_field(tmp_path):
+    """Test that dimensions with window expressions are parsed and use window as sql_expr."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "events.yml"
+    yaml_path.write_text(
+        """
+models:
+  - name: events
+    table: public.events
+    primary_key: event_id
+    dimensions:
+      - name: event
+        type: categorical
+
+      - name: next_event
+        type: categorical
+        sql: event
+        window: "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
+        description: The next event after this one for the same person
+
+      - name: next_timestamp
+        type: time
+        sql: timestamp
+        window: "LEAD(timestamp) OVER (PARTITION BY person_id ORDER BY timestamp)"
+        description: Timestamp of the next event
+
+      - name: plain_dim
+        type: categorical
+        sql: status
+
+    metrics:
+      - name: event_count
+        agg: count
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+    model = graph.models["events"]
+
+    # Dimension without window: sql_expr returns sql or name
+    event_dim = model.get_dimension("event")
+    assert event_dim.window is None
+    assert event_dim.sql_expr == "event"
+
+    plain_dim = model.get_dimension("plain_dim")
+    assert plain_dim.window is None
+    assert plain_dim.sql_expr == "status"
+
+    # Dimension with window: sql_expr returns the window expression
+    next_event = model.get_dimension("next_event")
+    assert next_event.window == "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
+    assert next_event.sql == "event"
+    assert next_event.sql_expr == "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
+
+    next_ts = model.get_dimension("next_timestamp")
+    assert next_ts.window == "LEAD(timestamp) OVER (PARTITION BY person_id ORDER BY timestamp)"
+    assert next_ts.sql == "timestamp"
+    assert next_ts.sql_expr == next_ts.window
+
+
+def test_dimension_window_roundtrip(tmp_path):
+    """Test that window dimensions survive YAML export/import roundtrip."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "events.yml"
+    yaml_path.write_text(
+        """
+models:
+  - name: events
+    table: public.events
+    primary_key: event_id
+    dimensions:
+      - name: next_event
+        type: categorical
+        sql: event
+        window: "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
+
+    metrics:
+      - name: event_count
+        agg: count
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+
+    # Export
+    export_path = tmp_path / "exported.yml"
+    adapter.export(graph, export_path)
+
+    # Re-import
+    graph2 = adapter.parse(export_path)
+    model2 = graph2.models["events"]
+    dim = model2.get_dimension("next_event")
+    assert dim.window == "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
+    assert dim.sql == "event"
+    assert dim.sql_expr == dim.window
+
+
+def test_dimension_window_in_sql_generation():
+    """Test that window dimensions produce correct SQL in generated queries."""
+    from sidemantic.core.dimension import Dimension
+    from sidemantic.core.metric import Metric
+    from sidemantic.core.model import Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.sql.generator import SQLGenerator
+
+    graph = SemanticGraph()
+    model = Model(
+        name="events",
+        table="public.events",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(
+                name="event",
+                type="categorical",
+            ),
+            Dimension(
+                name="next_event",
+                type="categorical",
+                sql="event",
+                window="LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)",
+            ),
+        ],
+        metrics=[
+            Metric(name="event_count", agg="count"),
+        ],
+    )
+    graph.add_model(model)
+
+    gen = SQLGenerator(graph, dialect="duckdb")
+    sql = gen.generate(
+        metrics=["events.event_count"],
+        dimensions=["events.next_event"],
+    )
+
+    # The window expression should appear in the generated SQL
+    assert "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)" in sql
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

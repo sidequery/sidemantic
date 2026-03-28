@@ -265,6 +265,7 @@ class SidemanticAdapter(BaseAdapter):
                 value_format_name=dim_def.get("value_format_name"),
                 parent=dim_def.get("parent"),
                 metadata=dim_def.get("metadata"),
+                window=dim_def.get("window"),
             )
             dimensions.append(dimension)
 
@@ -526,6 +527,8 @@ class SidemanticAdapter(BaseAdapter):
                     dim_def["value_format_name"] = dim.value_format_name
                 if dim.parent:
                     dim_def["parent"] = dim.parent
+                if dim.window:
+                    dim_def["window"] = dim.window
                 result["dimensions"].append(dim_def)
 
         # Export metrics (model-level aggregations)

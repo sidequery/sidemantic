@@ -287,5 +287,65 @@ def test_bsl_order_items_date_extraction():
     assert "EXTRACT(YEAR FROM" in created_year.sql
 
 
+def test_healthcare_roundtrip():
+    """Test healthcare fixture roundtrip preserves compound/boolean measures."""
+    adapter = BSLAdapter()
+    graph1 = adapter.parse("tests/fixtures/bsl/healthcare.yml")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
+
+        encounters2 = graph2.models["encounters"]
+
+        # Compound measures preserved
+        total_oop = next(m for m in encounters2.metrics if m.name == "total_out_of_pocket")
+        assert total_oop.agg == "sum"
+        assert "total_claim_cost" in total_oop.sql
+        assert "payer_coverage" in total_oop.sql
+
+        # Boolean measures preserved
+        emergency = next(m for m in encounters2.metrics if m.name == "emergency_count")
+        assert emergency.agg == "sum"
+        assert "encounter_class" in emergency.sql
+
+        # With: joins preserved
+        patient_rel = next(r for r in encounters2.relationships if r.name == "patients")
+        assert patient_rel.foreign_key == "patient_id"
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_nyc_taxi_roundtrip():
+    """Test NYC taxi fixture roundtrip preserves time dimension and boolean measures."""
+    adapter = BSLAdapter()
+    graph1 = adapter.parse("tests/fixtures/bsl/nyc_taxi.yml")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
+
+        trips2 = graph2.models["fhvhv_trips"]
+
+        # Time dimension preserved
+        assert trips2.default_time_dimension == "pickup_datetime"
+        assert trips2.default_grain == "second"
+
+        # Boolean measures preserved
+        shared_rate = next(m for m in trips2.metrics if m.name == "shared_trip_rate")
+        assert shared_rate.agg == "avg"
+        assert "shared_match_flag" in shared_rate.sql
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -46,7 +46,7 @@ class Model(BaseModel):
     default_time_dimension: str | None = Field(
         None, description="Default time dimension for metrics (auto-included in queries)"
     )
-    default_grain: Literal["hour", "day", "week", "month", "quarter", "year"] | None = Field(
+    default_grain: Literal["second", "minute", "hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Default time granularity when using default_time_dimension"
     )
 

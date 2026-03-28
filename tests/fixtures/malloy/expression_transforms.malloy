@@ -1,0 +1,40 @@
+// Expression Transforms - Tests all Malloy-to-SQL expression transformations
+
+source: transforms is duckdb.table('data.parquet') extend {
+  primary_key: id
+
+  dimension:
+    id is id,
+    // ?? null coalescing -> COALESCE (simple)
+    safe_name is name ?? 'Unknown',
+    // ?? null coalescing -> COALESCE (triple chain)
+    fallback_value is primary_value ?? secondary_value ?? 'default',
+    // @date literal full -> DATE 'YYYY-MM-DD'
+    cutoff_full is @2024-01-15,
+    // @date literal month -> DATE 'YYYY-MM-01'
+    cutoff_month is @2024-03,
+    // @date literal year -> DATE 'YYYY-01-01'
+    cutoff_year is @2024,
+    // & (and-tree) with operators -> AND expansion
+    in_range is value < 2031 & > -8000,
+    // & (and-tree) with values -> AND with same operator
+    not_excluded is status != 'Cancelled' & 'Returned',
+    // pick/when/else -> CASE
+    category is
+      pick 'High' when score > 80
+      pick 'Medium' when score > 50
+      else 'Low'
+
+  measure:
+    record_count is count()
+}
+
+// Separate source for now literal (must be standalone expression)
+source: time_check is duckdb.table('data.parquet') extend {
+  primary_key: id
+  dimension:
+    id is id,
+    current_time is now
+
+  measure: check_count is count()
+}

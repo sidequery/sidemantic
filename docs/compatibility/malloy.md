@@ -75,7 +75,7 @@ The adapter infers dimension types heuristically from the SQL expression and fie
 | `field.second` through `field.year` | Corresponding granularity |
 | `::date` cast | `day` |
 
-Not mapped: `access` modifiers (`public`, `private`, `internal`).
+Not mapped: `access` modifiers (`public`, `private`, `internal`). Malloy's declared types (`::type`, `:::type`) are not used for type assignment; types are inferred heuristically (see tables above).
 
 ---
 
@@ -134,11 +134,11 @@ Not mapped: `--! styles` directives, `##! experimental` pragmas.
 | `join_one: alias is source on condition` | Supported (FK extracted from first identifier before `=` in the on-expression) |
 | Multiple joins in comma-separated list | Supported |
 | Inline source definition in join (`join_one: name is connection.table(...) extend { ... } with fk`) | Supported (inline source extracted as a separate model; relationship created with correct FK) |
-| Matrix operations (`left`, `right`, `full`, `inner`) | Partial support: parsed by the grammar but the join direction is not stored. All joins use the default mapping based on `join_one`/`join_many`/`join_cross`. |
+| Matrix operations (`left`, `right`, `full`, `inner`) | Supported (stored in `metadata["join_direction"]`) |
 | Multi-condition `on` clause (`a = b.a and c = b.c`) | Supported (first equality used as FK; all equality FKs stored in `metadata["composite_keys"]`; full condition stored in `metadata["on_condition"]`) |
 | Cross-source join conditions (e.g., `gender = cohort.gender and state = cohort.state`) | Supported (all FKs extracted; full condition preserved in metadata) |
 
-Not mapped: join `type` (`left`, `right`, `full`, `inner`).
+Not mapped: `access` modifiers on joins.
 
 ---
 
@@ -173,63 +173,68 @@ Segment naming: first filter is named `default_filter`, subsequent filters are n
 
 ## Rename
 
-Supported. `rename:` statements (e.g., `rename: new_name is old_name`, `rename: year_born is \`year\``) are mapped to `Dimension(name=new_name, sql=old_name)`. The dimension type is inferred from the old field name. Comma-separated rename lists are supported. Downstream dimension and measure expressions that reference the new name work correctly since the old name is preserved in the dimension's SQL.
+| Feature | Status |
+|---------|--------|
+| `rename: new_name is old_name` | Supported (mapped to `Dimension(name=new_name, sql=old_name)`) |
+| Backtick-quoted renames (`` rename: year_born is `year` ``) | Supported |
+| Comma-separated rename lists | Supported |
 
 ---
 
 ## Views (Named Queries Within Sources)
 
-Views defined inside a source with `view: name is { ... }` are parsed by the grammar but not extracted by the visitor. They do not produce separate models or any stored query definitions. This is intentional: views represent query definitions, not semantic model structure.
-
-Content within view blocks, including `group_by:`, `aggregate:`, `nest:`, `order_by:`, `limit:`, `top:`, `where:`, `having:`, `sample:`, `select:`, and `index:`, is parsed without error by the grammar but entirely ignored by the semantic extraction.
+Unsupported. `view:` definitions inside sources are query definitions, not semantic model structure. All view content (`group_by:`, `aggregate:`, `nest:`, `order_by:`, `limit:`, etc.) parses without error but is not extracted.
 
 ---
 
 ## Top-Level Queries
 
-`query:` and `run:` statements at the top level of a Malloy file are parsed by the grammar but not extracted by the visitor. They do not produce models. Named queries (`query: name is source -> { ... }`) and anonymous run statements (`run: source -> { ... }`) are both silently skipped.
+Unsupported. `query:` and `run:` statements parse without error but are not extracted.
 
 ---
 
 ## Query Pipelines
 
-The arrow operator (`->`) for chaining query stages is parsed by the grammar. When used in a source definition (e.g., `source: cohort is names -> { ... } extend { ... }`), the base source's table or extends reference is preserved. The pipeline query body is not evaluated (its aggregate/group_by fields are not extracted), but the extend block is fully processed. This means pipeline-derived sources retain their connection to the base table.
+| Feature | Status |
+|---------|--------|
+| `->` in source definitions (`source: cohort is names -> { ... } extend { ... }`) | Partial support: base source preserved, extend block processed, pipeline query body not evaluated |
+| `->` in queries/views | Unsupported (queries not extracted) |
 
 ---
 
 ## Refinements
 
-The `+` operator for query/view refinement is parsed by the grammar as `SQRefinedQuery` or `SegRefine`. In the context of source definitions, when `+` is used instead of `extend` (old Malloy syntax), the base source is processed and the refinement block is processed best-effort for dimension:, measure:, join:, where:, and primary_key: statements. In the context of views and queries (which are not extracted), refinements are naturally skipped.
+| Feature | Status |
+|---------|--------|
+| `+` in source context (old extend syntax: `base + { ... }`) | Supported (dimension:, measure:, join:, where:, primary_key: processed) |
+| `+` in view/query context | Unsupported (views/queries not extracted) |
 
 ---
 
 ## Nesting
 
-`nest:` statements within queries/views allow embedding sub-queries as nested result sets. The grammar parses these correctly, including named nests (`nest: name is { ... }`), reference nests (`nest: view_name`), and refined nests (`nest: view_name + { ... }`). Since views and queries are not extracted, nesting has no effect on the semantic model.
+Unsupported. `nest:` is a query-level construct; since views and queries are not extracted, nesting has no effect on the semantic model.
 
 ---
 
 ## Grouping and Aggregation (Query-Level)
 
-`group_by:`, `aggregate:`, `calculate:`, `project:`/`select:`, `index:`, and `declare:` statements within query blocks are parsed by the grammar but not extracted. These are query-time operations, not semantic model definitions.
+Unsupported. `group_by:`, `aggregate:`, `calculate:`, `project:`/`select:`, `index:`, and `declare:` are query-time operations, not semantic model definitions.
 
 ---
 
 ## Accept/Except (Field Visibility)
 
-Partial support. `accept:` and `except:` statements within source extend blocks are recognized by the visitor. The field names are parsed and stored internally, though field filtering is best-effort since the adapter doesn't have knowledge of all underlying table columns. The `except:` clauses in composite source patterns (e.g., `flights_cubed extend { where: ... except: \`field1\`, \`field2\` }`) are parsed.
+| Feature | Status |
+|---------|--------|
+| `accept:` field lists in source extend blocks | Partial support (field names parsed, filtering best-effort) |
+| `except:` field lists in source extend blocks | Partial support (field names parsed, filtering best-effort) |
 
 ---
 
 ## Include Blocks
 
-`source extend { ... } include { ... }` blocks are parsed by the grammar. The `SQInclude` context in the visitor processes the base source expression but does not handle the include block contents. Field visibility restrictions from include blocks are not applied.
-
----
-
-## Type System
-
-Malloy's type system (`string`, `number`, `boolean`, `date`, `timestamp`, `timestamptz`) appears in the grammar for casts (`::type`, `:::type`), function type parameters, and source parameter declarations. The adapter does not use Malloy's declared types for dimension type assignment. Instead, types are inferred heuristically from expression content and field names (see Type Inference table above).
+Partial support. Base source expression is processed, but include block contents and field visibility restrictions are not applied.
 
 ---
 
@@ -312,16 +317,16 @@ Sidemantic can export its semantic model back to Malloy format.
 
 ## Experimental and Advanced Features
 
-Partially supported. `timezone:` statements are stored in `Model.metadata["timezone"]`. `declare:` field declarations are processed as dimensions in old `+` syntax blocks. `compose()` sources process the first composed source. `##! experimental{...}` pragma annotations and `sample:` specifications are parsed by the grammar without error but not processed by the visitor.
+| Feature | Status |
+|---------|--------|
+| `timezone: 'zone'` | Supported (stored in `Model.metadata["timezone"]`) |
+| `declare:` field declarations in old `+` syntax blocks | Supported (processed as dimensions) |
+| `compose()` sources | Partial support (first composed source processed) |
+| `##! experimental{...}` pragma | Parsed without error, not stored |
+| `sample:` | Parsed without error, not stored |
 
 ---
 
 ## Liquid / Templating
 
 Not applicable. Malloy does not use Liquid templating. SQL interpolation via `%{ }` is the closest equivalent and is handled as described above.
-
----
-
-## Grammar Coverage
-
-The adapter uses the full official Malloy grammar (MalloyLexer.g4 and MalloyParser.g4) with ANTLR4-generated Python parser classes. All valid Malloy syntax parses without error. The visitor selectively extracts only semantic model information (sources, dimensions, measures, joins, segments, imports). Grammar constructs that relate to query execution (views, queries, runs, pipelines, nesting, grouping, ordering, limiting) parse correctly but are intentionally not mapped to Sidemantic concepts.

@@ -1107,9 +1107,15 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             if sq_expr and not isinstance(sq_expr, MalloyParser.SQIDContext):
                 self._extract_inline_join_source(name, sq_expr)
 
-        # Get foreign key from 'with' clause
+        # Store join direction (LEFT, RIGHT, FULL, INNER) if specified
         foreign_key = None
         join_metadata = None
+        matrix_op = ctx.matrixOperation() if hasattr(ctx, "matrixOperation") else None
+        if matrix_op:
+            direction = self._get_text(matrix_op).lower()
+            join_metadata = {"join_direction": direction}
+
+        # Get foreign key from 'with' clause
         if isinstance(ctx, MalloyParser.JoinWithContext):
             field_expr = ctx.fieldExpr()
             if field_expr:
@@ -1119,7 +1125,9 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             if join_expr:
                 expr_text = self._get_text(join_expr)
                 # Store full condition in metadata
-                join_metadata = {"on_condition": expr_text}
+                if join_metadata is None:
+                    join_metadata = {}
+                join_metadata["on_condition"] = expr_text
                 # Extract all FKs from equalities: field = other.field
                 fk_matches = re.findall(r"(\w+)\s*=\s*\w+\.\w+", expr_text)
                 if fk_matches:

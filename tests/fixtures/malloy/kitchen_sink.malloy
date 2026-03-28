@@ -1,0 +1,192 @@
+// Kitchen Sink - Comprehensive Malloy fixture exercising all supported features
+// Multi-entity e-commerce model backed by DuckDB
+
+## Region reference data
+source: regions is duckdb.table('analytics.regions') extend {
+  primary_key: id
+  dimension: id is id
+  dimension: name is name
+  dimension: country is country
+  measure: region_count is count()
+}
+
+## Customer entity with varied dimension types
+# desc: Customer profiles and lifetime metrics
+source: customers is duckdb.table('analytics.customers') extend {
+  primary_key: id
+
+  dimension:
+    id is id,
+    email is email,
+    name is name,
+    region_id is region_id,
+    tier is tier,
+    // pick/when/else -> CASE
+    tier_label is
+      pick 'Top Tier' when tier = 'platinum'
+      pick 'High Tier' when tier = 'gold'
+      pick 'Mid Tier' when tier = 'silver'
+      else 'Entry Tier',
+    // Boolean from comparison
+    is_high_value is lifetime_value > 2000,
+    // Null coalescing -> COALESCE
+    display_name is name ?? email ?? 'Unknown',
+    // Time with granularity (Malloy dot syntax)
+    registered_month is registered_at.month,
+    registered_year is registered_at.year,
+    // Time with ::date cast
+    registered_date is registered_at::date
+
+  measure:
+    customer_count is count(),
+    unique_emails is count(email),
+    avg_lifetime_value is avg(lifetime_value),
+    total_lifetime_value is sum(lifetime_value),
+    max_lifetime_value is max(lifetime_value),
+    min_lifetime_value is min(lifetime_value),
+    // Filtered measure
+    high_value_count is count() { where: lifetime_value > 2000 }
+
+  join_one: regions with region_id
+}
+
+## Product catalog
+source: products is duckdb.table('analytics.products') extend {
+  primary_key: id
+
+  dimension:
+    id is id,
+    name is name,
+    sku is sku,
+    price is price,
+    cost is cost,
+    is_active is is_active,
+    created_at is created_at,
+    // Arithmetic expression
+    margin is (price - cost) / price * 100,
+    // Computed label
+    product_label is concat(sku, ' - ', name)
+
+  measure:
+    product_count is count(),
+    avg_price is avg(price),
+    // Dot-method aggregation
+    total_cost is cost.sum(),
+    // Filtered measure
+    active_count is count() { where: is_active = true }
+}
+
+## Orders with joins, segments, and diverse measures
+# desc: Order transactions with full lifecycle tracking
+source: orders is duckdb.table('analytics.orders') extend {
+  primary_key: id
+
+  // Source-level where (segment)
+  where: status != 'test'
+
+  dimension:
+    id is id,
+    customer_id is customer_id,
+    status is status,
+    channel is channel,
+    total is total,
+    subtotal is subtotal,
+    tax is tax,
+    shipping is shipping,
+    discount is discount,
+    is_first_order is is_first_order,
+    // Time with DATE_TRUNC
+    created_month is DATE_TRUNC('month', created_at),
+    created_year is DATE_TRUNC('year', created_at),
+    // Apply-pick: field ? pick ... when ...
+    order_size is total ?
+      pick 'Small' when < 100
+      pick 'Medium' when < 500
+      pick 'Large' when < 2000
+      else 'Enterprise',
+    // Date literal
+    is_recent is created_at > @2024-02-01
+
+  measure:
+    order_count is count(),
+    total_revenue is sum(total),
+    avg_order_value is avg(total),
+    min_order_value is min(total),
+    max_order_value is max(total),
+    unique_customers is count(customer_id),
+    total_discount is sum(discount),
+    // Filtered measures
+    delivered_count is count() { where: status = 'delivered' },
+    delivered_revenue is sum(total) { where: status = 'delivered' },
+    web_orders is count() { where: channel = 'web' },
+    // Derived measure
+    delivery_rate is delivered_count * 100.0 / order_count
+
+  // Joins with different types
+  join_one: customers with customer_id
+  join_many: order_items on id = order_items.order_id
+
+  // Rename
+  rename: order_status is status
+}
+
+## Order line items
+source: order_items is duckdb.table('analytics.order_items') extend {
+  primary_key: id
+
+  dimension:
+    id is id,
+    order_id is order_id,
+    product_id is product_id,
+    quantity is quantity,
+    unit_price is unit_price,
+    line_discount is line_discount
+
+  measure:
+    item_count is count(),
+    total_quantity is sum(quantity),
+    total_line_revenue is sum(unit_price * quantity),
+    total_line_discount is sum(line_discount)
+
+  join_one: products with product_id
+}
+
+## SQL-based source (derived table)
+source: order_summary is duckdb.sql("""
+  SELECT
+    customer_id,
+    COUNT(*) as order_count,
+    SUM(total) as total_spent,
+    MIN(created_at) as first_order_at,
+    MAX(created_at) as last_order_at
+  FROM analytics.orders
+  GROUP BY customer_id
+""") extend {
+  primary_key: customer_id
+
+  dimension:
+    customer_id is customer_id,
+    order_count is order_count,
+    total_spent is total_spent
+
+  measure:
+    summary_count is count(),
+    avg_total_spent is avg(total_spent)
+}
+
+## Source inheritance (extends)
+# desc: VIP customers with lifetime value over 2000
+source: vip_customers is customers extend {
+  where: lifetime_value > 2000
+
+  measure:
+    vip_count is count()
+}
+
+## Join with direction modifier
+source: directed_orders is duckdb.table('analytics.orders') extend {
+  primary_key: id
+  dimension: id is id, customer_id is customer_id
+  measure: order_count is count()
+  join_one: customers left on customer_id = customers.id
+}

@@ -218,6 +218,30 @@ def _filter_node_to_sql(node: ast.AST) -> str | None:
             return f"NOT ({operand})"
         return None
 
+    # BSL/Ibis filter method calls: _.col.isin([...]), _.col.notin([...]),
+    # _.col.between(a, b), _.col.isnull(), _.col.notnull()
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        method = node.func.attr
+        col_sql = _filter_node_to_sql(node.func.value)
+        if col_sql:
+            if method == "isin" and node.args:
+                values = _filter_list_to_sql(node.args[0])
+                if values is not None:
+                    return f"{col_sql} IN ({values})"
+            elif method == "notin" and node.args:
+                values = _filter_list_to_sql(node.args[0])
+                if values is not None:
+                    return f"{col_sql} NOT IN ({values})"
+            elif method == "between" and len(node.args) == 2:
+                low = _filter_node_to_sql(node.args[0])
+                high = _filter_node_to_sql(node.args[1])
+                if low and high:
+                    return f"{col_sql} BETWEEN {low} AND {high}"
+            elif method == "isnull":
+                return f"{col_sql} IS NULL"
+            elif method == "notnull":
+                return f"{col_sql} IS NOT NULL"
+
     if isinstance(node, ast.Attribute):
         attrs = _collect_attrs(node)
         if attrs:
@@ -232,6 +256,23 @@ def _filter_node_to_sql(node: ast.AST) -> str | None:
             return str(node.value)
 
     return None
+
+
+def _filter_list_to_sql(node: ast.AST) -> str | None:
+    """Convert a Python list literal AST node to SQL IN-list values.
+
+    [1, 2, 3] -> "1, 2, 3"
+    ["a", "b"] -> "'a', 'b'"
+    """
+    if not isinstance(node, ast.List):
+        return None
+    parts = []
+    for elt in node.elts:
+        val = _filter_node_to_sql(elt)
+        if val is None:
+            return None
+        parts.append(val)
+    return ", ".join(parts)
 
 
 def bsl_filter_to_sql(expr: str) -> str:

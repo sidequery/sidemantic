@@ -1051,10 +1051,41 @@ class TestBSLAdapterFilter:
         assert "bsl_filter" in flights.metadata
         assert "year" in flights.metadata["bsl_filter"]
 
-        # Filter baked into model.sql as subquery
+        # Filter baked into model.sql as subquery, table cleared for export safety
         assert flights.sql is not None
         assert "WHERE" in flights.sql
         assert "year > 2020" in flights.sql
+        assert flights.table is None
+        assert flights.metadata["bsl_table"] == "flights_tbl"
+
+    def test_filter_preserved_in_cross_format_export(self):
+        """Filtered BSL model preserves filter when exported to Cube."""
+        from sidemantic.adapters.cube import CubeAdapter
+
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/yaml_example_filter.yaml")
+
+        cube_adapter = CubeAdapter()
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            temp_path = Path(f.name)
+
+        try:
+            cube_adapter.export(graph, temp_path)
+            import yaml
+
+            with open(temp_path) as f:
+                data = yaml.safe_load(f)
+
+            # The filtered model should export with sql (not sql_table)
+            # so the filter is preserved
+            flights_cube = next(c for c in data["cubes"] if c["name"] == "flights")
+            assert "sql" in flights_cube
+            assert "year > 2020" in flights_cube["sql"]
+        finally:
+            temp_path.unlink(missing_ok=True)
 
 
 class TestBSLFilterToSQL:
@@ -1091,6 +1122,30 @@ class TestBSLFilterToSQL:
         result = bsl_filter_to_sql("(_.year > 2020) & ~(_.origin == 'LAX')")
         assert "AND" in result
         assert "NOT (origin = 'LAX')" in result
+
+    def test_isin(self):
+        result = bsl_filter_to_sql("_.origin.isin(['LAX', 'SFO', 'JFK'])")
+        assert result == "origin IN ('LAX', 'SFO', 'JFK')"
+
+    def test_notin(self):
+        result = bsl_filter_to_sql("_.status.notin(['cancelled', 'delayed'])")
+        assert result == "status NOT IN ('cancelled', 'delayed')"
+
+    def test_isin_numeric(self):
+        result = bsl_filter_to_sql("_.year.isin([2020, 2021, 2022])")
+        assert result == "year IN (2020, 2021, 2022)"
+
+    def test_between(self):
+        result = bsl_filter_to_sql("_.year.between(2020, 2025)")
+        assert result == "year BETWEEN 2020 AND 2025"
+
+    def test_isnull(self):
+        result = bsl_filter_to_sql("_.origin.isnull()")
+        assert result == "origin IS NULL"
+
+    def test_notnull(self):
+        result = bsl_filter_to_sql("_.origin.notnull()")
+        assert result == "origin IS NOT NULL"
 
 
 class TestBSLFilterAutoApply:

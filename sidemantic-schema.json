@@ -111,6 +111,12 @@
           "description": "Parent dimension for hierarchies (e.g., 'state' parent is 'country')",
           "title": "Parent"
         },
+        "public": {
+          "default": true,
+          "description": "Whether dimension is visible in API/UI",
+          "title": "Public",
+          "type": "boolean"
+        },
         "sql": {
           "anyOf": [
             {
@@ -546,6 +552,12 @@
           "default": null,
           "description": "Time offset for denominator (e.g., '1 month')",
           "title": "Offset Window"
+        },
+        "public": {
+          "default": true,
+          "description": "Whether metric is visible in API/UI",
+          "title": "Public",
+          "type": "boolean"
         },
         "sql": {
           "anyOf": [
@@ -1474,6 +1486,12 @@
             "description": "Time offset for denominator (e.g., '1 month')",
             "title": "Offset Window"
           },
+          "public": {
+            "default": true,
+            "description": "Whether metric is visible in API/UI",
+            "title": "Public",
+            "type": "boolean"
+          },
           "sql": {
             "anyOf": [
               {
@@ -1708,6 +1726,12 @@
                 "default": null,
                 "description": "Parent dimension for hierarchies (e.g., 'state' parent is 'country')",
                 "title": "Parent"
+              },
+              "public": {
+                "default": true,
+                "description": "Whether dimension is visible in API/UI",
+                "title": "Public",
+                "type": "boolean"
               },
               "sql": {
                 "anyOf": [
@@ -2144,6 +2168,12 @@
                 "default": null,
                 "description": "Time offset for denominator (e.g., '1 month')",
                 "title": "Offset Window"
+              },
+              "public": {
+                "default": true,
+                "description": "Whether metric is visible in API/UI",
+                "title": "Public",
+                "type": "boolean"
               },
               "sql": {
                 "anyOf": [

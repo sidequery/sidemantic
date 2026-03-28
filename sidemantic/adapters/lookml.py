@@ -66,14 +66,28 @@ class LookMLAdapter(BaseAdapter):
                 merged = merge_model(refinement_for_merge, graph.models[base_name])
                 graph.models[base_name] = merged
 
-        # Resolve extends chains
-        try:
-            resolved = resolve_model_inheritance(graph.models)
+        # Resolve extends chains. Pre-filter to models whose full chain
+        # is present so one broken/missing parent doesn't block valid ones.
+        def _chain_resolvable(name: str, visited: set[str] | None = None) -> bool:
+            if visited is None:
+                visited = set()
+            if name in visited:
+                return False  # circular
+            model = graph.models.get(name)
+            if not model:
+                return False
+            if not model.extends:
+                return True
+            visited.add(name)
+            return _chain_resolvable(model.extends, visited)
+
+        resolvable = {n: m for n, m in graph.models.items() if _chain_resolvable(n)}
+        unresolvable = {n: m for n, m in graph.models.items() if n not in resolvable}
+
+        if resolvable:
+            resolved = resolve_model_inheritance(resolvable)
+            resolved.update(unresolvable)
             graph.models = resolved
-        except ValueError:
-            # If inheritance resolution fails (missing parent, circular),
-            # continue with unresolved models rather than crashing
-            pass
 
         # Second pass: parse explores and add relationships
         for lkml_file in lkml_files:
@@ -730,13 +744,14 @@ class LookMLAdapter(BaseAdapter):
 
         # Handle percentile type with proper SQL generation
         if measure_type == "percentile":
-            percentile_value = measure_def.get("percentile", 50)
             sql = measure_def.get("sql")
-            if sql:
-                sql = sql.replace("${TABLE}", "{model}")
-                sql = self._resolve_dimension_references(sql, dimension_sql_lookup or {})
+            if not sql:
+                return None  # Skip placeholder percentile measures without SQL
+            sql = sql.replace("${TABLE}", "{model}")
+            sql = self._resolve_dimension_references(sql, dimension_sql_lookup or {})
+            percentile_value = measure_def.get("percentile", 50)
             fraction = float(percentile_value) / 100.0
-            percentile_sql = f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY {sql})" if sql else None
+            percentile_sql = f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY {sql})"
             meta = {}
             if measure_def.get("hidden") in ("yes", True):
                 meta["hidden"] = True
@@ -929,6 +944,8 @@ class LookMLAdapter(BaseAdapter):
 
         sql_always_where = explore_def.get("sql_always_where")
         if sql_always_where:
+            # Translate LookML ${view.field} references to {model}.field
+            sql_always_where = re.sub(r"\$\{(\w+)\.(\w+)\}", r"{model}.\2", sql_always_where)
             segment_name = f"_sql_always_where_{explore_name}"
             # Skip if this exact segment already exists
             existing_names = {s.name for s in base_model.segments}

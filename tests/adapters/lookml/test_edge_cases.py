@@ -139,7 +139,7 @@ def test_lookml_explore_from_join_aliasing():
 
 
 def test_lookml_sql_always_where_segment():
-    """Test that sql_always_where creates a segment on the base model."""
+    """Test that sql_always_where creates a segment with translated refs."""
     adapter = LookMLAdapter()
     graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
 
@@ -151,6 +151,9 @@ def test_lookml_sql_always_where_segment():
     sql_where_seg = fact_orders.get_segment("_sql_always_where_orders")
     assert sql_where_seg is not None
     assert "deleted" in sql_where_seg.sql
+    # ${fact_orders.status} should be translated to {model}.status
+    assert "${fact_orders.status}" not in sql_where_seg.sql
+    assert "{model}.status" in sql_where_seg.sql
 
 
 def test_lookml_always_filter_strips_view_qualifier():
@@ -265,6 +268,89 @@ explore: orders {
         assert "dim_customers" in rel_names
         cust_rel = next(r for r in fact_orders.relationships if r.name == "dim_customers")
         assert cust_rel.foreign_key == "customer_id"
+
+
+def test_lookml_inheritance_resilient_to_missing_parent():
+    """Test that one broken extends chain doesn't block valid ones."""
+    import tempfile
+
+    lkml_content = """
+view: good_parent {
+  sql_table_name: schema.parent ;;
+  dimension: id { type: number primary_key: yes sql: ${TABLE}.id ;; }
+  measure: count { type: count }
+}
+
+view: good_child {
+  extends: [good_parent]
+  sql_table_name: schema.child ;;
+  dimension: extra { type: string sql: ${TABLE}.extra ;; }
+}
+
+view: orphan_child {
+  extends: [nonexistent_parent]
+  sql_table_name: schema.orphan ;;
+  dimension: id { type: number primary_key: yes sql: ${TABLE}.id ;; }
+}
+"""
+    adapter = LookMLAdapter()
+    with tempfile.NamedTemporaryFile(suffix=".lkml", mode="w", delete=False) as f:
+        f.write(lkml_content)
+        f.flush()
+        graph = adapter.parse(Path(f.name))
+
+    # good_child should have inherited from good_parent despite orphan_child's broken chain
+    good_child = graph.get_model("good_child")
+    assert good_child.get_dimension("id") is not None  # inherited
+    assert good_child.get_dimension("extra") is not None  # own
+    assert good_child.get_metric("count") is not None  # inherited
+
+    # orphan_child should still exist, just unresolved
+    orphan = graph.get_model("orphan_child")
+    assert orphan is not None
+    assert orphan.extends == "nonexistent_parent"
+
+
+def test_lookml_percentile_without_sql_skipped():
+    """Test that percentile measures without SQL are skipped, not crash."""
+    import tempfile
+
+    lkml_content = """
+view: test_view {
+  sql_table_name: schema.test ;;
+
+  dimension: id {
+    type: number
+    primary_key: yes
+    sql: ${TABLE}.id ;;
+  }
+
+  measure: p50_no_sql {
+    type: percentile
+    percentile: 50
+  }
+
+  measure: p90_with_sql {
+    type: percentile
+    percentile: 90
+    sql: ${TABLE}.score ;;
+  }
+}
+"""
+    adapter = LookMLAdapter()
+    with tempfile.NamedTemporaryFile(suffix=".lkml", mode="w", delete=False) as f:
+        f.write(lkml_content)
+        f.flush()
+        graph = adapter.parse(Path(f.name))
+
+    test_view = graph.get_model("test_view")
+    # No-SQL percentile should be gracefully skipped
+    assert test_view.get_metric("p50_no_sql") is None
+    # With-SQL percentile should work
+    p90 = test_view.get_metric("p90_with_sql")
+    assert p90 is not None
+    assert "PERCENTILE_CONT" in p90.sql
+    assert "0.9" in p90.sql
 
 
 def test_lookml_explore_meta():

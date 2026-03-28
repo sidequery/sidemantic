@@ -323,6 +323,9 @@ class SQLGenerator:
             # Conversion metrics need special handling
             if metric.type == "conversion":
                 return True
+            # Retention metrics need special handling
+            if metric.type == "retention":
+                return True
             return False
 
         needs_window_functions = any(metric_needs_window(m) for m in metrics)
@@ -2197,6 +2200,170 @@ class SQLGenerator:
 
         raise NotImplementedError(f"Metric type {metric.type} not yet implemented")
 
+    def _generate_retention_query(
+        self,
+        metric_name: str,
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+    ) -> str:
+        """Generate SQL for cohort retention metrics.
+
+        Uses a multi-CTE pattern:
+        1. cohorts: identify each entity's first qualifying event (cohort_date)
+        2. activity: distinct entity activity dates
+        3. retention: join cohorts to activity, compute periods_since and active_users
+        4. cohort_sizes: count of entities per cohort_date
+        5. Final SELECT: retention percentage per cohort_date and period
+
+        Args:
+            metric_name: Name of the retention metric
+            dimensions: List of dimension references (unused for retention, reserved)
+            filters: List of filter expressions
+            order_by: List of fields to order by
+            limit: Maximum number of rows to return
+
+        Returns:
+            SQL query string
+        """
+        import re as _re
+
+        # Resolve metric and model
+        metric = None
+        model = None
+
+        if "." in metric_name:
+            model_name, measure_name = metric_name.split(".", 1)
+            model = self.graph.get_model(model_name)
+            if model:
+                metric = model.get_metric(measure_name)
+        else:
+            try:
+                metric = self.graph.get_metric(metric_name)
+            except KeyError:
+                pass
+
+        if not metric or not metric.entity or not metric.cohort_event:
+            raise ValueError(f"Retention metric {metric_name} missing required fields (entity, cohort_event)")
+
+        # Find the model that owns this metric if not already found
+        if not model:
+            for m_name, m in self.graph.models.items():
+                if m.get_metric(metric_name):
+                    model = m
+                    break
+            if not model:
+                for m_name, m in self.graph.models.items():
+                    for dim in m.dimensions:
+                        if dim.name == metric.entity:
+                            model = m
+                            break
+                    if model:
+                        break
+
+        if not model:
+            raise ValueError(f"No model found for retention metric {metric_name}")
+
+        # Defaults
+        periods = metric.periods or 28
+        granularity = metric.retention_granularity or "day"
+        activity_event = metric.activity_event or "TRUE"
+
+        # Validate entity identifier
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
+            raise ValueError(f"Invalid entity identifier: {metric.entity}")
+        if not isinstance(periods, int) or periods < 1:
+            raise ValueError(f"Invalid periods value: {periods}")
+
+        # Find timestamp dimension
+        timestamp_dim = None
+        for dim in model.dimensions:
+            if dim.type == "time":
+                timestamp_dim = dim.name
+                break
+
+        if not timestamp_dim:
+            raise ValueError("Retention metrics require a time dimension on the model")
+
+        # Build FROM clause
+        if model.sql:
+            from_clause = f"({model.sql}) AS t"
+        else:
+            from_clause = model.table
+
+        # Build granularity-specific date truncation and interval
+        if granularity == "day":
+            trunc_expr = f"{timestamp_dim}::date"
+            diff_expr = "a.active_date - c.cohort_date"
+            periods_label = "days_since"
+        elif granularity == "week":
+            trunc_expr = f"{self._date_trunc('week', timestamp_dim)}::date"
+            diff_expr = "(a.active_date - c.cohort_date) / 7"
+            periods_label = "weeks_since"
+        elif granularity == "month":
+            trunc_expr = f"{self._date_trunc('month', timestamp_dim)}::date"
+            diff_expr = (
+                "(EXTRACT(YEAR FROM a.active_date) - EXTRACT(YEAR FROM c.cohort_date)) * 12"
+                " + (EXTRACT(MONTH FROM a.active_date) - EXTRACT(MONTH FROM c.cohort_date))"
+            )
+            periods_label = "months_since"
+        else:
+            raise ValueError(f"Unsupported retention granularity: {granularity}")
+
+        # Build optional WHERE filters for the source data
+        filter_clause = ""
+        if filters:
+            filter_clause = " AND " + " AND ".join(filters)
+
+        order_clause = "\nORDER BY r.cohort_date, r.periods_since"
+        if order_by:
+            order_fields = []
+            for field in order_by:
+                field_name = field.split(".", 1)[1] if "." in field else field
+                order_fields.append(field_name)
+            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"\nLIMIT {limit}"
+
+        sql = f"""WITH cohorts AS (
+  SELECT {metric.entity}, MIN({trunc_expr}) AS cohort_date
+  FROM {from_clause}
+  WHERE {metric.cohort_event}{filter_clause}
+  GROUP BY {metric.entity}
+),
+activity AS (
+  SELECT DISTINCT {metric.entity}, {trunc_expr} AS active_date
+  FROM {from_clause}
+  WHERE {activity_event}{filter_clause}
+),
+retention AS (
+  SELECT
+    c.cohort_date,
+    CAST({diff_expr} AS INTEGER) AS periods_since,
+    COUNT(DISTINCT c.{metric.entity}) AS active_users
+  FROM cohorts c
+  JOIN activity a ON c.{metric.entity} = a.{metric.entity} AND a.active_date >= c.cohort_date
+  WHERE CAST({diff_expr} AS INTEGER) <= {periods}
+  GROUP BY 1, 2
+),
+cohort_sizes AS (
+  SELECT cohort_date, COUNT(DISTINCT {metric.entity}) AS cohort_size
+  FROM cohorts GROUP BY 1
+)
+SELECT
+  r.cohort_date,
+  r.periods_since AS {periods_label},
+  r.active_users,
+  c.cohort_size,
+  ROUND(r.active_users * 100.0 / c.cohort_size, 1) AS retention_pct
+FROM retention r
+JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}"""
+
+        return sql.strip()
+
     def _generate_conversion_query(
         self,
         metric_name: str,
@@ -2427,6 +2594,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         time_comparison_metrics = []
         offset_ratio_metrics = []
         conversion_metrics = []
+        retention_metrics = []
         base_metrics = []
         time_comparison_base_plans = {}
         regular_expression_metric_plans = {}
@@ -2570,6 +2738,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
             elif metric and metric.type == "conversion":
                 add_unique(conversion_metrics, m)
                 # Conversion metrics need special handling - don't add to base_metrics
+            elif metric and metric.type == "retention":
+                add_unique(retention_metrics, m)
+                # Retention metrics need special handling - don't add to base_metrics
             else:
                 # Regular metric or measure
                 metric_ref = canonical_ref(m, resolved_context)
@@ -2595,6 +2766,10 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # them in the outer window pass.
         if precomputed_cumulative_metrics:
             cumulative_metrics = [m for m in cumulative_metrics if m not in precomputed_cumulative_metrics]
+
+        # Handle retention metrics separately - they need a completely different pattern
+        if retention_metrics:
+            return self._generate_retention_query(retention_metrics[0], dimensions, filters, order_by, limit)
 
         # Handle conversion metrics separately - they need a completely different pattern
         if conversion_metrics:

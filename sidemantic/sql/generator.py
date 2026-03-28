@@ -75,6 +75,51 @@ class SQLGenerator:
             # Standard SQL: INTERVAL '7 days'
             return f"INTERVAL '{num} {unit}'"
 
+    def _date_diff(self, later: str, earlier: str, unit: str = "day") -> str:
+        """Generate dialect-specific date difference expression.
+
+        Args:
+            later: SQL expression for the later date
+            earlier: SQL expression for the earlier date
+            unit: Time unit for the difference (e.g., "day")
+
+        Returns:
+            SQL expression computing the difference in the given unit
+        """
+        if self.dialect == "bigquery":
+            return f"DATE_DIFF({later}, {earlier}, {unit.upper()})"
+        elif self.dialect == "snowflake":
+            return f"DATEDIFF('{unit}', {earlier}, {later})"
+        else:
+            # DuckDB and Postgres support direct date subtraction
+            return f"({later} - {earlier})"
+
+    def _strip_model_prefixes(self, filters: list[str], model_name: str) -> list[str]:
+        """Strip model name prefixes from filter column references.
+
+        Retention and conversion CTEs query the raw table directly, so qualified
+        references like ``events.region`` need to become just ``region``.
+
+        Args:
+            filters: List of filter SQL expressions
+            model_name: Model name whose prefix should be stripped
+
+        Returns:
+            Filters with model prefixes removed
+        """
+        result = []
+        for f in filters:
+            try:
+                parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                for column in parsed.find_all(exp.Column):
+                    tbl = column.table
+                    if tbl and tbl.replace("_cte", "") == model_name:
+                        column.set("table", None)
+                result.append(parsed.sql(dialect=self.dialect))
+            except Exception:
+                result.append(f)
+        return result
+
     def _quote_alias(self, name: str) -> str:
         """Quote an identifier for use as a SQL alias.
 
@@ -2276,15 +2321,21 @@ class SQLGenerator:
         if not isinstance(periods, int) or periods < 1:
             raise ValueError(f"Invalid periods value: {periods}")
 
-        # Find timestamp dimension
+        # Find timestamp dimension: prefer model.default_time_dimension, fall back to first time dim
         timestamp_dim = None
-        for dim in model.dimensions:
-            if dim.type == "time":
-                timestamp_dim = dim.name
-                break
+        if model.default_time_dimension:
+            timestamp_dim = model.get_dimension(model.default_time_dimension)
+        if not timestamp_dim:
+            for dim in model.dimensions:
+                if dim.type == "time":
+                    timestamp_dim = dim
+                    break
 
         if not timestamp_dim:
             raise ValueError("Retention metrics require a time dimension on the model")
+
+        # Use sql_expr for actual SQL, name for alias
+        ts_sql = timestamp_dim.sql_expr
 
         # Build FROM clause
         if model.sql:
@@ -2292,17 +2343,17 @@ class SQLGenerator:
         else:
             from_clause = model.table
 
-        # Build granularity-specific date truncation and interval
+        # Build granularity-specific date truncation and date diff (dialect-aware)
         if granularity == "day":
-            trunc_expr = f"{timestamp_dim}::date"
-            diff_expr = "a.active_date - c.cohort_date"
+            trunc_expr = f"CAST({ts_sql} AS DATE)"
+            diff_expr = self._date_diff("a.active_date", "c.cohort_date", "day")
             periods_label = "days_since"
         elif granularity == "week":
-            trunc_expr = f"{self._date_trunc('week', timestamp_dim)}::date"
-            diff_expr = "(a.active_date - c.cohort_date) / 7"
+            trunc_expr = f"CAST({self._date_trunc('week', ts_sql)} AS DATE)"
+            diff_expr = f"{self._date_diff('a.active_date', 'c.cohort_date', 'day')} / 7"
             periods_label = "weeks_since"
         elif granularity == "month":
-            trunc_expr = f"{self._date_trunc('month', timestamp_dim)}::date"
+            trunc_expr = f"CAST({self._date_trunc('month', ts_sql)} AS DATE)"
             diff_expr = (
                 "(EXTRACT(YEAR FROM a.active_date) - EXTRACT(YEAR FROM c.cohort_date)) * 12"
                 " + (EXTRACT(MONTH FROM a.active_date) - EXTRACT(MONTH FROM c.cohort_date))"
@@ -2311,10 +2362,13 @@ class SQLGenerator:
         else:
             raise ValueError(f"Unsupported retention granularity: {granularity}")
 
+        # Normalize filters: strip model name prefixes so they work inside CTEs
+        normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+
         # Build optional WHERE filters for the source data
         filter_clause = ""
-        if filters:
-            filter_clause = " AND " + " AND ".join(filters)
+        if normalized_filters:
+            filter_clause = " AND " + " AND ".join(normalized_filters)
 
         order_clause = "\nORDER BY r.cohort_date, r.periods_since"
         if order_by:

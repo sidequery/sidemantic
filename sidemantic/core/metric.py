@@ -203,6 +203,11 @@ class Metric(BaseModel):
             if self.steps:
                 if len(self.steps) < 2:
                     raise ValueError("conversion metric 'steps' requires at least 2 steps")
+                if self.conversion_window:
+                    raise ValueError(
+                        "conversion metric cannot specify both 'steps' and 'conversion_window'; "
+                        "conversion_window is only supported for base_event/conversion_event funnels"
+                    )
             elif not self.base_event or not self.conversion_event:
                 raise ValueError("conversion metric requires 'steps' or both 'base_event' and 'conversion_event'")
         return self

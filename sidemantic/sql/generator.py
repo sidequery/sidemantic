@@ -2504,14 +2504,17 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 group_by_inner_parts.append(sql_col)
         group_by_inner = ",\n    ".join(group_by_inner_parts)
 
-        # Build outer SELECT: total entities + sum of each step
+        # Build outer SELECT: total entities (only step 1 entrants) + sum of each step.
+        # Gate each step on completion of all prior steps for monotonic funnels.
         outer_select_parts = []
         if dim_aliases:
             for alias in dim_aliases:
                 outer_select_parts.append(f"{alias}")
-        outer_select_parts.append("COUNT(*) AS total_entities")
+        outer_select_parts.append("SUM(step_1::int) AS total_entities")
         for i in range(1, len(metric.steps) + 1):
-            outer_select_parts.append(f"SUM(step_{i}::int) AS step_{i}_count")
+            # Each step requires all prior steps to be true
+            gate_expr = " AND ".join(f"step_{j}" for j in range(1, i + 1))
+            outer_select_parts.append(f"SUM(({gate_expr})::int) AS step_{i}_count")
         outer_select = ",\n  ".join(outer_select_parts)
 
         # Build GROUP BY, ORDER BY, LIMIT for outer query

@@ -793,3 +793,123 @@ def test_conversion_metric_requires_entity():
             type="conversion",
             steps=["event = 'a'", "event = 'b'"],
         )
+
+
+def test_conversion_steps_and_conversion_window_rejected():
+    """Test validation: steps and conversion_window cannot be used together."""
+    import pytest
+
+    with pytest.raises(ValueError, match="cannot specify both 'steps' and 'conversion_window'"):
+        Metric(
+            name="bad_funnel",
+            type="conversion",
+            entity="user_id",
+            steps=["event = 'a'", "event = 'b'"],
+            conversion_window="7 days",
+        )
+
+
+def test_multistep_funnel_monotonic_counts():
+    """Test that funnel step counts are monotonically decreasing.
+
+    An entity that triggers a later event without completing earlier steps
+    should not be counted at the later step.
+    """
+    # person 5 has step 3 event but NOT step 1 or 2 -> should not inflate step 3
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS person_id, 'install' AS event
+            UNION ALL SELECT 1, 'activate'
+            UNION ALL SELECT 1, 'purchase'
+            UNION ALL SELECT 2, 'install'
+            UNION ALL SELECT 2, 'activate'
+            UNION ALL SELECT 3, 'install'
+            UNION ALL SELECT 5, 'purchase'
+        """,
+        primary_key="person_id",
+        dimensions=[
+            Dimension(name="person_id", sql="person_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+        ],
+    )
+
+    funnel = Metric(
+        name="mono_funnel",
+        type="conversion",
+        entity="person_id",
+        steps=[
+            "event = 'install'",
+            "event = 'activate'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["mono_funnel"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # total_entities = step 1 entrants only: persons 1,2,3 = 3 (person 5 excluded)
+    assert rows[0][0] == 3  # total_entities
+    assert rows[0][1] == 3  # step_1_count: persons 1,2,3
+    assert rows[0][2] == 2  # step_2_count: persons 1,2 (had install AND activate)
+    assert rows[0][3] == 1  # step_3_count: person 1 only (had all 3 steps)
+
+    # Verify monotonicity
+    for i in range(1, len(rows[0]) - 1):
+        assert rows[0][i] >= rows[0][i + 1], (
+            f"Funnel not monotonic: step {i} ({rows[0][i]}) < step {i + 1} ({rows[0][i + 1]})"
+        )
+
+
+def test_multistep_funnel_total_excludes_non_entrants():
+    """Test that total_entities excludes entities who never entered step 1."""
+    # 4 entities in data, but only 2 satisfy step 1
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS uid, 'signup' AS event
+            UNION ALL SELECT 1, 'purchase'
+            UNION ALL SELECT 2, 'signup'
+            UNION ALL SELECT 3, 'browse'
+            UNION ALL SELECT 4, 'browse'
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+        ],
+    )
+
+    funnel = Metric(
+        name="entry_funnel",
+        type="conversion",
+        entity="uid",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["entry_funnel"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # total_entities should be 2 (only users 1 and 2 who signed up), NOT 4
+    assert rows[0][0] == 2  # total_entities = step 1 entrants
+    assert rows[0][1] == 2  # step_1_count
+    assert rows[0][2] == 1  # step_2_count (only user 1 purchased)

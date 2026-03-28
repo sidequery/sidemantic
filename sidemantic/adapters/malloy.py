@@ -328,19 +328,20 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         expr = re.sub(r"(\w+)!\w+\(", r"\1(", expr)
 
         # ~ regex match with r'' literal: expr ~ r'pattern' -> REGEXP_MATCHES(expr, 'pattern')
+        # Use (.+?) with lookahead to capture full LHS including spaces/parens
         expr = re.sub(
-            r"(\S+)\s+~\s+r'([^']*)'",
+            r"(.+?)\s+~\s+r'([^']*)'",
             r"REGEXP_MATCHES(\1, '\2')",
             expr,
         )
         expr = re.sub(
-            r'(\S+)\s+~\s+r"([^"]*)"',
+            r'(.+?)\s+~\s+r"([^"]*)"',
             r"REGEXP_MATCHES(\1, '\2')",
             expr,
         )
         # !~ negated regex
         expr = re.sub(
-            r"(\S+)\s+!~\s+r'([^']*)'",
+            r"(.+?)\s+!~\s+r'([^']*)'",
             r"NOT REGEXP_MATCHES(\1, '\2')",
             expr,
         )
@@ -1116,7 +1117,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         Handles: join_one: name is connection.table(...) extend { ... } with fk
         """
-        # Save current state
+        # Save current state (including metadata accumulators)
         saved = (
             self.current_model_name,
             self.current_table,
@@ -1129,6 +1130,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             list(self.current_metrics),
             list(self.current_relationships),
             list(self.current_segments),
+            self._timezone,
+            list(self._model_tags),
+            list(self._accept_fields),
+            list(self._except_fields),
         )
 
         # Reset and process the inline source
@@ -1143,6 +1148,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_metrics = []
         self.current_relationships = []
         self.current_segments = []
+        self._timezone = None
+        self._model_tags = []
+        self._accept_fields = []
+        self._except_fields = []
 
         self._process_sq_expr(sq_expr)
 
@@ -1166,7 +1175,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             )
             self.models.append(inline_model)
 
-        # Restore state
+        # Restore state (including metadata accumulators)
         (
             self.current_model_name,
             self.current_table,
@@ -1179,6 +1188,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             self.current_metrics,
             self.current_relationships,
             self.current_segments,
+            self._timezone,
+            self._model_tags,
+            self._accept_fields,
+            self._except_fields,
         ) = saved
 
     def _process_where_as_segment(self, ctx: MalloyParser.WhereStatementContext):

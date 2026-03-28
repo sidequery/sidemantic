@@ -60,26 +60,33 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_metrics = []
         self.current_relationships = []
         self.current_segments = []
+        self._timezone = None
+        self._model_tags = []
+        self._accept_fields = []
+        self._except_fields = []
 
     def _parse_annotations(self, tags_ctx) -> str | None:
-        """Parse annotations from tags context.
+        """Parse annotations from tags context, returning description text.
 
-        Malloy annotations:
-        - ## Description text -> description (DOC_ANNOTATION)
-        - # key: value -> metadata (ANNOTATION)
-
-        We extract:
-        - Any ## text as description
-        - # desc: value as description
-
-        Returns the description text if found.
+        Also stores non-description tags via _parse_annotations_full.
         """
         if tags_ctx is None:
             return None
+        desc, _ = self._parse_annotations_full(tags_ctx)
+        return desc
+
+    def _parse_annotations_full(self, tags_ctx) -> tuple[str | None, list[str]]:
+        """Parse annotations from tags context.
+
+        Returns (description, tags) where tags is a list of non-description
+        tag strings like "line_chart", "percent", "currency", etc.
+        """
+        if tags_ctx is None:
+            return None, []
 
         descriptions = []
+        tags = []
 
-        # Iterate through ANNOTATION tokens
         for i in range(tags_ctx.getChildCount()):
             child = tags_ctx.getChild(i)
             if child is not None:
@@ -87,15 +94,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
                 # ## is a doc annotation (description)
                 if text.startswith("##"):
-                    # Strip ## and whitespace
                     desc = text[2:].strip()
                     if desc:
                         descriptions.append(desc)
                 # # is a tag annotation
                 elif text.startswith("#"):
-                    # Strip # and check for desc: or description:
                     tag_text = text[1:].strip()
-                    # Common patterns: desc: value, description: value
                     if tag_text.lower().startswith("desc:"):
                         desc = tag_text[5:].strip()
                         if desc:
@@ -104,10 +108,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                         desc = tag_text[12:].strip()
                         if desc:
                             descriptions.append(desc)
+                    elif tag_text:
+                        tags.append(tag_text)
 
-        if descriptions:
-            return " ".join(descriptions)
-        return None
+        desc = " ".join(descriptions) if descriptions else None
+        return desc, tags
 
     def visitImportStatement(self, ctx: MalloyParser.ImportStatementContext):  # noqa: N802
         """Visit import statement and extract dependencies.
@@ -499,7 +504,20 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         # These apply to all sources in the statement if there's only one,
         # or can be overridden by source-specific tags
         stmt_tags = ctx.tags()
-        stmt_description = self._parse_annotations(stmt_tags) if stmt_tags else None
+        stmt_description = None
+        stmt_persist = None
+        if stmt_tags:
+            stmt_description, stmt_tag_list = self._parse_annotations_full(stmt_tags)
+            # Check for #@ persist annotations
+            for tag in stmt_tag_list:
+                if tag.startswith("@ persist") or tag.startswith("@persist"):
+                    persist_text = tag[len("@ persist") :] if tag.startswith("@ persist") else tag[len("@persist") :]
+                    persist_text = persist_text.strip()
+                    stmt_persist = {"persist": True}
+                    # Parse name=value
+                    name_match = re.match(r"name\s*=\s*(\S+)", persist_text)
+                    if name_match:
+                        stmt_persist["persist_name"] = name_match.group(1)
 
         # Get source definitions
         source_list = ctx.sourcePropertyList()
@@ -510,7 +528,6 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 self._process_source_definition(source_def)
 
                 # If source has no description but statement does, use statement description
-                # (only for single-source statements, or as fallback)
                 if self.current_description is None and stmt_description is not None:
                     self.current_description = stmt_description
 
@@ -518,6 +535,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                     metadata = {}
                     if self.current_connection:
                         metadata["connection"] = self.current_connection
+                    if stmt_persist:
+                        metadata.update(stmt_persist)
+                    if self._timezone:
+                        metadata["timezone"] = self._timezone
+                    if self._model_tags:
+                        metadata["tags"] = self._model_tags
                     model = Model(
                         name=self.current_model_name,
                         table=self.current_table,
@@ -715,6 +738,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 where_stmt = stmt.whereStatement()
                 if where_stmt:
                     self._process_where_as_segment(where_stmt)
+            elif isinstance(stmt, MalloyParser.DeclareStatementContext):
+                # declare: creates fields accessible within the source
+                def_list = stmt.defList()
+                if def_list:
+                    for field_def in def_list.fieldDef():
+                        self._process_dimension_def(field_def)
 
     def _process_explore_statement(self, ctx: MalloyParser.ExploreStatementContext):
         """Process a single statement in explore properties."""
@@ -775,6 +804,34 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                     self._accept_fields.extend(field_names)
             return
 
+        # Timezone statement: timezone: 'US/Pacific'
+        if isinstance(ctx, MalloyParser.DefExploreTimezoneContext):
+            tz_stmt = ctx.timezoneStatement()
+            if tz_stmt:
+                tz_string = tz_stmt.string()
+                if tz_string:
+                    tz_value = self._extract_string(self._get_text(tz_string))
+                    if not hasattr(self, "_timezone"):
+                        self._timezone = None
+                    self._timezone = tz_value
+            return
+
+        # Standalone annotations in extend blocks
+        if isinstance(ctx, MalloyParser.DefExploreAnnotationContext):
+            # These are # tag annotations not attached to a field
+            # Store as model-level tags
+            for i in range(ctx.getChildCount()):
+                child = ctx.getChild(i)
+                if child is not None:
+                    text = child.getText()
+                    if text.startswith("#"):
+                        tag_text = text[1:].strip()
+                        if tag_text:
+                            if not hasattr(self, "_model_tags"):
+                                self._model_tags = []
+                            self._model_tags.append(tag_text)
+            return
+
         # Rename statements: rename: new_name is old_name
         if isinstance(ctx, MalloyParser.DefExploreRenameContext):
             rename_list = ctx.renameList()
@@ -812,8 +869,13 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         name = self._get_text(name_def)
 
         # Get annotations from tags
-        tags = ctx.tags()
-        description = self._parse_annotations(tags) if tags else None
+        tags_ctx = ctx.tags()
+        description = None
+        dim_metadata = None
+        if tags_ctx:
+            description, tag_list = self._parse_annotations_full(tags_ctx)
+            if tag_list:
+                dim_metadata = {"tags": tag_list}
 
         # Get the expression
         field_expr = ctx.fieldExpr()
@@ -848,6 +910,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 sql=sql,
                 granularity=granularity,
                 description=description,
+                metadata=dim_metadata,
             )
         )
 
@@ -869,8 +932,13 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         name = self._get_text(name_def)
 
         # Get annotations from tags
-        tags = ctx.tags()
-        description = self._parse_annotations(tags) if tags else None
+        tags_ctx = ctx.tags()
+        description = None
+        measure_tags = None
+        if tags_ctx:
+            description, tag_list = self._parse_annotations_full(tags_ctx)
+            if tag_list:
+                measure_tags = tag_list
 
         # Get the expression
         field_expr = ctx.fieldExpr()
@@ -942,9 +1010,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             else:
                 metric_type = "derived"
 
-        metric_metadata = None
+        metric_metadata = {}
         if measure_granularity:
-            metric_metadata = {"granularity": measure_granularity}
+            metric_metadata["granularity"] = measure_granularity
+        if measure_tags:
+            metric_metadata["tags"] = measure_tags
 
         self.current_metrics.append(
             Metric(
@@ -954,7 +1024,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 sql=sql,
                 filters=filters,
                 description=description,
-                metadata=metric_metadata,
+                metadata=metric_metadata if metric_metadata else None,
             )
         )
 
@@ -1314,7 +1384,7 @@ class MalloyAdapter(BaseAdapter):
         """
         lines = []
 
-        # Model description as annotation
+        # Model description as tag annotation
         if model.description:
             lines.append(f"# desc: {model.description}")
 
@@ -1331,10 +1401,13 @@ class MalloyAdapter(BaseAdapter):
         if model.primary_key and model.primary_key != "id":
             lines.append(f"  primary_key: {model.primary_key}")
 
-        # Dimensions
-        # Skip dimensions that match the primary key (Malloy auto-exposes the PK column).
-        # Skip passthrough dimensions (sql == name) since Malloy auto-exposes underlying
-        # table columns. Only export dimensions with actual transformations.
+        # Segments (source-level where clauses) - Tier 4.1
+        if model.segments:
+            for segment in model.segments:
+                lines.append(f"  where: {self._strip_model_prefix(segment.sql)}")
+
+        # Separate renames from computed dimensions for proper export
+        renames_to_export: list[tuple[str, str]] = []
         dims_to_export: list[tuple[Dimension, str]] = []
         for dim in model.dimensions:
             if dim.name == model.primary_key:
@@ -1343,23 +1416,32 @@ class MalloyAdapter(BaseAdapter):
             # Skip passthrough dimensions - Malloy auto-exposes table columns
             if sql == dim.name:
                 continue
-            dims_to_export.append((dim, sql))
+            # Tier 4.5: detect renames (simple identifier, no operators/functions)
+            if re.match(r"^[`\w]+$", sql) and sql != dim.name:
+                renames_to_export.append((dim.name, sql))
+            else:
+                dims_to_export.append((dim, sql))
 
+        # Export renames
+        if renames_to_export:
+            lines.append("")
+            lines.append("  rename:")
+            for new_name, old_name in renames_to_export:
+                lines.append(f"    {new_name} is {old_name}")
+
+        # Export computed dimensions
         if dims_to_export:
             lines.append("")
             lines.append("  dimension:")
             for dim, sql in dims_to_export:
                 if dim.description:
                     lines.append(f"    # desc: {dim.description}")
-                # For time dimensions with granularity, use Malloy's time truncation syntax
-                # But only if the SQL doesn't already contain a truncation function
                 if dim.type == "time" and dim.granularity:
                     sql_lower = sql.lower()
                     already_has_truncation = (
                         "date_trunc" in sql_lower or "::date" in sql_lower or sql_lower.endswith(f".{dim.granularity}")
                     )
                     if not already_has_truncation:
-                        # Append Malloy time accessor: .second, .minute, .hour, .day, .week, .month, .quarter, .year
                         lines.append(f"    {dim.name} is {sql}.{dim.granularity}")
                     else:
                         lines.append(f"    {dim.name} is {sql}")
@@ -1376,7 +1458,7 @@ class MalloyAdapter(BaseAdapter):
                 measure_expr = self._format_measure(metric)
                 lines.append(f"    {metric.name} is {measure_expr}")
 
-        # Joins
+        # Joins - Tier 4.4: use on condition from metadata when available
         for rel in model.relationships:
             lines.append("")
             if rel.type == "many_to_one":
@@ -1385,7 +1467,10 @@ class MalloyAdapter(BaseAdapter):
                 join_type = "join_cross"
             else:
                 join_type = "join_many"
-            if rel.foreign_key:
+            on_condition = (rel.metadata or {}).get("on_condition")
+            if on_condition:
+                lines.append(f"  {join_type}: {rel.name} on {on_condition}")
+            elif rel.foreign_key:
                 lines.append(f"  {join_type}: {rel.name} with {rel.foreign_key}")
             else:
                 lines.append(f"  {join_type}: {rel.name}")

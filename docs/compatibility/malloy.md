@@ -115,10 +115,11 @@ Not mapped: `access` modifiers (`public`, `private`, `internal`), `order_by:` wi
 | `# description: value` tag annotation | Supported (extracted as `description`) |
 | Multiple `##` lines on one entity | Supported (joined with spaces) |
 | Statement-level `#` tags (before `source:`) | Supported (applied as source description if the source itself has none) |
-| `# tag_name` (non-description tags) | Partial support: parsed without error but only `desc:` and `description:` prefixed tags are extracted. Other tags are discarded. |
-| `#@ persist` and `#@ persist name=...` | Unsupported (parsed by the grammar but not recognized by the visitor). |
+| `# tag_name` (non-description tags) | Supported (stored in `metadata["tags"]` on dimensions, measures, and models; includes `line_chart`, `bar_chart`, `percent`, `currency`, etc.) |
+| `#@ persist` and `#@ persist name=...` | Supported (stored in `Model.metadata["persist"]` and `metadata["persist_name"]`) |
+| Standalone `#` annotations in extend blocks | Supported (stored in `Model.metadata["tags"]` via `DefExploreAnnotationContext`) |
 
-Not mapped: visualization hint tags (`# line_chart`, `# bar_chart`, `# list_detail`, `# shape_map`, `# percent`, `# currency`, `# number`), `--! styles` directives, `##! experimental` pragmas.
+Not mapped: `--! styles` directives, `##! experimental` pragmas.
 
 ---
 
@@ -163,8 +164,8 @@ Not mapped: join `type` (`left`, `right`, `full`, `inner`).
 | `where: condition` in source extend block | Supported (mapped to `Segment`) |
 | Multiple filter conditions (comma-separated) | Supported (each becomes a separate segment) |
 | Filter expressions with comparisons, `and`, `or` | Supported (expression preserved as-is) |
-| Malloy partial application (`field ? pick ... when ...`) | Partial support: expression text is captured but the `?` operator is not evaluated. |
-| Malloy value matching (`field ? 'a' \| 'b'`) | Partial support: expression preserved as-is, not converted to SQL `IN`. |
+| Malloy partial application (`field ? pick ... when ...`) | Supported in dimension context (expanded to CASE); partial in filter context |
+| Malloy value matching (`field ? 'a' \| 'b'`) | Supported (transformed to `field IN ('a', 'b')`) |
 
 Segment naming: first filter is named `default_filter`, subsequent filters are named `default_filter_1`, `default_filter_2`, etc.
 
@@ -300,16 +301,18 @@ Sidemantic can export its semantic model back to Malloy format.
 | Ratio metrics | Supported (exported as `numerator / denominator`) |
 | `primary_key:` | Supported (exported when not the default `id`) |
 | `join_one:` / `join_many:` with `with` clause | Supported |
+| `join_one:` / `join_many:` with `on` condition | Supported (full `on` condition exported from `metadata["on_condition"]` when available) |
+| `where:` (segments) | Supported (source-level where clauses exported) |
 | Roundtrip fidelity (parse -> export -> re-parse) | Supported (semantically equivalent graphs; passthrough dimensions intentionally dropped) |
 | `join_cross:` export | Supported (one_to_one relationships exported as `join_cross:`) |
-| `rename:` export | Partial support: renames are captured as dimensions during parsing; exported as `dimension:` not `rename:` |
+| `rename:` export | Supported (simple identifier dimensions detected and exported as `rename: new is old`) |
 | `view:` export | Unsupported (views are not captured during parsing) |
 
 ---
 
 ## Experimental and Advanced Features
 
-Unsupported. `##! experimental{...}` pragma annotations, `compose()` for composite sources, `timezone:` statements, `sample:` specifications, and `declare:` field declarations are all parsed by the grammar without error but not processed by the visitor.
+Partially supported. `timezone:` statements are stored in `Model.metadata["timezone"]`. `declare:` field declarations are processed as dimensions in old `+` syntax blocks. `compose()` sources process the first composed source. `##! experimental{...}` pragma annotations and `sample:` specifications are parsed by the grammar without error but not processed by the visitor.
 
 ---
 

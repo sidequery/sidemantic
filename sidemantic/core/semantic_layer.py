@@ -24,6 +24,7 @@ class SemanticLayer:
         use_preaggregations: bool = False,
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
+        init_sql: list[str] | None = None,
     ):
         """Initialize semantic layer.
 
@@ -45,6 +46,8 @@ class SemanticLayer:
             use_preaggregations: Enable automatic pre-aggregation routing (default: False)
             preagg_database: Optional database name for pre-aggregation tables
             preagg_schema: Optional schema name for pre-aggregation tables
+            init_sql: SQL statements to run after connecting (DuckDB only, e.g.,
+                loading extensions, attaching catalogs, creating secrets)
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
@@ -66,10 +69,14 @@ class SemanticLayer:
 
                 self.adapter = MotherDuckAdapter.from_url(connection)
                 self.dialect = dialect or "duckdb"
+                # Run init_sql after MotherDuck connection
+                if init_sql:
+                    for stmt in init_sql:
+                        self.adapter.execute(stmt)
             elif connection.startswith("duckdb://"):
                 from sidemantic.db.duckdb import DuckDBAdapter
 
-                self.adapter = DuckDBAdapter.from_url(connection)
+                self.adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
                 self.dialect = dialect or "duckdb"
             elif connection.startswith(("postgres://", "postgresql://")):
                 from sidemantic.db.postgres import PostgreSQLAdapter

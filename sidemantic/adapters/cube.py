@@ -70,22 +70,38 @@ class CubeAdapter(BaseAdapter):
         graph = SemanticGraph()
         source_path = Path(source)
         pending_views: list[dict] = []
+        pending_hierarchies: dict[str, list[dict]] = {}
 
         if source_path.is_dir():
             # Parse all YAML files in directory
             for yaml_file in source_path.rglob("*.yml"):
-                self._parse_file(yaml_file, graph, pending_views)
+                self._parse_file(yaml_file, graph, pending_views, pending_hierarchies)
             for yaml_file in source_path.rglob("*.yaml"):
-                self._parse_file(yaml_file, graph, pending_views)
+                self._parse_file(yaml_file, graph, pending_views, pending_hierarchies)
         else:
             # Parse single file
-            self._parse_file(source_path, graph, pending_views)
+            self._parse_file(source_path, graph, pending_views, pending_hierarchies)
 
         # Resolve extends (inheritance) after all cubes are parsed
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         if any(m.extends for m in graph.models.values()):
             graph.models = resolve_model_inheritance(graph.models)
+
+        # Apply hierarchies after inheritance so inherited dimensions are available
+        for model_name, hierarchy_defs in pending_hierarchies.items():
+            model = graph.models.get(model_name)
+            if not model:
+                continue
+            for h_def in hierarchy_defs:
+                levels = h_def.get("levels", [])
+                for i in range(1, len(levels)):
+                    child_name = levels[i]
+                    parent_name = levels[i - 1]
+                    if "." not in parent_name and "." not in child_name:
+                        child_dim = model.get_dimension(child_name)
+                        if child_dim:
+                            child_dim.parent = parent_name
 
         # Parse views after all cubes are loaded and inheritance resolved
         for view_def in pending_views:
@@ -95,13 +111,20 @@ class CubeAdapter(BaseAdapter):
 
         return graph
 
-    def _parse_file(self, file_path: Path, graph: SemanticGraph, pending_views: list[dict]) -> None:
+    def _parse_file(
+        self,
+        file_path: Path,
+        graph: SemanticGraph,
+        pending_views: list[dict],
+        pending_hierarchies: dict[str, list[dict]],
+    ) -> None:
         """Parse a single Cube YAML file.
 
         Args:
             file_path: Path to YAML file
             graph: Semantic graph to add models to
             pending_views: List to accumulate view definitions for deferred parsing
+            pending_hierarchies: Dict to accumulate hierarchy definitions per cube for deferred application
         """
         with open(file_path) as f:
             data = yaml.safe_load(f)
@@ -116,6 +139,10 @@ class CubeAdapter(BaseAdapter):
             model = self._parse_cube(cube_def)
             if model:
                 graph.add_model(model)
+                # Collect hierarchies for deferred application (after inheritance)
+                h_defs = cube_def.get("hierarchies")
+                if h_defs:
+                    pending_hierarchies[model.name] = h_defs
 
         # Collect views for deferred parsing (need all cubes loaded first)
         for view_def in data.get("views") or []:
@@ -182,18 +209,6 @@ class CubeAdapter(BaseAdapter):
                 # Check if this is a primary key
                 if dim_def.get("primary_key"):
                     primary_key = dim.name
-
-        # Parse hierarchies and set Dimension.parent chains
-        for h_def in cube_def.get("hierarchies") or []:
-            levels = h_def.get("levels", [])
-            for i in range(1, len(levels)):
-                child_name = levels[i]
-                parent_name = levels[i - 1]
-                # Skip cross-cube level references (contain dots)
-                if "." not in parent_name and "." not in child_name:
-                    child_dim = next((d for d in dimensions if d.name == child_name), None)
-                    if child_dim:
-                        child_dim.parent = parent_name
 
         # Parse measures
         measures = []
@@ -847,11 +862,10 @@ class CubeAdapter(BaseAdapter):
                 # Time comparison - use Cube's time dimension features
                 measure_def["type"] = "number"
                 if measure.base_metric:
-                    # Add comment explaining this is a time comparison
-                    measure_def["description"] = (
-                        measure.description or ""
-                    ) + f" (Time comparison of {measure.base_metric})"
-                    measure_def["sql"] = measure.base_metric
+                    # Convert qualified name (cube.metric) to Cube reference (${metric})
+                    base_ref = measure.base_metric.split(".")[-1] if "." in measure.base_metric else measure.base_metric
+                    measure_def["sql"] = f"${{{base_ref}}}"
+                    measure_def["description"] = (measure.description or "") + f" (Time comparison of {base_ref})"
             else:
                 # Regular aggregation measure
                 type_mapping = {

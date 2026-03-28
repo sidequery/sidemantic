@@ -468,6 +468,22 @@
           "description": "Grain for period-to-date (e.g., 'month' for MTD)",
           "title": "Grain To Date"
         },
+        "having": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional HAVING clause filters applied after GROUP BY (e.g., 'count(distinct platform) > 1')",
+          "title": "Having"
+        },
         "label": {
           "anyOf": [
             {
@@ -1401,6 +1417,22 @@
             "description": "Grain for period-to-date (e.g., 'month' for MTD)",
             "title": "Grain To Date"
           },
+          "having": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional HAVING clause filters applied after GROUP BY (e.g., 'count(distinct platform) > 1')",
+            "title": "Having"
+          },
           "label": {
             "anyOf": [
               {
@@ -2083,6 +2115,22 @@
                 "default": null,
                 "description": "Grain for period-to-date (e.g., 'month' for MTD)",
                 "title": "Grain To Date"
+              },
+              "having": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional HAVING clause filters applied after GROUP BY (e.g., 'count(distinct platform) > 1')",
+                "title": "Having"
               },
               "label": {
                 "anyOf": [

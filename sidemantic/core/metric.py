@@ -254,6 +254,10 @@ class Metric(BaseModel):
 
     # Common parameters
     filters: list[str] | None = Field(None, description="Optional WHERE clause filters")
+    having: list[str] | None = Field(
+        None,
+        description="Optional HAVING clause filters applied after GROUP BY (e.g., 'count(distinct platform) > 1')",
+    )
     fill_nulls_with: int | float | str | None = Field(None, description="Default value when result is NULL")
     description: str | None = Field(None, description="Human-readable description")
     label: str | None = Field(None, description="Display label")

@@ -773,6 +773,9 @@ class SQLGenerator:
                     # Check the measure's own filters
                     if measure.filters:
                         add_filter_columns(model_name, measure.filters)
+                    # Check the measure's having clauses (columns in aggregate expressions)
+                    if measure.having:
+                        add_filter_columns(model_name, measure.having)
                     # If measure is a ratio/derived, recursively check dependencies
                     if measure.type == "ratio":
                         if measure.numerator:
@@ -810,6 +813,15 @@ class SQLGenerator:
                     if "." in dep:
                         dep_model_name = dep.split(".")[0]
                         add_filter_columns(dep_model_name, metric.filters)
+                        break
+
+            # Extract from metric's having clauses
+            if metric.having:
+                deps = metric.get_dependencies(self.graph)
+                for dep in deps:
+                    if "." in dep:
+                        dep_model_name = dep.split(".")[0]
+                        add_filter_columns(dep_model_name, metric.having)
                         break
 
             # For ratio metrics, check numerator and denominator
@@ -1792,6 +1804,30 @@ class SQLGenerator:
                 having_filters.append(filter_expr)
             else:
                 where_filters.append(filter_expr)
+
+        # Collect metric-level having clauses (Metric.having) and add to HAVING filters.
+        # These are post-aggregation conditions defined on the metric itself, e.g.,
+        # having: ["count(distinct platform) > 1"] for cross-platform user metrics.
+        for metric_ref in metrics:
+            metric_obj = None
+            metric_model_name = None
+            if "." in metric_ref:
+                metric_model_name, measure_name = metric_ref.split(".", 1)
+                model_obj = self.graph.get_model(metric_model_name)
+                if model_obj:
+                    metric_obj = model_obj.get_metric(measure_name)
+            else:
+                try:
+                    metric_obj = self.graph.get_metric(metric_ref)
+                except KeyError:
+                    pass
+            if metric_obj and metric_obj.having:
+                for having_expr in metric_obj.having:
+                    # Replace {model} placeholder with CTE reference
+                    resolved = having_expr
+                    if metric_model_name:
+                        resolved = resolved.replace("{model}", f"{metric_model_name}_cte")
+                    having_filters.append(resolved)
 
         # Add WHERE clause (dimension filters only - metric-level filters are in CASE WHEN)
         if where_filters:

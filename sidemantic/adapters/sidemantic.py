@@ -278,6 +278,7 @@ class SidemanticAdapter(BaseAdapter):
                 sql=measure_def.get("sql") or measure_def.get("expr"),
                 type=measure_def.get("type"),
                 filters=measure_def.get("filters"),
+                having=measure_def.get("having"),
                 fill_nulls_with=measure_def.get("fill_nulls_with"),
                 description=measure_def.get("description"),
                 label=measure_def.get("label"),
@@ -419,6 +420,7 @@ class SidemanticAdapter(BaseAdapter):
             window_frame=metric_def.get("window_frame"),
             window_order=metric_def.get("window_order"),
             filters=metric_def.get("filters"),
+            having=metric_def.get("having"),
             fill_nulls_with=metric_def.get("fill_nulls_with"),
             format=metric_def.get("format"),
             value_format_name=metric_def.get("value_format_name"),
@@ -540,6 +542,8 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["sql"] = measure.sql
                 if measure.filters:
                     measure_def["filters"] = measure.filters
+                if measure.having:
+                    measure_def["having"] = measure.having
                 if measure.description:
                     measure_def["description"] = measure.description
                 if measure.label:
@@ -666,5 +670,7 @@ class SidemanticAdapter(BaseAdapter):
             result["window"] = measure.window
         if measure.filters:
             result["filters"] = measure.filters
+        if measure.having:
+            result["having"] = measure.having
 
         return result

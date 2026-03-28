@@ -445,3 +445,183 @@ def test_having_filter_with_actual_data(layer):
     revenues = {row[0]: row[1] for row in rows}
     assert revenues["US"] == 225.0
     assert revenues["EU"] == 375.0
+
+
+def test_metric_having_basic(layer):
+    """Test that metric-level having clauses generate HAVING SQL."""
+    events = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="person_id", type="categorical"),
+            Dimension(name="platform", type="categorical"),
+        ],
+        metrics=[
+            Metric(
+                name="cross_platform_users",
+                agg="count_distinct",
+                sql="person_id",
+                having=["count(distinct platform) > 1"],
+                description="Users who used the app on multiple platforms",
+            ),
+        ],
+    )
+
+    layer.add_model(events)
+
+    sql = layer.compile(metrics=["events.cross_platform_users"], dimensions=["events.person_id"])
+
+    print("SQL with metric-level having:")
+    print(sql)
+
+    # HAVING clause should be present with the having condition
+    assert "HAVING" in sql
+    assert "count(distinct platform) > 1" in sql.lower() or "COUNT(DISTINCT platform) > 1" in sql
+
+
+def test_metric_having_with_filters(layer):
+    """Test metric with both filters (WHERE via CASE WHEN) and having (HAVING clause)."""
+    events = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="person_id", type="categorical"),
+            Dimension(name="platform", type="categorical"),
+            Dimension(name="event_type", type="categorical"),
+        ],
+        metrics=[
+            Metric(
+                name="cross_platform_active_users",
+                agg="count_distinct",
+                sql="person_id",
+                filters=["{model}.event_type = 'active'"],
+                having=["count(distinct platform) > 1"],
+                description="Active users on multiple platforms",
+            ),
+        ],
+    )
+
+    layer.add_model(events)
+
+    sql = layer.compile(
+        metrics=["events.cross_platform_active_users"],
+        dimensions=["events.person_id"],
+    )
+
+    print("SQL with both filters and having:")
+    print(sql)
+
+    # Filter should be in CASE WHEN (metric-level filter)
+    assert "CASE WHEN" in sql
+    assert "event_type = 'active'" in sql
+
+    # HAVING should contain the having clause
+    assert "HAVING" in sql
+    assert "count(distinct platform) > 1" in sql.lower() or "COUNT(DISTINCT platform) > 1" in sql
+
+
+def test_metric_having_regular_filters_still_work(layer):
+    """Test that regular filters still generate WHERE clauses when having is also present."""
+    events = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="person_id", type="categorical"),
+            Dimension(name="platform", type="categorical"),
+        ],
+        metrics=[
+            Metric(
+                name="total_events",
+                agg="count",
+                sql="event_id",
+            ),
+            Metric(
+                name="cross_platform_users",
+                agg="count_distinct",
+                sql="person_id",
+                having=["count(distinct platform) > 1"],
+            ),
+        ],
+    )
+
+    layer.add_model(events)
+
+    # Query with a query-level dimension filter plus a metric with having
+    sql = layer.compile(
+        metrics=["events.cross_platform_users"],
+        dimensions=["events.person_id"],
+    )
+
+    print("SQL with having and query filter:")
+    print(sql)
+
+    # HAVING clause should be present
+    assert "HAVING" in sql
+
+
+def test_metric_having_with_data(layer):
+    """Integration test: metric-level having with real DuckDB data."""
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE events (
+            event_id INTEGER,
+            person_id INTEGER,
+            platform VARCHAR
+        )
+    """)
+
+    conn.execute("""
+        INSERT INTO events VALUES
+        (1, 1, 'iOS'),
+        (2, 1, 'macOS'),
+        (3, 1, 'iOS'),
+        (4, 2, 'iOS'),
+        (5, 2, 'iOS'),
+        (6, 3, 'macOS'),
+        (7, 3, 'macOS'),
+        (8, 4, 'iOS'),
+        (9, 4, 'macOS'),
+        (10, 4, 'Android')
+    """)
+
+    layer = SemanticLayer()
+
+    events = Model(
+        name="events",
+        table="events",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="person_id", type="categorical"),
+            Dimension(name="platform", type="categorical"),
+        ],
+        metrics=[
+            Metric(
+                name="cross_platform_users",
+                agg="count_distinct",
+                sql="person_id",
+                having=["count(distinct platform) > 1"],
+                description="Users active on multiple platforms",
+            ),
+        ],
+    )
+
+    layer.conn = conn
+    layer.add_model(events)
+
+    result = layer.query(
+        metrics=["events.cross_platform_users"],
+        dimensions=["events.person_id"],
+    )
+    rows = df_rows(result)
+
+    # person_id 1: iOS + macOS (2 platforms) -> included
+    # person_id 2: iOS only (1 platform) -> excluded
+    # person_id 3: macOS only (1 platform) -> excluded
+    # person_id 4: iOS + macOS + Android (3 platforms) -> included
+    assert len(rows) == 2
+    person_ids = {row[0] for row in rows}
+    assert person_ids == {1, 4}

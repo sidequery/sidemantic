@@ -1808,26 +1808,8 @@ class SQLGenerator:
         # Collect metric-level having clauses (Metric.having) and add to HAVING filters.
         # These are post-aggregation conditions defined on the metric itself, e.g.,
         # having: ["count(distinct platform) > 1"] for cross-platform user metrics.
-        for metric_ref in metrics:
-            metric_obj = None
-            metric_model_name = None
-            if "." in metric_ref:
-                metric_model_name, measure_name = metric_ref.split(".", 1)
-                model_obj = self.graph.get_model(metric_model_name)
-                if model_obj:
-                    metric_obj = model_obj.get_metric(measure_name)
-            else:
-                try:
-                    metric_obj = self.graph.get_metric(metric_ref)
-                except KeyError:
-                    pass
-            if metric_obj and metric_obj.having:
-                for having_expr in metric_obj.having:
-                    # Replace {model} placeholder with CTE reference
-                    resolved = having_expr
-                    if metric_model_name:
-                        resolved = resolved.replace("{model}", f"{metric_model_name}_cte")
-                    having_filters.append(resolved)
+        # Traverses metric dependencies so derived/ratio metrics inherit base metric HAVING.
+        self._collect_metric_having_clauses(metrics, having_filters)
 
         # Add WHERE clause (dimension filters only - metric-level filters are in CASE WHEN)
         if where_filters:
@@ -1886,7 +1868,8 @@ class SQLGenerator:
             query = query.group_by(*group_by_positions)
 
         # Add HAVING clause (metric filters applied after aggregation)
-        if having_filters:
+        # Skip HAVING entirely for ungrouped queries: HAVING without GROUP BY is invalid SQL
+        if having_filters and not ungrouped:
             for filter_expr in having_filters:
                 # Replace model.metric_name with metric_name (the aggregated column alias)
                 parsed_having = filter_expr
@@ -2051,6 +2034,67 @@ class SQLGenerator:
             # is equivalent to COUNT(*) for single-model queries but correct for joins.
             return f"COUNT({raw_col})"
         return f"{agg_func}({raw_col})"
+
+    def _collect_metric_having_clauses(self, metrics: list[str], having_filters: list[str]) -> None:
+        """Collect HAVING clauses from metric definitions and their dependencies.
+
+        Inspects each metric referenced in the query. If a metric (or any base
+        metric it depends on) declares a ``having`` list, those expressions are
+        appended to *having_filters* (in-place) so they end up in the generated
+        HAVING clause.
+
+        Args:
+            metrics: Metric references from the query (e.g. ["orders.revenue"])
+            having_filters: Mutable list to which new HAVING expressions are appended
+        """
+        seen: set[str] = set()
+
+        def collect_from_ref(metric_ref: str) -> None:
+            if metric_ref in seen:
+                return
+            seen.add(metric_ref)
+
+            metric = None
+            metric_model_name = None
+            if "." in metric_ref:
+                metric_model_name, measure_name = metric_ref.split(".", 1)
+                try:
+                    model = self.graph.get_model(metric_model_name)
+                    if model:
+                        metric = model.get_metric(measure_name)
+                except KeyError:
+                    pass
+                # Fall back to graph-level metric with dotted name
+                if not metric:
+                    try:
+                        metric = self.graph.get_metric(metric_ref)
+                    except KeyError:
+                        pass
+            else:
+                try:
+                    metric = self.graph.get_metric(metric_ref)
+                except KeyError:
+                    pass
+
+            if not metric:
+                return
+
+            # Append this metric's own having clauses
+            if metric.having:
+                for h in metric.having:
+                    resolved = h
+                    if metric_model_name:
+                        resolved = resolved.replace("{model}", f"{metric_model_name}_cte")
+                    if resolved not in having_filters:
+                        having_filters.append(resolved)
+
+            # Traverse dependencies (ratio numerator/denominator, derived refs, etc.)
+            deps = metric.get_dependencies(self.graph)
+            for dep in deps:
+                collect_from_ref(dep)
+
+        for m in metrics:
+            collect_from_ref(m)
 
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.

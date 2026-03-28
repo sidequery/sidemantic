@@ -32,8 +32,6 @@ def test_cube_to_sidemantic_to_cube_roundtrip():
         cube_adapter.export(graph1, temp_path)
         graph2 = cube_adapter.parse(temp_path)
 
-        # NOTE: check_relationships=False because Cube exporter doesn't export joins yet
-        # TODO: Fix CubeAdapter.export() to include joins section
         assert_graph_equivalent(graph1, graph2, check_relationships=False)
 
     finally:
@@ -104,6 +102,72 @@ def test_cube_roundtrip_segment_properties():
             seg2 = orders2.get_segment(seg1.name)
             assert seg2 is not None, f"Segment {seg1.name} missing after roundtrip"
             assert_segment_equivalent(seg1, seg2)
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_roundtrip_pre_aggregations():
+    """Test that pre-aggregations survive Cube roundtrip."""
+    adapter = CubeAdapter()
+    graph1 = adapter.parse("tests/fixtures/cube/orders_with_preagg.yml")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph1, temp_path)
+        graph2 = adapter.parse(temp_path)
+
+        for model_name, model1 in graph1.models.items():
+            model2 = graph2.models.get(model_name)
+            assert model2 is not None, f"Model {model_name} missing after roundtrip"
+            assert len(model2.pre_aggregations) == len(model1.pre_aggregations), (
+                f"Pre-aggregation count mismatch for {model_name}"
+            )
+            for pa1 in model1.pre_aggregations:
+                pa2 = model2.get_pre_aggregation(pa1.name)
+                assert pa2 is not None, f"Pre-aggregation {pa1.name} missing after roundtrip"
+                assert pa2.type == pa1.type
+                assert pa2.granularity == pa1.granularity
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_cube_roundtrip_meta():
+    """Test that meta on cubes, dimensions, and measures survives roundtrip."""
+    graph = SemanticGraph()
+    model = Model(
+        name="test_meta",
+        table="test_table",
+        meta={"context": "testing"},
+        dimensions=[
+            Dimension(name="id", type="numeric", sql="id", meta={"ai_context": "primary identifier"}),
+            Dimension(name="status", type="categorical", sql="status"),
+        ],
+        metrics=[
+            Metric(name="count", agg="count", meta={"visibility": "internal"}),
+        ],
+    )
+    graph.add_model(model)
+
+    adapter = CubeAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph, temp_path)
+        graph2 = adapter.parse(temp_path)
+
+        model2 = graph2.get_model("test_meta")
+        assert model2.meta == {"context": "testing"}
+
+        id_dim = model2.get_dimension("id")
+        assert id_dim.meta == {"ai_context": "primary identifier"}
+
+        count_metric = model2.get_metric("count")
+        assert count_metric.meta == {"visibility": "internal"}
 
     finally:
         temp_path.unlink(missing_ok=True)

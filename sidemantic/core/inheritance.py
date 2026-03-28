@@ -3,6 +3,7 @@
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
+from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 
@@ -35,7 +36,7 @@ def merge_model(child: Model, parent: Model) -> Model:
 
     # Merge lists (dimensions, metrics, relationships, segments)
     # Child's items are added to parent's items
-    for field in ["dimensions", "metrics", "relationships", "segments"]:
+    for field in ["dimensions", "metrics", "relationships", "segments", "pre_aggregations"]:
         parent_items = merged_data.get(field, [])
         child_items = child_data.get(field, [])
 
@@ -64,6 +65,15 @@ def merge_model(child: Model, parent: Model) -> Model:
         merged_data["relationships"] = [Relationship(**r) for r in merged_data["relationships"]]
     if merged_data.get("segments"):
         merged_data["segments"] = [Segment(**s) for s in merged_data["segments"]]
+    if merged_data.get("pre_aggregations"):
+        preaggs = []
+        for pa in merged_data["pre_aggregations"]:
+            if pa.get("refresh_key") and isinstance(pa["refresh_key"], dict):
+                pa["refresh_key"] = RefreshKey(**pa["refresh_key"])
+            if pa.get("indexes") and isinstance(pa["indexes"], list):
+                pa["indexes"] = [Index(**idx) if isinstance(idx, dict) else idx for idx in pa["indexes"]]
+            preaggs.append(PreAggregation(**pa))
+        merged_data["pre_aggregations"] = preaggs
 
     return Model(**merged_data)
 

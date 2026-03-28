@@ -373,12 +373,41 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         return expr
 
     def _transform_null_coalesce(self, expr: str) -> str:
-        """Transform Malloy ?? null coalescing to SQL COALESCE."""
+        """Transform Malloy ?? null coalescing to SQL COALESCE.
+
+        Only splits on ?? at the top expression depth (not inside parens/brackets).
+        """
         if "??" not in expr:
             return expr
-        parts = re.split(r"\s*\?\?\s*", expr)
-        if len(parts) > 1:
-            return f"COALESCE({', '.join(p.strip() for p in parts)})"
+
+        # Split on ?? only at depth 0
+        parts = []
+        current = []
+        depth = 0
+        i = 0
+        while i < len(expr):
+            ch = expr[i]
+            if ch in ("(", "[", "{"):
+                depth += 1
+                current.append(ch)
+            elif ch in (")", "]", "}"):
+                depth -= 1
+                current.append(ch)
+            elif depth == 0 and expr[i : i + 2] == "??":
+                parts.append("".join(current).strip())
+                current = []
+                i += 2
+                # Skip whitespace after ??
+                while i < len(expr) and expr[i] == " ":
+                    i += 1
+                continue
+            else:
+                current.append(ch)
+            i += 1
+
+        if parts:
+            parts.append("".join(current).strip())
+            return f"COALESCE({', '.join(parts)})"
         return expr
 
     def _transform_and_tree(self, expr: str) -> str:
@@ -1160,6 +1189,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             metadata = {}
             if self.current_connection:
                 metadata["connection"] = self.current_connection
+            if self._timezone:
+                metadata["timezone"] = self._timezone
+            if self._model_tags:
+                metadata["tags"] = self._model_tags
             inline_model = Model(
                 name=join_name,
                 table=self.current_table,

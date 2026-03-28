@@ -28,8 +28,9 @@ The adapter only reads YAML. Cube's original JavaScript schema format (`cube.js`
 | `sql_table` | Supported (stored as `Model.table`) |
 | `sql` (inline query) | Supported (stored as `Model.sql`, `Model.table = None`) |
 | `description` | Supported |
-| `extends` | Partial support: the extending cube is parsed with only its own fields. Inherited fields from the base cube are not merged. Each cube in an extends chain is independent. |
-| `public` / `shown` | Unsupported |
+| `extends` | Supported (full inheritance resolution: child inherits all dimensions, metrics, relationships, segments, and pre-aggregations from parent, with child values taking precedence) |
+| `meta` | Supported (stored on `Model.meta`) |
+| `public` / `shown` | Unsupported (cube-level visibility) |
 | `data_source` | Unsupported |
 | `sql_alias` | Unsupported |
 | `refresh_key` (cube-level) | Unsupported |
@@ -55,15 +56,17 @@ Not mapped: `title`, `rewrite_queries`, `context_members`.
 | `sql: ${cube_name}.column` | Supported (cube-name references replaced with `{model}`) |
 | `primary_key: true` | Supported |
 | `description` | Supported |
+| `title` | Supported (stored as `Dimension.label`) |
 | `format` | Supported (stored on `Dimension.format`) |
+| `shown` / `public` | Supported (stored as `Dimension.public`) |
+| `meta` | Supported (stored on `Dimension.meta`) |
 | Cross-cube dimension references (`${other_cube.field}`) | Supported (preserved as-is in SQL) |
 | Path-qualified references (`{b.d.id}`) | Supported (preserved as-is in SQL) |
-| `case: { when: [...] }` (case dimensions) | Partial support: the `case` block is parsed by YAML without error but the case/when/else structure is not evaluated or stored. The dimension has no SQL expression. |
+| `case: { when: [...] }` (case dimensions) | Supported (converted to SQL `CASE WHEN ... THEN ... ELSE ... END` expression) |
+| Custom `granularities` on time dimensions | Supported (stored in `Dimension.supported_granularities`) |
 | `sub_query: true` | Unsupported (flag ignored, dimension SQL preserved verbatim) |
-| Custom `granularities` on time dimensions | Unsupported (parsed by YAML but not stored) |
-| `meta` | Unsupported |
 
-Not mapped: `shown`, `title`, `propagate_filters_to_sub_query`, `case` labels.
+Not mapped: `propagate_filters_to_sub_query`.
 
 ---
 
@@ -82,13 +85,17 @@ Not mapped: `shown`, `title`, `propagate_filters_to_sub_query`, `case` labels.
 | `sql: ${CUBE}.column` | Supported (normalized to `{model}` placeholder) |
 | `sql: ${dimension_ref}` (referencing a dimension) | Supported (preserved for resolution) |
 | `description` | Supported |
+| `title` | Supported (stored as `Metric.label`) |
 | `format` | Supported (stored on `Metric.format`) |
-| `type: rank` | Partial support: parses without error but rank semantics (`order_by`, `reduce_by`) are not stored. Becomes a regular measure with `agg_type=count` (default fallback). |
+| `shown` / `public` | Supported (stored as `Metric.public`) |
+| `meta` | Supported (stored on `Metric.meta`) |
+| `drill_members` | Supported (stored as `Metric.drill_fields`) |
+| `type: rank` | Partial support: stored as `type=derived` with rank semantics (`order_by`, `reduce_by`) preserved in `Metric.meta["cube_type"]`. Does not execute rank window function. |
 | `type: string` | Unsupported (no mapping; falls back to `count`) |
 | `type: boolean` | Unsupported (no mapping; falls back to `count`) |
 | `type: running_total` | Unsupported (no mapping) |
 
-Not mapped: `shown`, `title`, `drill_members` (on import; used on export), `meta`, `drill_filters`.
+Not mapped: `drill_filters`.
 
 ---
 
@@ -125,7 +132,7 @@ Derived measures are detected by `type: number` and handled with several strateg
 | `rolling_window: { trailing: "1 month" }` | Supported (trailing value stored in `Metric.window`) |
 | `rolling_window: { offset: end }` | Partial support: the `offset` value is not stored. Only `trailing` is captured. |
 | `rolling_window: { leading: "-1 month" }` | Partial support: the `leading` value is not stored. |
-| `rolling_window: { type: to_date, granularity: year }` | Partial support: treated as cumulative. The `type` and `granularity` sub-fields are not stored. |
+| `rolling_window: { type: to_date, granularity: year }` | Supported (maps to `Metric.grain_to_date`, e.g., `grain_to_date="year"` for YTD) |
 
 ---
 
@@ -137,6 +144,7 @@ Derived measures are detected by `type: number` and handled with several strateg
 | `${CUBE}` / `{CUBE}` replacement in segment SQL | Supported |
 | `${cube_name}` replacement in segment SQL | Supported |
 | `description` | Supported |
+| `shown` / `public` | Supported (stored as `Segment.public`) |
 | Query-time segment application | Supported |
 | Segments without `sql:` | Supported (correctly skipped, not added) |
 
@@ -191,24 +199,38 @@ Pre-aggregations are fully mapped to Sidemantic's `PreAggregation` model, includ
 
 ## Views
 
-Unsupported. The `views:` top-level section in Cube YAML is silently ignored during parsing. Files that contain only views (no `cubes:` section) parse without error and produce an empty graph.
+Supported. The `views:` top-level section in Cube YAML is parsed after all cubes are loaded. Each view is resolved into a composite Model by projecting members from source cubes.
 
-Cube views are a composition layer that project and rename members from cubes via `join_path`, `includes`, `excludes`, `prefix`, and `alias`. None of these concepts are mapped:
+| Feature | Status |
+|---------|--------|
+| `join_path: cube_name` (single cube) | Supported (resolves to target cube by last segment of path) |
+| `join_path: cube_a.cube_b` (multi-level) | Supported (resolves to the last cube in the path) |
+| `includes: "*"` (wildcard) | Supported (imports all dimensions and metrics from source cube) |
+| `includes:` (selective list) | Supported (imports named dimensions and metrics) |
+| `includes:` with `{ name, alias }` | Supported (renames members via `alias`) |
+| `excludes:` list | Supported (removes named members from includes) |
+| `prefix: true` | Supported (prefixes member names with `{cube_name}_`) |
+| `alias` on cube entry | Supported (used as prefix when `prefix: true`) |
+| View-only files (no `cubes:` section) | Supported (views that reference cubes from other files resolve correctly when parsed from a directory) |
+| Empty view (no resolvable cubes) | Supported (silently skipped, no model created) |
+| `extends` on views | Unsupported |
+| `folders` | Unsupported (UI grouping concept) |
+| View-level `access_policy` | Unsupported |
 
-- `join_path` traversal
-- `includes: "*"` wildcard and selective includes
-- `excludes` list
-- `prefix: true` namespacing
-- `alias` renaming
-- View-level `access_policy`
-- `folders` (grouping members in views)
-- `extends` on views
+View models are marked with `meta={"cube_type": "view"}` and are excluded from Cube export.
 
 ---
 
 ## Hierarchies
 
-Unsupported. `hierarchies:` blocks on cubes are parsed by YAML without error but not stored. Hierarchies define drill-down level ordering (e.g., year -> quarter -> month) and cross-cube level references. They have no Sidemantic equivalent.
+Supported. `hierarchies:` blocks on cubes are parsed and used to set `Dimension.parent` chains.
+
+| Feature | Status |
+|---------|--------|
+| `hierarchies: [{ name, levels }]` | Supported (level ordering sets `Dimension.parent` on each child level) |
+| Multiple hierarchies per cube | Supported |
+| Cross-cube level references (e.g., `users.city`) | Partial support: cross-cube references (containing dots) are silently skipped. Only same-cube levels are linked. |
+| `title` on hierarchies | Not stored (used for display only) |
 
 ---
 
@@ -226,19 +248,27 @@ Unsupported. Access policy blocks on cubes and views are parsed by YAML without 
 
 ## Multi-Stage Calculations
 
-Unsupported. The `multi_stage: true` flag on measures is parsed by YAML without error but not stored. Multi-stage calculations in Cube enable measures that reference other measures as inputs, run in separate query stages, and support features like `group_by` (for percent-of-total) and `time_shift` (for period comparisons). The adapter parses the measure's `sql` and `type` normally, so the measure still appears in the graph, but multi-stage execution semantics are not reproduced.
+Partial support. The `multi_stage: true` flag on measures is parsed by YAML without error but not stored. Multi-stage calculations in Cube enable measures that reference other measures as inputs, run in separate query stages, and support features like `group_by` (for percent-of-total) and `time_shift` (for period comparisons). The adapter parses the measure's `sql` and `type` normally, so the measure still appears in the graph, but multi-stage execution semantics are not reproduced.
 
-Related unsupported sub-features:
-- `time_shift: [{ time_dimension, interval, type }]` on measures
-- `group_by` (percent-of-total grouping)
-- `order_by` / `reduce_by` (ranking)
-- `case` / `switch` / `when` / `else` on measures
+| Feature | Status |
+|---------|--------|
+| `time_shift: [{ time_dimension, interval, type: prior }]` | Supported (maps to `Metric.type="time_comparison"` with `comparison_type` and `time_offset`) |
+| `group_by` (percent-of-total grouping) | Unsupported |
+| `order_by` / `reduce_by` (ranking) | Partial support: stored in `Metric.meta` for `type: rank` measures |
+| `case` / `switch` / `when` / `else` on measures | Unsupported |
 
 ---
 
 ## Custom Calendars and Granularities
 
-Unsupported. Cube supports custom calendar cubes (`calendar: true`) with custom granularity definitions on time dimensions (`granularities: [{ name, sql, interval, origin }]`) and dimension-level `time_shift` definitions. The adapter parses these structures without error but does not store them. Time dimensions always default to `granularity: day`.
+Partial support. Cube supports custom calendar cubes (`calendar: true`) with custom granularity definitions on time dimensions. The `calendar: true` flag is not stored, but custom granularities are now parsed.
+
+| Feature | Status |
+|---------|--------|
+| `granularities: [{ name, ... }]` on time dimensions | Supported (granularity names stored in `Dimension.supported_granularities`) |
+| `granularities[].sql`, `interval`, `origin` | Unsupported (only the name is stored) |
+| `calendar: true` on cubes | Partial support (parsed without error, not stored) |
+| Dimension-level `time_shift` | Unsupported |
 
 ---
 
@@ -268,21 +298,30 @@ Sidemantic can export its semantic model back to Cube YAML format.
 | Cubes with `sql_table` | Supported |
 | Cubes with `sql` (inline query) | Supported |
 | `description` | Supported |
+| `meta` on cubes | Supported |
 | Dimensions (string, number, time, boolean) | Supported (`{model}` mapped back to Cube types) |
 | `primary_key: true` on dimensions | Supported |
 | `format` on dimensions | Supported |
+| `title` on dimensions | Supported (exported from `Dimension.label`) |
+| `meta` on dimensions | Supported |
+| `shown: false` on dimensions | Supported (exported when `Dimension.public` is False) |
 | Standard measures (count, count_distinct, sum, avg, min, max) | Supported |
 | Derived measures (`type: number`) | Supported |
 | Ratio metrics | Supported (exported as `type: number` with `${numerator}::float / NULLIF(${denominator}, 0)`) |
-| Cumulative metrics | Supported (exported with `rolling_window: { trailing }`) |
+| Cumulative metrics | Supported (exported with `rolling_window: { trailing }` or `rolling_window: { type: to_date, granularity }`) |
 | Time comparison metrics | Partial support: exported as `type: number` with a description annotation; no `time_shift` block generated. |
 | Measures with filters | Supported (exported as `filters: [{ sql }]`) |
 | `format` on measures | Supported |
-| `drill_members` on measures | Supported (exported from hierarchy dimensions when available) |
+| `title` on measures | Supported (exported from `Metric.label`) |
+| `meta` on measures | Supported |
+| `shown: false` on measures | Supported (exported when `Metric.public` is False) |
+| `drill_members` on measures | Supported (exported from `Metric.drill_fields` or hierarchy dimensions) |
 | Segments | Supported (`{model}` replaced back with `${CUBE}`) |
-| Joins (many_to_one) | Supported (generates `sql` join expression from foreign key and primary key) |
-| Joins (one_to_many, one_to_one) | Partial support: only `many_to_one` relationships are exported as joins. Other relationship types are omitted. |
-| Pre-aggregations | Unsupported (not exported) |
+| `shown: false` on segments | Supported (exported when `Segment.public` is False) |
+| Joins (many_to_one, one_to_one) | Supported (generates `${CUBE}.fk = ${target}.pk` join SQL) |
+| Joins (one_to_many) | Supported (generates `${CUBE}.pk = ${target}.fk` with swapped direction) |
+| Joins (many_to_many) | Unsupported (skipped; requires junction table info) |
+| Pre-aggregations | Supported (all fields exported including refresh_key, indexes, build_range) |
 | Model inheritance resolution | Supported (inheritance resolved before export) |
-| Roundtrip fidelity (Cube -> parse -> export -> re-parse) | Supported for dimensions, metrics, and segments. Relationships are not fully round-tripped due to the export limitation above. |
-
+| View models | Supported (skipped during export, identified by `meta.cube_type == "view"`) |
+| Roundtrip fidelity (Cube -> parse -> export -> re-parse) | Supported for dimensions, metrics, segments, and pre-aggregations. |

@@ -1,5 +1,6 @@
 """Cube adapter for importing Cube.js semantic models."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -50,10 +51,11 @@ class CubeAdapter(BaseAdapter):
     """Adapter for importing/exporting Cube.js YAML semantic models.
 
     Transforms Cube.js definitions into Sidemantic format:
-    - Cubes → Models
-    - Dimensions → Dimensions
-    - Measures → Measures
-    - Joins → Inferred from relationships
+    - Cubes -> Models
+    - Dimensions -> Dimensions
+    - Measures -> Measures
+    - Joins -> Inferred from relationships
+    - Views -> Composite Models
     """
 
     def parse(self, source: str | Path) -> SemanticGraph:
@@ -67,25 +69,76 @@ class CubeAdapter(BaseAdapter):
         """
         graph = SemanticGraph()
         source_path = Path(source)
+        pending_views: list[dict] = []
+        pending_hierarchies: dict[str, list[dict]] = {}
+        pending_extends: dict[str, str] = {}  # child_name -> parent_name
 
         if source_path.is_dir():
             # Parse all YAML files in directory
             for yaml_file in source_path.rglob("*.yml"):
-                self._parse_file(yaml_file, graph)
+                self._parse_file(yaml_file, graph, pending_views, pending_hierarchies, pending_extends)
             for yaml_file in source_path.rglob("*.yaml"):
-                self._parse_file(yaml_file, graph)
+                self._parse_file(yaml_file, graph, pending_views, pending_hierarchies, pending_extends)
         else:
             # Parse single file
-            self._parse_file(source_path, graph)
+            self._parse_file(source_path, graph, pending_views, pending_hierarchies, pending_extends)
+
+        # Resolve extends (inheritance) after all cubes are parsed
+        from sidemantic.core.inheritance import resolve_model_inheritance
+
+        if any(m.extends for m in graph.models.values()):
+            graph.models = resolve_model_inheritance(graph.models)
+
+        # Apply hierarchies after inheritance so inherited dimensions are available.
+        # Also propagate parent hierarchies to child cubes via extends_map.
+        def _apply_hierarchies(model: Model, h_defs: list[dict]) -> None:
+            for h_def in h_defs:
+                levels = h_def.get("levels", [])
+                for i in range(1, len(levels)):
+                    child_name = levels[i]
+                    parent_name = levels[i - 1]
+                    if "." not in parent_name and "." not in child_name:
+                        child_dim = model.get_dimension(child_name)
+                        if child_dim and not child_dim.parent:
+                            child_dim.parent = parent_name
+
+        # Apply explicit hierarchies
+        for model_name, hierarchy_defs in pending_hierarchies.items():
+            model = graph.models.get(model_name)
+            if model:
+                _apply_hierarchies(model, hierarchy_defs)
+
+        # Propagate parent hierarchies to child cubes that inherited dimensions
+        for child_name, parent_name in pending_extends.items():
+            if parent_name in pending_hierarchies:
+                child_model = graph.models.get(child_name)
+                if child_model:
+                    _apply_hierarchies(child_model, pending_hierarchies[parent_name])
+
+        # Parse views after all cubes are loaded and inheritance resolved
+        for view_def in pending_views:
+            model = self._parse_view(view_def, graph)
+            if model:
+                graph.add_model(model)
 
         return graph
 
-    def _parse_file(self, file_path: Path, graph: SemanticGraph) -> None:
+    def _parse_file(
+        self,
+        file_path: Path,
+        graph: SemanticGraph,
+        pending_views: list[dict],
+        pending_hierarchies: dict[str, list[dict]],
+        pending_extends: dict[str, str],
+    ) -> None:
         """Parse a single Cube YAML file.
 
         Args:
             file_path: Path to YAML file
             graph: Semantic graph to add models to
+            pending_views: List to accumulate view definitions for deferred parsing
+            pending_hierarchies: Dict to accumulate hierarchy definitions per cube for deferred application
+            pending_extends: Dict to track extends relationships (child -> parent)
         """
         with open(file_path) as f:
             data = yaml.safe_load(f)
@@ -100,6 +153,18 @@ class CubeAdapter(BaseAdapter):
             model = self._parse_cube(cube_def)
             if model:
                 graph.add_model(model)
+                # Collect hierarchies for deferred application (after inheritance)
+                h_defs = cube_def.get("hierarchies")
+                if h_defs:
+                    pending_hierarchies[model.name] = h_defs
+                # Track extends for hierarchy propagation
+                ext = cube_def.get("extends")
+                if ext:
+                    pending_extends[model.name] = ext
+
+        # Collect views for deferred parsing (need all cubes loaded first)
+        for view_def in data.get("views") or []:
+            pending_views.append(view_def)
 
     def _extract_fk_from_join_sql(self, join_sql: str, relationship_type: str, join_name: str) -> str | None:
         """Extract foreign key column from Cube join SQL.
@@ -116,8 +181,6 @@ class CubeAdapter(BaseAdapter):
         Returns:
             Foreign key column name, or None if parsing fails
         """
-        import re
-
         if relationship_type == "one_to_many":
             # For one_to_many, extract from ${join_name.column}
             # Example: "${CUBE}.id = ${project_assignments.project_id}" -> "project_id"
@@ -146,13 +209,15 @@ class CubeAdapter(BaseAdapter):
         if not name:
             return None
 
-        # Get table name
+        # Get table name and extends
         table = cube_def.get("sql_table")
         sql = cube_def.get("sql")
+        extends = cube_def.get("extends")
+        cube_meta = cube_def.get("meta")
 
         # Parse dimensions and find primary key
         dimensions = []
-        primary_key = "id"  # default
+        primary_key = None  # Only set if explicitly declared
 
         for dim_def in cube_def.get("dimensions") or []:
             dim = self._parse_dimension(dim_def, name)
@@ -180,11 +245,13 @@ class CubeAdapter(BaseAdapter):
             if segment_name and segment_sql:
                 # Normalize ${CUBE}/{CUBE} to {model} placeholder
                 segment_sql = _normalize_cube_sql(segment_sql, name)
+                segment_public = segment_def.get("shown", segment_def.get("public", True))
                 segments.append(
                     Segment(
                         name=segment_name,
                         sql=segment_sql,
                         description=segment_def.get("description"),
+                        public=segment_public,
                     )
                 )
 
@@ -212,18 +279,30 @@ class CubeAdapter(BaseAdapter):
             if preagg:
                 pre_aggregations.append(preagg)
 
-        return Model(
-            name=name,
-            table=table,
-            sql=sql,
-            description=cube_def.get("description"),
-            primary_key=primary_key,
-            relationships=relationships,
-            dimensions=dimensions,
-            metrics=measures,
-            segments=segments,
-            pre_aggregations=pre_aggregations,
-        )
+        # Build kwargs, omitting None table/sql/primary_key so inheritance can provide them
+        model_kwargs = {
+            "name": name,
+            "relationships": relationships,
+            "dimensions": dimensions,
+            "metrics": measures,
+            "segments": segments,
+            "pre_aggregations": pre_aggregations,
+        }
+        if primary_key is not None:
+            model_kwargs["primary_key"] = primary_key
+        if table is not None:
+            model_kwargs["table"] = table
+        if sql is not None:
+            model_kwargs["sql"] = sql
+        if extends is not None:
+            model_kwargs["extends"] = extends
+        if cube_meta is not None:
+            model_kwargs["meta"] = cube_meta
+        desc = cube_def.get("description")
+        if desc is not None:
+            model_kwargs["description"] = desc
+
+        return Model(**model_kwargs)
 
     def _parse_dimension(self, dim_def: dict, cube_name: str) -> Dimension | None:
         """Parse Cube dimension into Sidemantic dimension.
@@ -256,16 +335,46 @@ class CubeAdapter(BaseAdapter):
         if dim_type == "time":
             granularity = "day"  # Default granularity
 
+        # Custom granularities on time dimensions
+        supported_granularities = None
+        custom_grans = dim_def.get("granularities")
+        if custom_grans and isinstance(custom_grans, list):
+            supported_granularities = [g.get("name") for g in custom_grans if g.get("name")]
+
         # Normalize SQL to replace ${CUBE}/{CUBE} with {model}
         dim_sql = _normalize_cube_sql(dim_def.get("sql"), cube_name)
+
+        # Convert case/when/else blocks to SQL CASE expressions
+        case_def = dim_def.get("case")
+        if case_def and not dim_sql:
+            whens = case_def.get("when", [])
+            else_clause = case_def.get("else", {})
+            parts = []
+            for w in whens:
+                cond = _normalize_cube_sql(w.get("sql"), cube_name)
+                lbl = w.get("label", "").replace("'", "''")
+                parts.append(f"WHEN {cond} THEN '{lbl}'")
+            if else_clause:
+                else_label = else_clause.get("label", "Unknown").replace("'", "''")
+                parts.append(f"ELSE '{else_label}'")
+            dim_sql = "CASE " + " ".join(parts) + " END"
+
+        # Read additional metadata fields
+        label = dim_def.get("title")
+        meta = dim_def.get("meta")
+        public = dim_def.get("shown", dim_def.get("public", True))
 
         return Dimension(
             name=name,
             type=sidemantic_type,
             sql=dim_sql,
             granularity=granularity,
+            supported_granularities=supported_granularities,
             description=dim_def.get("description"),
             format=dim_def.get("format"),
+            label=label,
+            meta=meta,
+            public=public,
         )
 
     def _parse_measure(self, measure_def: dict, cube_name: str) -> Metric | None:
@@ -278,8 +387,6 @@ class CubeAdapter(BaseAdapter):
         Returns:
             Measure instance or None
         """
-        import re
-
         name = measure_def.get("name")
         if not name:
             return None
@@ -298,7 +405,28 @@ class CubeAdapter(BaseAdapter):
             "number": None,  # Calculated measures - determine type from context
         }
 
-        agg_type = type_mapping.get(measure_type, "count")
+        # Read additional metadata fields early (may be modified by rank handling)
+        label = measure_def.get("title")
+        meta = measure_def.get("meta")
+        drill_fields = measure_def.get("drill_members")
+        public = measure_def.get("shown", measure_def.get("public", True))
+
+        agg_type = type_mapping.get(measure_type)
+        metric_type = None
+
+        # Handle unknown measure types explicitly
+        if agg_type is None and measure_type not in ("number",):
+            if measure_type == "rank":
+                # Rank measures: use count as executable fallback, store rank
+                # metadata so consumers can handle them specially
+                agg_type = "count"
+                meta = meta.copy() if meta else {}
+                meta["cube_type"] = "rank"
+                meta["order_by"] = measure_def.get("order_by")
+                meta["reduce_by"] = measure_def.get("reduce_by")
+            else:
+                # Truly unknown types fall back to count
+                agg_type = "count"
 
         # Parse filters and normalize ${CUBE}/{CUBE} references
         filters = []
@@ -310,11 +438,16 @@ class CubeAdapter(BaseAdapter):
 
         # Check for rolling_window (cumulative metric)
         rolling_window = measure_def.get("rolling_window")
-        metric_type = None
         window = None
+        grain_to_date = None
         if rolling_window:
             metric_type = "cumulative"
             window = rolling_window.get("trailing")
+            # Handle type: to_date with granularity (e.g., YTD, MTD)
+            rw_type = rolling_window.get("type")
+            rw_granularity = rolling_window.get("granularity")
+            if rw_type == "to_date" and rw_granularity:
+                grain_to_date = rw_granularity
 
         # For calculated measures (type=number), treat as derived with SQL expression
         if measure_type == "number" and not rolling_window:
@@ -324,6 +457,33 @@ class CubeAdapter(BaseAdapter):
 
         # Normalize SQL to replace ${CUBE}/{CUBE} with {model}
         measure_sql = _normalize_cube_sql(measure_def.get("sql"), cube_name)
+
+        # Check for time_shift (period-over-period comparison)
+        # Only convert to time_comparison if we can extract a base_metric reference
+        base_metric = None
+        comparison_type = None
+        time_offset = None
+        time_shift_def = measure_def.get("time_shift")
+        if time_shift_def and isinstance(time_shift_def, list) and len(time_shift_def) > 0:
+            ts = time_shift_def[0]
+            ts_interval = ts.get("interval")
+            ts_type = ts.get("type")
+            if ts_type == "prior" and ts_interval and measure_sql:
+                # Extract base_metric from sql like "{measure_name}"
+                base_match = re.match(r"^\s*\{(\w+)\}\s*$", measure_sql)
+                if base_match:
+                    base_metric = f"{cube_name}.{base_match.group(1)}"
+                    measure_sql = None  # Clear sql, base_metric carries the reference
+                    metric_type = "time_comparison"
+                    time_offset = str(ts_interval)
+                    comparison_map = {
+                        "1 year": "yoy",
+                        "1 month": "mom",
+                        "1 week": "wow",
+                        "1 day": "dod",
+                        "1 quarter": "qoq",
+                    }
+                    comparison_type = comparison_map.get(ts_interval, "prior_period")
 
         # Convert ${measure_name} references to model_name.measure_name format
         # This is needed for derived metrics that reference other measures
@@ -375,9 +535,17 @@ class CubeAdapter(BaseAdapter):
             numerator=numerator,
             denominator=denominator,
             window=window,
+            grain_to_date=grain_to_date,
+            base_metric=base_metric,
+            comparison_type=comparison_type,
+            time_offset=time_offset,
             filters=filters if filters else None,
             description=measure_def.get("description"),
             format=measure_def.get("format"),
+            label=label,
+            meta=meta,
+            drill_fields=drill_fields,
+            public=public,
         )
 
     def _parse_preaggregation(self, preagg_def: dict, cube_name: str) -> PreAggregation | None:
@@ -486,6 +654,115 @@ class CubeAdapter(BaseAdapter):
             build_range_end=build_range_end,
         )
 
+    def _parse_view(self, view_def: dict, graph: SemanticGraph) -> Model | None:
+        """Parse a Cube view into a composite Model.
+
+        Views project and rename members from existing cubes via join_path,
+        includes, excludes, prefix, and alias.
+
+        Args:
+            view_def: View definition dictionary
+            graph: Semantic graph with already-parsed cubes
+
+        Returns:
+            Model instance or None
+        """
+        name = view_def.get("name")
+        if not name:
+            return None
+
+        dimensions = []
+        metrics = []
+
+        for cube_spec in view_def.get("cubes", []):
+            join_path = cube_spec.get("join_path", "")
+            # Resolve target cube: last segment of join_path
+            target_name = join_path.split(".")[-1] if join_path else None
+            target = graph.models.get(target_name) if target_name else None
+            if not target:
+                continue
+
+            includes = cube_spec.get("includes", [])
+            excludes = set(cube_spec.get("excludes") or [])
+            prefix = cube_spec.get("prefix", False)
+            cube_alias = cube_spec.get("alias")
+            prefix_str = f"{cube_alias or target_name}_" if prefix else ""
+
+            # Build alias map for renaming dependent references
+            alias_map: dict[str, str] = {}
+
+            if includes == "*":
+                dims = [d for d in target.dimensions if d.name not in excludes]
+                mets = [m for m in target.metrics if m.name not in excludes]
+            elif isinstance(includes, list):
+                dims, mets = [], []
+                for inc in includes:
+                    if isinstance(inc, str):
+                        d = target.get_dimension(inc)
+                        if d and d.name not in excludes:
+                            dims.append(d)
+                        m = target.get_metric(inc)
+                        if m and m.name not in excludes:
+                            mets.append(m)
+                    elif isinstance(inc, dict):
+                        orig = inc.get("name", "")
+                        alias = inc.get("alias", orig)
+                        if alias != orig:
+                            alias_map[orig] = alias
+                        d = target.get_dimension(orig)
+                        if d:
+                            dims.append(d.model_copy(update={"name": alias}))
+                        m = target.get_metric(orig)
+                        if m:
+                            mets.append(m.model_copy(update={"name": alias}))
+            else:
+                continue
+
+            # Apply alias map to dependent references (parent, drill_fields)
+            if alias_map:
+                dims = [
+                    d.model_copy(update={"parent": alias_map[d.parent]}) if d.parent and d.parent in alias_map else d
+                    for d in dims
+                ]
+                mets = [
+                    m.model_copy(update={"drill_fields": [alias_map.get(f, f) for f in m.drill_fields]})
+                    if m.drill_fields and any(f in alias_map for f in m.drill_fields)
+                    else m
+                    for m in mets
+                ]
+
+            if prefix_str:
+                # Prefix names and update dependent references (parent, drill_fields)
+                prefixed_dims = []
+                for d in dims:
+                    updates: dict = {"name": f"{prefix_str}{d.name}"}
+                    if d.parent:
+                        updates["parent"] = f"{prefix_str}{d.parent}"
+                    prefixed_dims.append(d.model_copy(update=updates))
+                dims = prefixed_dims
+
+                prefixed_mets = []
+                for m in mets:
+                    updates = {"name": f"{prefix_str}{m.name}"}
+                    if m.drill_fields:
+                        updates["drill_fields"] = [f"{prefix_str}{f}" for f in m.drill_fields]
+                    prefixed_mets.append(m.model_copy(update=updates))
+                mets = prefixed_mets
+
+            dimensions.extend(dims)
+            metrics.extend(mets)
+
+        # Only create a model if the view resolved at least some members
+        if not dimensions and not metrics:
+            return None
+
+        return Model(
+            name=name,
+            dimensions=dimensions,
+            metrics=metrics,
+            meta={"cube_type": "view"},
+        )
+
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Cube YAML format.
 
@@ -500,10 +777,12 @@ class CubeAdapter(BaseAdapter):
 
         resolved_models = resolve_model_inheritance(graph.models)
 
-        # Convert models to cubes
+        # Convert models to cubes (skip view-type models)
         cubes = []
         for model in resolved_models.values():
-            cube = self._export_cube(model, graph)
+            if model.meta and model.meta.get("cube_type") == "view":
+                continue
+            cube = self._export_cube(model, resolved_models)
             cubes.append(cube)
 
         data = {"cubes": cubes}
@@ -513,12 +792,12 @@ class CubeAdapter(BaseAdapter):
         with open(output_path, "w") as f:
             yaml.dump(data, f, sort_keys=False, default_flow_style=False)
 
-    def _export_cube(self, model: Model, graph: SemanticGraph) -> dict:
+    def _export_cube(self, model: Model, resolved_models: dict[str, Model]) -> dict:
         """Export model to Cube definition.
 
         Args:
             model: Model to export
-            graph: Semantic graph (for join discovery)
+            resolved_models: Resolved (inheritance-applied) models dict for join target lookup
 
         Returns:
             Cube definition dictionary
@@ -532,6 +811,9 @@ class CubeAdapter(BaseAdapter):
 
         if model.description:
             cube["description"] = model.description
+
+        if model.meta:
+            cube["meta"] = model.meta
 
         # Export dimensions
         dimensions = []
@@ -558,6 +840,15 @@ class CubeAdapter(BaseAdapter):
             # Add metadata fields
             if dim.format:
                 dim_def["format"] = dim.format
+
+            if dim.label:
+                dim_def["title"] = dim.label
+
+            if dim.meta:
+                dim_def["meta"] = dim.meta
+
+            if not dim.public:
+                dim_def["shown"] = False
 
             # Mark primary key dimension
             if model.primary_key and dim.name == model.primary_key:
@@ -613,15 +904,19 @@ class CubeAdapter(BaseAdapter):
                     measure_def["sql"] = measure.sql
                 if measure.window:
                     measure_def["rolling_window"] = {"trailing": measure.window}
+                elif measure.grain_to_date:
+                    measure_def["rolling_window"] = {
+                        "type": "to_date",
+                        "granularity": measure.grain_to_date,
+                    }
             elif measure.type == "time_comparison":
                 # Time comparison - use Cube's time dimension features
                 measure_def["type"] = "number"
                 if measure.base_metric:
-                    # Add comment explaining this is a time comparison
-                    measure_def["description"] = (
-                        measure.description or ""
-                    ) + f" (Time comparison of {measure.base_metric})"
-                    measure_def["sql"] = measure.base_metric
+                    # Convert qualified name (cube.metric) to Cube reference (${metric})
+                    base_ref = measure.base_metric.split(".")[-1] if "." in measure.base_metric else measure.base_metric
+                    measure_def["sql"] = f"${{{base_ref}}}"
+                    measure_def["description"] = (measure.description or "") + f" (Time comparison of {base_ref})"
             else:
                 # Regular aggregation measure
                 type_mapping = {
@@ -647,12 +942,23 @@ class CubeAdapter(BaseAdapter):
             if measure.format:
                 measure_def["format"] = measure.format
 
+            if measure.label:
+                measure_def["title"] = measure.label
+
+            if measure.meta:
+                measure_def["meta"] = measure.meta
+
+            if not measure.public:
+                measure_def["shown"] = False
+
             # Add drill fields if specified
             if measure.drill_fields and drill_members:
                 # Only include drill fields that exist in this model
                 valid_drill = [f for f in measure.drill_fields if f in [d.name for d in model.dimensions]]
                 if valid_drill:
                     measure_def["drill_members"] = valid_drill
+            elif measure.drill_fields:
+                measure_def["drill_members"] = measure.drill_fields
             elif drill_members:
                 # Default to hierarchy dimensions
                 measure_def["drill_members"] = drill_members
@@ -673,25 +979,81 @@ class CubeAdapter(BaseAdapter):
                     segment_def["sql"] = segment_sql
                 if segment.description:
                     segment_def["description"] = segment.description
+                if not segment.public:
+                    segment_def["shown"] = False
                 cube["segments"].append(segment_def)
 
-        # Export joins (from many_to_one relationships)
+        # Export joins (all relationship types)
         joins = []
         for relationship in model.relationships:
-            if relationship.type == "many_to_one":
-                # Find target model
-                target_model = graph.models.get(relationship.name)
-                if target_model:
+            # Skip many_to_many (needs junction table info)
+            if relationship.type == "many_to_many":
+                continue
+
+            # Find target model from resolved models (inheritance-applied)
+            target_model = resolved_models.get(relationship.name)
+            if target_model:
+                # Use ${CUBE} for local side and ${target.col} for remote side
+                # so _extract_fk_from_join_sql can re-parse the exported SQL
+                if relationship.type in ("many_to_one", "one_to_one"):
                     local_key = relationship.sql_expr or relationship.foreign_key
                     remote_key = relationship.primary_key or target_model.primary_key
-                    join_def = {
-                        "name": relationship.name,
-                        "sql": f"{model.name}.{local_key} = {relationship.name}.{remote_key}",
-                        "relationship": "many_to_one",
-                    }
-                    joins.append(join_def)
+                    if isinstance(remote_key, list):
+                        remote_key = remote_key[0]
+                    join_sql = f"${{CUBE}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
+                else:
+                    # one_to_many: ${CUBE}.pk = ${target.fk}
+                    local_key = model.primary_key if isinstance(model.primary_key, str) else model.primary_key[0]
+                    remote_key = relationship.sql_expr or relationship.foreign_key
+                    join_sql = f"${{CUBE}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
+
+                join_def = {
+                    "name": relationship.name,
+                    "sql": join_sql,
+                    "relationship": relationship.type,
+                }
+                joins.append(join_def)
 
         if joins:
             cube["joins"] = joins
+
+        # Export pre-aggregations
+        if model.pre_aggregations:
+            cube["pre_aggregations"] = []
+            for preagg in model.pre_aggregations:
+                preagg_def = {"name": preagg.name, "type": preagg.type}
+                if preagg.measures:
+                    preagg_def["measures"] = [f"CUBE.{m}" for m in preagg.measures]
+                if preagg.dimensions:
+                    preagg_def["dimensions"] = [f"CUBE.{d}" for d in preagg.dimensions]
+                if preagg.time_dimension:
+                    preagg_def["time_dimension"] = preagg.time_dimension
+                if preagg.granularity:
+                    preagg_def["granularity"] = preagg.granularity
+                if preagg.partition_granularity:
+                    preagg_def["partition_granularity"] = preagg.partition_granularity
+                if preagg.refresh_key:
+                    rk = {}
+                    if preagg.refresh_key.every:
+                        rk["every"] = preagg.refresh_key.every
+                    if preagg.refresh_key.sql:
+                        rk["sql"] = preagg.refresh_key.sql
+                    if preagg.refresh_key.incremental:
+                        rk["incremental"] = True
+                    if preagg.refresh_key.update_window:
+                        rk["update_window"] = preagg.refresh_key.update_window
+                    if rk:
+                        preagg_def["refresh_key"] = rk
+                if not preagg.scheduled_refresh:
+                    preagg_def["scheduled_refresh"] = False
+                if preagg.indexes:
+                    preagg_def["indexes"] = [
+                        {"name": idx.name, "columns": idx.columns, "type": idx.type} for idx in preagg.indexes
+                    ]
+                if preagg.build_range_start:
+                    preagg_def["build_range_start"] = {"sql": preagg.build_range_start}
+                if preagg.build_range_end:
+                    preagg_def["build_range_end"] = {"sql": preagg.build_range_end}
+                cube["pre_aggregations"].append(preagg_def)
 
         return cube

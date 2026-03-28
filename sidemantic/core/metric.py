@@ -275,6 +275,9 @@ class Metric(BaseModel):
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
 
+    # Visibility
+    public: bool = Field(True, description="Whether metric is visible in API/UI")
+
     def __hash__(self) -> int:
         return hash((self.name, self.agg, self.sql))
 

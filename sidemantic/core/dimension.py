@@ -32,6 +32,9 @@ class Dimension(BaseModel):
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
 
+    # Visibility
+    public: bool = Field(True, description="Whether dimension is visible in API/UI")
+
     @model_validator(mode="before")
     @classmethod
     def handle_expr_alias(cls, data):

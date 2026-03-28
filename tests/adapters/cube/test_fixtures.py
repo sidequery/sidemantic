@@ -4,10 +4,6 @@ Fixtures sourced from:
 - Cube.js official Stripe schema: https://github.com/cube-js/stripe-schema
 - Cube schema compiler test fixtures: https://github.com/cube-js/cube
 - Cube documentation examples: https://cube.dev/docs
-
-These tests are intentionally permissive: they verify the adapter can parse
-without errors and check key properties, documenting what works and what
-the adapter silently ignores.
 """
 
 from pathlib import Path
@@ -174,6 +170,27 @@ class TestStripeSaaSMetrics:
         saas = graph.get_model("stripe_saas_metrics")
         assert len(saas.metrics) >= 14
 
+    def test_drill_members_imported(self, graph):
+        """drill_members on measures should map to drill_fields."""
+        charges = graph.get_model("stripe_charges")
+        count = charges.get_metric("count")
+        assert count.drill_fields == ["id", "amount", "paid", "refunded", "created"]
+
+    def test_shown_false(self, graph):
+        """shown: false should map to public=False."""
+        saas = graph.get_model("stripe_saas_metrics")
+        new_subs = saas.get_metric("new_subscriptions")
+        assert new_subs is not None
+        assert new_subs.public is False
+
+        churned_30d = saas.get_metric("churned_movement_30days")
+        assert churned_30d is not None
+        assert churned_30d.public is False
+
+        mrr_30d = saas.get_metric("mrr_30days_ago")
+        assert mrr_30d is not None
+        assert mrr_30d.public is False
+
 
 # ---------------------------------------------------------------------------
 # Diamond Join Pattern
@@ -250,13 +267,7 @@ class TestDiamondJoin:
 
 
 class TestViewsIncludesExcludes:
-    """Views: includes/excludes/prefix/alias.
-
-    The Cube adapter currently only parses the cubes: section.
-    Views are a Cube-specific concept not yet mapped to sidemantic models.
-    These tests document that the cubes parse correctly and that the views
-    section is silently ignored (permissive parsing).
-    """
+    """Views: includes/excludes/prefix/alias are resolved into composite Models."""
 
     @pytest.fixture()
     def graph(self):
@@ -273,10 +284,46 @@ class TestViewsIncludesExcludes:
         assert "products" in graph.models
         assert "users" in graph.models
 
-    def test_views_not_imported_as_models(self, graph):
-        """Views are not cubes; they should not appear as models."""
-        assert "orders_view" not in graph.models
-        assert "minimal_orders_view" not in graph.models
+    def test_views_imported_as_models(self, graph):
+        """Views are resolved into composite Models."""
+        assert "orders_view" in graph.models
+        assert "minimal_orders_view" in graph.models
+
+    def test_view_metadata(self, graph):
+        """Views have cube_type=view in meta."""
+        view = graph.get_model("orders_view")
+        assert view.meta == {"cube_type": "view"}
+
+    def test_orders_view_selected_members(self, graph):
+        """orders_view includes selected dims/metrics from base_orders."""
+        view = graph.get_model("orders_view")
+        dim_names = {d.name for d in view.dimensions}
+        metric_names = {m.name for m in view.metrics}
+        assert {"status", "created_date"} <= dim_names
+        assert {"total_amount", "count", "average_order_value"} <= metric_names
+
+    def test_orders_view_alias(self, graph):
+        """products.name is aliased to 'product' via alias."""
+        view = graph.get_model("orders_view")
+        dim_names = {d.name for d in view.dimensions}
+        assert "product" in dim_names
+
+    def test_orders_view_prefixed_users(self, graph):
+        """users dimensions are prefixed with users_ and company is excluded."""
+        view = graph.get_model("orders_view")
+        dim_names = {d.name for d in view.dimensions}
+        assert "users_id" in dim_names
+        assert "users_name" in dim_names
+        assert "users_city" in dim_names
+        assert "users_company" not in dim_names
+
+    def test_minimal_orders_view(self, graph):
+        """minimal_orders_view includes only count and status."""
+        view = graph.get_model("minimal_orders_view")
+        dim_names = {d.name for d in view.dimensions}
+        metric_names = {m.name for m in view.metrics}
+        assert "status" in dim_names
+        assert "count" in metric_names
 
     def test_base_orders_dimensions(self, graph):
         orders = graph.get_model("base_orders")
@@ -314,12 +361,7 @@ class TestViewsIncludesExcludes:
 
 
 class TestMultiStageTimeShift:
-    """Multi-stage measures, time_shift, rolling_window to_date, switch dimensions.
-
-    Many of these features (multi_stage, time_shift, group_by, rank, switch)
-    are Cube-specific and the adapter maps them best-effort. Tests verify
-    parsing does not crash and checks what does get mapped.
-    """
+    """Multi-stage measures, time_shift, rolling_window to_date, switch dimensions."""
 
     @pytest.fixture()
     def graph(self):
@@ -342,12 +384,13 @@ class TestMultiStageTimeShift:
         assert cal.relationships[0].name == "custom_calendar"
         assert cal.relationships[0].type == "many_to_one"
 
-    def test_calendar_orders_dimensions_with_meta(self, graph):
-        """Dimensions with meta: should parse (meta is on the YAML but not mapped)."""
+    def test_calendar_orders_meta_on_dimensions(self, graph):
+        """meta: on dimensions is now imported."""
         cal = graph.get_model("calendar_orders")
         status = cal.get_dimension("status")
         assert status is not None
         assert status.type == "categorical"
+        assert status.meta == {"addDesc": "The status of order", "moreNum": 42}
 
     def test_calendar_orders_rolling_window(self, graph):
         cal = graph.get_model("calendar_orders")
@@ -375,24 +418,25 @@ class TestMultiStageTimeShift:
         assert revenue is not None
         assert revenue.agg == "sum"
 
-        # revenue_ytd has rolling_window with type: to_date
-        # The adapter treats any rolling_window as cumulative
         revenue_ytd = pd_model.get_metric("revenue_ytd")
         assert revenue_ytd is not None
         assert revenue_ytd.type == "cumulative"
 
-    def test_prior_date_time_shift_measures_parse(self, graph):
-        """time_shift measures should parse without error.
+    def test_revenue_ytd_grain_to_date(self, graph):
+        """rolling_window with type: to_date maps to grain_to_date."""
+        pd_model = graph.get_model("prior_date")
+        revenue_ytd = pd_model.get_metric("revenue_ytd")
+        assert revenue_ytd.grain_to_date == "year"
 
-        The adapter may not fully map time_shift semantics, but it should
-        not crash. These measures have type: number, so they become derived.
-        """
+    def test_time_shift_maps_to_time_comparison(self, graph):
+        """time_shift with type: prior maps to time_comparison metric."""
         pd_model = graph.get_model("prior_date")
         prior_year = pd_model.get_metric("revenue_prior_year")
         assert prior_year is not None
-
-        prior_year_ytd = pd_model.get_metric("revenue_prior_year_ytd")
-        assert prior_year_ytd is not None
+        assert prior_year.type == "time_comparison"
+        assert prior_year.comparison_type == "yoy"
+        assert prior_year.time_offset == "1 year"
+        assert prior_year.base_metric == "prior_date.revenue"
 
     def test_percent_of_total_measures(self, graph):
         pot = graph.get_model("percent_of_total")
@@ -403,9 +447,21 @@ class TestMultiStageTimeShift:
         assert revenue is not None
         assert revenue.format == "currency"
 
-        # country_revenue has group_by (not mapped by adapter, but should parse)
         country_rev = pot.get_metric("country_revenue")
         assert country_rev is not None
+
+    def test_rank_preserves_metadata(self, graph):
+        """type: rank measures store rank metadata and are queryable."""
+        rank_model = graph.get_model("ranking")
+        product_rank = rank_model.get_metric("product_rank")
+        assert product_rank is not None
+        # count as executable fallback
+        assert product_rank.agg == "count"
+        # rank metadata preserved for special handling
+        assert product_rank.meta is not None
+        assert product_rank.meta.get("cube_type") == "rank"
+        assert product_rank.meta.get("order_by") is not None
+        assert product_rank.meta.get("reduce_by") is not None
 
     def test_ranking_measures(self, graph):
         rank_model = graph.get_model("ranking")
@@ -413,19 +469,11 @@ class TestMultiStageTimeShift:
         assert revenue is not None
         assert revenue.format == "currency"
 
-        # product_rank has type: rank (not a standard agg, adapter handles it)
-        product_rank = rank_model.get_metric("product_rank")
-        assert product_rank is not None
-
     def test_switch_dimension_parses(self, graph):
-        """Switch dimensions (type: switch) should parse without error.
-
-        The adapter maps unknown dimension types to 'categorical'.
-        """
+        """Switch dimensions (type: switch) parse as categorical."""
         switch_model = graph.get_model("orders_with_switch")
         currency = switch_model.get_dimension("currency")
         assert currency is not None
-        # switch is not a recognized type, should fall back to categorical
         assert currency.type == "categorical"
 
     def test_switch_model_measures(self, graph):
@@ -436,7 +484,6 @@ class TestMultiStageTimeShift:
         assert amount_usd is not None
         assert amount_usd.agg == "sum"
 
-        # amount_in_currency has case/switch/when (not standard, but should parse)
         aic = switch_model.get_metric("amount_in_currency")
         assert aic is not None
 
@@ -447,11 +494,7 @@ class TestMultiStageTimeShift:
 
 
 class TestExtendsAndHierarchies:
-    """Extends, hierarchies, accessPolicy, count_distinct.
-
-    The adapter parses cubes individually. The extends: field and hierarchies:
-    section are Cube-specific; the adapter should not crash on them.
-    """
+    """Extends resolves inheritance; hierarchies set Dimension.parent chains."""
 
     @pytest.fixture()
     def graph(self):
@@ -497,13 +540,20 @@ class TestExtendsAndHierarchies:
         assert preagg.refresh_key.every == "1 hour"
         assert preagg.scheduled_refresh is True
 
-    def test_orders_ext_extends_field(self, graph):
-        """The extends: field should be preserved if the adapter reads it."""
+    def test_orders_ext_inherits_table(self, graph):
+        """extends: resolves inheritance, so orders_ext gets parent's table."""
         ext = graph.get_model("orders_ext")
-        # The adapter does not currently map extends: to the Model,
-        # but the cube should still parse. orders_ext won't have a table
-        # because it inherits from orders_base (which the adapter doesn't resolve).
         assert ext is not None
+        # After inheritance resolution, extends is cleared and table is inherited
+        assert ext.table == "public.orders"
+
+    def test_orders_ext_inherits_dimensions(self, graph):
+        """orders_ext inherits parent's dims plus its own city."""
+        ext = graph.get_model("orders_ext")
+        dim_names = {d.name for d in ext.dimensions}
+        # From parent: id, user_id, status, created_at, completed_at
+        # Own: city
+        assert {"id", "user_id", "status", "created_at", "completed_at", "city"} <= dim_names
 
     def test_orders_ext_own_dimensions(self, graph):
         ext = graph.get_model("orders_ext")
@@ -517,24 +567,49 @@ class TestExtendsAndHierarchies:
         assert cd is not None
         assert cd.agg == "count_distinct"
 
+    def test_orders_ext_inherits_measures(self, graph):
+        """orders_ext inherits count from parent plus own count_distinct_status."""
+        ext = graph.get_model("orders_ext")
+        metric_names = {m.name for m in ext.metrics}
+        assert "count" in metric_names
+        assert "count_distinct_status" in metric_names
+
     def test_orders_ext_joins(self, graph):
         ext = graph.get_model("orders_ext")
         assert len(ext.relationships) >= 1
         join_names = {r.name for r in ext.relationships}
         assert "line_items" in join_names
+        # Also inherits order_users join from parent
+        assert "order_users" in join_names
 
-    def test_orders_ext_segment(self, graph):
+    def test_orders_ext_inherits_segments(self, graph):
+        """orders_ext inherits sf_users from parent plus own another_status."""
         ext = graph.get_model("orders_ext")
-        assert len(ext.segments) == 1
-        seg = ext.segments[0]
-        assert seg.name == "another_status"
+        seg_names = {s.name for s in ext.segments}
+        assert "sf_users" in seg_names
+        assert "another_status" in seg_names
 
-    def test_orders_ext_pre_aggregation(self, graph):
+    def test_orders_ext_inherits_pre_aggregations(self, graph):
+        """orders_ext inherits count_created_at from parent plus own main_pre_aggs."""
         ext = graph.get_model("orders_ext")
-        assert len(ext.pre_aggregations) == 1
-        preagg = ext.pre_aggregations[0]
-        assert preagg.name == "main_pre_aggs"
-        assert preagg.type == "rollup"
+        preagg_names = {p.name for p in ext.pre_aggregations}
+        assert "count_created_at" in preagg_names
+        assert "main_pre_aggs" in preagg_names
+
+    def test_hierarchy_sets_parent(self, graph):
+        """Hierarchy levels create Dimension.parent chains."""
+        ext = graph.get_model("orders_ext")
+        city = ext.get_dimension("city")
+        assert city is not None
+        # orders_ext hierarchy "ehlo": levels [status, city]
+        assert city.parent == "status"
+
+    def test_order_users_hierarchy_parent(self, graph):
+        """order_users hierarchy: levels [age, city] -> city.parent = age."""
+        users = graph.get_model("order_users")
+        city = users.get_dimension("city")
+        assert city is not None
+        assert city.parent == "age"
 
     def test_order_users_model(self, graph):
         users = graph.get_model("order_users")
@@ -547,3 +622,47 @@ class TestExtendsAndHierarchies:
         count = users.get_metric("count")
         assert count is not None
         assert count.agg == "count"
+
+
+# ---------------------------------------------------------------------------
+# Case/Switch Dimensions
+# ---------------------------------------------------------------------------
+
+
+class TestCaseSwitchDimensions:
+    """Case dimensions generate SQL CASE WHEN expressions."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = CubeAdapter()
+        return adapter.parse(FIXTURES_DIR / "case_switch_ownership.yaml")
+
+    def test_parses_without_error(self, graph):
+        assert graph is not None
+
+    def test_case_dimension_generates_sql(self, graph):
+        """case/when/else blocks are converted to SQL CASE expressions."""
+        users = graph.get_model("users")
+        owned_case = users.get_dimension("ownedCase")
+        assert owned_case is not None
+        assert owned_case.sql is not None
+        assert "CASE" in owned_case.sql
+        assert "WHEN" in owned_case.sql
+        assert "Admin" in owned_case.sql
+        assert "User" in owned_case.sql
+        assert "ELSE" in owned_case.sql
+        assert "Unknown" in owned_case.sql
+
+    def test_case_dimension_with_cross_cube_ref(self, graph):
+        """Case dimensions with cross-cube references preserve the references."""
+        users = graph.get_model("users")
+        not_owned = users.get_dimension("notOwnedCase")
+        assert not_owned is not None
+        assert not_owned.sql is not None
+        assert "CASE" in not_owned.sql
+
+    def test_views_from_case_fixture(self, graph):
+        """Views in case_switch_ownership.yaml are parsed."""
+        assert "users_to_orders" in graph.models
+        view = graph.get_model("users_to_orders")
+        assert view.meta == {"cube_type": "view"}

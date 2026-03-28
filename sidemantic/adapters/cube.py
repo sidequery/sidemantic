@@ -383,8 +383,8 @@ class CubeAdapter(BaseAdapter):
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
             if measure_type == "rank":
-                # Rank measures: store as derived with rank metadata
-                metric_type = "derived"
+                # Rank measures: store metadata only, no agg or derived type
+                # (rank is a window function concept with no simple SQL mapping)
                 meta = meta.copy() if meta else {}
                 meta["cube_type"] = "rank"
                 meta["order_by"] = measure_def.get("order_by")
@@ -491,10 +491,6 @@ class CubeAdapter(BaseAdapter):
                         return f"{cube_name}.{measure_ref}"
 
                     measure_sql = re.sub(r"\$\{(\w+)\}", replace_measure_ref, measure_sql)
-
-        # For rank measures, ensure they have sql to satisfy derived validation
-        if metric_type == "derived" and not measure_sql:
-            measure_sql = name
 
         return Metric(
             name=name,
@@ -931,15 +927,19 @@ class CubeAdapter(BaseAdapter):
             # Find target model from resolved models (inheritance-applied)
             target_model = resolved_models.get(relationship.name)
             if target_model:
+                # Use ${CUBE} for local side and ${target.col} for remote side
+                # so _extract_fk_from_join_sql can re-parse the exported SQL
                 if relationship.type in ("many_to_one", "one_to_one"):
                     local_key = relationship.sql_expr or relationship.foreign_key
                     remote_key = relationship.primary_key or target_model.primary_key
-                    join_sql = f"${{{model.name}}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
+                    if isinstance(remote_key, list):
+                        remote_key = remote_key[0]
+                    join_sql = f"${{CUBE}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
                 else:
-                    # one_to_many: swap direction
+                    # one_to_many: ${CUBE}.pk = ${target.fk}
                     local_key = model.primary_key if isinstance(model.primary_key, str) else model.primary_key[0]
                     remote_key = relationship.sql_expr or relationship.foreign_key
-                    join_sql = f"${{{model.name}}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
+                    join_sql = f"${{CUBE}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
 
                 join_def = {
                     "name": relationship.name,

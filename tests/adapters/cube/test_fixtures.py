@@ -456,9 +456,10 @@ class TestMultiStageTimeShift:
         product_rank = rank_model.get_metric("product_rank")
         assert product_rank is not None
         assert product_rank.agg != "count"
-        assert product_rank.type == "derived"
         assert product_rank.meta is not None
         assert product_rank.meta.get("cube_type") == "rank"
+        assert product_rank.meta.get("order_by") is not None
+        assert product_rank.meta.get("reduce_by") is not None
 
     def test_ranking_measures(self, graph):
         rank_model = graph.get_model("ranking")

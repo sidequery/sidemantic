@@ -318,10 +318,10 @@ class CubeAdapter(BaseAdapter):
             parts = []
             for w in whens:
                 cond = _normalize_cube_sql(w.get("sql"), cube_name)
-                lbl = w.get("label", "")
+                lbl = w.get("label", "").replace("'", "''")
                 parts.append(f"WHEN {cond} THEN '{lbl}'")
             if else_clause:
-                else_label = else_clause.get("label", "Unknown")
+                else_label = else_clause.get("label", "Unknown").replace("'", "''")
                 parts.append(f"ELSE '{else_label}'")
             dim_sql = "CASE " + " ".join(parts) + " END"
 
@@ -719,7 +719,7 @@ class CubeAdapter(BaseAdapter):
         for model in resolved_models.values():
             if model.meta and model.meta.get("cube_type") == "view":
                 continue
-            cube = self._export_cube(model, graph)
+            cube = self._export_cube(model, resolved_models)
             cubes.append(cube)
 
         data = {"cubes": cubes}
@@ -729,12 +729,12 @@ class CubeAdapter(BaseAdapter):
         with open(output_path, "w") as f:
             yaml.dump(data, f, sort_keys=False, default_flow_style=False)
 
-    def _export_cube(self, model: Model, graph: SemanticGraph) -> dict:
+    def _export_cube(self, model: Model, resolved_models: dict[str, Model]) -> dict:
         """Export model to Cube definition.
 
         Args:
             model: Model to export
-            graph: Semantic graph (for join discovery)
+            resolved_models: Resolved (inheritance-applied) models dict for join target lookup
 
         Returns:
             Cube definition dictionary
@@ -928,8 +928,8 @@ class CubeAdapter(BaseAdapter):
             if relationship.type == "many_to_many":
                 continue
 
-            # Find target model
-            target_model = graph.models.get(relationship.name)
+            # Find target model from resolved models (inheritance-applied)
+            target_model = resolved_models.get(relationship.name)
             if target_model:
                 if relationship.type in ("many_to_one", "one_to_one"):
                     local_key = relationship.sql_expr or relationship.foreign_key

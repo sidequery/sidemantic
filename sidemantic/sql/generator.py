@@ -389,7 +389,13 @@ class SQLGenerator:
                     pass
 
         # Classify filters for pushdown optimization
-        pushdown_filters, main_query_filters = self._classify_filters_for_pushdown(filters or [], all_models)
+        pushdown_filters, main_query_filters, window_dim_filters = self._classify_filters_for_pushdown(
+            filters or [], all_models
+        )
+        # In the standard (non-preagg) path, window-dim filters belong in the
+        # outer query WHERE, so merge them into main_query_filters.
+        for wf_list in window_dim_filters.values():
+            main_query_filters.extend(wf_list)
 
         # Determine which models have filters (for join type decision)
         models_with_filters = set()
@@ -657,7 +663,7 @@ class SQLGenerator:
 
     def _classify_filters_for_pushdown(
         self, filters: list[str], all_models: set[str]
-    ) -> tuple[dict[str, list[str]], list[str]]:
+    ) -> tuple[dict[str, list[str]], list[str], dict[str, list[str]]]:
         """Classify filters into those that can be pushed down vs those that must stay in main query.
 
         Compound AND expressions are split into individual conjuncts first so that
@@ -670,12 +676,17 @@ class SQLGenerator:
             all_models: Set of all model names in the query
 
         Returns:
-            Tuple of (pushdown_filters_by_model, main_query_filters)
+            Tuple of (pushdown_filters_by_model, main_query_filters, window_dim_filters_by_model)
             - pushdown_filters_by_model: Dict mapping model name to list of filters for that model
-            - main_query_filters: Filters that reference multiple models (can't push down)
+            - main_query_filters: Filters that reference multiple models or metrics (can't push down)
+            - window_dim_filters_by_model: Dict mapping model name to filters on window dimensions.
+              These can't be pushed into CTE WHERE (window not yet evaluated) but reference a
+              single model. In the standard path they belong in the outer query; in the preagg
+              path they are pushed into each model's sub-query (which has its own outer WHERE).
         """
         pushdown_filters = {model: [] for model in all_models}
         main_query_filters = []
+        window_dim_filters: dict[str, list[str]] = {model: [] for model in all_models}
 
         # Flatten compound AND expressions into individual conjuncts so each
         # part can be classified independently.
@@ -727,9 +738,15 @@ class SQLGenerator:
             # because metrics don't exist in CTEs (only _raw columns)
             if references_metric:
                 main_query_filters.append(filter_expr)
-            # Filters on window dimensions must stay in outer query because the
-            # window function hasn't been evaluated yet in the CTE WHERE context
+            # Single-model window-dim filters: kept separate so callers can
+            # handle them appropriately.  In the standard path they go to the
+            # outer WHERE; in the preagg path they are pushed into each model's
+            # sub-query (which has its own outer WHERE after window evaluation).
+            elif references_window_dim and len(referenced_models) == 1:
+                model_name = list(referenced_models)[0]
+                window_dim_filters[model_name].append(filter_expr)
             elif references_window_dim:
+                # Window-dim filter spanning multiple models: outer query
                 main_query_filters.append(filter_expr)
             # If filter references exactly one model and no metrics, push it down
             elif len(referenced_models) == 1:
@@ -739,7 +756,7 @@ class SQLGenerator:
                 # Filter references multiple models or no models - keep in main query
                 main_query_filters.append(filter_expr)
 
-        return pushdown_filters, main_query_filters
+        return pushdown_filters, main_query_filters, window_dim_filters
 
     def _extract_metric_filter_columns(self, metrics: list[str]) -> dict[str, set[str]]:
         """Extract columns referenced in metric-level filters and SQL expressions.
@@ -1439,7 +1456,9 @@ class SQLGenerator:
         # Cross-model filters (referencing models outside the sub-query) would
         # produce invalid SQL referencing CTEs that don't exist.
         all_model_names = set(metrics_by_model.keys())
-        pushdown_by_model, shared_filters = self._classify_filters_for_pushdown(all_filters, all_model_names)
+        pushdown_by_model, shared_filters, window_dim_filters = self._classify_filters_for_pushdown(
+            all_filters, all_model_names
+        )
 
         # Generate a pre-aggregated CTE for each metric model
         preagg_ctes = []
@@ -1449,8 +1468,11 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             cte_names.append(cte_name)
 
-            # Only pass filters relevant to this model's sub-query
-            model_filters = pushdown_by_model.get(model_name, [])
+            # Only pass filters relevant to this model's sub-query.
+            # Window-dim filters are included here (not in shared_filters) because
+            # preagg CTEs only project query dimensions/metrics, not window dims.
+            # The recursive generate() call handles them correctly in its outer WHERE.
+            model_filters = pushdown_by_model.get(model_name, []) + window_dim_filters.get(model_name, [])
 
             # Generate sub-query for this model's metrics at the dimension grain
             # We call generate() recursively but it won't trigger pre-aggregation

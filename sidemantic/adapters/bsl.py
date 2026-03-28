@@ -446,7 +446,10 @@ class BSLAdapter(BaseAdapter):
                 bsl_expr = f"_.{metric.name}"
         else:
             # Cross-format conversion: reconstruct BSL from SQL + aggregation
-            bsl_expr = _sql_to_bsl_expr(metric.sql or metric.name, metric.agg)
+            if metric.agg == "count" and not metric.sql:
+                bsl_expr = "_.count()"
+            else:
+                bsl_expr = _sql_to_bsl_expr(metric.sql or metric.name, metric.agg)
 
         if not metric.description:
             return bsl_expr

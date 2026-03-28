@@ -181,26 +181,27 @@ def _filter_node_to_sql(node: ast.AST) -> str | None:
         return _compare_to_sql(node)
 
     # BSL uses & and | (bitwise ops) for logical AND/OR in filter expressions
-    # because Python's `and`/`or` don't work with Ibis deferred expressions
+    # because Python's `and`/`or` don't work with Ibis deferred expressions.
+    # Wrap each side in parens to preserve precedence in mixed AND/OR filters.
     if isinstance(node, ast.BinOp):
         if isinstance(node.op, ast.BitAnd):
             left = _filter_node_to_sql(node.left)
             right = _filter_node_to_sql(node.right)
             if left and right:
-                return f"{left} AND {right}"
+                return f"({left}) AND ({right})"
             return None
         if isinstance(node.op, ast.BitOr):
             left = _filter_node_to_sql(node.left)
             right = _filter_node_to_sql(node.right)
             if left and right:
-                return f"{left} OR {right}"
+                return f"({left}) OR ({right})"
             return None
         return _binop_to_sql(node)
 
     if isinstance(node, ast.BoolOp):
         op = "AND" if isinstance(node.op, ast.And) else "OR"
-        parts = [_filter_node_to_sql(v) for v in node.values]
-        if all(parts):
+        parts = [f"({p})" for p in (_filter_node_to_sql(v) for v in node.values) if p]
+        if len(parts) == len(node.values):
             return f" {op} ".join(parts)
         return None
 

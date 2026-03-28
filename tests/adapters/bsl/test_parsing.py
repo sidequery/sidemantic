@@ -1058,11 +1058,19 @@ class TestBSLFilterToSQL:
 
     def test_compound_and(self):
         result = bsl_filter_to_sql("(_.year > 2020) & (_.origin == 'LAX')")
-        assert result == "year > 2020 AND origin = 'LAX'"
+        assert result == "(year > 2020) AND (origin = 'LAX')"
 
     def test_compound_or(self):
         result = bsl_filter_to_sql("(_.origin == 'LAX') | (_.origin == 'SFO')")
-        assert result == "origin = 'LAX' OR origin = 'SFO'"
+        assert result == "(origin = 'LAX') OR (origin = 'SFO')"
+
+    def test_mixed_precedence(self):
+        """Parens must preserve precedence in mixed AND/OR filters."""
+        result = bsl_filter_to_sql("(_.a == 1) & ((_.b == 2) | (_.c == 3))")
+        assert "AND" in result
+        assert "OR" in result
+        # The OR clause must be parenthesized to prevent SQL precedence issues
+        assert "(b = 2) OR (c = 3)" in result
 
 
 class TestBSLRoundtripFidelity:
@@ -1134,6 +1142,42 @@ class TestBSLRoundtripFidelity:
             else:
                 assert emergency["expr"] == '(_.encounter_class == "emergency").sum()'
 
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def test_count_metric_exports_correctly(self):
+        """COUNT(*) metrics without sql should export as _.count(), not _.name.count()."""
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from sidemantic.core.metric import Metric
+        from sidemantic.core.model import Model
+        from sidemantic.core.semantic_graph import SemanticGraph
+
+        model = Model(
+            name="test",
+            table="test",
+            primary_key="id",
+            metrics=[Metric(name="row_count", agg="count")],
+        )
+
+        graph = SemanticGraph()
+        graph.add_model(model)
+        adapter = BSLAdapter()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            temp_path = Path(f.name)
+
+        try:
+            adapter.export(graph, temp_path)
+            with open(temp_path) as f:
+                data = yaml.safe_load(f)
+
+            measure = data["test"]["measures"]["row_count"]
+            expr = measure if isinstance(measure, str) else measure["expr"]
+            assert expr == "_.count()"
         finally:
             temp_path.unlink(missing_ok=True)
 

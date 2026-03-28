@@ -189,3 +189,83 @@ def test_duckdb_valid_schema_names_accepted(schema):
     # Should not raise
     columns = adapter.get_columns("orders", schema=schema)
     assert len(columns) >= 1
+
+
+def test_duckdb_adapter_init_sql():
+    """Test that init_sql statements run after connecting."""
+    adapter = DuckDBAdapter(
+        ":memory:",
+        init_sql=["CREATE TABLE setup_test (id INT, name VARCHAR)"],
+    )
+    result = adapter.execute("SELECT * FROM setup_test")
+    assert result.fetchall() == []
+
+    # Verify columns were created
+    columns = adapter.get_columns("setup_test")
+    col_names = {c["column_name"] for c in columns}
+    assert col_names == {"id", "name"}
+
+
+def test_duckdb_adapter_init_sql_multiple_statements():
+    """Test multiple init_sql statements execute in order."""
+    adapter = DuckDBAdapter(
+        ":memory:",
+        init_sql=[
+            "CREATE TABLE t1 (x INT)",
+            "INSERT INTO t1 VALUES (42)",
+            "CREATE TABLE t2 AS SELECT x * 2 AS doubled FROM t1",
+        ],
+    )
+    result = adapter.execute("SELECT doubled FROM t2")
+    assert result.fetchone()[0] == 84
+
+
+def test_duckdb_adapter_init_sql_none():
+    """Test that init_sql=None is fine (no-op)."""
+    adapter = DuckDBAdapter(":memory:", init_sql=None)
+    result = adapter.execute("SELECT 1")
+    assert result.fetchone()[0] == 1
+
+
+def test_duckdb_adapter_from_url_with_init_sql():
+    """Test from_url passes init_sql through."""
+    adapter = DuckDBAdapter.from_url(
+        "duckdb:///:memory:",
+        init_sql=["CREATE TABLE url_test (val INT)"],
+    )
+    result = adapter.execute("SELECT COUNT(*) FROM url_test")
+    assert result.fetchone()[0] == 0
+
+
+def test_duckdb_adapter_from_url_init_sql_in_query_params():
+    """Test init_sql can be passed via URL query parameters."""
+    adapter = DuckDBAdapter.from_url("duckdb:///:memory:?init_sql=CREATE+TABLE+qs_test+(id+INT)")
+    result = adapter.execute("SELECT COUNT(*) FROM qs_test")
+    assert result.fetchone()[0] == 0
+
+
+def test_duckdb_adapter_from_url_param_overrides_query():
+    """Test that explicit init_sql parameter overrides URL query params."""
+    adapter = DuckDBAdapter.from_url(
+        "duckdb:///:memory:?init_sql=CREATE+TABLE+url_table+(id+INT)",
+        init_sql=["CREATE TABLE param_table (id INT)"],
+    )
+    # param_table should exist (from explicit param)
+    result = adapter.execute("SELECT COUNT(*) FROM param_table")
+    assert result.fetchone()[0] == 0
+
+    # url_table should NOT exist (overridden)
+    with pytest.raises(Exception):
+        adapter.execute("SELECT COUNT(*) FROM url_table")
+
+
+def test_duckdb_semantic_layer_init_sql():
+    """Test init_sql flows through SemanticLayer constructor."""
+    from sidemantic import SemanticLayer
+
+    layer = SemanticLayer(
+        connection="duckdb:///:memory:",
+        init_sql=["CREATE TABLE layer_test (id INT)"],
+    )
+    result = layer.adapter.execute("SELECT COUNT(*) FROM layer_test")
+    assert result.fetchone()[0] == 0

@@ -211,6 +211,13 @@ def _filter_node_to_sql(node: ast.AST) -> str | None:
             return f" {op} ".join(parts)
         return None
 
+    # BSL uses ~ for logical NOT (Ibis convention)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Invert):
+        operand = _filter_node_to_sql(node.operand)
+        if operand:
+            return f"NOT ({operand})"
+        return None
+
     if isinstance(node, ast.Attribute):
         attrs = _collect_attrs(node)
         if attrs:

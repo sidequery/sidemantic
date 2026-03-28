@@ -28,7 +28,6 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
-from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 
 
@@ -181,18 +180,21 @@ class BSLAdapter(BaseAdapter):
             if rel:
                 relationships.append(rel)
 
-        # Model-level filter -> Segment for query engine + metadata for roundtrip
-        segments = []
+        # Model-level filter -> bake into model.sql as a filtered subquery
+        # so the filter is always applied (matches BSL semantics)
+        model_sql = None
         metadata = None
         filter_expr = model_def.get("filter")
         if filter_expr:
             filter_str = str(filter_expr)
-            segments.append(Segment(name="_default_filter", sql=bsl_filter_to_sql(filter_str)))
+            filter_sql = bsl_filter_to_sql(filter_str)
+            model_sql = f"SELECT * FROM {table} WHERE {filter_sql}"
             metadata = {"bsl_filter": filter_str}
 
         return Model(
             name=name,
             table=table,
+            sql=model_sql,
             description=description,
             primary_key=primary_key,
             dimensions=dimensions,
@@ -200,7 +202,6 @@ class BSLAdapter(BaseAdapter):
             relationships=relationships,
             default_time_dimension=default_time_dimension,
             default_grain=default_grain,
-            segments=segments,
             metadata=metadata,
         )
 

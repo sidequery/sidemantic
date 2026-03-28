@@ -1046,14 +1046,15 @@ class TestBSLAdapterFilter:
         graph = adapter.parse("tests/fixtures/bsl/yaml_example_filter.yaml")
         flights = graph.models["flights"]
 
+        # Filter stored in metadata for roundtrip
         assert flights.metadata is not None
         assert "bsl_filter" in flights.metadata
         assert "year" in flights.metadata["bsl_filter"]
 
-        assert len(flights.segments) == 1
-        segment = flights.segments[0]
-        assert segment.name == "_default_filter"
-        assert "year > 2020" in segment.sql
+        # Filter baked into model.sql as subquery
+        assert flights.sql is not None
+        assert "WHERE" in flights.sql
+        assert "year > 2020" in flights.sql
 
 
 class TestBSLFilterToSQL:
@@ -1081,6 +1082,32 @@ class TestBSLFilterToSQL:
         assert "OR" in result
         # The OR clause must be parenthesized to prevent SQL precedence issues
         assert "(b = 2) OR (c = 3)" in result
+
+    def test_negation(self):
+        result = bsl_filter_to_sql("~(_.origin == 'LAX')")
+        assert result == "NOT (origin = 'LAX')"
+
+    def test_negation_compound(self):
+        result = bsl_filter_to_sql("(_.year > 2020) & ~(_.origin == 'LAX')")
+        assert "AND" in result
+        assert "NOT (origin = 'LAX')" in result
+
+
+class TestBSLFilterAutoApply:
+    """Tests that model-level filters are auto-applied in queries via model.sql."""
+
+    def test_filter_applied_in_query(self):
+        from sidemantic import SemanticLayer
+
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/yaml_example_filter.yaml")
+
+        layer = SemanticLayer()
+        layer.graph = graph
+
+        sql = layer.compile(metrics=["flights.flight_count"])
+        # The model-level filter is baked into the FROM subquery
+        assert "year > 2020" in sql
 
 
 class TestBSLRoundtripFidelity:

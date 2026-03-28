@@ -384,6 +384,135 @@ def test_metric_level_filters_not_pushed(layer):
     assert "completed" in case_sql
 
 
+def test_window_dimension_filter_not_pushed_down(layer):
+    """Test that filters on window dimensions stay in the outer query.
+
+    Window functions (LEAD, LAG, ROW_NUMBER, etc.) are computed in the CTE
+    SELECT but haven't been evaluated yet at WHERE-clause time, so pushing
+    a filter on a window dimension into the CTE WHERE would produce invalid
+    SQL. The filter must be applied in the outer query instead.
+    """
+    model = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="person_id", type="categorical", sql="person_id"),
+            Dimension(name="event_type", type="categorical", sql="event_type"),
+            Dimension(
+                name="next_event",
+                type="categorical",
+                sql="event_type",
+                window="LEAD(event_type) OVER (PARTITION BY person_id ORDER BY created_at)",
+            ),
+        ],
+        metrics=[
+            Metric(name="event_count", agg="count"),
+        ],
+    )
+
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["events.event_count"],
+        dimensions=["events.event_type"],
+        filters=["events.next_event = 'purchase'"],
+    )
+
+    parsed = sqlglot.parse_one(sql)
+
+    # Find the CTE
+    cte = None
+    for cte_def in parsed.find_all(exp.CTE):
+        if cte_def.alias == "events_cte":
+            cte = cte_def
+            break
+
+    assert cte is not None, "CTE not found"
+
+    # CTE should NOT have a WHERE clause for the window dimension filter
+    cte_where = cte.this.find(exp.Where)
+    if cte_where is not None:
+        cte_where_sql = cte_where.sql()
+        assert "next_event" not in cte_where_sql, "Window dimension filter should NOT be in CTE WHERE clause"
+        assert "purchase" not in cte_where_sql, "Window dimension filter value should NOT be in CTE WHERE clause"
+
+    # The window expression should still appear in the CTE SELECT
+    cte_sql = cte.sql()
+    assert "LEAD" in cte_sql.upper(), "Window function should appear in CTE SELECT"
+
+    # The filter should appear in the outer query WHERE
+    outer_where = parsed.find(exp.Where)
+    assert outer_where is not None, "Filter should be in outer query WHERE"
+    outer_where_sql = outer_where.sql()
+    assert "next_event" in outer_where_sql or "purchase" in outer_where_sql, (
+        "Window dimension filter should appear in outer query"
+    )
+
+
+def test_window_dimension_filter_with_regular_filter(layer):
+    """Test mixed filters: regular filter pushed down, window filter stays outer."""
+    model = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="person_id", type="categorical", sql="person_id"),
+            Dimension(name="event_type", type="categorical", sql="event_type"),
+            Dimension(
+                name="next_event",
+                type="categorical",
+                sql="event_type",
+                window="LEAD(event_type) OVER (PARTITION BY person_id ORDER BY created_at)",
+            ),
+        ],
+        metrics=[
+            Metric(name="event_count", agg="count"),
+        ],
+    )
+
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["events.event_count"],
+        dimensions=["events.event_type"],
+        filters=[
+            "events.event_type = 'click'",
+            "events.next_event = 'purchase'",
+        ],
+    )
+
+    parsed = sqlglot.parse_one(sql)
+
+    # Find the CTE
+    cte = None
+    for cte_def in parsed.find_all(exp.CTE):
+        if cte_def.alias == "events_cte":
+            cte = cte_def
+            break
+
+    assert cte is not None, "CTE not found"
+
+    # Regular filter (event_type) should be pushed into CTE WHERE
+    cte_where = cte.this.find(exp.Where)
+    assert cte_where is not None, "Regular filter should be pushed into CTE WHERE"
+    cte_where_sql = cte_where.sql()
+    assert "event_type" in cte_where_sql, "Regular filter should be in CTE WHERE"
+    assert "click" in cte_where_sql, "Regular filter value should be in CTE WHERE"
+
+    # Window filter (next_event) should NOT be in CTE WHERE
+    assert "next_event" not in cte_where_sql, "Window dimension filter should NOT be in CTE WHERE"
+    assert "purchase" not in cte_where_sql, "Window dimension filter value should NOT be in CTE WHERE"
+
+    # Window filter should be in outer query WHERE
+    outer_where = parsed.find(exp.Where)
+    assert outer_where is not None, "Window filter should be in outer query"
+    outer_where_sql = outer_where.sql()
+    assert "next_event" in outer_where_sql or "purchase" in outer_where_sql, (
+        "Window dimension filter should appear in outer query WHERE"
+    )
+
+
 if __name__ == "__main__":
     import pytest
 

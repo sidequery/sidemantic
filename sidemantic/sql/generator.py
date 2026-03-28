@@ -411,6 +411,25 @@ class SQLGenerator:
         # Extract columns needed for metric-level filters (before building CTEs)
         metric_filter_cols_by_model = self._extract_metric_filter_columns(metrics)
 
+        # Ensure dimensions referenced in outer-query filters (e.g. window dims)
+        # are included in the relevant CTE SELECT lists.
+        for filter_expr in main_query_filters:
+            try:
+                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                for column in parsed.find_all(exp.Column):
+                    if column.table:
+                        model_name = column.table.replace("_cte", "")
+                        if model_name in all_models:
+                            if model_name not in metric_filter_cols_by_model:
+                                metric_filter_cols_by_model[model_name] = set()
+                            metric_filter_cols_by_model[model_name].add(column.name)
+            except Exception:
+                logging.debug(
+                    "Failed to parse outer filter for column extraction: %s",
+                    filter_expr,
+                    exc_info=True,
+                )
+
         # Build CTEs for all models with pushed-down filters
         cte_sqls = []
         for model_name in all_models:
@@ -681,6 +700,7 @@ class SQLGenerator:
             # Find all table references in the filter
             referenced_models = set()
             references_metric = False
+            references_window_dim = False
 
             for column in parsed.find_all(exp.Column):
                 table_name = column.table
@@ -697,9 +717,19 @@ class SQLGenerator:
                         if model and model.get_metric(column_name):
                             references_metric = True
 
+                        # Check if this column is a window dimension
+                        if model:
+                            dim = model.get_dimension(column_name)
+                            if dim and dim.window is not None:
+                                references_window_dim = True
+
             # Filters that reference metrics must stay in main query (can't push down)
             # because metrics don't exist in CTEs (only _raw columns)
             if references_metric:
+                main_query_filters.append(filter_expr)
+            # Filters on window dimensions must stay in outer query because the
+            # window function hasn't been evaluated yet in the CTE WHERE context
+            elif references_window_dim:
                 main_query_filters.append(filter_expr)
             # If filter references exactly one model and no metrics, push it down
             elif len(referenced_models) == 1:

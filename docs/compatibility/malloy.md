@@ -17,15 +17,15 @@ Features are marked **supported**, **partial support**, or **unsupported**. Part
 | Comma-separated source definitions in one `source:` statement | Supported |
 | Directory parsing (recursive `.malloy` discovery) | Supported |
 | Empty/minimal sources (no dimensions or measures) | Supported |
-| Connection identifier (`duckdb`, `bigquery`, etc.) | Partial support: parsed by the grammar but the connection name is discarded. Export always uses `duckdb`. |
-| `source: name is other_source extend { ... }` (ID reference) | Partial support: the source parses but the base source's fields are not inherited. The resulting model has only the fields declared in the extend block, with no table reference. |
-| `source: name is base -> { ... } extend { ... }` (pipeline source) | Partial support: the extend block is processed but the arrow pipeline query is not evaluated. The model has no table and only contains fields from the extend block. |
-| `source: name is compose(...)` (composite sources) | Partial support: parses without error but the composition logic is not evaluated. No fields are extracted from the composed sources. |
+| Connection identifier (`duckdb`, `bigquery`, etc.) | Supported (stored in `Model.metadata["connection"]`; export uses the original connection name) |
+| `source: name is other_source extend { ... }` (ID reference) | Supported (sets `Model.extends` to the base source name; inheritance resolved via `resolve_model_inheritance()`) |
+| `source: name is base -> { ... } extend { ... }` (pipeline source) | Supported (base source's table/extends preserved; pipeline query not evaluated; extend block processed) |
+| `source: name is compose(...)` (composite sources) | Partial support: parses without error; first composed source processed for table/extends. Composition logic not evaluated. |
 | `source()` (parameterized sources) | Partial support: parameters are parsed by the grammar but parameter values are not stored or substituted. |
-| Old `+` syntax for extending (`base + { ... }`) | Partial support: the grammar parses this as `SQRefinedQuery`. The extend block is not processed, only the base source reference. |
+| Old `+` syntax for extending (`base + { ... }`) | Supported (base source processed; refinement block processed best-effort for dimension:, measure:, join:, where:, primary_key: statements) |
 | `from()` (source-from-query) | Unsupported (grammar-level construct not handled by the visitor). |
 
-Not mapped: `connection:` identifier values.
+Not mapped: `connection:` statement-level declarations (source-level connection identifiers are captured).
 
 ---
 
@@ -43,10 +43,10 @@ Not mapped: `connection:` identifier values.
 | `DATE_TRUNC('granularity', field)` | Supported (type inferred as `time`, granularity extracted) |
 | `field.granularity` (Malloy time truncation: `.day`, `.month`, `.year`, etc.) | Supported (granularity extracted from trailing `.timeframe` pattern) |
 | `pick ... when ... else ...` (conditional bucketing) | Supported (transformed to SQL `CASE WHEN ... THEN ... ELSE ... END`) |
-| `field ? pick ... when ...` (value-matching pick) | Partial support: parses without error and the pick/when text is captured, but the `?` apply operator and partial comparisons are preserved as raw text rather than being transformed to a proper CASE expression. |
+| `field ? pick ... when ...` (apply-pick) | Supported (the `?` apply operator is detected; partial comparisons like `when < 5` are expanded to `WHEN field < 5`, and value matches like `when 'ASW'` become `WHEN field = 'ASW'`) |
 | `case ... when ... then ... end` (SQL-style CASE) | Supported (grammar parses it; expression preserved as-is) |
 | `floor()`, `substr()`, `regexp_extract()` and other functions | Supported (expression preserved verbatim) |
-| `??` (null coalescing) | Partial support: parses correctly in the grammar but the operator is preserved as-is in the expression text, not converted to `COALESCE`. |
+| `??` (null coalescing) | Supported (transformed to `COALESCE(a, b, ...)`) |
 | Cross-source field references (`joined_source.field`) | Supported (preserved as-is in SQL) |
 | Struct navigation (`event_params.value.int_value`) | Partial support: preserved as-is in the expression text. Works if the database supports dot notation for structs. |
 
@@ -84,7 +84,7 @@ Not mapped: `access` modifiers (`public`, `private`, `internal`).
 | Feature | Status |
 |---------|--------|
 | `count()` | Supported |
-| `count(field)` | Supported |
+| `count(field)` | Supported (mapped to `count_distinct` per Malloy semantics) |
 | `count_distinct(field)` | Supported |
 | `sum(field)` | Supported |
 | `avg(field)` | Supported |
@@ -95,8 +95,8 @@ Not mapped: `access` modifiers (`public`, `private`, `internal`).
 | Filtered measures: `count() { where: condition }` | Supported (filter expressions extracted and stored) |
 | Filtered measures: `sum(x) { where: condition }` | Supported |
 | Comma-separated measure lists | Supported |
-| `field.sum()`, `field.avg()`, `field.count()` (dot-method aggregation) | Unsupported (the adapter's `_parse_aggregation` expects `func(arg)` syntax, not `field.func()`. The expression is captured but `agg` is `None` and the metric becomes `type="derived"`.) |
-| Backtick-quoted field with dot-method (`` `number`.sum() ``) | Unsupported (same limitation as dot-method aggregation). |
+| `field.sum()`, `field.avg()`, `field.count()` (dot-method aggregation) | Supported (e.g., `cost.sum()` -> `agg="sum", sql="cost"`; handles dotted paths like `event_params.value.double_value.sum()`) |
+| Backtick-quoted field with dot-method (`` `number`.sum() ``) | Supported (backtick-quoted fields handled correctly in dot-method pattern) |
 | `all(measure)` (ungrouped aggregate) | Partial support: parses without error, expression preserved as-is, but `all()` is not recognized as an aggregation wrapper. Measures using `all()` become derived. |
 | `exclude(measure, dimension)` (symmetric aggregate) | Partial support: expression preserved as-is but not interpreted. |
 | Measure references in derived measures | Partial support: referenced by name in the SQL expression but not resolved to their definitions. |
@@ -132,10 +132,10 @@ Not mapped: visualization hint tags (`# line_chart`, `# bar_chart`, `# list_deta
 | `join_one: alias is source with fk` (aliased join) | Supported (relationship name is the alias) |
 | `join_one: alias is source on condition` | Supported (FK extracted from first identifier before `=` in the on-expression) |
 | Multiple joins in comma-separated list | Supported |
-| Inline source definition in join (`join_one: name is connection.table(...) extend { ... } with fk`) | Partial support: the join relationship is created with the correct name and FK, but the inline source definition is not extracted as a separate model. |
+| Inline source definition in join (`join_one: name is connection.table(...) extend { ... } with fk`) | Supported (inline source extracted as a separate model; relationship created with correct FK) |
 | Matrix operations (`left`, `right`, `full`, `inner`) | Partial support: parsed by the grammar but the join direction is not stored. All joins use the default mapping based on `join_one`/`join_many`/`join_cross`. |
-| Multi-condition `on` clause (`a = b.a and c = b.c`) | Partial support: only the first equality is used for FK extraction. The full condition is not stored. |
-| Cross-source join conditions (e.g., `gender = cohort.gender and state = cohort.state`) | Partial support: the relationship is created but only the first condition's FK is extracted. |
+| Multi-condition `on` clause (`a = b.a and c = b.c`) | Supported (first equality used as FK; all equality FKs stored in `metadata["composite_keys"]`; full condition stored in `metadata["on_condition"]`) |
+| Cross-source join conditions (e.g., `gender = cohort.gender and state = cohort.state`) | Supported (all FKs extracted; full condition preserved in metadata) |
 
 Not mapped: join `type` (`left`, `right`, `full`, `inner`).
 
@@ -172,7 +172,7 @@ Segment naming: first filter is named `default_filter`, subsequent filters are n
 
 ## Rename
 
-Unsupported. `rename:` statements (e.g., `rename: new_name is old_name`, `rename: year_born is \`year\``) are parsed by the grammar without error but the visitor does not process `DefExploreRenameContext`. Renamed fields do not appear as dimensions. Downstream references to the renamed name work only if the expression text happens to contain the new name literally.
+Supported. `rename:` statements (e.g., `rename: new_name is old_name`, `rename: year_born is \`year\``) are mapped to `Dimension(name=new_name, sql=old_name)`. The dimension type is inferred from the old field name. Comma-separated rename lists are supported. Downstream dimension and measure expressions that reference the new name work correctly since the old name is preserved in the dimension's SQL.
 
 ---
 
@@ -192,13 +192,13 @@ Content within view blocks, including `group_by:`, `aggregate:`, `nest:`, `order
 
 ## Query Pipelines
 
-The arrow operator (`->`) for chaining query stages is parsed by the grammar. When used in a source definition (e.g., `source: cohort is names -> { ... } extend { ... }`), the pipeline portion is skipped and only the `extend` block is processed. The resulting model has no table reference. Multi-stage pipelines (`source -> stage1 -> stage2`) follow the same behavior: only the final extend block, if present, contributes fields.
+The arrow operator (`->`) for chaining query stages is parsed by the grammar. When used in a source definition (e.g., `source: cohort is names -> { ... } extend { ... }`), the base source's table or extends reference is preserved. The pipeline query body is not evaluated (its aggregate/group_by fields are not extracted), but the extend block is fully processed. This means pipeline-derived sources retain their connection to the base table.
 
 ---
 
 ## Refinements
 
-The `+` operator for query/view refinement (e.g., `top_posters + { where: ... }`, `term_dashboard + { limit: 20 }`) is parsed by the grammar as `SQRefinedQuery` or `SegRefine`. In the context of source definitions, when `+` is used instead of `extend`, the refinement block is not processed. In the context of views and queries (which are already unsupported), refinements are naturally skipped.
+The `+` operator for query/view refinement is parsed by the grammar as `SQRefinedQuery` or `SegRefine`. In the context of source definitions, when `+` is used instead of `extend` (old Malloy syntax), the base source is processed and the refinement block is processed best-effort for dimension:, measure:, join:, where:, and primary_key: statements. In the context of views and queries (which are not extracted), refinements are naturally skipped.
 
 ---
 
@@ -216,7 +216,7 @@ The `+` operator for query/view refinement (e.g., `top_posters + { where: ... }`
 
 ## Accept/Except (Field Visibility)
 
-`accept:` and `except:` statements within source extend blocks are parsed by the grammar but not processed by the visitor. All fields defined in a source are always visible in the resulting model regardless of accept/except restrictions. The `except:` clauses seen in composite source patterns (e.g., `flights_cubed extend { where: ... except: \`field1\`, \`field2\` }`) are similarly parsed but ignored.
+Partial support. `accept:` and `except:` statements within source extend blocks are recognized by the visitor. The field names are parsed and stored internally, though field filtering is best-effort since the adapter doesn't have knowledge of all underlying table columns. The `except:` clauses in composite source patterns (e.g., `flights_cubed extend { where: ... except: \`field1\`, \`field2\` }`) are parsed.
 
 ---
 
@@ -257,18 +257,19 @@ Malloy's type system (`string`, `number`, `boolean`, `date`, `timestamp`, `times
 
 | Pattern | Status |
 |---------|--------|
-| `??` (null coalescing) | Partial support: preserved as-is, not converted to `COALESCE` |
-| `?` (apply/partial comparison) | Partial support: preserved as-is |
-| `~` and `!~` (regex match) | Partial support: preserved as-is |
-| `\|` (alternative/or-tree) | Partial support: preserved as-is |
-| `&` (and-tree/partial filter) | Partial support: preserved as-is |
-| `!` (type assertion, e.g., `timestamp_seconds!timestamp(x)`) | Partial support: preserved as-is |
-| `field ? pick ... when ...` (apply-pick) | Partial support: the `?` and partial comparisons are preserved literally rather than being rewritten to standard SQL |
-| Date literals (`@2024-01-01`, `@2024-Q1`, `@2024`) | Partial support: parsed by the grammar but preserved as-is in expressions |
+| `??` (null coalescing) | Supported: transformed to `COALESCE(a, b, ...)` |
+| `?` (apply/partial comparison) in dimensions | Supported: `field ? pick ... when ...` is expanded to proper CASE with base field prepended to partial conditions |
+| `?` (apply/partial comparison) in filters | Partial support: preserved as-is in segment/filter expressions |
+| `~` and `!~` (regex match) | Supported: `expr ~ r'pattern'` transformed to `REGEXP_MATCHES(expr, 'pattern')` |
+| `\|` (alternative/or-tree) | Supported: `field ? 'a' \| 'b'` transformed to `field IN ('a', 'b')` |
+| `&` (and-tree/partial filter) | Supported: `field < X & > Y` transformed to `field < X AND field > Y`; `field != 'A' & 'B'` transformed to `field != 'A' AND field != 'B'` |
+| `!` (type assertion, e.g., `timestamp_seconds!timestamp(x)`) | Supported: `func!type(args)` stripped to `func(args)` |
+| `field ? pick ... when ...` (apply-pick) | Supported in dimensions: base field prepended to partial comparisons, transformed to CASE |
+| Date literals (`@2024-01-01`, `@2024-Q1`, `@2024`) | Supported: `@YYYY-MM-DD` -> `DATE 'YYYY-MM-DD'`, `@YYYY-MM` -> `DATE 'YYYY-MM-01'`, `@YYYY` -> `DATE 'YYYY-01-01'` |
 | Range expressions (`x to y`, `x for y days`) | Partial support: parsed by grammar, preserved as-is |
 | Array literals (`[1, 2, 3]`) | Partial support: parsed by grammar, preserved as-is |
 | Record literals (`{key: value}`) | Partial support: parsed by grammar, preserved as-is |
-| `now` | Partial support: preserved as-is |
+| `now` | Supported: standalone `now` transformed to `CURRENT_TIMESTAMP` |
 | Filter strings (`f'...'`, `f"..."`) | Partial support: parsed by grammar, preserved as-is |
 | `ungroup()` / `all()` / `exclude()` | Partial support: parsed but not interpreted semantically |
 
@@ -286,7 +287,7 @@ Sidemantic can export its semantic model back to Malloy format.
 
 | Feature | Status |
 |---------|--------|
-| Sources with `connection.table('path')` | Supported (always uses `duckdb` as connection) |
+| Sources with `connection.table('path')` | Supported (uses the original connection name from parsing, defaults to `duckdb`) |
 | Sources with `connection.sql("""...""")` | Supported (SQL preserved in triple-quoted string) |
 | Source descriptions as `# desc:` annotations | Supported |
 | Dimension descriptions as `# desc:` annotations | Supported |
@@ -300,8 +301,8 @@ Sidemantic can export its semantic model back to Malloy format.
 | `primary_key:` | Supported (exported when not the default `id`) |
 | `join_one:` / `join_many:` with `with` clause | Supported |
 | Roundtrip fidelity (parse -> export -> re-parse) | Supported (semantically equivalent graphs; passthrough dimensions intentionally dropped) |
-| `join_cross:` export | Unsupported (cross joins exported as `join_one` or `join_many` depending on relationship type) |
-| `rename:` export | Unsupported (renames are not captured during parsing) |
+| `join_cross:` export | Supported (one_to_one relationships exported as `join_cross:`) |
+| `rename:` export | Partial support: renames are captured as dimensions during parsing; exported as `dimension:` not `rename:` |
 | `view:` export | Unsupported (views are not captured during parsing) |
 
 ---

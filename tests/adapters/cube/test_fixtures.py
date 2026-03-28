@@ -450,12 +450,14 @@ class TestMultiStageTimeShift:
         country_rev = pot.get_metric("country_revenue")
         assert country_rev is not None
 
-    def test_rank_not_count(self, graph):
-        """type: rank measures should not fall back to agg=count."""
+    def test_rank_preserves_metadata(self, graph):
+        """type: rank measures store rank metadata and are queryable."""
         rank_model = graph.get_model("ranking")
         product_rank = rank_model.get_metric("product_rank")
         assert product_rank is not None
-        assert product_rank.agg != "count"
+        # count as executable fallback
+        assert product_rank.agg == "count"
+        # rank metadata preserved for special handling
         assert product_rank.meta is not None
         assert product_rank.meta.get("cube_type") == "rank"
         assert product_rank.meta.get("order_by") is not None

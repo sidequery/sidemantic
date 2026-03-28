@@ -399,8 +399,9 @@ class CubeAdapter(BaseAdapter):
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
             if measure_type == "rank":
-                # Rank measures: store metadata only, no agg or derived type
-                # (rank is a window function concept with no simple SQL mapping)
+                # Rank measures: use count as executable fallback, store rank
+                # metadata so consumers can handle them specially
+                agg_type = "count"
                 meta = meta.copy() if meta else {}
                 meta["cube_type"] = "rank"
                 meta["order_by"] = measure_def.get("order_by")
@@ -695,8 +696,22 @@ class CubeAdapter(BaseAdapter):
                 continue
 
             if prefix_str:
-                dims = [d.model_copy(update={"name": f"{prefix_str}{d.name}"}) for d in dims]
-                mets = [m.model_copy(update={"name": f"{prefix_str}{m.name}"}) for m in mets]
+                # Prefix names and update dependent references (parent, drill_fields)
+                prefixed_dims = []
+                for d in dims:
+                    updates: dict = {"name": f"{prefix_str}{d.name}"}
+                    if d.parent:
+                        updates["parent"] = f"{prefix_str}{d.parent}"
+                    prefixed_dims.append(d.model_copy(update=updates))
+                dims = prefixed_dims
+
+                prefixed_mets = []
+                for m in mets:
+                    updates = {"name": f"{prefix_str}{m.name}"}
+                    if m.drill_fields:
+                        updates["drill_fields"] = [f"{prefix_str}{f}" for f in m.drill_fields]
+                    prefixed_mets.append(m.model_copy(update=updates))
+                mets = prefixed_mets
 
             dimensions.extend(dims)
             metrics.extend(mets)

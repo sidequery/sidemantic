@@ -49,7 +49,7 @@ def merge_model(child: Model, parent: Model) -> Model:
         merged_data[field] = list(parent_by_name.values())
 
     # Override scalar fields with child values
-    for field in ["table", "sql", "description", "primary_key"]:
+    for field in ["table", "sql", "description", "primary_key", "meta"]:
         if field in child_data:
             merged_data[field] = child_data[field]
 

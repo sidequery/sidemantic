@@ -1,6 +1,6 @@
 # Docker
 
-The published image is [`sidequery/sidemantic`](https://hub.docker.com/repository/docker/sidequery/sidemantic) on Docker Hub. It includes all database drivers, the PostgreSQL wire-protocol server, and the MCP server.
+The published image is [`sidequery/sidemantic`](https://hub.docker.com/repository/docker/sidequery/sidemantic) on Docker Hub. It includes all database drivers, the PostgreSQL wire-protocol server, the HTTP API server, and the MCP server.
 
 ## Mounting your models
 
@@ -45,6 +45,35 @@ docker run -p 5433:5433 \
 docker run -v ./models:/app/models -e SIDEMANTIC_MODE=mcp sidequery/sidemantic
 ```
 
+## HTTP API server
+
+```bash
+docker run -p 4400:4400 \
+  -v ./models:/app/models \
+  -e SIDEMANTIC_MODE=api \
+  -e SIDEMANTIC_API_TOKEN=secret \
+  sidequery/sidemantic
+```
+
+JSON query:
+
+```bash
+curl -s http://localhost:4400/query \
+  -H "Authorization: Bearer secret" \
+  -H "Content-Type: application/json" \
+  -d '{"metrics":["orders.order_count"]}'
+```
+
+Arrow query:
+
+```bash
+curl -s http://localhost:4400/query \
+  -H "Authorization: Bearer secret" \
+  -H "Accept: application/vnd.apache.arrow.stream" \
+  -H "Content-Type: application/json" \
+  -d '{"metrics":["orders.order_count"]}' > result.arrow
+```
+
 ## Both servers simultaneously
 
 Runs the PG server in the background and MCP on stdio:
@@ -70,12 +99,16 @@ COPY my_models/ /app/models/
 
 | Variable | Description |
 |----------|-------------|
-| `SIDEMANTIC_MODE` | `serve` (default), `mcp`, or `both` |
+| `SIDEMANTIC_MODE` | `serve` (default), `mcp`, `api`, or `both` |
 | `SIDEMANTIC_CONNECTION` | Database connection string |
 | `SIDEMANTIC_DB` | Path to DuckDB file (inside container) |
 | `SIDEMANTIC_USERNAME` | PG server auth username |
 | `SIDEMANTIC_PASSWORD` | PG server auth password |
 | `SIDEMANTIC_PORT` | PG server port (default 5433) |
+| `SIDEMANTIC_API_PORT` | HTTP API port (default 4400) |
+| `SIDEMANTIC_API_TOKEN` | HTTP API bearer token |
+| `SIDEMANTIC_CORS_ORIGINS` | Comma-separated list of allowed CORS origins |
+| `SIDEMANTIC_MAX_REQUEST_BODY_BYTES` | Max HTTP request body size in bytes |
 
 ## Building from source
 

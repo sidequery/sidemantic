@@ -1,0 +1,32 @@
+{
+  "name": "sidemantic-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-06",
+  "containers": [
+    {
+      "class_name": "SidemanticApiContainer",
+      "image": "../../Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 3
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SIDEMANTIC_API",
+        "class_name": "SidemanticApiContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "SidemanticApiContainer"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

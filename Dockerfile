@@ -15,8 +15,12 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY sidemantic/ sidemantic/
 COPY examples/ examples/
+COPY scripts/ scripts/
 
-RUN uv pip install --system --no-cache ".[serve,mcp,all-databases]"
+RUN uv pip install --system --no-cache ".[serve,mcp,api,all-databases]"
+RUN mkdir -p /app/models
+RUN cp -R /app/examples/multi_format_demo/. /app/models/
+RUN python /app/scripts/build_demo_duckdb.py
 
 # --- Runtime stage (no build tools) ---
 FROM python:3.12-slim
@@ -33,9 +37,11 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
 RUN mkdir -p /app/models
+COPY --from=builder /app/models/ /app/models/
 WORKDIR /app/models
 
 EXPOSE 5433
+EXPOSE 4400
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
-# Mode is controlled by SIDEMANTIC_MODE env var (serve, mcp, both)
+# Mode is controlled by SIDEMANTIC_MODE env var (serve, mcp, api, both)

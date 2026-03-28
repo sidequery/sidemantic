@@ -85,8 +85,9 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     pytest.importorskip("riffq")
     called = {}
 
-    def fake_start_server(layer, port, username, password):
+    def fake_start_server(layer, host, port, username, password):
         called["layer"] = layer
+        called["host"] = host
         called["port"] = port
         called["username"] = username
         called["password"] = password
@@ -100,6 +101,45 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     assert called["port"] == 5544
     assert called["username"] == "u"
     assert called["password"] == "p"
+
+
+def test_api_serve_calls_start_server(monkeypatch, tmp_path):
+    pytest.importorskip("fastapi")
+    called = {}
+
+    def fake_start_api_server(layer, host, port, auth_token, cors_origins, max_request_body_bytes):
+        called["layer"] = layer
+        called["host"] = host
+        called["port"] = port
+        called["auth_token"] = auth_token
+        called["cors_origins"] = cors_origins
+        called["max_request_body_bytes"] = max_request_body_bytes
+
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+
+    _write_min_model(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "api-serve",
+            str(tmp_path),
+            "--port",
+            "4410",
+            "--auth-token",
+            "secret",
+            "--cors-origin",
+            "https://app.example.com",
+            "--max-request-body-bytes",
+            "2048",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert called["host"] == "127.0.0.1"
+    assert called["port"] == 4410
+    assert called["auth_token"] == "secret"
+    assert called["cors_origins"] == ["https://app.example.com"]
+    assert called["max_request_body_bytes"] == 2048
 
 
 def test_cli_source_uses_public_adapter():

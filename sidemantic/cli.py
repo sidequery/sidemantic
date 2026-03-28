@@ -540,6 +540,145 @@ def serve(
     start_server(layer, host=host_resolved, port=port_resolved, username=username_resolved, password=password_resolved)
 
 
+@app.command()
+def api_serve(
+    directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
+    demo: bool = typer.Option(False, "--demo", help="Use demo data"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    host: str = typer.Option(None, "--host", "-H", help="Host/IP to bind to (overrides config, default 127.0.0.1)"),
+    port: int = typer.Option(None, "--port", "-p", help="Port to listen on (overrides config)"),
+    auth_token: str = typer.Option(None, "--auth-token", help="Bearer token required for API requests"),
+    cors_origin: list[str] | None = typer.Option(None, "--cors-origin", help="Allowed CORS origin (repeatable)"),
+    max_request_body_bytes: int = typer.Option(
+        None, "--max-request-body-bytes", help="Maximum request body size in bytes"
+    ),
+):
+    """
+    Start an HTTP API server for the semantic layer.
+
+    Exposes semantic queries over JSON or Arrow IPC for remote clients.
+
+    Examples:
+      sidemantic api-serve
+      sidemantic api-serve ./models --db data/warehouse.db
+      sidemantic api-serve --connection "postgres://localhost:5432/analytics"
+      sidemantic api-serve --auth-token secret --cors-origin https://app.example.com
+      sidemantic api-serve --demo
+    """
+    try:
+        from sidemantic.api_server import start_api_server
+    except ImportError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+    if demo:
+        import sidemantic
+
+        package_dir = Path(sidemantic.__file__).parent
+        demo_dir = package_dir / "examples" / "multi_format_demo"
+
+        if not demo_dir.exists():
+            dev_demo_dir = package_dir.parent / "examples" / "multi_format_demo"
+            if dev_demo_dir.exists():
+                demo_dir = dev_demo_dir
+            else:
+                typer.echo("Error: Demo models not found", err=True)
+                raise typer.Exit(1)
+
+        directory = demo_dir
+    elif directory == Path(".") and _loaded_config:
+        directory = Path(_loaded_config.models_dir)
+
+    if not directory.exists():
+        typer.echo(f"Error: Directory {directory} does not exist", err=True)
+        raise typer.Exit(1)
+
+    connection_str = None
+    if connection:
+        connection_str = connection
+    elif db:
+        connection_str = f"duckdb:///{db.absolute()}"
+    elif _loaded_config and _loaded_config.connection:
+        connection_str = build_connection_string(_loaded_config)
+
+    host_resolved = host or (_loaded_config.api_server.host if _loaded_config else "127.0.0.1")
+    port_resolved = port if port is not None else (_loaded_config.api_server.port if _loaded_config else 4400)
+    auth_token_resolved = auth_token or (_loaded_config.api_server.auth_token if _loaded_config else None)
+    cors_origins_resolved = (
+        list(cors_origin)
+        if cors_origin is not None
+        else (_loaded_config.api_server.cors_origins if _loaded_config else [])
+    )
+    max_body_bytes_resolved = (
+        max_request_body_bytes
+        if max_request_body_bytes is not None
+        else (_loaded_config.api_server.max_request_body_bytes if _loaded_config else 1024 * 1024)
+    )
+
+    preagg_db = _loaded_config.preagg_database if _loaded_config else None
+    preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
+    if connection_str:
+        layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
+    else:
+        layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
+
+    load_from_directory(layer, str(directory))
+
+    if not layer.graph.models:
+        typer.echo("Error: No models found", err=True)
+        raise typer.Exit(1)
+
+    if demo:
+        try:
+            from sidemantic.examples.multi_format_demo.demo_data import create_demo_database
+        except ModuleNotFoundError:
+            import importlib.util
+            import sys
+
+            demo_data_path = directory / "demo_data.py"
+            if demo_data_path.exists():
+                spec = importlib.util.spec_from_file_location("demo_data", demo_data_path)
+                demo_data_module = importlib.util.module_from_spec(spec)
+                sys.modules["demo_data"] = demo_data_module
+                spec.loader.exec_module(demo_data_module)
+                create_demo_database = demo_data_module.create_demo_database
+            else:
+                raise ImportError(f"Could not find demo_data.py at {demo_data_path}")
+
+        demo_conn = create_demo_database()
+        for table in ["customers", "products", "orders"]:
+            rows = demo_conn.execute(f"SELECT * FROM {table}").fetchall()
+            columns = [desc[0] for desc in demo_conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
+
+            create_sql = demo_conn.execute(f"SELECT sql FROM duckdb_tables() WHERE table_name = '{table}'").fetchone()[
+                0
+            ]
+            layer.adapter.execute(create_sql)
+
+            if rows:
+                placeholders = ", ".join(["?" for _ in columns])
+                layer.adapter.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+
+    typer.echo(f"Starting HTTP API server for: {directory}", err=True)
+    typer.echo(f"Listening on http://{host_resolved}:{port_resolved}", err=True)
+    if auth_token_resolved:
+        typer.echo("Authentication: bearer token required", err=True)
+    else:
+        typer.echo("Authentication: disabled", err=True)
+
+    start_api_server(
+        layer,
+        host=host_resolved,
+        port=port_resolved,
+        auth_token=auth_token_resolved,
+        cors_origins=cors_origins_resolved,
+        max_request_body_bytes=max_body_bytes_resolved,
+    )
+
+
 @app.command(hidden=True)
 def tree(
     directory: Path = typer.Argument(..., help="Directory containing semantic layer files"),

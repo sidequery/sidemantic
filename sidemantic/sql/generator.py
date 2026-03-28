@@ -2207,8 +2207,9 @@ class SQLGenerator:
     ) -> str:
         """Generate SQL for conversion funnel metrics.
 
-        Uses self-join pattern to find entities that had both base and conversion events
-        within the specified time window.
+        Supports two modes:
+        - Legacy 2-step: uses base_event/conversion_event with self-join pattern
+        - N-step funnel: uses steps list with per-entity BOOL_OR aggregation
 
         Args:
             metric_name: Name of the conversion metric (can be "metric" or "model.metric" format)
@@ -2237,7 +2238,14 @@ class SQLGenerator:
             except KeyError:
                 pass
 
-        if not metric or not metric.entity or not metric.base_event or not metric.conversion_event:
+        if not metric or not metric.entity:
+            raise ValueError(f"Conversion metric {metric_name} missing required fields")
+
+        # Determine if this is a multi-step funnel or legacy 2-step
+        if metric.steps:
+            return self._generate_multistep_conversion_query(metric, metric_name, dimensions, filters, order_by, limit)
+
+        if not metric.base_event or not metric.conversion_event:
             raise ValueError(f"Conversion metric {metric_name} missing required fields")
 
         # Find the model that owns this metric if we haven't already
@@ -2390,6 +2398,150 @@ SELECT
 {dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {metric.name}
 FROM base_events
 LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
+"""
+
+        return sql.strip()
+
+    def _generate_multistep_conversion_query(
+        self,
+        metric,
+        metric_name: str,
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+    ) -> str:
+        """Generate SQL for N-step conversion funnel metrics.
+
+        Uses per-entity BOOL_OR aggregation for each step, then sums in the outer query.
+
+        Args:
+            metric: The Metric object with steps defined
+            metric_name: Name of the conversion metric
+            dimensions: List of dimension references
+            filters: List of filter expressions
+            order_by: List of fields to order by
+            limit: Maximum number of rows to return
+
+        Returns:
+            SQL query string
+        """
+        import re as _re
+
+        # Validate entity identifier
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
+            raise ValueError(f"Invalid entity identifier: {metric.entity}")
+
+        # Find the model that owns this metric
+        model = None
+        if "." in metric_name:
+            model_name, _ = metric_name.split(".", 1)
+            model = self.graph.get_model(model_name)
+        if not model:
+            for m_name, m in self.graph.models.items():
+                if m.get_metric(metric_name.split(".", 1)[-1] if "." in metric_name else metric_name):
+                    model = m
+                    break
+            if not model:
+                for m_name, m in self.graph.models.items():
+                    for dim in m.dimensions:
+                        if dim.name == metric.entity:
+                            model = m
+                            break
+                    if model:
+                        break
+
+        if not model:
+            raise ValueError(f"No model found for conversion metric {metric_name}")
+
+        # Build FROM clause
+        if model.sql:
+            from_clause = f"({model.sql}) AS t"
+        else:
+            from_clause = model.table
+
+        # Build WHERE filter clause
+        filter_clause = ""
+        if filters:
+            filter_clause = "\n  WHERE " + " AND ".join(filters)
+
+        # Resolve dimension columns for GROUP BY support
+        dim_entries: list[tuple[str, str]] = []
+        for dim_ref in dimensions:
+            dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
+            if "__" in dim_name:
+                base_dim, gran = dim_name.rsplit("__", 1)
+            else:
+                base_dim, gran = dim_name, None
+            dim_obj = model.get_dimension(base_dim)
+            if not dim_obj:
+                continue
+            sql_col = dim_obj.sql_expr
+            if gran and dim_obj.type == "time":
+                sql_col = self._date_trunc(gran, sql_col)
+                alias = f"{base_dim}__{gran}"
+            else:
+                alias = base_dim
+            dim_entries.append((alias, sql_col))
+
+        dim_aliases = [alias for alias, _ in dim_entries]
+
+        # Build inner CTE: per-entity BOOL_OR for each step
+        step_cols = []
+        for i, step_expr in enumerate(metric.steps, 1):
+            step_cols.append(f"BOOL_OR({step_expr}) AS step_{i}")
+
+        inner_select_parts = [f"{metric.entity} AS entity"]
+        if dim_entries:
+            for alias, sql_col in dim_entries:
+                inner_select_parts.append(f"{sql_col} AS {alias}")
+        inner_select_parts.extend(step_cols)
+        inner_select = ",\n    ".join(inner_select_parts)
+
+        group_by_inner_parts = [metric.entity]
+        if dim_entries:
+            for alias, sql_col in dim_entries:
+                group_by_inner_parts.append(sql_col)
+        group_by_inner = ",\n    ".join(group_by_inner_parts)
+
+        # Build outer SELECT: total entities + sum of each step
+        outer_select_parts = []
+        if dim_aliases:
+            for alias in dim_aliases:
+                outer_select_parts.append(f"{alias}")
+        outer_select_parts.append("COUNT(*) AS total_entities")
+        for i in range(1, len(metric.steps) + 1):
+            outer_select_parts.append(f"SUM(step_{i}::int) AS step_{i}_count")
+        outer_select = ",\n  ".join(outer_select_parts)
+
+        # Build GROUP BY, ORDER BY, LIMIT for outer query
+        outer_group_by = ""
+        if dim_aliases:
+            outer_group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
+
+        order_clause = ""
+        if order_by:
+            order_fields = []
+            for field in order_by:
+                field_name = field.split(".", 1)[1] if "." in field else field
+                order_fields.append(field_name)
+            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"\nLIMIT {limit}"
+
+        sql = f"""
+WITH {metric.name}_per_entity AS (
+  SELECT
+    {inner_select}
+  FROM {from_clause}{filter_clause}
+  GROUP BY
+    {group_by_inner}
+)
+SELECT
+  {outer_select}
+FROM {metric.name}_per_entity{outer_group_by}{order_clause}{limit_clause}
 """
 
         return sql.strip()

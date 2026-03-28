@@ -567,3 +567,229 @@ def test_wow_percent_change_partitions_by_dimension():
     assert rows[2][3] is None
     assert rows[3][0] == "B"
     assert abs(rows[3][3] - (-50.0)) < 0.1
+
+
+def test_multistep_conversion_funnel():
+    """Test N-step conversion funnel metric with BOOL_OR aggregation pattern."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS person_id, 'Application Installed' AS event
+            UNION ALL SELECT 1, 'note.opened'
+            UNION ALL SELECT 1, 'note.created'
+            UNION ALL SELECT 1, 'git.sync'
+            UNION ALL SELECT 2, 'Application Installed'
+            UNION ALL SELECT 2, 'note.opened'
+            UNION ALL SELECT 2, 'note.created'
+            UNION ALL SELECT 3, 'Application Installed'
+            UNION ALL SELECT 3, 'note.opened'
+            UNION ALL SELECT 4, 'Application Installed'
+        """,
+        primary_key="person_id",
+        dimensions=[
+            Dimension(name="person_id", sql="person_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+        ],
+    )
+
+    activation_funnel = Metric(
+        name="activation_funnel",
+        type="conversion",
+        entity="person_id",
+        steps=[
+            "event = 'Application Installed'",
+            "event = 'note.opened'",
+            "event = 'note.created'",
+            "event = 'git.sync'",
+        ],
+        description="4-step activation funnel",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(activation_funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["activation_funnel"], dimensions=[])
+
+    print("\nMulti-step Conversion SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    print("Results:", rows)
+
+    # 4 entities total
+    # Step 1 (Application Installed): persons 1,2,3,4 = 4
+    # Step 2 (note.opened): persons 1,2,3 = 3
+    # Step 3 (note.created): persons 1,2 = 2
+    # Step 4 (git.sync): person 1 = 1
+    assert rows[0][0] == 4  # total_entities
+    assert rows[0][1] == 4  # step_1_count
+    assert rows[0][2] == 3  # step_2_count
+    assert rows[0][3] == 2  # step_3_count
+    assert rows[0][4] == 1  # step_4_count
+
+
+def test_multistep_conversion_2_steps_via_steps_list():
+    """Test that a 2-step funnel via steps list works the same as base_event/conversion_event."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event
+            UNION ALL SELECT 1, 'purchase'
+            UNION ALL SELECT 2, 'signup'
+            UNION ALL SELECT 3, 'signup'
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+        ],
+    )
+
+    funnel = Metric(
+        name="signup_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["signup_funnel"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # 3 total entities
+    # Step 1 (signup): 3
+    # Step 2 (purchase): 1
+    assert rows[0][0] == 3  # total_entities
+    assert rows[0][1] == 3  # step_1_count
+    assert rows[0][2] == 1  # step_2_count
+
+
+def test_conversion_metric_backwards_compatible():
+    """Test that existing base_event/conversion_event still works after adding steps support."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event_type, '2024-01-01'::DATE AS event_date
+            UNION ALL SELECT 1, 'purchase', '2024-01-03'::DATE
+            UNION ALL SELECT 2, 'signup', '2024-01-05'::DATE
+            UNION ALL SELECT 2, 'purchase', '2024-01-20'::DATE
+            UNION ALL SELECT 3, 'signup', '2024-01-10'::DATE
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event_type", sql="event_type", type="categorical"),
+            Dimension(name="event_date", sql="event_date", type="time"),
+        ],
+        metrics=[Metric(name="user_count", agg="count_distinct", sql="user_id")],
+    )
+
+    # Legacy 2-step conversion (same as existing test_conversion_metric)
+    signup_conversion = Metric(
+        name="signup_conversion",
+        type="conversion",
+        entity="user_id",
+        base_event="signup",
+        conversion_event="purchase",
+        conversion_window="7 days",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(signup_conversion)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["signup_conversion"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # Same assertion as original test: 1/3 converted within 7 days
+    assert abs(rows[0][0] - 0.333) < 0.01
+
+
+def test_conversion_metric_steps_validation():
+    """Test validation: steps requires at least 2 entries."""
+    import pytest
+
+    with pytest.raises(ValueError, match="at least 2 steps"):
+        Metric(
+            name="bad_funnel",
+            type="conversion",
+            entity="user_id",
+            steps=["event = 'signup'"],
+        )
+
+
+def test_conversion_metric_steps_and_base_event():
+    """Test that steps takes precedence when both steps and base_event are provided."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS person_id, 'install' AS event
+            UNION ALL SELECT 1, 'activate'
+            UNION ALL SELECT 2, 'install'
+        """,
+        primary_key="person_id",
+        dimensions=[
+            Dimension(name="person_id", sql="person_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+        ],
+    )
+
+    # steps is provided, so base_event/conversion_event should be ignored
+    funnel = Metric(
+        name="test_funnel",
+        type="conversion",
+        entity="person_id",
+        base_event="install",
+        conversion_event="activate",
+        steps=[
+            "event = 'install'",
+            "event = 'activate'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["test_funnel"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # steps takes precedence: uses BOOL_OR pattern
+    assert rows[0][0] == 2  # total_entities
+    assert rows[0][1] == 2  # step_1_count (install)
+    assert rows[0][2] == 1  # step_2_count (activate)
+
+
+def test_conversion_metric_requires_entity():
+    """Test validation: conversion metric requires entity field."""
+    import pytest
+
+    with pytest.raises(ValueError, match="entity"):
+        Metric(
+            name="bad_funnel",
+            type="conversion",
+            steps=["event = 'a'", "event = 'b'"],
+        )

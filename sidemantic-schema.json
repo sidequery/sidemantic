@@ -169,6 +169,19 @@
           "default": null,
           "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
           "title": "Value Format Name"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Window function expression (e.g., 'LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)')",
+          "title": "Window"
         }
       },
       "required": [
@@ -1785,6 +1798,19 @@
                 "default": null,
                 "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
                 "title": "Value Format Name"
+              },
+              "window": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Window function expression (e.g., 'LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)')",
+                "title": "Window"
               }
             },
             "required": [

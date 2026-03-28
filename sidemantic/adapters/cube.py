@@ -172,7 +172,7 @@ class CubeAdapter(BaseAdapter):
 
         # Parse dimensions and find primary key
         dimensions = []
-        primary_key = "id"  # default
+        primary_key = None  # Only set if explicitly declared
 
         for dim_def in cube_def.get("dimensions") or []:
             dim = self._parse_dimension(dim_def, name)
@@ -246,16 +246,17 @@ class CubeAdapter(BaseAdapter):
             if preagg:
                 pre_aggregations.append(preagg)
 
-        # Build kwargs, omitting None table/sql so inheritance can provide them
+        # Build kwargs, omitting None table/sql/primary_key so inheritance can provide them
         model_kwargs = {
             "name": name,
-            "primary_key": primary_key,
             "relationships": relationships,
             "dimensions": dimensions,
             "metrics": measures,
             "segments": segments,
             "pre_aggregations": pre_aggregations,
         }
+        if primary_key is not None:
+            model_kwargs["primary_key"] = primary_key
         if table is not None:
             model_kwargs["table"] = table
         if sql is not None:
@@ -424,6 +425,7 @@ class CubeAdapter(BaseAdapter):
         measure_sql = _normalize_cube_sql(measure_def.get("sql"), cube_name)
 
         # Check for time_shift (period-over-period comparison)
+        # Only convert to time_comparison if we can extract a base_metric reference
         base_metric = None
         comparison_type = None
         time_offset = None
@@ -432,23 +434,22 @@ class CubeAdapter(BaseAdapter):
             ts = time_shift_def[0]
             ts_interval = ts.get("interval")
             ts_type = ts.get("type")
-            if ts_type == "prior" and ts_interval:
-                metric_type = "time_comparison"
-                time_offset = str(ts_interval)
-                comparison_map = {
-                    "1 year": "yoy",
-                    "1 month": "mom",
-                    "1 week": "wow",
-                    "1 day": "dod",
-                    "1 quarter": "qoq",
-                }
-                comparison_type = comparison_map.get(ts_interval, "prior_period")
+            if ts_type == "prior" and ts_interval and measure_sql:
                 # Extract base_metric from sql like "{measure_name}"
-                if measure_sql:
-                    base_match = re.match(r"^\s*\{(\w+)\}\s*$", measure_sql)
-                    if base_match:
-                        base_metric = f"{cube_name}.{base_match.group(1)}"
-                        measure_sql = None  # Clear sql, base_metric carries the reference
+                base_match = re.match(r"^\s*\{(\w+)\}\s*$", measure_sql)
+                if base_match:
+                    base_metric = f"{cube_name}.{base_match.group(1)}"
+                    measure_sql = None  # Clear sql, base_metric carries the reference
+                    metric_type = "time_comparison"
+                    time_offset = str(ts_interval)
+                    comparison_map = {
+                        "1 year": "yoy",
+                        "1 month": "mom",
+                        "1 week": "wow",
+                        "1 day": "dod",
+                        "1 quarter": "qoq",
+                    }
+                    comparison_type = comparison_map.get(ts_interval, "prior_period")
 
         # Convert ${measure_name} references to model_name.measure_name format
         # This is needed for derived metrics that reference other measures

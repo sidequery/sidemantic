@@ -198,7 +198,6 @@ Not mapped: `persist_for`, `datagroup_trigger`, `sql_trigger_value`, `materializ
 | `sql_always_where` | Supported (converted to a Segment on the base model) |
 | `always_filter` | Supported (each filter converted to a Segment on the base model) |
 | Explore-level `extends:` | Unsupported |
-
 | join `type` (`left_outer`, `inner`, `full_outer`, `cross`) | Supported (stored in `Relationship.metadata["join_type"]`) |
 
 Not mapped: `fields`, `sql_always_having`, `access_filter`, `required_joins`, `cancel_grouping_fields`, `conditionally_filter`.

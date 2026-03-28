@@ -6,8 +6,6 @@ Tests are permissive: parse without errors, check counts, verify key names.
 
 from pathlib import Path
 
-import pytest
-
 from sidemantic.adapters.malloy import MalloyAdapter
 
 
@@ -65,13 +63,8 @@ class TestAirports:
         avg_elevation = airports.get_metric("avg_elevation")
         assert avg_elevation.agg == "avg"
 
-    @pytest.mark.xfail(reason="Adapter does not extract rename: statements")
     def test_rename_extracted(self):
-        """Rename statements should create dimensions mapping old to new name.
-
-        The adapter does not currently handle DefExploreRenameContext,
-        so rename: facility_type is fac_type is silently ignored.
-        """
+        """Rename statements create dimensions mapping old to new name."""
         airports = self.graph.get_model("airports")
         dim_names = {d.name for d in airports.dimensions}
         assert "facility_type" in dim_names
@@ -184,10 +177,10 @@ class TestIMDB:
         assert "average_rating" in metric_names
 
     def test_movies_count_with_field(self):
-        """count(tconst) should parse as count aggregation."""
+        """count(tconst) should parse as count_distinct (Malloy semantics)."""
         movies = self.graph.get_model("movies")
         title_count = movies.get_metric("title_count")
-        assert title_count.agg == "count"
+        assert title_count.agg == "count_distinct"
         assert title_count.sql == "tconst"
 
     def test_movies_sum_with_expression(self):
@@ -196,13 +189,8 @@ class TestIMDB:
         total_ratings = movies.get_metric("total_ratings")
         assert total_ratings.agg == "sum"
 
-    @pytest.mark.xfail(reason="Adapter does not parse dot-method aggregations like field.avg()")
     def test_movies_dot_method_aggregation(self):
-        """averageRating.avg() should parse as avg aggregation.
-
-        The adapter's _parse_aggregation expects func(arg) syntax,
-        not Malloy's field.func() syntax.
-        """
+        """averageRating.avg() should parse as avg aggregation."""
         movies = self.graph.get_model("movies")
         avg_rating = movies.get_metric("average_rating")
         assert avg_rating.agg == "avg"
@@ -274,13 +262,8 @@ class TestNames:
         name_count = names.get_metric("name_count")
         assert name_count.agg == "count"
 
-    @pytest.mark.xfail(reason="Adapter does not parse backtick.method() aggregation syntax")
     def test_population_aggregation(self):
-        """population is `number`.sum() should parse as sum.
-
-        The adapter's _parse_aggregation expects func(arg) syntax,
-        not Malloy's field.func() syntax with backtick-quoted fields.
-        """
+        """population is `number`.sum() should parse as sum."""
         names = self.graph.get_model("names")
         population = names.get_metric("population")
         assert population.agg == "sum"
@@ -332,12 +315,8 @@ class TestNames:
         is_popular = nwc.get_dimension("is_popular")
         assert is_popular.type == "boolean"
 
-    @pytest.mark.xfail(reason="Adapter does not extract rename: statements")
     def test_names_rename_year(self):
-        """rename: year_born is `year` should be tracked.
-
-        The adapter does not handle DefExploreRenameContext.
-        """
+        """rename: year_born is `year` should be tracked as a dimension."""
         names = self.graph.get_model("names")
         dim_names = {d.name for d in names.dimensions}
         assert "year_born" in dim_names

@@ -40,6 +40,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_sql: str | None = None
         self.current_primary_key: str = "id"
         self.current_description: str | None = None
+        self.current_extends: str | None = None
+        self.current_connection: str | None = None
         self.current_dimensions: list[Dimension] = []
         self.current_metrics: list[Metric] = []
         self.current_relationships: list[Relationship] = []
@@ -52,30 +54,39 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.current_sql = None
         self.current_primary_key = "id"
         self.current_description = None
+        self.current_extends = None
+        self.current_connection = None
         self.current_dimensions = []
         self.current_metrics = []
         self.current_relationships = []
         self.current_segments = []
+        self._timezone = None
+        self._model_tags = []
+        self._accept_fields = []
+        self._except_fields = []
 
     def _parse_annotations(self, tags_ctx) -> str | None:
-        """Parse annotations from tags context.
+        """Parse annotations from tags context, returning description text.
 
-        Malloy annotations:
-        - ## Description text -> description (DOC_ANNOTATION)
-        - # key: value -> metadata (ANNOTATION)
-
-        We extract:
-        - Any ## text as description
-        - # desc: value as description
-
-        Returns the description text if found.
+        Also stores non-description tags via _parse_annotations_full.
         """
         if tags_ctx is None:
             return None
+        desc, _ = self._parse_annotations_full(tags_ctx)
+        return desc
+
+    def _parse_annotations_full(self, tags_ctx) -> tuple[str | None, list[str]]:
+        """Parse annotations from tags context.
+
+        Returns (description, tags) where tags is a list of non-description
+        tag strings like "line_chart", "percent", "currency", etc.
+        """
+        if tags_ctx is None:
+            return None, []
 
         descriptions = []
+        tags = []
 
-        # Iterate through ANNOTATION tokens
         for i in range(tags_ctx.getChildCount()):
             child = tags_ctx.getChild(i)
             if child is not None:
@@ -83,15 +94,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
                 # ## is a doc annotation (description)
                 if text.startswith("##"):
-                    # Strip ## and whitespace
                     desc = text[2:].strip()
                     if desc:
                         descriptions.append(desc)
                 # # is a tag annotation
                 elif text.startswith("#"):
-                    # Strip # and check for desc: or description:
                     tag_text = text[1:].strip()
-                    # Common patterns: desc: value, description: value
                     if tag_text.lower().startswith("desc:"):
                         desc = tag_text[5:].strip()
                         if desc:
@@ -100,10 +108,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                         desc = tag_text[12:].strip()
                         if desc:
                             descriptions.append(desc)
+                    elif tag_text:
+                        tags.append(tag_text)
 
-        if descriptions:
-            return " ".join(descriptions)
-        return None
+        desc = " ".join(descriptions) if descriptions else None
+        return desc, tags
 
     def visitImportStatement(self, ctx: MalloyParser.ImportStatementContext):  # noqa: N802
         """Visit import statement and extract dependencies.
@@ -169,6 +178,11 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         """Remove quotes from string literal."""
         if not text:
             return text
+        # Handle triple quotes BEFORE single/double quotes
+        if text.startswith("'''") and text.endswith("'''"):
+            return text[3:-3]
+        if text.startswith('"""') and text.endswith('"""'):
+            return text[3:-3]
         # Remove single, double, or backtick quotes
         if (
             (text.startswith("'") and text.endswith("'"))
@@ -176,11 +190,6 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             or (text.startswith("`") and text.endswith("`"))
         ):
             return text[1:-1]
-        # Handle triple quotes
-        if text.startswith("'''") and text.endswith("'''"):
-            return text[3:-3]
-        if text.startswith('"""') and text.endswith('"""'):
-            return text[3:-3]
         return text
 
     def _infer_dimension_type(self, sql: str, name: str) -> str:
@@ -251,28 +260,220 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         """Parse aggregation function from expression.
 
         Returns (agg_type, sql_expr) tuple.
+
+        Handles both standard SQL syntax (func(arg)) and Malloy dot-method
+        syntax (field.func()). In Malloy, count(field) means count_distinct(field).
         """
         if not expr:
             return None, None
 
-        # Match: count(), sum(x), avg(x), etc.
-        match = re.match(r"(\w+)\s*\(\s*(.*?)\s*\)$", expr.strip(), re.DOTALL)
+        expr_stripped = expr.strip()
+
+        # Pattern 1: dot-method aggregation - field.func() or field.func(args)
+        # Handles: cost.sum(), averageRating.avg(), `number`.sum(), images.count()
+        # Also handles dotted paths: event_params.value.double_value.sum()
+        dot_match = re.match(
+            r"^(.+)\.(sum|avg|count|min|max|count_distinct)\s*\(\s*(.*?)\s*\)$",
+            expr_stripped,
+            re.DOTALL,
+        )
+        if dot_match:
+            field = dot_match.group(1).strip()
+            agg_func = dot_match.group(2).lower()
+            extra_arg = dot_match.group(3).strip()
+            # For dot-method, the field IS the argument
+            if agg_func == "count" and not extra_arg:
+                return "count", field
+            return agg_func, field
+
+        # Pattern 2: standard func(arg) syntax
+        match = re.match(r"(\w+)\s*\(\s*(.*?)\s*\)$", expr_stripped, re.DOTALL)
         if match:
             agg_func = match.group(1).lower()
             agg_arg = match.group(2).strip()
 
-            if agg_func in ("count", "sum", "avg", "min", "max"):
+            if agg_func == "count":
+                # In Malloy, count(field) means count_distinct(field)
+                # count() with no args is just count
+                if agg_arg:
+                    return "count_distinct", agg_arg
+                return "count", None
+            elif agg_func in ("sum", "avg", "min", "max"):
                 return agg_func, agg_arg if agg_arg else None
             elif agg_func == "count_distinct":
                 return "count_distinct", agg_arg
 
         return None, expr
 
-    def _transform_pick_to_case(self, expr: str) -> str:
-        """Transform Malloy pick/when/else to SQL CASE expression."""
-        # Pattern: pick 'value' when condition
-        # Becomes: CASE WHEN condition THEN 'value' ... END
+    def _transform_malloy_expr(self, expr: str) -> str:
+        """Transform Malloy-specific expression syntax to standard SQL.
 
+        Handles:
+        - ?? null coalescing -> COALESCE
+        - ! type assertions -> stripped (e.g., timestamp_seconds!timestamp(x) -> timestamp_seconds(x))
+        - ~ regex match -> REGEXP_MATCHES
+        - @date literals -> DATE 'YYYY-MM-DD'
+        - now -> CURRENT_TIMESTAMP
+        """
+        if not expr:
+            return expr
+
+        # ?? null coalescing -> COALESCE
+        if "??" in expr:
+            expr = self._transform_null_coalesce(expr)
+
+        # ! type assertion: func!type(args) -> func(args)
+        # Matches: timestamp_seconds!timestamp(x), left!(s,1), md5!(x), to_base64!(x)
+        # Pattern: identifier!identifier( -> identifier(
+        expr = re.sub(r"(\w+)!\w+\(", r"\1(", expr)
+
+        # ~ regex match with r'' literal: expr ~ r'pattern' -> REGEXP_MATCHES(expr, 'pattern')
+        # Use (.+?) with lookahead to capture full LHS including spaces/parens
+        expr = re.sub(
+            r"(.+?)\s+~\s+r'([^']*)'",
+            r"REGEXP_MATCHES(\1, '\2')",
+            expr,
+        )
+        expr = re.sub(
+            r'(.+?)\s+~\s+r"([^"]*)"',
+            r"REGEXP_MATCHES(\1, '\2')",
+            expr,
+        )
+        # !~ negated regex
+        expr = re.sub(
+            r"(.+?)\s+!~\s+r'([^']*)'",
+            r"NOT REGEXP_MATCHES(\1, '\2')",
+            expr,
+        )
+
+        # @date literals: @YYYY-MM-DD -> DATE 'YYYY-MM-DD'
+        # @YYYY-MM -> DATE 'YYYY-MM-01'
+        # @YYYY -> DATE 'YYYY-01-01'
+        # @YYYY-Qn -> handled as text
+        expr = re.sub(r"@(\d{4}-\d{2}-\d{2})", r"DATE '\1'", expr)
+        expr = re.sub(r"@(\d{4}-\d{2})(?!\d)", r"DATE '\1-01'", expr)
+        expr = re.sub(r"@(\d{4})(?![-\d])", r"DATE '\1-01-01'", expr)
+
+        # now -> CURRENT_TIMESTAMP (only when it's the entire expression or clearly standalone)
+        if expr.strip() == "now":
+            expr = "CURRENT_TIMESTAMP"
+
+        # & (and-tree): expands partial conditions with the base field
+        # e.g., "field < 2031 & > -8000" -> "field < 2031 AND field > -8000"
+        # e.g., "status != 'Cancelled' & 'Returned'" -> "status != 'Cancelled' AND status != 'Returned'"
+        if " & " in expr and "?" not in expr:
+            expr = self._transform_and_tree(expr)
+
+        # | (or-tree / alternatives): used with ? apply operator
+        # e.g., "field ? 'a' | 'b'" -> "field IN ('a', 'b')"
+        # Only transform the simple value-matching pattern, not general uses of |
+        if " ? " in expr and " | " in expr and "pick" not in expr.lower():
+            expr = self._transform_or_tree(expr)
+
+        return expr
+
+    def _transform_null_coalesce(self, expr: str) -> str:
+        """Transform Malloy ?? null coalescing to SQL COALESCE.
+
+        Only splits on ?? at the top expression depth (not inside parens/brackets).
+        """
+        if "??" not in expr:
+            return expr
+
+        # Split on ?? only at depth 0
+        parts = []
+        current = []
+        depth = 0
+        i = 0
+        while i < len(expr):
+            ch = expr[i]
+            if ch in ("(", "[", "{"):
+                depth += 1
+                current.append(ch)
+            elif ch in (")", "]", "}"):
+                depth -= 1
+                current.append(ch)
+            elif depth == 0 and expr[i : i + 2] == "??":
+                parts.append("".join(current).strip())
+                current = []
+                i += 2
+                # Skip whitespace after ??
+                while i < len(expr) and expr[i] == " ":
+                    i += 1
+                continue
+            else:
+                current.append(ch)
+            i += 1
+
+        if parts:
+            parts.append("".join(current).strip())
+            return f"COALESCE({', '.join(parts)})"
+        return expr
+
+    def _transform_and_tree(self, expr: str) -> str:
+        """Transform Malloy & (and-tree) to SQL AND with expanded base field.
+
+        Examples:
+        - "field < 2031 & > -8000" -> "field < 2031 AND field > -8000"
+        - "status != 'Cancelled' & 'Returned'" -> "status != 'Cancelled' AND status != 'Returned'"
+        """
+        parts = re.split(r"\s+&\s+", expr)
+        if len(parts) < 2:
+            return expr
+
+        # First part should be a complete condition with the base field and operator
+        first = parts[0].strip()
+        # Extract base field and operator from the first condition
+        match = re.match(r"^(.+?)\s*([<>=!]+)\s*(.+)$", first)
+        if not match:
+            return expr
+
+        base_field = match.group(1).strip()
+        operator = match.group(2).strip()
+        expanded = [first]
+
+        for part in parts[1:]:
+            part = part.strip()
+            # If part starts with an operator, prepend the base field
+            if re.match(r"^[<>=!]", part):
+                expanded.append(f"{base_field} {part}")
+            # If part is a bare value (string/number), reuse the base operator
+            elif re.match(r"^['\"`\d]", part):
+                expanded.append(f"{base_field} {operator} {part}")
+            else:
+                expanded.append(part)
+
+        return " AND ".join(expanded)
+
+    def _transform_or_tree(self, expr: str) -> str:
+        """Transform Malloy field ? 'a' | 'b' to SQL field IN ('a', 'b').
+
+        Only handles the value-matching pattern: field ? value1 | value2 | ...
+        """
+        # Match: field ? value1 | value2 | ...
+        match = re.match(r"^(.+?)\s*\?\s*(.+)$", expr)
+        if not match:
+            return expr
+
+        base_field = match.group(1).strip()
+        values_str = match.group(2).strip()
+
+        # Split on | and collect values
+        values = [v.strip() for v in values_str.split("|")]
+        if len(values) < 2:
+            return expr
+
+        return f"{base_field} IN ({', '.join(values)})"
+
+    def _transform_pick_to_case(self, expr: str, base_field: str | None = None) -> str:
+        """Transform Malloy pick/when/else to SQL CASE expression.
+
+        Args:
+            expr: The pick/when/else expression text.
+            base_field: If provided, prepend to partial comparisons in when clauses.
+                For apply-pick syntax: `field ? pick 'X' when < 5` the base_field
+                is extracted by the caller and partial conditions get it prepended.
+        """
         lines = expr.strip().split("\n")
         cases = []
         else_value = None
@@ -287,6 +488,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             if pick_match:
                 value = pick_match.group(1).strip()
                 condition = pick_match.group(2).strip()
+                if base_field:
+                    condition = self._expand_partial_condition(condition, base_field)
                 cases.append(f"WHEN {condition} THEN {value}")
                 continue
 
@@ -304,13 +507,47 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         return expr
 
+    def _expand_partial_condition(self, condition: str, base_field: str) -> str:
+        """Expand a partial comparison by prepending the base field.
+
+        Malloy apply-pick uses partial conditions:
+        - `when < 5` -> `base_field < 5`
+        - `when 'ASW'` -> `base_field = 'ASW'`
+        - `when >= 1000` -> `base_field >= 1000`
+        - `when ~ r'pattern'` -> `base_field ~ r'pattern'`
+        - `when gender = 'F'` -> `gender = 'F'` (already complete, no change)
+        """
+        # Already a complete condition (contains an operator after a word)
+        if re.match(r"\w+\s*[=<>!~]", condition):
+            return condition
+        # Partial: starts with comparison operator
+        if re.match(r"[<>=!~]", condition):
+            return f"{base_field} {condition}"
+        # Partial: starts with a string/number literal (value matching)
+        if re.match(r"['\"`\d]", condition):
+            return f"{base_field} = {condition}"
+        return condition
+
     def visitDefineSourceStatement(self, ctx: MalloyParser.DefineSourceStatementContext):  # noqa: N802
         """Visit source: name is ... statement."""
         # Get statement-level tags (before 'source:' keyword)
         # These apply to all sources in the statement if there's only one,
         # or can be overridden by source-specific tags
         stmt_tags = ctx.tags()
-        stmt_description = self._parse_annotations(stmt_tags) if stmt_tags else None
+        stmt_description = None
+        stmt_persist = None
+        if stmt_tags:
+            stmt_description, stmt_tag_list = self._parse_annotations_full(stmt_tags)
+            # Check for #@ persist annotations
+            for tag in stmt_tag_list:
+                if tag.startswith("@ persist") or tag.startswith("@persist"):
+                    persist_text = tag[len("@ persist") :] if tag.startswith("@ persist") else tag[len("@persist") :]
+                    persist_text = persist_text.strip()
+                    stmt_persist = {"persist": True}
+                    # Parse name=value
+                    name_match = re.match(r"name\s*=\s*(\S+)", persist_text)
+                    if name_match:
+                        stmt_persist["persist_name"] = name_match.group(1)
 
         # Get source definitions
         source_list = ctx.sourcePropertyList()
@@ -321,21 +558,31 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 self._process_source_definition(source_def)
 
                 # If source has no description but statement does, use statement description
-                # (only for single-source statements, or as fallback)
                 if self.current_description is None and stmt_description is not None:
                     self.current_description = stmt_description
 
                 if self.current_model_name:
+                    metadata = {}
+                    if self.current_connection:
+                        metadata["connection"] = self.current_connection
+                    if stmt_persist:
+                        metadata.update(stmt_persist)
+                    if self._timezone:
+                        metadata["timezone"] = self._timezone
+                    if self._model_tags:
+                        metadata["tags"] = self._model_tags
                     model = Model(
                         name=self.current_model_name,
                         table=self.current_table,
                         sql=self.current_sql,
+                        extends=self.current_extends,
                         primary_key=self.current_primary_key,
                         description=self.current_description,
                         dimensions=self.current_dimensions,
                         metrics=self.current_metrics,
                         relationships=self.current_relationships,
                         segments=self.current_segments,
+                        metadata=metadata if metadata else None,
                     )
                     self.models.append(model)
 
@@ -368,6 +615,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if isinstance(ctx, MalloyParser.SQTableContext):
             explore_table = ctx.exploreTable()
             if explore_table:
+                # Extract connection name
+                conn_id = explore_table.connectionId()
+                if conn_id:
+                    id_ctx = conn_id.id_()
+                    if id_ctx:
+                        self.current_connection = self._get_text(id_ctx)
                 table_path = explore_table.tablePath()
                 if table_path:
                     self.current_table = self._extract_string(self._get_text(table_path))
@@ -377,10 +630,15 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         if isinstance(ctx, MalloyParser.SQSQLContext):
             sql_source = ctx.sqlSource()
             if sql_source:
+                # Extract connection name
+                conn_id = sql_source.connectionId()
+                if conn_id:
+                    id_ctx = conn_id.id_()
+                    if id_ctx:
+                        self.current_connection = self._get_text(id_ctx)
                 # Extract SQL string
                 sql_string = sql_source.sqlString()
                 if sql_string:
-                    # sqlString includes triple quotes, extract the content
                     self.current_sql = self._extract_string(self._get_text(sql_string))
                 else:
                     short_string = sql_source.shortString()
@@ -408,9 +666,41 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 self._process_sq_expr(base_sq_expr)
             return
 
-        # Check for ID reference (another source name)
+        # Check for ID reference (another source name) -> set extends
         if isinstance(ctx, MalloyParser.SQIDContext):
-            # This is a reference to another source - we might need to track extends
+            id_ctx = ctx.id_()
+            if id_ctx:
+                self.current_extends = self._get_text(id_ctx)
+            return
+
+        # Check for arrow/pipeline source: base -> { ... }
+        if isinstance(ctx, MalloyParser.SQArrowContext):
+            # Process the base source expression (sets table/extends)
+            base_sq_expr = ctx.sqExpr()
+            if base_sq_expr:
+                self._process_sq_expr(base_sq_expr)
+            return
+
+        # Check for refined query (old + syntax): base + { ... }
+        if isinstance(ctx, MalloyParser.SQRefinedQueryContext):
+            # Process the base source expression
+            base_sq = ctx.sqExpr()
+            if base_sq:
+                self._process_sq_expr(base_sq)
+            # Try to process the refinement block for explore-like statements
+            seg_expr = ctx.segExpr()
+            if seg_expr:
+                self._process_seg_expr(seg_expr)
+            return
+
+        # Check for compose() sources
+        if isinstance(ctx, MalloyParser.SQComposeContext):
+            # Extract composed source names for metadata
+            # compose(src1, src2, ...) - just note the first source as extends
+            sq_exprs = ctx.sqExpr()
+            if sq_exprs and len(sq_exprs) > 0:
+                first = sq_exprs[0] if isinstance(sq_exprs, list) else sq_exprs
+                self._process_sq_expr(first)
             return
 
         # Check for parenthesized expression
@@ -424,6 +714,66 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         """Process the extend { ... } block of a source."""
         for stmt in ctx.exploreStatement():
             self._process_explore_statement(stmt)
+
+    def _process_seg_expr(self, ctx):
+        """Process a segExpr from old + syntax refinements.
+
+        The segExpr can be SegOpsContext (query properties block),
+        SegRefineContext (lhs + rhs), or SegFieldContext (field path).
+        We try to extract explore-like statements from query properties.
+        """
+        if ctx is None:
+            return
+
+        if isinstance(ctx, MalloyParser.SegOpsContext):
+            # { queryStatement* } block - try to process as explore statements
+            query_props = ctx.queryProperties()
+            if query_props:
+                self._process_query_properties_as_explore(query_props)
+            return
+
+        if isinstance(ctx, MalloyParser.SegRefineContext):
+            # lhs + rhs - process both sides
+            for seg in ctx.segExpr():
+                self._process_seg_expr(seg)
+            return
+
+    def _process_query_properties_as_explore(self, ctx):
+        """Best-effort extraction of explore-like statements from query properties.
+
+        The old + syntax uses queryStatement, not exploreStatement.
+        Some query statements overlap with explore statements (dimension:, measure:,
+        join:, where:, primary_key:). We handle what we can.
+        """
+        for stmt in ctx.queryStatement():
+            # Try to match known statement types that exist in both query and explore contexts
+            # The grammar reuses the same context classes for some of these
+            if isinstance(stmt, MalloyParser.DefExplorePrimaryKeyContext):
+                field_name = stmt.fieldName()
+                if field_name:
+                    self.current_primary_key = self._get_text(field_name)
+            elif isinstance(stmt, MalloyParser.DefExploreDimension_stubContext):
+                def_dims = stmt.defDimensions()
+                if def_dims:
+                    self._process_def_dimensions(def_dims)
+            elif isinstance(stmt, MalloyParser.DefExploreMeasure_stubContext):
+                def_measures = stmt.defMeasures()
+                if def_measures:
+                    self._process_def_measures(def_measures)
+            elif isinstance(stmt, MalloyParser.DefJoin_stubContext):
+                join_stmt = stmt.joinStatement()
+                if join_stmt:
+                    self._process_join_statement(join_stmt)
+            elif isinstance(stmt, MalloyParser.DefExploreWhere_stubContext):
+                where_stmt = stmt.whereStatement()
+                if where_stmt:
+                    self._process_where_as_segment(where_stmt)
+            elif isinstance(stmt, MalloyParser.DeclareStatementContext):
+                # declare: creates fields accessible within the source
+                def_list = stmt.defList()
+                if def_list:
+                    for field_def in def_list.fieldDef():
+                        self._process_dimension_def(field_def)
 
     def _process_explore_statement(self, ctx: MalloyParser.ExploreStatementContext):
         """Process a single statement in explore properties."""
@@ -462,6 +812,75 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 self._process_where_as_segment(where_stmt)
             return
 
+        # Accept/except field visibility
+        if isinstance(ctx, MalloyParser.DefExploreEditFieldContext):
+            # Store accept/except in metadata; we'll filter after model creation
+            # The grammar has includeExceptList with field names
+            edit_field = ctx.editField() if hasattr(ctx, "editField") else None
+            if edit_field is None:
+                # Try to get the text and parse accept/except manually
+                text = self._get_text(ctx).strip()
+                if text.startswith("except:"):
+                    fields_text = text[7:].strip()
+                    field_names = [f.strip().strip("`") for f in fields_text.split(",")]
+                    if not hasattr(self, "_except_fields"):
+                        self._except_fields = []
+                    self._except_fields.extend(field_names)
+                elif text.startswith("accept:"):
+                    fields_text = text[7:].strip()
+                    field_names = [f.strip().strip("`") for f in fields_text.split(",")]
+                    if not hasattr(self, "_accept_fields"):
+                        self._accept_fields = []
+                    self._accept_fields.extend(field_names)
+            return
+
+        # Timezone statement: timezone: 'US/Pacific'
+        if isinstance(ctx, MalloyParser.DefExploreTimezoneContext):
+            tz_stmt = ctx.timezoneStatement()
+            if tz_stmt:
+                tz_string = tz_stmt.string()
+                if tz_string:
+                    tz_value = self._extract_string(self._get_text(tz_string))
+                    if not hasattr(self, "_timezone"):
+                        self._timezone = None
+                    self._timezone = tz_value
+            return
+
+        # Standalone annotations in extend blocks
+        if isinstance(ctx, MalloyParser.DefExploreAnnotationContext):
+            # These are # tag annotations not attached to a field
+            # Store as model-level tags
+            for i in range(ctx.getChildCount()):
+                child = ctx.getChild(i)
+                if child is not None:
+                    text = child.getText()
+                    if text.startswith("#"):
+                        tag_text = text[1:].strip()
+                        if tag_text:
+                            if not hasattr(self, "_model_tags"):
+                                self._model_tags = []
+                            self._model_tags.append(tag_text)
+            return
+
+        # Rename statements: rename: new_name is old_name
+        if isinstance(ctx, MalloyParser.DefExploreRenameContext):
+            rename_list = ctx.renameList()
+            if rename_list:
+                for rename_entry in rename_list.renameEntry():
+                    field_names = rename_entry.fieldName()
+                    if field_names and len(field_names) >= 2:
+                        new_name = self._get_text(field_names[0])
+                        old_name = self._get_text(field_names[1])
+                        dim_type = self._infer_dimension_type(old_name, new_name)
+                        self.current_dimensions.append(
+                            Dimension(
+                                name=new_name,
+                                sql=old_name,
+                                type=dim_type,
+                            )
+                        )
+            return
+
     def _process_def_dimensions(self, ctx: MalloyParser.DefDimensionsContext):
         """Process dimension: statements."""
         def_list = ctx.defList()
@@ -480,16 +899,31 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         name = self._get_text(name_def)
 
         # Get annotations from tags
-        tags = ctx.tags()
-        description = self._parse_annotations(tags) if tags else None
+        tags_ctx = ctx.tags()
+        description = None
+        dim_metadata = None
+        if tags_ctx:
+            description, tag_list = self._parse_annotations_full(tags_ctx)
+            if tag_list:
+                dim_metadata = {"tags": tag_list}
 
         # Get the expression
         field_expr = ctx.fieldExpr()
         sql = self._get_text(field_expr) if field_expr else name
 
-        # Transform pick/when to CASE
+        # Transform Malloy-specific expression syntax to SQL
+        sql = self._transform_malloy_expr(sql)
+
+        # Transform pick/when to CASE (with apply-pick support)
         if "pick" in sql.lower():
-            sql = self._transform_pick_to_case(sql)
+            # Check for apply-pick pattern: field ? pick ... when ...
+            apply_match = re.match(r"^(.+?)\s*\?\s*\n?\s*(pick\s+.+)$", sql, re.DOTALL | re.IGNORECASE)
+            if apply_match:
+                base_field = apply_match.group(1).strip()
+                pick_expr = apply_match.group(2).strip()
+                sql = self._transform_pick_to_case(pick_expr, base_field=base_field)
+            else:
+                sql = self._transform_pick_to_case(sql)
 
         # Infer type
         dim_type = self._infer_dimension_type(sql, name)
@@ -506,6 +940,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 sql=sql,
                 granularity=granularity,
                 description=description,
+                metadata=dim_metadata,
             )
         )
 
@@ -527,8 +962,13 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         name = self._get_text(name_def)
 
         # Get annotations from tags
-        tags = ctx.tags()
-        description = self._parse_annotations(tags) if tags else None
+        tags_ctx = ctx.tags()
+        description = None
+        measure_tags = None
+        if tags_ctx:
+            description, tag_list = self._parse_annotations_full(tags_ctx)
+            if tag_list:
+                measure_tags = tag_list
 
         # Get the expression
         field_expr = ctx.fieldExpr()
@@ -558,16 +998,53 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                             if filter_list:
                                 filters = [self._get_text(f) for f in filter_list.fieldExpr()]
 
+        # Transform Malloy-specific expression syntax to SQL
+        expr_text = self._transform_malloy_expr(expr_text)
+
+        # Handle .granularity suffix on aggregated expressions (3.7)
+        # e.g., min(post_time).day -> strip .day, parse agg, store granularity
+        measure_granularity = None
+        granularity_match = re.match(
+            r"^(.+)\.(second|minute|hour|day|week|month|quarter|year)$",
+            expr_text.strip(),
+        )
+        if granularity_match:
+            # Check if the inner part looks like an aggregation
+            inner = granularity_match.group(1).strip()
+            if re.match(r"\w+\s*\(", inner):
+                expr_text = inner
+                measure_granularity = granularity_match.group(2)
+
         # Parse aggregation
         agg, sql = self._parse_aggregation(expr_text)
 
         # Determine metric type
         metric_type = None
         if agg is None and sql:
-            # All non-aggregation expressions are derived metrics
-            # Ratio type requires numerator/denominator metric references which we can't
-            # reliably extract from arbitrary Malloy expressions
-            metric_type = "derived"
+            # Check if this is a measure reference with filters (3.8)
+            # e.g., interesting_post_count is post_count { where: is_interesting }
+            # The sql will be the measure name, and filters will be set
+            if filters and re.match(r"^\w+$", sql.strip()):
+                # Simple identifier with filters = measure reference with filter
+                # Look up the referenced measure to inherit its aggregation
+                ref_name = sql.strip()
+                ref_metric = next((m for m in self.current_metrics if m.name == ref_name), None)
+                if ref_metric and ref_metric.agg:
+                    agg = ref_metric.agg
+                    sql = ref_metric.sql
+                    # Merge filters
+                    if ref_metric.filters:
+                        filters = list(ref_metric.filters) + list(filters)
+                else:
+                    metric_type = "derived"
+            else:
+                metric_type = "derived"
+
+        metric_metadata = {}
+        if measure_granularity:
+            metric_metadata["granularity"] = measure_granularity
+        if measure_tags:
+            metric_metadata["tags"] = measure_tags
 
         self.current_metrics.append(
             Metric(
@@ -577,6 +1054,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 sql=sql,
                 filters=filters,
                 description=description,
+                metadata=metric_metadata if metric_metadata else None,
             )
         )
 
@@ -621,30 +1099,133 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         #     sq_expr = is_explore.sqExpr()
         #     target_model = self._get_text(sq_expr) if sq_expr else name
 
+        # Check if there's an isExplore (alias is source with inline definition)
+        # Only extract inline sources that define a table/sql, not simple ID references
+        is_explore = join_from.isExplore()
+        if is_explore:
+            sq_expr = is_explore.sqExpr()
+            if sq_expr and not isinstance(sq_expr, MalloyParser.SQIDContext):
+                self._extract_inline_join_source(name, sq_expr)
+
         # Get foreign key from 'with' clause
         foreign_key = None
+        join_metadata = None
         if isinstance(ctx, MalloyParser.JoinWithContext):
             field_expr = ctx.fieldExpr()
             if field_expr:
                 foreign_key = self._get_text(field_expr)
         elif isinstance(ctx, MalloyParser.JoinOnContext):
-            # Parse 'on' clause to extract FK if possible
             join_expr = ctx.joinExpression()
             if join_expr:
-                # Try to extract FK from simple equality: fk = other.pk
                 expr_text = self._get_text(join_expr)
-                # Simple heuristic: first identifier before = is often the FK
-                match = re.match(r"(\w+)\s*=", expr_text)
-                if match:
-                    foreign_key = match.group(1)
+                # Store full condition in metadata
+                join_metadata = {"on_condition": expr_text}
+                # Extract all FKs from equalities: field = other.field
+                fk_matches = re.findall(r"(\w+)\s*=\s*\w+\.\w+", expr_text)
+                if fk_matches:
+                    foreign_key = fk_matches[0]
+                    if len(fk_matches) > 1:
+                        join_metadata["composite_keys"] = fk_matches
+                else:
+                    # Fallback: first identifier before =
+                    match = re.match(r"(\w+)\s*=", expr_text)
+                    if match:
+                        foreign_key = match.group(1)
 
         self.current_relationships.append(
             Relationship(
                 name=name,
                 type=rel_type,
                 foreign_key=foreign_key,
+                metadata=join_metadata,
             )
         )
+
+    def _extract_inline_join_source(self, join_name: str, sq_expr):
+        """Extract inline source definition from a join and add as a model.
+
+        Handles: join_one: name is connection.table(...) extend { ... } with fk
+        """
+        # Save current state (including metadata accumulators)
+        saved = (
+            self.current_model_name,
+            self.current_table,
+            self.current_sql,
+            self.current_primary_key,
+            self.current_description,
+            self.current_extends,
+            self.current_connection,
+            list(self.current_dimensions),
+            list(self.current_metrics),
+            list(self.current_relationships),
+            list(self.current_segments),
+            self._timezone,
+            list(self._model_tags),
+            list(self._accept_fields),
+            list(self._except_fields),
+        )
+
+        # Reset and process the inline source
+        self.current_model_name = join_name
+        self.current_table = None
+        self.current_sql = None
+        self.current_primary_key = "id"
+        self.current_description = None
+        self.current_extends = None
+        self.current_connection = None
+        self.current_dimensions = []
+        self.current_metrics = []
+        self.current_relationships = []
+        self.current_segments = []
+        self._timezone = None
+        self._model_tags = []
+        self._accept_fields = []
+        self._except_fields = []
+
+        self._process_sq_expr(sq_expr)
+
+        # Only create model if we found something useful
+        if self.current_table or self.current_sql or self.current_extends:
+            metadata = {}
+            if self.current_connection:
+                metadata["connection"] = self.current_connection
+            if self._timezone:
+                metadata["timezone"] = self._timezone
+            if self._model_tags:
+                metadata["tags"] = self._model_tags
+            inline_model = Model(
+                name=join_name,
+                table=self.current_table,
+                sql=self.current_sql,
+                extends=self.current_extends,
+                primary_key=self.current_primary_key,
+                description=self.current_description,
+                dimensions=self.current_dimensions,
+                metrics=self.current_metrics,
+                relationships=self.current_relationships,
+                segments=self.current_segments,
+                metadata=metadata if metadata else None,
+            )
+            self.models.append(inline_model)
+
+        # Restore state (including metadata accumulators)
+        (
+            self.current_model_name,
+            self.current_table,
+            self.current_sql,
+            self.current_primary_key,
+            self.current_description,
+            self.current_extends,
+            self.current_connection,
+            self.current_dimensions,
+            self.current_metrics,
+            self.current_relationships,
+            self.current_segments,
+            self._timezone,
+            self._model_tags,
+            self._accept_fields,
+            self._except_fields,
+        ) = saved
 
     def _process_where_as_segment(self, ctx: MalloyParser.WhereStatementContext):
         """Process source-level where clause as a segment."""
@@ -654,6 +1235,7 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
 
         for i, filter_expr in enumerate(filter_list.fieldExpr()):
             sql = self._get_text(filter_expr)
+            sql = self._transform_malloy_expr(sql)
             self.current_segments.append(
                 Segment(
                     name=f"default_filter_{i}" if i > 0 else "default_filter",
@@ -848,16 +1430,16 @@ class MalloyAdapter(BaseAdapter):
         """
         lines = []
 
-        # Model description as annotation
+        # Model description as tag annotation
         if model.description:
             lines.append(f"# desc: {model.description}")
 
-        # Source header
+        # Source header - use connection from metadata, default to duckdb
+        connection = (model.metadata or {}).get("connection", "duckdb")
         if model.table:
-            lines.append(f"source: {model.name} is duckdb.table('{model.table}') extend {{")
+            lines.append(f"source: {model.name} is {connection}.table('{model.table}') extend {{")
         elif model.sql:
-            # For SQL-based sources
-            lines.append(f'source: {model.name} is duckdb.sql("""{model.sql}""") extend {{')
+            lines.append(f'source: {model.name} is {connection}.sql("""{model.sql}""") extend {{')
         else:
             lines.append(f"source: {model.name} extend {{")
 
@@ -865,10 +1447,13 @@ class MalloyAdapter(BaseAdapter):
         if model.primary_key and model.primary_key != "id":
             lines.append(f"  primary_key: {model.primary_key}")
 
-        # Dimensions
-        # Skip dimensions that match the primary key (Malloy auto-exposes the PK column).
-        # Skip passthrough dimensions (sql == name) since Malloy auto-exposes underlying
-        # table columns. Only export dimensions with actual transformations.
+        # Segments (source-level where clauses) - Tier 4.1
+        if model.segments:
+            for segment in model.segments:
+                lines.append(f"  where: {self._strip_model_prefix(segment.sql)}")
+
+        # Separate renames from computed dimensions for proper export
+        renames_to_export: list[tuple[str, str]] = []
         dims_to_export: list[tuple[Dimension, str]] = []
         for dim in model.dimensions:
             if dim.name == model.primary_key:
@@ -877,23 +1462,32 @@ class MalloyAdapter(BaseAdapter):
             # Skip passthrough dimensions - Malloy auto-exposes table columns
             if sql == dim.name:
                 continue
-            dims_to_export.append((dim, sql))
+            # Tier 4.5: detect renames (simple identifier, no operators/functions)
+            if re.match(r"^[`\w]+$", sql) and sql != dim.name:
+                renames_to_export.append((dim.name, sql))
+            else:
+                dims_to_export.append((dim, sql))
 
+        # Export renames
+        if renames_to_export:
+            lines.append("")
+            lines.append("  rename:")
+            for new_name, old_name in renames_to_export:
+                lines.append(f"    {new_name} is {old_name}")
+
+        # Export computed dimensions
         if dims_to_export:
             lines.append("")
             lines.append("  dimension:")
             for dim, sql in dims_to_export:
                 if dim.description:
                     lines.append(f"    # desc: {dim.description}")
-                # For time dimensions with granularity, use Malloy's time truncation syntax
-                # But only if the SQL doesn't already contain a truncation function
                 if dim.type == "time" and dim.granularity:
                     sql_lower = sql.lower()
                     already_has_truncation = (
                         "date_trunc" in sql_lower or "::date" in sql_lower or sql_lower.endswith(f".{dim.granularity}")
                     )
                     if not already_has_truncation:
-                        # Append Malloy time accessor: .second, .minute, .hour, .day, .week, .month, .quarter, .year
                         lines.append(f"    {dim.name} is {sql}.{dim.granularity}")
                     else:
                         lines.append(f"    {dim.name} is {sql}")
@@ -910,11 +1504,19 @@ class MalloyAdapter(BaseAdapter):
                 measure_expr = self._format_measure(metric)
                 lines.append(f"    {metric.name} is {measure_expr}")
 
-        # Joins
+        # Joins - Tier 4.4: use on condition from metadata when available
         for rel in model.relationships:
             lines.append("")
-            join_type = "join_one" if rel.type == "many_to_one" else "join_many"
-            if rel.foreign_key:
+            if rel.type == "many_to_one":
+                join_type = "join_one"
+            elif rel.type == "one_to_one":
+                join_type = "join_cross"
+            else:
+                join_type = "join_many"
+            on_condition = (rel.metadata or {}).get("on_condition")
+            if on_condition:
+                lines.append(f"  {join_type}: {rel.name} on {on_condition}")
+            elif rel.foreign_key:
                 lines.append(f"  {join_type}: {rel.name} with {rel.foreign_key}")
             else:
                 lines.append(f"  {join_type}: {rel.name}")

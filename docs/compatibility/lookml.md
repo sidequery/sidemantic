@@ -16,11 +16,14 @@ Features are marked **supported**, **partial support**, or **unsupported**. Part
 | Multi-view files | Supported |
 | Directory parsing (recursive `.lkml` discovery) | Supported |
 | Empty/minimal views (zero dimensions) | Supported |
-| `view: +name {}` (refinements) | Partial support: parsed as a separate model named `"+name"`. First refinement kept, duplicates skipped. Fields are not merged into the base view. |
-| `extension: required` (abstract views) | Partial support: view parses normally but the flag is not stored. No validation prevents direct use. |
-| `extends: [base_view]` | Partial support: extending view is parsed with only its own fields. Inherited fields from the base view are not merged. Each view in an extends chain is independent. |
+| `view: +name {}` (refinements) | Supported (merged into the base view; multiple refinements are applied in order) |
+| `extension: required` (abstract views) | Supported (stored in `model.meta["extension_required"]`) |
+| `extends: [base_view]` | Supported (inheritance resolved using `core/inheritance.py`; child inherits all parent fields with child values taking precedence) |
+| `label` | Supported (stored in `model.meta["label"]`) |
+| `hidden` | Supported (stored in `model.meta["hidden"]`) |
+| `tags` | Supported (stored in `model.meta["tags"]`) |
 
-Not mapped: `hidden`, `label`, `tags`.
+Multi-extends (`extends: [a, b]`) uses only the first parent. This is rare in practice.
 
 ---
 
@@ -42,9 +45,17 @@ Not mapped: `hidden`, `label`, `tags`.
 | `${dimension_name}` references | Supported (resolved recursively, max depth 10; circular references degrade gracefully) |
 | `${other_view.field}` cross-view refs | Supported (preserved as-is in SQL) |
 | `description` | Supported |
+| `label` | Supported (stored in `Dimension.label`) |
+| `value_format_name` | Supported (stored in `Dimension.value_format_name`) |
+| `value_format` | Supported (stored in `Dimension.format`) |
 | `case: { when: {} }` (case dimension) | Supported |
+| `hidden` | Supported (stored in `Dimension.meta["hidden"]`) |
+| `group_label` | Supported (stored in `Dimension.meta["group_label"]`) |
+| `tags` | Supported (stored in `Dimension.meta["tags"]`) |
+| `order_by_field` | Supported (stored in `Dimension.meta["order_by_field"]`) |
+| `can_filter` | Supported (stored in `Dimension.meta["can_filter"]`) |
 
-Not mapped: `hidden`, `label`, `group_label`, `value_format`, `value_format_name`, `order_by_field`, `drill_fields`, `tags`, `can_filter`, `suggest_dimension`, `suggest_explore`, `map_layer_name`, `alpha_sort`, `html:`, `link:`, `action:`.
+Not mapped: `drill_fields`, `suggest_dimension`, `suggest_explore`, `map_layer_name`, `alpha_sort`, `html:`, `link:`, `action:`.
 
 ---
 
@@ -57,6 +68,8 @@ Not mapped: `hidden`, `label`, `group_label`, `value_format`, `value_format_name
 | `dimension_group type: time` | Supported (one `Dimension(type="time")` per timeframe) |
 | `timeframes: [...]` | Supported (`raw` explicitly skipped) |
 | Default timeframe | Supported (defaults to `["date"]` if unspecified) |
+| `label` | Supported (propagated to each generated dimension) |
+| `description` | Supported (propagated to each generated dimension) |
 
 Naming convention: `{group_name}_{timeframe}`.
 
@@ -98,15 +111,22 @@ Not mapped: `convert_tz`, `datatype`.
 | `type: string` (derived) | Supported |
 | `type: yesno` (boolean measure) | Supported (maps to derived) |
 | `type: period_over_period` | Supported (maps to `time_comparison` with `based_on`, `comparison_type`, `calculation`) |
+| `type: percentile` | Supported (generates `PERCENTILE_CONT` SQL as a derived metric; `percentile:` parameter value is preserved) |
+| `type: list` | Supported (generates `STRING_AGG(DISTINCT ...)` SQL as a derived metric; measures without SQL are skipped) |
 | `sql: ${dimension_ref}` | Supported (resolved to dimension SQL) |
 | `sql: ${measure_ref}` in type:number | Supported (converted to plain names for dependency resolution) |
 | No explicit type (sql present) | Supported (treated as derived) |
 | `description` | Supported |
-| `type: percentile` | Partial support: parses without error but the `percentile:` parameter value is lost. Becomes `agg_type=None`. |
-| `type: list` | Partial support: parses but has no native aggregation mapping. |
+| `label` | Supported (stored in `Metric.label`) |
+| `value_format_name` | Supported (stored in `Metric.value_format_name`) |
+| `value_format` | Supported (stored in `Metric.format`) |
+| `drill_fields` | Supported (stored in `Metric.drill_fields`) |
+| `hidden` | Supported (stored in `Metric.meta["hidden"]`) |
+| `group_label` | Supported (stored in `Metric.meta["group_label"]`) |
+| `tags` | Supported (stored in `Metric.meta["tags"]`) |
 | `type: date` | Partial support: becomes derived rather than a date-aware aggregation. |
 
-Not mapped: `hidden`, `value_format`, `value_format_name`, `drill_fields`, `link:`, `tags`.
+Not mapped: `link:`.
 
 ---
 
@@ -171,10 +191,17 @@ Not mapped: `persist_for`, `datagroup_trigger`, `sql_trigger_value`, `materializ
 | `sql_on: ${a.col} = ${b.col}` | Supported (foreign key extracted from `${model.column}` pattern) |
 | `relationship:` | Supported (all four: `many_to_one`, `one_to_one`, `one_to_many`, `many_to_many`) |
 | Multi-hop join detection | Supported (transitive joins skipped; adjacency graph computes path) |
+| `from:` (explore-level) | Supported (resolves to the actual view for model lookup) |
+| `from:` (join-level) | Supported (relationship points to actual view name, not the join alias) |
+| `description` | Supported (set on base model if model has no description) |
+| `label`, `group_label` | Supported (stored in `model.meta["explore_label"]` / `model.meta["explore_group_label"]`) |
+| `sql_always_where` | Supported (converted to a Segment on the base model) |
+| `always_filter` | Supported (each filter converted to a Segment on the base model) |
 | Explore-level `extends:` | Unsupported |
-| `from:` (aliased views) | Partial support: parsed by lkml but not resolved to a different view name. |
 
-Not mapped: join `type` (`left_outer`, `inner`, etc.), `fields`, `sql_always_where`, `sql_always_having`, `always_filter`, `access_filter`, `required_joins`, `cancel_grouping_fields`, explore `label`, `description`, `group_label`.
+| join `type` (`left_outer`, `inner`, `full_outer`, `cross`) | Supported (stored in `Relationship.metadata["join_type"]`) |
+
+Not mapped: `fields`, `sql_always_having`, `access_filter`, `required_joins`, `cancel_grouping_fields`, `conditionally_filter`.
 
 ---
 
@@ -231,6 +258,9 @@ Sidemantic can export its semantic model back to LookML.
 | Filtered measures | Supported (`filters__all` format) |
 | Segments | Supported (exported as `filter:` blocks) |
 | Primary key | Supported |
+| `label` | Supported (roundtrips on dimensions and measures) |
+| `value_format_name` | Supported (roundtrips on dimensions and measures) |
+| `value_format` | Supported (roundtrips on dimensions and measures) |
+| `drill_fields` | Supported (roundtrips on measures) |
+| `hidden`, `group_label`, `tags` | Supported (roundtrips via `meta` dict) |
 | Roundtrip fidelity | Supported (LookML -> parse -> export -> re-parse produces semantically equivalent graphs) |
-
-

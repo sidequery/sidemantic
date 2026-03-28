@@ -11,6 +11,240 @@ import pytest
 from sidemantic.adapters.lookml import LookMLAdapter
 
 # =============================================================================
+# PROPERTY PASS-THROUGH TESTS (labels, formats, drill_fields, meta)
+# =============================================================================
+
+
+def test_lookml_dimension_label():
+    """Test that dimension labels are captured."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_extends.lkml"))
+
+    extended = graph.get_model("customers_extended")
+    name_dim = extended.get_dimension("name")
+    assert name_dim is not None
+    assert name_dim.label == "Customer Name"
+
+
+def test_lookml_dimension_value_format():
+    """Test that dimension value_format_name and value_format are captured."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_extends.lkml"))
+
+    extended = graph.get_model("customers_extended")
+    ltv_dim = extended.get_dimension("lifetime_value")
+    assert ltv_dim is not None
+    assert ltv_dim.value_format_name == "usd"
+
+
+def test_lookml_measure_value_format():
+    """Test that measure value_format_name and value_format are captured."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_extends.lkml"))
+
+    extended = graph.get_model("customers_extended")
+    total_ltv = extended.get_metric("total_ltv")
+    assert total_ltv is not None
+    assert total_ltv.value_format_name == "usd"
+
+    # Test value_format (not value_format_name)
+    graph2 = adapter.parse(Path("tests/fixtures/lookml/edge_cases_special_types.lkml"))
+    special = graph2.get_model("special_types")
+    avg_score = special.get_metric("avg_score")
+    assert avg_score is not None
+    assert avg_score.format == "0.00"
+
+
+def test_lookml_measure_label():
+    """Test that measure labels are captured."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_actions.lkml"))
+
+    orders = graph.get_model("interactive_orders")
+    revenue = orders.get_metric("total_revenue")
+    assert revenue is not None
+    assert revenue.value_format_name == "usd"
+
+
+def test_lookml_hidden_in_meta():
+    """Test that hidden fields are stored in meta."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_special_types.lkml"))
+
+    special = graph.get_model("special_types")
+
+    lat_dim = special.get_dimension("latitude")
+    assert lat_dim is not None
+    assert lat_dim.meta is not None
+    assert lat_dim.meta.get("hidden") is True
+
+    lng_dim = special.get_dimension("longitude")
+    assert lng_dim is not None
+    assert lng_dim.meta is not None
+    assert lng_dim.meta.get("hidden") is True
+
+
+def test_lookml_extension_required_in_meta():
+    """Test that extension: required is stored in model meta."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_extends.lkml"))
+
+    abstract = graph.get_model("abstract_metrics")
+    assert abstract.meta is not None
+    assert abstract.meta.get("extension_required") is True
+
+    # Non-abstract views should not have this flag
+    base = graph.get_model("base_entity")
+    assert base.meta is None or not base.meta.get("extension_required")
+
+
+def test_lookml_explore_description():
+    """Test that explore description is set on the model via from: aliasing."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # explore: orders { from: fact_orders description: "Main orders explore..." }
+    # fact_orders has no description of its own, so it gets the explore's
+    fact_orders = graph.get_model("fact_orders")
+    assert fact_orders is not None
+    assert fact_orders.description == "Main orders explore with all dimensions"
+
+
+def test_lookml_explore_from_aliasing():
+    """Test that from: on explores resolves to the correct base model."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # explore: orders { from: fact_orders } should add relationships to fact_orders
+    fact_orders = graph.get_model("fact_orders")
+    assert fact_orders is not None
+    rel_names = [r.name for r in fact_orders.relationships]
+    assert "dim_customers" in rel_names
+    assert "dim_products" in rel_names
+
+
+def test_lookml_explore_from_join_aliasing():
+    """Test that from: on joins resolves to the actual view name."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # explore: customers { from: dim_customers } has join: dim_regions (direct)
+    dim_customers = graph.get_model("dim_customers")
+    rel_names = [r.name for r in dim_customers.relationships]
+    assert "dim_regions" in rel_names
+
+    # explore: customers has join: customer_orders { from: fact_orders }
+    # This should create a relationship named "fact_orders" (the actual model)
+    assert "fact_orders" in rel_names
+
+
+def test_lookml_sql_always_where_segment():
+    """Test that sql_always_where creates a segment on the base model."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    fact_orders = graph.get_model("fact_orders")
+    segment_names = [s.name for s in fact_orders.segments]
+    # Segment names include the explore name for uniqueness
+    assert "_sql_always_where_orders" in segment_names
+
+    sql_where_seg = fact_orders.get_segment("_sql_always_where_orders")
+    assert sql_where_seg is not None
+    assert "deleted" in sql_where_seg.sql
+
+
+def test_lookml_explore_meta():
+    """Test that explore label/group_label are stored in model meta."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    fact_orders = graph.get_model("fact_orders")
+    assert fact_orders.meta is not None
+    # Multiple explores reference fact_orders, so the label may be from any of them
+    assert fact_orders.meta.get("explore_label") is not None
+    assert fact_orders.meta.get("explore_group_label") is not None
+
+
+def test_lookml_join_type_left_outer():
+    """Test that left_outer join type is captured in relationship metadata."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # explore: orders { from: fact_orders } has join: dim_customers { type: left_outer }
+    fact_orders = graph.get_model("fact_orders")
+    rels_by_name = {r.name: r for r in fact_orders.relationships}
+    dim_customers_rel = rels_by_name.get("dim_customers")
+    assert dim_customers_rel is not None
+    assert dim_customers_rel.metadata is not None
+    assert dim_customers_rel.metadata["join_type"] == "left_outer"
+
+
+def test_lookml_join_type_inner():
+    """Test that inner join type is captured in relationship metadata."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # explore: completed_orders { from: fact_orders } has join: dim_customers { type: inner }
+    # Both the "orders" and "completed_orders" explores add rels to fact_orders,
+    # so there may be multiple dim_customers relationships. Find the inner one.
+    fact_orders = graph.get_model("fact_orders")
+    inner_rels = [
+        r
+        for r in fact_orders.relationships
+        if r.name == "dim_customers" and r.metadata and r.metadata.get("join_type") == "inner"
+    ]
+    assert len(inner_rels) >= 1
+
+
+def test_lookml_join_type_full_outer():
+    """Test that full_outer join type is captured in relationship metadata."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # explore: all_customers_orders { from: dim_customers } has join: fact_orders { type: full_outer }
+    dim_customers = graph.get_model("dim_customers")
+    full_outer_rels = [
+        r
+        for r in dim_customers.relationships
+        if r.name == "fact_orders" and r.metadata and r.metadata.get("join_type") == "full_outer"
+    ]
+    assert len(full_outer_rels) >= 1
+
+
+def test_lookml_join_type_cross():
+    """Test that cross join type is captured in relationship metadata."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # explore: date_product_matrix { from: dim_products } has join: date_spine { type: cross }
+    dim_products = graph.get_model("dim_products")
+    cross_rels = [
+        r
+        for r in dim_products.relationships
+        if r.name == "date_spine" and r.metadata and r.metadata.get("join_type") == "cross"
+    ]
+    assert len(cross_rels) >= 1
+
+
+def test_lookml_join_type_all_four_on_same_graph():
+    """Test that all four join types coexist correctly on a single parsed graph."""
+    adapter = LookMLAdapter()
+    graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_explores.lkml"))
+
+    # Collect all join_type values across the entire graph
+    all_join_types = set()
+    for model in graph.models.values():
+        for rel in model.relationships:
+            if rel.metadata and "join_type" in rel.metadata:
+                all_join_types.add(rel.metadata["join_type"])
+
+    assert "left_outer" in all_join_types
+    assert "inner" in all_join_types
+    assert "full_outer" in all_join_types
+    assert "cross" in all_join_types
+
+
+# =============================================================================
 # EXTENDS AND REFINEMENTS TESTS
 # =============================================================================
 
@@ -40,37 +274,56 @@ def test_lookml_extends_base_view():
 
 
 def test_lookml_extends_extended_view():
-    """Test parsing views that extend other views."""
+    """Test parsing views that extend other views - inheritance is resolved."""
     adapter = LookMLAdapter()
     graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_extends.lkml"))
 
-    # Note: sidemantic doesn't currently resolve extends - it just parses each view
-    # The customers_extended view only has its own dimensions, not inherited ones
     assert "customers_extended" in graph.models
     extended = graph.get_model("customers_extended")
 
-    # Check customer-specific dimensions
+    # Inherited dimensions from base_entity
+    assert extended.get_dimension("id") is not None
+    assert extended.get_dimension("is_active") is not None
+    assert extended.get_dimension("created_date") is not None
+    assert extended.get_dimension("created_week") is not None
+
+    # Overridden dimension: name should have child's SQL (CONCAT)
+    name_dim = extended.get_dimension("name")
+    assert name_dim is not None
+    assert "CONCAT" in name_dim.sql
+
+    # Customer-specific dimensions
     assert extended.get_dimension("email") is not None
     assert extended.get_dimension("tier") is not None
     assert extended.get_dimension("lifetime_value") is not None
 
-    # Check measures
+    # Inherited measure from base_entity
+    assert extended.get_metric("count") is not None
+
+    # Customer-specific measures
     assert extended.get_metric("total_ltv") is not None
     assert extended.get_metric("avg_ltv") is not None
 
+    # Table should be overridden by child
+    assert extended.table == "analytics.customers"
+
 
 def test_lookml_refinement_syntax():
-    """Test parsing refinement syntax (+view_name)."""
+    """Test parsing refinement syntax (+view_name) - merged into base view."""
     adapter = LookMLAdapter()
     graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_extends.lkml"))
 
-    # Refinement views are parsed as separate models
-    # The +base_entity becomes a model named "+base_entity"
-    assert "+base_entity" in graph.models
-    refinement = graph.get_model("+base_entity")
+    # Refinements are merged into the base view, not stored separately
+    assert "+base_entity" not in graph.models
 
-    # Should have the added dimension
-    assert refinement.get_dimension("refined_field") is not None
+    # The refined_field should now be on base_entity
+    base = graph.get_model("base_entity")
+    assert base.get_dimension("refined_field") is not None
+    assert base.get_dimension("refined_field").description == "Added via refinement"
+
+    # Original dimensions should still be present
+    assert base.get_dimension("id") is not None
+    assert base.get_dimension("name") is not None
 
 
 def test_lookml_abstract_view():
@@ -94,21 +347,30 @@ def test_lookml_abstract_view():
 
 
 def test_lookml_concrete_extends_abstract():
-    """Test parsing concrete view extending abstract."""
+    """Test parsing concrete view extending abstract - inherits measures."""
     adapter = LookMLAdapter()
     graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_extends.lkml"))
 
     assert "transactions" in graph.models
     transactions = graph.get_model("transactions")
 
-    # Check dimensions
+    # Check dimensions (own)
     assert transactions.get_dimension("id") is not None
     assert transactions.get_dimension("amount") is not None
     assert transactions.get_dimension("status") is not None
 
-    # Check time dimensions
+    # Check time dimensions (own)
     assert transactions.get_dimension("transaction_time") is not None
     assert transactions.get_dimension("transaction_date") is not None
+
+    # Inherited measures from abstract_metrics
+    assert transactions.get_metric("record_count") is not None
+    assert transactions.get_metric("record_count").agg == "count"
+    assert transactions.get_metric("sum_amount") is not None
+    assert transactions.get_metric("sum_amount").agg == "sum"
+    assert transactions.get_metric("avg_amount") is not None
+    assert transactions.get_metric("min_amount") is not None
+    assert transactions.get_metric("max_amount") is not None
 
 
 # =============================================================================
@@ -391,13 +653,17 @@ def test_lookml_drill_fields():
 
     orders = graph.get_model("interactive_orders")
 
-    # Drill fields are parsed but not stored in sidemantic
-    # We verify measures exist
+    # Drill fields are now captured on metrics
     count_measure = orders.get_metric("count")
     assert count_measure is not None
+    assert count_measure.drill_fields is not None
+    assert "order_details*" in count_measure.drill_fields
 
     revenue_measure = orders.get_metric("total_revenue")
     assert revenue_measure is not None
+    assert revenue_measure.drill_fields is not None
+    assert "order_details*" in revenue_measure.drill_fields
+    assert "region" in revenue_measure.drill_fields
 
 
 def test_lookml_sets():
@@ -1521,8 +1787,8 @@ view: template_view {
         assert model.get_metric("real_derived_measure") is not None
 
 
-def test_lookml_duplicate_refinement_skipped():
-    """Test that duplicate refinements (+view) are skipped."""
+def test_lookml_multiple_refinements_merged():
+    """Test that multiple refinements (+view) are all merged into the base."""
     import tempfile
 
     lkml_content = """
@@ -1546,18 +1812,20 @@ view: +base_view {
         f.write(lkml_content)
         f.flush()
 
-        # Should not raise an error
         graph = adapter.parse(Path(f.name))
 
-        # Both base_view and first +base_view should exist
+        # Refinements are merged into base, not stored separately
         assert "base_view" in graph.models
-        assert "+base_view" in graph.models
+        assert "+base_view" not in graph.models
 
-        # Only the first refinement is kept
-        refinement = graph.get_model("+base_view")
-        assert refinement.get_dimension("new_field_1") is not None
-        # Second refinement's fields are not added (skipped)
-        assert refinement.get_dimension("new_field_2") is None
+        base = graph.get_model("base_view")
+        # Original dimensions preserved
+        assert base.get_dimension("id") is not None
+        # Both refinements merged in
+        assert base.get_dimension("new_field_1") is not None
+        assert base.get_dimension("new_field_2") is not None
+        # Original measure preserved
+        assert base.get_metric("count") is not None
 
 
 if __name__ == "__main__":

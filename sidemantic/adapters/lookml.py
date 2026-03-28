@@ -50,9 +50,30 @@ class LookMLAdapter(BaseAdapter):
         else:
             lkml_files = [source_path]
 
-        # First pass: parse all views
+        # First pass: parse all views, collecting refinements separately
+        refinements: list[Model] = []
         for lkml_file in lkml_files:
-            self._parse_views_from_file(lkml_file, graph)
+            self._parse_views_from_file(lkml_file, graph, refinements)
+
+        # Apply refinements: merge each refinement into its base view
+        from sidemantic.core.inheritance import merge_model, resolve_model_inheritance
+
+        for refinement in refinements:
+            base_name = refinement.name.lstrip("+")
+            if base_name in graph.models:
+                # Create a copy with the base name for merging
+                refinement_for_merge = refinement.model_copy(update={"name": base_name})
+                merged = merge_model(refinement_for_merge, graph.models[base_name])
+                graph.models[base_name] = merged
+
+        # Resolve extends chains
+        try:
+            resolved = resolve_model_inheritance(graph.models)
+            graph.models = resolved
+        except ValueError:
+            # If inheritance resolution fails (missing parent, circular),
+            # continue with unresolved models rather than crashing
+            pass
 
         # Second pass: parse explores and add relationships
         for lkml_file in lkml_files:
@@ -63,12 +84,15 @@ class LookMLAdapter(BaseAdapter):
 
         return graph
 
-    def _parse_views_from_file(self, file_path: Path, graph: SemanticGraph) -> None:
+    def _parse_views_from_file(
+        self, file_path: Path, graph: SemanticGraph, refinements: list[Model] | None = None
+    ) -> None:
         """Parse views from a single LookML file.
 
         Args:
             file_path: Path to .lkml file
             graph: Semantic graph to add models to
+            refinements: Optional list to collect refinement models into
         """
         lkml = _import_lkml()
 
@@ -84,11 +108,12 @@ class LookMLAdapter(BaseAdapter):
         for view_def in parsed.get("views") or []:
             model = self._parse_view(view_def)
             if model:
-                # For refinements (+view_name), skip if already exists
-                # In real Looker, multiple refinements would be merged
-                if model.name.startswith("+") and model.name in graph.models:
-                    continue
-                graph.add_model(model)
+                if model.name.startswith("+"):
+                    # Refinement: collect separately for merging after all views parsed
+                    if refinements is not None:
+                        refinements.append(model)
+                else:
+                    graph.add_model(model)
 
     def _parse_explores_from_file(self, file_path: Path, graph: SemanticGraph) -> None:
         """Parse explores from a single LookML file and add relationships.
@@ -360,15 +385,41 @@ class LookMLAdapter(BaseAdapter):
                     )
                 )
 
+        # Build model-level meta from LookML properties
+        model_meta = {}
+        if view_def.get("extension") == "required":
+            model_meta["extension_required"] = True
+        if view_def.get("label"):
+            model_meta["label"] = view_def["label"]
+        if view_def.get("hidden") in ("yes", True):
+            model_meta["hidden"] = True
+        if view_def.get("tags"):
+            model_meta["tags"] = view_def["tags"]
+
+        # Extract extends (lkml parses as list, e.g. ["base_view"])
+        extends_list = view_def.get("extends") or view_def.get("extends__all")
+        extends = None
+        if extends_list:
+            if isinstance(extends_list, list):
+                # Flatten nested lists from extends__all format
+                flat = extends_list
+                while flat and isinstance(flat[0], list):
+                    flat = flat[0]
+                extends = flat[0] if flat else None
+            elif isinstance(extends_list, str):
+                extends = extends_list
+
         return Model(
             name=name,
             table=table,
             sql=sql,
             description=view_def.get("description"),
+            extends=extends,
             primary_key=primary_key,
             dimensions=dimensions,
             metrics=measures,
             segments=segments,
+            meta=model_meta or None,
         )
 
     def _parse_dimension(self, dim_def: dict, dimension_sql_lookup: dict[str, str] | None = None) -> Dimension | None:
@@ -405,11 +456,28 @@ class LookMLAdapter(BaseAdapter):
             if sql:
                 sql = sql.replace("${TABLE}", "{model}")
 
+        # Build meta dict from LookML-specific display properties
+        meta = {}
+        if dim_def.get("hidden") in ("yes", True):
+            meta["hidden"] = True
+        if dim_def.get("group_label"):
+            meta["group_label"] = dim_def["group_label"]
+        if dim_def.get("tags"):
+            meta["tags"] = dim_def["tags"]
+        if dim_def.get("order_by_field"):
+            meta["order_by_field"] = dim_def["order_by_field"]
+        if dim_def.get("can_filter") in ("no", False):
+            meta["can_filter"] = False
+
         return Dimension(
             name=name,
             type=sidemantic_type,
             sql=sql,
             description=dim_def.get("description"),
+            label=dim_def.get("label"),
+            value_format_name=dim_def.get("value_format_name"),
+            format=dim_def.get("value_format"),
+            meta=meta or None,
         )
 
     def _parse_dimension_group(
@@ -472,6 +540,8 @@ class LookMLAdapter(BaseAdapter):
                     type="time",
                     sql=base_sql,
                     granularity=granularity,
+                    label=dim_group_def.get("label"),
+                    description=dim_group_def.get("description"),
                 )
             )
 
@@ -644,9 +714,54 @@ class LookMLAdapter(BaseAdapter):
                 description=measure_def.get("description"),
             )
 
+        # Handle percentile type with proper SQL generation
+        if measure_type == "percentile":
+            percentile_value = measure_def.get("percentile", 50)
+            sql = measure_def.get("sql")
+            if sql:
+                sql = sql.replace("${TABLE}", "{model}")
+                sql = self._resolve_dimension_references(sql, dimension_sql_lookup or {})
+            fraction = float(percentile_value) / 100.0
+            percentile_sql = f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY {sql})" if sql else None
+            meta = {}
+            if measure_def.get("hidden") in ("yes", True):
+                meta["hidden"] = True
+            return Metric(
+                name=name,
+                type="derived",
+                sql=percentile_sql,
+                description=measure_def.get("description"),
+                label=measure_def.get("label"),
+                value_format_name=measure_def.get("value_format_name"),
+                format=measure_def.get("value_format"),
+                meta=meta or None,
+            )
+
+        # Handle list type with STRING_AGG
+        if measure_type == "list":
+            sql = measure_def.get("sql")
+            if sql:
+                sql = sql.replace("${TABLE}", "{model}")
+                sql = self._resolve_dimension_references(sql, dimension_sql_lookup or {})
+                list_sql = f"STRING_AGG(DISTINCT {sql}, ', ')"
+                meta = {}
+                if measure_def.get("hidden") in ("yes", True):
+                    meta["hidden"] = True
+                return Metric(
+                    name=name,
+                    type="derived",
+                    sql=list_sql,
+                    description=measure_def.get("description"),
+                    label=measure_def.get("label"),
+                    value_format_name=measure_def.get("value_format_name"),
+                    format=measure_def.get("value_format"),
+                    meta=meta or None,
+                )
+            # No SQL for list measure - skip it (placeholder)
+            return None
+
         # Map LookML measure types to sidemantic aggregation types
         # Only include types supported by Metric.agg: sum, count, count_distinct, avg, min, max, median
-        # Unsupported types (percentile, list, date, string, yesno) become derived measures
         type_mapping = {
             "count": "count",
             "count_distinct": "count_distinct",
@@ -655,9 +770,7 @@ class LookMLAdapter(BaseAdapter):
             "min": "min",
             "max": "max",
             "median": "median",
-            # Unsupported as agg, will be treated as derived:
-            "percentile": None,
-            "list": None,
+            # Treated as derived:
             "date": None,
             "number": None,  # Calculated/derived measures
             "string": None,  # String measures are derived
@@ -736,6 +849,15 @@ class LookMLAdapter(BaseAdapter):
             metric_type = "derived"
             agg_type = None  # No aggregation type for derived measures
 
+        # Build meta dict from LookML-specific display properties
+        meta = {}
+        if measure_def.get("hidden") in ("yes", True):
+            meta["hidden"] = True
+        if measure_def.get("group_label"):
+            meta["group_label"] = measure_def["group_label"]
+        if measure_def.get("tags"):
+            meta["tags"] = measure_def["tags"]
+
         return Metric(
             name=name,
             type=metric_type,
@@ -743,6 +865,11 @@ class LookMLAdapter(BaseAdapter):
             sql=sql,
             filters=filters if filters else None,
             description=measure_def.get("description"),
+            label=measure_def.get("label"),
+            value_format_name=measure_def.get("value_format_name"),
+            format=measure_def.get("value_format"),
+            drill_fields=measure_def.get("drill_fields"),
+            meta=meta or None,
         )
 
     def _parse_explore(self, explore_def: dict, graph: SemanticGraph) -> None:
@@ -756,15 +883,90 @@ class LookMLAdapter(BaseAdapter):
         if not explore_name:
             return
 
-        # Check if base model exists
-        if explore_name not in graph.models:
-            return
+        # Handle from: aliasing (explore uses a different view as its base)
+        base_model_name = explore_def.get("from", explore_name)
+        if base_model_name not in graph.models:
+            # Fall back to explore name if from: target not found
+            if explore_name not in graph.models:
+                return
+            base_model_name = explore_name
 
-        base_model = graph.models[explore_name]
+        base_model = graph.models[base_model_name]
+
+        # Set description from explore if model doesn't already have one
+        explore_desc = explore_def.get("description")
+        if explore_desc and not base_model.description:
+            base_model.description = explore_desc
+
+        # Store explore-level display properties in model meta
+        explore_meta = {}
+        if explore_def.get("label"):
+            explore_meta["explore_label"] = explore_def["label"]
+        if explore_def.get("group_label"):
+            explore_meta["explore_group_label"] = explore_def["group_label"]
+        if explore_meta:
+            if base_model.meta:
+                base_model.meta.update(explore_meta)
+            else:
+                base_model.meta = explore_meta
+
+        # Convert sql_always_where to a segment (use explore name for uniqueness)
+        from sidemantic.core.segment import Segment
+
+        sql_always_where = explore_def.get("sql_always_where")
+        if sql_always_where:
+            segment_name = f"_sql_always_where_{explore_name}"
+            # Skip if this exact segment already exists
+            existing_names = {s.name for s in base_model.segments}
+            if segment_name not in existing_names:
+                base_model.segments.append(
+                    Segment(
+                        name=segment_name,
+                        sql=sql_always_where,
+                        description=f"Explore filter: {explore_name}",
+                    )
+                )
+
+        # Convert always_filter to segments
+        always_filter = explore_def.get("always_filter")
+        if always_filter:
+            existing_names = {s.name for s in base_model.segments}
+            filter_items = always_filter.get("filters") or always_filter.get("filters__all") or []
+            for item in filter_items:
+                if isinstance(item, list):
+                    for filter_dict in item:
+                        if isinstance(filter_dict, dict):
+                            for field, value in filter_dict.items():
+                                filter_sql = self._convert_lookml_filter_to_sql(field, str(value))
+                                segment_name = f"_always_filter_{explore_name}_{field}"
+                                if filter_sql and segment_name not in existing_names:
+                                    base_model.segments.append(
+                                        Segment(
+                                            name=segment_name,
+                                            sql=filter_sql,
+                                            description=f"Always filter: {field}",
+                                        )
+                                    )
+                                    existing_names.add(segment_name)
+                elif isinstance(item, dict):
+                    field = item.get("field")
+                    value = item.get("value")
+                    if field and value:
+                        filter_sql = self._convert_lookml_filter_to_sql(field, str(value))
+                        segment_name = f"_always_filter_{explore_name}_{field}"
+                        if filter_sql and segment_name not in existing_names:
+                            base_model.segments.append(
+                                Segment(
+                                    name=segment_name,
+                                    sql=filter_sql,
+                                    description=f"Always filter: {field}",
+                                )
+                            )
+                            existing_names.add(segment_name)
 
         # Parse joins
         for join_def in explore_def.get("joins") or []:
-            relationship = self._parse_join(join_def, explore_name)
+            relationship = self._parse_join(join_def, base_model_name)
             if relationship:
                 # Add relationship to the base model
                 base_model.relationships.append(relationship)
@@ -782,6 +984,9 @@ class LookMLAdapter(BaseAdapter):
         join_name = join_def.get("name")
         if not join_name:
             return None
+
+        # Handle from: aliasing on joins (join alias -> actual view)
+        actual_model_name = join_def.get("from", join_name)
 
         # Get relationship type from LookML
         # LookML uses: one_to_one, one_to_many, many_to_one, many_to_many
@@ -832,10 +1037,17 @@ class LookMLAdapter(BaseAdapter):
                         foreign_key = column
                         break
 
+        # Capture LookML join type (left_outer, inner, full_outer, cross)
+        metadata = None
+        lookml_join_type = join_def.get("type")
+        if lookml_join_type:
+            metadata = {"join_type": lookml_join_type}
+
         return Relationship(
-            name=join_name,
+            name=actual_model_name,
             type=relationship_type,
             foreign_key=foreign_key,
+            metadata=metadata,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -912,6 +1124,26 @@ class LookMLAdapter(BaseAdapter):
 
             if dim.description:
                 dim_def["description"] = dim.description
+
+            if dim.label:
+                dim_def["label"] = dim.label
+
+            if dim.value_format_name:
+                dim_def["value_format_name"] = dim.value_format_name
+
+            if dim.format:
+                dim_def["value_format"] = dim.format
+
+            # Write meta properties back as LookML fields
+            if dim.meta:
+                if dim.meta.get("hidden"):
+                    dim_def["hidden"] = "yes"
+                if dim.meta.get("group_label"):
+                    dim_def["group_label"] = dim.meta["group_label"]
+                if dim.meta.get("tags"):
+                    dim_def["tags"] = dim.meta["tags"]
+                if dim.meta.get("order_by_field"):
+                    dim_def["order_by_field"] = dim.meta["order_by_field"]
 
             # Check if primary key
             if dim.name == model.primary_key:
@@ -1081,6 +1313,27 @@ class LookMLAdapter(BaseAdapter):
 
             if metric.description and metric.type != "time_comparison":
                 measure_def["description"] = metric.description
+
+            if metric.label:
+                measure_def["label"] = metric.label
+
+            if metric.value_format_name:
+                measure_def["value_format_name"] = metric.value_format_name
+
+            if metric.format:
+                measure_def["value_format"] = metric.format
+
+            if metric.drill_fields:
+                measure_def["drill_fields"] = metric.drill_fields
+
+            # Write meta properties back as LookML fields
+            if metric.meta:
+                if metric.meta.get("hidden"):
+                    measure_def["hidden"] = "yes"
+                if metric.meta.get("group_label"):
+                    measure_def["group_label"] = metric.meta["group_label"]
+                if metric.meta.get("tags"):
+                    measure_def["tags"] = metric.meta["tags"]
 
             measures.append(measure_def)
 

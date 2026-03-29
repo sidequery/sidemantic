@@ -602,3 +602,86 @@ def test_window_dim_filter_excluded_from_preagg_shared_filters(layer):
     preagg_end = sql.index("order_items_preagg AS (")
     orders_subquery = sql[preagg_start:preagg_end]
     assert "next_status" in orders_subquery, "Window-dim filter should be pushed into orders sub-query"
+
+
+def test_multi_model_window_dim_filter_excluded_from_preagg_shared_filters(layer):
+    """Test that multi-model window-dim filters do not become shared_filters in the preagg path.
+
+    When a filter references columns from multiple models and at least one is a
+    window dimension, it must NOT be applied as a shared filter on preagg CTEs
+    (which only project query dimensions/metrics, not window columns). Instead it
+    should be routed into window_dim_filters for the model that owns the window
+    dimension, so the recursive generate() call can handle it.
+    """
+    from sidemantic.core.model import Relationship
+
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(
+                name="next_status",
+                type="categorical",
+                sql="status",
+                window="LEAD(status) OVER (PARTITION BY customer_id ORDER BY created_at)",
+            ),
+            Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+        relationships=[
+            Relationship(
+                name="order_items",
+                type="one_to_many",
+                sql="order_id",
+                foreign_key="order_id",
+            ),
+        ],
+    )
+
+    order_items = Model(
+        name="order_items",
+        table="order_items_table",
+        primary_key="item_id",
+        dimensions=[
+            Dimension(name="item_status", type="categorical", sql="item_status"),
+        ],
+        metrics=[
+            Metric(name="quantity", agg="sum", sql="qty"),
+        ],
+        relationships=[
+            Relationship(
+                name="orders",
+                type="many_to_one",
+                foreign_key="order_id",
+                primary_key="order_id",
+            ),
+        ],
+    )
+
+    layer.add_model(orders)
+    layer.add_model(order_items)
+
+    # Multi-model filter: window dim from orders + regular dim from order_items
+    sql = layer.compile(
+        metrics=["orders.revenue", "order_items.quantity"],
+        dimensions=["orders.order_date"],
+        filters=["orders.next_status = order_items.item_status"],
+    )
+
+    # The SQL should use pre-aggregation (two model CTEs joined together)
+    assert "orders_preagg" in sql, "Should use pre-aggregation path"
+    assert "order_items_preagg" in sql, "Should use pre-aggregation path"
+
+    # The multi-model window-dim filter must NOT appear in the outer WHERE
+    # referencing _preagg CTEs, because preagg CTEs don't project window columns
+    assert "orders_preagg.next_status" not in sql, "Multi-model window-dim filter should NOT reference preagg CTE"
+
+    # The filter should be pushed into the orders sub-query instead
+    preagg_start = sql.index("orders_preagg AS (")
+    preagg_end = sql.index("order_items_preagg AS (")
+    orders_subquery = sql[preagg_start:preagg_end]
+    assert "next_status" in orders_subquery, "Multi-model window-dim filter should be pushed into orders sub-query"

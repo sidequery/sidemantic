@@ -679,10 +679,11 @@ class SQLGenerator:
             Tuple of (pushdown_filters_by_model, main_query_filters, window_dim_filters_by_model)
             - pushdown_filters_by_model: Dict mapping model name to list of filters for that model
             - main_query_filters: Filters that reference multiple models or metrics (can't push down)
-            - window_dim_filters_by_model: Dict mapping model name to filters on window dimensions.
-              These can't be pushed into CTE WHERE (window not yet evaluated) but reference a
-              single model. In the standard path they belong in the outer query; in the preagg
-              path they are pushed into each model's sub-query (which has its own outer WHERE).
+            - window_dim_filters_by_model: Dict mapping model name to filters that reference
+              a window dimension on that model. These can't be pushed into CTE WHERE (window
+              not yet evaluated). In the standard path they belong in the outer query; in the
+              preagg path they are pushed into each model's sub-query (which has its own outer
+              WHERE). Multi-model filters are keyed by the model that owns the window dim.
         """
         pushdown_filters = {model: [] for model in all_models}
         main_query_filters = []
@@ -711,7 +712,7 @@ class SQLGenerator:
             # Find all table references in the filter
             referenced_models = set()
             references_metric = False
-            references_window_dim = False
+            window_dim_models: set[str] = set()
 
             for column in parsed.find_all(exp.Column):
                 table_name = column.table
@@ -732,22 +733,23 @@ class SQLGenerator:
                         if model:
                             dim = model.get_dimension(column_name)
                             if dim and dim.window is not None:
-                                references_window_dim = True
+                                window_dim_models.add(clean_name)
 
             # Filters that reference metrics must stay in main query (can't push down)
             # because metrics don't exist in CTEs (only _raw columns)
             if references_metric:
                 main_query_filters.append(filter_expr)
-            # Single-model window-dim filters: kept separate so callers can
-            # handle them appropriately.  In the standard path they go to the
-            # outer WHERE; in the preagg path they are pushed into each model's
-            # sub-query (which has its own outer WHERE after window evaluation).
-            elif references_window_dim and len(referenced_models) == 1:
-                model_name = list(referenced_models)[0]
-                window_dim_filters[model_name].append(filter_expr)
-            elif references_window_dim:
-                # Window-dim filter spanning multiple models: outer query
-                main_query_filters.append(filter_expr)
+            # Window-dim filters: kept separate so callers can handle them
+            # appropriately.  In the standard path they go to the outer WHERE;
+            # in the preagg path they are pushed into each model's sub-query
+            # (which has its own outer WHERE after window evaluation).
+            # For multi-model filters, route to each model that owns a window
+            # dim column so the preagg path includes them in the correct
+            # sub-queries (the recursive generate() call will join in any
+            # additional models referenced by the filter).
+            elif window_dim_models:
+                for wdm in window_dim_models:
+                    window_dim_filters[wdm].append(filter_expr)
             # If filter references exactly one model and no metrics, push it down
             elif len(referenced_models) == 1:
                 model = list(referenced_models)[0]

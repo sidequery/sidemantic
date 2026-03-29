@@ -1204,5 +1204,100 @@ def test_preagg_injection_in_preagg_name_rejected():
         preagg.get_table_name("orders")
 
 
+def test_generate_materialization_sql_rejects_window_dimension():
+    """Test that generate_materialization_sql raises ValueError for window dimensions."""
+    model = Model(
+        name="events",
+        table="events",
+        dimensions=[
+            Dimension(name="event", type="categorical", sql="event"),
+            Dimension(
+                name="next_event",
+                type="categorical",
+                sql="event",
+                window="LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)",
+            ),
+            Dimension(name="status", type="categorical", sql="status"),
+        ],
+        metrics=[
+            Metric(name="count", agg="count"),
+        ],
+    )
+
+    # Pre-aggregation that references a window dimension should raise
+    preagg = PreAggregation(
+        name="by_next_event",
+        measures=["count"],
+        dimensions=["next_event"],
+    )
+
+    with pytest.raises(ValueError, match="window dimension.*next_event.*incompatible"):
+        preagg.generate_materialization_sql(model)
+
+
+def test_generate_materialization_sql_rejects_window_time_dimension():
+    """Test that generate_materialization_sql raises ValueError for window time dimensions."""
+    model = Model(
+        name="events",
+        table="events",
+        dimensions=[
+            Dimension(
+                name="next_timestamp",
+                type="time",
+                sql="timestamp",
+                window="LEAD(timestamp) OVER (PARTITION BY person_id ORDER BY timestamp)",
+            ),
+        ],
+        metrics=[
+            Metric(name="count", agg="count"),
+        ],
+    )
+
+    preagg = PreAggregation(
+        name="daily_next",
+        measures=["count"],
+        dimensions=[],
+        time_dimension="next_timestamp",
+        granularity="day",
+    )
+
+    with pytest.raises(ValueError, match="window dimension.*next_timestamp.*incompatible"):
+        preagg.generate_materialization_sql(model)
+
+
+def test_generate_materialization_sql_normal_dimensions_still_work():
+    """Test that pre-aggregations with normal (non-window) dimensions still work."""
+    model = Model(
+        name="events",
+        table="events",
+        dimensions=[
+            Dimension(name="event", type="categorical", sql="event"),
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(
+                name="next_event",
+                type="categorical",
+                sql="event",
+                window="LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)",
+            ),
+        ],
+        metrics=[
+            Metric(name="count", agg="count"),
+        ],
+    )
+
+    # Pre-aggregation with only normal dimensions should work fine
+    preagg = PreAggregation(
+        name="by_status",
+        measures=["count"],
+        dimensions=["status"],
+    )
+
+    sql = preagg.generate_materialization_sql(model)
+    assert "status as status" in sql
+    assert "GROUP BY" in sql
+    assert "LEAD" not in sql
+    assert "OVER" not in sql
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

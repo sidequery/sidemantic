@@ -324,3 +324,92 @@ def test_symmetric_aggregates_with_data():
     assert revenues == [100, 200]  # Correct totals, not inflated
 
     conn.close()
+
+
+def test_preagg_grain_preserved_with_filters():
+    """Test that preagg subqueries preserve the requested dimension grain when filters are applied.
+
+    Filters should not introduce extra dimensions into preagg subqueries. Each
+    preagg CTE must produce exactly one row per dimension key so the FULL OUTER
+    JOIN does not inflate results.
+    """
+    conn = duckdb.connect(":memory:")
+
+    conn.execute("""
+        CREATE TABLE raw_orders AS
+        SELECT * FROM (VALUES
+            (1, '2024-01-01'::DATE, 100, 'shipped'),
+            (2, '2024-01-01'::DATE, 200, 'pending'),
+            (3, '2024-01-02'::DATE, 150, 'shipped')
+        ) AS t(id, order_date, amount, status)
+    """)
+
+    conn.execute("""
+        CREATE TABLE raw_items AS
+        SELECT * FROM (VALUES
+            (1, 1, 5),
+            (2, 1, 3),
+            (3, 2, 10),
+            (4, 3, 7)
+        ) AS t(id, order_id, quantity)
+    """)
+
+    graph = SemanticGraph()
+
+    orders = Model(
+        name="orders",
+        table="raw_orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="order_date", type="time", sql="order_date"),
+            Dimension(name="status", type="categorical", sql="status"),
+        ],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        relationships=[
+            Relationship(name="items", type="one_to_many", sql="id", foreign_key="order_id"),
+        ],
+    )
+
+    items = Model(
+        name="items",
+        table="raw_items",
+        primary_key="id",
+        dimensions=[],
+        metrics=[Metric(name="total_qty", agg="sum", sql="quantity")],
+        relationships=[
+            Relationship(name="orders", type="many_to_one", foreign_key="order_id", primary_key="id"),
+        ],
+    )
+
+    graph.add_model(orders)
+    graph.add_model(items)
+
+    generator = SQLGenerator(graph)
+
+    # Query with a filter on orders.status: preagg should still produce one
+    # row per order_date, not one row per (order_date, status).
+    sql = generator.generate(
+        metrics=["orders.revenue", "items.total_qty"],
+        dimensions=["orders.order_date"],
+        filters=["orders.status = 'shipped'"],
+    )
+
+    result = conn.execute(sql)
+    rows = fetch_rows(result)
+
+    # Verify no duplicate dimension keys
+    dates = [row[0] for row in rows]
+    assert len(dates) == len(set(dates)), f"Duplicate dimension keys in preagg result: {dates}"
+
+    # Verify correct values:
+    # The orders filter (status='shipped') only constrains orders_preagg.
+    # items_preagg aggregates ALL items by order_date (joined via orders).
+    # 2024-01-01: revenue=100 (shipped), total_qty=18 (items for orders 1+2)
+    # 2024-01-02: revenue=150 (shipped), total_qty=7 (items for order 3)
+    rows_sorted = sorted(rows, key=lambda r: r[0])
+    assert rows_sorted[0][1] == 100  # 2024-01-01 revenue (shipped only)
+    assert rows_sorted[0][2] == 18  # 2024-01-01 total_qty (all items for date)
+    assert rows_sorted[1][1] == 150  # 2024-01-02 revenue
+    assert rows_sorted[1][2] == 7  # 2024-01-02 total_qty
+
+    conn.close()

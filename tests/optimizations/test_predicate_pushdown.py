@@ -384,7 +384,378 @@ def test_metric_level_filters_not_pushed(layer):
     assert "completed" in case_sql
 
 
+def test_window_dimension_filter_not_pushed_down(layer):
+    """Test that filters on window dimensions stay in the outer query.
+
+    Window functions (LEAD, LAG, ROW_NUMBER, etc.) are computed in the CTE
+    SELECT but haven't been evaluated yet at WHERE-clause time, so pushing
+    a filter on a window dimension into the CTE WHERE would produce invalid
+    SQL. The filter must be applied in the outer query instead.
+    """
+    model = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="person_id", type="categorical", sql="person_id"),
+            Dimension(name="event_type", type="categorical", sql="event_type"),
+            Dimension(
+                name="next_event",
+                type="categorical",
+                sql="event_type",
+                window="LEAD(event_type) OVER (PARTITION BY person_id ORDER BY created_at)",
+            ),
+        ],
+        metrics=[
+            Metric(name="event_count", agg="count"),
+        ],
+    )
+
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["events.event_count"],
+        dimensions=["events.event_type"],
+        filters=["events.next_event = 'purchase'"],
+    )
+
+    parsed = sqlglot.parse_one(sql)
+
+    # Find the CTE
+    cte = None
+    for cte_def in parsed.find_all(exp.CTE):
+        if cte_def.alias == "events_cte":
+            cte = cte_def
+            break
+
+    assert cte is not None, "CTE not found"
+
+    # CTE should NOT have a WHERE clause for the window dimension filter
+    cte_where = cte.this.find(exp.Where)
+    if cte_where is not None:
+        cte_where_sql = cte_where.sql()
+        assert "next_event" not in cte_where_sql, "Window dimension filter should NOT be in CTE WHERE clause"
+        assert "purchase" not in cte_where_sql, "Window dimension filter value should NOT be in CTE WHERE clause"
+
+    # The window expression should still appear in the CTE SELECT
+    cte_sql = cte.sql()
+    assert "LEAD" in cte_sql.upper(), "Window function should appear in CTE SELECT"
+
+    # The filter should appear in the outer query WHERE
+    outer_where = parsed.find(exp.Where)
+    assert outer_where is not None, "Filter should be in outer query WHERE"
+    outer_where_sql = outer_where.sql()
+    assert "next_event" in outer_where_sql or "purchase" in outer_where_sql, (
+        "Window dimension filter should appear in outer query"
+    )
+
+
+def test_window_dimension_filter_with_regular_filter(layer):
+    """Test mixed filters: regular filter pushed down, window filter stays outer."""
+    model = Model(
+        name="events",
+        table="events_table",
+        primary_key="event_id",
+        dimensions=[
+            Dimension(name="person_id", type="categorical", sql="person_id"),
+            Dimension(name="event_type", type="categorical", sql="event_type"),
+            Dimension(
+                name="next_event",
+                type="categorical",
+                sql="event_type",
+                window="LEAD(event_type) OVER (PARTITION BY person_id ORDER BY created_at)",
+            ),
+        ],
+        metrics=[
+            Metric(name="event_count", agg="count"),
+        ],
+    )
+
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["events.event_count"],
+        dimensions=["events.event_type"],
+        filters=[
+            "events.event_type = 'click'",
+            "events.next_event = 'purchase'",
+        ],
+    )
+
+    parsed = sqlglot.parse_one(sql)
+
+    # Find the CTE
+    cte = None
+    for cte_def in parsed.find_all(exp.CTE):
+        if cte_def.alias == "events_cte":
+            cte = cte_def
+            break
+
+    assert cte is not None, "CTE not found"
+
+    # Regular filter (event_type) should be pushed into CTE WHERE
+    cte_where = cte.this.find(exp.Where)
+    assert cte_where is not None, "Regular filter should be pushed into CTE WHERE"
+    cte_where_sql = cte_where.sql()
+    assert "event_type" in cte_where_sql, "Regular filter should be in CTE WHERE"
+    assert "click" in cte_where_sql, "Regular filter value should be in CTE WHERE"
+
+    # Window filter (next_event) should NOT be in CTE WHERE
+    assert "next_event" not in cte_where_sql, "Window dimension filter should NOT be in CTE WHERE"
+    assert "purchase" not in cte_where_sql, "Window dimension filter value should NOT be in CTE WHERE"
+
+    # Window filter should be in outer query WHERE
+    outer_where = parsed.find(exp.Where)
+    assert outer_where is not None, "Window filter should be in outer query"
+    outer_where_sql = outer_where.sql()
+    assert "next_event" in outer_where_sql or "purchase" in outer_where_sql, (
+        "Window dimension filter should appear in outer query WHERE"
+    )
+
+
 if __name__ == "__main__":
     import pytest
 
     pytest.main([__file__, "-v"])
+
+
+def test_window_dim_filter_pushed_into_model_subquery_in_preagg(layer):
+    """Test that window-dim filters are pushed into model subqueries in the preagg path.
+
+    When metrics come from multiple models (triggering pre-aggregation), a filter
+    on a window dimension is pushed into the owning model's recursive generate()
+    call. This preserves the preagg grain (no extra dimensions added) while the
+    recursive generate() handles the window dim filter in its own outer WHERE.
+    """
+    from sidemantic.core.model import Relationship
+
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(
+                name="next_status",
+                type="categorical",
+                sql="status",
+                window="LEAD(status) OVER (PARTITION BY customer_id ORDER BY created_at)",
+            ),
+            Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+        relationships=[
+            Relationship(
+                name="order_items",
+                type="one_to_many",
+                sql="order_id",
+                foreign_key="order_id",
+            ),
+        ],
+    )
+
+    order_items = Model(
+        name="order_items",
+        table="order_items_table",
+        primary_key="item_id",
+        dimensions=[],
+        metrics=[
+            Metric(name="quantity", agg="sum", sql="qty"),
+        ],
+        relationships=[
+            Relationship(
+                name="orders",
+                type="many_to_one",
+                foreign_key="order_id",
+                primary_key="order_id",
+            ),
+        ],
+    )
+
+    layer.add_model(orders)
+    layer.add_model(order_items)
+
+    # This query spans two models, triggering preagg, and filters on a window dim
+    sql = layer.compile(
+        metrics=["orders.revenue", "order_items.quantity"],
+        dimensions=["orders.order_date"],
+        filters=["orders.next_status = 'complete'"],
+    )
+
+    # The SQL should use pre-aggregation (two model CTEs joined together)
+    assert "orders_preagg" in sql, "Should use pre-aggregation path"
+    assert "order_items_preagg" in sql, "Should use pre-aggregation path"
+
+    # The window dim filter should be inside the orders preagg CTE (pushed into
+    # the model subquery), not in the outer WHERE
+    preagg_start = sql.index("orders_preagg AS (")
+    preagg_end = sql.index("order_items_preagg AS (")
+    orders_subquery = sql[preagg_start:preagg_end]
+    assert "next_status" in orders_subquery, "Window dim filter should be in orders preagg subquery"
+
+    # The outer query should NOT have the window dim filter (it's handled inside subquery)
+    outer_query = sql[sql.rindex("SELECT") :]
+    assert "next_status" not in outer_query, "Window dim filter should NOT be in outer WHERE"
+
+
+def test_multi_model_window_dim_filter_pushed_into_model_subquery_in_preagg(layer):
+    """Test that multi-model window-dim filters are pushed into model subqueries in preagg.
+
+    When a filter references columns from multiple models and at least one is a
+    window dimension, the filter is pushed into the owning model's subquery so
+    the recursive generate() handles it correctly without changing the preagg grain.
+    """
+    from sidemantic.core.model import Relationship
+
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(
+                name="next_status",
+                type="categorical",
+                sql="status",
+                window="LEAD(status) OVER (PARTITION BY customer_id ORDER BY created_at)",
+            ),
+            Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+        relationships=[
+            Relationship(
+                name="order_items",
+                type="one_to_many",
+                sql="order_id",
+                foreign_key="order_id",
+            ),
+        ],
+    )
+
+    order_items = Model(
+        name="order_items",
+        table="order_items_table",
+        primary_key="item_id",
+        dimensions=[
+            Dimension(name="item_status", type="categorical", sql="item_status"),
+        ],
+        metrics=[
+            Metric(name="quantity", agg="sum", sql="qty"),
+        ],
+        relationships=[
+            Relationship(
+                name="orders",
+                type="many_to_one",
+                foreign_key="order_id",
+                primary_key="order_id",
+            ),
+        ],
+    )
+
+    layer.add_model(orders)
+    layer.add_model(order_items)
+
+    # Multi-model filter: window dim from orders + regular dim from order_items
+    sql = layer.compile(
+        metrics=["orders.revenue", "order_items.quantity"],
+        dimensions=["orders.order_date"],
+        filters=["orders.next_status = order_items.item_status"],
+    )
+
+    # The SQL should use pre-aggregation (two model CTEs joined together)
+    assert "orders_preagg" in sql, "Should use pre-aggregation path"
+    assert "order_items_preagg" in sql, "Should use pre-aggregation path"
+
+    # The window dim filter should be inside the orders preagg CTE
+    preagg_start = sql.index("orders_preagg AS (")
+    preagg_end = sql.index("order_items_preagg AS (")
+    orders_subquery = sql[preagg_start:preagg_end]
+    assert "next_status" in orders_subquery, "Window dim filter should be in orders preagg subquery"
+
+    # The outer query should NOT have the window dim filter
+    outer_query = sql[sql.rindex("SELECT") :]
+    assert "next_status" not in outer_query, "Window dim filter should NOT be in outer WHERE"
+
+
+def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg(layer):
+    """Test that a filter referencing both a metric and a window dim is pushed into model subquery.
+
+    When a filter like "orders.next_status = 'complete' OR orders.revenue > 100"
+    references both a window dimension (next_status) and a metric (revenue), the
+    window dim check takes priority and the filter is pushed into the owning model's
+    subquery to preserve the preagg grain.
+    """
+    from sidemantic.core.model import Relationship
+
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(
+                name="next_status",
+                type="categorical",
+                sql="status",
+                window="LEAD(status) OVER (PARTITION BY customer_id ORDER BY created_at)",
+            ),
+            Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+        relationships=[
+            Relationship(
+                name="order_items",
+                type="one_to_many",
+                sql="order_id",
+                foreign_key="order_id",
+            ),
+        ],
+    )
+
+    order_items = Model(
+        name="order_items",
+        table="order_items_table",
+        primary_key="item_id",
+        dimensions=[],
+        metrics=[
+            Metric(name="quantity", agg="sum", sql="qty"),
+        ],
+        relationships=[
+            Relationship(
+                name="orders",
+                type="many_to_one",
+                foreign_key="order_id",
+                primary_key="order_id",
+            ),
+        ],
+    )
+
+    layer.add_model(orders)
+    layer.add_model(order_items)
+
+    # Filter references BOTH a window dim (next_status) and a metric (revenue)
+    sql = layer.compile(
+        metrics=["orders.revenue", "order_items.quantity"],
+        dimensions=["orders.order_date"],
+        filters=["orders.next_status = 'complete' OR orders.revenue > 100"],
+    )
+
+    # Should use pre-aggregation path
+    assert "orders_preagg" in sql, "Should use pre-aggregation path"
+    assert "order_items_preagg" in sql, "Should use pre-aggregation path"
+
+    # The window dim filter should be inside the orders preagg CTE
+    preagg_start = sql.index("orders_preagg AS (")
+    preagg_end = sql.index("order_items_preagg AS (")
+    orders_subquery = sql[preagg_start:preagg_end]
+    assert "next_status" in orders_subquery, "Window dim filter should be in orders preagg subquery"
+
+    # The outer query should NOT have the window dim filter
+    outer_query = sql[sql.rindex("SELECT") :]
+    assert "next_status" not in outer_query, "Window dim filter should NOT be in outer WHERE"

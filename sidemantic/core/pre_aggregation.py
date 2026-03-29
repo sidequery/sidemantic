@@ -143,16 +143,28 @@ class PreAggregation(BaseModel):
         if self.time_dimension and self.granularity:
             time_dim = model.get_dimension(self.time_dimension)
             if time_dim:
+                if time_dim.window:
+                    raise ValueError(
+                        f"Cannot use window dimension '{self.time_dimension}' as time_dimension "
+                        f"in pre-aggregation '{self.name}': window functions are incompatible "
+                        f"with GROUP BY in rollup materialization"
+                    )
                 col_name = f"{self.time_dimension}_{self.granularity}"
                 select_exprs.append(f"DATE_TRUNC('{self.granularity}', {time_dim.sql_expr}) as {col_name}")
                 group_by_positions.append(str(pos))
                 pos += 1
 
-        # Add dimensions
+        # Add dimensions (reject window dimensions - incompatible with GROUP BY)
         if self.dimensions:
             for dim_name in self.dimensions:
                 dim = model.get_dimension(dim_name)
                 if dim:
+                    if dim.window:
+                        raise ValueError(
+                            f"Cannot use window dimension '{dim_name}' in pre-aggregation "
+                            f"'{self.name}': window functions are incompatible with "
+                            f"GROUP BY in rollup materialization"
+                        )
                     select_exprs.append(f"{dim.sql_expr} as {dim_name}")
                     group_by_positions.append(str(pos))
                     pos += 1

@@ -1114,10 +1114,13 @@ class SQLGenerator:
         for dimension in model.dimensions:
             if dimension.name in needed_dimensions and dimension.name not in columns_added:
                 # For time dimensions with granularity, apply DATE_TRUNC
+                # Use window_sql_expr for CTE projection so window functions
+                # (LEAD, LAG, etc.) are evaluated here.
+                base_expr = dimension.window_sql_expr
                 if dimension.type == "time" and dimension.granularity:
-                    dim_sql = self._date_trunc(dimension.granularity, dimension.sql_expr)
+                    dim_sql = self._date_trunc(dimension.granularity, base_expr)
                 else:
-                    dim_sql = dimension.sql_expr
+                    dim_sql = base_expr
                 # Replace {model} placeholder with actual table reference
                 dim_sql = replace_model_placeholder(dim_sql)
                 select_cols.append(f"{dim_sql} AS {self._quote_alias(dimension.name)}")
@@ -1242,7 +1245,7 @@ class SQLGenerator:
                 continue
             dim = model.get_dimension(col_name)
             if dim:
-                dim_sql = replace_model_placeholder(dim.sql_expr)
+                dim_sql = replace_model_placeholder(dim.window_sql_expr)
                 select_cols.append(f"{dim_sql} AS {self._quote_alias(col_name)}")
                 columns_added.add(col_name)
                 continue
@@ -1525,10 +1528,10 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             cte_names.append(cte_name)
 
-            # Only pass filters relevant to this model's sub-query.
-            # Window-dim filters are included here (not in shared_filters) because
-            # preagg CTEs only project query dimensions/metrics, not window dims.
-            # The recursive generate() call handles them correctly in its outer WHERE.
+            # Pass pushdown filters plus any window-dim filters for this model.
+            # Window-dim filters are pushed into the model's sub-query (not the
+            # outer preagg join) so the recursive generate() handles them in its
+            # own outer WHERE, preserving the requested dimension grain.
             model_filters = pushdown_by_model.get(model_name, []) + window_dim_filters.get(model_name, [])
 
             # Generate sub-query for this model's metrics at the dimension grain
@@ -1897,7 +1900,24 @@ class SQLGenerator:
                 if references_metric:
                     break
 
+            # Check if filter also references a window dimension.
+            # Window dims are projected as regular columns in the CTE, so
+            # they belong in WHERE, not HAVING (they aren't aggregated).
+            references_window_dim = False
             if references_metric:
+                for model_name in [base_model_name] + other_models:
+                    model_obj = self.graph.get_model(model_name)
+                    if not model_obj:
+                        continue
+                    for field_name in re.findall(f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)", filter_expr):
+                        dim = model_obj.get_dimension(field_name)
+                        if dim and getattr(dim, "window", None) is not None:
+                            references_window_dim = True
+                            break
+                    if references_window_dim:
+                        break
+
+            if references_metric and not references_window_dim:
                 having_filters.append(filter_expr)
             else:
                 where_filters.append(filter_expr)

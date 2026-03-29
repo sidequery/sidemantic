@@ -32,6 +32,12 @@ class Dimension(BaseModel):
     # Arbitrary metadata (ai_context, custom_extensions, etc.)
     meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
 
+    # Window function expression
+    window: str | None = Field(
+        None,
+        description="Window function expression (e.g., 'LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)')",
+    )
+
     # Visibility
     public: bool = Field(True, description="Whether dimension is visible in API/UI")
 
@@ -68,7 +74,22 @@ class Dimension(BaseModel):
 
     @property
     def sql_expr(self) -> str:
-        """Get SQL expression, defaulting to name if not specified."""
+        """Get the base SQL expression, defaulting to name if not specified.
+
+        Always returns the row-level expression (``sql`` or ``name``), never the
+        window function.  Use ``window_sql_expr`` when you need the window
+        expression for CTE projection.
+        """
+        return self.sql or self.name
+
+    @property
+    def window_sql_expr(self) -> str:
+        """Get the window SQL expression if set, otherwise fall back to sql_expr.
+
+        Use this in CTE SELECT lists where window functions should be projected.
+        """
+        if self.window:
+            return self.window
         return self.sql or self.name
 
     def with_granularity(self, granularity: str) -> str:

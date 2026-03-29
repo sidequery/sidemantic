@@ -11,6 +11,10 @@ class DuckDBConnection(BaseModel):
 
     type: Literal["duckdb"] = "duckdb"
     path: str = Field(..., description="Path to DuckDB database file or :memory:")
+    init_sql: list[str] | None = Field(
+        default=None,
+        description="SQL statements to run after connecting (e.g., loading extensions, attaching catalogs)",
+    )
 
 
 class PostgreSQLConnection(BaseModel):
@@ -186,7 +190,7 @@ class SidemanticConfig(BaseModel):
             db_p = Path(connection.path)
             if not db_p.is_absolute():
                 db_p = (base / db_p).resolve()
-            connection = DuckDBConnection(type="duckdb", path=str(db_p))
+            connection = DuckDBConnection(type="duckdb", path=str(db_p), init_sql=connection.init_sql)
 
         return SidemanticConfig(
             models_dir=str(models_path),
@@ -260,6 +264,20 @@ def find_config(start_dir: Path | None = None) -> Path | None:
             break
         current = parent
 
+    return None
+
+
+def get_init_sql(config: SidemanticConfig) -> list[str] | None:
+    """Get init_sql statements from config, if any.
+
+    Args:
+        config: Sidemantic configuration
+
+    Returns:
+        List of SQL statements to run after connecting, or None
+    """
+    if config.connection and isinstance(config.connection, DuckDBConnection):
+        return config.connection.init_sql
     return None
 
 

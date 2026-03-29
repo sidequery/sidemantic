@@ -75,10 +75,29 @@ class SQLGenerator:
             # Standard SQL: INTERVAL '7 days'
             return f"INTERVAL '{num} {unit}'"
 
+    def _date_diff(self, later: str, earlier: str, unit: str = "day") -> str:
+        """Generate dialect-specific date difference expression.
+
+        Args:
+            later: SQL expression for the later date
+            earlier: SQL expression for the earlier date
+            unit: Time unit for the difference (e.g., "day")
+
+        Returns:
+            SQL expression computing the difference in the given unit
+        """
+        if self.dialect == "bigquery":
+            return f"DATE_DIFF({later}, {earlier}, {unit.upper()})"
+        elif self.dialect == "snowflake":
+            return f"DATEDIFF('{unit}', {earlier}, {later})"
+        else:
+            # DuckDB and Postgres support direct date subtraction
+            return f"({later} - {earlier})"
+
     def _strip_model_prefixes(self, filters: list[str], model_name: str) -> list[str]:
         """Strip model name prefixes from filter column references.
 
-        Conversion and retention CTEs query the raw table directly, so qualified
+        Retention and conversion CTEs query the raw table directly, so qualified
         references like ``events.region`` need to become just ``region``.
 
         Args:
@@ -351,6 +370,9 @@ class SQLGenerator:
                 return True
             # Conversion metrics need special handling
             if metric.type == "conversion":
+                return True
+            # Retention metrics need special handling
+            if metric.type == "retention":
                 return True
             return False
 
@@ -761,7 +783,7 @@ class SQLGenerator:
                         # Check if this column is a window dimension
                         if model:
                             dim = model.get_dimension(column_name)
-                            if dim and dim.window is not None:
+                            if dim and getattr(dim, "window", None) is not None:
                                 window_dim_models.add(clean_name)
 
             # Window-dim filters take priority: kept separate so callers can
@@ -2198,7 +2220,7 @@ class SQLGenerator:
                 metric_model_name = model_context
                 if not metric_model_name:
                     for m_name, m in self.graph.models.items():
-                        if m.get_metric(metric.name):
+                        if any(metric is mm for mm in m.metrics):
                             metric_model_name = m_name
                             break
 
@@ -2284,6 +2306,218 @@ class SQLGenerator:
 
         raise NotImplementedError(f"Metric type {metric.type} not yet implemented")
 
+    def _generate_retention_query(
+        self,
+        metric_name: str,
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> str:
+        """Generate SQL for cohort retention metrics.
+
+        Uses a multi-CTE pattern:
+        1. cohorts: identify each entity's first qualifying event (cohort_date)
+        2. activity: distinct entity activity dates
+        3. retention: join cohorts to activity, compute periods_since and active_users
+        4. cohort_sizes: count of entities per cohort_date
+        5. Final SELECT: retention percentage per cohort_date and period
+
+        Args:
+            metric_name: Name of the retention metric
+            dimensions: List of dimension references (unused for retention, reserved)
+            filters: List of filter expressions
+            order_by: List of fields to order by
+            limit: Maximum number of rows to return
+            offset: Number of rows to skip (for pagination)
+
+        Returns:
+            SQL query string
+        """
+        import re as _re
+
+        # Resolve metric and model
+        metric = None
+        model = None
+
+        if "." in metric_name:
+            model_name, measure_name = metric_name.split(".", 1)
+            model = self.graph.get_model(model_name)
+            if model:
+                metric = model.get_metric(measure_name)
+        else:
+            try:
+                metric = self.graph.get_metric(metric_name)
+            except KeyError:
+                pass
+
+        if not metric or not metric.entity or not metric.cohort_event:
+            raise ValueError(f"Retention metric {metric_name} missing required fields (entity, cohort_event)")
+
+        # Find the model that owns this metric if not already found
+        if not model:
+            for m_name, m in self.graph.models.items():
+                if any(metric is mm for mm in m.metrics):
+                    model = m
+                    break
+            if not model:
+                matching_models = []
+                for m_name, m in self.graph.models.items():
+                    for dim in m.dimensions:
+                        if dim.name == metric.entity:
+                            matching_models.append(m_name)
+                            break
+                if len(matching_models) == 1:
+                    model = self.graph.get_model(matching_models[0])
+                elif len(matching_models) > 1:
+                    raise ValueError(
+                        f"Ambiguous model for retention metric '{metric_name}': "
+                        f"entity dimension '{metric.entity}' found in multiple models: "
+                        f"{', '.join(matching_models)}. "
+                        f"Use a model-qualified metric name (e.g., 'model_name.{metric_name}') to disambiguate."
+                    )
+
+        if not model:
+            raise ValueError(f"No model found for retention metric {metric_name}")
+
+        # Defaults (use `is not None` to avoid converting 0 to the default)
+        periods = metric.periods if metric.periods is not None else 28
+        granularity = metric.retention_granularity if metric.retention_granularity is not None else "day"
+        activity_event = metric.activity_event or "TRUE"
+
+        # Replace {model} placeholders in event predicates with actual table alias
+        table_alias = "t" if model.sql else ""
+
+        def _replace_model_placeholder(expr: str) -> str:
+            if table_alias:
+                return expr.replace("{model}", table_alias)
+            else:
+                return expr.replace("{model}.", "")
+
+        cohort_event = _replace_model_placeholder(metric.cohort_event)
+        activity_event = _replace_model_placeholder(activity_event)
+
+        # Resolve entity dimension: use sql_expr for physical column, name for alias
+        entity_dim = model.get_dimension(metric.entity)
+        entity_sql = _replace_model_placeholder(entity_dim.sql_expr) if entity_dim else metric.entity
+        entity_alias = metric.entity
+
+        # Validate entity alias identifier
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", entity_alias):
+            raise ValueError(f"Invalid entity identifier: {entity_alias}")
+        if not isinstance(periods, int) or periods < 1:
+            raise ValueError(f"Invalid periods value: {periods}")
+
+        # Find timestamp dimension: prefer model.default_time_dimension, fall back to first time dim
+        timestamp_dim = None
+        if model.default_time_dimension:
+            timestamp_dim = model.get_dimension(model.default_time_dimension)
+        if not timestamp_dim:
+            for dim in model.dimensions:
+                if dim.type == "time":
+                    timestamp_dim = dim
+                    break
+
+        if not timestamp_dim:
+            raise ValueError("Retention metrics require a time dimension on the model")
+
+        # Use sql_expr for actual SQL, name for alias; expand {model} placeholder
+        ts_sql = _replace_model_placeholder(timestamp_dim.sql_expr)
+
+        # Build FROM clause
+        if model.sql:
+            from_clause = f"({model.sql}) AS t"
+        else:
+            from_clause = model.table
+
+        # Build granularity-specific date truncation and date diff (dialect-aware)
+        if granularity == "day":
+            trunc_expr = f"CAST({ts_sql} AS DATE)"
+            diff_expr = self._date_diff("a.active_date", "c.cohort_date", "day")
+            periods_label = "days_since"
+        elif granularity == "week":
+            trunc_expr = f"CAST({self._date_trunc('week', ts_sql)} AS DATE)"
+            diff_expr = f"{self._date_diff('a.active_date', 'c.cohort_date', 'day')} / 7"
+            periods_label = "weeks_since"
+        elif granularity == "month":
+            trunc_expr = f"CAST({self._date_trunc('month', ts_sql)} AS DATE)"
+            diff_expr = (
+                "(EXTRACT(YEAR FROM a.active_date) - EXTRACT(YEAR FROM c.cohort_date)) * 12"
+                " + (EXTRACT(MONTH FROM a.active_date) - EXTRACT(MONTH FROM c.cohort_date))"
+            )
+            periods_label = "months_since"
+        else:
+            raise ValueError(f"Unsupported retention granularity: {granularity}")
+
+        # Merge metric-level filters with request-time filters
+        all_filters = list(filters or [])
+        if metric.filters:
+            all_filters.extend(metric.filters)
+
+        # Normalize filters: strip model name prefixes so they work inside CTEs
+        normalized_filters = self._strip_model_prefixes(all_filters, model.name)
+
+        # Build optional WHERE filters for the source data
+        filter_clause = ""
+        if normalized_filters:
+            filter_clause = " AND " + " AND ".join(normalized_filters)
+
+        order_clause = "\nORDER BY r.cohort_date, r.periods_since"
+        if order_by:
+            order_fields = []
+            for field in order_by:
+                field_name = field.split(".", 1)[1] if "." in field else field
+                order_fields.append(field_name)
+            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"\nLIMIT {limit}"
+
+        offset_clause = ""
+        if offset is not None:
+            offset_clause = f"\nOFFSET {offset}"
+
+        # Use entity_sql for raw-table references, entity_alias for CTE column names
+        entity_select = f"{entity_sql} AS {entity_alias}" if entity_sql != entity_alias else entity_alias
+
+        sql = f"""WITH cohorts AS (
+  SELECT {entity_select}, MIN({trunc_expr}) AS cohort_date
+  FROM {from_clause}
+  WHERE {cohort_event}{filter_clause}
+  GROUP BY {entity_sql}
+),
+activity AS (
+  SELECT DISTINCT {entity_select}, {trunc_expr} AS active_date
+  FROM {from_clause}
+  WHERE {activity_event}{filter_clause}
+),
+retention AS (
+  SELECT
+    c.cohort_date,
+    CAST({diff_expr} AS INTEGER) AS periods_since,
+    COUNT(DISTINCT c.{entity_alias}) AS active_users
+  FROM cohorts c
+  JOIN activity a ON c.{entity_alias} = a.{entity_alias} AND a.active_date >= c.cohort_date
+  WHERE CAST({diff_expr} AS INTEGER) <= {periods}
+  GROUP BY 1, 2
+),
+cohort_sizes AS (
+  SELECT cohort_date, COUNT(DISTINCT {entity_alias}) AS cohort_size
+  FROM cohorts GROUP BY 1
+)
+SELECT
+  r.cohort_date,
+  r.periods_since AS {periods_label},
+  r.active_users,
+  c.cohort_size,
+  ROUND(r.active_users * 100.0 / c.cohort_size, 1) AS retention_pct
+FROM retention r
+JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}{offset_clause}"""
+
+        return sql.strip()
+
     def _generate_conversion_query(
         self,
         metric_name: str,
@@ -2339,7 +2573,7 @@ class SQLGenerator:
         if not model:
             # First, try to find which model has this conversion metric defined
             for m_name, m in self.graph.models.items():
-                if m.get_metric(metric_name):
+                if any(metric is mm for mm in m.metrics):
                     model = m
                     break
 
@@ -2573,11 +2807,15 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Expressions may contain {model} placeholders (e.g. "{model}.created_at")
         # or model-name prefixes (e.g. "events.created_at") that are invalid
         # inside the step subqueries which use different aliases.
-        def _normalize_expr_for_subquery(sql_expr: str, table_alias: str) -> str:
+        def _normalize_expr_for_subquery(sql_expr: str, table_alias: str, qualify_bare: bool = False) -> str:
             """Rewrite {model} placeholders and model-name prefixes for a subquery.
 
             For SQL-backed models the table_alias (e.g. "t" or "_src") replaces
             the placeholder.  For table-backed models the prefix is stripped.
+
+            When qualify_bare=True and table_alias is set, unqualified column
+            references are prefixed with the alias (e.g. ``event`` -> ``s.event``).
+            This prevents ambiguous-column errors in JOINed CTEs.
             """
             result = sql_expr
             if table_alias:
@@ -2588,6 +2826,16 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
             prefix = f"{model.name}."
             if prefix in result:
                 result = result.replace(prefix, "")
+            # Qualify bare column references with the alias
+            if qualify_bare and table_alias:
+                try:
+                    parsed = sqlglot.parse_one(result, dialect=self.dialect)
+                    for col in parsed.find_all(exp.Column):
+                        if not col.table:
+                            col.set("table", table_alias)
+                    result = parsed.sql(dialect=self.dialect)
+                except Exception:
+                    pass
             return result
 
         # ts_sql for step 1 (from_clause aliases SQL models as "t", table models have no alias)
@@ -2599,10 +2847,16 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Normalize filters: strip model name prefixes so they work inside CTEs
         normalized_filters = self._strip_model_prefixes(filters or [], model.name)
 
-        # Build WHERE filter clause (appended with AND to each step CTE)
+        # Build WHERE filter clauses for step 1 and step N
+        # Step N needs bare columns qualified with "s." to avoid ambiguity in JOINs
         filter_clause = ""
+        filter_clause_s = ""
         if normalized_filters:
             filter_clause = " AND " + " AND ".join(normalized_filters)
+            qualified = [
+                _normalize_expr_for_subquery(f, "s" if model.sql else "", qualify_bare=True) for f in normalized_filters
+            ]
+            filter_clause_s = " AND " + " AND ".join(qualified)
 
         # Resolve dimension columns for GROUP BY support
         dim_entries: list[tuple[str, str]] = []
@@ -2667,7 +2921,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
             else:
                 # Normalize step predicate: rewrite {model} / model-name prefixes
                 # for step N scope (SQL models alias as "s", table models strip prefix)
-                norm_step = _normalize_expr_for_subquery(step_expr, "s" if model.sql else "")
+                norm_step = _normalize_expr_for_subquery(step_expr, "s" if model.sql else "", qualify_bare=True)
 
                 # Step N: join source to step N-1, only consider events at or after prior step
                 prev = f"step_{i - 1}"
@@ -2686,7 +2940,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     f"  FROM {from_clause_s}\n"
                     f"  JOIN {prev} ON s.{metric.entity} = {prev}.entity\n"
                     f"    AND s.__ts >= {prev}.step_{i - 1}_ts\n"
-                    f"  WHERE ({norm_step}){filter_clause}\n"
+                    f"  WHERE ({norm_step}){filter_clause_s}\n"
                     f"  GROUP BY\n"
                     f"    {group_str}\n"
                     f")"
@@ -2776,6 +3030,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         time_comparison_metrics = []
         offset_ratio_metrics = []
         conversion_metrics = []
+        retention_metrics = []
         base_metrics = []
         time_comparison_base_plans = {}
         regular_expression_metric_plans = {}
@@ -2919,6 +3174,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             elif metric and metric.type == "conversion":
                 add_unique(conversion_metrics, m)
                 # Conversion metrics need special handling - don't add to base_metrics
+            elif metric and metric.type == "retention":
+                add_unique(retention_metrics, m)
+                # Retention metrics need special handling - don't add to base_metrics
             else:
                 # Regular metric or measure
                 metric_ref = canonical_ref(m, resolved_context)
@@ -2944,6 +3202,22 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         # them in the outer window pass.
         if precomputed_cumulative_metrics:
             cumulative_metrics = [m for m in cumulative_metrics if m not in precomputed_cumulative_metrics]
+
+        # Handle retention metrics separately - they need a completely different pattern
+        if retention_metrics:
+            if len(retention_metrics) > 1:
+                raise ValueError("Only one retention metric can be queried at a time")
+            non_retention = (
+                base_metrics
+                or cumulative_metrics
+                or time_comparison_metrics
+                or offset_ratio_metrics
+                or conversion_metrics
+                or regular_expression_metric_plans
+            )
+            if non_retention:
+                raise ValueError("Retention metrics cannot be combined with other metrics in a single query")
+            return self._generate_retention_query(retention_metrics[0], dimensions, filters, order_by, limit, offset)
 
         # Handle conversion metrics separately - they need a completely different pattern
         if conversion_metrics:

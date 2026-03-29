@@ -210,10 +210,15 @@ class Metric(BaseModel):
                     )
             elif not self.base_event or not self.conversion_event:
                 raise ValueError("conversion metric requires 'steps' or both 'base_event' and 'conversion_event'")
+        if self.type == "retention":
+            if not self.entity:
+                raise ValueError("retention metric requires 'entity' field")
+            if not self.cohort_event:
+                raise ValueError("retention metric requires 'cohort_event' field")
         return self
 
     # Metric type (if this is a complex metric, not just a simple aggregation)
-    type: Literal["ratio", "derived", "cumulative", "time_comparison", "conversion"] | None = Field(
+    type: Literal["ratio", "derived", "cumulative", "time_comparison", "conversion", "retention"] | None = Field(
         None, description="Metric type for complex calculations"
     )
 
@@ -259,6 +264,18 @@ class Metric(BaseModel):
     conversion_window: str | None = Field(None, description="Conversion time window")
     steps: list[str] | None = Field(
         None, description="N-step funnel filter expressions (overrides base_event/conversion_event)"
+    )
+
+    # Retention parameters
+    cohort_event: str | None = Field(
+        None, description="SQL filter for cohort-defining event (e.g., \"event = 'install'\")"
+    )
+    activity_event: str | None = Field(
+        None, description='SQL filter for activity event (default: any event, e.g., "event IS NOT NULL")'
+    )
+    periods: int | None = Field(None, description="Number of retention periods to compute (e.g., 28 for 28-day)")
+    retention_granularity: Literal["day", "week", "month"] | None = Field(
+        None, description="Time granularity for retention periods (day, week, month)"
     )
 
     # Common parameters

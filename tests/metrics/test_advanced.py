@@ -1134,3 +1134,132 @@ def test_multistep_funnel_only_prior_step2_not_counted():
     assert rows[0][0] == 2  # total_entities
     assert rows[0][1] == 2  # step_1_count (both signed up)
     assert rows[0][2] == 1  # step_2_count (only user 2)
+
+
+def test_multistep_funnel_expression_timestamp():
+    """Test that a time dimension using an expression works in step CTEs.
+
+    When the time dimension's sql_expr is something like CAST(ts AS DATE)
+    rather than a bare column name, the generated SQL must not produce
+    invalid fragments like s.CAST(ts AS DATE).  The generator should alias
+    the expression and reference the alias in later steps.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event, '2024-01-01 10:00:00'::TIMESTAMP AS created_at
+            UNION ALL SELECT 1, 'purchase', '2024-01-02 14:00:00'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', '2024-01-01 08:00:00'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', '2024-01-01 09:00:00'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            # Expression-based time dimension (not a bare column)
+            Dimension(name="event_date", sql="CAST(created_at AS DATE)", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="expr_ts_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["expr_ts_funnel"], dimensions=[])
+
+    print("\nExpression timestamp funnel SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # User 1: signup -> purchase (valid path)
+    # User 2: signup only
+    # User 3: signup only
+    assert rows[0][0] == 3  # total_entities
+    assert rows[0][1] == 3  # step_1_count
+    assert rows[0][2] == 1  # step_2_count (only user 1)
+
+
+def test_multistep_funnel_or_step_with_filter():
+    """Test that step predicates containing OR are correctly parenthesized.
+
+    Without parenthesization, WHERE event = 'a' OR event = 'b' AND region = 'US'
+    would be parsed as event = 'a' OR (event = 'b' AND region = 'US'), which is
+    incorrect. The step predicate should be wrapped: WHERE (event = 'a' OR event = 'b')
+    AND region = 'US'.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'email_signup' AS event, 'US' AS region, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'purchase', 'US', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'social_signup', 'US', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 2, 'purchase', 'US', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 3, 'email_signup', 'EU', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'purchase', 'EU', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 4, 'social_signup', 'EU', '2024-01-01'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="region", sql="region", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="or_step_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'email_signup' OR event = 'social_signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    # Filter to US only
+    sql = generator.generate(
+        metrics=["or_step_funnel"],
+        dimensions=[],
+        filters=["region = 'US'"],
+    )
+
+    print("\nOR step with filter funnel SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # With correct parenthesization:
+    # Step 1: (event = 'email_signup' OR event = 'social_signup') AND region = 'US'
+    #   -> users 1 (email_signup, US), 2 (social_signup, US) = 2
+    #   User 3 is EU, user 4 is EU -> filtered out
+    # Step 2: (event = 'purchase') AND region = 'US'
+    #   -> users 1, 2 (both purchased in US) = 2
+    #
+    # Without parenthesization (the bug):
+    # Step 1: event = 'email_signup' OR (event = 'social_signup' AND region = 'US')
+    #   -> users 1 (email), 2 (social+US), 3 (email) = 3 (WRONG: user 3 EU leaks in)
+    assert rows[0][0] == 2  # total_entities (US signups only)
+    assert rows[0][1] == 2  # step_1_count
+    assert rows[0][2] == 2  # step_2_count (both US users purchased)

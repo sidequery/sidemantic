@@ -2537,11 +2537,14 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         dim_aliases = [alias for alias, _ in dim_entries]
 
-        # Build from_clause variant for non-first steps (aliased as 's' for joining)
+        # Build from_clause variant for non-first steps (aliased as 's' for joining).
+        # Project the timestamp expression as __ts so later CTEs can reference
+        # s.__ts regardless of whether ts_sql is a simple column or an expression
+        # like CAST(created_at AS DATE).
         if model.sql:
-            from_clause_s = f"({model.sql}) AS s"
+            from_clause_s = f"(SELECT *, {ts_sql} AS __ts FROM ({model.sql}) AS _src) AS s"
         else:
-            from_clause_s = f"{model.table} s"
+            from_clause_s = f"(SELECT *, {ts_sql} AS __ts FROM {model.table}) AS s"
 
         # Build sequential CTE chain: each step derives its timestamp from the
         # prior step's completion, ensuring correct chronological ordering.
@@ -2564,7 +2567,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     f"  SELECT\n"
                     f"    {select_str}\n"
                     f"  FROM {from_clause}\n"
-                    f"  WHERE {step_expr}{filter_clause}\n"
+                    f"  WHERE ({step_expr}){filter_clause}\n"
                     f"  GROUP BY\n"
                     f"    {group_str}\n"
                     f")"
@@ -2572,7 +2575,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
             else:
                 # Step N: join source to step N-1, only consider events at or after prior step
                 prev = f"step_{i - 1}"
-                select_parts = [f"s.{metric.entity} AS entity", f"MIN(s.{ts_sql}) AS step_{i}_ts"]
+                select_parts = [f"s.{metric.entity} AS entity", f"MIN(s.__ts) AS step_{i}_ts"]
                 for alias, _sql_col in dim_entries:
                     select_parts.append(f"{prev}.{alias}")
                 select_str = ",\n    ".join(select_parts)
@@ -2586,8 +2589,8 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     f"    {select_str}\n"
                     f"  FROM {from_clause_s}\n"
                     f"  JOIN {prev} ON s.{metric.entity} = {prev}.entity\n"
-                    f"    AND s.{ts_sql} >= {prev}.step_{i - 1}_ts\n"
-                    f"  WHERE {step_expr}{filter_clause}\n"
+                    f"    AND s.__ts >= {prev}.step_{i - 1}_ts\n"
+                    f"  WHERE ({step_expr}){filter_clause}\n"
                     f"  GROUP BY\n"
                     f"    {group_str}\n"
                     f")"

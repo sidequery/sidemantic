@@ -1030,3 +1030,107 @@ def test_multistep_funnel_qualified_filters():
     assert rows[0][0] == 2  # total_entities (US users with signup)
     assert rows[0][1] == 2  # step_1_count
     assert rows[0][2] == 1  # step_2_count (only user 1 purchased)
+
+
+def test_multistep_funnel_repeated_actions_valid_path():
+    """Test that repeated actions find a valid ordered path.
+
+    Entity does purchase at t1, signup at t2, purchase again at t3.
+    The old MIN(CASE WHEN ...) approach would compute step_1_ts (signup) = t2,
+    step_2_ts (purchase) = t1 (the global MIN), and fail t1 >= t2.
+    The sequential CTE chain correctly finds signup at t2, then purchase at t3.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'purchase' AS event, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'signup', '2024-01-05'::TIMESTAMP
+            UNION ALL SELECT 1, 'purchase', '2024-01-10'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 2, 'purchase', '2024-01-02'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="repeated_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["repeated_funnel"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # User 1: purchase(t1), signup(t5), purchase(t10) -> valid path exists: signup(t5)->purchase(t10)
+    # User 2: signup(t1), purchase(t2) -> valid path: signup(t1)->purchase(t2)
+    # Both users should be counted at step 2
+    assert rows[0][0] == 2  # total_entities
+    assert rows[0][1] == 2  # step_1_count (both signed up)
+    assert rows[0][2] == 2  # step_2_count (both have purchase AFTER signup)
+
+
+def test_multistep_funnel_only_prior_step2_not_counted():
+    """Test that an entity with step 2 ONLY before step 1 is NOT counted at step 2.
+
+    Entity does purchase at t1, signup at t5, but NO purchase after t5.
+    There is no valid ordered path for this entity.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'purchase' AS event, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'signup', '2024-01-05'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 2, 'purchase', '2024-01-02'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="nopath_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["nopath_funnel"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # User 1: purchase(t1), signup(t5) -> no purchase after signup -> NOT counted at step 2
+    # User 2: signup(t1), purchase(t2) -> valid path -> counted at step 2
+    assert rows[0][0] == 2  # total_entities
+    assert rows[0][1] == 2  # step_1_count (both signed up)
+    assert rows[0][2] == 1  # step_2_count (only user 2)

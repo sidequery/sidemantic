@@ -2439,9 +2439,11 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
     ) -> str:
         """Generate SQL for N-step conversion funnel metrics.
 
-        Uses timestamp-aware chronological ordering: for each entity, tracks
-        the earliest timestamp at which each step was satisfied (via MIN/CASE),
-        then gates each step on occurring after all prior steps.
+        Uses a sequential CTE chain: each step CTE joins back to the previous
+        step and only considers events AFTER the prior step's timestamp. This
+        correctly handles entities with repeated actions (e.g., an entity that
+        does step 2 before step 1 is only counted if they also do step 2 after
+        step 1).
 
         Args:
             metric: The Metric object with steps defined
@@ -2509,10 +2511,10 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Normalize filters: strip model name prefixes so they work inside CTEs
         normalized_filters = self._strip_model_prefixes(filters or [], model.name)
 
-        # Build WHERE filter clause
+        # Build WHERE filter clause (appended with AND to each step CTE)
         filter_clause = ""
         if normalized_filters:
-            filter_clause = "\n  WHERE " + " AND ".join(normalized_filters)
+            filter_clause = " AND " + " AND ".join(normalized_filters)
 
         # Resolve dimension columns for GROUP BY support
         dim_entries: list[tuple[str, str]] = []
@@ -2535,47 +2537,84 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         dim_aliases = [alias for alias, _ in dim_entries]
 
-        # Build inner CTE: per-entity MIN timestamp for each step.
-        # MIN(CASE WHEN step_expr THEN timestamp END) captures the earliest time
-        # the step was satisfied, enabling chronological ordering in the outer query.
-        step_cols = []
+        # Build from_clause variant for non-first steps (aliased as 's' for joining)
+        if model.sql:
+            from_clause_s = f"({model.sql}) AS s"
+        else:
+            from_clause_s = f"{model.table} s"
+
+        # Build sequential CTE chain: each step derives its timestamp from the
+        # prior step's completion, ensuring correct chronological ordering.
+        cte_parts = []
+        num_steps = len(metric.steps)
+
         for i, step_expr in enumerate(metric.steps, 1):
-            step_cols.append(f"MIN(CASE WHEN {step_expr} THEN {ts_sql} END) AS step_{i}_ts")
+            if i == 1:
+                # Step 1: find the earliest matching event per entity
+                select_parts = [f"{metric.entity} AS entity", f"MIN({ts_sql}) AS step_1_ts"]
+                for alias, sql_col in dim_entries:
+                    select_parts.append(f"{sql_col} AS {alias}")
+                select_str = ",\n    ".join(select_parts)
+                group_parts = [metric.entity]
+                for _alias, sql_col in dim_entries:
+                    group_parts.append(sql_col)
+                group_str = ",\n    ".join(group_parts)
+                cte_parts.append(
+                    f"step_1 AS (\n"
+                    f"  SELECT\n"
+                    f"    {select_str}\n"
+                    f"  FROM {from_clause}\n"
+                    f"  WHERE {step_expr}{filter_clause}\n"
+                    f"  GROUP BY\n"
+                    f"    {group_str}\n"
+                    f")"
+                )
+            else:
+                # Step N: join source to step N-1, only consider events at or after prior step
+                prev = f"step_{i - 1}"
+                select_parts = [f"s.{metric.entity} AS entity", f"MIN(s.{ts_sql}) AS step_{i}_ts"]
+                for alias, _sql_col in dim_entries:
+                    select_parts.append(f"{prev}.{alias}")
+                select_str = ",\n    ".join(select_parts)
+                group_parts = [f"s.{metric.entity}"]
+                for alias, _sql_col in dim_entries:
+                    group_parts.append(f"{prev}.{alias}")
+                group_str = ",\n    ".join(group_parts)
+                cte_parts.append(
+                    f"step_{i} AS (\n"
+                    f"  SELECT\n"
+                    f"    {select_str}\n"
+                    f"  FROM {from_clause_s}\n"
+                    f"  JOIN {prev} ON s.{metric.entity} = {prev}.entity\n"
+                    f"    AND s.{ts_sql} >= {prev}.step_{i - 1}_ts\n"
+                    f"  WHERE {step_expr}{filter_clause}\n"
+                    f"  GROUP BY\n"
+                    f"    {group_str}\n"
+                    f")"
+                )
 
-        inner_select_parts = [f"{metric.entity} AS entity"]
-        if dim_entries:
-            for alias, sql_col in dim_entries:
-                inner_select_parts.append(f"{sql_col} AS {alias}")
-        inner_select_parts.extend(step_cols)
-        inner_select = ",\n    ".join(inner_select_parts)
+        # Build final SELECT: count distinct entities from each step CTE
+        final_select_parts = []
+        for alias in dim_aliases:
+            final_select_parts.append(f"step_1.{alias}")
+        final_select_parts.append("COUNT(DISTINCT step_1.entity) AS total_entities")
+        for i in range(1, num_steps + 1):
+            final_select_parts.append(f"COUNT(DISTINCT step_{i}.entity) AS step_{i}_count")
+        final_select = ",\n  ".join(final_select_parts)
 
-        group_by_inner_parts = [metric.entity]
-        if dim_entries:
-            for alias, sql_col in dim_entries:
-                group_by_inner_parts.append(sql_col)
-        group_by_inner = ",\n    ".join(group_by_inner_parts)
-
-        # Build outer SELECT: total entities (only step 1 entrants) + sum of each step.
-        # Gate each step on chronological order: step_N_ts must be >= step_(N-1)_ts.
-        outer_select_parts = []
-        if dim_aliases:
+        # Build LEFT JOIN chain: step_1 LEFT JOIN step_2 LEFT JOIN step_3 ...
+        join_parts = []
+        for i in range(2, num_steps + 1):
+            join_on = f"step_{i - 1}.entity = step_{i}.entity"
             for alias in dim_aliases:
-                outer_select_parts.append(f"{alias}")
-        outer_select_parts.append("SUM(CASE WHEN step_1_ts IS NOT NULL THEN 1 ELSE 0 END) AS total_entities")
-        for i in range(1, len(metric.steps) + 1):
-            # Each step requires all prior steps to have been completed in chronological order
-            conditions = ["step_1_ts IS NOT NULL"]
-            for j in range(2, i + 1):
-                conditions.append(f"step_{j}_ts IS NOT NULL")
-                conditions.append(f"step_{j}_ts >= step_{j - 1}_ts")
-            gate_expr = " AND ".join(conditions)
-            outer_select_parts.append(f"SUM(CASE WHEN {gate_expr} THEN 1 ELSE 0 END) AS step_{i}_count")
-        outer_select = ",\n  ".join(outer_select_parts)
+                join_on += f"\n    AND step_{i - 1}.{alias} IS NOT DISTINCT FROM step_{i}.{alias}"
+            join_parts.append(f"LEFT JOIN step_{i} ON {join_on}")
+        join_str = "\n".join(join_parts)
 
-        # Build GROUP BY, ORDER BY, LIMIT for outer query
-        outer_group_by = ""
+        # Build GROUP BY, ORDER BY, LIMIT for final query
+        final_group_by = ""
         if dim_aliases:
-            outer_group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
+            final_group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
 
         order_clause = ""
         if order_by:
@@ -2589,17 +2628,14 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         if limit is not None:
             limit_clause = f"\nLIMIT {limit}"
 
+        # Assemble full query
+        cte_str = ",\n".join(cte_parts)
+        join_section = f"\n{join_str}" if join_parts else ""
         sql = f"""
-WITH {metric.name}_per_entity AS (
-  SELECT
-    {inner_select}
-  FROM {from_clause}{filter_clause}
-  GROUP BY
-    {group_by_inner}
-)
+WITH {cte_str}
 SELECT
-  {outer_select}
-FROM {metric.name}_per_entity{outer_group_by}{order_clause}{limit_clause}
+  {final_select}
+FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 """
 
         return sql.strip()

@@ -362,7 +362,10 @@ def _normalize_sql_query(query: str) -> str:
     # literals (e.g. SELECT ';') are not rejected.
     import sqlglot
 
-    statements = sqlglot.parse(normalized)
+    try:
+        statements = sqlglot.parse(normalized)
+    except Exception as exc:
+        raise ValueError(f"Failed to parse SQL: {exc}") from exc
     if len(statements) > 1:
         raise ValueError("Multiple SQL statements are not supported")
     return normalized

@@ -1435,3 +1435,127 @@ def test_multistep_funnel_model_name_prefix_step_predicates():
     assert rows[0][1] == 3  # step_1_count (all installed)
     assert rows[0][2] == 2  # step_2_count (users 1,2 activated)
     assert rows[0][3] == 1  # step_3_count (only user 1 purchased)
+
+
+def test_multistep_funnel_model_placeholder_filter():
+    """Test that {model}.col in query filters is resolved before stripping.
+
+    When a filter uses {model}.region = 'US', the {model} placeholder must be
+    resolved to the actual model name before sqlglot parsing, otherwise the
+    parse fails and the literal {model} leaks into the WHERE clause.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event, 'US' AS region, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'purchase', 'US', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', 'US', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', 'EU', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'purchase', 'EU', '2024-01-02'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="region", sql="region", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="placeholder_filter_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    # Use {model}.region filter: should be resolved to events.region then stripped
+    sql = generator.generate(
+        metrics=["placeholder_filter_funnel"],
+        dimensions=[],
+        filters=["{model}.region = 'US'"],
+    )
+
+    print("\n{model} placeholder filter SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # Only US users: user 1 (signup + purchase), user 2 (signup only)
+    # User 3 is EU, filtered out
+    assert rows[0][0] == 2  # total_entities
+    assert rows[0][1] == 2  # step_1_count
+    assert rows[0][2] == 1  # step_2_count (only user 1 purchased)
+
+
+def test_multistep_funnel_order_by_metric_name():
+    """Test that order_by referencing the metric name works.
+
+    The multistep funnel output must include a column aliased to the metric name
+    so that ORDER BY metric_name does not fail with a missing-column error.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event, 'US' AS region, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'purchase', 'US', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', 'US', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', 'EU', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'purchase', 'EU', '2024-01-02'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="region", sql="region", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="activation_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    # Group by region and order by metric name
+    sql = generator.generate(
+        metrics=["activation_funnel"],
+        dimensions=["events.region"],
+        order_by=["activation_funnel DESC"],
+    )
+
+    print("\nOrder by metric name SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    print("Results:", rows)
+
+    # 2 regions: EU (1 signup, 1 purchase), US (2 signups, 1 purchase)
+    # activation_funnel is the last-step count, used for ordering DESC
+    assert len(rows) == 2
+    # Both execute without error, confirming the metric-named column exists
+    for row in rows:
+        assert row[0] in ("US", "EU")  # region

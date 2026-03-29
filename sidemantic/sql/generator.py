@@ -90,15 +90,18 @@ class SQLGenerator:
         """
         result = []
         for f in filters:
+            # Resolve {model} placeholders to the actual model name before
+            # parsing, so sqlglot can handle the expression as valid SQL.
+            f_resolved = f.replace("{model}.", f"{model_name}.")
             try:
-                parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                parsed = sqlglot.parse_one(f_resolved, dialect=self.dialect)
                 for column in parsed.find_all(exp.Column):
                     tbl = column.table
                     if tbl and tbl.replace("_cte", "") == model_name:
                         column.set("table", None)
                 result.append(parsed.sql(dialect=self.dialect))
             except Exception:
-                result.append(f)
+                result.append(f_resolved)
         return result
 
     def _quote_alias(self, name: str) -> str:
@@ -2690,12 +2693,16 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 )
 
         # Build final SELECT: count distinct entities from each step CTE
+        # Also alias the last step count to the metric name for ORDER BY compatibility
+        metric_name_only = metric_name.split(".", 1)[-1] if "." in metric_name else metric_name
         final_select_parts = []
         for alias in dim_aliases:
             final_select_parts.append(f"step_1.{alias}")
         final_select_parts.append("COUNT(DISTINCT step_1.entity) AS total_entities")
         for i in range(1, num_steps + 1):
             final_select_parts.append(f"COUNT(DISTINCT step_{i}.entity) AS step_{i}_count")
+        # Add metric-named column (last step count) so ORDER BY metric_name works
+        final_select_parts.append(f"COUNT(DISTINCT step_{num_steps}.entity) AS {metric_name_only}")
         final_select = ",\n  ".join(final_select_parts)
 
         # Build LEFT JOIN chain: step_1 LEFT JOIN step_2 LEFT JOIN step_3 ...

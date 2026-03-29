@@ -703,3 +703,118 @@ def test_retention_metric_level_filters():
     # Day 1: only user 1 active -> 50%
     day1 = [r for r in rows if r[1] == 1]
     assert day1[0][4] == 50.0
+
+
+def test_retention_multiple_retention_metrics_raises():
+    """Test that querying two retention metrics raises ValueError."""
+    events = Model(
+        name="events",
+        sql="SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS ts",
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[],
+    )
+
+    ret1 = Metric(
+        name="retention_a",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        periods=1,
+    )
+    ret2 = Metric(
+        name="retention_b",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        periods=2,
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(ret1)
+    graph.add_metric(ret2)
+
+    generator = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="Only one retention metric can be queried at a time"):
+        generator.generate(metrics=["retention_a", "retention_b"], dimensions=[])
+
+
+def test_retention_mixed_with_regular_metric_raises():
+    """Test that mixing retention + regular metric raises ValueError."""
+    events = Model(
+        name="events",
+        sql="SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS ts, 10 AS revenue",
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[
+            Metric(name="total_revenue", agg="sum", sql="revenue"),
+        ],
+    )
+
+    retention = Metric(
+        name="retention",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        periods=1,
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="Retention metrics cannot be combined with other metrics"):
+        generator.generate(metrics=["retention", "events.total_revenue"], dimensions=[])
+
+
+def test_retention_offset_in_sql():
+    """Test that offset parameter is included in retention SQL output."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS ts
+            UNION ALL SELECT 1, 'login', '2024-01-02'::DATE
+            UNION ALL SELECT 2, 'signup', '2024-01-01'::DATE
+            UNION ALL SELECT 2, 'login', '2024-01-01'::DATE
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[],
+    )
+
+    retention = Metric(
+        name="retention",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        periods=2,
+        retention_granularity="day",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["retention"], dimensions=[], limit=5, offset=10)
+
+    assert "LIMIT 5" in sql
+    assert "OFFSET 10" in sql
+
+    # Without offset, OFFSET should not appear
+    sql_no_offset = generator.generate(metrics=["retention"], dimensions=[], limit=5)
+    assert "OFFSET" not in sql_no_offset

@@ -2252,6 +2252,7 @@ class SQLGenerator:
         filters: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> str:
         """Generate SQL for cohort retention metrics.
 
@@ -2268,6 +2269,7 @@ class SQLGenerator:
             filters: List of filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows to return
+            offset: Number of rows to skip (for pagination)
 
         Returns:
             SQL query string
@@ -2404,6 +2406,10 @@ class SQLGenerator:
         if limit is not None:
             limit_clause = f"\nLIMIT {limit}"
 
+        offset_clause = ""
+        if offset is not None:
+            offset_clause = f"\nOFFSET {offset}"
+
         # Use entity_sql for raw-table references, entity_alias for CTE column names
         entity_select = f"{entity_sql} AS {entity_alias}" if entity_sql != entity_alias else entity_alias
 
@@ -2439,7 +2445,7 @@ SELECT
   c.cohort_size,
   ROUND(r.active_users * 100.0 / c.cohort_size, 1) AS retention_pct
 FROM retention r
-JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}"""
+JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}{offset_clause}"""
 
         return sql.strip()
 
@@ -2848,7 +2854,19 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         # Handle retention metrics separately - they need a completely different pattern
         if retention_metrics:
-            return self._generate_retention_query(retention_metrics[0], dimensions, filters, order_by, limit)
+            if len(retention_metrics) > 1:
+                raise ValueError("Only one retention metric can be queried at a time")
+            non_retention = (
+                base_metrics
+                or cumulative_metrics
+                or time_comparison_metrics
+                or offset_ratio_metrics
+                or conversion_metrics
+                or regular_expression_metric_plans
+            )
+            if non_retention:
+                raise ValueError("Retention metrics cannot be combined with other metrics in a single query")
+            return self._generate_retention_query(retention_metrics[0], dimensions, filters, order_by, limit, offset)
 
         # Handle conversion metrics separately - they need a completely different pattern
         if conversion_metrics:

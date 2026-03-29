@@ -1,8 +1,6 @@
-from pathlib import Path
 import importlib.util
 import sys
-
-import duckdb
+from pathlib import Path
 
 
 def load_create_demo_database():

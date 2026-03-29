@@ -67,9 +67,11 @@ class QueryRewriter:
                 # Keep non-strict passthrough behavior when Yardstick rewrite cannot be applied safely.
                 return sql
 
-        # Handle multiple statements (some PostgreSQL clients send these)
+        # Handle multiple statements (some PostgreSQL clients send these).
+        # Use sqlglot.parse() so semicolons inside string literals are not
+        # mistaken for statement separators.
         if ";" in sql:
-            statements = [s.strip() for s in sql.split(";") if s.strip()]
+            statements = sqlglot.parse(sql, dialect=self.dialect)
             if len(statements) > 1:
                 if strict:
                     raise ValueError("Multiple statements are not supported")

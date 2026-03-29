@@ -19,9 +19,9 @@ from sidemantic import SemanticLayer, __version__
 from sidemantic.loaders import load_from_directory
 from sidemantic.server.common import (
     ARROW_STREAM_MEDIA_TYPE,
+    reader_to_arrow_bytes,
     record_batch_reader_to_table,
     result_to_record_batch_reader,
-    table_to_arrow_bytes,
     table_to_json_rows,
     validate_filter_expression,
 )
@@ -319,20 +319,20 @@ def _build_query_response(
     original_sql: str | None = None,
 ):
     reader = result_to_record_batch_reader(result, layer.adapter)
-    table = record_batch_reader_to_table(reader)
     response_format = _resolve_response_format(request, format_override)
 
     if response_format == ARROW_FORMAT:
-        body = table_to_arrow_bytes(table)
+        body, row_count = reader_to_arrow_bytes(reader)
         return Response(
             content=body,
             media_type=ARROW_STREAM_MEDIA_TYPE,
             headers={
-                "X-Sidemantic-Row-Count": str(table.num_rows),
+                "X-Sidemantic-Row-Count": str(row_count),
                 "X-Sidemantic-Dialect": layer.dialect,
             },
         )
 
+    table = record_batch_reader_to_table(reader)
     payload: dict[str, Any] = {
         "sql": sql,
         "rows": table_to_json_rows(table),
@@ -349,7 +349,12 @@ def _normalize_sql_query(query: str) -> str:
         raise ValueError("Query cannot be empty")
     if normalized.endswith(";"):
         normalized = normalized[:-1].strip()
-    if ";" in normalized:
+    # Use sqlglot to detect multiple statements so semicolons inside string
+    # literals (e.g. SELECT ';') are not rejected.
+    import sqlglot
+
+    statements = sqlglot.parse(normalized)
+    if len(statements) > 1:
         raise ValueError("Multiple SQL statements are not supported")
     return normalized
 

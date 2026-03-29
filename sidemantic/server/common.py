@@ -83,6 +83,22 @@ def table_to_json_rows(table: Any) -> list[dict[str, Any]]:
     return [to_json_compatible(row) for row in table.to_pylist()]
 
 
+def reader_to_arrow_bytes(reader: Any) -> tuple[bytes, int]:
+    """Stream a RecordBatchReader to Arrow IPC bytes without full table materialization.
+
+    Returns ``(ipc_bytes, row_count)``.
+    """
+    import pyarrow as pa
+
+    sink = pa.BufferOutputStream()
+    row_count = 0
+    with pa.ipc.new_stream(sink, reader.schema) as writer:
+        for batch in reader:
+            row_count += batch.num_rows
+            writer.write_batch(batch)
+    return sink.getvalue().to_pybytes(), row_count
+
+
 def table_to_arrow_bytes(table: Any) -> bytes:
     """Serialize a PyArrow table to Arrow IPC stream bytes."""
     import pyarrow as pa

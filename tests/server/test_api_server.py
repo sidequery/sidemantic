@@ -296,6 +296,32 @@ class _ArrowOnlyAdapter(BaseDatabaseAdapter):
         return None
 
 
+def test_sql_with_semicolon_in_string_literal(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    response = client.post(
+        "/sql/compile",
+        headers=_auth_headers(),
+        json={"query": "SELECT order_count FROM orders WHERE status = ';'"},
+    )
+
+    assert response.status_code == 200, response.json()
+    assert "sql" in response.json()
+
+
+def test_sql_multi_statement_rejected(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    response = client.post(
+        "/sql/compile",
+        headers=_auth_headers(),
+        json={"query": "SELECT 1; DROP TABLE orders"},
+    )
+
+    assert response.status_code == 400
+    assert "multiple" in response.json()["error"].lower()
+
+
 def test_json_responses_use_arrow_reader_for_generic_adapters():
     adapter = _ArrowOnlyAdapter()
     layer = SemanticLayer(connection=adapter, auto_register=False)

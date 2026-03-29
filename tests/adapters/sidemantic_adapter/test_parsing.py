@@ -193,16 +193,19 @@ models:
     assert plain_dim.window is None
     assert plain_dim.sql_expr == "status"
 
-    # Dimension with window: sql_expr returns the window expression
+    # Dimension with window: sql_expr returns the base expression,
+    # window_sql_expr returns the window function
     next_event = model.get_dimension("next_event")
     assert next_event.window == "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
     assert next_event.sql == "event"
-    assert next_event.sql_expr == "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
+    assert next_event.sql_expr == "event"
+    assert next_event.window_sql_expr == "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
 
     next_ts = model.get_dimension("next_timestamp")
     assert next_ts.window == "LEAD(timestamp) OVER (PARTITION BY person_id ORDER BY timestamp)"
     assert next_ts.sql == "timestamp"
-    assert next_ts.sql_expr == next_ts.window
+    assert next_ts.sql_expr == "timestamp"
+    assert next_ts.window_sql_expr == next_ts.window
 
 
 def test_dimension_window_roundtrip(tmp_path):
@@ -239,7 +242,8 @@ models:
     dim = model2.get_dimension("next_event")
     assert dim.window == "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)"
     assert dim.sql == "event"
-    assert dim.sql_expr == dim.window
+    assert dim.window_sql_expr == dim.window
+    assert dim.sql_expr == "event"
 
 
 def test_dimension_window_in_sql_generation():

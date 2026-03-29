@@ -74,11 +74,19 @@ class Dimension(BaseModel):
 
     @property
     def sql_expr(self) -> str:
-        """Get SQL expression, defaulting to name if not specified.
+        """Get the base SQL expression, defaulting to name if not specified.
 
-        When a window function expression is set, it takes precedence over the
-        regular sql expression. The sql field still documents which column the
-        window operates on.
+        Always returns the row-level expression (``sql`` or ``name``), never the
+        window function.  Use ``window_sql_expr`` when you need the window
+        expression for CTE projection.
+        """
+        return self.sql or self.name
+
+    @property
+    def window_sql_expr(self) -> str:
+        """Get the window SQL expression if set, otherwise fall back to sql_expr.
+
+        Use this in CTE SELECT lists where window functions should be projected.
         """
         if self.window:
             return self.window

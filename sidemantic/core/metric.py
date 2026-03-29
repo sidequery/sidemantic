@@ -204,10 +204,15 @@ class Metric(BaseModel):
                 raise ValueError("conversion metric requires 'base_event' field")
             if not self.conversion_event:
                 raise ValueError("conversion metric requires 'conversion_event' field")
+        if self.type == "retention":
+            if not self.entity:
+                raise ValueError("retention metric requires 'entity' field")
+            if not self.cohort_event:
+                raise ValueError("retention metric requires 'cohort_event' field")
         return self
 
     # Metric type (if this is a complex metric, not just a simple aggregation)
-    type: Literal["ratio", "derived", "cumulative", "time_comparison", "conversion"] | None = Field(
+    type: Literal["ratio", "derived", "cumulative", "time_comparison", "conversion", "retention"] | None = Field(
         None, description="Metric type for complex calculations"
     )
 
@@ -251,6 +256,18 @@ class Metric(BaseModel):
     base_event: str | None = Field(None, description="Starting event filter")
     conversion_event: str | None = Field(None, description="Target event filter")
     conversion_window: str | None = Field(None, description="Conversion time window")
+
+    # Retention parameters
+    cohort_event: str | None = Field(
+        None, description="SQL filter for cohort-defining event (e.g., \"event = 'install'\")"
+    )
+    activity_event: str | None = Field(
+        None, description='SQL filter for activity event (default: any event, e.g., "event IS NOT NULL")'
+    )
+    periods: int | None = Field(None, description="Number of retention periods to compute (e.g., 28 for 28-day)")
+    retention_granularity: Literal["day", "week", "month"] | None = Field(
+        None, description="Time granularity for retention periods (day, week, month)"
+    )
 
     # Common parameters
     filters: list[str] | None = Field(None, description="Optional WHERE clause filters")

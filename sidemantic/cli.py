@@ -5,7 +5,7 @@ from pathlib import Path
 import typer
 
 from sidemantic import SemanticLayer, __version__, load_from_directory
-from sidemantic.config import SidemanticConfig, build_connection_string, find_config, load_config
+from sidemantic.config import SidemanticConfig, build_connection_string, find_config, get_init_sql, load_config
 
 
 def version_callback(value: bool):
@@ -348,6 +348,7 @@ def query(
     try:
         # Build connection string from args or config
         connection_str = None
+        init_sql = None
         if connection:
             # Explicit --connection arg provided
             connection_str = connection
@@ -357,6 +358,7 @@ def query(
         elif _loaded_config and _loaded_config.connection:
             # Use connection from config
             connection_str = build_connection_string(_loaded_config)
+            init_sql = get_init_sql(_loaded_config)
         else:
             # Try to find database file in data/
             data_dir = models / "data"
@@ -369,7 +371,9 @@ def query(
         preagg_db = _loaded_config.preagg_database if _loaded_config else None
         preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
         if connection_str:
-            layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
+            layer = SemanticLayer(
+                connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch, init_sql=init_sql
+            )
         else:
             layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
         load_from_directory(layer, str(models))

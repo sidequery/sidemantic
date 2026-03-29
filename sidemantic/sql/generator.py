@@ -437,7 +437,13 @@ class SQLGenerator:
                     pass
 
         # Classify filters for pushdown optimization
-        pushdown_filters, main_query_filters = self._classify_filters_for_pushdown(filters or [], all_models)
+        pushdown_filters, main_query_filters, window_dim_filters = self._classify_filters_for_pushdown(
+            filters or [], all_models
+        )
+        # Window-dim filters can't be pushed into CTEs (window not yet evaluated),
+        # so in the standard path they go to the outer WHERE alongside main_query_filters.
+        for wdf_list in window_dim_filters.values():
+            main_query_filters.extend(wdf_list)
 
         # Determine which models have filters (for join type decision)
         models_with_filters = set()
@@ -755,7 +761,7 @@ class SQLGenerator:
                         # Check if this column is a window dimension
                         if model:
                             dim = model.get_dimension(column_name)
-                            if dim and dim.window is not None:
+                            if dim and getattr(dim, "window", None) is not None:
                                 window_dim_models.add(clean_name)
 
             # Window-dim filters take priority: kept separate so callers can
@@ -1485,7 +1491,14 @@ class SQLGenerator:
         # Cross-model filters (referencing models outside the sub-query) would
         # produce invalid SQL referencing CTEs that don't exist.
         all_model_names = set(metrics_by_model.keys())
-        pushdown_by_model, shared_filters = self._classify_filters_for_pushdown(all_filters, all_model_names)
+        pushdown_by_model, shared_filters, window_dim_filters = self._classify_filters_for_pushdown(
+            all_filters, all_model_names
+        )
+        # In the preagg path, window-dim filters are pushed into each model's sub-query
+        # (which has its own outer WHERE after window evaluation).
+        for model_name, wdf_list in window_dim_filters.items():
+            if model_name in pushdown_by_model:
+                pushdown_by_model[model_name].extend(wdf_list)
 
         # Generate a pre-aggregated CTE for each metric model
         preagg_ctes = []

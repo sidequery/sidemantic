@@ -312,6 +312,10 @@ class SidemanticAdapter(BaseAdapter):
                 window_expression=measure_def.get("window_expression"),
                 window_frame=measure_def.get("window_frame"),
                 window_order=measure_def.get("window_order"),
+                # Cohort parameters
+                inner_metrics=measure_def.get("inner_metrics"),
+                entity_dimensions=measure_def.get("entity_dimensions"),
+                having=measure_def.get("having"),
             )
             measures.append(measure)
 
@@ -429,6 +433,9 @@ class SidemanticAdapter(BaseAdapter):
             retention_granularity=(metric_def.get("retention_granularity") or metric_def.get("granularity"))
             if metric_type == "retention"
             else None,
+            inner_metrics=metric_def.get("inner_metrics"),
+            entity_dimensions=metric_def.get("entity_dimensions"),
+            having=metric_def.get("having"),
             window=metric_def.get("window"),
             grain_to_date=metric_def.get("grain_to_date"),
             window_expression=metric_def.get("window_expression"),

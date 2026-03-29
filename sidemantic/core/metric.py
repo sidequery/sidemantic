@@ -215,11 +215,20 @@ class Metric(BaseModel):
                 raise ValueError("retention metric requires 'entity' field")
             if not self.cohort_event:
                 raise ValueError("retention metric requires 'cohort_event' field")
+        if self.type == "cohort":
+            if not self.entity:
+                raise ValueError("cohort metric requires 'entity' field")
+            if not self.inner_metrics:
+                raise ValueError("cohort metric requires 'inner_metrics' field")
+            if not self.having:
+                raise ValueError("cohort metric requires 'having' field")
+            if not self.agg:
+                raise ValueError("cohort metric requires 'agg' field for outer aggregation")
         return self
 
     # Metric type (if this is a complex metric, not just a simple aggregation)
-    type: Literal["ratio", "derived", "cumulative", "time_comparison", "conversion", "retention"] | None = Field(
-        None, description="Metric type for complex calculations"
+    type: Literal["ratio", "derived", "cumulative", "time_comparison", "conversion", "retention", "cohort"] | None = (
+        Field(None, description="Metric type for complex calculations")
     )
 
     # Ratio parameters
@@ -277,6 +286,15 @@ class Metric(BaseModel):
     retention_granularity: Literal["day", "week", "month"] | None = Field(
         None, description="Time granularity for retention periods (day, week, month)"
     )
+
+    # Cohort metric parameters
+    inner_metrics: list[dict[str, Any]] | None = Field(
+        None, description="Per-entity aggregations for cohort metrics (list of {name, agg, sql})"
+    )
+    entity_dimensions: list[str] | None = Field(
+        None, description="Dimensions to carry through from inner to outer aggregation in cohort metrics"
+    )
+    having: str | None = Field(None, description="HAVING filter on inner aggregation for cohort metrics")
 
     # Common parameters
     filters: list[str] | None = Field(None, description="Optional WHERE clause filters")

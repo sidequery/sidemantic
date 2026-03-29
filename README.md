@@ -23,6 +23,11 @@ Malloy support (uv):
 uv add "sidemantic[malloy]"
 ```
 
+HTTP API server (uv):
+```bash
+uv add "sidemantic[api]"
+```
+
 Notebook widget (uv):
 ```bash
 uv add "sidemantic[widget]" jupyterlab
@@ -129,6 +134,9 @@ sidemantic workbench models/ --db data.duckdb
 # PostgreSQL server (connect Tableau, DBeaver, etc.)
 sidemantic serve models/ --port 5433
 
+# HTTP API server (JSON or Arrow)
+sidemantic api-serve models/ --port 4400 --auth-token secret
+
 # Validate definitions
 sidemantic validate models/
 
@@ -152,6 +160,11 @@ uvx sidemantic workbench --demo
 **PostgreSQL server** (connect Tableau, DBeaver, etc.):
 ```bash
 uvx sidemantic serve --demo --port 5433
+```
+
+**HTTP API server** (JSON or Arrow):
+```bash
+uvx --from "sidemantic[api]" sidemantic api-serve --demo --port 4400 --auth-token secret
 ```
 
 **Colab notebooks:**
@@ -219,6 +232,7 @@ See `examples/` for more.
 - Segments and metric-level filters
 - Jinja2 templating for dynamic SQL
 - PostgreSQL wire protocol server for BI tools
+- HTTP API with JSON and Arrow IPC responses
 
 ## Multi-Format Support
 
@@ -263,6 +277,54 @@ docker run -p 5433:5433 sidequery/sidemantic --demo
 ```
 
 See [`examples/docker/`](examples/docker/) for MCP mode, env vars, building from source, and integration test services.
+
+For Cloudflare Worker + Container deployment, see [`examples/cloudflare_containers/`](examples/cloudflare_containers/).
+
+## HTTP API
+
+Start the API server:
+
+```bash
+sidemantic api-serve models/ --db data.duckdb --port 4400 --auth-token secret
+```
+
+Compile a structured semantic query:
+
+```bash
+curl -s http://localhost:4400/compile \
+  -H "Authorization: Bearer secret" \
+  -H "Content-Type: application/json" \
+  -d '{"dimensions":["orders.status"],"metrics":["orders.total_amount"]}'
+```
+
+Run a structured query as JSON:
+
+```bash
+curl -s http://localhost:4400/query \
+  -H "Authorization: Bearer secret" \
+  -H "Content-Type: application/json" \
+  -d '{"dimensions":["orders.status"],"metrics":["orders.total_amount","orders.order_count"]}'
+```
+
+Run a structured query as Arrow IPC:
+
+```bash
+curl -s http://localhost:4400/query \
+  -H "Authorization: Bearer secret" \
+  -H "Accept: application/vnd.apache.arrow.stream" \
+  -H "Content-Type: application/json" \
+  -d '{"metrics":["orders.order_count"]}' \
+  > result.arrow
+```
+
+Execute rewritten SQL over HTTP:
+
+```bash
+curl -s http://localhost:4400/sql \
+  -H "Authorization: Bearer secret" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"SELECT status, total_amount FROM orders ORDER BY status"}'
+```
 
 ## Agent Skill
 

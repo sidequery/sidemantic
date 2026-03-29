@@ -114,6 +114,16 @@ class PostgresServerConfig(BaseModel):
     password: str | None = Field(default=None, description="Password for authentication (optional)")
 
 
+class APIServerConfig(BaseModel):
+    """HTTP API server configuration."""
+
+    host: str = Field(default="127.0.0.1", description="Host/IP to bind to")
+    port: int = Field(default=4400, description="Port to listen on")
+    auth_token: str | None = Field(default=None, description="Bearer token for API authentication (optional)")
+    cors_origins: list[str] = Field(default_factory=list, description="Allowed CORS origins")
+    max_request_body_bytes: int = Field(default=1024 * 1024, description="Maximum request body size in bytes")
+
+
 Connection = (
     DuckDBConnection
     | PostgreSQLConnection
@@ -141,6 +151,9 @@ class SidemanticConfig(BaseModel):
           port: 5433
           username: admin
           password: secret
+        api_server:
+          port: 4400
+          auth_token: secret-token
 
     Example JSON:
         {
@@ -155,6 +168,10 @@ class SidemanticConfig(BaseModel):
             "port": 5433,
             "username": "admin",
             "password": "secret"
+          },
+          "api_server": {
+            "port": 4400,
+            "auth_token": "secret-token"
           }
         }
     """
@@ -168,6 +185,7 @@ class SidemanticConfig(BaseModel):
     pg_server: PostgresServerConfig = Field(
         default_factory=PostgresServerConfig, description="PostgreSQL server settings (ALPHA)"
     )
+    api_server: APIServerConfig = Field(default_factory=APIServerConfig, description="HTTP API server settings")
 
     def resolve_paths(self, base_dir: Path | None = None) -> "SidemanticConfig":
         """Resolve relative paths to absolute paths.
@@ -198,6 +216,7 @@ class SidemanticConfig(BaseModel):
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
             pg_server=self.pg_server,
+            api_server=self.api_server,
         )
 
 

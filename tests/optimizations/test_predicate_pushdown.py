@@ -519,13 +519,13 @@ if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
 
-def test_window_dim_filter_applied_as_outer_where_in_preagg(layer):
-    """Test that window-dim filters are applied as outer WHERE in the preagg path.
+def test_window_dim_filter_pushed_into_model_subquery_in_preagg(layer):
+    """Test that window-dim filters are pushed into model subqueries in the preagg path.
 
     When metrics come from multiple models (triggering pre-aggregation), a filter
-    on a window dimension must be applied as an outer WHERE on the final preagg
-    join so that ALL models' metrics are constrained. The window dim column is
-    projected through the owning model's preagg CTE to make it available.
+    on a window dimension is pushed into the owning model's recursive generate()
+    call. This preserves the preagg grain (no extra dimensions added) while the
+    recursive generate() handles the window dim filter in its own outer WHERE.
     """
     from sidemantic.core.model import Relationship
 
@@ -588,26 +588,24 @@ def test_window_dim_filter_applied_as_outer_where_in_preagg(layer):
     assert "orders_preagg" in sql, "Should use pre-aggregation path"
     assert "order_items_preagg" in sql, "Should use pre-aggregation path"
 
-    # The window dim column should be projected in the orders preagg CTE
+    # The window dim filter should be inside the orders preagg CTE (pushed into
+    # the model subquery), not in the outer WHERE
     preagg_start = sql.index("orders_preagg AS (")
     preagg_end = sql.index("order_items_preagg AS (")
     orders_subquery = sql[preagg_start:preagg_end]
-    assert "next_status" in orders_subquery, "Window dim column should be projected in orders preagg CTE"
+    assert "next_status" in orders_subquery, "Window dim filter should be in orders preagg subquery"
 
-    # The filter should appear in the outer WHERE referencing the preagg CTE,
-    # so that BOTH models' metrics are constrained by the filter
+    # The outer query should NOT have the window dim filter (it's handled inside subquery)
     outer_query = sql[sql.rindex("SELECT") :]
-    assert "orders_preagg.next_status" in outer_query, (
-        "Window-dim filter should be in outer WHERE referencing preagg CTE"
-    )
+    assert "next_status" not in outer_query, "Window dim filter should NOT be in outer WHERE"
 
 
-def test_multi_model_window_dim_filter_applied_as_outer_where_in_preagg(layer):
-    """Test that multi-model window-dim filters are applied as outer WHERE in preagg.
+def test_multi_model_window_dim_filter_pushed_into_model_subquery_in_preagg(layer):
+    """Test that multi-model window-dim filters are pushed into model subqueries in preagg.
 
     When a filter references columns from multiple models and at least one is a
-    window dimension, the window dim column is projected through the preagg CTE
-    and the filter is applied on the outer WHERE so both models are constrained.
+    window dimension, the filter is pushed into the owning model's subquery so
+    the recursive generate() handles it correctly without changing the preagg grain.
     """
     from sidemantic.core.model import Relationship
 
@@ -672,24 +670,24 @@ def test_multi_model_window_dim_filter_applied_as_outer_where_in_preagg(layer):
     assert "orders_preagg" in sql, "Should use pre-aggregation path"
     assert "order_items_preagg" in sql, "Should use pre-aggregation path"
 
-    # The window dim column should be projected in the orders preagg CTE
+    # The window dim filter should be inside the orders preagg CTE
     preagg_start = sql.index("orders_preagg AS (")
     preagg_end = sql.index("order_items_preagg AS (")
     orders_subquery = sql[preagg_start:preagg_end]
-    assert "next_status" in orders_subquery, "Window dim column should be projected in orders preagg CTE"
+    assert "next_status" in orders_subquery, "Window dim filter should be in orders preagg subquery"
 
-    # The filter should appear in the outer WHERE
+    # The outer query should NOT have the window dim filter
     outer_query = sql[sql.rindex("SELECT") :]
-    assert "orders_preagg.next_status" in outer_query, "Multi-model window-dim filter should be in outer WHERE"
+    assert "next_status" not in outer_query, "Window dim filter should NOT be in outer WHERE"
 
 
-def test_mixed_metric_and_window_dim_filter_applied_as_outer_where_in_preagg(layer):
-    """Test that a filter referencing both a metric and a window dim is applied as outer WHERE.
+def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg(layer):
+    """Test that a filter referencing both a metric and a window dim is pushed into model subquery.
 
     When a filter like "orders.next_status = 'complete' OR orders.revenue > 100"
     references both a window dimension (next_status) and a metric (revenue), the
-    window dim check takes priority and the filter is applied on the outer preagg
-    WHERE. The window dim column is projected through the preagg CTE.
+    window dim check takes priority and the filter is pushed into the owning model's
+    subquery to preserve the preagg grain.
     """
     from sidemantic.core.model import Relationship
 
@@ -752,12 +750,12 @@ def test_mixed_metric_and_window_dim_filter_applied_as_outer_where_in_preagg(lay
     assert "orders_preagg" in sql, "Should use pre-aggregation path"
     assert "order_items_preagg" in sql, "Should use pre-aggregation path"
 
-    # The window dim column should be projected in the orders preagg CTE
+    # The window dim filter should be inside the orders preagg CTE
     preagg_start = sql.index("orders_preagg AS (")
     preagg_end = sql.index("order_items_preagg AS (")
     orders_subquery = sql[preagg_start:preagg_end]
-    assert "next_status" in orders_subquery, "Window dim column should be projected in orders preagg CTE"
+    assert "next_status" in orders_subquery, "Window dim filter should be in orders preagg subquery"
 
-    # The filter should be in the outer WHERE, constraining both models
+    # The outer query should NOT have the window dim filter
     outer_query = sql[sql.rindex("SELECT") :]
-    assert "orders_preagg.next_status" in outer_query, "Mixed metric/window-dim filter should be in outer WHERE"
+    assert "next_status" not in outer_query, "Window dim filter should NOT be in outer WHERE"

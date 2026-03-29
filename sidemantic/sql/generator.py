@@ -1468,28 +1468,6 @@ class SQLGenerator:
             all_filters, all_model_names
         )
 
-        # Collect window dimension columns that need to be projected through
-        # preagg CTEs so the outer WHERE can reference them.
-        window_dim_extra_dims: dict[str, list[str]] = {}
-        for model_name, wf_list in window_dim_filters.items():
-            for f_expr in wf_list:
-                try:
-                    parsed_f = sqlglot.parse_one(f_expr, dialect=self.dialect)
-                    for col in parsed_f.find_all(exp.Column):
-                        clean = (col.table or "").replace("_cte", "")
-                        if clean in all_model_names:
-                            model_obj = self.graph.get_model(clean)
-                            if model_obj:
-                                dim_obj = model_obj.get_dimension(col.name)
-                                if dim_obj and dim_obj.window is not None:
-                                    dim_ref = f"{clean}.{col.name}"
-                                    if clean not in window_dim_extra_dims:
-                                        window_dim_extra_dims[clean] = []
-                                    if dim_ref not in window_dim_extra_dims[clean]:
-                                        window_dim_extra_dims[clean].append(dim_ref)
-                except Exception:
-                    pass
-
         # Generate a pre-aggregated CTE for each metric model
         preagg_ctes = []
         cte_names = []
@@ -1498,25 +1476,18 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             cte_names.append(cte_name)
 
-            # Only pass filters relevant to this model's sub-query.
-            # Window-dim filters are NOT pushed here: they are applied as outer
-            # WHERE on the final preagg join so that ALL models' metrics are
-            # constrained, not just the model that owns the window dimension.
-            model_filters = pushdown_by_model.get(model_name, [])
-
-            # Add extra window dim columns to the sub-query dimensions so they
-            # get projected through the preagg CTE for outer WHERE access.
-            sub_dimensions = list(dimensions)
-            for extra_dim in window_dim_extra_dims.get(model_name, []):
-                if extra_dim not in sub_dimensions:
-                    sub_dimensions.append(extra_dim)
+            # Pass pushdown filters plus any window-dim filters for this model.
+            # Window-dim filters are pushed into the model's sub-query (not the
+            # outer preagg join) so the recursive generate() handles them in its
+            # own outer WHERE, preserving the requested dimension grain.
+            model_filters = pushdown_by_model.get(model_name, []) + window_dim_filters.get(model_name, [])
 
             # Generate sub-query for this model's metrics at the dimension grain
             # We call generate() recursively but it won't trigger pre-aggregation
             # again because each sub-query has metrics from only one model
             sub_query = self.generate(
                 metrics=model_metrics,
-                dimensions=sub_dimensions,
+                dimensions=dimensions,
                 filters=model_filters,
                 segments=None,  # Already resolved
                 order_by=None,
@@ -1597,25 +1568,18 @@ class SQLGenerator:
 
         final_query = f"SELECT\n  {select_str}\nFROM {from_str}"
 
-        # Apply shared filters and window-dim filters on the outer query.
-        # Window-dim filters are applied here (not inside model sub-queries) so
-        # that ALL models' metrics are constrained by the filter, not just the
-        # model that owns the window dimension.
+        # Apply shared filters (cross-model or metric-level) on the outer query.
         # Rewrite table references from model/model_cte to model_preagg using
         # sqlglot AST rewriting so we don't accidentally mangle column names
         # that happen to contain a model name as a substring.
-        all_outer_filters = list(shared_filters)
-        for wf_list in window_dim_filters.values():
-            all_outer_filters.extend(wf_list)
-
-        if all_outer_filters:
+        if shared_filters:
             preagg_table_map = {}
             for model_name in metrics_by_model:
                 preagg_table_map[model_name] = f"{model_name}_preagg"
                 preagg_table_map[f"{model_name}_cte"] = f"{model_name}_preagg"
 
             rewritten = []
-            for f in all_outer_filters:
+            for f in shared_filters:
                 try:
                     parsed = sqlglot.parse_one(f, dialect=self.dialect)
                     for col in parsed.find_all(exp.Column):

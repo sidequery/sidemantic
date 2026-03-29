@@ -567,8 +567,6 @@ def test_wow_percent_change_partitions_by_dimension():
     assert rows[2][3] is None
     assert rows[3][0] == "B"
     assert abs(rows[3][3] - (-50.0)) < 0.1
-<<<<<<< Updated upstream
-=======
 
 
 def test_multistep_conversion_funnel():
@@ -1562,4 +1560,3 @@ def test_multistep_funnel_order_by_metric_name():
     # Both execute without error, confirming the metric-named column exists
     for row in rows:
         assert row[0] in ("US", "EU")  # region
->>>>>>> Stashed changes

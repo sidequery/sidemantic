@@ -2851,7 +2851,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Normalize for step 1 context (alias "t" for SQL models, bare for table models)
         entity_sql = _normalize_expr_for_subquery(entity_sql_raw, "t" if model.sql else "")
         # Normalize for step N context (always alias "s")
-        entity_sql_s = _normalize_expr_for_subquery(entity_sql_raw, "s")
+        entity_sql_s = _normalize_expr_for_subquery(entity_sql_raw, "s", qualify_bare=True)
 
         # Normalize filters: strip model name prefixes so they work inside CTEs
         normalized_filters = self._strip_model_prefixes(filters or [], model.name)

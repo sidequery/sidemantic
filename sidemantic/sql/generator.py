@@ -2301,13 +2301,21 @@ class SQLGenerator:
                     model = m
                     break
             if not model:
+                matching_models = []
                 for m_name, m in self.graph.models.items():
                     for dim in m.dimensions:
                         if dim.name == metric.entity:
-                            model = m
+                            matching_models.append(m_name)
                             break
-                    if model:
-                        break
+                if len(matching_models) == 1:
+                    model = self.graph.get_model(matching_models[0])
+                elif len(matching_models) > 1:
+                    raise ValueError(
+                        f"Ambiguous model for retention metric '{metric_name}': "
+                        f"entity dimension '{metric.entity}' found in multiple models: "
+                        f"{', '.join(matching_models)}. "
+                        f"Use a model-qualified metric name (e.g., 'model_name.{metric_name}') to disambiguate."
+                    )
 
         if not model:
             raise ValueError(f"No model found for retention metric {metric_name}")

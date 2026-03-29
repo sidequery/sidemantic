@@ -818,3 +818,53 @@ def test_retention_offset_in_sql():
     # Without offset, OFFSET should not appear
     sql_no_offset = generator.generate(metrics=["retention"], dimensions=[], limit=5)
     assert "OFFSET" not in sql_no_offset
+
+
+def test_retention_ambiguous_model_raises():
+    """Test that graph-level retention metric with entity in multiple models raises ValueError."""
+    orders = Model(
+        name="orders",
+        sql="SELECT 1 AS user_id, 'purchase' AS event, '2024-01-01'::DATE AS ts",
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[],
+    )
+
+    sessions = Model(
+        name="sessions",
+        sql="SELECT 1 AS user_id, 'visit' AS event, '2024-01-01'::DATE AS ts",
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[],
+    )
+
+    retention = Metric(
+        name="retention",
+        type="retention",
+        entity="user_id",
+        cohort_event="event = 'purchase'",
+        periods=7,
+        retention_granularity="day",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(orders)
+    graph.add_model(sessions)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="Ambiguous model for retention metric") as exc_info:
+        generator.generate(metrics=["retention"], dimensions=[])
+
+    # Verify error mentions both model names
+    err_msg = str(exc_info.value)
+    assert "orders" in err_msg
+    assert "sessions" in err_msg

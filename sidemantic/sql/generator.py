@@ -109,15 +109,18 @@ class SQLGenerator:
         """
         result = []
         for f in filters:
+            # Resolve {model} placeholders to the actual model name before
+            # parsing, so sqlglot can handle the expression as valid SQL.
+            f_resolved = f.replace("{model}.", f"{model_name}.")
             try:
-                parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                parsed = sqlglot.parse_one(f_resolved, dialect=self.dialect)
                 for column in parsed.find_all(exp.Column):
                     tbl = column.table
                     if tbl and tbl.replace("_cte", "") == model_name:
                         column.set("table", None)
                 result.append(parsed.sql(dialect=self.dialect))
             except Exception:
-                result.append(f)
+                result.append(f_resolved)
         return result
 
     def _quote_alias(self, name: str) -> str:
@@ -440,10 +443,10 @@ class SQLGenerator:
         pushdown_filters, main_query_filters, window_dim_filters = self._classify_filters_for_pushdown(
             filters or [], all_models
         )
-        # Window-dim filters can't be pushed into CTEs (window not yet evaluated),
-        # so in the standard path they go to the outer WHERE alongside main_query_filters.
-        for wdf_list in window_dim_filters.values():
-            main_query_filters.extend(wdf_list)
+        # In the standard (non-preagg) path, window-dim filters belong in the
+        # outer query WHERE, so merge them into main_query_filters.
+        for wf_list in window_dim_filters.values():
+            main_query_filters.extend(wf_list)
 
         # Determine which models have filters (for join type decision)
         models_with_filters = set()
@@ -464,6 +467,25 @@ class SQLGenerator:
 
         # Extract columns needed for metric-level filters (before building CTEs)
         metric_filter_cols_by_model = self._extract_metric_filter_columns(metrics)
+
+        # Ensure dimensions referenced in outer-query filters (e.g. window dims)
+        # are included in the relevant CTE SELECT lists.
+        for filter_expr in main_query_filters:
+            try:
+                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                for column in parsed.find_all(exp.Column):
+                    if column.table:
+                        model_name = column.table.replace("_cte", "")
+                        if model_name in all_models:
+                            if model_name not in metric_filter_cols_by_model:
+                                metric_filter_cols_by_model[model_name] = set()
+                            metric_filter_cols_by_model[model_name].add(column.name)
+            except Exception:
+                logging.debug(
+                    "Failed to parse outer filter for column extraction: %s",
+                    filter_expr,
+                    exc_info=True,
+                )
 
         # Build CTEs for all models with pushed-down filters
         cte_sqls = []
@@ -1494,11 +1516,6 @@ class SQLGenerator:
         pushdown_by_model, shared_filters, window_dim_filters = self._classify_filters_for_pushdown(
             all_filters, all_model_names
         )
-        # In the preagg path, window-dim filters are pushed into each model's sub-query
-        # (which has its own outer WHERE after window evaluation).
-        for model_name, wdf_list in window_dim_filters.items():
-            if model_name in pushdown_by_model:
-                pushdown_by_model[model_name].extend(wdf_list)
 
         # Generate a pre-aggregated CTE for each metric model
         preagg_ctes = []
@@ -1508,8 +1525,11 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             cte_names.append(cte_name)
 
-            # Only pass filters relevant to this model's sub-query
-            model_filters = pushdown_by_model.get(model_name, [])
+            # Only pass filters relevant to this model's sub-query.
+            # Window-dim filters are included here (not in shared_filters) because
+            # preagg CTEs only project query dimensions/metrics, not window dims.
+            # The recursive generate() call handles them correctly in its outer WHERE.
+            model_filters = pushdown_by_model.get(model_name, []) + window_dim_filters.get(model_name, [])
 
             # Generate sub-query for this model's metrics at the dimension grain
             # We call generate() recursively but it won't trigger pre-aggregation
@@ -2508,8 +2528,9 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
     ) -> str:
         """Generate SQL for conversion funnel metrics.
 
-        Uses self-join pattern to find entities that had both base and conversion events
-        within the specified time window.
+        Supports two modes:
+        - Legacy 2-step: uses base_event/conversion_event with self-join pattern
+        - N-step funnel: uses steps list with per-entity BOOL_OR aggregation
 
         Args:
             metric_name: Name of the conversion metric (can be "metric" or "model.metric" format)
@@ -2538,7 +2559,14 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
             except KeyError:
                 pass
 
-        if not metric or not metric.entity or not metric.base_event or not metric.conversion_event:
+        if not metric or not metric.entity:
+            raise ValueError(f"Conversion metric {metric_name} missing required fields")
+
+        # Determine if this is a multi-step funnel or legacy 2-step
+        if metric.steps:
+            return self._generate_multistep_conversion_query(metric, metric_name, dimensions, filters, order_by, limit)
+
+        if not metric.base_event or not metric.conversion_event:
             raise ValueError(f"Conversion metric {metric_name} missing required fields")
 
         # Find the model that owns this metric if we haven't already
@@ -2691,6 +2719,288 @@ SELECT
 {dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {metric.name}
 FROM base_events
 LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
+"""
+
+        return sql.strip()
+
+    def _generate_multistep_conversion_query(
+        self,
+        metric,
+        metric_name: str,
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+    ) -> str:
+        """Generate SQL for N-step conversion funnel metrics.
+
+        Uses a sequential CTE chain: each step CTE joins back to the previous
+        step and only considers events AFTER the prior step's timestamp. This
+        correctly handles entities with repeated actions (e.g., an entity that
+        does step 2 before step 1 is only counted if they also do step 2 after
+        step 1).
+
+        Args:
+            metric: The Metric object with steps defined
+            metric_name: Name of the conversion metric
+            dimensions: List of dimension references
+            filters: List of filter expressions
+            order_by: List of fields to order by
+            limit: Maximum number of rows to return
+
+        Returns:
+            SQL query string
+        """
+        import re as _re
+
+        # Validate entity identifier
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
+            raise ValueError(f"Invalid entity identifier: {metric.entity}")
+
+        # Find the model that owns this metric
+        model = None
+        if "." in metric_name:
+            model_name, _ = metric_name.split(".", 1)
+            model = self.graph.get_model(model_name)
+        if not model:
+            for m_name, m in self.graph.models.items():
+                if m.get_metric(metric_name.split(".", 1)[-1] if "." in metric_name else metric_name):
+                    model = m
+                    break
+            if not model:
+                for m_name, m in self.graph.models.items():
+                    for dim in m.dimensions:
+                        if dim.name == metric.entity:
+                            model = m
+                            break
+                    if model:
+                        break
+
+        if not model:
+            raise ValueError(f"No model found for conversion metric {metric_name}")
+
+        # Find timestamp dimension: prefer model.default_time_dimension, fall back to first time dim
+        timestamp_dim = None
+        if model.default_time_dimension:
+            timestamp_dim = model.get_dimension(model.default_time_dimension)
+        if not timestamp_dim:
+            for dim in model.dimensions:
+                if dim.type == "time":
+                    timestamp_dim = dim
+                    break
+
+        if not timestamp_dim:
+            raise ValueError(
+                f"Multi-step conversion funnel requires a time dimension on model '{model.name}' "
+                "to enforce chronological step ordering"
+            )
+
+        ts_sql_raw = timestamp_dim.sql_expr
+
+        # Build FROM clause
+        if model.sql:
+            from_clause = f"({model.sql}) AS t"
+        else:
+            from_clause = model.table
+
+        # Normalize SQL expressions for use inside subqueries.
+        # Expressions may contain {model} placeholders (e.g. "{model}.created_at")
+        # or model-name prefixes (e.g. "events.created_at") that are invalid
+        # inside the step subqueries which use different aliases.
+        def _normalize_expr_for_subquery(sql_expr: str, table_alias: str, qualify_bare: bool = False) -> str:
+            """Rewrite {model} placeholders and model-name prefixes for a subquery.
+
+            For SQL-backed models the table_alias (e.g. "t" or "_src") replaces
+            the placeholder.  For table-backed models the prefix is stripped.
+
+            When qualify_bare=True and table_alias is set, unqualified column
+            references are prefixed with the alias (e.g. ``event`` -> ``s.event``).
+            This prevents ambiguous-column errors in JOINed CTEs.
+            """
+            result = sql_expr
+            if table_alias:
+                result = result.replace("{model}", table_alias)
+            else:
+                result = result.replace("{model}.", "")
+            # Rewrite column references via sqlglot to avoid corrupting string
+            # literals (e.g. "events.signup" inside a quoted value).
+            try:
+                parsed = sqlglot.parse_one(result, dialect=self.dialect)
+                for col in parsed.find_all(exp.Column):
+                    if col.table == model.name:
+                        # Strip model-name qualifier (e.g. events.col -> col)
+                        # or replace with alias when qualify_bare is set
+                        col.set("table", table_alias if qualify_bare and table_alias else None)
+                    elif not col.table and qualify_bare and table_alias:
+                        col.set("table", table_alias)
+                result = parsed.sql(dialect=self.dialect)
+            except Exception:
+                pass
+            return result
+
+        # ts_sql for step 1 (from_clause aliases SQL models as "t", table models have no alias)
+        ts_sql = _normalize_expr_for_subquery(ts_sql_raw, "t" if model.sql else "")
+
+        # ts_sql for from_clause_s subquery (SQL models aliased as "_src", table models no alias)
+        ts_sql_src = _normalize_expr_for_subquery(ts_sql_raw, "_src" if model.sql else "")
+
+        # Resolve entity: use dimension sql_expr if available (handles aliased dims
+        # and qualified names like events.user_id -> user_id)
+        entity_dim = model.get_dimension(metric.entity)
+        entity_sql_raw = entity_dim.sql_expr if entity_dim else metric.entity
+        # Normalize for step 1 context (alias "t" for SQL models, bare for table models)
+        entity_sql = _normalize_expr_for_subquery(entity_sql_raw, "t" if model.sql else "")
+        # Normalize for step N context (always alias "s")
+        entity_sql_s = _normalize_expr_for_subquery(entity_sql_raw, "s", qualify_bare=True)
+
+        # Normalize filters: strip model name prefixes so they work inside CTEs
+        normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+
+        # Build WHERE filter clauses for step 1 and step N
+        # Step N needs bare columns qualified with "s." to avoid ambiguity in JOINs
+        filter_clause = ""
+        filter_clause_s = ""
+        if normalized_filters:
+            filter_clause = " AND " + " AND ".join(f"({f})" for f in normalized_filters)
+            qualified = [_normalize_expr_for_subquery(f, "s", qualify_bare=True) for f in normalized_filters]
+            filter_clause_s = " AND " + " AND ".join(f"({q})" for q in qualified)
+
+        # Resolve dimension columns for GROUP BY support
+        dim_entries: list[tuple[str, str]] = []
+        for dim_ref in dimensions:
+            dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
+            if "__" in dim_name:
+                base_dim, gran = dim_name.rsplit("__", 1)
+            else:
+                base_dim, gran = dim_name, None
+            dim_obj = model.get_dimension(base_dim)
+            if not dim_obj:
+                continue
+            sql_col = _normalize_expr_for_subquery(dim_obj.sql_expr, "t" if model.sql else "")
+            if gran and dim_obj.type == "time":
+                sql_col = self._date_trunc(gran, sql_col)
+                alias = f"{base_dim}__{gran}"
+            else:
+                alias = base_dim
+            dim_entries.append((alias, sql_col))
+
+        dim_aliases = [alias for alias, _ in dim_entries]
+
+        # Build from_clause variant for non-first steps (aliased as 's' for joining).
+        # Project the timestamp expression as __ts so later CTEs can reference
+        # s.__ts regardless of whether ts_sql is a simple column or an expression
+        # like CAST(created_at AS DATE).
+        if model.sql:
+            from_clause_s = f"(SELECT *, {ts_sql_src} AS __ts FROM ({model.sql}) AS _src) AS s"
+        else:
+            from_clause_s = f"(SELECT *, {ts_sql_src} AS __ts FROM {model.table}) AS s"
+
+        # Build sequential CTE chain: each step derives its timestamp from the
+        # prior step's completion, ensuring correct chronological ordering.
+        cte_parts = []
+        num_steps = len(metric.steps)
+
+        for i, step_expr in enumerate(metric.steps, 1):
+            if i == 1:
+                # Normalize step predicate: rewrite {model} / model-name prefixes
+                # for step 1 scope (SQL models alias as "t", table models have no alias)
+                norm_step = _normalize_expr_for_subquery(step_expr, "t" if model.sql else "")
+
+                # Step 1: find the earliest matching event per entity
+                select_parts = [f"{entity_sql} AS entity", f"MIN({ts_sql}) AS step_1_ts"]
+                for alias, sql_col in dim_entries:
+                    select_parts.append(f"{sql_col} AS {alias}")
+                select_str = ",\n    ".join(select_parts)
+                group_parts = [entity_sql]
+                for _alias, sql_col in dim_entries:
+                    group_parts.append(sql_col)
+                group_str = ",\n    ".join(group_parts)
+                cte_parts.append(
+                    f"step_1 AS (\n"
+                    f"  SELECT\n"
+                    f"    {select_str}\n"
+                    f"  FROM {from_clause}\n"
+                    f"  WHERE ({norm_step}){filter_clause}\n"
+                    f"  GROUP BY\n"
+                    f"    {group_str}\n"
+                    f")"
+                )
+            else:
+                # Normalize step predicate: rewrite {model} / model-name prefixes
+                # for step N scope. Source is always aliased as "s" (both SQL and
+                # table-backed models), so qualify_bare with "s" unconditionally.
+                norm_step = _normalize_expr_for_subquery(step_expr, "s", qualify_bare=True)
+
+                # Step N: join source to step N-1, only consider events at or after prior step
+                prev = f"step_{i - 1}"
+                select_parts = [f"{entity_sql_s} AS entity", f"MIN(s.__ts) AS step_{i}_ts"]
+                for alias, _sql_col in dim_entries:
+                    select_parts.append(f"{prev}.{alias}")
+                select_str = ",\n    ".join(select_parts)
+                group_parts = [entity_sql_s]
+                for alias, _sql_col in dim_entries:
+                    group_parts.append(f"{prev}.{alias}")
+                group_str = ",\n    ".join(group_parts)
+                cte_parts.append(
+                    f"step_{i} AS (\n"
+                    f"  SELECT\n"
+                    f"    {select_str}\n"
+                    f"  FROM {from_clause_s}\n"
+                    f"  JOIN {prev} ON {entity_sql_s} = {prev}.entity\n"
+                    f"    AND s.__ts >= {prev}.step_{i - 1}_ts\n"
+                    f"  WHERE ({norm_step}){filter_clause_s}\n"
+                    f"  GROUP BY\n"
+                    f"    {group_str}\n"
+                    f")"
+                )
+
+        # Build final SELECT: count distinct entities from each step CTE
+        # Also alias the last step count to the metric name for ORDER BY compatibility
+        metric_name_only = metric_name.split(".", 1)[-1] if "." in metric_name else metric_name
+        final_select_parts = []
+        for alias in dim_aliases:
+            final_select_parts.append(f"step_1.{alias}")
+        final_select_parts.append("COUNT(DISTINCT step_1.entity) AS total_entities")
+        for i in range(1, num_steps + 1):
+            final_select_parts.append(f"COUNT(DISTINCT step_{i}.entity) AS step_{i}_count")
+        # Add metric-named column (last step count) so ORDER BY metric_name works
+        final_select_parts.append(f"COUNT(DISTINCT step_{num_steps}.entity) AS {metric_name_only}")
+        final_select = ",\n  ".join(final_select_parts)
+
+        # Build LEFT JOIN chain: step_1 LEFT JOIN step_2 LEFT JOIN step_3 ...
+        join_parts = []
+        for i in range(2, num_steps + 1):
+            join_on = f"step_{i - 1}.entity = step_{i}.entity"
+            for alias in dim_aliases:
+                join_on += f"\n    AND step_{i - 1}.{alias} IS NOT DISTINCT FROM step_{i}.{alias}"
+            join_parts.append(f"LEFT JOIN step_{i} ON {join_on}")
+        join_str = "\n".join(join_parts)
+
+        # Build GROUP BY, ORDER BY, LIMIT for final query
+        final_group_by = ""
+        if dim_aliases:
+            final_group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
+
+        order_clause = ""
+        if order_by:
+            order_fields = []
+            for field in order_by:
+                field_name = field.split(".", 1)[1] if "." in field else field
+                order_fields.append(field_name)
+            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"\nLIMIT {limit}"
+
+        # Assemble full query
+        cte_str = ",\n".join(cte_parts)
+        join_section = f"\n{join_str}" if join_parts else ""
+        sql = f"""
+WITH {cte_str}
+SELECT
+  {final_select}
+FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 """
 
         return sql.strip()

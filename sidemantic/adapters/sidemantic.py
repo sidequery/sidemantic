@@ -296,6 +296,7 @@ class SidemanticAdapter(BaseAdapter):
                 base_event=measure_def.get("base_event"),
                 conversion_event=measure_def.get("conversion_event"),
                 conversion_window=measure_def.get("conversion_window"),
+                steps=measure_def.get("steps"),
                 offset_window=measure_def.get("offset_window"),
                 # Retention parameters
                 cohort_event=measure_def.get("cohort_event"),
@@ -419,6 +420,7 @@ class SidemanticAdapter(BaseAdapter):
             base_event=metric_def.get("base_event"),
             conversion_event=metric_def.get("conversion_event"),
             conversion_window=metric_def.get("conversion_window"),
+            steps=metric_def.get("steps"),
             offset_window=metric_def.get("offset_window"),
             cohort_event=metric_def.get("cohort_event"),
             activity_event=metric_def.get("activity_event"),
@@ -585,6 +587,8 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["conversion_event"] = measure.conversion_event
                 if measure.conversion_window:
                     measure_def["conversion_window"] = measure.conversion_window
+                if measure.steps:
+                    measure_def["steps"] = measure.steps
                 if measure.offset_window:
                     measure_def["offset_window"] = measure.offset_window
                 # Retention parameters
@@ -675,6 +679,8 @@ class SidemanticAdapter(BaseAdapter):
             result["conversion_event"] = measure.conversion_event
         if measure.conversion_window:
             result["conversion_window"] = measure.conversion_window
+        if measure.steps:
+            result["steps"] = measure.steps
         if measure.offset_window:
             result["offset_window"] = measure.offset_window
         if measure.cohort_event:

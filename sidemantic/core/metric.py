@@ -200,10 +200,16 @@ class Metric(BaseModel):
         if self.type == "conversion":
             if not self.entity:
                 raise ValueError("conversion metric requires 'entity' field")
-            if not self.base_event:
-                raise ValueError("conversion metric requires 'base_event' field")
-            if not self.conversion_event:
-                raise ValueError("conversion metric requires 'conversion_event' field")
+            if self.steps:
+                if len(self.steps) < 2:
+                    raise ValueError("conversion metric 'steps' requires at least 2 steps")
+                if self.conversion_window:
+                    raise ValueError(
+                        "conversion metric cannot specify both 'steps' and 'conversion_window'; "
+                        "conversion_window is only supported for base_event/conversion_event funnels"
+                    )
+            elif not self.base_event or not self.conversion_event:
+                raise ValueError("conversion metric requires 'steps' or both 'base_event' and 'conversion_event'")
         if self.type == "retention":
             if not self.entity:
                 raise ValueError("retention metric requires 'entity' field")
@@ -256,6 +262,9 @@ class Metric(BaseModel):
     base_event: str | None = Field(None, description="Starting event filter")
     conversion_event: str | None = Field(None, description="Target event filter")
     conversion_window: str | None = Field(None, description="Conversion time window")
+    steps: list[str] | None = Field(
+        None, description="N-step funnel filter expressions (overrides base_event/conversion_event)"
+    )
 
     # Retention parameters
     cohort_event: str | None = Field(

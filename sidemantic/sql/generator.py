@@ -2852,11 +2852,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         filter_clause = ""
         filter_clause_s = ""
         if normalized_filters:
-            filter_clause = " AND " + " AND ".join(normalized_filters)
-            qualified = [
-                _normalize_expr_for_subquery(f, "s" if model.sql else "", qualify_bare=True) for f in normalized_filters
-            ]
-            filter_clause_s = " AND " + " AND ".join(qualified)
+            filter_clause = " AND " + " AND ".join(f"({f})" for f in normalized_filters)
+            qualified = [_normalize_expr_for_subquery(f, "s", qualify_bare=True) for f in normalized_filters]
+            filter_clause_s = " AND " + " AND ".join(f"({q})" for q in qualified)
 
         # Resolve dimension columns for GROUP BY support
         dim_entries: list[tuple[str, str]] = []
@@ -2920,8 +2918,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 )
             else:
                 # Normalize step predicate: rewrite {model} / model-name prefixes
-                # for step N scope (SQL models alias as "s", table models strip prefix)
-                norm_step = _normalize_expr_for_subquery(step_expr, "s" if model.sql else "", qualify_bare=True)
+                # for step N scope. Source is always aliased as "s" (both SQL and
+                # table-backed models), so qualify_bare with "s" unconditionally.
+                norm_step = _normalize_expr_for_subquery(step_expr, "s", qualify_bare=True)
 
                 # Step N: join source to step N-1, only consider events at or after prior step
                 prev = f"step_{i - 1}"

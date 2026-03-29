@@ -1319,3 +1319,119 @@ def test_multistep_funnel_model_placeholder_timestamp():
     assert rows[0][0] == 3  # total_entities
     assert rows[0][1] == 3  # step_1_count
     assert rows[0][2] == 1  # step_2_count (only user 1)
+
+
+def test_multistep_funnel_model_placeholder_step_predicates():
+    """Test that {model}.col in step predicates is rewritten to the CTE source alias.
+
+    When step predicates use qualified syntax like {model}.event = 'X' or
+    events.event = 'X', the generator must rewrite these to the correct alias
+    (t for step 1, s for later steps) or strip the prefix for table models.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event, '2024-01-01 10:00:00'::TIMESTAMP AS created_at
+            UNION ALL SELECT 1, 'purchase', '2024-01-02 14:00:00'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', '2024-01-01 08:00:00'::TIMESTAMP
+            UNION ALL SELECT 2, 'purchase', '2024-01-03 10:00:00'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', '2024-01-01 09:00:00'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="created_at", sql="created_at", type="time"),
+        ],
+    )
+
+    # Steps use {model}.event = '...' syntax
+    funnel = Metric(
+        name="qualified_step_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "{model}.event = 'signup'",
+            "{model}.event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["qualified_step_funnel"], dimensions=[])
+
+    print("\n{model} placeholder step predicates SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # User 1: signup -> purchase (valid path)
+    # User 2: signup -> purchase (valid path)
+    # User 3: signup only
+    assert rows[0][0] == 3  # total_entities
+    assert rows[0][1] == 3  # step_1_count
+    assert rows[0][2] == 2  # step_2_count (users 1 and 2)
+
+
+def test_multistep_funnel_model_name_prefix_step_predicates():
+    """Test that model-name prefixed step predicates (events.event) are normalized.
+
+    When step predicates use the model name directly (e.g., events.event = 'X'),
+    the prefix must be stripped or rewritten so the step CTE can resolve columns.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'install' AS event, '2024-01-01 10:00:00'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'activate', '2024-01-01 12:00:00'::TIMESTAMP
+            UNION ALL SELECT 1, 'purchase', '2024-01-02 14:00:00'::TIMESTAMP
+            UNION ALL SELECT 2, 'install', '2024-01-01 08:00:00'::TIMESTAMP
+            UNION ALL SELECT 2, 'activate', '2024-01-01 09:00:00'::TIMESTAMP
+            UNION ALL SELECT 3, 'install', '2024-01-01 09:00:00'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    # 3-step funnel using model-name prefix in predicates
+    funnel = Metric(
+        name="model_prefix_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "events.event = 'install'",
+            "events.event = 'activate'",
+            "events.event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["model_prefix_funnel"], dimensions=[])
+
+    print("\nModel-name prefix step predicates SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # User 1: install -> activate -> purchase (all 3 steps)
+    # User 2: install -> activate (2 steps only)
+    # User 3: install only
+    assert rows[0][0] == 3  # total_entities
+    assert rows[0][1] == 3  # step_1_count (all installed)
+    assert rows[0][2] == 2  # step_2_count (users 1,2 activated)
+    assert rows[0][3] == 1  # step_3_count (only user 1 purchased)

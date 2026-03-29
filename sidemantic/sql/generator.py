@@ -415,7 +415,13 @@ class SQLGenerator:
                     pass
 
         # Classify filters for pushdown optimization
-        pushdown_filters, main_query_filters = self._classify_filters_for_pushdown(filters or [], all_models)
+        pushdown_filters, main_query_filters, window_dim_filters = self._classify_filters_for_pushdown(
+            filters or [], all_models
+        )
+        # In the standard (non-preagg) path, window-dim filters belong in the
+        # outer query WHERE, so merge them into main_query_filters.
+        for wf_list in window_dim_filters.values():
+            main_query_filters.extend(wf_list)
 
         # Determine which models have filters (for join type decision)
         models_with_filters = set()
@@ -436,6 +442,25 @@ class SQLGenerator:
 
         # Extract columns needed for metric-level filters (before building CTEs)
         metric_filter_cols_by_model = self._extract_metric_filter_columns(metrics)
+
+        # Ensure dimensions referenced in outer-query filters (e.g. window dims)
+        # are included in the relevant CTE SELECT lists.
+        for filter_expr in main_query_filters:
+            try:
+                parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+                for column in parsed.find_all(exp.Column):
+                    if column.table:
+                        model_name = column.table.replace("_cte", "")
+                        if model_name in all_models:
+                            if model_name not in metric_filter_cols_by_model:
+                                metric_filter_cols_by_model[model_name] = set()
+                            metric_filter_cols_by_model[model_name].add(column.name)
+            except Exception:
+                logging.debug(
+                    "Failed to parse outer filter for column extraction: %s",
+                    filter_expr,
+                    exc_info=True,
+                )
 
         # Build CTEs for all models with pushed-down filters
         cte_sqls = []
@@ -664,7 +689,7 @@ class SQLGenerator:
 
     def _classify_filters_for_pushdown(
         self, filters: list[str], all_models: set[str]
-    ) -> tuple[dict[str, list[str]], list[str]]:
+    ) -> tuple[dict[str, list[str]], list[str], dict[str, list[str]]]:
         """Classify filters into those that can be pushed down vs those that must stay in main query.
 
         Compound AND expressions are split into individual conjuncts first so that
@@ -677,12 +702,18 @@ class SQLGenerator:
             all_models: Set of all model names in the query
 
         Returns:
-            Tuple of (pushdown_filters_by_model, main_query_filters)
+            Tuple of (pushdown_filters_by_model, main_query_filters, window_dim_filters_by_model)
             - pushdown_filters_by_model: Dict mapping model name to list of filters for that model
-            - main_query_filters: Filters that reference multiple models (can't push down)
+            - main_query_filters: Filters that reference multiple models or metrics (can't push down)
+            - window_dim_filters_by_model: Dict mapping model name to filters that reference
+              a window dimension on that model. These can't be pushed into CTE WHERE (window
+              not yet evaluated). In the standard path they belong in the outer query; in the
+              preagg path they are pushed into each model's sub-query (which has its own outer
+              WHERE). Multi-model filters are keyed by the model that owns the window dim.
         """
         pushdown_filters = {model: [] for model in all_models}
         main_query_filters = []
+        window_dim_filters: dict[str, list[str]] = {model: [] for model in all_models}
 
         # Flatten compound AND expressions into individual conjuncts so each
         # part can be classified independently.
@@ -707,6 +738,7 @@ class SQLGenerator:
             # Find all table references in the filter
             referenced_models = set()
             references_metric = False
+            window_dim_models: set[str] = set()
 
             for column in parsed.find_all(exp.Column):
                 table_name = column.table
@@ -723,9 +755,30 @@ class SQLGenerator:
                         if model and model.get_metric(column_name):
                             references_metric = True
 
+                        # Check if this column is a window dimension
+                        if model:
+                            dim = model.get_dimension(column_name)
+                            if dim and dim.window is not None:
+                                window_dim_models.add(clean_name)
+
+            # Window-dim filters take priority: kept separate so callers can
+            # handle them appropriately.  In the standard path they go to the
+            # outer WHERE; in the preagg path they are pushed into each model's
+            # sub-query (which has its own outer WHERE after window evaluation).
+            # This check must come BEFORE the metric check because a filter
+            # that references both a metric and a window dimension must NOT
+            # land in main_query_filters/shared_filters: preagg CTEs do not
+            # project window dimension columns.
+            # For multi-model filters, route to each model that owns a window
+            # dim column so the preagg path includes them in the correct
+            # sub-queries (the recursive generate() call will join in any
+            # additional models referenced by the filter).
+            if window_dim_models:
+                for wdm in window_dim_models:
+                    window_dim_filters[wdm].append(filter_expr)
             # Filters that reference metrics must stay in main query (can't push down)
             # because metrics don't exist in CTEs (only _raw columns)
-            if references_metric:
+            elif references_metric:
                 main_query_filters.append(filter_expr)
             # If filter references exactly one model and no metrics, push it down
             elif len(referenced_models) == 1:
@@ -735,7 +788,7 @@ class SQLGenerator:
                 # Filter references multiple models or no models - keep in main query
                 main_query_filters.append(filter_expr)
 
-        return pushdown_filters, main_query_filters
+        return pushdown_filters, main_query_filters, window_dim_filters
 
     def _extract_metric_filter_columns(self, metrics: list[str]) -> dict[str, set[str]]:
         """Extract columns referenced in metric-level filters and SQL expressions.
@@ -1435,7 +1488,9 @@ class SQLGenerator:
         # Cross-model filters (referencing models outside the sub-query) would
         # produce invalid SQL referencing CTEs that don't exist.
         all_model_names = set(metrics_by_model.keys())
-        pushdown_by_model, shared_filters = self._classify_filters_for_pushdown(all_filters, all_model_names)
+        pushdown_by_model, shared_filters, window_dim_filters = self._classify_filters_for_pushdown(
+            all_filters, all_model_names
+        )
 
         # Generate a pre-aggregated CTE for each metric model
         preagg_ctes = []
@@ -1445,8 +1500,11 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             cte_names.append(cte_name)
 
-            # Only pass filters relevant to this model's sub-query
-            model_filters = pushdown_by_model.get(model_name, [])
+            # Only pass filters relevant to this model's sub-query.
+            # Window-dim filters are included here (not in shared_filters) because
+            # preagg CTEs only project query dimensions/metrics, not window dims.
+            # The recursive generate() call handles them correctly in its outer WHERE.
+            model_filters = pushdown_by_model.get(model_name, []) + window_dim_filters.get(model_name, [])
 
             # Generate sub-query for this model's metrics at the dimension grain
             # We call generate() recursively but it won't trigger pre-aggregation
@@ -2580,6 +2638,10 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         for i, step_expr in enumerate(metric.steps, 1):
             if i == 1:
+                # Normalize step predicate: rewrite {model} / model-name prefixes
+                # for step 1 scope (SQL models alias as "t", table models have no alias)
+                norm_step = _normalize_expr_for_subquery(step_expr, "t" if model.sql else "")
+
                 # Step 1: find the earliest matching event per entity
                 select_parts = [f"{metric.entity} AS entity", f"MIN({ts_sql}) AS step_1_ts"]
                 for alias, sql_col in dim_entries:
@@ -2594,12 +2656,16 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     f"  SELECT\n"
                     f"    {select_str}\n"
                     f"  FROM {from_clause}\n"
-                    f"  WHERE ({step_expr}){filter_clause}\n"
+                    f"  WHERE ({norm_step}){filter_clause}\n"
                     f"  GROUP BY\n"
                     f"    {group_str}\n"
                     f")"
                 )
             else:
+                # Normalize step predicate: rewrite {model} / model-name prefixes
+                # for step N scope (SQL models alias as "s", table models strip prefix)
+                norm_step = _normalize_expr_for_subquery(step_expr, "s" if model.sql else "")
+
                 # Step N: join source to step N-1, only consider events at or after prior step
                 prev = f"step_{i - 1}"
                 select_parts = [f"s.{metric.entity} AS entity", f"MIN(s.__ts) AS step_{i}_ts"]
@@ -2617,7 +2683,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     f"  FROM {from_clause_s}\n"
                     f"  JOIN {prev} ON s.{metric.entity} = {prev}.entity\n"
                     f"    AND s.__ts >= {prev}.step_{i - 1}_ts\n"
-                    f"  WHERE ({step_expr}){filter_clause}\n"
+                    f"  WHERE ({norm_step}){filter_clause}\n"
                     f"  GROUP BY\n"
                     f"    {group_str}\n"
                     f")"

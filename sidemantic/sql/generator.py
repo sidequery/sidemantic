@@ -2844,6 +2844,15 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # ts_sql for from_clause_s subquery (SQL models aliased as "_src", table models no alias)
         ts_sql_src = _normalize_expr_for_subquery(ts_sql_raw, "_src" if model.sql else "")
 
+        # Resolve entity: use dimension sql_expr if available (handles aliased dims
+        # and qualified names like events.user_id -> user_id)
+        entity_dim = model.get_dimension(metric.entity)
+        entity_sql_raw = entity_dim.sql_expr if entity_dim else metric.entity
+        # Normalize for step 1 context (alias "t" for SQL models, bare for table models)
+        entity_sql = _normalize_expr_for_subquery(entity_sql_raw, "t" if model.sql else "")
+        # Normalize for step N context (always alias "s")
+        entity_sql_s = _normalize_expr_for_subquery(entity_sql_raw, "s")
+
         # Normalize filters: strip model name prefixes so they work inside CTEs
         normalized_filters = self._strip_model_prefixes(filters or [], model.name)
 
@@ -2898,11 +2907,11 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 norm_step = _normalize_expr_for_subquery(step_expr, "t" if model.sql else "")
 
                 # Step 1: find the earliest matching event per entity
-                select_parts = [f"{metric.entity} AS entity", f"MIN({ts_sql}) AS step_1_ts"]
+                select_parts = [f"{entity_sql} AS entity", f"MIN({ts_sql}) AS step_1_ts"]
                 for alias, sql_col in dim_entries:
                     select_parts.append(f"{sql_col} AS {alias}")
                 select_str = ",\n    ".join(select_parts)
-                group_parts = [metric.entity]
+                group_parts = [entity_sql]
                 for _alias, sql_col in dim_entries:
                     group_parts.append(sql_col)
                 group_str = ",\n    ".join(group_parts)
@@ -2924,11 +2933,11 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
                 # Step N: join source to step N-1, only consider events at or after prior step
                 prev = f"step_{i - 1}"
-                select_parts = [f"s.{metric.entity} AS entity", f"MIN(s.__ts) AS step_{i}_ts"]
+                select_parts = [f"{entity_sql_s} AS entity", f"MIN(s.__ts) AS step_{i}_ts"]
                 for alias, _sql_col in dim_entries:
                     select_parts.append(f"{prev}.{alias}")
                 select_str = ",\n    ".join(select_parts)
-                group_parts = [f"s.{metric.entity}"]
+                group_parts = [entity_sql_s]
                 for alias, _sql_col in dim_entries:
                     group_parts.append(f"{prev}.{alias}")
                 group_str = ",\n    ".join(group_parts)
@@ -2937,7 +2946,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                     f"  SELECT\n"
                     f"    {select_str}\n"
                     f"  FROM {from_clause_s}\n"
-                    f"  JOIN {prev} ON s.{metric.entity} = {prev}.entity\n"
+                    f"  JOIN {prev} ON {entity_sql_s} = {prev}.entity\n"
                     f"    AND s.__ts >= {prev}.step_{i - 1}_ts\n"
                     f"  WHERE ({norm_step}){filter_clause_s}\n"
                     f"  GROUP BY\n"

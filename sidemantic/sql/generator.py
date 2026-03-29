@@ -156,6 +156,12 @@ class SQLGenerator:
                 for column in parsed.find_all(exp.Column):
                     if not column.table and column.name in dim_map:
                         replacement = sqlglot.parse_one(dim_map[column.name], dialect=self.dialect)
+                        # Strip model-qualified refs from the replacement so
+                        # expressions like events.region don't leak into
+                        # subquery contexts where the alias is t/s.
+                        for rcol in replacement.find_all(exp.Column):
+                            if rcol.table and rcol.table.replace("_cte", "") == model.name:
+                                rcol.set("table", None)
                         column.replace(replacement)
                 result.append(parsed.sql(dialect=self.dialect))
             except Exception:

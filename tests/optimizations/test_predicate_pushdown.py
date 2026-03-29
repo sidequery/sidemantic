@@ -685,3 +685,84 @@ def test_multi_model_window_dim_filter_excluded_from_preagg_shared_filters(layer
     preagg_end = sql.index("order_items_preagg AS (")
     orders_subquery = sql[preagg_start:preagg_end]
     assert "next_status" in orders_subquery, "Multi-model window-dim filter should be pushed into orders sub-query"
+
+
+def test_mixed_metric_and_window_dim_filter_excluded_from_preagg_shared_filters(layer):
+    """Test that a filter referencing both a metric and a window dim goes to window_dim_filters.
+
+    When a filter like "orders.next_status = 'complete' OR orders.revenue > 100"
+    references both a window dimension (next_status) and a metric (revenue), the
+    window dim check must take priority over the metric check. Otherwise the filter
+    lands in main_query_filters/shared_filters and gets rewritten onto preagg CTEs
+    that don't project window dimension columns, causing a runtime failure.
+    """
+    from sidemantic.core.model import Relationship
+
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(
+                name="next_status",
+                type="categorical",
+                sql="status",
+                window="LEAD(status) OVER (PARTITION BY customer_id ORDER BY created_at)",
+            ),
+            Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+        relationships=[
+            Relationship(
+                name="order_items",
+                type="one_to_many",
+                sql="order_id",
+                foreign_key="order_id",
+            ),
+        ],
+    )
+
+    order_items = Model(
+        name="order_items",
+        table="order_items_table",
+        primary_key="item_id",
+        dimensions=[],
+        metrics=[
+            Metric(name="quantity", agg="sum", sql="qty"),
+        ],
+        relationships=[
+            Relationship(
+                name="orders",
+                type="many_to_one",
+                foreign_key="order_id",
+                primary_key="order_id",
+            ),
+        ],
+    )
+
+    layer.add_model(orders)
+    layer.add_model(order_items)
+
+    # Filter references BOTH a window dim (next_status) and a metric (revenue)
+    sql = layer.compile(
+        metrics=["orders.revenue", "order_items.quantity"],
+        dimensions=["orders.order_date"],
+        filters=["orders.next_status = 'complete' OR orders.revenue > 100"],
+    )
+
+    # Should use pre-aggregation path
+    assert "orders_preagg" in sql, "Should use pre-aggregation path"
+    assert "order_items_preagg" in sql, "Should use pre-aggregation path"
+
+    # The mixed filter must NOT appear in the outer WHERE referencing _preagg
+    # because preagg CTEs don't project window dimension columns
+    assert "orders_preagg.next_status" not in sql, "Mixed metric/window-dim filter should NOT reference preagg CTE"
+
+    # The filter should be pushed into the orders sub-query instead
+    preagg_start = sql.index("orders_preagg AS (")
+    preagg_end = sql.index("order_items_preagg AS (")
+    orders_subquery = sql[preagg_start:preagg_end]
+    assert "next_status" in orders_subquery, "Mixed metric/window-dim filter should be pushed into orders sub-query"

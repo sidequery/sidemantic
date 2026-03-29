@@ -735,21 +735,27 @@ class SQLGenerator:
                             if dim and dim.window is not None:
                                 window_dim_models.add(clean_name)
 
-            # Filters that reference metrics must stay in main query (can't push down)
-            # because metrics don't exist in CTEs (only _raw columns)
-            if references_metric:
-                main_query_filters.append(filter_expr)
-            # Window-dim filters: kept separate so callers can handle them
-            # appropriately.  In the standard path they go to the outer WHERE;
-            # in the preagg path they are pushed into each model's sub-query
-            # (which has its own outer WHERE after window evaluation).
+            # Window-dim filters take priority: kept separate so callers can
+            # handle them appropriately.  In the standard path they go to the
+            # outer WHERE; in the preagg path they are pushed into each model's
+            # sub-query (which has its own outer WHERE after window evaluation).
+            # This check must come BEFORE the metric check because a filter
+            # that references both a metric and a window dimension (e.g.,
+            # "orders.next_status = 'complete' OR orders.revenue > 100") must
+            # NOT land in main_query_filters/shared_filters: preagg CTEs do
+            # not project window dimension columns, so applying the filter on
+            # the outer preagg join would reference a non-existent column.
             # For multi-model filters, route to each model that owns a window
             # dim column so the preagg path includes them in the correct
             # sub-queries (the recursive generate() call will join in any
             # additional models referenced by the filter).
-            elif window_dim_models:
+            if window_dim_models:
                 for wdm in window_dim_models:
                     window_dim_filters[wdm].append(filter_expr)
+            # Filters that reference metrics must stay in main query (can't push down)
+            # because metrics don't exist in CTEs (only _raw columns)
+            elif references_metric:
+                main_query_filters.append(filter_expr)
             # If filter references exactly one model and no metrics, push it down
             elif len(referenced_models) == 1:
                 model = list(referenced_models)[0]

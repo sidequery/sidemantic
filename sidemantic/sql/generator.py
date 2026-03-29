@@ -2317,16 +2317,24 @@ class SQLGenerator:
 
         # Replace {model} placeholders in event predicates with actual table alias
         table_alias = "t" if model.sql else ""
-        if table_alias:
-            cohort_event = metric.cohort_event.replace("{model}", table_alias)
-            activity_event = activity_event.replace("{model}", table_alias)
-        else:
-            cohort_event = metric.cohort_event.replace("{model}.", "")
-            activity_event = activity_event.replace("{model}.", "")
 
-        # Validate entity identifier
-        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
-            raise ValueError(f"Invalid entity identifier: {metric.entity}")
+        def _replace_model_placeholder(expr: str) -> str:
+            if table_alias:
+                return expr.replace("{model}", table_alias)
+            else:
+                return expr.replace("{model}.", "")
+
+        cohort_event = _replace_model_placeholder(metric.cohort_event)
+        activity_event = _replace_model_placeholder(activity_event)
+
+        # Resolve entity dimension: use sql_expr for physical column, name for alias
+        entity_dim = model.get_dimension(metric.entity)
+        entity_sql = _replace_model_placeholder(entity_dim.sql_expr) if entity_dim else metric.entity
+        entity_alias = metric.entity
+
+        # Validate entity alias identifier
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", entity_alias):
+            raise ValueError(f"Invalid entity identifier: {entity_alias}")
         if not isinstance(periods, int) or periods < 1:
             raise ValueError(f"Invalid periods value: {periods}")
 
@@ -2343,8 +2351,8 @@ class SQLGenerator:
         if not timestamp_dim:
             raise ValueError("Retention metrics require a time dimension on the model")
 
-        # Use sql_expr for actual SQL, name for alias
-        ts_sql = timestamp_dim.sql_expr
+        # Use sql_expr for actual SQL, name for alias; expand {model} placeholder
+        ts_sql = _replace_model_placeholder(timestamp_dim.sql_expr)
 
         # Build FROM clause
         if model.sql:
@@ -2371,8 +2379,13 @@ class SQLGenerator:
         else:
             raise ValueError(f"Unsupported retention granularity: {granularity}")
 
+        # Merge metric-level filters with request-time filters
+        all_filters = list(filters or [])
+        if metric.filters:
+            all_filters.extend(metric.filters)
+
         # Normalize filters: strip model name prefixes so they work inside CTEs
-        normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+        normalized_filters = self._strip_model_prefixes(all_filters, model.name)
 
         # Build optional WHERE filters for the source data
         filter_clause = ""
@@ -2391,14 +2404,17 @@ class SQLGenerator:
         if limit is not None:
             limit_clause = f"\nLIMIT {limit}"
 
+        # Use entity_sql for raw-table references, entity_alias for CTE column names
+        entity_select = f"{entity_sql} AS {entity_alias}" if entity_sql != entity_alias else entity_alias
+
         sql = f"""WITH cohorts AS (
-  SELECT {metric.entity}, MIN({trunc_expr}) AS cohort_date
+  SELECT {entity_select}, MIN({trunc_expr}) AS cohort_date
   FROM {from_clause}
   WHERE {cohort_event}{filter_clause}
-  GROUP BY {metric.entity}
+  GROUP BY {entity_sql}
 ),
 activity AS (
-  SELECT DISTINCT {metric.entity}, {trunc_expr} AS active_date
+  SELECT DISTINCT {entity_select}, {trunc_expr} AS active_date
   FROM {from_clause}
   WHERE {activity_event}{filter_clause}
 ),
@@ -2406,14 +2422,14 @@ retention AS (
   SELECT
     c.cohort_date,
     CAST({diff_expr} AS INTEGER) AS periods_since,
-    COUNT(DISTINCT c.{metric.entity}) AS active_users
+    COUNT(DISTINCT c.{entity_alias}) AS active_users
   FROM cohorts c
-  JOIN activity a ON c.{metric.entity} = a.{metric.entity} AND a.active_date >= c.cohort_date
+  JOIN activity a ON c.{entity_alias} = a.{entity_alias} AND a.active_date >= c.cohort_date
   WHERE CAST({diff_expr} AS INTEGER) <= {periods}
   GROUP BY 1, 2
 ),
 cohort_sizes AS (
-  SELECT cohort_date, COUNT(DISTINCT {metric.entity}) AS cohort_size
+  SELECT cohort_date, COUNT(DISTINCT {entity_alias}) AS cohort_size
   FROM cohorts GROUP BY 1
 )
 SELECT

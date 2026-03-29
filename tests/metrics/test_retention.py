@@ -547,3 +547,159 @@ def test_retention_export_roundtrip_retention_granularity():
         assert metric.periods == 4
     finally:
         os.unlink(tmp_path)
+
+
+def test_retention_model_placeholder_in_time_dimension():
+    """Test that {model} placeholder in time dimension sql_expr is resolved."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS created_at
+            UNION ALL SELECT 1, 'login', '2024-01-02'::DATE
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="{model}.created_at", type="time"),
+        ],
+        metrics=[],
+    )
+
+    retention = Metric(
+        name="retention",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        periods=1,
+        retention_granularity="day",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["retention"], dimensions=[])
+
+    # {model} should be replaced with 't' for SQL-backed models
+    assert "{model}" not in sql
+    assert "t.created_at" in sql
+
+    # Should execute correctly
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+    assert len(rows) > 0
+    # Day 0 retention should be 100%
+    day0 = [r for r in rows if r[1] == 0]
+    assert day0[0][4] == 100.0
+
+
+def test_retention_aliased_entity_dimension():
+    """Test that aliased entity dimension (name != sql) generates correct SQL."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS person_id, 'signup' AS event, '2024-01-01'::DATE AS ts
+            UNION ALL SELECT 1, 'login', '2024-01-02'::DATE
+            UNION ALL SELECT 2, 'signup', '2024-01-01'::DATE
+            UNION ALL SELECT 2, 'login', '2024-01-01'::DATE
+        """,
+        primary_key="person_id",
+        dimensions=[
+            Dimension(name="user_id", sql="person_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[],
+    )
+
+    retention = Metric(
+        name="retention",
+        type="retention",
+        entity="user_id",
+        cohort_event="event = 'signup'",
+        periods=1,
+        retention_granularity="day",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["retention"], dimensions=[])
+
+    # Should use person_id (sql_expr) in SELECT from raw table, aliased as user_id
+    assert "person_id AS user_id" in sql
+    # Downstream CTEs should reference user_id (alias)
+    assert "c.user_id" in sql
+    assert "a.user_id" in sql
+
+    # Should execute correctly
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+    assert len(rows) > 0
+    day0 = [r for r in rows if r[1] == 0]
+    assert day0[0][4] == 100.0
+
+
+def test_retention_metric_level_filters():
+    """Test that metric.filters are included in retention CTE predicates."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS ts, 'US' AS country
+            UNION ALL SELECT 1, 'login', '2024-01-02'::DATE, 'US'
+            UNION ALL SELECT 2, 'signup', '2024-01-01'::DATE, 'UK'
+            UNION ALL SELECT 2, 'login', '2024-01-02'::DATE, 'UK'
+            UNION ALL SELECT 3, 'signup', '2024-01-01'::DATE, 'US'
+            UNION ALL SELECT 3, 'login', '2024-01-01'::DATE, 'US'
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+            Dimension(name="country", sql="country", type="categorical"),
+        ],
+        metrics=[],
+    )
+
+    # Metric-level filter scopes to US only
+    retention = Metric(
+        name="us_retention",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        activity_event="TRUE",
+        periods=1,
+        retention_granularity="day",
+        filters=["country = 'US'"],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["us_retention"], dimensions=[])
+
+    # Metric filter should appear in the SQL
+    assert "country = 'US'" in sql
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # Only US users (uid 1 and 3) should be in cohort
+    assert len(rows) > 0
+    day0 = [r for r in rows if r[1] == 0]
+    assert day0[0][3] == 2  # cohort_size = 2 (US users only)
+    # Day 0: both active -> 100%
+    assert day0[0][4] == 100.0
+    # Day 1: only user 1 active -> 50%
+    day1 = [r for r in rows if r[1] == 1]
+    assert day1[0][4] == 50.0

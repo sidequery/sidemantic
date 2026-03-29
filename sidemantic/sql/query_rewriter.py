@@ -71,7 +71,13 @@ class QueryRewriter:
         # Use sqlglot.parse() so semicolons inside string literals are not
         # mistaken for statement separators.
         if ";" in sql:
-            statements = sqlglot.parse(sql, dialect=self.dialect)
+            try:
+                statements = sqlglot.parse(sql, dialect=self.dialect)
+            except Exception:
+                if strict:
+                    raise
+                # In non-strict mode, pass through unparseable SQL
+                return sql
             if len(statements) > 1:
                 if strict:
                     raise ValueError("Multiple statements are not supported")

@@ -78,12 +78,21 @@ class MaxRequestBodyMiddleware(BaseHTTPMiddleware):
                     {"error": f"Request body exceeds {self.max_body_bytes} bytes"},
                     status_code=413,
                 )
-            body = await request.body()
-            if len(body) > self.max_body_bytes:
-                return JSONResponse(
-                    {"error": f"Request body exceeds {self.max_body_bytes} bytes"},
-                    status_code=413,
-                )
+            # Read incrementally so we can reject before buffering the full
+            # payload (protects against chunked uploads without Content-Length).
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > self.max_body_bytes:
+                    return JSONResponse(
+                        {"error": f"Request body exceeds {self.max_body_bytes} bytes"},
+                        status_code=413,
+                    )
+                chunks.append(chunk)
+            # Starlette caches the body once read; inject the reassembled bytes
+            # so downstream handlers can still use request.body() / request.json().
+            request._body = b"".join(chunks)
         return await call_next(request)
 
 

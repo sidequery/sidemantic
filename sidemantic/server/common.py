@@ -37,13 +37,17 @@ def validate_filter_expression(filter_str: str, dialect: str | None = None) -> N
     """Validate a filter string to prevent SQL injection."""
     import sqlglot
 
-    if ";" in filter_str:
-        raise ValueError("Filter contains disallowed SQL: multi-statement input")
-
     try:
         parsed = sqlglot.parse_one(f"SELECT 1 WHERE {filter_str}", dialect=dialect)
     except Exception as exc:
         raise ValueError(f"Invalid filter expression: {filter_str}") from exc
+
+    # Check for multi-statement input after parsing succeeds. The raw ";"
+    # check was removed because it rejected valid filters containing
+    # semicolons inside string literals (e.g. status = ';').
+    statements = sqlglot.parse(f"SELECT 1 WHERE {filter_str}", dialect=dialect)
+    if len(statements) > 1:
+        raise ValueError("Filter contains disallowed SQL: multi-statement input")
 
     disallowed_type_names = (
         "Drop",

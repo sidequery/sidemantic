@@ -1263,3 +1263,59 @@ def test_multistep_funnel_or_step_with_filter():
     assert rows[0][0] == 2  # total_entities (US signups only)
     assert rows[0][1] == 2  # step_1_count
     assert rows[0][2] == 2  # step_2_count (both US users purchased)
+
+
+def test_multistep_funnel_model_placeholder_timestamp():
+    """Test that {model}.col timestamps are rewritten for step source subqueries.
+
+    When a time dimension uses {model}.created_at as its SQL expression, the
+    generator must replace the placeholder with the correct alias inside each
+    step CTE. Otherwise the subquery references an undefined table.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event, '2024-01-01 10:00:00'::TIMESTAMP AS created_at
+            UNION ALL SELECT 1, 'purchase', '2024-01-02 14:00:00'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', '2024-01-01 08:00:00'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', '2024-01-01 09:00:00'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            # Time dimension using {model} placeholder
+            Dimension(name="created_at", sql="{model}.created_at", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="placeholder_ts_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["placeholder_ts_funnel"], dimensions=[])
+
+    print("\n{model} placeholder timestamp funnel SQL:")
+    print(sql)
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # User 1: signup -> purchase (valid path)
+    # User 2: signup only
+    # User 3: signup only
+    assert rows[0][0] == 3  # total_entities
+    assert rows[0][1] == 3  # step_1_count
+    assert rows[0][2] == 1  # step_2_count (only user 1)

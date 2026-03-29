@@ -2500,13 +2500,40 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 "to enforce chronological step ordering"
             )
 
-        ts_sql = timestamp_dim.sql_expr
+        ts_sql_raw = timestamp_dim.sql_expr
 
         # Build FROM clause
         if model.sql:
             from_clause = f"({model.sql}) AS t"
         else:
             from_clause = model.table
+
+        # Normalize SQL expressions for use inside subqueries.
+        # Expressions may contain {model} placeholders (e.g. "{model}.created_at")
+        # or model-name prefixes (e.g. "events.created_at") that are invalid
+        # inside the step subqueries which use different aliases.
+        def _normalize_expr_for_subquery(sql_expr: str, table_alias: str) -> str:
+            """Rewrite {model} placeholders and model-name prefixes for a subquery.
+
+            For SQL-backed models the table_alias (e.g. "t" or "_src") replaces
+            the placeholder.  For table-backed models the prefix is stripped.
+            """
+            result = sql_expr
+            if table_alias:
+                result = result.replace("{model}", table_alias)
+            else:
+                result = result.replace("{model}.", "")
+            # Also strip direct model-name qualifiers (e.g. "events.col" -> "col")
+            prefix = f"{model.name}."
+            if prefix in result:
+                result = result.replace(prefix, "")
+            return result
+
+        # ts_sql for step 1 (from_clause aliases SQL models as "t", table models have no alias)
+        ts_sql = _normalize_expr_for_subquery(ts_sql_raw, "t" if model.sql else "")
+
+        # ts_sql for from_clause_s subquery (SQL models aliased as "_src", table models no alias)
+        ts_sql_src = _normalize_expr_for_subquery(ts_sql_raw, "_src" if model.sql else "")
 
         # Normalize filters: strip model name prefixes so they work inside CTEs
         normalized_filters = self._strip_model_prefixes(filters or [], model.name)
@@ -2527,7 +2554,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
             dim_obj = model.get_dimension(base_dim)
             if not dim_obj:
                 continue
-            sql_col = dim_obj.sql_expr
+            sql_col = _normalize_expr_for_subquery(dim_obj.sql_expr, "t" if model.sql else "")
             if gran and dim_obj.type == "time":
                 sql_col = self._date_trunc(gran, sql_col)
                 alias = f"{base_dim}__{gran}"
@@ -2542,9 +2569,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # s.__ts regardless of whether ts_sql is a simple column or an expression
         # like CAST(created_at AS DATE).
         if model.sql:
-            from_clause_s = f"(SELECT *, {ts_sql} AS __ts FROM ({model.sql}) AS _src) AS s"
+            from_clause_s = f"(SELECT *, {ts_sql_src} AS __ts FROM ({model.sql}) AS _src) AS s"
         else:
-            from_clause_s = f"(SELECT *, {ts_sql} AS __ts FROM {model.table}) AS s"
+            from_clause_s = f"(SELECT *, {ts_sql_src} AS __ts FROM {model.table}) AS s"
 
         # Build sequential CTE chain: each step derives its timestamp from the
         # prior step's completion, ensuring correct chronological ordering.

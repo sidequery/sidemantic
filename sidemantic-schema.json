@@ -642,6 +642,22 @@
           "description": "SQL expression or formula (accepts 'expr' as alias)",
           "title": "Sql"
         },
+        "steps": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
+          "title": "Steps"
+        },
         "time_offset": {
           "anyOf": [
             {
@@ -1633,6 +1649,22 @@
             "description": "SQL expression or formula (accepts 'expr' as alias)",
             "title": "Sql"
           },
+          "steps": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
+            "title": "Steps"
+          },
           "time_offset": {
             "anyOf": [
               {
@@ -2386,6 +2418,22 @@
                 "default": null,
                 "description": "SQL expression or formula (accepts 'expr' as alias)",
                 "title": "Sql"
+              },
+              "steps": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
+                "title": "Steps"
               },
               "time_offset": {
                 "anyOf": [

@@ -215,6 +215,19 @@
     "Metric": {
       "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
       "properties": {
+        "activity_event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
+          "title": "Activity Event"
+        },
         "agg": {
           "anyOf": [
             {
@@ -284,6 +297,19 @@
           "default": null,
           "description": "Comparison calculation (default: percent_change)",
           "title": "Calculation"
+        },
+        "cohort_event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
+          "title": "Cohort Event"
         },
         "comparison_type": {
           "anyOf": [
@@ -553,11 +579,42 @@
           "description": "Time offset for denominator (e.g., '1 month')",
           "title": "Offset Window"
         },
+        "periods": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
+          "title": "Periods"
+        },
         "public": {
           "default": true,
           "description": "Whether metric is visible in API/UI",
           "title": "Public",
           "type": "boolean"
+        },
+        "retention_granularity": {
+          "anyOf": [
+            {
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Time granularity for retention periods (day, week, month)",
+          "title": "Retention Granularity"
         },
         "sql": {
           "anyOf": [
@@ -593,7 +650,8 @@
                 "derived",
                 "cumulative",
                 "time_comparison",
-                "conversion"
+                "conversion",
+                "retention"
               ],
               "type": "string"
             },
@@ -1148,6 +1206,19 @@
       "items": {
         "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
         "properties": {
+          "activity_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
+            "title": "Activity Event"
+          },
           "agg": {
             "anyOf": [
               {
@@ -1217,6 +1288,19 @@
             "default": null,
             "description": "Comparison calculation (default: percent_change)",
             "title": "Calculation"
+          },
+          "cohort_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
+            "title": "Cohort Event"
           },
           "comparison_type": {
             "anyOf": [
@@ -1486,11 +1570,42 @@
             "description": "Time offset for denominator (e.g., '1 month')",
             "title": "Offset Window"
           },
+          "periods": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
+            "title": "Periods"
+          },
           "public": {
             "default": true,
             "description": "Whether metric is visible in API/UI",
             "title": "Public",
             "type": "boolean"
+          },
+          "retention_granularity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "day",
+                  "week",
+                  "month"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Time granularity for retention periods (day, week, month)",
+            "title": "Retention Granularity"
           },
           "sql": {
             "anyOf": [
@@ -1526,7 +1641,8 @@
                   "derived",
                   "cumulative",
                   "time_comparison",
-                  "conversion"
+                  "conversion",
+                  "retention"
                 ],
                 "type": "string"
               },
@@ -1831,6 +1947,19 @@
           "Metric": {
             "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
             "properties": {
+              "activity_event": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
+                "title": "Activity Event"
+              },
               "agg": {
                 "anyOf": [
                   {
@@ -1900,6 +2029,19 @@
                 "default": null,
                 "description": "Comparison calculation (default: percent_change)",
                 "title": "Calculation"
+              },
+              "cohort_event": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
+                "title": "Cohort Event"
               },
               "comparison_type": {
                 "anyOf": [
@@ -2169,11 +2311,42 @@
                 "description": "Time offset for denominator (e.g., '1 month')",
                 "title": "Offset Window"
               },
+              "periods": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
+                "title": "Periods"
+              },
               "public": {
                 "default": true,
                 "description": "Whether metric is visible in API/UI",
                 "title": "Public",
                 "type": "boolean"
+              },
+              "retention_granularity": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "day",
+                      "week",
+                      "month"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Time granularity for retention periods (day, week, month)",
+                "title": "Retention Granularity"
               },
               "sql": {
                 "anyOf": [
@@ -2209,7 +2382,8 @@
                       "derived",
                       "cumulative",
                       "time_comparison",
-                      "conversion"
+                      "conversion",
+                      "retention"
                     ],
                     "type": "string"
                   },

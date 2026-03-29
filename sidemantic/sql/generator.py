@@ -2822,20 +2822,20 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
                 result = result.replace("{model}", table_alias)
             else:
                 result = result.replace("{model}.", "")
-            # Also strip direct model-name qualifiers (e.g. "events.col" -> "col")
-            prefix = f"{model.name}."
-            if prefix in result:
-                result = result.replace(prefix, "")
-            # Qualify bare column references with the alias
-            if qualify_bare and table_alias:
-                try:
-                    parsed = sqlglot.parse_one(result, dialect=self.dialect)
-                    for col in parsed.find_all(exp.Column):
-                        if not col.table:
-                            col.set("table", table_alias)
-                    result = parsed.sql(dialect=self.dialect)
-                except Exception:
-                    pass
+            # Rewrite column references via sqlglot to avoid corrupting string
+            # literals (e.g. "events.signup" inside a quoted value).
+            try:
+                parsed = sqlglot.parse_one(result, dialect=self.dialect)
+                for col in parsed.find_all(exp.Column):
+                    if col.table == model.name:
+                        # Strip model-name qualifier (e.g. events.col -> col)
+                        # or replace with alias when qualify_bare is set
+                        col.set("table", table_alias if qualify_bare and table_alias else None)
+                    elif not col.table and qualify_bare and table_alias:
+                        col.set("table", table_alias)
+                result = parsed.sql(dialect=self.dialect)
+            except Exception:
+                pass
             return result
 
         # ts_sql for step 1 (from_clause aliases SQL models as "t", table models have no alias)

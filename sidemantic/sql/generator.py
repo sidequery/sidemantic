@@ -686,7 +686,7 @@ class SQLGenerator:
 
     def _classify_filters_for_pushdown(
         self, filters: list[str], all_models: set[str]
-    ) -> tuple[dict[str, list[str]], list[str]]:
+    ) -> tuple[dict[str, list[str]], list[str], dict[str, list[str]]]:
         """Classify filters into those that can be pushed down vs those that must stay in main query.
 
         Compound AND expressions are split into individual conjuncts first so that
@@ -699,12 +699,18 @@ class SQLGenerator:
             all_models: Set of all model names in the query
 
         Returns:
-            Tuple of (pushdown_filters_by_model, main_query_filters)
+            Tuple of (pushdown_filters_by_model, main_query_filters, window_dim_filters_by_model)
             - pushdown_filters_by_model: Dict mapping model name to list of filters for that model
-            - main_query_filters: Filters that reference multiple models (can't push down)
+            - main_query_filters: Filters that reference multiple models or metrics (can't push down)
+            - window_dim_filters_by_model: Dict mapping model name to filters that reference
+              a window dimension on that model. These can't be pushed into CTE WHERE (window
+              not yet evaluated). In the standard path they belong in the outer query; in the
+              preagg path they are pushed into each model's sub-query (which has its own outer
+              WHERE). Multi-model filters are keyed by the model that owns the window dim.
         """
         pushdown_filters = {model: [] for model in all_models}
         main_query_filters = []
+        window_dim_filters: dict[str, list[str]] = {model: [] for model in all_models}
 
         # Flatten compound AND expressions into individual conjuncts so each
         # part can be classified independently.
@@ -729,6 +735,7 @@ class SQLGenerator:
             # Find all table references in the filter
             referenced_models = set()
             references_metric = False
+            window_dim_models: set[str] = set()
 
             for column in parsed.find_all(exp.Column):
                 table_name = column.table
@@ -745,9 +752,30 @@ class SQLGenerator:
                         if model and model.get_metric(column_name):
                             references_metric = True
 
+                        # Check if this column is a window dimension
+                        if model:
+                            dim = model.get_dimension(column_name)
+                            if dim and dim.window is not None:
+                                window_dim_models.add(clean_name)
+
+            # Window-dim filters take priority: kept separate so callers can
+            # handle them appropriately.  In the standard path they go to the
+            # outer WHERE; in the preagg path they are pushed into each model's
+            # sub-query (which has its own outer WHERE after window evaluation).
+            # This check must come BEFORE the metric check because a filter
+            # that references both a metric and a window dimension must NOT
+            # land in main_query_filters/shared_filters: preagg CTEs do not
+            # project window dimension columns.
+            # For multi-model filters, route to each model that owns a window
+            # dim column so the preagg path includes them in the correct
+            # sub-queries (the recursive generate() call will join in any
+            # additional models referenced by the filter).
+            if window_dim_models:
+                for wdm in window_dim_models:
+                    window_dim_filters[wdm].append(filter_expr)
             # Filters that reference metrics must stay in main query (can't push down)
             # because metrics don't exist in CTEs (only _raw columns)
-            if references_metric:
+            elif references_metric:
                 main_query_filters.append(filter_expr)
             # If filter references exactly one model and no metrics, push it down
             elif len(referenced_models) == 1:
@@ -757,7 +785,7 @@ class SQLGenerator:
                 # Filter references multiple models or no models - keep in main query
                 main_query_filters.append(filter_expr)
 
-        return pushdown_filters, main_query_filters
+        return pushdown_filters, main_query_filters, window_dim_filters
 
     def _extract_metric_filter_columns(self, metrics: list[str]) -> dict[str, set[str]]:
         """Extract columns referenced in metric-level filters and SQL expressions.
@@ -2159,7 +2187,7 @@ class SQLGenerator:
                 metric_model_name = model_context
                 if not metric_model_name:
                     for m_name, m in self.graph.models.items():
-                        if m.get_metric(metric.name):
+                        if metric in m.metrics:
                             metric_model_name = m_name
                             break
 
@@ -2297,7 +2325,7 @@ class SQLGenerator:
         # Find the model that owns this metric if not already found
         if not model:
             for m_name, m in self.graph.models.items():
-                if m.get_metric(metric_name):
+                if metric in m.metrics:
                     model = m
                     break
             if not model:
@@ -2504,7 +2532,7 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
         if not model:
             # First, try to find which model has this conversion metric defined
             for m_name, m in self.graph.models.items():
-                if m.get_metric(metric_name):
+                if metric in m.metrics:
                     model = m
                     break
 

@@ -868,3 +868,84 @@ def test_retention_ambiguous_model_raises():
     err_msg = str(exc_info.value)
     assert "orders" in err_msg
     assert "sessions" in err_msg
+
+
+def test_retention_graph_metric_does_not_bind_to_same_name_model_metric():
+    """Graph-level retention metric must not bind to a model-level metric with the same name."""
+    # Model A: model-level metric named "retention" with cohort_event = 'install'
+    model_a = Model(
+        name="app_events",
+        sql="""
+            SELECT 1 AS uid, 'install' AS event, '2024-01-01'::DATE AS ts
+            UNION ALL SELECT 1, 'open', '2024-01-02'::DATE
+            UNION ALL SELECT 2, 'install', '2024-01-01'::DATE
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[
+            Metric(
+                name="retention",
+                type="retention",
+                entity="uid",
+                cohort_event="event = 'install'",
+                periods=2,
+                retention_granularity="day",
+            )
+        ],
+    )
+
+    # Model B: model-level metric named "retention" with cohort_event = 'purchase'
+    model_b = Model(
+        name="shop_events",
+        sql="""
+            SELECT 10 AS uid, 'purchase' AS event, '2024-01-01'::DATE AS ts
+            UNION ALL SELECT 10, 'browse', '2024-01-02'::DATE
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+        metrics=[
+            Metric(
+                name="retention",
+                type="retention",
+                entity="uid",
+                cohort_event="event = 'purchase'",
+                periods=2,
+                retention_granularity="day",
+            )
+        ],
+    )
+
+    # Graph-level retention metric: same name but different config
+    graph_retention = Metric(
+        name="retention",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        activity_event="TRUE",
+        periods=1,
+        retention_granularity="day",
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(model_a)
+    graph.add_model(model_b)
+    # Insert graph-level metric directly (retention type is not auto-registered)
+    graph.metrics["retention"] = graph_retention
+
+    generator = SQLGenerator(graph)
+
+    # The resolved metric object (graph_retention) is NOT in either model's
+    # metrics list.  The fallback should proceed to entity-dimension matching,
+    # find uid in both models, and raise an ambiguity error.  Before the fix,
+    # m.get_metric("retention") would match by name alone, incorrectly binding
+    # the graph-level metric to whichever model was iterated first.
+    with pytest.raises(ValueError, match="Ambiguous model for retention metric"):
+        generator.generate(metrics=["retention"], dimensions=[])

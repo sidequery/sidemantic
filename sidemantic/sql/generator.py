@@ -2200,7 +2200,7 @@ class SQLGenerator:
                 metric_model_name = model_context
                 if not metric_model_name:
                     for m_name, m in self.graph.models.items():
-                        if metric in m.metrics:
+                        if any(metric is mm for mm in m.metrics):
                             metric_model_name = m_name
                             break
 
@@ -2338,7 +2338,7 @@ class SQLGenerator:
         # Find the model that owns this metric if not already found
         if not model:
             for m_name, m in self.graph.models.items():
-                if metric in m.metrics:
+                if any(metric is mm for mm in m.metrics):
                     model = m
                     break
             if not model:
@@ -2545,7 +2545,7 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
         if not model:
             # First, try to find which model has this conversion metric defined
             for m_name, m in self.graph.models.items():
-                if metric in m.metrics:
+                if any(metric is mm for mm in m.metrics):
                     model = m
                     break
 

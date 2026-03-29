@@ -316,6 +316,25 @@ def create_app(
                 format_override=format,
             )
 
+    @app.post("/raw", dependencies=[Depends(require_auth)])
+    def run_raw_sql(
+        payload: SQLRequest,
+        request: Request,
+        format: Literal["json", "arrow"] | None = Query(default=None),
+    ):
+        """Execute raw SQL directly on the underlying database, bypassing the semantic rewriter."""
+        with app.state.lock:
+            current_layer = app.state.layer
+            query = _normalize_sql_query(payload.query)
+            result = current_layer.adapter.execute(query)
+            return _build_query_response(
+                request,
+                current_layer,
+                result,
+                sql=query,
+                format_override=format,
+            )
+
     return app
 
 

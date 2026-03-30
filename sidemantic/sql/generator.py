@@ -15,10 +15,12 @@ _dialect_cache: dict[str, Dialect] = {}
 
 
 def _cached_dialect(dialect: str) -> Dialect:
-    """Get a Dialect instance with cached generator and parser.
+    """Get a Dialect instance with a cached generator.
 
-    sqlglot 30 creates a new Generator and Parser per .sql()/parse_one() call.
-    Caching both avoids this overhead (measured 64x speedup for .sql()).
+    sqlglot 30 creates a new Generator per .sql() call.
+    Caching the generator avoids this overhead (measured 64x speedup).
+    The parser is NOT cached because it is a stateful state machine
+    whose cursor/token state would be corrupted by concurrent use.
     """
     if dialect in _dialect_cache:
         return _dialect_cache[dialect]
@@ -31,14 +33,6 @@ def _cached_dialect(dialect: str) -> Dialect:
         return gen if not opts else orig_generator(**opts)
 
     instance.generator = _fast_generator
-
-    cached_parser = instance.parser()
-    orig_parser = instance.parser
-
-    def _fast_parser(**opts):
-        return cached_parser if not opts else orig_parser(**opts)
-
-    instance.parser = _fast_parser
 
     _dialect_cache[dialect] = instance
     return instance

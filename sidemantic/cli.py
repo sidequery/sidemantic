@@ -223,6 +223,9 @@ def mcp_serve(
         [], "--init-sql", help="SQL statements to run after connecting (e.g., LOAD httpfs)"
     ),
     demo: bool = typer.Option(False, "--demo", help="Use demo data instead of a directory"),
+    apps: bool = typer.Option(False, "--apps", help="Enable interactive UI widgets (requires mcp-ui-server)"),
+    http: bool = typer.Option(False, "--http", help="Use HTTP transport instead of stdio"),
+    port: int = typer.Option(4100, "--port", "-p", help="Port for HTTP server"),
 ):
     """
     Start an MCP server for the semantic layer.
@@ -234,6 +237,7 @@ def mcp_serve(
       sidemantic mcp-serve
       sidemantic mcp-serve ./models --db data/warehouse.db
       sidemantic mcp-serve --demo
+      sidemantic mcp-serve --apps --http --port 4100
     """
     from sidemantic.mcp_server import initialize_layer, mcp
 
@@ -314,13 +318,41 @@ def mcp_serve(
                     placeholders = ", ".join(["?" for _ in columns])
                     layer.adapter.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
+        # Enable apps mode if requested
+        if apps:
+            try:
+                import mcp_ui_server  # noqa: F401
+
+                import sidemantic.mcp_server as _mcp_mod
+
+                _mcp_mod._apps_enabled = True
+                typer.echo("Interactive UI widgets enabled", err=True)
+            except ImportError:
+                typer.echo(
+                    "Error: mcp-ui-server not installed. Install with: uv add mcp-ui-server",
+                    err=True,
+                )
+                raise typer.Exit(1)
+
+        # Determine transport
+        if http or apps:
+            if apps and not http:
+                typer.echo("Note: --apps implies HTTP transport, enabling automatically", err=True)
+            mcp.settings.port = port
+            transport = "streamable-http"
+        else:
+            transport = "stdio"
+
         typer.echo(f"Starting MCP server for: {directory}", err=True)
         if db_path and db_path != ":memory:":
             typer.echo(f"Using database: {db_path}", err=True)
-        typer.echo("Server running on stdio...", err=True)
+        if transport == "streamable-http":
+            typer.echo(f"Server running on HTTP at port {port}...", err=True)
+        else:
+            typer.echo("Server running on stdio...", err=True)
 
         # Run the MCP server
-        mcp.run(transport="stdio")
+        mcp.run(transport=transport)
 
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)

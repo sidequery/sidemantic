@@ -8,14 +8,14 @@ from sqlglot import exp
 
 from sidemantic.core.dialect import (
     PROPERTY_ALIASES,
-    DimensionDef,
-    MetricDef,
-    ModelDef,
-    ParameterDef,
-    PreAggregationDef,
-    PropertyEQ,
-    RelationshipDef,
-    SegmentDef,
+    is_dimension_def,
+    is_metric_def,
+    is_model_def,
+    is_parameter_def,
+    is_pre_aggregation_def,
+    is_property_eq,
+    is_relationship_def,
+    is_segment_def,
     parse,
 )
 from sidemantic.core.dimension import Dimension
@@ -199,29 +199,29 @@ def _parse_sql_statements(
     statements = parse(sql)
 
     for stmt in statements:
-        if isinstance(stmt, ModelDef):
+        if is_model_def(stmt):
             model_def = _parse_model_def(stmt)
-        elif isinstance(stmt, DimensionDef):
+        elif is_dimension_def(stmt):
             dimension = _parse_dimension_def(stmt)
             if dimension:
                 dimensions.append(dimension)
-        elif isinstance(stmt, RelationshipDef):
+        elif is_relationship_def(stmt):
             relationship = _parse_relationship_def(stmt)
             if relationship:
                 relationships.append(relationship)
-        elif isinstance(stmt, MetricDef):
+        elif is_metric_def(stmt):
             metric = _parse_metric_def(stmt)
             if metric:
                 metrics.append(metric)
-        elif isinstance(stmt, SegmentDef):
+        elif is_segment_def(stmt):
             segment = _parse_segment_def(stmt)
             if segment:
                 segments.append(segment)
-        elif isinstance(stmt, ParameterDef):
+        elif is_parameter_def(stmt):
             parameter = _parse_parameter_def(stmt)
             if parameter:
                 parameters.append(parameter)
-        elif isinstance(stmt, PreAggregationDef):
+        elif is_pre_aggregation_def(stmt):
             preagg = _parse_pre_aggregation_def(stmt)
             if preagg:
                 pre_aggregations.append(preagg)
@@ -359,7 +359,7 @@ def parse_sql_file_with_frontmatter(path: Path) -> tuple[dict, list[Metric], lis
     return frontmatter, metrics, segments
 
 
-def _parse_model_def(model_def: ModelDef) -> Model | None:
+def _parse_model_def(model_def: exp.Expression) -> Model | None:
     """Convert ModelDef expression to Model instance.
 
     Args:
@@ -399,7 +399,7 @@ def _parse_model_def(model_def: ModelDef) -> Model | None:
     return Model(**model_data)
 
 
-def _parse_dimension_def(dimension_def: DimensionDef) -> Dimension | None:
+def _parse_dimension_def(dimension_def: exp.Expression) -> Dimension | None:
     """Convert DimensionDef expression to Dimension instance.
 
     Args:
@@ -433,7 +433,7 @@ def _parse_dimension_def(dimension_def: DimensionDef) -> Dimension | None:
     return Dimension(**dimension_data)
 
 
-def _parse_relationship_def(relationship_def: RelationshipDef) -> Relationship | None:
+def _parse_relationship_def(relationship_def: exp.Expression) -> Relationship | None:
     """Convert RelationshipDef expression to Relationship instance.
 
     Args:
@@ -467,7 +467,7 @@ def _parse_relationship_def(relationship_def: RelationshipDef) -> Relationship |
     return Relationship(**relationship_data)
 
 
-def _parse_metric_def(metric_def: MetricDef) -> Metric | None:
+def _parse_metric_def(metric_def: exp.Expression) -> Metric | None:
     """Convert MetricDef expression to Metric instance.
 
     Args:
@@ -503,7 +503,7 @@ def _parse_metric_def(metric_def: MetricDef) -> Metric | None:
     return Metric(**metric_data)
 
 
-def _parse_parameter_def(parameter_def: ParameterDef) -> Parameter | None:
+def _parse_parameter_def(parameter_def: exp.Expression) -> Parameter | None:
     """Convert ParameterDef expression to Parameter instance."""
     props = _extract_properties(parameter_def)
 
@@ -529,7 +529,7 @@ def _parse_parameter_def(parameter_def: ParameterDef) -> Parameter | None:
     return Parameter(**parameter_data)
 
 
-def _parse_pre_aggregation_def(preagg_def: PreAggregationDef) -> PreAggregation | None:
+def _parse_pre_aggregation_def(preagg_def: exp.Expression) -> PreAggregation | None:
     """Convert PreAggregationDef expression to PreAggregation instance."""
     props = _extract_properties(preagg_def)
 
@@ -574,7 +574,7 @@ def _parse_pre_aggregation_def(preagg_def: PreAggregationDef) -> PreAggregation 
     return PreAggregation(**preagg_data)
 
 
-def _parse_segment_def(segment_def: SegmentDef) -> Segment | None:
+def _parse_segment_def(segment_def: exp.Expression) -> Segment | None:
     """Convert SegmentDef expression to Segment instance.
 
     Args:
@@ -628,7 +628,7 @@ def _extract_properties(definition: exp.Expression) -> dict[str, object]:
     props = {}
 
     for expr in definition.expressions:
-        if isinstance(expr, PropertyEQ):
+        if is_property_eq(expr):
             key = expr.this.name.lower()
             value_expr = expr.expression
 

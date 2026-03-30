@@ -7,7 +7,7 @@ license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
     "antlr4-python3-runtime>=4.13.2",
-    "sqlglot==27.12.0",
+    "sqlglot[c]>=30.1.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
     "jinja2>=3.1.0",
@@ -29,7 +29,8 @@ dev = [
     "httpx>=0.28.0",
     "pyarrow>=14.0.0",
     "uvicorn>=0.34.0",
-    "fakesnow>=0.9.0",  # For Snowflake integration tests
+    # fakesnow pinned out until it supports sqlglot 30.x
+    # "fakesnow>=0.9.0",  # For Snowflake integration tests
     "lkml>=1.3.7",
     "inflect>=7.0.0",
     "antlr4-python3-runtime>=4.13.2",

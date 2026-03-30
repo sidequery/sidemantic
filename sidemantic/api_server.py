@@ -316,6 +316,26 @@ def create_app(
                 format_override=format,
             )
 
+    @app.post("/raw", dependencies=[Depends(require_auth)])
+    def run_raw_sql(
+        payload: SQLRequest,
+        request: Request,
+        format: Literal["json", "arrow"] | None = Query(default=None),
+    ):
+        """Execute raw SQL directly on the underlying database, bypassing the semantic rewriter."""
+        with app.state.lock:
+            current_layer = app.state.layer
+            query = _normalize_sql_query(payload.query)
+            _require_select_statement(query)
+            result = current_layer.adapter.execute(query)
+            return _build_query_response(
+                request,
+                current_layer,
+                result,
+                sql=query,
+                format_override=format,
+            )
+
     return app
 
 
@@ -369,6 +389,43 @@ def _normalize_sql_query(query: str) -> str:
     if len(statements) > 1:
         raise ValueError("Multiple SQL statements are not supported")
     return normalized
+
+
+_DML_TYPES: tuple[type, ...] | None = None
+
+
+def _get_dml_types() -> tuple[type, ...]:
+    global _DML_TYPES
+    if _DML_TYPES is None:
+        from sqlglot import exp
+
+        _DML_TYPES = (exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create, exp.Alter, exp.Command)
+    return _DML_TYPES
+
+
+def _require_select_statement(query: str) -> None:
+    """Reject non-SELECT statements to prevent mutations via /raw.
+
+    Also inspects CTEs so that DML hidden inside a WITH clause
+    (e.g., WITH x AS (DELETE ... RETURNING ...) SELECT * FROM x)
+    is caught.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        parsed = sqlglot.parse_one(query)
+    except Exception:
+        # If parsing fails, let it through to get a proper DB error
+        return
+    query_types = (exp.Select, exp.Union, exp.Intersect, exp.Except, exp.Subquery)
+    if not isinstance(parsed, query_types):
+        raise ValueError("Only SELECT statements are allowed on the /raw endpoint")
+    # Walk the full AST to catch DML buried in CTEs or subqueries
+    dml_types = _get_dml_types()
+    for node in parsed.walk():
+        if isinstance(node, dml_types):
+            raise ValueError("Only SELECT statements are allowed on the /raw endpoint")
 
 
 def _resolve_response_format(

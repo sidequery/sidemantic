@@ -627,7 +627,9 @@ def api_serve(
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
     preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
     if connection_str:
-        layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch, init_sql=init_sql)
+        layer = SemanticLayer(
+            connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch, init_sql=init_sql
+        )
     else:
         layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
 

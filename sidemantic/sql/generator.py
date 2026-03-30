@@ -2415,15 +2415,51 @@ class SQLGenerator:
                 pass
             if model:
                 metric = model.get_metric(local_name)
+        else:
+            # Check graph-level metrics first
+            try:
+                metric = self.graph.get_metric(local_name)
+            except KeyError:
+                pass
+
+        # Find the model that owns this metric if not already found
+        if not model:
+            if metric:
+                # Check if any model owns this metric object
+                for m_name, m in self.graph.models.items():
+                    if any(metric is mm for mm in m.metrics):
+                        model = m
+                        model_name = m_name
+                        break
+            if not model:
+                # Fall back to scanning models for a cohort metric by name
+                for m_name, m in self.graph.models.items():
+                    candidate = m.get_metric(local_name)
+                    if candidate and candidate.type == "cohort":
+                        model = m
+                        metric = candidate
+                        model_name = m_name
+                        break
 
         if not model:
-            for m_name, m in self.graph.models.items():
-                candidate = m.get_metric(local_name if not model_name else metric_name.split(".", 1)[-1])
-                if candidate and candidate.type == "cohort":
-                    model = m
-                    metric = candidate
-                    model_name = m_name
-                    break
+            # Last resort: find model by entity dimension match
+            if metric and metric.entity:
+                matching_models = []
+                for m_name, m in self.graph.models.items():
+                    for dim in m.dimensions:
+                        if dim.name == metric.entity:
+                            matching_models.append(m_name)
+                            break
+                if len(matching_models) == 1:
+                    model = self.graph.get_model(matching_models[0])
+                    model_name = matching_models[0]
+                elif len(matching_models) > 1:
+                    raise ValueError(
+                        f"Ambiguous model for cohort metric '{metric_name}': "
+                        f"entity dimension '{metric.entity}' found in multiple models: "
+                        f"{', '.join(matching_models)}. "
+                        f"Use a model-qualified metric name (e.g., 'model_name.{metric_name}') to disambiguate."
+                    )
 
         if not model or not metric:
             raise ValueError(f"No model found for cohort metric {metric_name}")
@@ -2523,8 +2559,6 @@ class SQLGenerator:
 
             inner_metric_selects.append(f"{expr} AS {im_name}")
 
-        inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)
-        inner_group = ", ".join(inner_group_cols)
         having_clause = _replace_model_placeholder(metric.having)
 
         # Build outer query
@@ -2550,11 +2584,14 @@ class SQLGenerator:
 
         # Add query-level dimensions (if any beyond entity_dimensions)
         parsed_dims = self._parse_dimension_refs(dimensions)
-        for dim_ref in parsed_dims:
-            dim_model_name = dim_ref.get("model", model_name)
-            dim_name = dim_ref.get("dimension")
-            granularity = dim_ref.get("granularity")
-            alias = dim_ref.get("alias", dim_name)
+        for dim_ref_str, granularity in parsed_dims:
+            # Parse model.dimension or just dimension from the ref string
+            if "." in dim_ref_str:
+                dim_model_name, dim_name = dim_ref_str.split(".", 1)
+            else:
+                dim_model_name = model_name
+                dim_name = dim_ref_str
+            alias = dim_name
 
             if alias in entity_dim_aliases:
                 continue  # Already included
@@ -2565,11 +2602,15 @@ class SQLGenerator:
                     dim_sql = _replace_model_placeholder(dim.sql_expr)
                     if granularity:
                         dim_sql = f"DATE_TRUNC('{granularity}', {dim_sql})"
-                    inner_select_cols_extra = f"{dim_sql} AS {alias}"
-                    # This dimension needs to be in the inner query too
-                    # For simplicity, we add it to the outer select from the subquery
+                    # Add to inner query so it's available in the outer subquery
+                    inner_select_cols.append(f"{dim_sql} AS {alias}")
+                    inner_group_cols.append(dim_sql)
                     outer_select_cols.append(alias)
                     outer_group_cols.append(alias)
+
+        # Join inner select/group after dimensions are added
+        inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)
+        inner_group = ", ".join(inner_group_cols)
 
         outer_select_cols.append(f"{outer_expr} AS {metric.name}")
 

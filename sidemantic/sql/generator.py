@@ -2,6 +2,7 @@
 
 import logging
 import threading
+from functools import lru_cache
 
 import sqlglot
 from sqlglot import exp, select
@@ -11,6 +12,15 @@ from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
+
+
+@lru_cache(maxsize=4096)
+def _quote_identifier_cached(name: str, dialect: str, is_simple: bool) -> str:
+    """Cached identifier quoting, shared across all SQLGenerator instances."""
+    if is_simple:
+        return sqlglot.to_identifier(name).sql(dialect=dialect)
+    return sqlglot.to_identifier(name, quoted=True).sql(dialect=dialect)
+
 
 _dialect_cache: dict[str, Dialect] = {}
 _tls = threading.local()
@@ -232,11 +242,10 @@ class SQLGenerator:
         """Quote a SQL identifier for the current dialect.
 
         Delegates to sqlglot which handles reserved words (e.g., 'order')
-        and special characters automatically.
+        and special characters automatically. Results are cached since the
+        same identifiers are used many times during query generation.
         """
-        if self._is_simple_identifier(name):
-            return name
-        return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+        return _quote_identifier_cached(name, self.dialect, self._is_simple_identifier(name))
 
     def _cte_name(self, model_name: str) -> str:
         """Get the CTE identifier name for a model."""

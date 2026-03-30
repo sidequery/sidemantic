@@ -288,7 +288,7 @@ def test_cohort_ambiguous_unqualified_raises():
     graph.add_model(events2)
 
     gen = SQLGenerator(graph)
-    with pytest.raises(ValueError, match="Ambiguous cohort metric"):
+    with pytest.raises(ValueError, match="Ambiguous metric"):
         gen.generate(metrics=["multi_platform_users"], dimensions=[])
 
 

@@ -407,11 +407,12 @@ class SQLGenerator:
                     metric = self.graph.get_metric(m)
                 except KeyError:
                     pass
-                # Fall back to scanning models (e.g. model-scoped cohort metrics)
+                # Fall back to scanning models (e.g. model-scoped metrics)
                 if not metric:
                     for model in self.graph.models.values():
-                        metric = model.get_metric(m)
-                        if metric:
+                        found = model.get_metric(m)
+                        if found:
+                            metric = found
                             break
 
             if not metric:
@@ -3492,10 +3493,19 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 pass
 
             # Fall back to scanning models for the metric by name
+            matches = []
             for m_name, m in self.graph.models.items():
                 found = m.get_metric(metric_ref)
                 if found:
-                    return found, m_name
+                    matches.append((found, m_name))
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                model_names = ", ".join(mn for _, mn in matches)
+                raise ValueError(
+                    f"Ambiguous metric '{metric_ref}': found in models {model_names}. "
+                    f"Use a model-qualified name (e.g., 'model_name.{metric_ref}') to disambiguate."
+                )
 
             return None, model_context
 

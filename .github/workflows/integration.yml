@@ -110,14 +110,24 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: |
-          uv sync --extra snowflake --extra dev
-          uv pip install "fakesnow>=0.9.0" || echo "fakesnow install failed (sqlglot version mismatch), tests will be skipped"
+        run: uv sync --extra snowflake --extra dev
+
+      - name: Install fakesnow
+        id: fakesnow
+        continue-on-error: true
+        run: uv pip install "fakesnow>=0.9.0"
 
       - name: Run Snowflake integration tests
+        if: steps.fakesnow.outcome == 'success'
         env:
           SNOWFLAKE_TEST: "1"
         run: uv run pytest -m integration tests/db/test_snowflake_integration.py -v
+
+      - name: Report fakesnow incompatibility
+        if: steps.fakesnow.outcome == 'failure'
+        run: |
+          echo "::warning::fakesnow could not be installed (likely sqlglot version mismatch). Snowflake integration tests were skipped."
+          exit 0
 
   clickhouse-integration:
     runs-on: ubuntu-latest

@@ -5,9 +5,7 @@ from pathlib import Path
 from typing import Literal, get_args, get_origin
 
 import sqlglot
-from sqlglot import exp
-from sqlglot.dialects.duckdb import DuckDB
-from sqlglot.tokens import TokenType
+from sqlglot import Dialect, exp
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
@@ -32,48 +30,55 @@ def _supported_metric_aggs() -> set[str]:
     return _extract_literal_strings(annotation)
 
 
-class YardstickDialect(DuckDB):
-    """DuckDB dialect extension that supports `AS MEASURE <alias>`."""
+@lru_cache(maxsize=8)
+def _yardstick_dialect(base_dialect_name: str = "duckdb") -> type:
+    """Create a Yardstick dialect class extending any sqlglot dialect.
 
-    class Parser(DuckDB.Parser):
-        """Parser extension for Yardstick's measure alias syntax."""
+    The returned class adds ``AS MEASURE`` alias recognition to the base
+    dialect's parser.  Results are cached so repeated calls with the same
+    dialect name return the same class object.
+    """
+    base_instance = Dialect.get_or_raise(base_dialect_name)
+    base_cls = type(base_instance) if not isinstance(base_instance, type) else base_instance
+
+    class _YardstickParser(base_cls.Parser):
+        """Parser extension for Yardstick's measure alias syntax.
+
+        Delegates to the base dialect's ``_parse_alias`` so that
+        dialect-specific alias behaviour (e.g. ClickHouse ``APPLY``)
+        is preserved.  After the base parser runs, we detect the
+        ``AS MEASURE <name>`` pattern: the base parser will have
+        consumed ``MEASURE`` as the alias identifier, so we replace
+        it with the real alias name that follows.
+        """
 
         def _parse_alias(self, this: exp.Expression | None, explicit: bool = False) -> exp.Expression | None:
-            if self._can_parse_limit_or_offset():
-                return this
+            result = super()._parse_alias(this, explicit)
 
-            any_token = self._match(TokenType.ALIAS)
-            comments = self._prev_comments or []
-
-            if explicit and not any_token:
-                return this
-
-            if self._match(TokenType.L_PAREN):
-                aliases = self.expression(
-                    exp.Aliases,
-                    comments=comments,
-                    this=this,
-                    expressions=self._parse_csv(lambda: self._parse_id_var(any_token)),
+            if (
+                isinstance(result, exp.Alias)
+                and isinstance(result.args.get("alias"), exp.Identifier)
+                and not result.args["alias"].quoted
+                and result.args["alias"].name.upper() == "MEASURE"
+            ):
+                actual_alias = self._parse_id_var(True, tokens=self.ALIAS_TOKENS) or (
+                    self.STRING_ALIASES and self._parse_string_as_identifier()
                 )
-                self._match_r_paren(aliases)
-                return aliases
+                if actual_alias:
+                    result.set("alias", actual_alias)
+                    result.set("yardstick_measure", True)
 
-            is_measure_alias = bool(any_token and self._match_texts({"MEASURE"}))
-            alias = self._parse_id_var(any_token, tokens=self.ALIAS_TOKENS) or (
-                self.STRING_ALIASES and self._parse_string_as_identifier()
-            )
+            return result
 
-            if alias:
-                comments.extend(alias.pop_comments())
-                this = self.expression(exp.Alias, comments=comments, this=this, alias=alias)
-                if is_measure_alias:
-                    this.set("yardstick_measure", True)
+    class _YardstickDialect(base_cls):
+        class Parser(_YardstickParser):
+            pass
 
-                column = this.this
-                if not this.comments and column and column.comments:
-                    this.comments = column.pop_comments()
+    return _YardstickDialect
 
-            return this
+
+# Backward-compatible alias: the default DuckDB-based dialect.
+YardstickDialect = _yardstick_dialect("duckdb")
 
 
 class YardstickAdapter(BaseAdapter):
@@ -82,6 +87,9 @@ class YardstickAdapter(BaseAdapter):
     Yardstick defines measures inside CREATE VIEW statements with:
     `AGG(expr) AS MEASURE measure_name`.
     """
+
+    def __init__(self, dialect: str = "duckdb"):
+        self.dialect = dialect
 
     _SIMPLE_AGGREGATIONS: dict[type[exp.Expression], str] = {
         exp.Sum: "sum",
@@ -136,7 +144,7 @@ class YardstickAdapter(BaseAdapter):
                 graph.add_model(model)
 
     def _parse_statements(self, sql: str) -> list[exp.Expression | None]:
-        return sqlglot.parse(sql, read=YardstickDialect)
+        return sqlglot.parse(sql, read=_yardstick_dialect(self.dialect))
 
     def _model_from_create_view(self, create_stmt: exp.Create, select: exp.Select) -> Model | None:
         measure_aliases = {
@@ -174,7 +182,7 @@ class YardstickAdapter(BaseAdapter):
                     Dimension(
                         name=output_name,
                         type=dim_type,
-                        sql=dim_expr.sql(dialect="duckdb"),
+                        sql=dim_expr.sql(dialect=self.dialect),
                         granularity=dim_granularity,
                     )
                 )
@@ -182,7 +190,7 @@ class YardstickAdapter(BaseAdapter):
         if not metrics:
             return None
 
-        yardstick_metadata: dict[str, str] = {"view_sql": select.sql(dialect="duckdb")}
+        yardstick_metadata: dict[str, str] = {"view_sql": select.sql(dialect=self.dialect)}
         if source_table:
             yardstick_metadata["base_table"] = source_table
         if source_sql:
@@ -206,7 +214,7 @@ class YardstickAdapter(BaseAdapter):
         return Model(**model_kwargs)
 
     def _metric_from_expression(self, name: str, expression: exp.Expression, all_measure_names: set[str]) -> Metric:
-        expression_sql = expression.sql(dialect="duckdb")
+        expression_sql = expression.sql(dialect=self.dialect)
         if self._references_other_measures(name, expression, all_measure_names):
             return Metric(name=name, type="derived", sql=expression_sql)
 
@@ -244,7 +252,7 @@ class YardstickAdapter(BaseAdapter):
             table_expr = from_clause.this
             is_simple_table = isinstance(table_expr.this, exp.Identifier) and table_expr.args.get("alias") is None
             if is_simple_table:
-                return table_expr.sql(dialect="duckdb"), None
+                return table_expr.sql(dialect=self.dialect), None
 
         if from_clause is None:
             return None, None
@@ -258,7 +266,7 @@ class YardstickAdapter(BaseAdapter):
         if where_clause is not None:
             base_relation.set("where", where_clause.copy())
 
-        return None, base_relation.sql(dialect="duckdb")
+        return None, base_relation.sql(dialect=self.dialect)
 
     def _references_other_measures(self, name: str, expression: exp.Expression, all_measure_names: set[str]) -> bool:
         measure_lookup = {
@@ -278,9 +286,9 @@ class YardstickAdapter(BaseAdapter):
         agg, inner_sql = aggregation
         where_expression = expression.args.get("expression")
         if isinstance(where_expression, exp.Where):
-            filter_sql = where_expression.this.sql(dialect="duckdb")
+            filter_sql = where_expression.this.sql(dialect=self.dialect)
         elif isinstance(where_expression, exp.Expression):
-            filter_sql = where_expression.sql(dialect="duckdb")
+            filter_sql = where_expression.sql(dialect=self.dialect)
         else:
             filter_sql = ""
 
@@ -292,21 +300,21 @@ class YardstickAdapter(BaseAdapter):
             count_expr = expression.this
             if isinstance(count_expr, exp.Distinct):
                 if count_expr.expressions:
-                    inner_sql = ", ".join(expr.sql(dialect="duckdb") for expr in count_expr.expressions)
+                    inner_sql = ", ".join(expr.sql(dialect=self.dialect) for expr in count_expr.expressions)
                 else:
-                    inner_sql = count_expr.sql(dialect="duckdb")
+                    inner_sql = count_expr.sql(dialect=self.dialect)
                 return "count_distinct", inner_sql
 
             if count_expr is None or isinstance(count_expr, exp.Star):
                 return "count", "*"
-            return "count", count_expr.sql(dialect="duckdb")
+            return "count", count_expr.sql(dialect=self.dialect)
 
         for expression_type, aggregation_name in self._SIMPLE_AGGREGATIONS.items():
             if isinstance(expression, expression_type):
                 inner_expression = expression.this
                 if inner_expression is None:
                     return aggregation_name, "*"
-                return aggregation_name, inner_expression.sql(dialect="duckdb")
+                return aggregation_name, inner_expression.sql(dialect=self.dialect)
 
         if isinstance(expression, exp.Func):
             function_name = (expression.name or "").lower()
@@ -314,20 +322,20 @@ class YardstickAdapter(BaseAdapter):
                 count_expr = expression.this or (expression.expressions[0] if expression.expressions else None)
                 if isinstance(count_expr, exp.Distinct):
                     if count_expr.expressions:
-                        inner_sql = ", ".join(expr.sql(dialect="duckdb") for expr in count_expr.expressions)
+                        inner_sql = ", ".join(expr.sql(dialect=self.dialect) for expr in count_expr.expressions)
                     else:
-                        inner_sql = count_expr.sql(dialect="duckdb")
+                        inner_sql = count_expr.sql(dialect=self.dialect)
                     return "count_distinct", inner_sql
                 if count_expr is None or isinstance(count_expr, exp.Star):
                     return "count", "*"
-                return "count", count_expr.sql(dialect="duckdb")
+                return "count", count_expr.sql(dialect=self.dialect)
 
             supported_function_aggs = _supported_metric_aggs() - {"count", "count_distinct"}
             if function_name in supported_function_aggs:
                 inner_expression = expression.this or (expression.expressions[0] if expression.expressions else None)
                 if inner_expression is None:
                     return function_name, "*"
-                return function_name, inner_expression.sql(dialect="duckdb")
+                return function_name, inner_expression.sql(dialect=self.dialect)
 
         return None
 

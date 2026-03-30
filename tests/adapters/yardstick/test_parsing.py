@@ -373,3 +373,180 @@ INSERT INTO dup_regions VALUES
     rows = fetch_dicts(result)
 
     assert {row["year"]: row["unique_regions"] for row in rows} == {2023: 2, 2024: 2}
+
+
+def test_import_yardstick_with_postgres_dialect(tmp_path):
+    """Postgres dialect: TRY_CAST becomes plain CAST, measure detection still works."""
+    sql_file = tmp_path / "sales.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW sales_v AS
+SELECT
+    TRY_CAST(year_str AS INT) AS year,
+    region,
+    SUM(amount) AS MEASURE revenue,
+    COUNT(*) AS MEASURE order_count
+FROM sales;
+"""
+    )
+
+    adapter = YardstickAdapter(dialect="postgres")
+    graph = adapter.parse(sql_file)
+
+    model = graph.models["sales_v"]
+    assert model.table == "sales"
+
+    # Postgres has no TRY_CAST; sqlglot downgrades it to CAST
+    year_dim = model.get_dimension("year")
+    assert year_dim is not None
+    assert "CAST" in year_dim.sql
+    assert "TRY_CAST" not in year_dim.sql
+
+    revenue = model.get_metric("revenue")
+    assert revenue is not None
+    assert revenue.agg == "sum"
+    assert revenue.sql == "amount"
+
+    order_count = model.get_metric("order_count")
+    assert order_count is not None
+    assert order_count.agg == "count"
+
+
+def test_bigquery_dialect_rewrites_types_and_functions(tmp_path):
+    """BigQuery dialect: TEXT becomes STRING, TRY_CAST becomes SAFE_CAST."""
+    sql_file = tmp_path / "bq.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW bq_v AS
+SELECT
+    CAST(category AS TEXT) AS category,
+    TRY_CAST(score AS INT) AS score,
+    SUM(amount) AS MEASURE revenue
+FROM events;
+"""
+    )
+
+    adapter = YardstickAdapter(dialect="bigquery")
+    graph = adapter.parse(sql_file)
+
+    model = graph.models["bq_v"]
+    assert model.table == "events"
+
+    category_dim = model.get_dimension("category")
+    assert category_dim is not None
+    # BigQuery uses STRING instead of TEXT
+    assert "STRING" in category_dim.sql
+    assert "TEXT" not in category_dim.sql
+
+    score_dim = model.get_dimension("score")
+    assert score_dim is not None
+    # BigQuery uses SAFE_CAST instead of TRY_CAST, INT64 instead of INT
+    assert "SAFE_CAST" in score_dim.sql
+    assert "INT64" in score_dim.sql
+
+    revenue = model.get_metric("revenue")
+    assert revenue is not None
+    assert revenue.agg == "sum"
+
+
+def test_dialect_affects_filter_serialization(tmp_path):
+    """Filter expressions inside FILTER (WHERE ...) are serialized in the target dialect."""
+    sql_file = tmp_path / "filtered.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW filtered_v AS
+SELECT
+    region,
+    SUM(amount) FILTER (WHERE TRY_CAST(flag AS INT) = 1) AS MEASURE flagged_revenue
+FROM sales;
+"""
+    )
+
+    # DuckDB keeps TRY_CAST
+    duckdb_adapter = YardstickAdapter(dialect="duckdb")
+    duckdb_model = duckdb_adapter.parse(sql_file).models["filtered_v"]
+    duckdb_metric = duckdb_model.get_metric("flagged_revenue")
+    assert duckdb_metric is not None
+    assert duckdb_metric.filters is not None
+    assert "TRY_CAST" in duckdb_metric.filters[0]
+
+    # Postgres downgrades TRY_CAST to CAST in the filter
+    pg_adapter = YardstickAdapter(dialect="postgres")
+    pg_model = pg_adapter.parse(sql_file).models["filtered_v"]
+    pg_metric = pg_model.get_metric("flagged_revenue")
+    assert pg_metric is not None
+    assert pg_metric.filters is not None
+    assert "TRY_CAST" not in pg_metric.filters[0]
+    assert "CAST" in pg_metric.filters[0]
+
+
+def test_dialect_affects_base_relation_sql(tmp_path):
+    """Complex base relations (JOIN/WHERE) are serialized in the target dialect."""
+    sql_file = tmp_path / "joined.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW joined_v AS
+SELECT
+    a.region,
+    SUM(a.amount) AS MEASURE revenue
+FROM sales a
+JOIN dim_region b ON a.region_id = b.id
+WHERE TRY_CAST(a.active AS INT) = 1;
+"""
+    )
+
+    duckdb_adapter = YardstickAdapter(dialect="duckdb")
+    duckdb_model = duckdb_adapter.parse(sql_file).models["joined_v"]
+    assert duckdb_model.sql is not None
+    assert "TRY_CAST" in duckdb_model.sql
+
+    pg_adapter = YardstickAdapter(dialect="postgres")
+    pg_model = pg_adapter.parse(sql_file).models["joined_v"]
+    assert pg_model.sql is not None
+    assert "TRY_CAST" not in pg_model.sql
+    assert "CAST" in pg_model.sql
+
+
+def test_dialect_affects_view_sql_metadata(tmp_path):
+    """The view_sql stored in metadata is serialized in the target dialect."""
+    sql_file = tmp_path / "meta.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW meta_v AS
+SELECT
+    CAST(name AS TEXT) AS name,
+    SUM(amount) AS MEASURE revenue
+FROM items;
+"""
+    )
+
+    bq_adapter = YardstickAdapter(dialect="bigquery")
+    bq_model = bq_adapter.parse(sql_file).models["meta_v"]
+    view_sql = bq_model.metadata["yardstick"]["view_sql"]
+    # BigQuery serialization uses STRING not TEXT
+    assert "STRING" in view_sql
+    assert "TEXT" not in view_sql
+
+
+def test_dialect_default_is_duckdb(tmp_path):
+    """Adapter defaults to duckdb when no dialect is specified."""
+    sql_file = tmp_path / "default.sql"
+    sql_file.write_text(
+        """
+CREATE VIEW default_v AS
+SELECT
+    TRY_CAST(x AS INT) AS val,
+    SUM(amount) AS MEASURE revenue
+FROM t;
+"""
+    )
+
+    default_adapter = YardstickAdapter()
+    explicit_adapter = YardstickAdapter(dialect="duckdb")
+
+    default_model = default_adapter.parse(sql_file).models["default_v"]
+    explicit_model = explicit_adapter.parse(sql_file).models["default_v"]
+
+    # Both should produce identical dimension SQL (TRY_CAST preserved)
+    assert default_model.get_dimension("val").sql == explicit_model.get_dimension("val").sql
+    assert "TRY_CAST" in default_model.get_dimension("val").sql

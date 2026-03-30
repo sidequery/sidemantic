@@ -1,6 +1,14 @@
 """Tests for Sidemantic SQL dialect parsing."""
 
-from sidemantic.core.dialect import DimensionDef, MetricDef, ModelDef, RelationshipDef, SegmentDef, parse
+from sidemantic.core.dialect import (
+    is_definition,
+    is_dimension_def,
+    is_metric_def,
+    is_model_def,
+    is_relationship_def,
+    is_segment_def,
+    parse,
+)
 
 
 def _extract_props(defn):
@@ -47,11 +55,15 @@ def test_parse_definitions_and_properties():
     statements = parse(sql)
     assert len(statements) == 5
 
-    assert isinstance(statements[0], ModelDef)
-    assert isinstance(statements[1], DimensionDef)
-    assert isinstance(statements[2], MetricDef)
-    assert isinstance(statements[3], RelationshipDef)
-    assert isinstance(statements[4], SegmentDef)
+    assert is_model_def(statements[0])
+    assert is_dimension_def(statements[1])
+    assert is_metric_def(statements[2])
+    assert is_relationship_def(statements[3])
+    assert is_segment_def(statements[4])
+
+    # All are definitions
+    for stmt in statements:
+        assert is_definition(stmt)
 
     metric_props = _extract_props(statements[2])
     assert metric_props["name"] == "revenue"

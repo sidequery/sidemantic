@@ -19,7 +19,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 
-_MEASURE_PATTERN = re.compile(r"\bAS\s+MEASURE\s+(\w+)", re.IGNORECASE)
+_MEASURE_PATTERN = re.compile(r'\bAS\s+MEASURE\s+("(?:[^"\\]|\\.)*"|\w+)', re.IGNORECASE)
 
 
 def _extract_literal_strings(annotation) -> set[str]:
@@ -101,23 +101,32 @@ class YardstickAdapter(BaseAdapter):
                 graph.add_model(model)
 
     def _parse_statements(self, sql: str) -> list[exp.Expression | None]:
-        # Capture measure names and strip AS MEASURE -> AS
-        measures: set[str] = set()
+        # Track which measure names appear in which statement (by index)
+        # so we only tag aliases that were actually declared AS MEASURE.
+        raw_stmts = [s.strip() for s in sql.split(";") if s.strip()]
+        measures_per_stmt: list[set[str]] = []
+        preprocessed_stmts: list[str] = []
 
-        def _capture(m):
-            measures.add(m.group(1))
-            return f"AS {m.group(1)}"
+        for raw in raw_stmts:
+            stmt_measures: set[str] = set()
 
-        preprocessed = _MEASURE_PATTERN.sub(_capture, sql)
+            def _capture(m, _measures=stmt_measures):
+                name = m.group(1)
+                _measures.add(name.strip('"'))
+                return f"AS {name}"
+
+            preprocessed_stmts.append(_MEASURE_PATTERN.sub(_capture, raw))
+            measures_per_stmt.append(stmt_measures)
+
+        preprocessed = ";\n".join(preprocessed_stmts)
         statements = sqlglot.parse(preprocessed, read=self.dialect)
 
-        # Tag measure aliases on the parsed AST
-        if measures:
-            for stmt in statements:
-                if stmt:
-                    for alias_node in stmt.find_all(exp.Alias):
-                        if alias_node.output_name in measures:
-                            alias_node.set("yardstick_measure", True)
+        # Tag measure aliases scoped to their own statement
+        for i, stmt in enumerate(statements):
+            if stmt and i < len(measures_per_stmt) and measures_per_stmt[i]:
+                for alias_node in stmt.find_all(exp.Alias):
+                    if alias_node.output_name in measures_per_stmt[i]:
+                        alias_node.set("yardstick_measure", True)
 
         return statements
 

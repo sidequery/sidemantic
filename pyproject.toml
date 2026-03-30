@@ -7,7 +7,7 @@ license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
     "antlr4-python3-runtime>=4.13.2",
-    "sqlglot[c]>=30.1.0",
+    "sqlglot>=30.1.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
     "jinja2>=3.1.0",
@@ -34,6 +34,7 @@ dev = [
     "lkml>=1.3.7",
     "inflect>=7.0.0",
     "antlr4-python3-runtime>=4.13.2",
+    "sqlglot[c]>=30.1.0",
 ]
 workbench = [
     "textual[syntax]>=1.0.0",
@@ -49,6 +50,9 @@ apps = [
 charts = [
     "altair>=5.0.0",
     "vl-convert-python>=1.0.0",
+]
+fast = [
+    "sqlglot[c]>=30.1.0",
 ]
 serve = [
     "riffq>=0.1.0",

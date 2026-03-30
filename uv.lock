@@ -3250,7 +3250,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "sqlglot", extra = ["c"] },
+    { name = "sqlglot" },
     { name = "typer" },
 ]
 
@@ -3308,7 +3308,11 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "sqlglot", extra = ["c"] },
     { name = "uvicorn" },
+]
+fast = [
+    { name = "sqlglot", extra = ["c"] },
 ]
 full = [
     { name = "altair" },
@@ -3442,7 +3446,9 @@ requires-dist = [
     { name = "sidemantic", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
     { name = "sidemantic", extras = ["workbench", "mcp", "apps", "charts", "lsp", "lookml", "malloy", "metricflow", "widget", "api"], marker = "extra == 'full'" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0.0" },
-    { name = "sqlglot", extras = ["c"], specifier = ">=30.1.0" },
+    { name = "sqlglot", specifier = ">=30.1.0" },
+    { name = "sqlglot", extras = ["c"], marker = "extra == 'dev'", specifier = ">=30.1.0" },
+    { name = "sqlglot", extras = ["c"], marker = "extra == 'fast'", specifier = ">=30.1.0" },
     { name = "textual", extras = ["syntax"], marker = "extra == 'workbench'", specifier = ">=1.0.0" },
     { name = "textual-plotext", marker = "extra == 'workbench'", specifier = ">=1.0.1" },
     { name = "thrift", marker = "extra == 'spark'", specifier = ">=0.16.0" },
@@ -3452,7 +3458,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.34.0" },
     { name = "vl-convert-python", marker = "extra == 'charts'", specifier = ">=1.0.0" },
 ]
-provides-extras = ["dev", "workbench", "mcp", "apps", "charts", "serve", "api", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "lookml", "malloy", "metricflow", "widget", "all-databases", "full"]
+provides-extras = ["dev", "workbench", "mcp", "apps", "charts", "fast", "serve", "api", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "lookml", "malloy", "metricflow", "widget", "all-databases", "full"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -347,13 +347,13 @@ class HolisticsAdapter(BaseAdapter):
         if model.description:
             lines.append(f"  description: '{_escape_single_quotes(model.description)}'")
 
-        if model.table:
-            lines.append(f"  table_name: '{_escape_single_quotes(model.table)}'")
-        elif model.sql:
+        if model.sql:
             query = model.sql.strip()
             lines.append("  query: @sql")
             lines.extend([f"    {line}" if line.strip() else "" for line in query.splitlines()])
             lines.append("  ;;")
+        elif model.table:
+            lines.append(f"  table_name: '{_escape_single_quotes(model.table)}'")
 
         for dimension in model.dimensions:
             lines.extend(_export_dimension(dimension, model.primary_key))

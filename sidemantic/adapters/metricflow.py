@@ -109,6 +109,9 @@ class MetricFlowAdapter(BaseAdapter):
                 ref_model = model_ref.replace("ref('", "").replace("')", "").replace('ref("', "").replace('")', "")
                 table = ref_model
 
+        # Read sql field (used for filtered/derived models)
+        model_sql = model_def.get("sql")
+
         # Parse entities to extract primary key and relationships
         primary_key = "id"  # default
         relationships = []
@@ -167,6 +170,7 @@ class MetricFlowAdapter(BaseAdapter):
         return Model(
             name=name,
             table=table,
+            sql=model_sql,
             description=model_def.get("description"),
             primary_key=primary_key,
             relationships=relationships,
@@ -445,10 +449,10 @@ class MetricFlowAdapter(BaseAdapter):
         """
         result = {"name": model.name}
 
-        if model.table:
-            result["model"] = f"ref('{model.table.split('.')[-1]}')"
-        elif model.sql:
+        if model.sql:
             result["sql"] = model.sql
+        elif model.table:
+            result["model"] = f"ref('{model.table.split('.')[-1]}')"
 
         if model.description:
             result["description"] = model.description

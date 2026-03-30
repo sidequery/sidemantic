@@ -804,10 +804,10 @@ class CubeAdapter(BaseAdapter):
         """
         cube = {"name": model.name}
 
-        if model.table:
-            cube["sql_table"] = model.table
-        elif model.sql:
+        if model.sql:
             cube["sql"] = model.sql
+        elif model.table:
+            cube["sql_table"] = model.table
 
         if model.description:
             cube["description"] = model.description

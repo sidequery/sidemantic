@@ -1444,10 +1444,10 @@ class MalloyAdapter(BaseAdapter):
 
         # Source header - use connection from metadata, default to duckdb
         connection = (model.metadata or {}).get("connection", "duckdb")
-        if model.table:
-            lines.append(f"source: {model.name} is {connection}.table('{model.table}') extend {{")
-        elif model.sql:
+        if model.sql:
             lines.append(f'source: {model.name} is {connection}.sql("""{model.sql}""") extend {{')
+        elif model.table:
+            lines.append(f"source: {model.name} is {connection}.table('{model.table}') extend {{")
         else:
             lines.append(f"source: {model.name} extend {{")
 

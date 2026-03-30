@@ -1129,10 +1129,10 @@ class LookMLAdapter(BaseAdapter):
         """
         view = {"name": model.name}
 
-        if model.table:
-            view["sql_table_name"] = model.table
-        elif model.sql:
+        if model.sql:
             view["derived_table"] = {"sql": model.sql}
+        elif model.table:
+            view["sql_table_name"] = model.table
 
         if model.description:
             view["description"] = model.description

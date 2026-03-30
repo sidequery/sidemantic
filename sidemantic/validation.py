@@ -282,10 +282,10 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
         if "__" in dim_ref:
             dim_ref_base, granularity = dim_ref.rsplit("__", 1)
             # Validate granularity
-            if granularity not in ["hour", "day", "week", "month", "quarter", "year"]:
+            if granularity not in ["second", "minute", "hour", "day", "week", "month", "quarter", "year"]:
                 errors.append(
                     f"Invalid time granularity '{granularity}' in '{dim_ref}'. "
-                    f"Must be one of: hour, day, week, month, quarter, year"
+                    f"Must be one of: second, minute, hour, day, week, month, quarter, year"
                 )
             dim_ref = dim_ref_base
 

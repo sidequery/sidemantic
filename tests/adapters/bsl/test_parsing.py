@@ -5,6 +5,8 @@ import pytest
 from sidemantic.adapters.bsl import BSLAdapter
 from sidemantic.adapters.bsl_expr import (
     ParsedExpr,
+    _sql_to_bsl_expr,
+    bsl_filter_to_sql,
     bsl_to_sql,
     is_calc_measure_expr,
     parse_bsl_expr,
@@ -855,6 +857,428 @@ models:
 
         # Check that BSL pattern doesn't match Sidemantic
         assert not ("_." in sidemantic_content and "dimensions:" in sidemantic_content)
+
+
+class TestBSLCompoundExpressions:
+    """Tests for compound arithmetic expressions like (_.a - _.b).sum()."""
+
+    def test_parse_arithmetic_subtraction(self):
+        result = parse_bsl_expr("(_.total_claim_cost - _.payer_coverage).sum()")
+        assert result.column == "total_claim_cost - payer_coverage"
+        assert result.aggregation == "sum"
+
+    def test_parse_arithmetic_addition(self):
+        result = parse_bsl_expr("(_.a + _.b).sum()")
+        assert result.column == "a + b"
+        assert result.aggregation == "sum"
+
+    def test_parse_arithmetic_division(self):
+        result = parse_bsl_expr("(_.a / _.b).mean()")
+        assert result.column == "a / b"
+        assert result.aggregation == "mean"
+
+    def test_parse_arithmetic_multiplication(self):
+        result = parse_bsl_expr("(_.a * _.b).sum()")
+        assert result.column == "a * b"
+        assert result.aggregation == "sum"
+
+    def test_parse_arithmetic_with_constant(self):
+        result = parse_bsl_expr("(_.a * 100).sum()")
+        assert result.column == "a * 100"
+        assert result.aggregation == "sum"
+
+    def test_parse_nested_arithmetic_preserves_grouping(self):
+        result = parse_bsl_expr("(_.a - (_.b + _.c)).sum()")
+        assert result.column == "a - (b + c)"
+        assert result.aggregation == "sum"
+
+    def test_parse_nested_arithmetic_left_grouping(self):
+        result = parse_bsl_expr("((_.a - _.b) * _.c).sum()")
+        assert result.column == "(a - b) * c"
+        assert result.aggregation == "sum"
+
+    def test_bsl_to_sql_compound(self):
+        sql, agg, date_part = bsl_to_sql("(_.total_claim_cost - _.payer_coverage).sum()")
+        assert sql == "total_claim_cost - payer_coverage"
+        assert agg == "sum"
+        assert date_part is None
+
+    def test_sql_to_bsl_expr_compound(self):
+        result = _sql_to_bsl_expr("total_claim_cost - payer_coverage", "sum")
+        assert result == "(_.total_claim_cost - _.payer_coverage).sum()"
+
+    def test_sql_to_bsl_expr_compound_mean(self):
+        result = _sql_to_bsl_expr("total_claim_cost - payer_coverage", "avg")
+        assert result == "(_.total_claim_cost - _.payer_coverage).mean()"
+
+
+class TestBSLBooleanExpressions:
+    """Tests for boolean comparison expressions like (_.col == "val").sum()."""
+
+    def test_parse_equality_string(self):
+        result = parse_bsl_expr('(_.encounter_class == "emergency").sum()')
+        assert result.column == "encounter_class = 'emergency'"
+        assert result.aggregation == "sum"
+
+    def test_parse_equality_char(self):
+        result = parse_bsl_expr("(_.shared_match_flag == 'Y').mean()")
+        assert result.column == "shared_match_flag = 'Y'"
+        assert result.aggregation == "mean"
+
+    def test_parse_inequality(self):
+        result = parse_bsl_expr('(_.col != "val").sum()')
+        assert result.column == "col != 'val'"
+        assert result.aggregation == "sum"
+
+    def test_parse_greater_than(self):
+        result = parse_bsl_expr("(_.col > 5).sum()")
+        assert result.column == "col > 5"
+        assert result.aggregation == "sum"
+
+    def test_bsl_to_sql_comparison(self):
+        sql, agg, date_part = bsl_to_sql('(_.encounter_class == "emergency").sum()')
+        assert sql == "encounter_class = 'emergency'"
+        assert agg == "sum"
+        assert date_part is None
+
+    def test_sql_to_bsl_expr_comparison(self):
+        result = _sql_to_bsl_expr("encounter_class = 'emergency'", "sum")
+        assert result == "(_.encounter_class == 'emergency').sum()"
+
+    def test_sql_to_bsl_expr_comparison_mean(self):
+        result = _sql_to_bsl_expr("shared_match_flag = 'Y'", "avg")
+        assert result == "(_.shared_match_flag == 'Y').mean()"
+
+    def test_sql_to_bsl_expr_gte(self):
+        result = _sql_to_bsl_expr("a >= 5", "sum")
+        assert result == "(_.a >= 5).sum()"
+
+
+class TestBSLAdapterHealthcare:
+    """Tests for healthcare fixture (compound measures, with: joins, primary_key)."""
+
+    def test_import_healthcare_compound_measures(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/healthcare.yml")
+        encounters = graph.models["encounters"]
+
+        total_oop = next(m for m in encounters.metrics if m.name == "total_out_of_pocket")
+        assert total_oop.agg == "sum"
+        assert total_oop.sql == "total_claim_cost - payer_coverage"
+
+        avg_oop = next(m for m in encounters.metrics if m.name == "avg_out_of_pocket")
+        assert avg_oop.agg == "avg"
+        assert avg_oop.sql == "total_claim_cost - payer_coverage"
+
+    def test_import_healthcare_boolean_measures(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/healthcare.yml")
+        encounters = graph.models["encounters"]
+
+        emergency = next(m for m in encounters.metrics if m.name == "emergency_count")
+        assert emergency.agg == "sum"
+        assert "encounter_class" in emergency.sql
+        assert "'emergency'" in emergency.sql
+
+        wellness = next(m for m in encounters.metrics if m.name == "wellness_count")
+        assert wellness.agg == "sum"
+        assert "'wellness'" in wellness.sql
+
+    def test_import_healthcare_with_joins(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/healthcare.yml")
+        encounters = graph.models["encounters"]
+
+        patient_rel = next(r for r in encounters.relationships if r.name == "patients")
+        assert patient_rel.foreign_key == "patient_id"
+        assert patient_rel.type == "many_to_one"
+
+        org_rel = next(r for r in encounters.relationships if r.name == "organizations")
+        assert org_rel.foreign_key == "organization_id"
+
+        payer_rel = next(r for r in encounters.relationships if r.name == "payers")
+        assert payer_rel.foreign_key == "payer_id"
+
+    def test_import_healthcare_primary_key(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/healthcare.yml")
+        orgs = graph.models["organizations"]
+        assert orgs.primary_key == "id"
+
+
+class TestBSLAdapterNycTaxi:
+    """Tests for NYC taxi fixture (time_dimension, boolean rates, with: joins)."""
+
+    def test_import_time_dimension(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/nyc_taxi.yml")
+        trips = graph.models["fhvhv_trips"]
+
+        assert trips.default_time_dimension == "pickup_datetime"
+        assert trips.default_grain == "second"
+
+        pickup_dim = next(d for d in trips.dimensions if d.name == "pickup_datetime")
+        assert pickup_dim.type == "time"
+        assert pickup_dim.granularity == "second"
+
+    def test_import_boolean_rate(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/nyc_taxi.yml")
+        trips = graph.models["fhvhv_trips"]
+
+        shared_rate = next(m for m in trips.metrics if m.name == "shared_trip_rate")
+        assert shared_rate.agg == "avg"
+        assert "shared_match_flag" in shared_rate.sql
+        assert "'Y'" in shared_rate.sql
+
+    def test_import_with_join(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/nyc_taxi.yml")
+        trips = graph.models["fhvhv_trips"]
+
+        pickup_rel = next(r for r in trips.relationships if r.name == "taxi_zones")
+        assert pickup_rel.foreign_key == "PULocationID"
+
+
+class TestBSLAdapterFilter:
+    """Tests for model-level filter parsing."""
+
+    def test_import_filter_model(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/yaml_example_filter.yaml")
+        flights = graph.models["flights"]
+
+        # Filter stored in metadata for roundtrip
+        assert flights.metadata is not None
+        assert "bsl_filter" in flights.metadata
+        assert "year" in flights.metadata["bsl_filter"]
+
+        # Filter baked into model.sql as subquery; table kept for migrator
+        assert flights.sql is not None
+        assert "WHERE" in flights.sql
+        assert "year > 2020" in flights.sql
+        assert flights.table == "flights_tbl"
+
+    def test_filter_preserved_in_cross_format_export(self):
+        """Filtered BSL model preserves filter when exported to Cube."""
+        from sidemantic.adapters.cube import CubeAdapter
+
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/yaml_example_filter.yaml")
+
+        cube_adapter = CubeAdapter()
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            temp_path = Path(f.name)
+
+        try:
+            cube_adapter.export(graph, temp_path)
+            import yaml
+
+            with open(temp_path) as f:
+                data = yaml.safe_load(f)
+
+            # The filtered model should export with sql (not sql_table)
+            # so the filter is preserved
+            flights_cube = next(c for c in data["cubes"] if c["name"] == "flights")
+            assert "sql" in flights_cube
+            assert "year > 2020" in flights_cube["sql"]
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+
+class TestBSLFilterToSQL:
+    """Tests for BSL filter expression to SQL conversion."""
+
+    def test_simple_comparison(self):
+        assert bsl_filter_to_sql("_.year > 2020") == "year > 2020"
+
+    def test_equality_string(self):
+        result = bsl_filter_to_sql("_.origin == 'LAX'")
+        assert result == "origin = 'LAX'"
+
+    def test_compound_and(self):
+        result = bsl_filter_to_sql("(_.year > 2020) & (_.origin == 'LAX')")
+        assert result == "(year > 2020) AND (origin = 'LAX')"
+
+    def test_compound_or(self):
+        result = bsl_filter_to_sql("(_.origin == 'LAX') | (_.origin == 'SFO')")
+        assert result == "(origin = 'LAX') OR (origin = 'SFO')"
+
+    def test_mixed_precedence(self):
+        """Parens must preserve precedence in mixed AND/OR filters."""
+        result = bsl_filter_to_sql("(_.a == 1) & ((_.b == 2) | (_.c == 3))")
+        assert "AND" in result
+        assert "OR" in result
+        # The OR clause must be parenthesized to prevent SQL precedence issues
+        assert "(b = 2) OR (c = 3)" in result
+
+    def test_negation(self):
+        result = bsl_filter_to_sql("~(_.origin == 'LAX')")
+        assert result == "NOT (origin = 'LAX')"
+
+    def test_negation_compound(self):
+        result = bsl_filter_to_sql("(_.year > 2020) & ~(_.origin == 'LAX')")
+        assert "AND" in result
+        assert "NOT (origin = 'LAX')" in result
+
+    def test_isin(self):
+        result = bsl_filter_to_sql("_.origin.isin(['LAX', 'SFO', 'JFK'])")
+        assert result == "origin IN ('LAX', 'SFO', 'JFK')"
+
+    def test_notin(self):
+        result = bsl_filter_to_sql("_.status.notin(['cancelled', 'delayed'])")
+        assert result == "status NOT IN ('cancelled', 'delayed')"
+
+    def test_isin_numeric(self):
+        result = bsl_filter_to_sql("_.year.isin([2020, 2021, 2022])")
+        assert result == "year IN (2020, 2021, 2022)"
+
+    def test_between(self):
+        result = bsl_filter_to_sql("_.year.between(2020, 2025)")
+        assert result == "year BETWEEN 2020 AND 2025"
+
+    def test_isnull(self):
+        result = bsl_filter_to_sql("_.origin.isnull()")
+        assert result == "origin IS NULL"
+
+    def test_notnull(self):
+        result = bsl_filter_to_sql("_.origin.notnull()")
+        assert result == "origin IS NOT NULL"
+
+    def test_negative_number(self):
+        assert bsl_filter_to_sql("_.delta > -5") == "delta > -5"
+
+    def test_negative_float(self):
+        assert bsl_filter_to_sql("_.score < -0.5") == "score < -0.5"
+
+
+class TestBSLFilterAutoApply:
+    """Tests that model-level filters are auto-applied in queries via model.sql."""
+
+    def test_filter_applied_in_query(self):
+        from sidemantic import SemanticLayer
+
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/yaml_example_filter.yaml")
+
+        layer = SemanticLayer()
+        layer.graph = graph
+
+        sql = layer.compile(metrics=["flights.flight_count"])
+        # The model-level filter is baked into the FROM subquery
+        assert "year > 2020" in sql
+
+
+class TestBSLRoundtripFidelity:
+    """Tests that BSL import/export preserves original expressions."""
+
+    def test_compound_measure_preserves_original(self):
+        """Compound expressions roundtrip via stored original, not reconstruction."""
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/healthcare.yml")
+
+        encounters = graph.models["encounters"]
+        total_oop = next(m for m in encounters.metrics if m.name == "total_out_of_pocket")
+
+        # Original BSL expression is stored
+        assert total_oop.metadata is not None
+        assert total_oop.metadata["bsl_expr"] == "(_.total_claim_cost - _.payer_coverage).sum()"
+
+    def test_boolean_measure_preserves_original(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/healthcare.yml")
+
+        encounters = graph.models["encounters"]
+        emergency = next(m for m in encounters.metrics if m.name == "emergency_count")
+
+        assert emergency.metadata is not None
+        assert emergency.metadata["bsl_expr"] == '(_.encounter_class == "emergency").sum()'
+
+    def test_dimension_preserves_original(self):
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/flights.yml")
+
+        flights = graph.models["flights"]
+        origin = next(d for d in flights.dimensions if d.name == "origin")
+
+        assert origin.metadata is not None
+        assert origin.metadata["bsl_expr"] == "_.origin"
+
+    def test_export_uses_stored_original(self):
+        """Export emits the stored BSL expression, not a reconstruction."""
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        adapter = BSLAdapter()
+        graph = adapter.parse("tests/fixtures/bsl/healthcare.yml")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            temp_path = Path(f.name)
+
+        try:
+            adapter.export(graph, temp_path)
+            with open(temp_path) as f:
+                data = yaml.safe_load(f)
+
+            measures = data["encounters"]["measures"]
+
+            # Compound measure exported with original BSL expression
+            total_oop = measures["total_out_of_pocket"]
+            if isinstance(total_oop, str):
+                assert total_oop == "(_.total_claim_cost - _.payer_coverage).sum()"
+            else:
+                assert total_oop["expr"] == "(_.total_claim_cost - _.payer_coverage).sum()"
+
+            # Boolean measure exported with original BSL expression
+            emergency = measures["emergency_count"]
+            if isinstance(emergency, str):
+                assert emergency == '(_.encounter_class == "emergency").sum()'
+            else:
+                assert emergency["expr"] == '(_.encounter_class == "emergency").sum()'
+
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def test_count_metric_exports_correctly(self):
+        """COUNT(*) metrics without sql should export as _.count(), not _.name.count()."""
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from sidemantic.core.metric import Metric
+        from sidemantic.core.model import Model
+        from sidemantic.core.semantic_graph import SemanticGraph
+
+        model = Model(
+            name="test",
+            table="test",
+            primary_key="id",
+            metrics=[Metric(name="row_count", agg="count")],
+        )
+
+        graph = SemanticGraph()
+        graph.add_model(model)
+        adapter = BSLAdapter()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            temp_path = Path(f.name)
+
+        try:
+            adapter.export(graph, temp_path)
+            with open(temp_path) as f:
+                data = yaml.safe_load(f)
+
+            measure = data["test"]["measures"]["row_count"]
+            expr = measure if isinstance(measure, str) else measure["expr"]
+            assert expr == "_.count()"
+        finally:
+            temp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

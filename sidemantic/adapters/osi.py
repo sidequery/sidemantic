@@ -478,10 +478,10 @@ class OSIAdapter(BaseAdapter):
         """
         dataset: dict[str, Any] = {"name": model.name}
 
-        if model.table:
-            dataset["source"] = model.table
-        elif model.sql:
+        if model.sql:
             dataset["source"] = f"({model.sql})"
+        elif model.table:
+            dataset["source"] = model.table
 
         # Export primary_key as list (multi-column support)
         if model.primary_key:

@@ -336,10 +336,10 @@ class HexAdapter(BaseAdapter):
         """
         model_def = {"id": model.name}
 
-        if model.table:
-            model_def["base_sql_table"] = model.table
-        elif model.sql:
+        if model.sql:
             model_def["base_sql_query"] = model.sql
+        elif model.table:
+            model_def["base_sql_table"] = model.table
 
         if model.description:
             model_def["description"] = model.description

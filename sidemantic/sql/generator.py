@@ -403,6 +403,12 @@ class SQLGenerator:
                     metric = self.graph.get_metric(m)
                 except KeyError:
                     pass
+                # Fall back to scanning models (e.g. model-scoped cohort metrics)
+                if not metric:
+                    for model in self.graph.models.values():
+                        metric = model.get_metric(m)
+                        if metric:
+                            break
 
             if not metric:
                 return False
@@ -3469,7 +3475,15 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             try:
                 return self.graph.get_metric(metric_ref), model_context
             except KeyError:
-                return None, model_context
+                pass
+
+            # Fall back to scanning models for the metric by name
+            for m_name, m in self.graph.models.items():
+                found = m.get_metric(metric_ref)
+                if found:
+                    return found, m_name
+
+            return None, model_context
 
         def collect_leaf_base_metrics(
             metric_ref: str, model_context: str | None = None, visited: set[str] | None = None

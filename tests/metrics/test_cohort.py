@@ -79,6 +79,24 @@ def test_cohort_graph_level_metric():
     assert rows[0][0] == 1
 
 
+def test_cohort_model_scoped_unqualified():
+    """Model-scoped cohort metric with unqualified name resolves correctly."""
+    events = _make_events_model()
+    metric = _make_multi_platform_metric()
+    events.metrics.append(metric)
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+
+    gen = SQLGenerator(graph)
+    # Unqualified name for a model-scoped metric (not added via graph.add_metric)
+    sql = gen.generate(metrics=["multi_platform_users"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    rows = df_rows(conn.execute(sql))
+    assert rows[0][0] == 1
+
+
 def test_cohort_with_dimension():
     """Cohort metric with a query-level dimension unpacks tuples correctly."""
     events = Model(

@@ -2550,12 +2550,18 @@ class SQLGenerator:
                 if dim:
                     im_sql = _replace_model_placeholder(dim.sql_expr)
 
+            if not im_sql and im_agg not in ("COUNT", "COUNT_DISTINCT"):
+                raise ValueError(
+                    f"Inner metric '{im_name}' on cohort metric '{metric.name}' "
+                    f"uses agg '{im_agg}' which requires a 'sql' field"
+                )
+
             if im_agg == "COUNT_DISTINCT":
                 expr = f"COUNT(DISTINCT {im_sql or '*'})"
             elif im_agg == "COUNT":
                 expr = f"COUNT({im_sql or '*'})"
             else:
-                expr = f"{im_agg}({im_sql or '*'})"
+                expr = f"{im_agg}({im_sql})"
 
             inner_metric_selects.append(f"{expr} AS {im_name}")
 
@@ -2569,12 +2575,15 @@ class SQLGenerator:
             # cohort_sub), not the raw table alias used inside the subquery.
             outer_sql = outer_sql.replace("{model}.", "cohort_sub.").replace("{model}", "cohort_sub")
 
+        if not outer_sql and outer_agg not in ("COUNT", "COUNT_DISTINCT"):
+            raise ValueError(f"Cohort metric '{metric.name}' uses agg '{outer_agg}' which requires a 'sql' field")
+
         if outer_agg == "COUNT_DISTINCT":
             outer_expr = f"COUNT(DISTINCT {outer_sql or entity_alias})"
         elif outer_agg == "COUNT":
             outer_expr = f"COUNT({outer_sql or '*'})"
         else:
-            outer_expr = f"{outer_agg}({outer_sql or '*'})"
+            outer_expr = f"{outer_agg}({outer_sql})"
 
         outer_select_cols = []
         outer_group_cols = []

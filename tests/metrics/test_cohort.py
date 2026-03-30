@@ -118,6 +118,49 @@ def test_cohort_with_dimension():
     assert result["EU"] == 1
 
 
+def test_cohort_outer_agg_without_sql_raises():
+    """Non-count outer agg without sql should raise, not emit SUM(*)."""
+    events = _make_events_model()
+    metric = Metric(
+        name="bad_cohort",
+        type="cohort",
+        entity="user_id",
+        inner_metrics=[{"name": "cnt", "agg": "count"}],
+        having="cnt >= 2",
+        agg="avg",
+        # no sql field
+    )
+    events.metrics.append(metric)
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+
+    gen = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="requires a 'sql' field"):
+        gen.generate(metrics=["events.bad_cohort"], dimensions=[])
+
+
+def test_cohort_inner_metric_agg_without_sql_raises():
+    """Non-count inner metric agg without sql should raise, not emit SUM(*)."""
+    events = _make_events_model()
+    metric = Metric(
+        name="bad_inner",
+        type="cohort",
+        entity="user_id",
+        inner_metrics=[{"name": "total", "agg": "sum"}],  # no sql
+        having="total > 0",
+        agg="count",
+    )
+    events.metrics.append(metric)
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+
+    gen = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="requires a 'sql' field"):
+        gen.generate(metrics=["events.bad_inner"], dimensions=[])
+
+
 def test_cohort_unknown_dimension_raises():
     """Referencing a nonexistent dimension should raise, not silently drop it."""
     events = _make_events_model()

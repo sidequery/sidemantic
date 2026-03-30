@@ -330,19 +330,10 @@ def mcp_serve(
 
         # Enable apps mode if requested
         if apps:
-            try:
-                import mcp_ui_server  # noqa: F401
+            import sidemantic.mcp_server as _mcp_mod
 
-                import sidemantic.mcp_server as _mcp_mod
-
-                _mcp_mod._apps_enabled = True
-                typer.echo("Interactive UI widgets enabled", err=True)
-            except ImportError:
-                typer.echo(
-                    "Error: mcp-ui-server not installed. Install with: uv add mcp-ui-server",
-                    err=True,
-                )
-                raise typer.Exit(1)
+            _mcp_mod._apps_enabled = True
+            typer.echo("Interactive UI widgets enabled", err=True)
 
         # Determine transport
         if http or apps:

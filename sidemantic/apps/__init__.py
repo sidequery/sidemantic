@@ -1,6 +1,6 @@
 """MCP Apps integration for sidemantic.
 
-Uses mcp-ui-server to create vendor-neutral UI resources that render
+Creates vendor-neutral UI resources (MCP Apps standard) that render
 interactive charts in any MCP Apps-compatible host.
 """
 
@@ -45,7 +45,7 @@ def create_chart_resource(vega_spec: dict[str, Any]):
     Returns:
         UIResource (EmbeddedResource) for MCP Apps-compatible hosts.
     """
-    from mcp_ui_server import create_ui_resource
+    from sidemantic.apps._mcp_ui import create_ui_resource
 
     html = build_chart_html(vega_spec)
     return create_ui_resource(

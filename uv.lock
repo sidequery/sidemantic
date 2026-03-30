@@ -1924,16 +1924,6 @@ cli = [
 ]
 
 [[package]]
-name = "mcp-ui-server"
-version = "1.0.0"
-source = { git = "https://github.com/MCP-UI-Org/mcp-ui.git?subdirectory=sdks%2Fpython%2Fserver#af881f9eff2cb0c394587cbf3bd00ffe5ee973a0" }
-dependencies = [
-    { name = "mcp" },
-    { name = "pydantic" },
-    { name = "typing-extensions" },
-]
-
-[[package]]
 name = "mdit-py-plugins"
 version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3303,7 +3293,6 @@ api = [
 ]
 apps = [
     { name = "mcp", extra = ["cli"] },
-    { name = "mcp-ui-server" },
 ]
 bigquery = [
     { name = "google-cloud-bigquery" },
@@ -3345,7 +3334,6 @@ full = [
     { name = "lkml" },
     { name = "lsprotocol" },
     { name = "mcp", extra = ["cli"] },
-    { name = "mcp-ui-server" },
     { name = "plotext" },
     { name = "pyarrow" },
     { name = "pygls" },
@@ -3443,7 +3431,6 @@ requires-dist = [
     { name = "lsprotocol", marker = "extra == 'lsp'", specifier = ">=2025.0.0" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'apps'", specifier = ">=1.25.0,<2" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.25.0,<2" },
-    { name = "mcp-ui-server", marker = "extra == 'apps'", git = "https://github.com/MCP-UI-Org/mcp-ui.git?subdirectory=sdks%2Fpython%2Fserver" },
     { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.26,<3" },
     { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.2,<3" },
     { name = "plotext", marker = "extra == 'workbench'", specifier = ">=5.3.2" },

@@ -1,9 +1,8 @@
-"""Tests for MCP Apps (mcp-ui-server) integration."""
+"""Tests for MCP Apps UI integration."""
 
 import pytest
 
-pytest.importorskip("mcp_ui_server")  # Skip if apps extra not installed
-pytest.importorskip("mcp")
+pytest.importorskip("mcp")  # Skip if mcp extra not installed
 
 from sidemantic.apps import build_chart_html, create_chart_resource
 from sidemantic.mcp_server import create_chart, initialize_layer

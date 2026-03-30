@@ -1,25 +1,25 @@
 """Yardstick adapter for importing SQL models with AS MEASURE semantics.
 
-Compatible with sqlglot's mypyc C extension by preprocessing SQL
-to strip ``AS MEASURE`` before parsing, then tagging measure aliases
-on the resulting AST.
+Compatible with sqlglot's mypyc C extension. Uses the tokenizer to
+identify ``AS MEASURE <alias>`` sequences, strips the ``MEASURE``
+keyword, parses with the standard DuckDB dialect, then tags the
+corresponding alias nodes.
 """
 
-import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args, get_origin
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.duckdb import DuckDB
+from sqlglot.tokens import TokenType
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
-
-_MEASURE_PATTERN = re.compile(r'\bAS\s+MEASURE\s+("(?:[^"\\]|\\.)*"|\w+)', re.IGNORECASE)
 
 
 def _extract_literal_strings(annotation) -> set[str]:
@@ -36,6 +36,42 @@ def _extract_literal_strings(annotation) -> set[str]:
 def _supported_metric_aggs() -> set[str]:
     annotation = Metric.model_fields["agg"].annotation
     return _extract_literal_strings(annotation)
+
+
+def _strip_measure_tokens(sql: str) -> tuple[str, set[str]]:
+    """Remove MEASURE keyword from ``AS MEASURE <alias>`` sequences.
+
+    Uses sqlglot's tokenizer so string literals and comments are handled
+    correctly. Returns the cleaned SQL and the set of measure alias names.
+    """
+    dialect = DuckDB()
+    tokens = list(dialect.tokenize(sql))
+    measure_names: set[str] = set()
+    remove_indices: set[int] = set()
+
+    for i in range(len(tokens) - 2):
+        if (
+            tokens[i].token_type == TokenType.ALIAS
+            and tokens[i + 1].token_type == TokenType.VAR
+            and tokens[i + 1].text.upper() == "MEASURE"
+            and tokens[i + 2].token_type in (TokenType.VAR, TokenType.STRING)
+        ):
+            measure_names.add(tokens[i + 2].text.strip('"'))
+            remove_indices.add(i + 1)
+
+    if not remove_indices:
+        return sql, set()
+
+    # Rebuild SQL by replacing MEASURE token spans with whitespace
+    # to preserve character positions for error messages.
+    result = list(sql)
+    for idx in remove_indices:
+        tok = tokens[idx]
+        start = tok.start
+        end = tok.end + 1
+        for j in range(start, min(end, len(result))):
+            result[j] = " "
+    return "".join(result), measure_names
 
 
 class YardstickAdapter(BaseAdapter):
@@ -101,32 +137,18 @@ class YardstickAdapter(BaseAdapter):
                 graph.add_model(model)
 
     def _parse_statements(self, sql: str) -> list[exp.Expression | None]:
-        # Track which measure names appear in which statement (by index)
-        # so we only tag aliases that were actually declared AS MEASURE.
-        raw_stmts = [s.strip() for s in sql.split(";") if s.strip()]
-        measures_per_stmt: list[set[str]] = []
-        preprocessed_stmts: list[str] = []
+        cleaned, measure_names = _strip_measure_tokens(sql)
+        statements = sqlglot.parse(cleaned, read=self.dialect)
 
-        for raw in raw_stmts:
-            stmt_measures: set[str] = set()
-
-            def _capture(m, _measures=stmt_measures):
-                name = m.group(1)
-                _measures.add(name.strip('"'))
-                return f"AS {name}"
-
-            preprocessed_stmts.append(_MEASURE_PATTERN.sub(_capture, raw))
-            measures_per_stmt.append(stmt_measures)
-
-        preprocessed = ";\n".join(preprocessed_stmts)
-        statements = sqlglot.parse(preprocessed, read=self.dialect)
-
-        # Tag measure aliases scoped to their own statement
-        for i, stmt in enumerate(statements):
-            if stmt and i < len(measures_per_stmt) and measures_per_stmt[i]:
-                for alias_node in stmt.find_all(exp.Alias):
-                    if alias_node.output_name in measures_per_stmt[i]:
-                        alias_node.set("yardstick_measure", True)
+        if measure_names:
+            for stmt in statements:
+                if stmt:
+                    # Only tag aliases in SELECT projections of CREATE VIEW
+                    select = stmt.expression if isinstance(stmt, exp.Create) else stmt
+                    if isinstance(select, exp.Select):
+                        for proj in select.expressions:
+                            if isinstance(proj, exp.Alias) and proj.output_name in measure_names:
+                                proj.set("yardstick_measure", True)
 
         return statements
 

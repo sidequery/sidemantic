@@ -705,6 +705,65 @@ def test_retention_metric_level_filters():
     assert day1[0][4] == 50.0
 
 
+def test_retention_filter_with_model_qualified_sql_expr():
+    """Test that dimension sql_expr with model-qualified refs doesn't break retention filters.
+
+    When a dimension's sql_expr is model-qualified (e.g., events.country),
+    _resolve_filter_dimensions must strip the model prefix so the expression
+    is valid inside FROM (<model.sql>) AS t subqueries.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS uid, 'signup' AS event, '2024-01-01'::DATE AS ts, 'US' AS country
+            UNION ALL SELECT 1, 'login', '2024-01-02'::DATE, 'US'
+            UNION ALL SELECT 2, 'signup', '2024-01-01'::DATE, 'UK'
+            UNION ALL SELECT 2, 'login', '2024-01-02'::DATE, 'UK'
+            UNION ALL SELECT 3, 'signup', '2024-01-01'::DATE, 'US'
+            UNION ALL SELECT 3, 'login', '2024-01-01'::DATE, 'US'
+        """,
+        primary_key="uid",
+        dimensions=[
+            Dimension(name="uid", sql="uid", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+            # sql_expr uses model-qualified reference
+            Dimension(name="country", sql="events.country", type="categorical"),
+        ],
+        metrics=[],
+    )
+
+    retention = Metric(
+        name="us_retention",
+        type="retention",
+        entity="uid",
+        cohort_event="event = 'signup'",
+        activity_event="TRUE",
+        periods=1,
+        retention_granularity="day",
+        filters=["country = 'US'"],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(retention)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(metrics=["us_retention"], dimensions=[])
+
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # Only US users (uid 1 and 3) should be in cohort
+    assert len(rows) > 0
+    day0 = [r for r in rows if r[1] == 0]
+    assert day0[0][3] == 2  # cohort_size = 2
+    assert day0[0][4] == 100.0  # Day 0: 100%
+    day1 = [r for r in rows if r[1] == 1]
+    assert day1[0][4] == 50.0  # Day 1: 50%
+
+
 def test_retention_multiple_retention_metrics_raises():
     """Test that querying two retention metrics raises ValueError."""
     events = Model(

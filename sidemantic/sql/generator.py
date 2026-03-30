@@ -123,6 +123,51 @@ class SQLGenerator:
                 result.append(f_resolved)
         return result
 
+    def _resolve_filter_dimensions(self, filters: list[str], model) -> list[str]:
+        """Resolve semantic dimension names in filter expressions to their SQL expressions.
+
+        After ``_strip_model_prefixes`` turns ``events.city`` into ``city``,
+        this method rewrites ``city`` to the actual SQL expression
+        (e.g., ``json_extract_string(properties, '$."$geoip_city_name"')``).
+
+        This is needed because retention, conversion, and cohort CTEs query
+        the raw table directly, where semantic dimension names don't exist
+        as columns.
+
+        Args:
+            filters: Filter expressions with model prefixes already stripped
+            model: The model whose dimensions to resolve
+
+        Returns:
+            Filters with dimension names replaced by their SQL expressions
+        """
+        dim_map = {}
+        for dim in model.dimensions:
+            if dim.sql_expr != dim.name:
+                dim_map[dim.name] = dim.sql_expr
+
+        if not dim_map:
+            return filters
+
+        result = []
+        for f in filters:
+            try:
+                parsed = sqlglot.parse_one(f, dialect=self.dialect)
+                for column in parsed.find_all(exp.Column):
+                    if not column.table and column.name in dim_map:
+                        replacement = sqlglot.parse_one(dim_map[column.name], dialect=self.dialect)
+                        # Strip model-qualified refs from the replacement so
+                        # expressions like events.region don't leak into
+                        # subquery contexts where the alias is t/s.
+                        for rcol in replacement.find_all(exp.Column):
+                            if rcol.table and rcol.table.replace("_cte", "") == model.name:
+                                rcol.set("table", None)
+                        column.replace(replacement)
+                result.append(parsed.sql(dialect=self.dialect))
+            except Exception:
+                result.append(f)
+        return result
+
     def _quote_alias(self, name: str) -> str:
         """Quote an identifier for use as a SQL alias.
 
@@ -2475,8 +2520,10 @@ class SQLGenerator:
         if metric.filters:
             all_filters.extend(metric.filters)
 
-        # Normalize filters: strip model name prefixes so they work inside CTEs
+        # Normalize filters: strip model name prefixes and resolve dimension names
         normalized_filters = self._strip_model_prefixes(all_filters, model.name)
+        normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
+        normalized_filters = [_replace_model_placeholder(f) for f in normalized_filters]
 
         # Build optional WHERE filters for the source data
         filter_clause = ""
@@ -2651,6 +2698,13 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
         else:
             from_clause = model.table
 
+        # Normalize filters: strip model name prefixes and resolve dimension names
+        normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+        normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
+        filter_clause = ""
+        if normalized_filters:
+            filter_clause = "\n    AND " + " AND ".join(f"({f})" for f in normalized_filters)
+
         # Resolve dimension columns for GROUP BY support.
         # Each entry is (alias, sql_expr) where sql_expr uses the dimension's
         # actual SQL expression and applies DATE_TRUNC for time granularity.
@@ -2718,14 +2772,14 @@ WITH base_events AS (
     {metric.entity} AS entity,
     {timestamp_dim} AS event_time{extra_base_cols}
   FROM {from_clause}
-  WHERE {event_type_dim} = '{metric.base_event.replace("'", "''")}'
+  WHERE {event_type_dim} = '{metric.base_event.replace("'", "''")}'{filter_clause}
 ),
 conversion_events AS (
   SELECT
     {metric.entity} AS entity,
     {timestamp_dim} AS event_time{extra_conv_cols}
   FROM {from_clause}
-  WHERE {event_type_dim} = '{metric.conversion_event.replace("'", "''")}'
+  WHERE {event_type_dim} = '{metric.conversion_event.replace("'", "''")}'{filter_clause}
 ),
 conversions AS (
   SELECT DISTINCT
@@ -2873,8 +2927,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Normalize for step N context (always alias "s")
         entity_sql_s = _normalize_expr_for_subquery(entity_sql_raw, "s", qualify_bare=True)
 
-        # Normalize filters: strip model name prefixes so they work inside CTEs
+        # Normalize filters: strip model name prefixes and resolve dimension names
         normalized_filters = self._strip_model_prefixes(filters or [], model.name)
+        normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
 
         # Build WHERE filter clauses for step 1 and step N
         # Step N needs bare columns qualified with "s." to avoid ambiguity in JOINs

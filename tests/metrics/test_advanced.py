@@ -1032,6 +1032,65 @@ def test_multistep_funnel_qualified_filters():
     assert rows[0][2] == 1  # step_2_count (only user 1 purchased)
 
 
+def test_filter_dimension_with_model_qualified_sql_expr():
+    """Test that dimension sql_expr with model-qualified refs doesn't break filters.
+
+    When a dimension's sql_expr is model-qualified (e.g., events.region),
+    _resolve_filter_dimensions must strip the model prefix so the expression
+    is valid inside FROM (<model.sql>) AS t subqueries.
+    """
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'signup' AS event, 'US' AS region, '2024-01-01'::TIMESTAMP AS ts
+            UNION ALL SELECT 1, 'purchase', 'US', '2024-01-02'::TIMESTAMP
+            UNION ALL SELECT 2, 'signup', 'US', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'signup', 'EU', '2024-01-01'::TIMESTAMP
+            UNION ALL SELECT 3, 'purchase', 'EU', '2024-01-02'::TIMESTAMP
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="event", sql="event", type="categorical"),
+            # sql_expr uses model-qualified reference
+            Dimension(name="region", sql="events.region", type="categorical"),
+            Dimension(name="ts", sql="ts", type="time"),
+        ],
+    )
+
+    funnel = Metric(
+        name="regional_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=[
+            "event = 'signup'",
+            "event = 'purchase'",
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+    graph.add_metric(funnel)
+
+    generator = SQLGenerator(graph)
+    sql = generator.generate(
+        metrics=["regional_funnel"],
+        dimensions=[],
+        filters=["region = 'US'"],
+    )
+
+    # The resolved SQL should not contain events.region in a context
+    # where only alias t/s is valid
+    conn = duckdb.connect(":memory:")
+    result = conn.execute(sql)
+    rows = df_rows(result)
+
+    # Only US users: user 1 (signup + purchase), user 2 (signup only)
+    assert rows[0][0] == 2  # total_entities
+    assert rows[0][1] == 2  # step_1_count
+    assert rows[0][2] == 1  # step_2_count
+
+
 def test_multistep_funnel_repeated_actions_valid_path():
     """Test that repeated actions find a valid ordered path.
 

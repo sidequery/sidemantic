@@ -219,6 +219,9 @@ def info(
 def mcp_serve(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (optional)"),
+    init_sql: list[str] = typer.Option(
+        [], "--init-sql", help="SQL statements to run after connecting (e.g., LOAD httpfs)"
+    ),
     demo: bool = typer.Option(False, "--demo", help="Use demo data instead of a directory"),
 ):
     """
@@ -261,9 +264,14 @@ def mcp_serve(
     else:
         db_path = str(db) if db else None
 
+    # Merge CLI --init-sql with config-based init_sql
+    effective_init_sql: list[str] | None = init_sql if init_sql else None
+    if not effective_init_sql and _loaded_config:
+        effective_init_sql = get_init_sql(_loaded_config)
+
     try:
         # Initialize the semantic layer
-        initialize_layer(str(directory), db_path)
+        initialize_layer(str(directory), db_path, init_sql=effective_init_sql)
 
         # If demo mode, populate with demo data
         if demo:

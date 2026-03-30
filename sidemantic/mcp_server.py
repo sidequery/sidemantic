@@ -152,7 +152,7 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
 mcp = FastMCP("sidemantic")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_models(model_names: list[str]) -> dict[str, Any]:
     """Get detailed information about one or more models.
 
@@ -320,15 +320,15 @@ def get_models(model_names: list[str]) -> dict[str, Any]:
     return {"models": details}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def run_query(
-    dimensions: list[str] | None = None,
-    metrics: list[str] | None = None,
-    where: str | None = None,
-    segments: list[str] | None = None,
-    order_by: list[str] | None = None,
-    limit: int | None = None,
-    offset: int | None = None,
+    dimensions: list[str] = [],
+    metrics: list[str] = [],
+    where: str = "",
+    segments: list[str] = [],
+    order_by: list[str] = [],
+    limit: int = 0,
+    offset: int = 0,
     ungrouped: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -368,8 +368,8 @@ def run_query(
         filters=[where] if where else None,
         segments=segments,
         order_by=order_by,
-        limit=limit,
-        offset=offset,
+        limit=limit or None,
+        offset=offset or None,
         ungrouped=ungrouped,
     )
 
@@ -391,17 +391,17 @@ def run_query(
     }
 
 
-@mcp.tool(meta={"ui": {"resourceUri": "ui://sidemantic/chart"}})
+@mcp.tool(structured_output=False, meta={"ui": {"resourceUri": "ui://sidemantic/chart"}})
 def create_chart(
-    dimensions: list[str] | None = None,
-    metrics: list[str] | None = None,
-    where: str | None = None,
-    segments: list[str] | None = None,
-    order_by: list[str] | None = None,
-    limit: int | None = None,
-    offset: int | None = None,
+    dimensions: list[str] = [],
+    metrics: list[str] = [],
+    where: str = "",
+    segments: list[str] = [],
+    order_by: list[str] = [],
+    limit: int = 0,
+    offset: int = 0,
     chart_type: Literal["auto", "bar", "line", "area", "scatter", "point"] = "auto",
-    title: str | None = None,
+    title: str = "",
     width: int = 600,
     height: int = 400,
 ) -> dict[str, Any]:
@@ -449,8 +449,8 @@ def create_chart(
         filters=[where] if where else None,
         segments=segments,
         order_by=order_by,
-        limit=limit,
-        offset=offset,
+        limit=limit or None,
+        offset=offset or None,
     )
 
     result = layer.adapter.execute(sql)
@@ -466,7 +466,7 @@ def create_chart(
         )
 
     # Auto-generate title if not provided
-    if title is None:
+    if not title:
         title = _generate_chart_title(dimensions or [], metrics or [])
 
     # Create chart with beautiful defaults
@@ -536,7 +536,7 @@ def _format_field_name(field: str) -> str:
     return field.replace("_", " ").title()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def run_sql(query: str) -> dict[str, Any]:
     """Execute a SQL query rewritten through the semantic layer.
 
@@ -578,10 +578,10 @@ def run_sql(query: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def validate_query(
-    dimensions: list[str] | None = None,
-    metrics: list[str] | None = None,
+    dimensions: list[str] = [],
+    metrics: list[str] = [],
 ) -> dict[str, Any]:
     """Validate dimension and metric references before running a query.
 
@@ -614,7 +614,7 @@ def validate_query(
     }
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_semantic_graph() -> dict[str, Any]:
     """Discover the semantic layer: all models, relationships, and available fields.
 

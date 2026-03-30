@@ -2,7 +2,7 @@
 
 Compatible with sqlglot's mypyc C extension. Uses the tokenizer to
 identify ``AS MEASURE <alias>`` sequences, strips the ``MEASURE``
-keyword, parses with the standard DuckDB dialect, then tags the
+keyword, parses with the configured dialect, then tags the
 corresponding alias nodes.
 """
 
@@ -12,7 +12,7 @@ from typing import Literal, get_args, get_origin
 
 import sqlglot
 from sqlglot import exp
-from sqlglot.dialects.duckdb import DuckDB
+from sqlglot.dialects.dialect import Dialect
 from sqlglot.tokens import TokenType
 
 from sidemantic.adapters.base import BaseAdapter
@@ -38,14 +38,14 @@ def _supported_metric_aggs() -> set[str]:
     return _extract_literal_strings(annotation)
 
 
-def _strip_measure_tokens(sql: str) -> tuple[str, set[str]]:
+def _strip_measure_tokens(sql: str, dialect: str = "duckdb") -> tuple[str, set[str]]:
     """Remove MEASURE keyword from ``AS MEASURE <alias>`` sequences.
 
     Uses sqlglot's tokenizer so string literals and comments are handled
     correctly. Returns the cleaned SQL and the set of measure alias names.
     """
-    dialect = DuckDB()
-    tokens = list(dialect.tokenize(sql))
+    dialect_instance = Dialect.get_or_raise(dialect)
+    tokens = list(dialect_instance.tokenize(sql))
     measure_names: set[str] = set()
     remove_indices: set[int] = set()
 
@@ -137,7 +137,7 @@ class YardstickAdapter(BaseAdapter):
                 graph.add_model(model)
 
     def _parse_statements(self, sql: str) -> list[exp.Expression | None]:
-        cleaned, measure_names = _strip_measure_tokens(sql)
+        cleaned, measure_names = _strip_measure_tokens(sql, dialect=self.dialect)
         statements = sqlglot.parse(cleaned, read=self.dialect)
 
         if measure_names:

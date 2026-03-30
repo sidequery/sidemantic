@@ -13,7 +13,6 @@ from sidemantic.loaders import load_from_directory
 
 # Global semantic layer instance
 _layer: SemanticLayer | None = None
-_apps_enabled: bool = False
 
 
 def initialize_layer(
@@ -152,7 +151,7 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
 mcp = FastMCP("sidemantic")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_models(model_names: list[str]) -> dict[str, Any]:
     """Get detailed information about one or more models.
 
@@ -320,15 +319,15 @@ def get_models(model_names: list[str]) -> dict[str, Any]:
     return {"models": details}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def run_query(
-    dimensions: list[str] | None = None,
-    metrics: list[str] | None = None,
-    where: str | None = None,
-    segments: list[str] | None = None,
-    order_by: list[str] | None = None,
-    limit: int | None = None,
-    offset: int | None = None,
+    dimensions: list[str] = [],
+    metrics: list[str] = [],
+    where: str = "",
+    segments: list[str] = [],
+    order_by: list[str] = [],
+    limit: int = 0,
+    offset: int = 0,
     ungrouped: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -368,8 +367,8 @@ def run_query(
         filters=[where] if where else None,
         segments=segments,
         order_by=order_by,
-        limit=limit,
-        offset=offset,
+        limit=limit or None,
+        offset=offset or None,
         ungrouped=ungrouped,
     )
 
@@ -391,17 +390,28 @@ def run_query(
     }
 
 
-@mcp.tool(meta={"ui": {"resourceUri": "ui://sidemantic/chart"}})
+@mcp.tool(
+    structured_output=False,
+    meta={
+        "ui": {
+            "resourceUri": "ui://sidemantic/chart",
+            "csp": {
+                "connectDomains": [],
+                "resourceDomains": [],
+            },
+        },
+    },
+)
 def create_chart(
-    dimensions: list[str] | None = None,
-    metrics: list[str] | None = None,
-    where: str | None = None,
-    segments: list[str] | None = None,
-    order_by: list[str] | None = None,
-    limit: int | None = None,
-    offset: int | None = None,
+    dimensions: list[str] = [],
+    metrics: list[str] = [],
+    where: str = "",
+    segments: list[str] = [],
+    order_by: list[str] = [],
+    limit: int = 0,
+    offset: int = 0,
     chart_type: Literal["auto", "bar", "line", "area", "scatter", "point"] = "auto",
-    title: str | None = None,
+    title: str = "",
     width: int = 600,
     height: int = 400,
 ) -> dict[str, Any]:
@@ -433,7 +443,7 @@ def create_chart(
         png_base64: Base64-encoded PNG image
         row_count: Number of data points
     """
-    from sidemantic.charts import chart_to_base64_png, chart_to_vega
+    from sidemantic.charts import chart_to_vega
     from sidemantic.charts import create_chart as make_chart
 
     layer = get_layer()
@@ -449,8 +459,8 @@ def create_chart(
         filters=[where] if where else None,
         segments=segments,
         order_by=order_by,
-        limit=limit,
-        offset=offset,
+        limit=limit or None,
+        offset=offset or None,
     )
 
     result = layer.adapter.execute(sql)
@@ -466,7 +476,7 @@ def create_chart(
         )
 
     # Auto-generate title if not provided
-    if title is None:
+    if not title:
         title = _generate_chart_title(dimensions or [], metrics or [])
 
     # Create chart with beautiful defaults
@@ -478,24 +488,14 @@ def create_chart(
         height=height,
     )
 
-    # Export to both formats
+    # Export Vega spec (rendered interactively by MCP Apps widget)
     vega_spec = chart_to_vega(chart)
-    png_base64 = chart_to_base64_png(chart)
 
-    result = {
+    return {
         "sql": sql,
         "vega_spec": vega_spec,
-        "png_base64": png_base64,
         "row_count": len(row_dicts),
     }
-
-    # When apps mode is enabled, include an interactive UI widget
-    if _apps_enabled:
-        from sidemantic.apps import create_chart_resource
-
-        return [result, create_chart_resource(vega_spec)]
-
-    return result
 
 
 def _generate_chart_title(dimensions: list[str], metrics: list[str]) -> str:
@@ -536,7 +536,7 @@ def _format_field_name(field: str) -> str:
     return field.replace("_", " ").title()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def run_sql(query: str) -> dict[str, Any]:
     """Execute a SQL query rewritten through the semantic layer.
 
@@ -578,10 +578,10 @@ def run_sql(query: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def validate_query(
-    dimensions: list[str] | None = None,
-    metrics: list[str] | None = None,
+    dimensions: list[str] = [],
+    metrics: list[str] = [],
 ) -> dict[str, Any]:
     """Validate dimension and metric references before running a query.
 
@@ -614,7 +614,7 @@ def validate_query(
     }
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_semantic_graph() -> dict[str, Any]:
     """Discover the semantic layer: all models, relationships, and available fields.
 
@@ -699,7 +699,24 @@ def get_semantic_graph() -> dict[str, Any]:
     return result
 
 
-# --- MCP Resource: Catalog Metadata ---
+# --- MCP Resources ---
+
+
+@mcp.resource(
+    "ui://sidemantic/chart",
+    mime_type="text/html;profile=mcp-app",
+    meta={
+        "ui": {
+            "csp": {"connectDomains": [], "resourceDomains": []},
+        },
+        "mcpui.dev/ui-preferred-frame-size": ["100%", "500px"],
+    },
+)
+def chart_widget_resource() -> str:
+    """Interactive Vega-Lite chart widget for MCP Apps-compatible hosts."""
+    from sidemantic.apps import _get_widget_template
+
+    return _get_widget_template()
 
 
 @mcp.resource("semantic://catalog")

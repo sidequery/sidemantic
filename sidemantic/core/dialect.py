@@ -262,31 +262,42 @@ _install_parser_patch()
 
 
 class SidemanticDialect(Dialect):
-    """Sidemantic SQL dialect with METRIC and SEGMENT support."""
+    """Sidemantic SQL dialect with METRIC and SEGMENT support.
 
-    pass
+    Activates the Sidemantic parser extensions automatically so that
+    callers using the dialect directly (e.g. ``sqlglot.parse(sql,
+    read=SidemanticDialect)``) get MODEL/METRIC parsing without
+    needing to set the thread-local flag manually.
+    """
+
+    def parse(self, sql: str, **opts):
+        _sidemantic_parsing.active = True
+        try:
+            return super().parse(sql, **opts)
+        finally:
+            _sidemantic_parsing.active = False
+
+    def parse_into(self, expression_type, sql: str, **opts):
+        _sidemantic_parsing.active = True
+        try:
+            return super().parse_into(expression_type, sql, **opts)
+        finally:
+            _sidemantic_parsing.active = False
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
+# Singleton instance for convenience functions.
+_dialect = SidemanticDialect()
+
 
 def parse_one(sql: str) -> exp.Expression:
     """Parse SQL with Sidemantic extensions."""
-    _sidemantic_parsing.active = True
-    try:
-        dialect = SidemanticDialect()
-        return dialect.parse_one(sql)
-    finally:
-        _sidemantic_parsing.active = False
+    return _dialect.parse_one(sql)
 
 
 def parse(sql: str) -> list[exp.Expression]:
     """Parse multiple SQL statements with Sidemantic extensions."""
-    _sidemantic_parsing.active = True
-    try:
-        dialect = SidemanticDialect()
-        return list(dialect.parse(sql))
-    finally:
-        _sidemantic_parsing.active = False
+    return list(_dialect.parse(sql))

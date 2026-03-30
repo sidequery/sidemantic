@@ -268,14 +268,24 @@ def mcp_serve(
     else:
         db_path = str(db) if db else None
 
-    # Merge CLI --init-sql with config-based init_sql
+    # Resolve connection from CLI args or config
+    connection_str = None
     effective_init_sql: list[str] | None = init_sql if init_sql else None
-    if not effective_init_sql and _loaded_config:
+
+    if db_path and db_path != ":memory:":
+        connection_str = f"duckdb:///{Path(db_path).absolute()}"
+    elif db_path == ":memory:":
+        connection_str = "duckdb:///:memory:"
+    elif _loaded_config and _loaded_config.connection:
+        connection_str = build_connection_string(_loaded_config)
+        if not effective_init_sql:
+            effective_init_sql = get_init_sql(_loaded_config)
+    elif not effective_init_sql and _loaded_config:
         effective_init_sql = get_init_sql(_loaded_config)
 
     try:
         # Initialize the semantic layer
-        initialize_layer(str(directory), db_path, init_sql=effective_init_sql)
+        initialize_layer(str(directory), connection=connection_str, init_sql=effective_init_sql)
 
         # If demo mode, populate with demo data
         if demo:

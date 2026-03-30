@@ -6,7 +6,6 @@ from typing import Literal, get_args, get_origin
 
 import sqlglot
 from sqlglot import Dialect, exp
-from sqlglot.tokens import TokenType
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
@@ -43,44 +42,33 @@ def _yardstick_dialect(base_dialect_name: str = "duckdb") -> type:
     base_cls = type(base_instance) if not isinstance(base_instance, type) else base_instance
 
     class _YardstickParser(base_cls.Parser):
-        """Parser extension for Yardstick's measure alias syntax."""
+        """Parser extension for Yardstick's measure alias syntax.
+
+        Delegates to the base dialect's ``_parse_alias`` so that
+        dialect-specific alias behaviour (e.g. ClickHouse ``APPLY``)
+        is preserved.  After the base parser runs, we detect the
+        ``AS MEASURE <name>`` pattern: the base parser will have
+        consumed ``MEASURE`` as the alias identifier, so we replace
+        it with the real alias name that follows.
+        """
 
         def _parse_alias(self, this: exp.Expression | None, explicit: bool = False) -> exp.Expression | None:
-            if self._can_parse_limit_or_offset():
-                return this
+            result = super()._parse_alias(this, explicit)
 
-            any_token = self._match(TokenType.ALIAS)
-            comments = self._prev_comments or []
-
-            if explicit and not any_token:
-                return this
-
-            if self._match(TokenType.L_PAREN):
-                aliases = self.expression(
-                    exp.Aliases,
-                    comments=comments,
-                    this=this,
-                    expressions=self._parse_csv(lambda: self._parse_id_var(any_token)),
+            if (
+                isinstance(result, exp.Alias)
+                and isinstance(result.args.get("alias"), exp.Identifier)
+                and not result.args["alias"].quoted
+                and result.args["alias"].name.upper() == "MEASURE"
+            ):
+                actual_alias = self._parse_id_var(True, tokens=self.ALIAS_TOKENS) or (
+                    self.STRING_ALIASES and self._parse_string_as_identifier()
                 )
-                self._match_r_paren(aliases)
-                return aliases
+                if actual_alias:
+                    result.set("alias", actual_alias)
+                    result.set("yardstick_measure", True)
 
-            is_measure_alias = bool(any_token and self._match_texts({"MEASURE"}))
-            alias = self._parse_id_var(any_token, tokens=self.ALIAS_TOKENS) or (
-                self.STRING_ALIASES and self._parse_string_as_identifier()
-            )
-
-            if alias:
-                comments.extend(alias.pop_comments())
-                this = self.expression(exp.Alias, comments=comments, this=this, alias=alias)
-                if is_measure_alias:
-                    this.set("yardstick_measure", True)
-
-                column = this.this
-                if not this.comments and column and column.comments:
-                    this.comments = column.pop_comments()
-
-            return this
+            return result
 
     class _YardstickDialect(base_cls):
         class Parser(_YardstickParser):

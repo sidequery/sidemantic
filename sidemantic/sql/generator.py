@@ -2550,14 +2550,14 @@ class SQLGenerator:
                 if dim:
                     im_sql = _replace_model_placeholder(dim.sql_expr)
 
-            if not im_sql and im_agg not in ("COUNT", "COUNT_DISTINCT"):
+            if not im_sql and im_agg != "COUNT":
                 raise ValueError(
                     f"Inner metric '{im_name}' on cohort metric '{metric.name}' "
                     f"uses agg '{im_agg}' which requires a 'sql' field"
                 )
 
             if im_agg == "COUNT_DISTINCT":
-                expr = f"COUNT(DISTINCT {im_sql or '*'})"
+                expr = f"COUNT(DISTINCT {im_sql})"
             elif im_agg == "COUNT":
                 expr = f"COUNT({im_sql or '*'})"
             else:

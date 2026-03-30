@@ -166,6 +166,19 @@ def test_cohort_inner_metric_missing_name_raises():
         )
 
 
+def test_cohort_inner_count_distinct_without_sql_raises():
+    """count_distinct without sql would emit COUNT(DISTINCT *), which is invalid."""
+    with pytest.raises(ValueError, match="requires a 'sql' field"):
+        Metric(
+            name="bad_cd",
+            type="cohort",
+            entity="user_id",
+            inner_metrics=[{"name": "uniq", "agg": "count_distinct"}],
+            having="uniq >= 2",
+            agg="count",
+        )
+
+
 def test_cohort_unknown_dimension_raises():
     """Referencing a nonexistent dimension should raise, not silently drop it."""
     events = _make_events_model()

@@ -224,7 +224,7 @@ class Metric(BaseModel):
                 if not isinstance(im, dict) or not im.get("name"):
                     raise ValueError(f"cohort metric inner_metrics[{i}] must be a dict with at least a 'name' key")
                 im_agg = im.get("agg", "count").upper()
-                if im_agg not in ("COUNT", "COUNT_DISTINCT") and not im.get("sql"):
+                if im_agg != "COUNT" and not im.get("sql"):
                     raise ValueError(
                         f"cohort metric inner_metrics[{i}] ('{im['name']}') "
                         f"uses agg '{im_agg}' which requires a 'sql' field"

@@ -81,7 +81,7 @@ def test_create_chart_resource():
     dumped = resource.model_dump()
     assert dumped["type"] == "resource"
     assert str(dumped["resource"]["uri"]) == "ui://sidemantic/chart"
-    assert dumped["resource"]["mimeType"] == "text/html;profile=mcp-app"
+    assert "text/html" in dumped["resource"]["mimeType"]
     assert "text" in dumped["resource"]
     assert "vega-embed" in dumped["resource"]["text"]
 

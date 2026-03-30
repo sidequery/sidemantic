@@ -1926,11 +1926,15 @@ cli = [
 [[package]]
 name = "mcp-ui-server"
 version = "1.0.0"
-source = { git = "https://github.com/MCP-UI-Org/mcp-ui.git?subdirectory=sdks%2Fpython%2Fserver#af881f9eff2cb0c394587cbf3bd00ffe5ee973a0" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mcp" },
     { name = "pydantic" },
     { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f7/ed/80b21fb515be72baa7fbb55326ee36bad55aa3080519827431599b003989/mcp_ui_server-1.0.0.tar.gz", hash = "sha256:5ab8f17b93bf794966af7c35e9a575e4f21a9ba2bab3d316cfc107a15f88a3c9", size = 78389, upload-time = "2025-11-04T16:17:01.21Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/8a/4c1b2b5708e2f8bf3f3d2ebc130f5bb2a1805cd648b6eda8e5e4bdc039bc/mcp_ui_server-1.0.0-py3-none-any.whl", hash = "sha256:85f53b2e4300fbd175f1fbb7c40f2566b1f4a4ad03a1f33647867c82a3159dcc", size = 11500, upload-time = "2025-11-04T16:17:00.366Z" },
 ]
 
 [[package]]
@@ -3443,7 +3447,7 @@ requires-dist = [
     { name = "lsprotocol", marker = "extra == 'lsp'", specifier = ">=2025.0.0" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'apps'", specifier = ">=1.25.0,<2" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.25.0,<2" },
-    { name = "mcp-ui-server", marker = "extra == 'apps'", git = "https://github.com/MCP-UI-Org/mcp-ui.git?subdirectory=sdks%2Fpython%2Fserver" },
+    { name = "mcp-ui-server", marker = "extra == 'apps'", specifier = ">=1.0.0" },
     { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.26,<3" },
     { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.2,<3" },
     { name = "plotext", marker = "extra == 'workbench'", specifier = ">=5.3.2" },

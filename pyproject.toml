@@ -44,7 +44,7 @@ mcp = [
 ]
 apps = [
     "mcp[cli]>=1.25.0,<2",
-    "mcp-ui-server @ git+https://github.com/MCP-UI-Org/mcp-ui.git#subdirectory=sdks/python/server",  # PyPI v1.0.0 has wrong MIME type; switch to PyPI pin when they release
+    "mcp-ui-server>=1.0.0",
 ]
 charts = [
     "altair>=5.0.0",
@@ -118,9 +118,6 @@ full = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.sdist]
 exclude = [

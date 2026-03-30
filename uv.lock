@@ -3256,7 +3256,7 @@ wheels = [
 
 [[package]]
 name = "sidemantic"
-version = "0.9.3"
+version = "0.9.4"
 source = { editable = "." }
 dependencies = [
     { name = "antlr4-python3-runtime" },

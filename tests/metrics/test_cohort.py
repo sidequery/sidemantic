@@ -141,24 +141,29 @@ def test_cohort_outer_agg_without_sql_raises():
 
 
 def test_cohort_inner_metric_agg_without_sql_raises():
-    """Non-count inner metric agg without sql should raise, not emit SUM(*)."""
-    events = _make_events_model()
-    metric = Metric(
-        name="bad_inner",
-        type="cohort",
-        entity="user_id",
-        inner_metrics=[{"name": "total", "agg": "sum"}],  # no sql
-        having="total > 0",
-        agg="count",
-    )
-    events.metrics.append(metric)
-
-    graph = SemanticGraph()
-    graph.add_model(events)
-
-    gen = SQLGenerator(graph)
+    """Non-count inner metric agg without sql should raise at construction time."""
     with pytest.raises(ValueError, match="requires a 'sql' field"):
-        gen.generate(metrics=["events.bad_inner"], dimensions=[])
+        Metric(
+            name="bad_inner",
+            type="cohort",
+            entity="user_id",
+            inner_metrics=[{"name": "total", "agg": "sum"}],  # no sql
+            having="total > 0",
+            agg="count",
+        )
+
+
+def test_cohort_inner_metric_missing_name_raises():
+    """inner_metrics entry without a name should raise at construction time."""
+    with pytest.raises(ValueError, match="must be a dict with at least a 'name' key"):
+        Metric(
+            name="bad_shape",
+            type="cohort",
+            entity="user_id",
+            inner_metrics=[{}],
+            having="cnt >= 1",
+            agg="count",
+        )
 
 
 def test_cohort_unknown_dimension_raises():

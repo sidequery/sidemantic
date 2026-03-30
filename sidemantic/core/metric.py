@@ -220,6 +220,15 @@ class Metric(BaseModel):
                 raise ValueError("cohort metric requires 'entity' field")
             if not self.inner_metrics:
                 raise ValueError("cohort metric requires 'inner_metrics' field")
+            for i, im in enumerate(self.inner_metrics):
+                if not isinstance(im, dict) or not im.get("name"):
+                    raise ValueError(f"cohort metric inner_metrics[{i}] must be a dict with at least a 'name' key")
+                im_agg = im.get("agg", "count").upper()
+                if im_agg not in ("COUNT", "COUNT_DISTINCT") and not im.get("sql"):
+                    raise ValueError(
+                        f"cohort metric inner_metrics[{i}] ('{im['name']}') "
+                        f"uses agg '{im_agg}' which requires a 'sql' field"
+                    )
             if not self.having:
                 raise ValueError("cohort metric requires 'having' field")
             if not self.agg:

@@ -404,7 +404,7 @@ def create_chart(
     title: str | None = None,
     width: int = 600,
     height: int = 400,
-) -> dict[str, Any]:
+) -> dict[str, Any] | list[Any]:
     """Generate a chart from a semantic layer query, producing a Vega-Lite spec and PNG.
 
     Query parameters work the same as run_query (model.field_name references,

@@ -88,7 +88,7 @@ def validate_model(model: "Model") -> list[str]:
     # Derived, ratio, cumulative, time_comparison, and conversion metrics don't need agg
     for measure in model.metrics:
         # Skip validation for complex metric types that don't use agg
-        if measure.type in ["derived", "ratio", "cumulative", "time_comparison", "conversion", "retention"]:
+        if measure.type in ["derived", "ratio", "cumulative", "time_comparison", "conversion", "retention", "cohort"]:
             continue
 
         valid_aggs = _valid_measure_aggs()
@@ -127,10 +127,11 @@ def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
         "time_comparison",
         "conversion",
         "retention",
+        "cohort",
     ]:
         errors.append(
             f"Metric '{measure.name}' has invalid type '{measure.type}'. "
-            f"Must be one of: ratio, derived, cumulative, time_comparison, conversion, retention"
+            f"Must be one of: ratio, derived, cumulative, time_comparison, conversion, retention, cohort"
         )
         return errors  # Can't continue validation with invalid type
 

@@ -30,7 +30,10 @@ def build_chart_html(vega_spec: dict[str, Any]) -> str:
         Complete HTML string with the spec injected.
     """
     template = _get_widget_template()
-    return template.replace("{{VEGA_SPEC}}", json.dumps(vega_spec))
+    # Escape </script> sequences to prevent XSS when user-provided strings
+    # (e.g., chart titles) flow into the Vega spec.
+    safe_json = json.dumps(vega_spec).replace("<", "\\u003c")
+    return template.replace("{{VEGA_SPEC}}", safe_json)
 
 
 def create_chart_resource(vega_spec: dict[str, Any]):

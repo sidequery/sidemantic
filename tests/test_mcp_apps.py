@@ -1,7 +1,5 @@
 """Tests for MCP Apps (mcp-ui-server) integration."""
 
-import json
-
 import pytest
 
 pytest.importorskip("mcp_ui_server")  # Skip if apps extra not installed
@@ -59,8 +57,20 @@ def test_build_chart_html_escapes_json():
     spec = {"title": "Revenue <&> Costs", "description": 'Test\'s "spec"'}
     html = build_chart_html(spec)
 
-    # The JSON should be parseable from the HTML
-    assert json.dumps(spec) in html
+    # < in the JSON data should be escaped to \u003c
+    assert "\\u003c" in html
+    # The raw < from user input should not appear in the JSON block
+    assert "Revenue <&>" not in html
+    assert "Revenue \\u003c&>" in html
+
+
+def test_build_chart_html_prevents_script_injection():
+    """Test that </script> in user input cannot break out of the JSON block."""
+    spec = {"title": '</script><script>alert("xss")</script>'}
+    html = build_chart_html(spec)
+
+    assert "</script><script>" not in html
+    assert "\\u003c/script>" in html
 
 
 def test_create_chart_resource():

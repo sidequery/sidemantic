@@ -189,9 +189,13 @@ class SQLGenerator:
         return re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) is not None
 
     def _quote_identifier(self, name: str) -> str:
-        """Quote a SQL identifier for the current dialect."""
+        """Quote a SQL identifier for the current dialect.
+
+        Delegates to sqlglot which handles reserved words (e.g., 'order')
+        and special characters automatically.
+        """
         if self._is_simple_identifier(name):
-            return name
+            return sqlglot.to_identifier(name, quoted=False).sql(dialect=self.dialect)
         return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
 
     def _cte_name(self, model_name: str) -> str:
@@ -2439,13 +2443,19 @@ class SQLGenerator:
                         break
             if not model:
                 # Fall back to scanning models for a cohort metric by name
+                matches = []
                 for m_name, m in self.graph.models.items():
                     candidate = m.get_metric(local_name)
                     if candidate and candidate.type == "cohort":
-                        model = m
-                        metric = candidate
-                        model_name = m_name
-                        break
+                        matches.append((m_name, m, candidate))
+                if len(matches) == 1:
+                    model_name, model, metric = matches[0]
+                elif len(matches) > 1:
+                    raise ValueError(
+                        f"Ambiguous cohort metric '{local_name}': found in models "
+                        f"{', '.join(mn for mn, _, _ in matches)}. "
+                        f"Use a model-qualified name (e.g., 'model_name.{local_name}') to disambiguate."
+                    )
 
         if not model:
             # Last resort: find model by entity dimension match
@@ -2524,7 +2534,8 @@ class SQLGenerator:
             where_clause += " AND " + " AND ".join(filter_parts)
 
         # Build inner GROUP BY columns
-        entity_select = f"{entity_sql} AS {entity_alias}" if entity_sql != entity_alias else entity_alias
+        quoted_entity = self._quote_alias(entity_alias)
+        entity_select = f"{entity_sql} AS {quoted_entity}" if entity_sql != entity_alias else quoted_entity
         inner_group_cols = [entity_sql]
         inner_select_cols = [entity_select]
 
@@ -2532,14 +2543,15 @@ class SQLGenerator:
         entity_dim_aliases = []
         for ed_name in metric.entity_dimensions or []:
             dim = model.get_dimension(ed_name)
+            quoted_name = self._quote_alias(ed_name)
             if dim:
                 dim_sql = _replace_model_placeholder(dim.sql_expr)
-                inner_select_cols.append(f"{dim_sql} AS {dim.name}")
+                inner_select_cols.append(f"{dim_sql} AS {quoted_name}")
                 inner_group_cols.append(dim_sql)
-                entity_dim_aliases.append(dim.name)
+                entity_dim_aliases.append(ed_name)
             else:
-                inner_select_cols.append(ed_name)
-                inner_group_cols.append(ed_name)
+                inner_select_cols.append(quoted_name)
+                inner_group_cols.append(quoted_name)
                 entity_dim_aliases.append(ed_name)
 
         # Inner metrics
@@ -2585,7 +2597,7 @@ class SQLGenerator:
             raise ValueError(f"Cohort metric '{metric.name}' uses agg '{outer_agg}' which requires a 'sql' field")
 
         if outer_agg == "COUNT_DISTINCT":
-            outer_expr = f"COUNT(DISTINCT {outer_sql or entity_alias})"
+            outer_expr = f"COUNT(DISTINCT {outer_sql or quoted_entity})"
         elif outer_agg == "COUNT":
             outer_expr = f"COUNT({outer_sql or '*'})"
         else:
@@ -2596,8 +2608,9 @@ class SQLGenerator:
 
         # Add entity_dimensions to outer SELECT/GROUP BY
         for alias in entity_dim_aliases:
-            outer_select_cols.append(alias)
-            outer_group_cols.append(alias)
+            quoted = self._quote_alias(alias)
+            outer_select_cols.append(quoted)
+            outer_group_cols.append(quoted)
 
         # Add query-level dimensions (if any beyond entity_dimensions)
         parsed_dims = self._parse_dimension_refs(dimensions)
@@ -2624,11 +2637,12 @@ class SQLGenerator:
             dim_sql = _replace_model_placeholder(dim.sql_expr)
             if granularity:
                 dim_sql = self._date_trunc(granularity, dim_sql)
+            quoted_alias = self._quote_alias(alias)
             # Add to inner query so it's available in the outer subquery
-            inner_select_cols.append(f"{dim_sql} AS {alias}")
+            inner_select_cols.append(f"{dim_sql} AS {quoted_alias}")
             inner_group_cols.append(dim_sql)
-            outer_select_cols.append(alias)
-            outer_group_cols.append(alias)
+            outer_select_cols.append(quoted_alias)
+            outer_group_cols.append(quoted_alias)
 
         # Join inner select/group after dimensions are added
         inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)

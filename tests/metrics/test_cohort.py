@@ -260,6 +260,75 @@ def test_cohort_outer_sql_references_subquery():
     assert abs(rows[0][0] - 26.667) < 1
 
 
+def test_cohort_ambiguous_unqualified_raises():
+    """Same cohort metric name on two models should raise ambiguity error."""
+    events1 = Model(
+        name="events1",
+        sql="SELECT 1 AS user_id, 'web' AS platform",
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="platform", sql="platform", type="categorical"),
+        ],
+        metrics=[_make_multi_platform_metric()],
+    )
+    events2 = Model(
+        name="events2",
+        sql="SELECT 1 AS user_id, 'mobile' AS platform",
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="platform", sql="platform", type="categorical"),
+        ],
+        metrics=[_make_multi_platform_metric()],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events1)
+    graph.add_model(events2)
+
+    gen = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="Ambiguous cohort metric"):
+        gen.generate(metrics=["multi_platform_users"], dimensions=[])
+
+
+def test_cohort_reserved_word_dimension():
+    """Dimension named with a reserved word should be quoted in generated SQL."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'web' AS platform, 'active' AS "order"
+            UNION ALL SELECT 1, 'mobile', 'active'
+            UNION ALL SELECT 2, 'web', 'pending'
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="platform", sql="platform", type="categorical"),
+            Dimension(name="order", sql='"order"', type="categorical"),
+        ],
+        metrics=[_make_multi_platform_metric()],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+
+    gen = SQLGenerator(graph)
+    sql = gen.generate(
+        metrics=["events.multi_platform_users"],
+        dimensions=["events.order"],
+    )
+
+    # Reserved word 'order' must be quoted in the SQL
+    assert '"order"' in sql
+
+    conn = duckdb.connect(":memory:")
+    rows = df_rows(conn.execute(sql))
+    # user 1 has both platforms, order='active'
+    assert len(rows) == 1
+    assert rows[0][0] == "active"
+
+
 def test_cohort_mixed_with_conversion_raises():
     """Mixing cohort + conversion metrics should raise, not silently drop one."""
     events = _make_events_model()

@@ -426,6 +426,22 @@
           "description": "Entity to track (e.g., 'user_id')",
           "title": "Entity"
         },
+        "entity_dimensions": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
+          "title": "Entity Dimensions"
+        },
         "extends": {
           "anyOf": [
             {
@@ -506,6 +522,36 @@
           "default": null,
           "description": "Grain for period-to-date (e.g., 'month' for MTD)",
           "title": "Grain To Date"
+        },
+        "having": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HAVING filter on inner aggregation for cohort metrics",
+          "title": "Having"
+        },
+        "inner_metrics": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
+          "title": "Inner Metrics"
         },
         "label": {
           "anyOf": [
@@ -680,7 +726,8 @@
                 "cumulative",
                 "time_comparison",
                 "conversion",
-                "retention"
+                "retention",
+                "cohort"
               ],
               "type": "string"
             },
@@ -1433,6 +1480,22 @@
             "description": "Entity to track (e.g., 'user_id')",
             "title": "Entity"
           },
+          "entity_dimensions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
+            "title": "Entity Dimensions"
+          },
           "extends": {
             "anyOf": [
               {
@@ -1513,6 +1576,36 @@
             "default": null,
             "description": "Grain for period-to-date (e.g., 'month' for MTD)",
             "title": "Grain To Date"
+          },
+          "having": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "HAVING filter on inner aggregation for cohort metrics",
+            "title": "Having"
+          },
+          "inner_metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
+            "title": "Inner Metrics"
           },
           "label": {
             "anyOf": [
@@ -1687,7 +1780,8 @@
                   "cumulative",
                   "time_comparison",
                   "conversion",
-                  "retention"
+                  "retention",
+                  "cohort"
                 ],
                 "type": "string"
               },
@@ -2203,6 +2297,22 @@
                 "description": "Entity to track (e.g., 'user_id')",
                 "title": "Entity"
               },
+              "entity_dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
+                "title": "Entity Dimensions"
+              },
               "extends": {
                 "anyOf": [
                   {
@@ -2283,6 +2393,36 @@
                 "default": null,
                 "description": "Grain for period-to-date (e.g., 'month' for MTD)",
                 "title": "Grain To Date"
+              },
+              "having": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "HAVING filter on inner aggregation for cohort metrics",
+                "title": "Having"
+              },
+              "inner_metrics": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
+                "title": "Inner Metrics"
               },
               "label": {
                 "anyOf": [
@@ -2457,7 +2597,8 @@
                       "cumulative",
                       "time_comparison",
                       "conversion",
-                      "retention"
+                      "retention",
+                      "cohort"
                     ],
                     "type": "string"
                   },

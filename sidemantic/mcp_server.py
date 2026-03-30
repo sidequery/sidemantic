@@ -19,14 +19,14 @@ _apps_enabled: bool = False
 def initialize_layer(
     directory: str,
     db_path: str | None = None,
+    connection: str | None = None,
     init_sql: list[str] | None = None,
 ) -> SemanticLayer:
     """Initialize the semantic layer with models from directory."""
     global _layer
 
-    # Create connection string
-    connection = None
-    if db_path:
+    # Use explicit connection string, or build one from db_path
+    if connection is None and db_path:
         if db_path == ":memory:":
             connection = "duckdb:///:memory:"
         else:

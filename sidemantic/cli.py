@@ -601,12 +601,14 @@ def api_serve(
         raise typer.Exit(1)
 
     connection_str = None
+    init_sql = None
     if connection:
         connection_str = connection
     elif db:
         connection_str = f"duckdb:///{db.absolute()}"
     elif _loaded_config and _loaded_config.connection:
         connection_str = build_connection_string(_loaded_config)
+        init_sql = get_init_sql(_loaded_config)
 
     host_resolved = host or (_loaded_config.api_server.host if _loaded_config else "127.0.0.1")
     port_resolved = port if port is not None else (_loaded_config.api_server.port if _loaded_config else 4400)
@@ -625,7 +627,7 @@ def api_serve(
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
     preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
     if connection_str:
-        layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch)
+        layer = SemanticLayer(connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch, init_sql=init_sql)
     else:
         layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
 

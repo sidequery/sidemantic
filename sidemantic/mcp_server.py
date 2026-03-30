@@ -13,6 +13,7 @@ from sidemantic.loaders import load_from_directory
 
 # Global semantic layer instance
 _layer: SemanticLayer | None = None
+_apps_enabled: bool = False
 
 
 def initialize_layer(
@@ -390,7 +391,7 @@ def run_query(
     }
 
 
-@mcp.tool()
+@mcp.tool(meta={"ui": {"resourceUri": "ui://sidemantic/chart"}})
 def create_chart(
     dimensions: list[str] | None = None,
     metrics: list[str] | None = None,
@@ -481,12 +482,20 @@ def create_chart(
     vega_spec = chart_to_vega(chart)
     png_base64 = chart_to_base64_png(chart)
 
-    return {
+    result = {
         "sql": sql,
         "vega_spec": vega_spec,
         "png_base64": png_base64,
         "row_count": len(row_dicts),
     }
+
+    # When apps mode is enabled, include an interactive UI widget
+    if _apps_enabled:
+        from sidemantic.apps import create_chart_resource
+
+        return [result, create_chart_resource(vega_spec)]
+
+    return result
 
 
 def _generate_chart_title(dimensions: list[str], metrics: list[str]) -> str:

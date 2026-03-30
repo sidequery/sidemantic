@@ -42,6 +42,10 @@ workbench = [
 mcp = [
     "mcp[cli]>=1.25.0,<2",
 ]
+apps = [
+    "mcp[cli]>=1.25.0,<2",
+    "mcp-ui-server @ git+https://github.com/MCP-UI-Org/mcp-ui.git#subdirectory=sdks/python/server",
+]
 charts = [
     "altair>=5.0.0",
     "vl-convert-python>=1.0.0",
@@ -108,12 +112,15 @@ all-databases = [
     "sidemantic[postgres,bigquery,snowflake,clickhouse,databricks,spark,adbc]",
 ]
 full = [
-    "sidemantic[workbench,mcp,charts,lsp,lookml,malloy,metricflow,widget,api]",
+    "sidemantic[workbench,mcp,apps,charts,lsp,lookml,malloy,metricflow,widget,api]",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.sdist]
 exclude = [

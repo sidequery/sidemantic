@@ -1,6 +1,7 @@
 """Tests for cohort metric type (two-level aggregation with HAVING)."""
 
 import duckdb
+import pytest
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -115,3 +116,28 @@ def test_cohort_with_dimension():
     result = {r[0]: r[1] for r in rows}
     assert result["US"] == 1
     assert result["EU"] == 1
+
+
+def test_cohort_mixed_with_conversion_raises():
+    """Mixing cohort + conversion metrics should raise, not silently drop one."""
+    events = _make_events_model()
+    cohort = _make_multi_platform_metric()
+    events.metrics.append(cohort)
+
+    funnel = Metric(
+        name="signup_funnel",
+        type="conversion",
+        entity="user_id",
+        steps=["platform = 'web'", "platform = 'mobile'"],
+    )
+    events.metrics.append(funnel)
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+
+    gen = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        gen.generate(
+            metrics=["events.multi_platform_users", "events.signup_funnel"],
+            dimensions=[],
+        )

@@ -2601,7 +2601,7 @@ class SQLGenerator:
                 if dim:
                     dim_sql = _replace_model_placeholder(dim.sql_expr)
                     if granularity:
-                        dim_sql = f"DATE_TRUNC('{granularity}', {dim_sql})"
+                        dim_sql = self._date_trunc(granularity, dim_sql)
                     # Add to inner query so it's available in the outer subquery
                     inner_select_cols.append(f"{dim_sql} AS {alias}")
                     inner_group_cols.append(dim_sql)
@@ -3592,6 +3592,17 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         # Handle conversion metrics separately - they need a completely different pattern
         if conversion_metrics:
+            non_conversion = (
+                base_metrics
+                or cumulative_metrics
+                or time_comparison_metrics
+                or offset_ratio_metrics
+                or cohort_metrics
+                or retention_metrics
+                or regular_expression_metric_plans
+            )
+            if non_conversion:
+                raise ValueError("Conversion metrics cannot be combined with other metrics in a single query")
             return self._generate_conversion_query(conversion_metrics[0], dimensions, filters, order_by, limit)
 
         # Handle cohort metrics separately - two-level aggregation pattern

@@ -418,7 +418,8 @@ def _require_select_statement(query: str) -> None:
     except Exception:
         # If parsing fails, let it through to get a proper DB error
         return
-    if not isinstance(parsed, exp.Select):
+    query_types = (exp.Select, exp.Union, exp.Intersect, exp.Except, exp.Subquery)
+    if not isinstance(parsed, query_types):
         raise ValueError("Only SELECT statements are allowed on the /raw endpoint")
     # Walk the full AST to catch DML buried in CTEs or subqueries
     dml_types = _get_dml_types()

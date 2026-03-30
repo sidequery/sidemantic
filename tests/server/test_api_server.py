@@ -336,6 +336,29 @@ def test_raw_select_returns_results(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT 1 AS n UNION SELECT 2 AS n",
+        "SELECT 1 AS n UNION ALL SELECT 2 AS n",
+        "SELECT 1 AS n INTERSECT SELECT 1 AS n",
+        "SELECT 1 AS n EXCEPT SELECT 2 AS n",
+        "(SELECT 1 AS n)",
+    ],
+)
+def test_raw_allows_set_operations(tmp_path, query):
+    client = _build_test_client(tmp_path)
+
+    response = client.post(
+        "/raw",
+        headers=_auth_headers(),
+        json={"query": query},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["rows"]) > 0
+
+
+@pytest.mark.parametrize(
     "stmt",
     [
         "INSERT INTO orders VALUES (99, 'x', 1.0, '2024-01-01')",

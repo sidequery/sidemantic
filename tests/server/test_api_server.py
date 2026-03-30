@@ -358,6 +358,19 @@ def test_raw_rejects_non_select(tmp_path, stmt):
     assert "only select" in response.json()["error"].lower()
 
 
+def test_raw_rejects_dml_in_cte(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    response = client.post(
+        "/raw",
+        headers=_auth_headers(),
+        json={"query": "WITH changed AS (DELETE FROM orders RETURNING id) SELECT * FROM changed"},
+    )
+
+    assert response.status_code == 400
+    assert "only select" in response.json()["error"].lower()
+
+
 def test_json_responses_use_arrow_reader_for_generic_adapters():
     adapter = _ArrowOnlyAdapter()
     layer = SemanticLayer(connection=adapter, auto_register=False)

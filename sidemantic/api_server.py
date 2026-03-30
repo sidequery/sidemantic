@@ -391,8 +391,25 @@ def _normalize_sql_query(query: str) -> str:
     return normalized
 
 
+_DML_TYPES: tuple[type, ...] | None = None
+
+
+def _get_dml_types() -> tuple[type, ...]:
+    global _DML_TYPES
+    if _DML_TYPES is None:
+        from sqlglot import exp
+
+        _DML_TYPES = (exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create, exp.Alter, exp.Command)
+    return _DML_TYPES
+
+
 def _require_select_statement(query: str) -> None:
-    """Reject non-SELECT statements to prevent mutations via /raw."""
+    """Reject non-SELECT statements to prevent mutations via /raw.
+
+    Also inspects CTEs so that DML hidden inside a WITH clause
+    (e.g., WITH x AS (DELETE ... RETURNING ...) SELECT * FROM x)
+    is caught.
+    """
     import sqlglot
     from sqlglot import exp
 
@@ -403,6 +420,11 @@ def _require_select_statement(query: str) -> None:
         return
     if not isinstance(parsed, exp.Select):
         raise ValueError("Only SELECT statements are allowed on the /raw endpoint")
+    # Walk the full AST to catch DML buried in CTEs or subqueries
+    dml_types = _get_dml_types()
+    for node in parsed.walk():
+        if isinstance(node, dml_types):
+            raise ValueError("Only SELECT statements are allowed on the /raw endpoint")
 
 
 def _resolve_response_format(

@@ -312,6 +312,10 @@ class SidemanticAdapter(BaseAdapter):
                 window_expression=measure_def.get("window_expression"),
                 window_frame=measure_def.get("window_frame"),
                 window_order=measure_def.get("window_order"),
+                # Cohort parameters
+                inner_metrics=measure_def.get("inner_metrics"),
+                entity_dimensions=measure_def.get("entity_dimensions"),
+                having=measure_def.get("having"),
             )
             measures.append(measure)
 
@@ -429,6 +433,9 @@ class SidemanticAdapter(BaseAdapter):
             retention_granularity=(metric_def.get("retention_granularity") or metric_def.get("granularity"))
             if metric_type == "retention"
             else None,
+            inner_metrics=metric_def.get("inner_metrics"),
+            entity_dimensions=metric_def.get("entity_dimensions"),
+            having=metric_def.get("having"),
             window=metric_def.get("window"),
             grain_to_date=metric_def.get("grain_to_date"),
             window_expression=metric_def.get("window_expression"),
@@ -603,6 +610,13 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["periods"] = measure.periods
                 if measure.retention_granularity:
                     measure_def["retention_granularity"] = measure.retention_granularity
+                # Cohort parameters
+                if measure.inner_metrics:
+                    measure_def["inner_metrics"] = measure.inner_metrics
+                if measure.entity_dimensions:
+                    measure_def["entity_dimensions"] = measure.entity_dimensions
+                if measure.having:
+                    measure_def["having"] = measure.having
                 # Cumulative/window parameters
                 if measure.window:
                     measure_def["window"] = measure.window
@@ -694,6 +708,12 @@ class SidemanticAdapter(BaseAdapter):
             result["periods"] = measure.periods
         if measure.retention_granularity:
             result["retention_granularity"] = measure.retention_granularity
+        if measure.inner_metrics:
+            result["inner_metrics"] = measure.inner_metrics
+        if measure.entity_dimensions:
+            result["entity_dimensions"] = measure.entity_dimensions
+        if measure.having:
+            result["having"] = measure.having
         if measure.sql:
             result["sql"] = measure.sql
             # Auto-detect and export dependencies for derived measures
@@ -701,6 +721,8 @@ class SidemanticAdapter(BaseAdapter):
                 dependencies = measure.get_dependencies(graph)
                 if dependencies:
                     result["metrics"] = list(dependencies)
+        if measure.agg:
+            result["agg"] = measure.agg
         if measure.window:
             result["window"] = measure.window
         if measure.filters:

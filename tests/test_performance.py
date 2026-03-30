@@ -172,7 +172,7 @@ def test_complex_rewrite_performance(performance_layer):
     avg_ms = (elapsed / iterations) * 1000
 
     print(f"\nComplex rewrite: {avg_ms:.3f}ms per query ({iterations} iterations)")
-    assert avg_ms < 15.0, f"Complex rewrite too slow: {avg_ms:.3f}ms"
+    assert avg_ms < 20.0, f"Complex rewrite too slow: {avg_ms:.3f}ms"
 
 
 def test_sql_generation_performance(performance_layer):

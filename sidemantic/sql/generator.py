@@ -189,9 +189,13 @@ class SQLGenerator:
         return re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) is not None
 
     def _quote_identifier(self, name: str) -> str:
-        """Quote a SQL identifier for the current dialect."""
+        """Quote a SQL identifier for the current dialect.
+
+        Delegates to sqlglot which handles reserved words (e.g., 'order')
+        and special characters automatically.
+        """
         if self._is_simple_identifier(name):
-            return name
+            return sqlglot.to_identifier(name, quoted=False).sql(dialect=self.dialect)
         return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
 
     def _cte_name(self, model_name: str) -> str:
@@ -403,6 +407,13 @@ class SQLGenerator:
                     metric = self.graph.get_metric(m)
                 except KeyError:
                     pass
+                # Fall back to scanning models (e.g. model-scoped metrics)
+                if not metric:
+                    for model in self.graph.models.values():
+                        found = model.get_metric(m)
+                        if found:
+                            metric = found
+                            break
 
             if not metric:
                 return False
@@ -418,6 +429,9 @@ class SQLGenerator:
                 return True
             # Retention metrics need special handling
             if metric.type == "retention":
+                return True
+            # Cohort metrics need special handling
+            if metric.type == "cohort":
                 return True
             return False
 
@@ -2371,6 +2385,312 @@ class SQLGenerator:
 
         raise NotImplementedError(f"Metric type {metric.type} not yet implemented")
 
+    def _generate_cohort_metric_query(
+        self,
+        metric_name: str,
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> str:
+        """Generate SQL for cohort metrics (two-level aggregation with HAVING).
+
+        Pattern:
+        1. Inner query: GROUP BY entity (+ entity_dimensions), compute inner_metrics, apply HAVING
+        2. Outer query: re-aggregate filtered entities using the metric's agg
+
+        Args:
+            metric_name: Name of the cohort metric (can be "model.metric" format)
+            dimensions: List of dimension references from the query
+            filters: List of filter expressions
+            order_by: List of fields to order by
+            limit: Maximum number of rows
+            offset: Number of rows to skip
+        """
+        import re as _re
+
+        # Resolve the metric
+        if "." in metric_name:
+            model_name, local_name = metric_name.split(".", 1)
+        else:
+            local_name = metric_name
+            model_name = None
+
+        metric = None
+        model = None
+        if model_name:
+            try:
+                model = self.graph.get_model(model_name)
+            except KeyError:
+                pass
+            if model:
+                metric = model.get_metric(local_name)
+        else:
+            # Check graph-level metrics first
+            try:
+                metric = self.graph.get_metric(local_name)
+            except KeyError:
+                pass
+
+        # Find the model that owns this metric if not already found
+        if not model:
+            if metric:
+                # Check if any model owns this metric object
+                for m_name, m in self.graph.models.items():
+                    if any(metric is mm for mm in m.metrics):
+                        model = m
+                        model_name = m_name
+                        break
+            if not model:
+                # Fall back to scanning models for a cohort metric by name
+                matches = []
+                for m_name, m in self.graph.models.items():
+                    candidate = m.get_metric(local_name)
+                    if candidate and candidate.type == "cohort":
+                        matches.append((m_name, m, candidate))
+                if len(matches) == 1:
+                    model_name, model, metric = matches[0]
+                elif len(matches) > 1:
+                    raise ValueError(
+                        f"Ambiguous cohort metric '{local_name}': found in models "
+                        f"{', '.join(mn for mn, _, _ in matches)}. "
+                        f"Use a model-qualified name (e.g., 'model_name.{local_name}') to disambiguate."
+                    )
+
+        if not model:
+            # Last resort: find model by entity dimension match
+            if metric and metric.entity:
+                matching_models = []
+                for m_name, m in self.graph.models.items():
+                    for dim in m.dimensions:
+                        if dim.name == metric.entity:
+                            matching_models.append(m_name)
+                            break
+                if len(matching_models) == 1:
+                    model = self.graph.get_model(matching_models[0])
+                    model_name = matching_models[0]
+                elif len(matching_models) > 1:
+                    raise ValueError(
+                        f"Ambiguous model for cohort metric '{metric_name}': "
+                        f"entity dimension '{metric.entity}' found in multiple models: "
+                        f"{', '.join(matching_models)}. "
+                        f"Use a model-qualified metric name (e.g., 'model_name.{metric_name}') to disambiguate."
+                    )
+
+        if not model or not metric:
+            raise ValueError(f"No model found for cohort metric {metric_name}")
+
+        # Validate entity identifier
+        if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
+            raise ValueError(f"Invalid entity identifier: {metric.entity}")
+
+        # Build FROM clause
+        if model.sql:
+            from_clause = f"({model.sql}) AS t"
+        else:
+            from_clause = model.table
+
+        # Resolve entity SQL expression -- it might be a dimension name
+        entity_sql = metric.entity
+        entity_alias = metric.entity
+        entity_dim = model.get_dimension(metric.entity)
+        if entity_dim:
+            entity_sql = entity_dim.sql_expr
+            entity_alias = entity_dim.name
+
+        def _replace_model_placeholder(expr: str) -> str:
+            if model.sql:
+                return expr.replace("{model}", "t")
+            return expr.replace("{model}.", "")
+
+        entity_sql = _replace_model_placeholder(entity_sql)
+
+        # Process segments from filters
+        all_filters = list(filters or [])
+        segment_clause = ""
+        remaining_filters = []
+        for f in all_filters:
+            # Check if filter references a segment
+            segment_resolved = False
+            for seg in model.segments or []:
+                qualified = f"{model_name}.{seg.name}" if model_name else seg.name
+                if f.strip() == qualified or f.strip() == seg.name:
+                    seg_sql = _replace_model_placeholder(seg.sql)
+                    segment_clause += f" AND ({seg_sql})"
+                    segment_resolved = True
+                    break
+            if not segment_resolved:
+                remaining_filters.append(f)
+
+        # Build base WHERE from remaining filters
+        filter_parts = []
+        for f in remaining_filters:
+            stripped = self._strip_model_prefixes([f], model_name or "")[0] if model_name else f
+            stripped = _replace_model_placeholder(stripped)
+            filter_parts.append(stripped)
+
+        where_clause = "1=1" + segment_clause
+        if filter_parts:
+            where_clause += " AND " + " AND ".join(filter_parts)
+
+        # Build inner GROUP BY columns
+        quoted_entity = self._quote_alias(entity_alias)
+        entity_select = f"{entity_sql} AS {quoted_entity}" if entity_sql != entity_alias else quoted_entity
+        inner_group_cols = [entity_sql]
+        inner_select_cols = [entity_select]
+
+        # Entity dimensions (carried through to outer query)
+        entity_dim_aliases = []
+        for ed_name in metric.entity_dimensions or []:
+            dim = model.get_dimension(ed_name)
+            quoted_name = self._quote_alias(ed_name)
+            if dim:
+                dim_sql = _replace_model_placeholder(dim.sql_expr)
+                inner_select_cols.append(f"{dim_sql} AS {quoted_name}")
+                inner_group_cols.append(dim_sql)
+                entity_dim_aliases.append(ed_name)
+            else:
+                inner_select_cols.append(quoted_name)
+                inner_group_cols.append(quoted_name)
+                entity_dim_aliases.append(ed_name)
+
+        # Inner metrics
+        inner_metric_selects = []
+        for im in metric.inner_metrics:
+            im_name = im["name"]
+            im_agg = im.get("agg", "count").upper()
+            im_sql = im.get("sql")
+
+            if im_sql:
+                im_sql = _replace_model_placeholder(im_sql)
+                # Resolve dimension references in inner metric sql
+                dim = model.get_dimension(im_sql)
+                if dim:
+                    im_sql = _replace_model_placeholder(dim.sql_expr)
+
+            if not im_sql and im_agg != "COUNT":
+                raise ValueError(
+                    f"Inner metric '{im_name}' on cohort metric '{metric.name}' "
+                    f"uses agg '{im_agg}' which requires a 'sql' field"
+                )
+
+            if im_agg == "COUNT_DISTINCT":
+                expr = f"COUNT(DISTINCT {im_sql})"
+            elif im_agg == "COUNT":
+                expr = f"COUNT({im_sql or '*'})"
+            else:
+                expr = f"{im_agg}({im_sql})"
+
+            inner_metric_selects.append(f"{expr} AS {self._quote_alias(im_name)}")
+
+        having_clause = _replace_model_placeholder(metric.having)
+
+        # Build outer query
+        outer_agg = metric.agg.upper()
+        outer_sql = metric.sql
+        if outer_sql:
+            # Outer SQL references columns from the inner subquery (aliased as
+            # cohort_sub), not the raw table alias used inside the subquery.
+            outer_sql = outer_sql.replace("{model}.", "cohort_sub.").replace("{model}", "cohort_sub")
+
+        if not outer_sql and outer_agg not in ("COUNT", "COUNT_DISTINCT"):
+            raise ValueError(f"Cohort metric '{metric.name}' uses agg '{outer_agg}' which requires a 'sql' field")
+
+        if outer_agg == "COUNT_DISTINCT":
+            outer_expr = f"COUNT(DISTINCT {outer_sql or quoted_entity})"
+        elif outer_agg == "COUNT":
+            outer_expr = f"COUNT({outer_sql or '*'})"
+        else:
+            outer_expr = f"{outer_agg}({outer_sql})"
+
+        outer_select_cols = []
+        outer_group_cols = []
+
+        # Add entity_dimensions to outer SELECT/GROUP BY
+        for alias in entity_dim_aliases:
+            quoted = self._quote_alias(alias)
+            outer_select_cols.append(quoted)
+            outer_group_cols.append(quoted)
+
+        # Add query-level dimensions (if any beyond entity_dimensions)
+        parsed_dims = self._parse_dimension_refs(dimensions)
+        for dim_ref_str, granularity in parsed_dims:
+            # Parse model.dimension or just dimension from the ref string
+            if "." in dim_ref_str:
+                dim_model_name, dim_name = dim_ref_str.split(".", 1)
+            else:
+                dim_model_name = model_name
+                dim_name = dim_ref_str
+            alias = dim_name
+
+            if alias in entity_dim_aliases:
+                continue  # Already included
+
+            if dim_model_name != model_name:
+                raise ValueError(
+                    f"Cohort metric '{metric.name}' does not support dimensions "
+                    f"from model '{dim_model_name}' (expected '{model_name}')"
+                )
+            dim = model.get_dimension(dim_name)
+            if not dim:
+                raise ValueError(f"Dimension '{dim_name}' not found on model '{model_name}'")
+            dim_sql = _replace_model_placeholder(dim.sql_expr)
+            if granularity:
+                dim_sql = self._date_trunc(granularity, dim_sql)
+            quoted_alias = self._quote_alias(alias)
+            # Add to inner query so it's available in the outer subquery
+            inner_select_cols.append(f"{dim_sql} AS {quoted_alias}")
+            inner_group_cols.append(dim_sql)
+            outer_select_cols.append(quoted_alias)
+            outer_group_cols.append(quoted_alias)
+
+        # Join inner select/group after dimensions are added
+        inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)
+        inner_group = ", ".join(inner_group_cols)
+
+        outer_select_cols.append(f"{outer_expr} AS {self._quote_alias(metric.name)}")
+
+        # Also add any additional outer metrics from inner_metrics that the user
+        # might want (e.g., AVG(active_days) alongside COUNT)
+        # For now, just output the primary metric
+
+        outer_select = ",\n  ".join(outer_select_cols)
+
+        group_by = ""
+        if outer_group_cols:
+            group_by = f"\nGROUP BY {', '.join(outer_group_cols)}"
+
+        # Order/limit/offset
+        order_clause = ""
+        if order_by:
+            order_fields = []
+            for field in order_by:
+                field_name = field.split(".", 1)[1] if "." in field else field
+                # Handle "desc"/"asc" suffix
+                parts = field_name.rsplit(" ", 1)
+                if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
+                    order_fields.append(f"{self._quote_alias(parts[0])} {parts[1].upper()}")
+                else:
+                    order_fields.append(self._quote_alias(field_name))
+            order_clause = f"\nORDER BY {', '.join(order_fields)}"
+
+        limit_clause = f"\nLIMIT {limit}" if limit is not None else ""
+        offset_clause = f"\nOFFSET {offset}" if offset is not None else ""
+
+        sql = f"""SELECT
+  {outer_select}
+FROM (
+  SELECT
+    {inner_select}
+  FROM {from_clause}
+  WHERE {where_clause}
+  GROUP BY {inner_group}
+  HAVING {having_clause}
+) cohort_sub{group_by}{order_clause}{limit_clause}{offset_clause}"""
+
+        return sql.strip()
+
     def _generate_retention_query(
         self,
         metric_name: str,
@@ -3114,6 +3434,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         offset_ratio_metrics = []
         conversion_metrics = []
         retention_metrics = []
+        cohort_metrics = []
         base_metrics = []
         time_comparison_base_plans = {}
         regular_expression_metric_plans = {}
@@ -3169,7 +3490,24 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             try:
                 return self.graph.get_metric(metric_ref), model_context
             except KeyError:
-                return None, model_context
+                pass
+
+            # Fall back to scanning models for the metric by name
+            matches = []
+            for m_name, m in self.graph.models.items():
+                found = m.get_metric(metric_ref)
+                if found:
+                    matches.append((found, m_name))
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                model_names = ", ".join(mn for _, mn in matches)
+                raise ValueError(
+                    f"Ambiguous metric '{metric_ref}': found in models {model_names}. "
+                    f"Use a model-qualified name (e.g., 'model_name.{metric_ref}') to disambiguate."
+                )
+
+            return None, model_context
 
         def collect_leaf_base_metrics(
             metric_ref: str, model_context: str | None = None, visited: set[str] | None = None
@@ -3260,6 +3598,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             elif metric and metric.type == "retention":
                 add_unique(retention_metrics, m)
                 # Retention metrics need special handling - don't add to base_metrics
+            elif metric and metric.type == "cohort":
+                add_unique(cohort_metrics, m)
+                # Cohort metrics need special handling - don't add to base_metrics
             else:
                 # Regular metric or measure
                 metric_ref = canonical_ref(m, resolved_context)
@@ -3296,6 +3637,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 or time_comparison_metrics
                 or offset_ratio_metrics
                 or conversion_metrics
+                or cohort_metrics
                 or regular_expression_metric_plans
             )
             if non_retention:
@@ -3304,7 +3646,35 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         # Handle conversion metrics separately - they need a completely different pattern
         if conversion_metrics:
+            non_conversion = (
+                base_metrics
+                or cumulative_metrics
+                or time_comparison_metrics
+                or offset_ratio_metrics
+                or cohort_metrics
+                or retention_metrics
+                or regular_expression_metric_plans
+            )
+            if non_conversion:
+                raise ValueError("Conversion metrics cannot be combined with other metrics in a single query")
             return self._generate_conversion_query(conversion_metrics[0], dimensions, filters, order_by, limit)
+
+        # Handle cohort metrics separately - two-level aggregation pattern
+        if cohort_metrics:
+            if len(cohort_metrics) > 1:
+                raise ValueError("Only one cohort metric can be queried at a time")
+            non_cohort = (
+                base_metrics
+                or cumulative_metrics
+                or time_comparison_metrics
+                or offset_ratio_metrics
+                or conversion_metrics
+                or retention_metrics
+                or regular_expression_metric_plans
+            )
+            if non_cohort:
+                raise ValueError("Cohort metrics cannot be combined with other metrics in a single query")
+            return self._generate_cohort_metric_query(cohort_metrics[0], dimensions, filters, order_by, limit, offset)
 
         # Build inner query with base aggregations
         # Dedupe base_metrics to avoid duplicate column names

@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric

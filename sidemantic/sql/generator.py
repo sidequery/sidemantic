@@ -1912,7 +1912,7 @@ class SQLGenerator:
                                 primary_key=pk,
                                 agg_type=measure.agg,
                                 model_alias=f"{model_name}_cte",
-                                dialect=self._dialect_instance,
+                                dialect=self.dialect,
                             )
                         else:
                             # Use helper that applies metric-level filters via CASE WHEN

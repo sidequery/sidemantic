@@ -2582,7 +2582,7 @@ class SQLGenerator:
             else:
                 expr = f"{im_agg}({im_sql})"
 
-            inner_metric_selects.append(f"{expr} AS {im_name}")
+            inner_metric_selects.append(f"{expr} AS {self._quote_alias(im_name)}")
 
         having_clause = _replace_model_placeholder(metric.having)
 
@@ -2649,7 +2649,7 @@ class SQLGenerator:
         inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)
         inner_group = ", ".join(inner_group_cols)
 
-        outer_select_cols.append(f"{outer_expr} AS {metric.name}")
+        outer_select_cols.append(f"{outer_expr} AS {self._quote_alias(metric.name)}")
 
         # Also add any additional outer metrics from inner_metrics that the user
         # might want (e.g., AVG(active_days) alongside COUNT)
@@ -2670,9 +2670,9 @@ class SQLGenerator:
                 # Handle "desc"/"asc" suffix
                 parts = field_name.rsplit(" ", 1)
                 if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
-                    order_fields.append(f"{parts[0]} {parts[1].upper()}")
+                    order_fields.append(f"{self._quote_alias(parts[0])} {parts[1].upper()}")
                 else:
-                    order_fields.append(field_name)
+                    order_fields.append(self._quote_alias(field_name))
             order_clause = f"\nORDER BY {', '.join(order_fields)}"
 
         limit_clause = f"\nLIMIT {limit}" if limit is not None else ""

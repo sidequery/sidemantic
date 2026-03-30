@@ -1,6 +1,7 @@
 """SQL generation using SQLGlot builder API."""
 
 import logging
+import threading
 
 import sqlglot
 from sqlglot import exp, select
@@ -12,25 +13,34 @@ from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 
 _dialect_cache: dict[str, Dialect] = {}
+_tls = threading.local()
 
 
 def _cached_dialect(dialect: str) -> Dialect:
-    """Get a Dialect instance with a cached generator.
+    """Get a Dialect instance with a thread-local cached generator.
 
-    sqlglot 30 creates a new Generator per .sql() call.
-    Caching the generator avoids this overhead (measured 64x speedup).
-    The parser is NOT cached because it is a stateful state machine
-    whose cursor/token state would be corrupted by concurrent use.
+    sqlglot 30 creates a new Generator per .sql() call. Caching the
+    generator per thread avoids this overhead while remaining safe for
+    concurrent use (each thread gets its own Generator instance).
     """
     if dialect in _dialect_cache:
         return _dialect_cache[dialect]
     instance = Dialect.get_or_raise(dialect)
 
-    gen = instance.generator()
     orig_generator = instance.generator
 
     def _fast_generator(**opts):
-        return gen if not opts else orig_generator(**opts)
+        if opts:
+            return orig_generator(**opts)
+        generators = getattr(_tls, "generators", None)
+        if generators is None:
+            generators = {}
+            _tls.generators = generators
+        gen = generators.get(dialect)
+        if gen is None:
+            gen = orig_generator()
+            generators[dialect] = gen
+        return gen
 
     instance.generator = _fast_generator
 

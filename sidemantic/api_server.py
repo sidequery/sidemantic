@@ -326,6 +326,7 @@ def create_app(
         with app.state.lock:
             current_layer = app.state.layer
             query = _normalize_sql_query(payload.query)
+            _require_select_statement(query)
             result = current_layer.adapter.execute(query)
             return _build_query_response(
                 request,
@@ -388,6 +389,20 @@ def _normalize_sql_query(query: str) -> str:
     if len(statements) > 1:
         raise ValueError("Multiple SQL statements are not supported")
     return normalized
+
+
+def _require_select_statement(query: str) -> None:
+    """Reject non-SELECT statements to prevent mutations via /raw."""
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        parsed = sqlglot.parse_one(query)
+    except Exception:
+        # If parsing fails, let it through to get a proper DB error
+        return
+    if not isinstance(parsed, exp.Select):
+        raise ValueError("Only SELECT statements are allowed on the /raw endpoint")
 
 
 def _resolve_response_format(

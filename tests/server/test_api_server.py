@@ -322,6 +322,42 @@ def test_sql_multi_statement_rejected(tmp_path):
     assert "multiple" in response.json()["error"].lower()
 
 
+def test_raw_select_returns_results(tmp_path):
+    client = _build_test_client(tmp_path)
+
+    response = client.post(
+        "/raw",
+        headers=_auth_headers(),
+        json={"query": "SELECT 1 AS n"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"] == [{"n": 1}]
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "INSERT INTO orders VALUES (99, 'x', 1.0, '2024-01-01')",
+        "UPDATE orders SET status = 'x'",
+        "DELETE FROM orders",
+        "DROP TABLE orders",
+        "CREATE TABLE hack (id INT)",
+    ],
+)
+def test_raw_rejects_non_select(tmp_path, stmt):
+    client = _build_test_client(tmp_path)
+
+    response = client.post(
+        "/raw",
+        headers=_auth_headers(),
+        json={"query": stmt},
+    )
+
+    assert response.status_code == 400
+    assert "only select" in response.json()["error"].lower()
+
+
 def test_json_responses_use_arrow_reader_for_generic_adapters():
     adapter = _ArrowOnlyAdapter()
     layer = SemanticLayer(connection=adapter, auto_register=False)

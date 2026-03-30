@@ -13,6 +13,11 @@ def test_get_layer_requires_init():
         mcp_server.get_layer()
 
 
+def test_validate_filter_allows_semicolon_in_string_literal():
+    """Semicolons inside string literals should not be rejected."""
+    mcp_server._validate_filter("status = 'semi;colon'")
+
+
 def test_format_field_name():
     assert mcp_server._format_field_name("orders.total_revenue") == "Total Revenue"
     assert mcp_server._format_field_name("created_at__month") == "Created At (Month)"

@@ -11,13 +11,10 @@ pytest.importorskip("mcp")  # Skip if mcp extra not installed
 
 from sidemantic.mcp_server import (
     catalog_resource,
-    compile_query,
     create_chart,
     get_models,
     get_semantic_graph,
     initialize_layer,
-    list_models,
-    list_segments,
     run_query,
     run_sql,
     validate_query,
@@ -99,9 +96,10 @@ models:
     shutil.rmtree(tmpdir)
 
 
-def test_list_models(demo_layer):
-    """Test listing all models."""
-    models = list_models()
+def test_discover_models_via_semantic_graph(demo_layer):
+    """Test discovering models via get_semantic_graph (replaces list_models)."""
+    graph = get_semantic_graph()
+    models = graph["models"]
 
     assert len(models) == 1
     assert models[0]["name"] == "orders"
@@ -350,12 +348,13 @@ def test_create_chart_time_series(demo_layer):
 # --- Tests for new tools ---
 
 
-def test_compile_query(demo_layer):
-    """Test compile_query returns SQL without executing."""
-    result = compile_query(
+def test_run_query_dry_run(demo_layer):
+    """Test run_query with dry_run returns SQL without executing."""
+    result = run_query(
         dimensions=["orders.customer_name"],
         metrics=["orders.total_revenue"],
         limit=5,
+        dry_run=True,
     )
 
     assert "sql" in result
@@ -367,13 +366,14 @@ def test_compile_query(demo_layer):
     assert "row_count" not in result
 
 
-def test_compile_query_with_offset(demo_layer):
-    """Test compile_query with offset for pagination."""
-    result = compile_query(
+def test_run_query_dry_run_with_offset(demo_layer):
+    """Test run_query dry_run with offset for pagination."""
+    result = run_query(
         dimensions=["orders.customer_name"],
         metrics=["orders.total_revenue"],
         limit=10,
         offset=20,
+        dry_run=True,
     )
 
     assert "sql" in result
@@ -453,20 +453,19 @@ def test_validate_query_invalid_metric(demo_layer):
     assert len(result["errors"]) > 0
 
 
-def test_list_segments(demo_layer):
-    """Test list_segments returns all segments."""
-    segments = list_segments()
+def test_segments_via_get_models(demo_layer):
+    """Test that segments are accessible via get_models (replaces list_segments)."""
+    models = get_models(["orders"])
+    model = models[0]
 
-    assert len(segments) == 2
+    assert "segments" in model
+    assert len(model["segments"]) == 2
 
-    seg_names = [s["name"] for s in segments]
+    seg_names = [s["name"] for s in model["segments"]]
     assert "completed_orders" in seg_names
     assert "high_value" in seg_names
 
-    # Check structure
-    completed = next(s for s in segments if s["name"] == "completed_orders")
-    assert completed["model"] == "orders"
-    assert completed["qualified_name"] == "orders.completed_orders"
+    completed = next(s for s in model["segments"] if s["name"] == "completed_orders")
     assert "sql" in completed
     assert "description" in completed
 

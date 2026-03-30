@@ -157,9 +157,10 @@ def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
     pytest.importorskip("mcp")
     called = {}
 
-    def fake_initialize_layer(directory, db_path=None):
+    def fake_initialize_layer(directory, db_path=None, init_sql=None):
         called["directory"] = directory
         called["db_path"] = db_path
+        called["init_sql"] = init_sql
 
     def fake_run(*args, **kwargs):
         called["run"] = True

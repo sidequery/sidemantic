@@ -15,7 +15,11 @@ from sidemantic.loaders import load_from_directory
 _layer: SemanticLayer | None = None
 
 
-def initialize_layer(directory: str, db_path: str | None = None) -> SemanticLayer:
+def initialize_layer(
+    directory: str,
+    db_path: str | None = None,
+    init_sql: list[str] | None = None,
+) -> SemanticLayer:
     """Initialize the semantic layer with models from directory."""
     global _layer
 
@@ -27,7 +31,7 @@ def initialize_layer(directory: str, db_path: str | None = None) -> SemanticLaye
         else:
             connection = f"duckdb:///{Path(db_path).absolute()}"
 
-    _layer = SemanticLayer(connection=connection)
+    _layer = SemanticLayer(connection=connection, init_sql=init_sql)
     load_from_directory(_layer, directory)
     return _layer
 
@@ -35,7 +39,10 @@ def initialize_layer(directory: str, db_path: str | None = None) -> SemanticLaye
 def get_layer() -> SemanticLayer:
     """Get the initialized semantic layer."""
     if _layer is None:
-        raise RuntimeError("Semantic layer not initialized. Call initialize_layer first.")
+        raise RuntimeError(
+            "Semantic layer not initialized. The MCP server must be started via "
+            "'sidemantic mcp-serve <directory>' which loads models before serving."
+        )
     return _layer
 
 
@@ -60,16 +67,22 @@ def _validate_filter(filter_str: str, dialect: str | None = None) -> None:
     """Validate a filter string to prevent SQL injection.
 
     Parses the filter as a SQL expression using the active dialect and rejects
-    DDL/DML statements. Also rejects multi-statement input (semicolons).
+    DDL/DML statements and multi-statement input.
     """
     import sqlglot
 
-    if ";" in filter_str:
+    # Detect multi-statement input via sqlglot parsing (not raw string check,
+    # which would false-positive on semicolons inside string literals).
+    try:
+        statements = sqlglot.parse(f"SELECT 1 WHERE {filter_str}", dialect=dialect)
+    except Exception:
+        raise ValueError(f"Invalid filter expression: {filter_str}")
+
+    if len(statements) > 1:
         raise ValueError("Filter contains disallowed SQL: multi-statement input")
 
-    try:
-        parsed = sqlglot.parse_one(f"SELECT 1 WHERE {filter_str}", dialect=dialect)
-    except Exception:
+    parsed = statements[0]
+    if parsed is None:
         raise ValueError(f"Invalid filter expression: {filter_str}")
 
     # Build the disallowed SQL node types defensively because sqlglot class
@@ -139,72 +152,20 @@ mcp = FastMCP("sidemantic")
 
 
 @mcp.tool()
-def list_models() -> list[dict[str, Any]]:
-    """List all available models in the semantic layer.
-
-    Models are the core building blocks of the semantic layer. Each model represents
-    a business entity (e.g., orders, customers, products) and contains:
-    - Dimensions: attributes you can group by or filter on
-    - Metrics: measures you can aggregate (sum, count, average, etc.)
-    - Relationships: connections to other models for automatic joins
-
-    Use this to discover what data is available before constructing queries.
-
-    Returns:
-        List of models with basic information including name, table, dimensions,
-        metrics, and relationship count.
-    """
-    layer = get_layer()
-
-    models = []
-    for model_name, model in layer.graph.models.items():
-        models.append(
-            {
-                "name": model_name,
-                "table": model.table,
-                "dimensions": [d.name for d in model.dimensions],
-                "metrics": [m.name for m in model.metrics],
-                "relationships": len(model.relationships),
-            }
-        )
-
-    return models
-
-
-@mcp.tool()
 def get_models(model_names: list[str]) -> list[dict[str, Any]]:
     """Get detailed information about one or more models.
 
-    Returns comprehensive details about models including:
-    - All dimensions with their types, SQL definitions, descriptions, labels, hierarchy, and formatting
-    - All metrics with their aggregation types, SQL formulas, filters, descriptions, and complex metric config
-    - All segments (named reusable filters) defined on the model
-    - All relationships showing how models connect for joins
-    - Model metadata: description, primary key, default time dimension, source info
-
-    Dimension types:
-    - categorical: text/enum values for grouping (e.g., status, region)
-    - time: timestamps supporting granularity rollups (e.g., created_at)
-    - numeric: numbers that can be used in calculations
-    - boolean: true/false flags
-
-    Metric aggregations:
-    - sum, avg, min, max: numeric aggregations
-    - count, count_distinct: counting aggregations
-    - median: statistical median
-
-    Special metric types:
-    - ratio: division of two metrics (has numerator/denominator)
-    - derived: formula combining other metrics
-    - cumulative: running totals or rolling windows
-    - time_comparison: period-over-period calculations (YoY, MoM, etc.)
-    - conversion: funnel conversion rates
+    Returns full definitions including all dimensions (with types, SQL, granularity),
+    metrics (with aggregation, SQL, filters), segments, relationships with join
+    conditions, and model metadata. Use get_semantic_graph first to discover model
+    names, then this tool to get the details you need for query construction.
 
     Args:
         model_names: List of model names to retrieve details for
 
     Returns:
-        Detailed information for each requested model.
+        Detailed information for each requested model, including dimensions,
+        metrics, segments, relationships, and metadata.
     """
     layer = get_layer()
 
@@ -368,80 +329,30 @@ def run_query(
     limit: int | None = None,
     offset: int | None = None,
     ungrouped: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Run a query against the semantic layer.
+    """Run a structured query against the semantic layer.
 
-    Sidemantic automatically generates SQL from semantic references and handles joins between models.
-
-    Field References:
-    - Use model.field_name format (e.g., "orders.customer_name", "orders.total_revenue")
-    - Dimensions and metrics are namespaced by their model
-
-    Time Dimensions:
-    - Time dimensions support granularity suffixes using double underscore
-    - Available granularities: __year, __quarter, __month, __week, __day, __hour
-    - Example: "orders.created_at__month" groups by month
-    - Use the base dimension name without suffix for raw timestamp
-
-    Automatic Joins:
-    - Reference fields from multiple models to trigger automatic joins
-    - Joins are inferred from model relationships
-    - Example: ["orders.revenue", "customers.region"] automatically joins orders to customers
-
-    Filters:
-    - Use model.field_name in WHERE conditions
-    - Standard SQL operators: =, !=, <, >, <=, >=, IN, LIKE, BETWEEN
-    - Combine with AND/OR
-    - Example: "orders.status = 'completed' AND orders.amount > 100"
-
-    Segments:
-    - Named reusable filters defined on models (e.g., "orders.active_users")
-    - Use list_segments to discover available segments
+    Reference fields as model.field_name (e.g., "orders.total_revenue"). Time
+    dimensions support granularity suffixes: "orders.created_at__month" (year,
+    quarter, month, week, day, hour). Referencing fields from multiple models
+    triggers automatic joins via model relationships.
 
     Args:
-        dimensions: List of dimension references (e.g., ["orders.customer_name", "orders.created_at__month"])
-        metrics: List of metric references (e.g., ["orders.total_revenue", "orders.order_count"])
-        where: Optional WHERE clause using model.field_name syntax
-        segments: Optional list of segment references to apply (e.g., ["orders.active_users"])
-        order_by: List of fields to order by with optional "asc" or "desc" (e.g., ["orders.total_revenue desc"])
-        limit: Optional row limit
-        offset: Optional number of rows to skip (for pagination, use with limit)
-        ungrouped: If True, return raw rows without aggregation (no GROUP BY)
+        dimensions: Dimension references to group by (e.g., ["orders.status", "orders.created_at__month"])
+        metrics: Metric references to aggregate (e.g., ["orders.total_revenue"])
+        where: SQL WHERE clause using model.field_name (e.g., "orders.status = 'completed' AND orders.amount > 100")
+        segments: Named reusable filters defined on models (e.g., ["orders.completed_orders"])
+        order_by: Fields to sort by with optional direction (e.g., ["orders.total_revenue desc"])
+        limit: Maximum rows to return
+        offset: Rows to skip (for pagination, use with limit)
+        ungrouped: If True, return raw rows without GROUP BY aggregation
+        dry_run: If True, return only the generated SQL without executing
 
     Returns:
-        Query result containing generated SQL, result rows, and row count.
-
-    Examples:
-        Simple aggregation:
-        - dimensions: ["orders.status"]
-        - metrics: ["orders.total_revenue"]
-
-        Time series with granularity:
-        - dimensions: ["orders.created_at__month"]
-        - metrics: ["orders.total_revenue", "orders.order_count"]
-
-        Cross-model query (automatic join):
-        - dimensions: ["customers.region", "products.category"]
-        - metrics: ["orders.total_revenue"]
-
-        With filters, segments, and sorting:
-        - dimensions: ["orders.status"]
-        - metrics: ["orders.total_revenue"]
-        - where: "orders.created_at >= '2024-01-01'"
-        - segments: ["orders.completed_orders"]
-        - order_by: ["orders.total_revenue desc"]
-        - limit: 10
-
-        Paginated results:
-        - dimensions: ["orders.customer_name"]
-        - metrics: ["orders.total_revenue"]
-        - limit: 20
-        - offset: 40
-
-        Raw ungrouped rows:
-        - dimensions: ["orders.customer_name", "orders.created_at"]
-        - ungrouped: True
-        - limit: 100
+        sql: Generated SQL query.
+        rows: Result rows as list of dicts (omitted when dry_run=True).
+        row_count: Number of rows returned (omitted when dry_run=True).
     """
     layer = get_layer()
 
@@ -460,6 +371,9 @@ def run_query(
         offset=offset,
         ungrouped=ungrouped,
     )
+
+    if dry_run:
+        return {"sql": sql}
 
     # Execute query via adapter (works with all database backends)
     result = layer.adapter.execute(sql)
@@ -484,78 +398,39 @@ def create_chart(
     segments: list[str] | None = None,
     order_by: list[str] | None = None,
     limit: int | None = None,
+    offset: int | None = None,
     chart_type: Literal["auto", "bar", "line", "area", "scatter", "point"] = "auto",
     title: str | None = None,
     width: int = 600,
     height: int = 400,
 ) -> dict[str, Any]:
-    """Generate a chart from a semantic layer query.
+    """Generate a chart from a semantic layer query, producing a Vega-Lite spec and PNG.
 
-    Combines query execution with chart generation, producing Vega-Lite specs and PNG images.
+    Query parameters work the same as run_query (model.field_name references,
+    time granularity suffixes, automatic joins, segments).
 
-    Chart Type Selection (when chart_type="auto"):
-    - Time dimension + metrics -> Line chart (multiple metrics) or Area chart (single metric)
-    - Categorical dimension + metrics -> Bar chart
-    - Two numeric dimensions -> Scatter plot
-    - Multiple metrics over time -> Multi-line chart
-
-    Visual Design:
-    - Modern, accessible color palette (not rainbow defaults)
-    - Clean typography with Inter font family
-    - Minimal gridlines and chartjunk
-    - Responsive tooltips showing all relevant data
-    - Smart axis formatting (currency, percentages, thousands separators)
-    - Professional spacing and proportions
-
-    Query Semantics (same as run_query):
-    - Use model.field_name format for all references
-    - Time dimensions support granularity: dimension__month, dimension__year, etc.
-    - Automatic joins when referencing multiple models
-    - Standard SQL operators in WHERE clause
-    - Segments: named reusable filters (e.g., ["orders.active_users"])
+    When chart_type is "auto", the chart type is inferred: time dimensions produce
+    line/area charts, categorical dimensions produce bar charts, two numeric
+    dimensions produce scatter plots.
 
     Args:
-        dimensions: List of dimension references (e.g., ["orders.created_at__month", "customers.region"])
-        metrics: List of metric references (e.g., ["orders.total_revenue", "orders.order_count"])
+        dimensions: List of dimension references (e.g., ["orders.created_at__month"])
+        metrics: List of metric references (e.g., ["orders.total_revenue"])
         where: Optional WHERE clause filter using model.field_name syntax
-        segments: Optional list of segment references to apply (e.g., ["orders.active_users"])
+        segments: Optional list of segment references to apply
         order_by: List of fields to order by with optional "asc" or "desc"
         limit: Optional row limit
-        chart_type: Chart type ("auto" for smart selection, or "bar", "line", "area", "scatter", "point")
-        title: Chart title (auto-generated if not provided)
+        offset: Optional number of rows to skip
+        chart_type: "auto", "bar", "line", "area", "scatter", or "point"
+        title: Chart title (auto-generated from field names if not provided)
         width: Chart width in pixels (default: 600)
         height: Chart height in pixels (default: 400)
 
     Returns:
-        Chart result containing:
-        - sql: Generated SQL query
-        - vega_spec: Vega-Lite JSON specification (can be rendered client-side)
-        - png_base64: Base64-encoded PNG image (ready for display)
-        - row_count: Number of data points in the chart
-
-    Examples:
-        Revenue trend over time:
-        - dimensions: ["orders.created_at__month"]
-        - metrics: ["orders.total_revenue"]
-        - title: "Monthly Revenue Trend"
-
-        Top products by revenue:
-        - dimensions: ["products.name"]
-        - metrics: ["orders.total_revenue"]
-        - order_by: ["orders.total_revenue desc"]
-        - limit: 10
-        - chart_type: "bar"
-
-        Revenue by region and status:
-        - dimensions: ["customers.region"]
-        - metrics: ["orders.total_revenue"]
-        - where: "orders.status = 'completed'"
-        - chart_type: "bar"
-
-        Multiple metrics over time:
-        - dimensions: ["orders.created_at__month"]
-        - metrics: ["orders.total_revenue", "orders.order_count"]
-        - chart_type: "line"
+        sql: Generated SQL query
+        vega_spec: Vega-Lite JSON specification (renderable client-side)
+        png_base64: Base64-encoded PNG image
+        row_count: Number of data points
     """
     from sidemantic.charts import chart_to_base64_png, chart_to_vega
     from sidemantic.charts import create_chart as make_chart
@@ -574,6 +449,7 @@ def create_chart(
         segments=segments,
         order_by=order_by,
         limit=limit,
+        offset=offset,
     )
 
     result = layer.adapter.execute(sql)
@@ -582,7 +458,11 @@ def create_chart(
     row_dicts = [{col: _convert_to_json_compatible(val) for col, val in zip(columns, row)} for row in rows]
 
     if not row_dicts:
-        raise ValueError("Query returned no data - cannot create chart")
+        raise ValueError(
+            "Query returned no data. Check your filter conditions and ensure "
+            "the referenced dimensions/metrics contain data. Use validate_query "
+            "to verify field references, or run_query to inspect results first."
+        )
 
     # Auto-generate title if not provided
     if title is None:
@@ -648,100 +528,27 @@ def _format_field_name(field: str) -> str:
 
 
 @mcp.tool()
-def compile_query(
-    dimensions: list[str] | None = None,
-    metrics: list[str] | None = None,
-    where: str | None = None,
-    segments: list[str] | None = None,
-    order_by: list[str] | None = None,
-    limit: int | None = None,
-    offset: int | None = None,
-    ungrouped: bool = False,
-) -> dict[str, str]:
-    """Compile a semantic layer query to SQL without executing it (dry run).
-
-    Use this to inspect the generated SQL before running it, or to get SQL for use
-    in other tools. Accepts the same parameters as run_query.
-
-    Args:
-        dimensions: List of dimension references (e.g., ["orders.customer_name", "orders.created_at__month"])
-        metrics: List of metric references (e.g., ["orders.total_revenue", "orders.order_count"])
-        where: Optional WHERE clause using model.field_name syntax
-        segments: Optional list of segment references to apply (e.g., ["orders.active_users"])
-        order_by: List of fields to order by with optional "asc" or "desc"
-        limit: Optional row limit
-        offset: Optional number of rows to skip (for pagination)
-        ungrouped: If True, return raw rows without aggregation (no GROUP BY)
-
-    Returns:
-        Dictionary with "sql" key containing the generated SQL string.
-    """
-    layer = get_layer()
-
-    sql = layer.compile(
-        dimensions=dimensions or [],
-        metrics=metrics or [],
-        filters=[where] if where else None,
-        segments=segments,
-        order_by=order_by,
-        limit=limit,
-        offset=offset,
-        ungrouped=ungrouped,
-    )
-
-    return {"sql": sql}
-
-
-@mcp.tool()
 def run_sql(query: str) -> dict[str, Any]:
     """Execute a SQL query rewritten through the semantic layer.
 
-    Write natural SQL referencing model fields, and sidemantic rewrites it to use the
-    semantic layer's metric/dimension definitions with proper aggregations and joins.
-
-    The query is parsed and rewritten:
-    - Column references are resolved to semantic layer dimensions and metrics
-    - Aggregations are applied based on metric definitions
-    - Joins between models are automatic based on relationships
-    - CTEs and subqueries that reference semantic models are rewritten
-
-    Supported SQL features:
-    - Simple SELECT: SELECT revenue, status FROM orders
-    - Qualified references: SELECT orders.revenue, customers.region FROM orders
-    - Time granularity: SELECT order_date__month, revenue FROM orders
-    - WHERE filters: SELECT revenue FROM orders WHERE status = 'completed'
-    - ORDER BY and LIMIT: SELECT revenue FROM orders ORDER BY revenue DESC LIMIT 10
-    - CTEs: WITH agg AS (SELECT revenue, status FROM orders) SELECT * FROM agg
-    - Subqueries: SELECT * FROM (SELECT revenue, status FROM orders) WHERE revenue > 100
-    - FROM metrics: SELECT orders.revenue, customers.region FROM metrics (virtual table for cross-model queries)
-
-    Not supported:
-    - Explicit JOIN syntax (joins are automatic)
-    - Inline aggregation functions (must be defined as metrics)
-    - Multiple statements
+    Write SQL referencing model fields (e.g., SELECT revenue, status FROM orders)
+    and sidemantic rewrites it using semantic layer definitions with proper
+    aggregations and joins. Supports SELECT, WHERE, ORDER BY, LIMIT, CTEs,
+    subqueries, time granularity suffixes, and "FROM metrics" for cross-model queries.
+    Joins are automatic; explicit JOIN syntax is not supported.
 
     Args:
-        query: SQL query referencing semantic layer models/fields
+        query: SQL query referencing semantic layer models/fields.
+            Examples:
+            - "SELECT revenue, status FROM orders"
+            - "SELECT orders.revenue, customers.region FROM metrics"
+            - "SELECT order_date__month, revenue FROM orders ORDER BY order_date__month"
 
     Returns:
-        Query result containing:
-        - sql: The rewritten SQL that was actually executed
-        - original_sql: The original SQL you provided
-        - rows: Result rows as list of dicts
-        - row_count: Number of rows returned
-
-    Examples:
-        Simple query:
-            "SELECT revenue, status FROM orders"
-
-        Cross-model with virtual table:
-            "SELECT orders.revenue, customers.region FROM metrics"
-
-        With time granularity:
-            "SELECT order_date__month, revenue FROM orders ORDER BY order_date__month"
-
-        CTE:
-            "WITH monthly AS (SELECT order_date__month, revenue FROM orders) SELECT * FROM monthly WHERE revenue > 1000"
+        sql: The rewritten SQL that was executed
+        original_sql: The original SQL you provided
+        rows: Result rows as list of dicts
+        row_count: Number of rows returned
     """
     from sidemantic.sql.query_rewriter import QueryRewriter
 
@@ -799,65 +606,17 @@ def validate_query(
 
 
 @mcp.tool()
-def list_segments() -> list[dict[str, Any]]:
-    """List all segments (named reusable filters) across all models.
-
-    Segments are predefined WHERE clause filters that can be applied to queries
-    for consistent data filtering. For example, "active_users" might filter to
-    users with status='active' who logged in within the last 30 days.
-
-    Returns:
-        List of segments with model name, segment name, SQL expression, and description.
-
-    Example response:
-        [
-            {
-                "model": "users",
-                "name": "active_users",
-                "qualified_name": "users.active_users",
-                "sql": "{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30",
-                "description": "Users who are active and logged in recently"
-            }
-        ]
-    """
-    layer = get_layer()
-
-    all_segments = []
-    for model_name, model in layer.graph.models.items():
-        for seg in model.segments:
-            seg_info: dict[str, Any] = {
-                "model": model_name,
-                "name": seg.name,
-                "qualified_name": f"{model_name}.{seg.name}",
-                "sql": seg.sql,
-            }
-            if seg.description:
-                seg_info["description"] = seg.description
-            if not seg.public:
-                seg_info["public"] = False
-            all_segments.append(seg_info)
-
-    return all_segments
-
-
-@mcp.tool()
 def get_semantic_graph() -> dict[str, Any]:
-    """Get the full semantic graph structure showing all models, their relationships, and graph-level metrics.
+    """Discover the semantic layer: all models, relationships, and available fields.
 
-    Provides a high-level overview of the entire semantic layer:
-    - All models with their dimensions, metrics, and segments (names only for brevity)
-    - All relationships between models with join types
-    - Graph-level metrics (metrics not attached to a specific model)
-    - Join paths: which models can be joined together
-
-    Use this for understanding the overall data model before constructing queries.
-    For detailed information about specific models, use get_models.
+    Start here to understand what data is available. Returns every model with its
+    dimension/metric/segment names, inter-model relationships, graph-level metrics,
+    and which model pairs can be joined. Use get_models for full field definitions.
 
     Returns:
-        Dictionary containing:
-        - models: List of model summaries (name, table, dimension/metric/segment names, relationship info)
-        - graph_metrics: List of graph-level metrics (time_comparison, conversion, derived, ratio)
-        - joinable_pairs: List of model pairs that can be joined together
+        models: List of model summaries (name, table, dimensions, metrics, segments, relationships).
+        graph_metrics: Graph-level metrics not attached to a single model (if any).
+        joinable_pairs: Model pairs that can be joined, with hop count.
     """
     layer = get_layer()
     graph = layer.graph

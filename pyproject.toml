@@ -40,7 +40,7 @@ workbench = [
     "textual-plotext>=1.0.1",
 ]
 mcp = [
-    "mcp[cli]>=1.16.0",
+    "mcp[cli]>=1.25.0,<2",
 ]
 charts = [
     "altair>=5.0.0",

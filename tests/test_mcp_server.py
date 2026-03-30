@@ -116,7 +116,8 @@ def test_discover_models_via_semantic_graph(demo_layer):
 
 def test_get_models(demo_layer):
     """Test getting detailed model information."""
-    models = get_models(["orders"])
+    result = get_models(["orders"])
+    models = result["models"]
 
     assert len(models) == 1
     model = models[0]
@@ -145,15 +146,15 @@ def test_get_models(demo_layer):
 
 def test_get_models_nonexistent(demo_layer):
     """Test getting a model that doesn't exist."""
-    models = get_models(["nonexistent"])
-    assert len(models) == 0
+    result = get_models(["nonexistent"])
+    assert len(result["models"]) == 0
 
 
 def test_get_models_multiple(demo_layer):
     """Test getting multiple models (only one exists)."""
-    models = get_models(["orders", "nonexistent"])
-    assert len(models) == 1
-    assert models[0]["name"] == "orders"
+    result = get_models(["orders", "nonexistent"])
+    assert len(result["models"]) == 1
+    assert result["models"][0]["name"] == "orders"
 
 
 def test_run_query_basic(demo_layer):
@@ -455,8 +456,8 @@ def test_validate_query_invalid_metric(demo_layer):
 
 def test_segments_via_get_models(demo_layer):
     """Test that segments are accessible via get_models (replaces list_segments)."""
-    models = get_models(["orders"])
-    model = models[0]
+    result = get_models(["orders"])
+    model = result["models"][0]
 
     assert "segments" in model
     assert len(model["segments"]) == 2
@@ -489,8 +490,8 @@ def test_get_semantic_graph(demo_layer):
 
 def test_get_models_enriched(demo_layer):
     """Test that get_models returns enriched model data."""
-    models = get_models(["orders"])
-    model = models[0]
+    result = get_models(["orders"])
+    model = result["models"][0]
 
     # Check new fields
     assert model["primary_key"] == "id"

@@ -153,7 +153,7 @@ mcp = FastMCP("sidemantic")
 
 
 @mcp.tool()
-def get_models(model_names: list[str]) -> list[dict[str, Any]]:
+def get_models(model_names: list[str]) -> dict[str, Any]:
     """Get detailed information about one or more models.
 
     Returns full definitions including all dimensions (with types, SQL, granularity),
@@ -317,7 +317,7 @@ def get_models(model_names: list[str]) -> list[dict[str, Any]]:
 
         details.append(detail)
 
-    return details
+    return {"models": details}
 
 
 @mcp.tool()
@@ -404,7 +404,7 @@ def create_chart(
     title: str | None = None,
     width: int = 600,
     height: int = 400,
-) -> dict[str, Any] | list[Any]:
+) -> dict[str, Any]:
     """Generate a chart from a semantic layer query, producing a Vega-Lite spec and PNG.
 
     Query parameters work the same as run_query (model.field_name references,

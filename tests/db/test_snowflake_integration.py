@@ -22,7 +22,7 @@ pytestmark = [
 @pytest.fixture(scope="module", autouse=True)
 def patch_snowflake():
     """Patch snowflake.connector with fakesnow for all tests in this module."""
-    fakesnow = pytest.importorskip("fakesnow", reason="fakesnow not installed")
+    import fakesnow
 
     with fakesnow.patch():
         yield

@@ -2565,7 +2565,9 @@ class SQLGenerator:
         outer_agg = metric.agg.upper()
         outer_sql = metric.sql
         if outer_sql:
-            outer_sql = _replace_model_placeholder(outer_sql)
+            # Outer SQL references columns from the inner subquery (aliased as
+            # cohort_sub), not the raw table alias used inside the subquery.
+            outer_sql = outer_sql.replace("{model}.", "cohort_sub.").replace("{model}", "cohort_sub")
 
         if outer_agg == "COUNT_DISTINCT":
             outer_expr = f"COUNT(DISTINCT {outer_sql or entity_alias})"
@@ -2596,17 +2598,22 @@ class SQLGenerator:
             if alias in entity_dim_aliases:
                 continue  # Already included
 
-            if dim_model_name == model_name:
-                dim = model.get_dimension(dim_name)
-                if dim:
-                    dim_sql = _replace_model_placeholder(dim.sql_expr)
-                    if granularity:
-                        dim_sql = self._date_trunc(granularity, dim_sql)
-                    # Add to inner query so it's available in the outer subquery
-                    inner_select_cols.append(f"{dim_sql} AS {alias}")
-                    inner_group_cols.append(dim_sql)
-                    outer_select_cols.append(alias)
-                    outer_group_cols.append(alias)
+            if dim_model_name != model_name:
+                raise ValueError(
+                    f"Cohort metric '{metric.name}' does not support dimensions "
+                    f"from model '{dim_model_name}' (expected '{model_name}')"
+                )
+            dim = model.get_dimension(dim_name)
+            if not dim:
+                raise ValueError(f"Dimension '{dim_name}' not found on model '{model_name}'")
+            dim_sql = _replace_model_placeholder(dim.sql_expr)
+            if granularity:
+                dim_sql = self._date_trunc(granularity, dim_sql)
+            # Add to inner query so it's available in the outer subquery
+            inner_select_cols.append(f"{dim_sql} AS {alias}")
+            inner_group_cols.append(dim_sql)
+            outer_select_cols.append(alias)
+            outer_group_cols.append(alias)
 
         # Join inner select/group after dimensions are added
         inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)

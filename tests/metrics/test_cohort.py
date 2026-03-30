@@ -118,6 +118,69 @@ def test_cohort_with_dimension():
     assert result["EU"] == 1
 
 
+def test_cohort_unknown_dimension_raises():
+    """Referencing a nonexistent dimension should raise, not silently drop it."""
+    events = _make_events_model()
+    metric = _make_multi_platform_metric()
+    events.metrics.append(metric)
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+
+    gen = SQLGenerator(graph)
+    with pytest.raises(ValueError, match="Dimension 'nonexistent' not found"):
+        gen.generate(
+            metrics=["events.multi_platform_users"],
+            dimensions=["events.nonexistent"],
+        )
+
+
+def test_cohort_outer_sql_references_subquery():
+    """Cohort metric with explicit sql should reference cohort_sub, not inner alias."""
+    events = Model(
+        name="events",
+        sql="""
+            SELECT 1 AS user_id, 'web' AS platform, 10 AS score
+            UNION ALL SELECT 1, 'mobile', 20
+            UNION ALL SELECT 2, 'web', 5
+            UNION ALL SELECT 2, 'mobile', 15
+            UNION ALL SELECT 3, 'mobile', 30
+        """,
+        primary_key="user_id",
+        dimensions=[
+            Dimension(name="user_id", sql="user_id", type="categorical"),
+            Dimension(name="platform", sql="platform", type="categorical"),
+            Dimension(name="score", sql="score", type="numeric"),
+        ],
+        metrics=[
+            Metric(
+                name="avg_total_score",
+                type="cohort",
+                entity="user_id",
+                inner_metrics=[{"name": "total_score", "agg": "sum", "sql": "score"}],
+                having="total_score > 0",
+                agg="avg",
+                sql="cohort_sub.total_score",
+            ),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(events)
+
+    gen = SQLGenerator(graph)
+    sql = gen.generate(metrics=["events.avg_total_score"], dimensions=[])
+
+    # Should not contain "t.total_score" in the outer query
+    assert "t.total_score" not in sql.split("cohort_sub")[0] or "cohort_sub.total_score" in sql
+
+    conn = duckdb.connect(":memory:")
+    rows = df_rows(conn.execute(sql))
+    # user1: 30, user2: 20, user3: 30 -> avg = (30+20+30)/3 = 26.67
+    assert len(rows) == 1
+    assert abs(rows[0][0] - 26.667) < 1
+
+
 def test_cohort_mixed_with_conversion_raises():
     """Mixing cohort + conversion metrics should raise, not silently drop one."""
     events = _make_events_model()

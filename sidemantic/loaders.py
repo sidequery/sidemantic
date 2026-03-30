@@ -74,7 +74,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         elif suffix == ".sql":
             content = file_path.read_text()
             if _looks_like_yardstick_sql(content):
-                adapter = YardstickAdapter(dialect=layer.dialect)
+                adapter = YardstickAdapter(dialect=layer.dialect or "duckdb")
             else:
                 # Sidemantic SQL files (pure SQL or with YAML frontmatter)
                 adapter = SidemanticAdapter()

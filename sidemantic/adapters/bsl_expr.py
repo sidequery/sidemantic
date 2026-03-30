@@ -127,6 +127,12 @@ def _expr_to_sql(node: ast.AST) -> str | None:
         if isinstance(node.value, (int, float)):
             return str(node.value)
 
+    # Python parses -5 as UnaryOp(USub, Constant(5))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        operand = _expr_to_sql(node.operand)
+        if operand is not None:
+            return f"-{operand}"
+
     if isinstance(node, ast.Name) and node.id == "_":
         return None
 

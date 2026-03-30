@@ -1148,6 +1148,12 @@ class TestBSLFilterToSQL:
         result = bsl_filter_to_sql("_.origin.notnull()")
         assert result == "origin IS NOT NULL"
 
+    def test_negative_number(self):
+        assert bsl_filter_to_sql("_.delta > -5") == "delta > -5"
+
+    def test_negative_float(self):
+        assert bsl_filter_to_sql("_.score < -0.5") == "score < -0.5"
+
 
 class TestBSLFilterAutoApply:
     """Tests that model-level filters are auto-applied in queries via model.sql."""

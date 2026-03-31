@@ -119,6 +119,7 @@ app.ontoolresult = (result: CallToolResult) => {
 
 app.ontoolinput = () => {
   cleanupChart();
+  lastSpec = null;
   ++renderGeneration;
   container.innerHTML = '<div class="loading">Running query...</div>';
 };

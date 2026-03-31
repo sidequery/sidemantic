@@ -9,9 +9,12 @@ let lastSpec: Record<string, unknown> | null = null;
 
 function renderChart(vegaSpec: Record<string, unknown>) {
   container.innerHTML = "";
+  const isFullscreen = currentDisplayMode === "fullscreen";
+  document.documentElement.classList.toggle("fullscreen", isFullscreen);
+
   const spec = { ...vegaSpec };
   spec.width = "container";
-  spec.height = currentDisplayMode === "fullscreen" ? "container" : 500;
+  spec.height = isFullscreen ? "container" : 500;
   spec.background = "transparent";
 
   const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
@@ -26,14 +29,17 @@ function renderChart(vegaSpec: Record<string, unknown>) {
       const ro = new ResizeObserver(() => result.view.resize().run());
       ro.observe(container);
 
-      // Add expand bar in inline mode
-      if (currentDisplayMode === "inline") {
-        addExpandBar();
+      if (!isFullscreen) {
+        addExpandButton();
       }
 
       requestAnimationFrame(() => {
-        const h = Math.max(500, document.documentElement.scrollHeight);
-        app.sendSizeChanged({ height: h });
+        if (isFullscreen) {
+          app.sendSizeChanged({ height: window.innerHeight - 150 });
+        } else {
+          const h = Math.max(505, document.documentElement.scrollHeight + 5);
+          app.sendSizeChanged({ height: h });
+        }
       });
     })
     .catch((err) => {
@@ -41,12 +47,13 @@ function renderChart(vegaSpec: Record<string, unknown>) {
     });
 }
 
-function addExpandBar() {
-  const bar = document.createElement("div");
-  bar.className = "expand-bar";
-  bar.innerHTML = '<span>↗ Expand</span>';
-  bar.addEventListener("click", goFullscreen);
-  container.appendChild(bar);
+function addExpandButton() {
+  const btn = document.createElement("div");
+  btn.className = "expand-btn";
+  btn.title = "Expand to fullscreen";
+  btn.textContent = "Expand ↗";
+  btn.addEventListener("click", goFullscreen);
+  container.appendChild(btn);
 }
 
 async function goFullscreen() {

@@ -828,6 +828,8 @@ def explore_metrics(
     metrics: list[str] = [],
     dimensions: list[str] = [],
     time_dimension: str = "",
+    start_date: str = "",
+    end_date: str = "",
 ) -> dict[str, Any]:
     """Launch an interactive metrics explorer for a semantic model.
 
@@ -840,6 +842,8 @@ def explore_metrics(
         metrics: Metric refs to show (e.g., ["orders.revenue"]). Defaults to all.
         dimensions: Dimension refs for leaderboards. Defaults to categorical/boolean dims.
         time_dimension: Time dimension name for series. Defaults to model default.
+        start_date: Start date filter (e.g., "2026-01-01"). Defaults to min date in data.
+        end_date: End date filter (e.g., "2026-03-30"). Defaults to max date in data.
 
     Returns:
         Explorer configuration and initial data for the interactive widget.
@@ -947,6 +951,15 @@ def explore_metrics(
                         date_range.append(str(val))
         except Exception:
             pass
+
+    # Override date range if start_date/end_date provided
+    if start_date or end_date:
+        if start_date and end_date:
+            date_range = [start_date, end_date]
+        elif start_date and len(date_range) == 2:
+            date_range = [start_date, date_range[1]]
+        elif end_date and len(date_range) == 2:
+            date_range = [date_range[0], end_date]
 
     # Build date filters for initial queries
     date_filters: list[str] = []

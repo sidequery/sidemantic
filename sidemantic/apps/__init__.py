@@ -8,18 +8,33 @@ ext-apps SDK and Vega-Lite with CSP-safe interpreter.
 
 from pathlib import Path
 
-_WIDGET_HTML: str | None = None
+_CHART_HTML: str | None = None
+_EXPLORER_HTML: str | None = None
 
 
 def _get_widget_template() -> str:
     """Load the built chart widget HTML for the MCP Apps resource handler."""
-    global _WIDGET_HTML
-    if _WIDGET_HTML is None:
+    global _CHART_HTML
+    if _CHART_HTML is None:
         built = Path(__file__).parent / "chart.html"
         if built.exists():
-            _WIDGET_HTML = built.read_text()
+            _CHART_HTML = built.read_text()
         else:
             raise FileNotFoundError(
                 f"Chart widget not built at {built}. Run: cd sidemantic/apps/web && bun install && bun run build"
             )
-    return _WIDGET_HTML
+    return _CHART_HTML
+
+
+def _get_explorer_template() -> str:
+    """Load the built explorer widget HTML for the MCP Apps resource handler."""
+    global _EXPLORER_HTML
+    if _EXPLORER_HTML is None:
+        built = Path(__file__).parent / "explorer.html"
+        if built.exists():
+            _EXPLORER_HTML = built.read_text()
+        else:
+            raise FileNotFoundError(
+                f"Explorer widget not built at {built}. Run: cd sidemantic/apps/web && bun install && bun run build"
+            )
+    return _EXPLORER_HTML

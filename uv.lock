@@ -3293,6 +3293,7 @@ api = [
 ]
 apps = [
     { name = "mcp", extra = ["cli"] },
+    { name = "pyarrow" },
 ]
 bigquery = [
     { name = "google-cloud-bigquery" },
@@ -3438,6 +3439,7 @@ requires-dist = [
     { name = "pure-sasl", marker = "extra == 'spark'", specifier = ">=0.6.2" },
     { name = "pyarrow", marker = "extra == 'adbc'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'api'", specifier = ">=14.0.0" },
+    { name = "pyarrow", marker = "extra == 'apps'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'bigquery'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'clickhouse'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'databricks'", specifier = ">=14.0.0" },

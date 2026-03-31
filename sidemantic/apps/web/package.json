@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build"
+    "build": "ENTRY=chart vite build && ENTRY=explorer vite build",
+    "build:chart": "ENTRY=chart vite build",
+    "build:explorer": "ENTRY=explorer vite build"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.3.2",

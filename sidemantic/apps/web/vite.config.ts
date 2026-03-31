@@ -1,20 +1,19 @@
 import { defineConfig } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
+import path from "path";
+
+const entry = process.env.ENTRY || "chart";
 
 export default defineConfig({
   plugins: [viteSingleFile()],
   build: {
-    rollupOptions: { input: "chart.html" },
+    rollupOptions: { input: `${entry}.html` },
     outDir: "../",
     emptyOutDir: false,
   },
-  define: {
-    // Replace new Function calls with a safe fallback at build time
-    // This prevents CSP violations in MCP Apps sandboxes
-  },
   resolve: {
     alias: {
-      // Use CSP-safe expression interpreter
+      // Use CSP-safe expression interpreter (chart widget)
       "vega-functions/codegenExpression": "vega-interpreter",
     },
   },

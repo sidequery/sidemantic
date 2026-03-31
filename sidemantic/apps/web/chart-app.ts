@@ -8,10 +8,16 @@ let currentDisplayMode: "inline" | "fullscreen" = "inline";
 let lastSpec: Record<string, unknown> | null = null;
 let activeObserver: ResizeObserver | null = null;
 let activeView: { finalize: () => void } | null = null;
+let renderGeneration = 0;
 
-function renderChart(vegaSpec: Record<string, unknown>) {
+function cleanupChart() {
   if (activeObserver) { activeObserver.disconnect(); activeObserver = null; }
   if (activeView) { activeView.finalize(); activeView = null; }
+}
+
+function renderChart(vegaSpec: Record<string, unknown>) {
+  cleanupChart();
+  const generation = ++renderGeneration;
 
   container.innerHTML = "";
   const isFullscreen = currentDisplayMode === "fullscreen";
@@ -31,6 +37,8 @@ function renderChart(vegaSpec: Record<string, unknown>) {
     expr: expressionInterpreter,
   })
     .then((result) => {
+      if (generation !== renderGeneration) { result.finalize(); return; }
+
       activeView = result;
       const ro = new ResizeObserver(() => result.view.resize().run());
       ro.observe(container);
@@ -41,6 +49,7 @@ function renderChart(vegaSpec: Record<string, unknown>) {
       }
 
       requestAnimationFrame(() => {
+        if (generation !== renderGeneration) return;
         if (isFullscreen) {
           app.sendSizeChanged({ height: window.innerHeight - 150 });
         } else {
@@ -50,6 +59,7 @@ function renderChart(vegaSpec: Record<string, unknown>) {
       });
     })
     .catch((err) => {
+      if (generation !== renderGeneration) return;
       container.innerHTML = `<div class="error">Chart render error: ${err.message}</div>`;
     });
 }
@@ -101,11 +111,13 @@ app.ontoolresult = (result: CallToolResult) => {
     lastSpec = spec;
     renderChart(spec);
   } else {
+    cleanupChart();
     container.innerHTML = '<div class="error">No chart data in tool result</div>';
   }
 };
 
 app.ontoolinput = () => {
+  cleanupChart();
   container.innerHTML = '<div class="loading">Running query...</div>';
 };
 

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="light dark">
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; padding: 0; width: 100%; background: transparent; }
+    #chart { width: 100%; min-height: 500px; position: relative; }
+    .vega-embed { background: transparent !important; }
+    .fullscreen-btn {
+      position: absolute; top: 8px; right: 8px; z-index: 10;
+      width: 32px; height: 32px; border: 1px solid #ccc; border-radius: 6px;
+      background: #fff; cursor: pointer; color: #333;
+      display: none; opacity: 0; transition: opacity 0.2s;
+      align-items: center; justify-content: center; font-size: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .fullscreen-btn.available { display: flex; }
+    #chart:hover .fullscreen-btn.available { opacity: 1; }
+    .fullscreen-btn:hover { background: #f0f0f0; }
+    body.fullscreen #chart { min-height: 100vh; }
+    @media (prefers-color-scheme: dark) {
+      .fullscreen-btn { background: rgba(255,255,255,0.1); }
+      .fullscreen-btn:hover { background: rgba(255,255,255,0.2); }
+    }
+    #chart .vega-embed, #chart .vega-embed > div,
+    #chart .vega-embed canvas, #chart .vega-embed svg { overflow: hidden !important; }
+    #chart .vega-actions { overflow: visible; }
+    .error { padding: 2rem; text-align: center; color: #dc2626; }
+    .loading { padding: 2rem; text-align: center; color: #999; }
+  </style>
+</head>
+<body>
+  <div id="chart">
+    <button id="fullscreen-btn" class="fullscreen-btn" title="Toggle fullscreen">⛶</button>
+    <div class="loading">Loading...</div>
+  </div>
+  <script type="module" src="./chart-app.ts"></script>
+</body>
+</html>

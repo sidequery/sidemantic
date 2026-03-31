@@ -1,60 +1,25 @@
 """MCP Apps integration for sidemantic.
 
-Creates vendor-neutral UI resources (MCP Apps standard) that render
-interactive charts in any MCP Apps-compatible host.
+Provides interactive chart widgets for MCP Apps-compatible hosts.
+The widget is built with Vite (sidemantic/apps/web/) and bundled into
+a single HTML file (sidemantic/apps/chart.html) that includes the
+ext-apps SDK and Vega-Lite with CSP-safe interpreter.
 """
 
-import json
 from pathlib import Path
-from typing import Any
 
-_WIDGET_TEMPLATE: str | None = None
+_WIDGET_HTML: str | None = None
 
 
 def _get_widget_template() -> str:
-    """Load the chart widget HTML template."""
-    global _WIDGET_TEMPLATE
-    if _WIDGET_TEMPLATE is None:
-        path = Path(__file__).parent / "chart_widget.html"
-        _WIDGET_TEMPLATE = path.read_text()
-    return _WIDGET_TEMPLATE
-
-
-def build_chart_html(vega_spec: dict[str, Any]) -> str:
-    """Build a self-contained chart widget HTML with embedded Vega spec.
-
-    Args:
-        vega_spec: Vega-Lite specification dict.
-
-    Returns:
-        Complete HTML string with the spec injected.
-    """
-    template = _get_widget_template()
-    # Escape </script> sequences to prevent XSS when user-provided strings
-    # (e.g., chart titles) flow into the Vega spec.
-    safe_json = json.dumps(vega_spec).replace("<", "\\u003c")
-    return template.replace("{{VEGA_SPEC}}", safe_json)
-
-
-def create_chart_resource(vega_spec: dict[str, Any]):
-    """Create a UIResource for a chart visualization.
-
-    Args:
-        vega_spec: Vega-Lite specification dict.
-
-    Returns:
-        UIResource (EmbeddedResource) for MCP Apps-compatible hosts.
-    """
-    from sidemantic.apps._mcp_ui import create_ui_resource
-
-    html = build_chart_html(vega_spec)
-    return create_ui_resource(
-        {
-            "uri": "ui://sidemantic/chart",
-            "content": {
-                "type": "rawHtml",
-                "htmlString": html,
-            },
-            "encoding": "text",
-        }
-    )
+    """Load the built chart widget HTML for the MCP Apps resource handler."""
+    global _WIDGET_HTML
+    if _WIDGET_HTML is None:
+        built = Path(__file__).parent / "chart.html"
+        if built.exists():
+            _WIDGET_HTML = built.read_text()
+        else:
+            raise FileNotFoundError(
+                f"Chart widget not built at {built}. Run: cd sidemantic/apps/web && bun install && bun run build"
+            )
+    return _WIDGET_HTML

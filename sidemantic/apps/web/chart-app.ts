@@ -112,12 +112,14 @@ app.ontoolresult = (result: CallToolResult) => {
     renderChart(spec);
   } else {
     cleanupChart();
+    lastSpec = null;
     container.innerHTML = '<div class="error">No chart data in tool result</div>';
   }
 };
 
 app.ontoolinput = () => {
   cleanupChart();
+  ++renderGeneration;
   container.innerHTML = '<div class="loading">Running query...</div>';
 };
 

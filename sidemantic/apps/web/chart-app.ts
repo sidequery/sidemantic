@@ -6,8 +6,13 @@ import { expressionInterpreter } from "vega-interpreter";
 const container = document.getElementById("chart")!;
 let currentDisplayMode: "inline" | "fullscreen" = "inline";
 let lastSpec: Record<string, unknown> | null = null;
+let activeObserver: ResizeObserver | null = null;
+let activeView: { finalize: () => void } | null = null;
 
 function renderChart(vegaSpec: Record<string, unknown>) {
+  if (activeObserver) { activeObserver.disconnect(); activeObserver = null; }
+  if (activeView) { activeView.finalize(); activeView = null; }
+
   container.innerHTML = "";
   const isFullscreen = currentDisplayMode === "fullscreen";
   document.documentElement.classList.toggle("fullscreen", isFullscreen);
@@ -26,8 +31,10 @@ function renderChart(vegaSpec: Record<string, unknown>) {
     expr: expressionInterpreter,
   })
     .then((result) => {
+      activeView = result;
       const ro = new ResizeObserver(() => result.view.resize().run());
       ro.observe(container);
+      activeObserver = ro;
 
       if (!isFullscreen) {
         addExpandButton();

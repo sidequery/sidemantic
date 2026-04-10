@@ -435,6 +435,7 @@ class SemanticLayer:
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
+        post_process: str | None = None,
     ):
         """Execute a query against the semantic layer.
 
@@ -448,6 +449,9 @@ class SemanticLayer:
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             parameters: Template parameters for Jinja2 rendering
             use_preaggregations: Override pre-aggregation routing setting for this query
+            post_process: Optional SQL to wrap around the semantic query result.
+                Use {inner} as a placeholder for the compiled semantic query, e.g.:
+                "SELECT *, revenue / count AS avg_value FROM ({inner})"
 
         Returns:
             DuckDB relation object (can convert to DataFrame with .df() or .to_df())
@@ -462,6 +466,7 @@ class SemanticLayer:
             ungrouped=ungrouped,
             parameters=parameters,
             use_preaggregations=use_preaggregations,
+            post_process=post_process,
         )
 
         return self.adapter.execute(sql)
@@ -479,6 +484,7 @@ class SemanticLayer:
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
+        post_process: str | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
 
@@ -493,6 +499,9 @@ class SemanticLayer:
             dialect: SQL dialect override (defaults to layer's dialect)
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             use_preaggregations: Override pre-aggregation routing setting for this query
+            post_process: Optional SQL to wrap around the semantic query result.
+                Use {inner} as a placeholder for the compiled semantic query, e.g.:
+                "SELECT *, revenue / count AS avg_value FROM ({inner})"
 
         Returns:
             SQL query string
@@ -520,7 +529,7 @@ class SemanticLayer:
             preagg_schema=self.preagg_schema,
         )
 
-        return generator.generate(
+        inner_sql = generator.generate(
             metrics=metrics,
             dimensions=dimensions,
             filters=filters,
@@ -532,6 +541,34 @@ class SemanticLayer:
             parameters=parameters,
             use_preaggregations=use_preaggs,
         )
+
+        if post_process is not None:
+            if "{inner}" not in post_process:
+                raise ValueError("post_process must contain a {inner} placeholder")
+
+            # Strip sidemantic instrumentation comment
+            stripped = inner_sql.rstrip()
+            last_line = stripped.split("\n")[-1].strip()
+            if last_line.startswith("-- sidemantic:"):
+                stripped = "\n".join(stripped.split("\n")[:-1])
+
+            # If inner SQL starts with WITH (CTEs), hoist them outside
+            # the subquery position so the SQL is valid.
+            if stripped.lstrip().upper().startswith("WITH "):
+                import sqlglot
+
+                target_dialect = dialect or self.dialect
+                parsed_inner = sqlglot.parse_one(stripped, dialect=target_dialect)
+                with_clause = parsed_inner.args.get("with")
+                if with_clause:
+                    parsed_inner.set("with", None)
+                    body = parsed_inner.sql(dialect=target_dialect)
+                    ctes = with_clause.sql(dialect=target_dialect)
+                    return ctes + "\n" + post_process.replace("{inner}", body)
+
+            return post_process.replace("{inner}", stripped)
+
+        return inner_sql
 
     def explain(
         self,

@@ -684,8 +684,6 @@ def test_cte_with_limit_in_inner_query(semantic_layer):
 
 def test_nested_subquery(semantic_layer):
     """Test filtering semantic query results in outer query."""
-    # Note: Deep nesting of subqueries (subquery within subquery) is not currently supported
-    # This test demonstrates single-level subquery with filtering
     sql = """
         SELECT * FROM (
             SELECT revenue, status FROM orders
@@ -1080,3 +1078,289 @@ def test_granularity_on_non_time_dimension(semantic_layer):
 
     # Should work - status is a valid categorical dimension
     assert len(rows) == 2  # Two status groups
+
+
+# --- Post-processing SQL over semantic query results ---
+
+
+def test_postprocess_case_expression(semantic_layer):
+    """Test CASE expression in outer query over semantic subquery."""
+    sql = """
+        SELECT
+            status,
+            revenue,
+            CASE WHEN revenue > 200 THEN 'high' ELSE 'low' END AS tier
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    columns = _columns(result)
+
+    assert "tier" in columns
+    assert len(rows) == 2
+    for row in rows:
+        if row["revenue"] > 200:
+            assert row["tier"] == "high"
+        else:
+            assert row["tier"] == "low"
+
+
+def test_postprocess_arithmetic(semantic_layer):
+    """Test arithmetic between metrics in outer query."""
+    sql = """
+        SELECT
+            status,
+            revenue,
+            count,
+            revenue / count AS avg_order_value
+        FROM (
+            SELECT orders.revenue, orders.count, orders.status FROM orders
+        ) AS sq
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    columns = _columns(result)
+
+    assert "avg_order_value" in columns
+    for row in rows:
+        assert row["avg_order_value"] == row["revenue"] / row["count"]
+
+
+def test_postprocess_window_function(semantic_layer):
+    """Test window functions in outer query over semantic results."""
+    sql = """
+        SELECT
+            status,
+            revenue,
+            LAG(revenue) OVER (ORDER BY revenue DESC) AS next_lower_revenue
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    columns = _columns(result)
+
+    assert "next_lower_revenue" in columns
+    assert len(rows) == 2
+
+
+def test_postprocess_coalesce(semantic_layer):
+    """Test COALESCE in outer query."""
+    sql = """
+        SELECT
+            status,
+            COALESCE(revenue, 0) AS safe_revenue
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    columns = _columns(result)
+
+    assert "safe_revenue" in columns
+    assert all(row["safe_revenue"] is not None for row in rows)
+
+
+def test_postprocess_having(semantic_layer):
+    """Test filtering with WHERE in outer query (equivalent to HAVING on aggregated results)."""
+    sql = """
+        SELECT status, revenue
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+        WHERE revenue > 200
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["revenue"] > 200
+
+
+def test_postprocess_order_by_in_outer(semantic_layer):
+    """Test ORDER BY in outer query over semantic results."""
+    sql = """
+        SELECT status, revenue
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+        ORDER BY revenue DESC
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 2
+    assert rows[0]["revenue"] >= rows[1]["revenue"]
+
+
+def test_postprocess_limit_in_outer(semantic_layer):
+    """Test LIMIT in outer query over semantic results."""
+    sql = """
+        SELECT status, revenue
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+        ORDER BY revenue DESC
+        LIMIT 1
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00
+
+
+def test_postprocess_cross_model_subquery(semantic_layer):
+    """Test post-processing over cross-model semantic subquery."""
+    sql = """
+        SELECT
+            region,
+            revenue,
+            CASE WHEN revenue > 200 THEN 'big' ELSE 'small' END AS market_size
+        FROM (
+            SELECT orders.revenue, customers.region FROM orders
+        ) AS sq
+    """
+
+    result = semantic_layer.sql(sql)
+    _rows(result)
+    columns = _columns(result)
+
+    assert "market_size" in columns
+    assert "region" in columns
+    assert "revenue" in columns
+
+
+def test_deeply_nested_subquery(semantic_layer):
+    """Test double-wrapped subquery: outer(plain) -> middle(plain) -> inner(semantic)."""
+    sql = """
+        SELECT
+            status,
+            revenue,
+            tier
+        FROM (
+            SELECT
+                status,
+                revenue,
+                CASE WHEN revenue > 200 THEN 'high' ELSE 'low' END AS tier
+            FROM (
+                SELECT orders.revenue, orders.status FROM orders
+            ) AS inner_sq
+        ) AS outer_sq
+        WHERE tier = 'high'
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["tier"] == "high"
+    assert rows[0]["revenue"] > 200
+
+
+def test_subquery_in_join(semantic_layer):
+    """Test semantic subquery used in a JOIN."""
+    semantic_layer.conn.execute("""
+        CREATE TABLE IF NOT EXISTS targets AS
+        SELECT 'completed' as status, 200 as target
+        UNION ALL
+        SELECT 'pending', 150
+    """)
+
+    sql = """
+        SELECT
+            sq.status,
+            sq.revenue,
+            t.target,
+            sq.revenue - t.target AS delta
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+        JOIN targets t ON sq.status = t.status
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    columns = _columns(result)
+
+    assert "delta" in columns
+    assert len(rows) == 2
+    for row in rows:
+        assert row["delta"] == row["revenue"] - row["target"]
+
+
+def test_compile_post_process(semantic_layer):
+    """Test post_process parameter on compile()."""
+    outer_sql = semantic_layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        post_process="SELECT *, CASE WHEN revenue > 200 THEN 'high' ELSE 'low' END AS tier FROM ({inner})",
+    )
+
+    # CTEs are hoisted; outer query wraps only the SELECT body
+    assert "CASE" in outer_sql
+    assert "tier" in outer_sql
+    assert "orders_cte" in outer_sql
+    # Should not have double WITH
+    assert "WITH WITH" not in outer_sql
+
+
+def test_query_post_process(semantic_layer):
+    """Test post_process parameter on query()."""
+    result = semantic_layer.query(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        post_process="SELECT *, CASE WHEN revenue > 200 THEN 'high' ELSE 'low' END AS tier FROM ({inner})",
+    )
+
+    rows = _rows(result)
+    columns = _columns(result)
+
+    assert "tier" in columns
+    for row in rows:
+        if row["revenue"] > 200:
+            assert row["tier"] == "high"
+        else:
+            assert row["tier"] == "low"
+
+
+def test_post_process_missing_placeholder(semantic_layer):
+    """Test that post_process without {inner} raises ValueError."""
+    with pytest.raises(ValueError, match="\\{inner\\}"):
+        semantic_layer.compile(
+            metrics=["orders.revenue"],
+            post_process="SELECT * FROM results",
+        )
+
+
+def test_dry_run_with_postprocess_subquery(semantic_layer):
+    """Test that rewriter.rewrite() returns composed SQL for subquery wrapping."""
+    rewriter = QueryRewriter(semantic_layer.graph)
+    sql = """
+        SELECT
+            status,
+            revenue,
+            CASE WHEN revenue > 200 THEN 'high' ELSE 'low' END AS tier
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+    """
+
+    rewritten = rewriter.rewrite(sql)
+
+    # The rewritten SQL should contain the semantic layer compilation
+    assert "CASE" in rewritten
+    assert "tier" in rewritten
+    # Inner query should be compiled (has CTE-style SQL from generator)
+    assert "AS" in rewritten

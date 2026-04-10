@@ -118,8 +118,9 @@ class QueryRewriter:
         # Check if this is a CTE-based query or has subqueries
         has_ctes = parsed.args.get("with") is not None
         has_subquery_in_from = self._has_subquery_in_from(parsed)
+        has_subquery_in_joins = any(isinstance(join.this, exp.Subquery) for join in (parsed.args.get("joins") or []))
 
-        if has_ctes or has_subquery_in_from:
+        if has_ctes or has_subquery_in_from or has_subquery_in_joins:
             # Handle CTEs and subqueries
             return self._rewrite_with_ctes_or_subqueries(parsed)
 
@@ -1851,41 +1852,51 @@ class QueryRewriter:
     def _rewrite_with_ctes_or_subqueries(self, parsed: exp.Select) -> str:
         """Rewrite query that contains CTEs or subqueries.
 
-        Strategy:
-        1. Rewrite each CTE that references semantic models
-        2. Rewrite subqueries in FROM clause
-        3. Return the modified SQL
+        Recursively walks the query tree bottom-up, rewriting any
+        SELECT whose FROM target resolves to a semantic model.
+        Outer queries are left as plain SQL, so post-processing
+        (CASE, window functions, arithmetic, etc.) works naturally.
         """
-        # Handle CTEs
-        if parsed.args.get("with"):
-            with_clause = parsed.args["with"]
-            for cte in with_clause.expressions:
-                # Each CTE has a name (alias) and a query (this)
+        self._rewrite_select_tree(parsed)
+        return parsed.sql(dialect=self.dialect)
+
+    def _rewrite_select_tree(self, select: exp.Select):
+        """Recursively rewrite semantic subqueries and CTEs (bottom-up).
+
+        At each level: recurse into children first, then rewrite this
+        node if it directly references a semantic model.
+        """
+        # Recurse into CTEs
+        if select.args.get("with"):
+            for cte in select.args["with"].expressions:
                 cte_query = cte.this
                 if isinstance(cte_query, exp.Select):
-                    # Check if this CTE references a semantic model
+                    self._rewrite_select_tree(cte_query)
                     if self._references_semantic_model(cte_query):
-                        # Rewrite the CTE query
-                        rewritten_cte_sql = self._rewrite_simple_query(cte_query)
-                        # Parse the rewritten SQL and replace the CTE query
-                        rewritten_cte = sqlglot.parse_one(rewritten_cte_sql, dialect=self.dialect)
-                        cte.set("this", rewritten_cte)
+                        rewritten_sql = self._rewrite_simple_query(cte_query)
+                        cte.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
 
-        # Handle subquery in FROM
-        from_clause = parsed.args.get("from")
+        # Recurse into FROM subquery
+        from_clause = select.args.get("from")
         if from_clause and isinstance(from_clause.this, exp.Subquery):
             subquery = from_clause.this
             subquery_select = subquery.this
-            if isinstance(subquery_select, exp.Select) and self._references_semantic_model(subquery_select):
-                # Rewrite the subquery
-                rewritten_subquery_sql = self._rewrite_simple_query(subquery_select)
-                rewritten_subquery = sqlglot.parse_one(rewritten_subquery_sql, dialect=self.dialect)
-                subquery.set("this", rewritten_subquery)
+            if isinstance(subquery_select, exp.Select):
+                self._rewrite_select_tree(subquery_select)
+                if self._references_semantic_model(subquery_select):
+                    rewritten_sql = self._rewrite_simple_query(subquery_select)
+                    subquery.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
 
-        # Return the modified SQL
-        # Note: Individual CTEs/subqueries are already instrumented by _rewrite_simple_query -> generator
-        # The outer query wrapper doesn't need separate instrumentation
-        return parsed.sql(dialect=self.dialect)
+        # Recurse into JOIN subqueries
+        for join in select.args.get("joins") or []:
+            join_expr = join.this
+            if isinstance(join_expr, exp.Subquery):
+                join_select = join_expr.this
+                if isinstance(join_select, exp.Select):
+                    self._rewrite_select_tree(join_select)
+                    if self._references_semantic_model(join_select):
+                        rewritten_sql = self._rewrite_simple_query(join_select)
+                        join_expr.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
 
     def _references_semantic_model(self, select: exp.Select) -> bool:
         """Check if a SELECT statement references any semantic models."""

@@ -175,6 +175,20 @@ def test_qualified_field_ref():
     assert sql == "amount + 1"
 
 
+def test_field_ref_with_spaces_quoted():
+    """Field refs with spaces are quoted as identifiers."""
+    sql, ok = _translate_formula("[Extracts Incremented At]")
+    assert ok
+    assert sql == '"Extracts Incremented At"'
+
+
+def test_parameter_field_ref_with_spaces_quoted():
+    """Qualified field refs keep the leaf name and quote it when needed."""
+    sql, ok = _translate_formula("[Parameters].[Parameter 1]")
+    assert ok
+    assert sql == '"Parameter 1"'
+
+
 def test_countd_nested():
     """COUNTD with nested expression."""
     sql, ok = _translate_formula("COUNTD(IF [status] = 'active' THEN [user_id] END)")
@@ -206,9 +220,11 @@ def test_double_quoted_strings():
     """Double-quoted string literals converted to single quotes."""
     sql, ok = _translate_formula('IF [x] THEN "Selected" ELSE "Not Selected" END')
     assert ok
+    assert "x" in sql
     assert "'Selected'" in sql
     assert "'Not Selected'" in sql
-    assert '"' not in sql
+    assert '"Selected"' not in sql
+    assert '"Not Selected"' not in sql
 
 
 def test_comment_stripped():

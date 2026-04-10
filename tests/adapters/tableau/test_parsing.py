@@ -220,6 +220,18 @@ def test_hidden_fields(adapter):
     assert price.public is True
 
 
+def test_raw_dimension_names_with_special_chars_are_quoted(adapter):
+    """Raw Tableau dimension names fall back to valid quoted SQL identifiers."""
+    dimension = adapter._build_dimension("Country/Region", "string", None, None, False, None)
+    assert dimension.sql == '"Country/Region"'
+
+
+def test_raw_metric_names_with_special_chars_are_quoted(adapter):
+    """Raw Tableau metric names fall back to valid quoted SQL identifiers."""
+    metric = adapter._build_metric("Profit Ratio (%)", "sum", None, None, False, True, None, None)
+    assert metric.sql == '"Profit Ratio (%)"'
+
+
 # =============================================================================
 # MULTI-TABLE JOIN TESTS
 # =============================================================================

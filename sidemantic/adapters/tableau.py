@@ -97,6 +97,7 @@ _DATEADD_RE = re.compile(
 )
 _MID_RE = re.compile(r"\bMID\s*\(", re.IGNORECASE)
 _FIND_RE = re.compile(r"\bFIND\s*\(", re.IGNORECASE)
+_SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Simple function renames (Tableau name -> SQL name)
 _SIMPLE_RENAMES: list[tuple[re.Pattern, str]] = [
@@ -202,7 +203,7 @@ def _replace_func_balanced(text: str, func_re: re.Pattern, template: str) -> str
 
 
 def _replace_field_refs(formula: str) -> str:
-    """Replace [FieldName] references with bare column names, skipping string literals.
+    """Replace [FieldName] references with quoted column names, skipping string literals.
 
     Handles Tableau's qualified names: [table].[column] -> column
     Skips brackets inside string literals (single or double quoted).
@@ -250,7 +251,7 @@ def _replace_field_refs(formula: str) -> str:
             else:
                 i = end + 1
 
-            result.append(field_name)
+            result.append(_quote_identifier_if_needed(_normalize_column_name(field_name)))
             continue
 
         result.append(c)
@@ -333,11 +334,11 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
     # Strip // comments before translation (they can contain IF/THEN keywords)
     result = _COMMENT_RE.sub("", formula).strip()
 
-    # Replace [Field] references with bare column names (string-literal-aware)
-    result = _replace_field_refs(result)
-
     # Convert Tableau double-quoted string literals to SQL single quotes
     result = _convert_double_quotes(result)
+
+    # Replace [Field] references with quoted column names (string-literal-aware)
+    result = _replace_field_refs(result)
 
     # ZN(x) -> COALESCE(x, 0)
     result = _replace_func_balanced(result, _ZN_RE, "COALESCE({arg}, 0)")
@@ -599,6 +600,17 @@ def _quote_sql_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def _quote_identifier_if_needed(identifier: str) -> str:
+    """Quote a raw Tableau field name when it is not a simple SQL identifier."""
+    if identifier.startswith('"') and identifier.endswith('"'):
+        return identifier
+    if _SIMPLE_SQL_IDENTIFIER_RE.match(identifier):
+        return identifier
+    if "." in identifier:
+        return _quote_column_reference(identifier)
+    return _quote_sql_identifier(identifier)
+
+
 def _quote_column_reference(column_name: str) -> str:
     """Quote a possibly-qualified column reference."""
     parts = _strip_brackets(column_name).split(".")
@@ -839,9 +851,8 @@ class TableauAdapter(BaseAdapter):
         dim_type = _DATATYPE_MAP.get(datatype or "", "categorical")
         granularity = _DATATYPE_GRANULARITY.get(datatype or "")
 
-        # Quote names with spaces/special chars so they produce valid SQL
-        if sql is None and (" " in name or "-" in name):
-            sql = f'"{name}"'
+        if sql is None:
+            sql = _quote_identifier_if_needed(name)
 
         return Dimension(
             name=name,
@@ -876,9 +887,8 @@ class TableauAdapter(BaseAdapter):
             return Metric(name=name, agg="count", sql=None, label=caption, public=not hidden)
 
         # For metrics without a formula, sql defaults to the column name.
-        # Quote names with spaces/special chars so they produce valid SQL.
         if sql is None and not formula:
-            sql = f'"{name}"' if " " in name or "-" in name else name
+            sql = _quote_identifier_if_needed(name)
 
         if agg_lower in _PASSTHROUGH_AGGS or not is_translatable:
             # Passthrough or untranslatable: make derived metric
@@ -974,9 +984,7 @@ class TableauAdapter(BaseAdapter):
             agg_lower = aggregation.lower() if aggregation else ""
 
             # Use remote_alias as the SQL expression (actual DB column name)
-            sql = remote_alias or col_name
-            if " " in sql or "-" in sql:
-                sql = f'"{sql}"'
+            sql = _quote_identifier_if_needed(remote_alias or col_name)
 
             # Role inference based on type and aggregation
             is_measure = agg_lower in measure_aggs and local_type in ("real", "integer")
@@ -1451,7 +1459,7 @@ class TableauAdapter(BaseAdapter):
 
             if members and level_col:
                 quoted_members = ", ".join(f"'{m}'" for m in members)
-                sql = f"{level_col} IN ({quoted_members})"
+                sql = f"{_quote_identifier_if_needed(level_col)} IN ({quoted_members})"
                 segments.append(Segment(name=group_name, sql=sql))
 
         return segments

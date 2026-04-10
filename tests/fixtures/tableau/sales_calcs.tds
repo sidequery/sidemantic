@@ -1,0 +1,26 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='sales_calcs' version='18.1'>
+  <connection class='postgres' dbname='analytics' server='localhost'>
+    <relation type='table' name='sales' table='[public].[sales]' />
+  </connection>
+  <column datatype='integer' name='[id]' role='dimension' type='ordinal' />
+  <column datatype='string' name='[country]' role='dimension' type='nominal' />
+  <column datatype='string' name='[state]' role='dimension' type='nominal' />
+  <column datatype='string' name='[city]' role='dimension' type='nominal' />
+  <column datatype='real' name='[price]' role='measure' type='quantitative' aggregation='sum' />
+  <column datatype='integer' name='[quantity]' role='measure' type='quantitative' aggregation='sum' />
+  <column caption='Revenue' datatype='real' name='[calc_revenue]' role='measure' type='quantitative' aggregation='sum'>
+    <calculation class='tableau' formula='[price] * [quantity]' />
+  </column>
+  <column datatype='real' name='[hidden_cost]' role='measure' type='quantitative' aggregation='sum' hidden='true' />
+  <column caption='Safe Discount' datatype='real' name='[calc_safe_discount]' role='measure' type='quantitative' aggregation='sum'>
+    <calculation class='tableau' formula='ZN([discount])' />
+  </column>
+  <drill-paths>
+    <drill-path name='Geography'>
+      <field>[country]</field>
+      <field>[state]</field>
+      <field>[city]</field>
+    </drill-path>
+  </drill-paths>
+</datasource>

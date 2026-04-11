@@ -360,3 +360,12 @@ def test_escaped_quote_before_comment_marker():
     sql, ok = _translate_formula("'O''Reilly // keep' + [x]")
     assert ok
     assert "O''Reilly // keep" in sql
+
+
+def test_escaped_quote_before_bracket_in_string():
+    """Escaped apostrophe before bracket text inside a string literal is preserved."""
+    sql, ok = _translate_formula("IIF([a]=1, 'It''s [x]', 'n')")
+    assert ok
+    assert "It''s [x]" in sql
+    # [x] inside the string should NOT be treated as a field reference
+    assert "CASE WHEN" in sql

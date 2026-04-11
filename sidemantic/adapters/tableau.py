@@ -221,10 +221,19 @@ def _replace_field_refs(formula: str) -> str:
         c = formula[i]
 
         if in_string:
-            result.append(c)
-            if c == string_char and (i + 1 >= len(formula) or formula[i + 1] != string_char):
-                in_string = False
-            i += 1
+            if c == string_char:
+                if i + 1 < len(formula) and formula[i + 1] == string_char:
+                    # Doubled-quote escape: append both and skip
+                    result.append(c)
+                    result.append(formula[i + 1])
+                    i += 2
+                else:
+                    result.append(c)
+                    in_string = False
+                    i += 1
+            else:
+                result.append(c)
+                i += 1
             continue
 
         if c in ("'", '"'):
@@ -1502,7 +1511,9 @@ class TableauAdapter(BaseAdapter):
             join_keyword = join.join_type.upper()
             parts.append(f"{join_keyword} JOIN {join.right_table_qualified}")
             if join.column_pairs:
-                on_clauses = [f"{lc} = {rc}" for lc, rc in join.column_pairs]
+                on_clauses = [
+                    f"{_quote_column_reference(lc)} = {_quote_column_reference(rc)}" for lc, rc in join.column_pairs
+                ]
                 parts.append(f"ON {' AND '.join(on_clauses)}")
 
         return "\n".join(parts)
@@ -1558,7 +1569,8 @@ class TableauAdapter(BaseAdapter):
                             level_col = _normalize_column_name(level)
 
             if members and level_col:
-                quoted_members = ", ".join(f"'{m}'" for m in members)
+                escaped = [m.replace("'", "''") for m in members]
+                quoted_members = ", ".join(f"'{m}'" for m in escaped)
                 sql = f"{_quote_identifier_if_needed(level_col)} IN ({quoted_members})"
                 segments.append(Segment(name=group_name, sql=sql))
 

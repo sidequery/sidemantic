@@ -345,3 +345,11 @@ def test_iif_simple_still_works():
     assert "CASE WHEN" in sql
     assert "'yes'" in sql
     assert "'no'" in sql
+
+
+def test_escaped_quote_in_string():
+    """Doubled single quotes (escaped apostrophe) handled correctly."""
+    sql, ok = _translate_formula("IIF([x]=1, 'O''Reilly', 'no')")
+    assert ok
+    assert "CASE WHEN" in sql
+    assert "O''Reilly" in sql

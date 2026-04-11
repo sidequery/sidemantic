@@ -164,7 +164,11 @@ def _find_matching_paren(s: str, open_pos: int) -> int:
     while i < len(s):
         c = s[i]
         if in_string:
-            if c == string_char and (i + 1 >= len(s) or s[i + 1] != string_char):
+            if c == string_char:
+                # Check for doubled-quote escape ('' or "")
+                if i + 1 < len(s) and s[i + 1] == string_char:
+                    i += 2  # Skip the escaped pair
+                    continue
                 in_string = False
         elif c in ("'", '"'):
             in_string = True
@@ -605,11 +609,12 @@ def _find_relation_element(connection: ET.Element) -> ET.Element | None:
     return None
 
 
-def _extract_join_columns(expr: ET.Element) -> tuple[str | None, str | None]:
-    """Extract left and right column names from a join expression.
+def _extract_join_columns(expr: ET.Element) -> list[tuple[str, str]]:
+    """Extract all (left, right) column pairs from a join expression.
 
-    Handles both simple equality (op='=') and compound conditions (op='AND')
-    where we take the first equality clause.
+    Handles simple equality (op='='), compound conditions (op='AND'),
+    and nested structures. Returns all predicates so multi-column joins
+    are fully preserved.
     """
     op = expr.get("op", "")
     sub_exprs = expr.findall("expression")
@@ -617,20 +622,25 @@ def _extract_join_columns(expr: ET.Element) -> tuple[str | None, str | None]:
     if op == "=" and len(sub_exprs) >= 2:
         left = _strip_brackets(sub_exprs[0].get("op", ""))
         right = _strip_brackets(sub_exprs[1].get("op", ""))
-        return (left, right)
+        if left and right:
+            return [(left, right)]
+        return []
 
     if op.upper() == "AND" and sub_exprs:
-        # Compound condition: recurse into the first equality
-        return _extract_join_columns(sub_exprs[0])
+        # Compound condition: collect ALL equality clauses
+        pairs = []
+        for child in sub_exprs:
+            pairs.extend(_extract_join_columns(child))
+        return pairs
 
     # Try sub-expressions directly (some formats nest differently)
     if len(sub_exprs) >= 2:
         left = _strip_brackets(sub_exprs[0].get("op", ""))
         right = _strip_brackets(sub_exprs[1].get("op", ""))
         if left and right and left != "=" and right != "=":
-            return (left, right)
+            return [(left, right)]
 
-    return (None, None)
+    return []
 
 
 @dataclass
@@ -640,8 +650,7 @@ class _JoinInfo:
     right_table: str
     right_table_qualified: str
     join_type: str  # inner, left, right, full, cross
-    left_column: str | None
-    right_column: str | None
+    column_pairs: list[tuple[str, str]]  # [(left_col, right_col), ...]
 
 
 @dataclass
@@ -1171,10 +1180,9 @@ class TableauAdapter(BaseAdapter):
         for rel in rels_elem.findall("relationship"):
             # Extract join columns from expression
             expr = rel.find("expression")
-            left_col = None
-            right_col = None
+            pairs: list[tuple[str, str]] = []
             if expr is not None:
-                left_col, right_col = _extract_join_columns(expr)
+                pairs = _extract_join_columns(expr)
 
             # Extract endpoint table names
             first_ep = rel.find("first-end-point")
@@ -1182,7 +1190,8 @@ class TableauAdapter(BaseAdapter):
             first_table = obj_map.get(first_ep.get("object-id", ""), "") if first_ep is not None else ""
             second_table = obj_map.get(second_ep.get("object-id", ""), "") if second_ep is not None else ""
 
-            if first_table and second_table and left_col and right_col:
+            if first_table and second_table and pairs:
+                left_col, right_col = pairs[0]
                 left_field = left_col.rsplit(".", 1)[-1] if "." in left_col else left_col
                 right_field = right_col.rsplit(".", 1)[-1] if "." in right_col else right_col
                 joins.append(
@@ -1426,9 +1435,12 @@ class TableauAdapter(BaseAdapter):
             return (table_name, [])
 
         if rel_type == "text":
-            # Custom SQL: use the name attribute as identifier
+            # Custom SQL: wrap as subquery with name as alias
             name = relation_elem.get("name", "")
-            return (name, [])
+            sql_body = (relation_elem.text or "").strip()
+            if sql_body and name:
+                return (f"({sql_body}) AS {name}", [])
+            return (name or sql_body, [])
 
         if rel_type != "join":
             return (None, [])
@@ -1444,13 +1456,12 @@ class TableauAdapter(BaseAdapter):
         join_type = join_type_map.get(join_type_raw, "inner")
 
         # Extract join columns from clause
-        left_col = None
-        right_col = None
+        column_pairs: list[tuple[str, str]] = []
         clause = relation_elem.find("clause")
         if clause is not None:
             expr = clause.find("expression")
             if expr is not None:
-                left_col, right_col = _extract_join_columns(expr)
+                column_pairs = _extract_join_columns(expr)
 
         # Parse child relations
         child_relations = relation_elem.findall("relation")
@@ -1471,8 +1482,7 @@ class TableauAdapter(BaseAdapter):
                 right_table=right_table_name,
                 right_table_qualified=right_table_qualified,
                 join_type=join_type,
-                left_column=left_col,
-                right_column=right_col,
+                column_pairs=column_pairs,
             )
         )
 
@@ -1487,8 +1497,9 @@ class TableauAdapter(BaseAdapter):
         for join in joins:
             join_keyword = join.join_type.upper()
             parts.append(f"{join_keyword} JOIN {join.right_table_qualified}")
-            if join.left_column and join.right_column:
-                parts.append(f"ON {join.left_column} = {join.right_column}")
+            if join.column_pairs:
+                on_clauses = [f"{lc} = {rc}" for lc, rc in join.column_pairs]
+                parts.append(f"ON {' AND '.join(on_clauses)}")
 
         return "\n".join(parts)
 
@@ -1496,14 +1507,13 @@ class TableauAdapter(BaseAdapter):
         """Extract Relationship objects from parsed joins."""
         relationships: list[Relationship] = []
         for join in joins:
-            if not join.left_column or not join.right_column:
+            if not join.column_pairs:
                 continue
 
-            # Determine foreign key and primary key from column names
-            left_parts = join.left_column.rsplit(".", 1)
-            right_parts = join.right_column.rsplit(".", 1)
-            left_col = left_parts[-1] if left_parts else join.left_column
-            right_col = right_parts[-1] if right_parts else join.right_column
+            # Use the first column pair for fk/pk (Relationship supports single pair)
+            left_col_full, right_col_full = join.column_pairs[0]
+            left_col = left_col_full.rsplit(".", 1)[-1]
+            right_col = right_col_full.rsplit(".", 1)[-1]
 
             rel_type = "many_to_one"
             if join.join_type == "full":

@@ -318,3 +318,30 @@ def test_makedate():
     sql, ok = _translate_formula("MAKEDATE(2024, 1, 15)")
     assert ok
     assert "MAKE_DATE(" in sql
+
+
+def test_comment_preserves_url_in_string():
+    """// inside a string literal is NOT a comment."""
+    sql, ok = _translate_formula("[prefix] + '://' + [suffix]")
+    assert ok
+    assert "://" in sql
+    assert "prefix" in sql
+    assert "suffix" in sql
+
+
+def test_iif_with_nested_function():
+    """IIF with nested function calls containing commas."""
+    sql, ok = _translate_formula("IIF([x] > 0, DATEADD('day', 1, [d]), [d])")
+    assert ok
+    assert "CASE WHEN" in sql
+    assert "date_add" in sql
+    assert "ELSE" in sql
+
+
+def test_iif_simple_still_works():
+    """Basic IIF still translates correctly."""
+    sql, ok = _translate_formula("IIF([active], 'yes', 'no')")
+    assert ok
+    assert "CASE WHEN" in sql
+    assert "'yes'" in sql
+    assert "'no'" in sql

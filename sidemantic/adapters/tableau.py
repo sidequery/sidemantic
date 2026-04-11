@@ -80,7 +80,7 @@ _FUNC_CALL_RE = re.compile(r"\b([A-Z_]+)\s*\(", re.IGNORECASE)
 # Each is (pattern, replacement_func_or_str)
 _ZN_RE = re.compile(r"\bZN\s*\(", re.IGNORECASE)
 _IFNULL_RE = re.compile(r"\bIFNULL\s*\(", re.IGNORECASE)
-_IIF_RE = re.compile(r"\bIIF\s*\(\s*(.+?)\s*,\s*(.+?)\s*,\s*(.+?)\s*\)", re.IGNORECASE)
+_IIF_RE = re.compile(r"\bIIF\s*\(", re.IGNORECASE)
 _IF_THEN_RE = re.compile(
     r"\bIF\s+(.+?)\s+THEN\s+(.+?)(?:\s+ELSEIF\s+(.+?)\s+THEN\s+(.+?))*\s+(?:ELSE\s+(.+?)\s+)?END\b",
     re.IGNORECASE | re.DOTALL,
@@ -304,6 +304,91 @@ def _convert_double_quotes(text: str) -> str:
     return "".join(result)
 
 
+def _strip_comments(text: str) -> str:
+    """Strip // line comments while preserving // inside string literals.
+
+    E.g. '://' in a string is NOT a comment start.
+    """
+    result = []
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c in ("'", '"'):
+            # Inside a string literal: pass through until matching quote
+            quote = c
+            result.append(c)
+            i += 1
+            while i < len(text):
+                result.append(text[i])
+                if text[i] == quote and (i + 1 >= len(text) or text[i + 1] != quote):
+                    i += 1
+                    break
+                i += 1
+        elif c == "/" and i + 1 < len(text) and text[i + 1] == "/":
+            # Skip until end of line
+            while i < len(text) and text[i] != "\n":
+                i += 1
+        else:
+            result.append(c)
+            i += 1
+    return "".join(result)
+
+
+def _split_args_balanced(text: str) -> list[str]:
+    """Split comma-separated arguments respecting parentheses and string literals."""
+    args = []
+    depth = 0
+    current = []
+    in_string = False
+    string_char = None
+
+    for c in text:
+        if in_string:
+            current.append(c)
+            if c == string_char:
+                in_string = False
+        elif c in ("'", '"'):
+            in_string = True
+            string_char = c
+            current.append(c)
+        elif c == "(":
+            depth += 1
+            current.append(c)
+        elif c == ")":
+            depth -= 1
+            current.append(c)
+        elif c == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+        else:
+            current.append(c)
+
+    if current:
+        args.append("".join(current).strip())
+
+    return args
+
+
+def _translate_iif(text: str) -> str:
+    """Translate IIF(cond, then, else) using balanced-paren argument parsing."""
+    result = text
+    for m in _IIF_RE.finditer(text):
+        start = m.start()
+        open_paren = m.end() - 1
+        close_paren = _find_matching_paren(result, open_paren)
+        if close_paren == -1:
+            continue
+        inner = result[open_paren + 1 : close_paren]
+        args = _split_args_balanced(inner)
+        if len(args) >= 3:
+            cond, then_val, else_val = args[0], args[1], args[2]
+            replacement = f"CASE WHEN {cond} THEN {then_val} ELSE {else_val} END"
+            result = result[:start] + replacement + result[close_paren + 1 :]
+            # Restart since positions shifted
+            return _translate_iif(result)
+    return result
+
+
 def _convert_string_concat(text: str) -> str:
     """Convert Tableau's + string concatenation to SQL ||.
 
@@ -332,7 +417,8 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
         return (formula, False)
 
     # Strip // comments before translation (they can contain IF/THEN keywords)
-    result = _COMMENT_RE.sub("", formula).strip()
+    # Must be string-aware to preserve '://' inside string literals
+    result = _strip_comments(formula).strip()
 
     # Convert Tableau double-quoted string literals to SQL single quotes
     result = _convert_double_quotes(result)
@@ -349,8 +435,8 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
     # ISNULL(x) -> (x IS NULL)
     result = _replace_func_balanced(result, _ISNULL_RE, "({arg} IS NULL)")
 
-    # IIF(c, t, f) -> CASE WHEN c THEN t ELSE f END
-    result = _IIF_RE.sub(r"CASE WHEN \1 THEN \2 ELSE \3 END", result)
+    # IIF(c, t, f) -> CASE WHEN c THEN t ELSE f END (balanced-paren aware)
+    result = _translate_iif(result)
 
     # IF c THEN t ELSE e END -> CASE WHEN c THEN t ELSE e END
     result = _IF_THEN_RE.sub(_if_to_case, result)

@@ -1863,7 +1863,26 @@ class QueryRewriter:
         # still go through _rewrite_simple_query (which enforces the
         # explicit JOIN guard and performs semantic rewriting).
         if self._references_semantic_model(parsed):
-            return self._rewrite_simple_query(parsed)
+            # Save user-defined CTEs before _rewrite_simple_query replaces
+            # the entire query with fresh generator output.
+            original_with = parsed.args.get("with")
+
+            rewritten_sql = self._rewrite_simple_query(parsed)
+
+            if original_with:
+                # Merge user CTEs into the generated SQL so references
+                # from filters/expressions (e.g. IN (SELECT ... FROM cte))
+                # remain valid.
+                rewritten = sqlglot.parse_one(rewritten_sql, dialect=self.dialect)
+                gen_with = rewritten.args.get("with")
+                if gen_with:
+                    user_ctes = [cte.copy() for cte in original_with.expressions]
+                    gen_with.set("expressions", user_ctes + list(gen_with.expressions))
+                else:
+                    rewritten.set("with", original_with.copy())
+                return rewritten.sql(dialect=self.dialect)
+
+            return rewritten_sql
 
         return parsed.sql(dialect=self.dialect)
 

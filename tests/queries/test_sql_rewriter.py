@@ -1378,3 +1378,39 @@ def test_semantic_root_with_join_subquery_rejected(semantic_layer):
     """
     with pytest.raises(ValueError, match="Explicit JOIN syntax is not supported"):
         semantic_layer.sql(sql)
+
+
+def test_semantic_root_with_user_cte_preserved(semantic_layer):
+    """User-defined CTEs are preserved when root query is semantic."""
+    sql = """
+        WITH allowed_statuses AS (
+            SELECT 'completed' AS status
+        )
+        SELECT orders.revenue
+        FROM orders
+        WHERE orders.status IN (SELECT status FROM allowed_statuses)
+    """
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00
+
+
+def test_post_process_with_own_ctes(semantic_layer):
+    """post_process SQL with its own CTEs merges with inner CTEs."""
+    result = semantic_layer.query(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        post_process="""
+            WITH thresholds AS (SELECT 200 AS min_rev)
+            SELECT sq.*, t.min_rev
+            FROM ({inner}) sq
+            CROSS JOIN thresholds t
+            WHERE sq.revenue >= t.min_rev
+        """,
+    )
+    rows = _rows(result)
+
+    assert len(rows) >= 1
+    assert all(row["revenue"] >= 200 for row in rows)

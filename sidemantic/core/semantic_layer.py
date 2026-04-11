@@ -559,12 +559,22 @@ class SemanticLayer:
 
                 target_dialect = dialect or self.dialect
                 parsed_inner = sqlglot.parse_one(stripped, dialect=target_dialect)
-                with_clause = parsed_inner.args.get("with")
-                if with_clause:
+                inner_with = parsed_inner.args.get("with")
+                if inner_with:
                     parsed_inner.set("with", None)
                     body = parsed_inner.sql(dialect=target_dialect)
-                    ctes = with_clause.sql(dialect=target_dialect)
-                    return ctes + "\n" + post_process.replace("{inner}", body)
+
+                    # Substitute body into post_process, then merge CTEs
+                    outer_sql = post_process.replace("{inner}", body)
+                    outer_parsed = sqlglot.parse_one(outer_sql, dialect=target_dialect)
+                    outer_with = outer_parsed.args.get("with")
+                    if outer_with:
+                        # Prepend inner CTEs before outer CTEs
+                        merged = list(inner_with.expressions) + list(outer_with.expressions)
+                        outer_with.set("expressions", merged)
+                    else:
+                        outer_parsed.set("with", inner_with)
+                    return outer_parsed.sql(dialect=target_dialect)
 
             return post_process.replace("{inner}", stripped)
 

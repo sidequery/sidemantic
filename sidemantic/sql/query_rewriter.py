@@ -1878,6 +1878,9 @@ class QueryRewriter:
                 if gen_with:
                     user_ctes = [cte.copy() for cte in original_with.expressions]
                     gen_with.set("expressions", user_ctes + list(gen_with.expressions))
+                    # Preserve WITH RECURSIVE from the original query
+                    if original_with.args.get("recursive"):
+                        gen_with.set("recursive", True)
                 else:
                     rewritten.set("with", original_with.copy())
                 return rewritten.sql(dialect=self.dialect)

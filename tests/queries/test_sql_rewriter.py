@@ -1397,6 +1397,25 @@ def test_semantic_root_with_user_cte_preserved(semantic_layer):
     assert rows[0]["revenue"] == 250.00
 
 
+def test_semantic_root_with_recursive_cte_preserved(semantic_layer):
+    """WITH RECURSIVE flag is preserved when merging user CTEs."""
+    sql = """
+        WITH RECURSIVE status_chain(status, depth) AS (
+            SELECT 'completed', 1
+            UNION ALL
+            SELECT 'pending', depth + 1 FROM status_chain WHERE depth < 2
+        )
+        SELECT orders.revenue, orders.status
+        FROM orders
+        WHERE orders.status IN (SELECT status FROM status_chain)
+    """
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    # Both completed ($250) and pending ($200) statuses are in the recursive CTE
+    assert len(rows) == 2
+
+
 def test_post_process_with_own_ctes(semantic_layer):
     """post_process SQL with its own CTEs merges with inner CTEs."""
     result = semantic_layer.query(

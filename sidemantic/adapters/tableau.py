@@ -293,18 +293,23 @@ def _convert_double_quotes(text: str) -> str:
                 i += 1
         elif c == '"':
             # Double-quoted string: convert to single quotes
+            # Escape any apostrophes inside, and preserve escaped "" as literal "
             result.append("'")
             i += 1
             while i < len(text):
                 if text[i] == '"':
                     if i + 1 < len(text) and text[i + 1] == '"':
-                        # Escaped double quote -> escaped single quote
-                        result.append("''")
+                        # Escaped double quote "" -> literal " in single-quoted string
+                        result.append('"')
                         i += 2
                     else:
                         result.append("'")
                         i += 1
                         break
+                elif text[i] == "'":
+                    # Apostrophe inside string: escape for SQL single-quoted literal
+                    result.append("''")
+                    i += 1
                 else:
                     result.append(text[i])
                     i += 1
@@ -723,8 +728,7 @@ class _ObjectGraphJoin:
 
     first_table: str
     second_table: str
-    first_field: str
-    second_field: str
+    column_pairs: list[tuple[str, str]]  # [(first_field, second_field), ...]
 
 
 @dataclass
@@ -1250,20 +1254,22 @@ class TableauAdapter(BaseAdapter):
             second_table = obj_map.get(second_ep.get("object-id", ""), "") if second_ep is not None else ""
 
             if first_table and second_table and pairs:
-                left_col, right_col = pairs[0]
-                left_field = left_col.rsplit(".", 1)[-1] if "." in left_col else left_col
-                right_field = right_col.rsplit(".", 1)[-1] if "." in right_col else right_col
+                field_pairs = [
+                    (
+                        lc.rsplit(".", 1)[-1] if "." in lc else lc,
+                        rc.rsplit(".", 1)[-1] if "." in rc else rc,
+                    )
+                    for lc, rc in pairs
+                ]
                 joins.append(
                     _ObjectGraphJoin(
                         first_table=first_table,
                         second_table=second_table,
-                        first_field=left_field,
-                        second_field=right_field,
+                        column_pairs=field_pairs,
                     )
                 )
-                # Extract just the column names (strip table qualifiers)
-                fk = left_field
-                pk = right_field
+                # Use first pair for Relationship fk/pk
+                fk, pk = field_pairs[0]
                 relationships.append(
                     Relationship(
                         name=second_table,
@@ -1316,9 +1322,8 @@ class TableauAdapter(BaseAdapter):
                     join_clauses.append(
                         self._build_collection_join_clause(
                             join.first_table,
-                            join.first_field,
                             join.second_table,
-                            join.second_field,
+                            join.column_pairs,
                             table_map,
                             alias_by_table,
                             field_sources,
@@ -1328,12 +1333,13 @@ class TableauAdapter(BaseAdapter):
                     remaining.remove(join)
                     progressed = True
                 elif join.second_table in connected and join.first_table not in connected:
+                    # Reverse the column pairs for the swapped direction
+                    reversed_pairs = [(rc, lc) for lc, rc in join.column_pairs]
                     join_clauses.append(
                         self._build_collection_join_clause(
                             join.second_table,
-                            join.second_field,
                             join.first_table,
-                            join.first_field,
+                            reversed_pairs,
                             table_map,
                             alias_by_table,
                             field_sources,
@@ -1373,30 +1379,23 @@ class TableauAdapter(BaseAdapter):
     def _build_collection_join_clause(
         self,
         connected_table: str,
-        connected_field: str,
         joining_table: str,
-        joining_field: str,
+        column_pairs: list[tuple[str, str]],
         table_map: dict[str, str],
         alias_by_table: dict[str, str],
         field_sources: dict[str, tuple[str, str]],
     ) -> str:
         """Build one LEFT JOIN clause for a logical-layer collection."""
         joining_table_qualified = table_map[joining_table]
-        left_expr = self._collection_field_sql(
-            connected_table,
-            connected_field,
-            alias_by_table,
-            field_sources,
-        )
-        right_expr = self._collection_field_sql(
-            joining_table,
-            joining_field,
-            alias_by_table,
-            field_sources,
-        )
+        on_parts = []
+        for left_field, right_field in column_pairs:
+            left_expr = self._collection_field_sql(connected_table, left_field, alias_by_table, field_sources)
+            right_expr = self._collection_field_sql(joining_table, right_field, alias_by_table, field_sources)
+            on_parts.append(f"{left_expr} = {right_expr}")
+        on_clause = " AND ".join(on_parts)
         return (
             f"LEFT JOIN {_quote_table_reference(joining_table_qualified)} AS {alias_by_table[joining_table]} "
-            f"ON {left_expr} = {right_expr}"
+            f"ON {on_clause}"
         )
 
     def _collection_field_sql(

@@ -227,6 +227,22 @@ def test_double_quoted_strings():
     assert '"Not Selected"' not in sql
 
 
+def test_double_quoted_with_apostrophe():
+    """Apostrophe inside double-quoted string is escaped for SQL."""
+    sql, ok = _translate_formula('IF [x] THEN "O\'Reilly" ELSE "none" END')
+    assert ok
+    assert "O''Reilly" in sql
+
+
+def test_double_quoted_escaped_double():
+    """Escaped double quote inside double-quoted string preserved as literal double-quote."""
+    # Tableau: "He said ""Hi"""  (escaped "" means literal ")
+    formula = 'IF [x] THEN "said ""Hi""" ELSE "no" END'
+    sql, ok = _translate_formula(formula)
+    assert ok
+    assert '"Hi"' in sql
+
+
 def test_comment_stripped():
     """// comments are stripped before translation."""
     sql, ok = _translate_formula("// Don't notify if alert fails\n[status]")

@@ -312,6 +312,7 @@ def _strip_comments(text: str) -> str:
     """Strip // line comments while preserving // inside string literals.
 
     E.g. '://' in a string is NOT a comment start.
+    Handles doubled-quote escapes ('') inside string literals.
     """
     result = []
     i = 0
@@ -323,11 +324,20 @@ def _strip_comments(text: str) -> str:
             result.append(c)
             i += 1
             while i < len(text):
-                result.append(text[i])
-                if text[i] == quote and (i + 1 >= len(text) or text[i + 1] != quote):
+                if text[i] == quote:
+                    if i + 1 < len(text) and text[i + 1] == quote:
+                        # Doubled-quote escape: append both and skip
+                        result.append(text[i])
+                        result.append(text[i + 1])
+                        i += 2
+                    else:
+                        # End of string
+                        result.append(text[i])
+                        i += 1
+                        break
+                else:
+                    result.append(text[i])
                     i += 1
-                    break
-                i += 1
         elif c == "/" and i + 1 < len(text) and text[i + 1] == "/":
             # Skip until end of line
             while i < len(text) and text[i] != "\n":
@@ -632,13 +642,6 @@ def _extract_join_columns(expr: ET.Element) -> list[tuple[str, str]]:
         for child in sub_exprs:
             pairs.extend(_extract_join_columns(child))
         return pairs
-
-    # Try sub-expressions directly (some formats nest differently)
-    if len(sub_exprs) >= 2:
-        left = _strip_brackets(sub_exprs[0].get("op", ""))
-        right = _strip_brackets(sub_exprs[1].get("op", ""))
-        if left and right and left != "=" and right != "=":
-            return [(left, right)]
 
     return []
 
@@ -1435,11 +1438,12 @@ class TableauAdapter(BaseAdapter):
             return (table_name, [])
 
         if rel_type == "text":
-            # Custom SQL: wrap as subquery with name as alias
+            # Custom SQL: wrap as subquery with quoted alias
             name = relation_elem.get("name", "")
             sql_body = (relation_elem.text or "").strip()
             if sql_body and name:
-                return (f"({sql_body}) AS {name}", [])
+                quoted_name = f'"{name}"' if " " in name or "(" in name else name
+                return (f"({sql_body}) AS {quoted_name}", [])
             return (name or sql_body, [])
 
         if rel_type != "join":

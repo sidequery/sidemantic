@@ -353,3 +353,10 @@ def test_escaped_quote_in_string():
     assert ok
     assert "CASE WHEN" in sql
     assert "O''Reilly" in sql
+
+
+def test_escaped_quote_before_comment_marker():
+    """Escaped quote before // inside a string is preserved."""
+    sql, ok = _translate_formula("'O''Reilly // keep' + [x]")
+    assert ok
+    assert "O''Reilly // keep" in sql

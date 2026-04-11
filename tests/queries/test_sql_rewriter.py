@@ -1364,3 +1364,17 @@ def test_dry_run_with_postprocess_subquery(semantic_layer):
     assert "tier" in rewritten
     # Inner query should be compiled (has CTE-style SQL from generator)
     assert "AS" in rewritten
+
+
+def test_semantic_root_with_join_subquery_rejected(semantic_layer):
+    """Explicit JOINs on semantic models are rejected even when JOIN has a subquery."""
+    semantic_layer.conn.execute("""
+        CREATE TABLE IF NOT EXISTS lookup AS SELECT 1 AS id, 'x' AS val
+    """)
+    sql = """
+        SELECT orders.revenue
+        FROM orders
+        JOIN (SELECT * FROM lookup) AS lk ON 1 = 1
+    """
+    with pytest.raises(ValueError, match="Explicit JOIN syntax is not supported"):
+        semantic_layer.sql(sql)

@@ -1858,6 +1858,13 @@ class QueryRewriter:
         (CASE, window functions, arithmetic, etc.) works naturally.
         """
         self._rewrite_select_tree(parsed)
+
+        # If the root SELECT itself references a semantic model, it must
+        # still go through _rewrite_simple_query (which enforces the
+        # explicit JOIN guard and performs semantic rewriting).
+        if self._references_semantic_model(parsed):
+            return self._rewrite_simple_query(parsed)
+
         return parsed.sql(dialect=self.dialect)
 
     def _rewrite_select_tree(self, select: exp.Select):

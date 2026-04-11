@@ -85,16 +85,13 @@ _IF_THEN_RE = re.compile(
     r"\bIF\s+(.+?)\s+THEN\s+(.+?)(?:\s+ELSEIF\s+(.+?)\s+THEN\s+(.+?))*\s+(?:ELSE\s+(.+?)\s+)?END\b",
     re.IGNORECASE | re.DOTALL,
 )
-_CONTAINS_RE = re.compile(r"\bCONTAINS\s*\(\s*(.+?)\s*,\s*(.+?)\s*\)", re.IGNORECASE)
+_CONTAINS_RE = re.compile(r"\bCONTAINS\s*\(", re.IGNORECASE)
 _DATETRUNC_RE = re.compile(r"\bDATETRUNC\s*\(", re.IGNORECASE)
 _COUNTD_RE = re.compile(r"\bCOUNTD\s*\(", re.IGNORECASE)
 _LEN_RE = re.compile(r"\bLEN\s*\(", re.IGNORECASE)
 _ISNULL_RE = re.compile(r"\bISNULL\s*\(", re.IGNORECASE)
 _COMMENT_RE = re.compile(r"//[^\n]*", re.MULTILINE)
-_DATEADD_RE = re.compile(
-    r"\bDATEADD\s*\(\s*'(\w+)'\s*,\s*(.+?)\s*,\s*(.+?)\s*\)",
-    re.IGNORECASE,
-)
+_DATEADD_RE = re.compile(r"\bDATEADD\s*\(", re.IGNORECASE)
 _MID_RE = re.compile(r"\bMID\s*\(", re.IGNORECASE)
 _FIND_RE = re.compile(r"\bFIND\s*\(", re.IGNORECASE)
 _SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -464,8 +461,8 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
     # IF c THEN t ELSE e END -> CASE WHEN c THEN t ELSE e END
     result = _IF_THEN_RE.sub(_if_to_case, result)
 
-    # CONTAINS(s, sub) -> s LIKE '%' || sub || '%'
-    result = _CONTAINS_RE.sub(r"\1 LIKE '%' || \2 || '%'", result)
+    # CONTAINS(s, sub) -> s LIKE '%' || sub || '%' (balanced-paren aware)
+    result = _translate_contains(result)
 
     # DATETRUNC('g', d) -> DATE_TRUNC('g', d)
     result = _DATETRUNC_RE.sub("DATE_TRUNC(", result)
@@ -481,8 +478,8 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
         func_re = re.compile(rf"\b{func_name}\s*\(", re.IGNORECASE)
         result = _replace_func_balanced(result, func_re, template)
 
-    # DATEADD('unit', n, date) -> date_add(date, INTERVAL (n) unit)
-    result = _DATEADD_RE.sub(_dateadd_to_sql, result)
+    # DATEADD('unit', n, date) -> date_add(date, INTERVAL (n) unit) (balanced-paren aware)
+    result = _translate_dateadd(result)
 
     # Simple function renames (MID->SUBSTRING, FIND->STRPOS, etc.)
     for pattern, replacement in _SIMPLE_RENAMES:
@@ -495,12 +492,44 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
     return (result, True)
 
 
-def _dateadd_to_sql(match: re.Match) -> str:
-    """Convert DATEADD('unit', n, date) to date_add(date, INTERVAL (n) unit)."""
-    unit = match.group(1).lower()
-    amount = match.group(2).strip()
-    date_expr = match.group(3).strip()
-    return f"date_add({date_expr}, INTERVAL ({amount}) {unit})"
+def _translate_contains(text: str) -> str:
+    """Translate CONTAINS(s, sub) -> s LIKE '%' || sub || '%' with balanced args."""
+    result = text
+    for m in _CONTAINS_RE.finditer(text):
+        start = m.start()
+        open_paren = m.end() - 1
+        close_paren = _find_matching_paren(result, open_paren)
+        if close_paren == -1:
+            continue
+        inner = result[open_paren + 1 : close_paren]
+        args = _split_args_balanced(inner)
+        if len(args) >= 2:
+            s, sub = args[0], args[1]
+            replacement = f"{s} LIKE '%' || {sub} || '%'"
+            result = result[:start] + replacement + result[close_paren + 1 :]
+            return _translate_contains(result)
+    return result
+
+
+def _translate_dateadd(text: str) -> str:
+    """Translate DATEADD('unit', n, date) -> date_add(date, INTERVAL (n) unit) with balanced args."""
+    result = text
+    for m in _DATEADD_RE.finditer(text):
+        start = m.start()
+        open_paren = m.end() - 1
+        close_paren = _find_matching_paren(result, open_paren)
+        if close_paren == -1:
+            continue
+        inner = result[open_paren + 1 : close_paren]
+        args = _split_args_balanced(inner)
+        if len(args) >= 3:
+            unit = args[0].strip().strip("'\"").lower()
+            amount = args[1].strip()
+            date_expr = args[2].strip()
+            replacement = f"date_add({date_expr}, INTERVAL ({amount}) {unit})"
+            result = result[:start] + replacement + result[close_paren + 1 :]
+            return _translate_dateadd(result)
+    return result
 
 
 def _if_to_case(match: re.Match) -> str:

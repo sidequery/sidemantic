@@ -369,3 +369,22 @@ def test_escaped_quote_before_bracket_in_string():
     assert "It''s [x]" in sql
     # [x] inside the string should NOT be treated as a field reference
     assert "CASE WHEN" in sql
+
+
+def test_dateadd_nested_args():
+    """DATEADD with nested function containing commas."""
+    sql, ok = _translate_formula("DATEADD('day', IFNULL([offset], 1), [start_date])")
+    assert ok
+    assert "date_add" in sql
+    assert "start_date" in sql
+    assert "COALESCE" in sql
+    assert "day" in sql
+
+
+def test_contains_nested_args():
+    """CONTAINS with nested function containing commas."""
+    sql, ok = _translate_formula("CONTAINS(IFNULL([name], 'a,b'), 'x')")
+    assert ok
+    assert "LIKE" in sql
+    assert "COALESCE" in sql
+    assert "'x'" in sql

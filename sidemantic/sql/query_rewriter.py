@@ -1876,6 +1876,15 @@ class QueryRewriter:
                 rewritten = sqlglot.parse_one(rewritten_sql, dialect=self.dialect)
                 gen_with = rewritten.args.get("with")
                 if gen_with:
+                    # Check for CTE name collisions between user and generated CTEs
+                    user_names = {cte.alias for cte in original_with.expressions}
+                    for gen_cte in gen_with.expressions:
+                        if gen_cte.alias in user_names:
+                            raise ValueError(
+                                f"CTE name '{gen_cte.alias}' conflicts with an internally "
+                                f"generated name. Please choose a different CTE name."
+                            )
+
                     user_ctes = [cte.copy() for cte in original_with.expressions]
                     gen_with.set("expressions", user_ctes + list(gen_with.expressions))
                     # Preserve WITH RECURSIVE from the original query

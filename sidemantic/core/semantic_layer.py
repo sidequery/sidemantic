@@ -552,30 +552,10 @@ class SemanticLayer:
             if last_line.startswith("-- sidemantic:"):
                 stripped = "\n".join(stripped.split("\n")[:-1])
 
-            # If inner SQL starts with WITH (CTEs), hoist them outside
-            # the subquery position so the SQL is valid.
-            if stripped.lstrip().upper().startswith("WITH "):
-                import sqlglot
-
-                target_dialect = dialect or self.dialect
-                parsed_inner = sqlglot.parse_one(stripped, dialect=target_dialect)
-                inner_with = parsed_inner.args.get("with")
-                if inner_with:
-                    parsed_inner.set("with", None)
-                    body = parsed_inner.sql(dialect=target_dialect)
-
-                    # Substitute body into post_process, then merge CTEs
-                    outer_sql = post_process.replace("{inner}", body)
-                    outer_parsed = sqlglot.parse_one(outer_sql, dialect=target_dialect)
-                    outer_with = outer_parsed.args.get("with")
-                    if outer_with:
-                        # Prepend inner CTEs before outer CTEs
-                        merged = list(inner_with.expressions) + list(outer_with.expressions)
-                        outer_with.set("expressions", merged)
-                    else:
-                        outer_parsed.set("with", inner_with)
-                    return outer_parsed.sql(dialect=target_dialect)
-
+            # Inner SQL (including any CTEs) is placed directly in the
+            # subquery position. CTEs inside subqueries are valid SQL in
+            # all target databases and naturally scoped, avoiding name
+            # collisions with CTEs in the post_process SQL.
             return post_process.replace("{inner}", stripped)
 
         return inner_sql

@@ -1433,3 +1433,35 @@ def test_post_process_with_own_ctes(semantic_layer):
 
     assert len(rows) >= 1
     assert all(row["revenue"] >= 200 for row in rows)
+
+
+def test_post_process_cte_name_collision(semantic_layer):
+    """post_process CTE with same name as generated CTE doesn't collide."""
+    result = semantic_layer.query(
+        metrics=["orders.revenue"],
+        dimensions=["orders.status"],
+        post_process="""
+            WITH orders_cte AS (SELECT 'custom' AS source)
+            SELECT sq.*, oc.source
+            FROM ({inner}) sq
+            CROSS JOIN orders_cte oc
+        """,
+    )
+    rows = _rows(result)
+
+    assert len(rows) >= 1
+    assert all(row["source"] == "custom" for row in rows)
+
+
+def test_root_semantic_cte_name_collision(semantic_layer):
+    """User CTE with same name as generated CTE raises a clear error."""
+    sql = """
+        WITH orders_cte AS (
+            SELECT 'completed' AS status
+        )
+        SELECT orders.revenue
+        FROM orders
+        WHERE orders.status IN (SELECT status FROM orders_cte)
+    """
+    with pytest.raises(ValueError, match="conflicts with an internally generated name"):
+        semantic_layer.sql(sql)

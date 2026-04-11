@@ -188,7 +188,7 @@ def test_aggregation_mapping_all_aggs(adapter):
 
 
 def test_lod_expression_preserved(adapter):
-    """LOD expressions are not translated; raw formula stored in metadata."""
+    """LOD expressions are not translated; raw formula stored in metadata, hidden from queries."""
     graph = adapter.parse(FIXTURES / "kitchen_sink.tds")
     model = graph.models["kitchen_sink"]
 
@@ -198,6 +198,9 @@ def test_lod_expression_preserved(adapter):
     assert lod.metadata is not None
     assert "tableau_formula" in lod.metadata
     assert "{FIXED" in lod.metadata["tableau_formula"]
+    # Untranslatable formulas should be hidden and use safe SQL
+    assert lod.public is False
+    assert lod.sql == "NULL"
 
 
 # =============================================================================

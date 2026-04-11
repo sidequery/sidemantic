@@ -418,7 +418,8 @@ def _convert_string_concat(text: str) -> str:
     """Convert Tableau's + string concatenation to SQL ||.
 
     Replaces + with || when at least one adjacent operand is a string-producing
-    expression: a string literal ('...') or a CAST(... AS VARCHAR).
+    expression: a string literal ('...') or a CAST(... AS VARCHAR) result.
+    Only matches VARCHAR casts (not INTEGER/DOUBLE) to avoid breaking arithmetic.
     """
     result = text
     prev = None
@@ -427,9 +428,8 @@ def _convert_string_concat(text: str) -> str:
         # 'string' + ... or ... + 'string'
         result = re.sub(r"('\s*)\+(\s*)", r"\1||\2", result)
         result = re.sub(r"(\s*)\+(\s*')", r"\1||\2", result)
-        # CAST(... AS VARCHAR) + ... or ... + CAST(... AS VARCHAR)
+        # CAST(... AS VARCHAR) + ... (only VARCHAR, not INTEGER/DOUBLE)
         result = re.sub(r"(AS\s+VARCHAR\)\s*)\+(\s*)", r"\1||\2", result, flags=re.IGNORECASE)
-        result = re.sub(r"(\s*)\+(\s*CAST\()", r"\1||\2", result, flags=re.IGNORECASE)
     return result
 
 
@@ -994,6 +994,12 @@ class TableauAdapter(BaseAdapter):
             if not is_translatable:
                 metadata = {"tableau_formula": formula}
 
+        # Untranslatable formulas (LOD, table calcs) produce non-queryable fields
+        # with NULL sql to prevent raw Tableau syntax in generated SQL
+        if not is_translatable:
+            hidden = True
+            sql_expr = "NULL"
+
         if role == "measure":
             return self._build_metric(
                 col_name, aggregation, sql_expr, caption, hidden, is_translatable, formula, metadata
@@ -1056,10 +1062,13 @@ class TableauAdapter(BaseAdapter):
 
         if agg_lower in _PASSTHROUGH_AGGS or not is_translatable:
             # Passthrough or untranslatable: make derived metric
+            # Use NULL placeholder for untranslatable formulas to prevent
+            # raw Tableau syntax from being emitted in SQL queries
+            safe_sql = "NULL" if not is_translatable else (sql or name)
             return Metric(
                 name=name,
                 type="derived",
-                sql=sql or name,
+                sql=safe_sql,
                 label=caption,
                 public=not hidden,
                 metadata=metadata,

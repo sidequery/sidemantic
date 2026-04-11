@@ -284,6 +284,14 @@ def test_arithmetic_plus_preserved():
     assert "||" not in sql
 
 
+def test_numeric_cast_plus_preserved():
+    """INT() + FLOAT() keeps arithmetic +, not ||."""
+    sql, ok = _translate_formula("[x] + INT([y])")
+    assert ok
+    assert "+" in sql
+    assert "||" not in sql
+
+
 def test_dateadd():
     """DATEADD('unit', n, date) -> date_add(date, INTERVAL (n) unit)."""
     sql, ok = _translate_formula("DATEADD('hour', 3, [created_at])")

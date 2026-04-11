@@ -417,13 +417,19 @@ def _translate_iif(text: str) -> str:
 def _convert_string_concat(text: str) -> str:
     """Convert Tableau's + string concatenation to SQL ||.
 
-    Replaces + with || when at least one adjacent operand is a string literal.
-    Uses a simple heuristic: if a + is preceded or followed by a single-quoted
-    string (possibly with whitespace), replace it with ||.
+    Replaces + with || when at least one adjacent operand is a string-producing
+    expression: a string literal ('...') or a CAST(... AS VARCHAR).
     """
-    # Match: 'string' + or + 'string'
-    result = re.sub(r"('\s*)\+(\s*)", r"\1||\2", text)
-    result = re.sub(r"(\s*)\+(\s*')", r"\1||\2", result)
+    result = text
+    prev = None
+    while prev != result:
+        prev = result
+        # 'string' + ... or ... + 'string'
+        result = re.sub(r"('\s*)\+(\s*)", r"\1||\2", result)
+        result = re.sub(r"(\s*)\+(\s*')", r"\1||\2", result)
+        # CAST(... AS VARCHAR) + ... or ... + CAST(... AS VARCHAR)
+        result = re.sub(r"(AS\s+VARCHAR\)\s*)\+(\s*)", r"\1||\2", result, flags=re.IGNORECASE)
+        result = re.sub(r"(\s*)\+(\s*CAST\()", r"\1||\2", result, flags=re.IGNORECASE)
     return result
 
 

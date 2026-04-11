@@ -267,6 +267,15 @@ def test_string_concat_plus_to_pipes():
     assert "+" not in sql
 
 
+def test_string_concat_str_functions():
+    """STR() + STR() uses || not +."""
+    sql, ok = _translate_formula("STR([x]) + STR([y])")
+    assert ok
+    assert "||" in sql
+    assert "+" not in sql
+    assert "CAST" in sql
+
+
 def test_arithmetic_plus_preserved():
     """Arithmetic + is NOT converted to ||."""
     sql, ok = _translate_formula("[x] + [y]")

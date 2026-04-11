@@ -388,3 +388,11 @@ def test_contains_nested_args():
     assert "LIKE" in sql
     assert "COALESCE" in sql
     assert "'x'" in sql
+
+
+def test_nested_if_blocks():
+    """Nested IF/THEN/ELSE/END blocks are fully translated."""
+    sql, ok = _translate_formula("IF [x]=1 THEN IF [y]=2 THEN 'a' ELSE 'b' END ELSE 'c' END")
+    assert ok
+    assert "IF" not in sql.upper().replace("CASE WHEN", "")
+    assert sql.upper().count("CASE WHEN") == 2

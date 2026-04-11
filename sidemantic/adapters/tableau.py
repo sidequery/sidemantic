@@ -459,7 +459,11 @@ def _translate_formula(formula: str | None) -> tuple[str | None, bool]:
     result = _translate_iif(result)
 
     # IF c THEN t ELSE e END -> CASE WHEN c THEN t ELSE e END
-    result = _IF_THEN_RE.sub(_if_to_case, result)
+    # Apply repeatedly for nested IF blocks
+    prev = None
+    while prev != result:
+        prev = result
+        result = _IF_THEN_RE.sub(_if_to_case, result)
 
     # CONTAINS(s, sub) -> s LIKE '%' || sub || '%' (balanced-paren aware)
     result = _translate_contains(result)
@@ -736,9 +740,17 @@ def _quote_sql_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+_NUMERIC_LITERAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
+
+
 def _quote_identifier_if_needed(identifier: str) -> str:
-    """Quote a raw Tableau field name when it is not a simple SQL identifier."""
+    """Quote a raw Tableau field name when it is not a simple SQL identifier.
+
+    Passes through numeric literals and already-quoted identifiers unchanged.
+    """
     if identifier.startswith('"') and identifier.endswith('"'):
+        return identifier
+    if _NUMERIC_LITERAL_RE.match(identifier):
         return identifier
     if _SIMPLE_SQL_IDENTIFIER_RE.match(identifier):
         return identifier
@@ -748,9 +760,15 @@ def _quote_identifier_if_needed(identifier: str) -> str:
 
 
 def _quote_column_reference(column_name: str) -> str:
-    """Quote a possibly-qualified column reference."""
-    parts = _strip_brackets(column_name).split(".")
-    return ".".join(_quote_sql_identifier(part) for part in parts if part)
+    """Quote a possibly-qualified column reference.
+
+    Passes through numeric literals unchanged.
+    """
+    stripped = _strip_brackets(column_name)
+    if _NUMERIC_LITERAL_RE.match(stripped):
+        return stripped
+    parts = stripped.split(".")
+    return ".".join(_quote_identifier_if_needed(part) for part in parts if part)
 
 
 def _quote_table_reference(table_name: str) -> str:

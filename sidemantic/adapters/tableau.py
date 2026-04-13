@@ -1378,7 +1378,7 @@ class TableauAdapter(BaseAdapter):
         select_clauses = [
             f"{alias_by_table[table_name]}.{_quote_sql_identifier(column_name)} AS {_quote_sql_identifier(field_name)}"
             for field_name, (table_name, column_name) in field_sources.items()
-            if table_name in alias_by_table
+            if table_name in connected
         ]
         if not select_clauses:
             return None

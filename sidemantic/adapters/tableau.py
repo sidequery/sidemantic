@@ -1369,11 +1369,11 @@ class TableauAdapter(BaseAdapter):
             if not progressed:
                 break
 
+        # Skip unconnected tables rather than CROSS JOIN, which would
+        # introduce cartesian products and corrupt metrics
         for table_name, qualified_table in collection_info.tables:
-            if table_name in connected or table_name == base_table_name:
-                continue
-            join_clauses.append(f"CROSS JOIN {_quote_table_reference(qualified_table)} AS {alias_by_table[table_name]}")
-            connected.add(table_name)
+            if table_name not in connected and table_name != base_table_name:
+                pass  # Intentionally omitted: no relationship edge found
 
         select_clauses = [
             f"{alias_by_table[table_name]}.{_quote_sql_identifier(column_name)} AS {_quote_sql_identifier(field_name)}"
@@ -1569,13 +1569,16 @@ class TableauAdapter(BaseAdapter):
 
         parts = [f"SELECT * FROM {base_table}"]
         for join in joins:
+            if not join.column_pairs:
+                # Skip joins without extractable ON predicates to avoid
+                # emitting bare JOINs that degrade to cartesian products
+                continue
             join_keyword = join.join_type.upper()
             parts.append(f"{join_keyword} JOIN {join.right_table_qualified}")
-            if join.column_pairs:
-                on_clauses = [
-                    f"{_quote_column_reference(lc)} = {_quote_column_reference(rc)}" for lc, rc in join.column_pairs
-                ]
-                parts.append(f"ON {' AND '.join(on_clauses)}")
+            on_clauses = [
+                f"{_quote_column_reference(lc)} = {_quote_column_reference(rc)}" for lc, rc in join.column_pairs
+            ]
+            parts.append(f"ON {' AND '.join(on_clauses)}")
 
         return "\n".join(parts)
 

@@ -55,36 +55,34 @@ class WidgetModel {
     if (changed.has("active_dimension")) {
       const ad = this.state.active_dimension;
       if (ad) {
-        // Just set: don't query yet, widget will clear it in 400ms
         return;
       }
-      // Was cleared: do a full refresh
-      this.callRefresh("all");
+      this.callRefreshPublic("all");
       return;
     }
 
     if (changed.has("filters")) {
       const ad = this.state.active_dimension;
       if (ad) {
-        this.callRefresh("dimensions");
+        this.callRefreshPublic("dimensions");
       } else {
-        this.callRefresh("all");
+        this.callRefreshPublic("all");
       }
       return;
     }
 
     if (changed.has("brush_selection")) {
-      this.callRefresh("all");
+      this.callRefreshPublic("all");
       return;
     }
 
     if (changed.has("selected_metric")) {
-      this.callRefresh("dimensions");
+      this.callRefreshPublic("dimensions");
       return;
     }
 
     if (changed.has("time_grain")) {
-      this.callRefresh("metrics");
+      this.callRefreshPublic("metrics");
       return;
     }
   }
@@ -141,37 +139,104 @@ class WidgetModel {
     return null;
   }
 
-  // Call the widget_query tool on the MCP server
-  private async callRefresh(queryType: string): Promise<void> {
-    // Show loading state
-    this.state.status = "loading";
-    this.fireChange("status");
+  // Fetch all data by firing individual per-metric and per-dimension calls
+  callRefreshPublic(queryType: string): void {
+    const filtersJson = JSON.stringify(this.state.filters || {});
+    const brushJson = JSON.stringify(this.state.brush_selection || []);
+    const timeGrain = this.state.time_grain || "day";
+    const selectedMetric = this.state.selected_metric || "";
 
+    if (queryType === "all" || queryType === "metrics") {
+      // Fire one call per metric (series + total)
+      const metrics = (this.state.metrics_config || []) as Array<{ key: string }>;
+      for (const mc of metrics) {
+        this.fetchMetric(mc.key, timeGrain, filtersJson, brushJson);
+      }
+    }
+
+    if (queryType === "all" || queryType === "dimensions") {
+      // Fire one call per dimension
+      const dims = (this.state.dimensions_config || []) as Array<{ key: string }>;
+      for (const dc of dims) {
+        this.fetchDimension(dc.key, selectedMetric, filtersJson, brushJson);
+      }
+    }
+  }
+
+  private async fetchMetric(metricKey: string, timeGrain: string, filtersJson: string, brushJson: string): Promise<void> {
     try {
       const result = await this.app.callServerTool({
         name: "widget_query",
         arguments: {
-          query_type: queryType,
-          selected_metric: this.state.selected_metric || "",
-          time_grain: this.state.time_grain || "day",
-          filters_json: JSON.stringify(this.state.filters || {}),
-          brush_selection_json: JSON.stringify(this.state.brush_selection || []),
-          active_dimension: this.state.active_dimension || "",
+          query_type: "metric",
+          metric_key: metricKey,
+          time_grain: timeGrain,
+          filters_json: filtersJson,
+          brush_selection_json: brushJson,
         },
       });
-
-      // Extract data from tool result
       const data = this.extractData(result);
-      if (data) {
-        this.applyData(data);
+      if (data && data.status !== "error") {
+        // Update metric total
+        if (data.metric_total !== undefined) {
+          const totals = { ...(this.state.metric_totals || {}) };
+          totals[metricKey] = data.metric_total;
+          this.state.metric_totals = totals;
+          this.fireChange("metric_totals");
+        }
+        // Update metric series (merge into combined data)
+        if (data.metric_series_data && data.time_series_column) {
+          this.state.config = {
+            ...(this.state.config || {}),
+            time_series_column: data.time_series_column,
+          };
+          // Store per-metric series data for later merge
+          if (!this._metricSeriesMap) this._metricSeriesMap = {};
+          this._metricSeriesMap[metricKey] = data.metric_series_data;
+          // Use the first available metric's series as metric_series_data
+          // (widget.js will parse it and render sparklines)
+          const firstKey = Object.keys(this._metricSeriesMap)[0];
+          if (firstKey) {
+            this.state.metric_series_data = this._metricSeriesMap[firstKey];
+            this.fireChange("metric_series_data");
+            this.fireChange("config");
+          }
+        }
+        // Update status
+        this.state.status = "ready";
+        this.fireChange("status");
       }
-    } catch (err) {
-      this.state.status = "error";
-      this.state.error = err instanceof Error ? err.message : String(err);
-      this.fireChange("status");
-      this.fireChange("error");
+    } catch {
+      // Individual metric failure, don't kill the whole widget
     }
   }
+
+  private async fetchDimension(dimKey: string, selectedMetric: string, filtersJson: string, brushJson: string): Promise<void> {
+    try {
+      const result = await this.app.callServerTool({
+        name: "widget_query",
+        arguments: {
+          query_type: "dimension",
+          dimension_key: dimKey,
+          selected_metric: selectedMetric,
+          filters_json: filtersJson,
+          brush_selection_json: brushJson,
+        },
+      });
+      const data = this.extractData(result);
+      if (data && data.dimension_data !== undefined) {
+        const dimData = { ...(this.state.dimension_data || {}) };
+        dimData[dimKey] = data.dimension_data;
+        this.state.dimension_data = dimData;
+        this.fireChange("dimension_data");
+      }
+    } catch {
+      // Individual dimension failure
+    }
+  }
+
+  // Storage for per-metric series Arrow IPC data
+  private _metricSeriesMap: Record<string, string> | null = null;
 }
 
 // --- App setup ---
@@ -195,11 +260,7 @@ function renderExplorer(): void {
   const isFullscreen = currentDisplayMode === "fullscreen";
   document.documentElement.classList.toggle("fullscreen", isFullscreen);
 
-  // Create widget container
-  const widgetEl = document.createElement("div");
-  container.appendChild(widgetEl);
-
-  // Add expand button in inline mode
+  // Add expand button in inline mode (before widget so it layers on top)
   if (!isFullscreen) {
     const btn = document.createElement("div");
     btn.className = "expand-btn";
@@ -216,6 +277,10 @@ function renderExplorer(): void {
     });
     container.appendChild(btn);
   }
+
+  // Create widget container
+  const widgetEl = document.createElement("div");
+  container.appendChild(widgetEl);
 
   // Render the anywidget
   const result = renderWidget({ model, el: widgetEl });
@@ -234,12 +299,14 @@ function renderExplorer(): void {
   });
 }
 
-// Handle initial tool result (from explore_metrics)
+// Handle initial tool result (from explore_metrics - config only, no data)
 app.ontoolresult = (result: CallToolResult) => {
   const data = model.extractData(result);
   if (data) {
     model.applyData(data);
     renderExplorer();
+    // Immediately fetch actual data via widget_query
+    model.callRefreshPublic("all");
   } else {
     container.innerHTML = '<div class="error">No explorer data in tool result</div>';
   }

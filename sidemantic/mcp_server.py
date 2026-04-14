@@ -1,6 +1,7 @@
 """MCP server for Sidemantic semantic layer."""
 
 import json
+import sys
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -10,6 +11,12 @@ from mcp.server.fastmcp import FastMCP
 
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.loaders import load_from_directory
+
+
+def _log(msg: str) -> None:
+    """Log to stderr (visible in Claude Desktop MCP logs)."""
+    print(f"[sidemantic] {msg}", file=sys.stderr, flush=True)
+
 
 # Global semantic layer instance
 _layer: SemanticLayer | None = None
@@ -797,20 +804,65 @@ def _format_date_literal(value: str) -> str:
     return f"CAST('{value}' AS TIMESTAMP)"
 
 
-def _detect_time_series_column(table, *, grain: str) -> str | None:
+def _merge_metric_tables(tables: list, time_column: str) -> str:
+    """Merge per-metric Arrow tables into one table joined on the time column."""
+    import pyarrow as pa
+
+    if not tables:
+        return ""
+    if len(tables) == 1:
+        return _table_to_ipc_base64(tables[0], decimal_mode="float")
+
+    # Start with the first table's time column
+    merged = tables[0]
+    for t in tables[1:]:
+        # Each table has time_column + one metric column. Extract the metric column.
+        metric_cols = [f.name for f in t.schema if f.name != time_column]
+        for col_name in metric_cols:
+            if col_name not in [f.name for f in merged.schema]:
+                merged = merged.append_column(col_name, pa.nulls(merged.num_rows, type=pa.float64()))
+                # Build a lookup from time values to metric values
+                time_vals = t.column(time_column).to_pylist()
+                metric_vals = t.column(col_name).to_pylist()
+                lookup = dict(zip(time_vals, metric_vals))
+                # Fill in the values
+                merged_time = merged.column(time_column).to_pylist()
+                filled = [lookup.get(tv) for tv in merged_time]
+                idx = merged.schema.get_field_index(col_name)
+                merged = merged.set_column(idx, col_name, pa.array(filled, type=pa.float64()))
+
+    return _table_to_ipc_base64(merged, decimal_mode="float")
+
+
+def _detect_time_series_column(table, *, grain: str, time_dimension: str = "") -> str | None:
     """Find the time-series column name from an Arrow schema."""
     import pyarrow as pa
 
     schema = getattr(table, "schema", None)
     if schema is None:
         return None
-    for field in schema:
-        if pa.types.is_date(field.type) or pa.types.is_timestamp(field.type):
-            return field.name
+
+    # Prefer the grain-suffixed column (e.g. timestamp__day)
     suffix = f"__{grain}"
     for field in schema:
         if suffix in field.name:
             return field.name
+
+    # Then try Arrow date/timestamp types
+    for field in schema:
+        if pa.types.is_date(field.type) or pa.types.is_timestamp(field.type):
+            return field.name
+
+    # Then match on time_dimension name
+    if time_dimension:
+        for field in schema:
+            if time_dimension in field.name:
+                return field.name
+
+    # Fall back to first column
+    if len(schema) > 0:
+        return schema[0].name
+
     return None
 
 
@@ -850,6 +902,8 @@ def explore_metrics(
     """
     global _explorer_state
 
+    _log(f"explore_metrics called: model={model_name}, start={start_date}, end={end_date}")
+
     layer = get_layer()
     graph = layer.graph
     model_names = list(graph.models.keys())
@@ -863,15 +917,15 @@ def explore_metrics(
     if model is None:
         raise ValueError(f"Model '{model_name}' not found. Available: {model_names}")
 
-    # Resolve metrics
+    # Resolve metrics (cap at 8 to avoid timeout from too many individual queries)
     if not metrics:
-        metrics = [f"{model_name}.{m.name}" for m in (model.metrics or [])]
+        metrics = [f"{model_name}.{m.name}" for m in (model.metrics or [])][:8]
 
-    # Resolve dimensions (categorical/boolean only for leaderboards)
+    # Resolve dimensions (categorical/boolean only, cap at 8)
     if not dimensions:
         dimensions = [
             f"{model_name}.{d.name}" for d in (model.dimensions or []) if d.type in ("categorical", "boolean")
-        ]
+        ][:8]
 
     # Resolve time dimension
     if not time_dimension:
@@ -928,9 +982,11 @@ def explore_metrics(
     # Default selected metric
     selected_metric = metrics_config[0]["key"] if metrics_config else ""
 
-    # Compute date range from the underlying table
+    # Compute date range: use provided dates or query the table
     date_range: list[str] = []
-    if time_dimension and model.table:
+    if start_date and end_date:
+        date_range = [start_date, end_date]
+    elif time_dimension and model.table:
         try:
             from sidemantic.widget._widget import _quote_qualified_name
 
@@ -941,7 +997,6 @@ def explore_metrics(
             range_result = layer.adapter.execute(range_sql).fetchone()
             if range_result and range_result[0] is not None and range_result[1] is not None:
                 min_val, max_val = range_result[0], range_result[1]
-                # Stringify
                 for val in (min_val, max_val):
                     if isinstance(val, datetime):
                         date_range.append(val.isoformat(sep=" "))
@@ -951,89 +1006,13 @@ def explore_metrics(
                         date_range.append(str(val))
         except Exception:
             pass
+        # Apply partial overrides
+        if start_date and len(date_range) == 2:
+            date_range[0] = start_date
+        if end_date and len(date_range) == 2:
+            date_range[1] = end_date
 
-    # Override date range if start_date/end_date provided
-    if start_date or end_date:
-        if start_date and end_date:
-            date_range = [start_date, end_date]
-        elif start_date and len(date_range) == 2:
-            date_range = [start_date, date_range[1]]
-        elif end_date and len(date_range) == 2:
-            date_range = [date_range[0], end_date]
-
-    # Build date filters for initial queries
-    date_filters: list[str] = []
-    if time_dimension and len(date_range) == 2:
-        start_literal = _format_date_literal(date_range[0])
-        end_literal = _format_date_literal(date_range[1])
-        date_filters.append(
-            f"{model_name}.{time_dimension} >= {start_literal} AND {model_name}.{time_dimension} <= {end_literal}"
-        )
-
-    # Metric series query
-    metric_refs = [m["ref"] for m in metrics_config]
-    time_dim_ref_grain = f"{model_name}.{time_dimension}__{default_grain}" if time_dimension else None
-    time_dim_ref = f"{model_name}.{time_dimension}" if time_dimension else None
-
-    metric_series_data = ""
-    time_series_column: str | None = None
-    if time_dim_ref_grain and metric_refs:
-        try:
-            series_sql = layer.compile(
-                metrics=metric_refs,
-                dimensions=[time_dim_ref_grain],
-                filters=date_filters or None,
-                order_by=[time_dim_ref] if time_dim_ref else None,
-                limit=500,
-            )
-            series_result = _execute_arrow(layer, series_sql)
-            time_series_column = _detect_time_series_column(series_result, grain=default_grain)
-            metric_series_data = _table_to_ipc_base64(series_result, decimal_mode="float")
-        except Exception:
-            pass
-
-    config["time_series_column"] = time_series_column
-
-    # Metric totals query
-    metric_totals: dict[str, Any] = {}
-    if metric_refs:
-        try:
-            totals_sql = layer.compile(
-                metrics=metric_refs,
-                dimensions=[],
-                filters=date_filters or None,
-            )
-            totals_row = layer.adapter.execute(totals_sql).fetchone()
-            if totals_row:
-                for i, metric_ref in enumerate(metric_refs):
-                    value = _convert_to_json_compatible(totals_row[i])
-                    if isinstance(value, Decimal):
-                        value = str(value)
-                    metric_totals[metric_ref.split(".")[-1]] = value
-        except Exception:
-            pass
-
-    # Dimension leaderboards
-    selected_metric_ref = f"{model_name}.{selected_metric}" if selected_metric else ""
-    dimension_data: dict[str, str] = {}
-    if selected_metric_ref and dimensions_config:
-        for dim_config in dimensions_config:
-            dim_key = dim_config["key"]
-            dim_ref = dim_config["ref"]
-            try:
-                dim_sql = layer.compile(
-                    metrics=[selected_metric_ref],
-                    dimensions=[dim_ref],
-                    filters=date_filters or None,
-                    order_by=[f"{selected_metric_ref} DESC"],
-                    limit=6,
-                )
-                dim_result = _execute_arrow(layer, dim_sql)
-                dimension_data[dim_key] = _table_to_ipc_base64(dim_result, decimal_mode="string")
-            except Exception:
-                dimension_data[dim_key] = ""
-
-    # Store state for widget_query
+    # Store state for widget_query (data is fetched lazily via widget_query)
     _explorer_state = {
         "model_name": model_name,
         "time_dimension": time_dimension,
@@ -1044,6 +1023,9 @@ def explore_metrics(
         "brush_selection": [],
     }
 
+    _log("explore_metrics: returning config (data will be fetched via widget_query)")
+
+    # Return config only - widget renders skeletons immediately, then calls widget_query for data
     return {
         "config": config,
         "metrics_config": metrics_config,
@@ -1052,10 +1034,10 @@ def explore_metrics(
         "time_grain": default_grain,
         "time_grain_options": time_grain_options,
         "selected_metric": selected_metric,
-        "metric_series_data": metric_series_data,
-        "metric_totals": metric_totals,
-        "dimension_data": dimension_data,
-        "status": "ready",
+        "metric_series_data": "",
+        "metric_totals": {},
+        "dimension_data": {},
+        "status": "loading",
     }
 
 
@@ -1064,139 +1046,122 @@ def explore_metrics(
     meta={"ui": {"visibility": ["app"]}},
 )
 def widget_query(
-    query_type: str = "all",
+    query_type: str = "metric",
+    metric_key: str = "",
     selected_metric: str = "",
     time_grain: str = "day",
+    dimension_key: str = "",
     filters_json: str = "{}",
     brush_selection_json: str = "[]",
-    active_dimension: str = "",
 ) -> dict[str, Any]:
-    """Refresh explorer widget data (app-only, not visible to LLM).
+    """Fetch a single metric or dimension for the explorer widget (app-only).
 
-    Called by the explorer widget to fetch updated metric series, totals,
-    and/or dimension leaderboard data after user interactions.
+    query_type controls what to fetch:
+    - "metric": series + total for one metric (metric_key required)
+    - "dimension": leaderboard for one dimension (dimension_key + selected_metric required)
 
     Args:
-        query_type: What to refresh: "metrics", "dimensions", or "all"
-        selected_metric: Active metric key for dimension leaderboards
+        query_type: "metric" or "dimension"
+        metric_key: Metric key to query (for query_type="metric")
+        selected_metric: Active metric key (for query_type="dimension" leaderboards)
         time_grain: Time granularity for metric series
-        filters_json: JSON-encoded dimension filters ({dim_key: [values]})
-        brush_selection_json: JSON-encoded brush selection ([start, end] or [])
-        active_dimension: If set, only refresh this single dimension leaderboard
-
-    Returns:
-        Updated data matching the requested query_type.
+        dimension_key: Dimension key to query (for query_type="dimension")
+        filters_json: JSON-encoded dimension filters
+        brush_selection_json: JSON-encoded brush selection
     """
     global _explorer_state
 
     if _explorer_state is None:
-        raise RuntimeError("Explorer not initialized. Call explore_metrics first.")
+        return {"status": "error", "error": "Explorer not initialized. Use explore_metrics first."}
 
-    try:
-        layer = get_layer()
-        model_name = _explorer_state["model_name"]
-        time_dimension = _explorer_state["time_dimension"]
-        metrics_config = _explorer_state["metrics_config"]
-        dimensions_config = _explorer_state["dimensions_config"]
+    layer = get_layer()
+    model_name = _explorer_state["model_name"]
+    time_dimension = _explorer_state["time_dimension"]
+    metrics_config = _explorer_state["metrics_config"]
+    dimensions_config = _explorer_state["dimensions_config"]
 
-        filters = json.loads(filters_json) if filters_json else {}
-        brush_selection = json.loads(brush_selection_json) if brush_selection_json else []
+    filters = json.loads(filters_json) if filters_json else {}
+    brush_selection = json.loads(brush_selection_json) if brush_selection_json else []
+    _explorer_state["filters"] = filters
+    _explorer_state["brush_selection"] = brush_selection
 
-        # Update stored state
-        _explorer_state["filters"] = filters
-        _explorer_state["brush_selection"] = brush_selection
+    state = {
+        "model_name": model_name,
+        "time_dimension": time_dimension,
+        "filters": filters,
+        "date_range": _explorer_state.get("date_range", []),
+        "brush_selection": brush_selection,
+    }
+    date_filters = _build_explorer_filters(state)
 
-        # Build state dict for filter builder
-        state = {
-            "model_name": model_name,
-            "time_dimension": time_dimension,
-            "filters": filters,
-            "date_range": _explorer_state.get("date_range", []),
-            "brush_selection": brush_selection,
-        }
+    if query_type == "metric" and metric_key:
+        # Find the metric config
+        mc = next((m for m in metrics_config if m["key"] == metric_key), None)
+        if not mc:
+            return {"status": "error", "error": f"Unknown metric: {metric_key}"}
 
-        result: dict[str, Any] = {"status": "ready"}
+        metric_ref = mc["ref"]
+        time_dim_ref_grain = f"{model_name}.{time_dimension}__{time_grain}" if time_dimension else None
+        result: dict[str, Any] = {"metric_key": metric_key}
 
-        # --- Metrics ---
-        if query_type in ("metrics", "all"):
-            metric_refs = [m["ref"] for m in metrics_config]
-            time_dim_ref_grain = f"{model_name}.{time_dimension}__{time_grain}" if time_dimension else None
-            time_dim_ref = f"{model_name}.{time_dimension}" if time_dimension else None
-            date_filters = _build_explorer_filters(state)
-
-            # Metric series
-            metric_series_data = ""
-            time_series_column: str | None = None
-            if time_dim_ref_grain and metric_refs:
+        # Series
+        if time_dim_ref_grain:
+            try:
                 series_sql = layer.compile(
-                    metrics=metric_refs,
+                    metrics=[metric_ref],
                     dimensions=[time_dim_ref_grain],
                     filters=date_filters or None,
-                    order_by=[time_dim_ref] if time_dim_ref else None,
+                    order_by=[time_dim_ref_grain],
                     limit=500,
                 )
                 series_table = _execute_arrow(layer, series_sql)
-                time_series_column = _detect_time_series_column(series_table, grain=time_grain)
-                metric_series_data = _table_to_ipc_base64(series_table, decimal_mode="float")
+                ts_col = _detect_time_series_column(series_table, grain=time_grain, time_dimension=time_dimension)
+                result["metric_series_data"] = _table_to_ipc_base64(series_table, decimal_mode="float")
+                result["time_series_column"] = ts_col
+            except Exception as e:
+                _log(f"  metric series FAIL {metric_key}: {e}")
 
-            result["metric_series_data"] = metric_series_data
-            result["config"] = {
-                "model_name": model_name,
-                "time_dimension": time_dimension,
-                "time_dimension_ref": f"{model_name}.{time_dimension}" if time_dimension else None,
-                "time_series_column": time_series_column,
-            }
+        # Total
+        try:
+            totals_sql = layer.compile(metrics=[metric_ref], dimensions=[], filters=date_filters or None)
+            totals_row = layer.adapter.execute(totals_sql).fetchone()
+            if totals_row:
+                value = _convert_to_json_compatible(totals_row[0])
+                if isinstance(value, Decimal):
+                    value = str(value)
+                result["metric_total"] = value
+        except Exception:
+            pass
 
-            # Metric totals
-            metric_totals: dict[str, Any] = {}
-            if metric_refs:
-                totals_sql = layer.compile(
-                    metrics=metric_refs,
-                    dimensions=[],
-                    filters=date_filters or None,
-                )
-                totals_row = layer.adapter.execute(totals_sql).fetchone()
-                if totals_row:
-                    for i, metric_ref in enumerate(metric_refs):
-                        value = _convert_to_json_compatible(totals_row[i])
-                        if isinstance(value, Decimal):
-                            value = str(value)
-                        metric_totals[metric_ref.split(".")[-1]] = value
-            result["metric_totals"] = metric_totals
-
-        # --- Dimensions ---
-        if query_type in ("dimensions", "all"):
-            selected_metric_ref = f"{model_name}.{selected_metric}" if selected_metric else ""
-            dimension_data: dict[str, str] = {}
-
-            dims_to_query = dimensions_config
-            if active_dimension:
-                dims_to_query = [d for d in dimensions_config if d["key"] == active_dimension]
-
-            if selected_metric_ref and dims_to_query:
-                for dim_config in dims_to_query:
-                    dim_key = dim_config["key"]
-                    dim_ref = dim_config["ref"]
-                    dim_filters = _build_explorer_filters(state, exclude_dimension=dim_key)
-                    try:
-                        dim_sql = layer.compile(
-                            metrics=[selected_metric_ref],
-                            dimensions=[dim_ref],
-                            filters=dim_filters or None,
-                            order_by=[f"{selected_metric_ref} DESC"],
-                            limit=6,
-                        )
-                        dim_table = _execute_arrow(layer, dim_sql)
-                        dimension_data[dim_key] = _table_to_ipc_base64(dim_table, decimal_mode="string")
-                    except Exception:
-                        dimension_data[dim_key] = ""
-
-            result["dimension_data"] = dimension_data
-
+        result["status"] = "ready"
         return result
 
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    if query_type == "dimension" and dimension_key:
+        dc = next((d for d in dimensions_config if d["key"] == dimension_key), None)
+        if not dc:
+            return {"status": "error", "error": f"Unknown dimension: {dimension_key}"}
+
+        selected_metric_ref = f"{model_name}.{selected_metric}" if selected_metric else ""
+        dim_filters = _build_explorer_filters(state, exclude_dimension=dimension_key)
+        result = {"dimension_key": dimension_key}
+
+        try:
+            dim_sql = layer.compile(
+                metrics=[selected_metric_ref],
+                dimensions=[dc["ref"]],
+                filters=dim_filters or None,
+                order_by=[f"{selected_metric_ref} DESC"],
+                limit=6,
+            )
+            dim_table = _execute_arrow(layer, dim_sql)
+            result["dimension_data"] = _table_to_ipc_base64(dim_table, decimal_mode="string")
+        except Exception:
+            result["dimension_data"] = ""
+
+        result["status"] = "ready"
+        return result
+
+    return {"status": "error", "error": f"Invalid query_type: {query_type}"}
 
 
 # --- MCP Resources ---

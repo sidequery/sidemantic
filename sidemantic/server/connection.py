@@ -21,12 +21,14 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
     def handle_auth(self, user, pwd, host, database=None, callback=callable):
         """Handle authentication."""
-        # If username/password are set, check them
-        if self.username is not None and self.password is not None:
-            callback(user == self.username and pwd == self.password)
-        else:
+        if self.username is None and self.password is None:
             # No auth required
             callback(True)
+        elif self.username is not None and self.password is not None:
+            callback(user == self.username and pwd == self.password)
+        else:
+            # Partial auth config must fail closed.
+            callback(False)
 
     def handle_connect(self, ip, port, callback=callable):
         """Handle connection."""

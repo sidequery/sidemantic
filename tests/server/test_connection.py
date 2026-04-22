@@ -25,6 +25,24 @@ def test_handle_auth():
     assert auth_results == [True, False]
 
 
+def test_handle_auth_partial_config_fails_closed():
+    pytest.importorskip("riffq")
+    pytest.importorskip("pyarrow")
+    from sidemantic.server.connection import SemanticLayerConnection
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer, username="user", password=None)
+
+    auth_results = []
+
+    def callback(result):
+        auth_results.append(result)
+
+    conn.handle_auth("user", "anything", "localhost", callback=callback)
+
+    assert auth_results == [False]
+
+
 def test_handle_system_queries():
     pytest.importorskip("riffq")
     pa = pytest.importorskip("pyarrow")

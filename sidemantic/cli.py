@@ -534,6 +534,10 @@ def serve(
     username_resolved = username or (_loaded_config.pg_server.username if _loaded_config else None)
     password_resolved = password or (_loaded_config.pg_server.password if _loaded_config else None)
 
+    if (username_resolved is None) != (password_resolved is None):
+        typer.echo("Error: Must provide both --username and --password for PG server auth", err=True)
+        raise typer.Exit(1)
+
     # Create semantic layer (only pass connection if not None, otherwise use default)
     preagg_db = _loaded_config.preagg_database if _loaded_config else None
     preagg_sch = _loaded_config.preagg_schema if _loaded_config else None

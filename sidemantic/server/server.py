@@ -47,6 +47,8 @@ def start_server(
         username: Username for authentication (optional)
         password: Password for authentication (optional)
     """
+    if (username is None) != (password is None):
+        raise ValueError("Both username and password must be provided together")
 
     # Create connection class with layer injected
     class BoundConnection(SemanticLayerConnection):

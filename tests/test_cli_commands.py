@@ -103,6 +103,21 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     assert called["password"] == "p"
 
 
+def test_serve_rejects_partial_auth(monkeypatch, tmp_path):
+    pytest.importorskip("riffq")
+
+    def fake_start_server(*args, **kwargs):
+        raise AssertionError("start_server should not be called with partial auth config")
+
+    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+
+    _write_min_model(tmp_path)
+    result = runner.invoke(app, ["serve", str(tmp_path), "--username", "u"])
+
+    assert result.exit_code == 1
+    assert "both --username and --password" in result.output
+
+
 def test_api_serve_calls_start_server(monkeypatch, tmp_path):
     pytest.importorskip("fastapi")
     called = {}
@@ -176,3 +191,10 @@ def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
     assert called["directory"] == str(tmp_path)
     assert called["db_path"] is None
     assert called.get("run") is True
+
+
+def test_docker_entrypoint_does_not_use_eval():
+    entrypoint_path = Path(__file__).resolve().parent.parent / "docker-entrypoint.sh"
+    content = entrypoint_path.read_text()
+
+    assert "eval " not in content

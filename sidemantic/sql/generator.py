@@ -1112,7 +1112,7 @@ class SQLGenerator:
         # Include this model's primary key columns (always needed for joins/grouping)
         for pk_col in model.primary_key_columns:
             if pk_col not in columns_added:
-                select_cols.append(f"{pk_col} AS {self._quote_alias(pk_col)}")
+                select_cols.append(f"{self._quote_identifier(pk_col)} AS {self._quote_alias(pk_col)}")
                 columns_added.add(pk_col)
 
         # Include foreign keys if we're joining OR if they're explicitly requested as dimensions
@@ -1123,7 +1123,7 @@ class SQLGenerator:
                     # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
                     should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
                     if should_include and fk not in columns_added:
-                        select_cols.append(f"{fk} AS {self._quote_alias(fk)}")
+                        select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
                         columns_added.add(fk)
                         # Mark FK as "needed" so it's not duplicated as a dimension
                         needed_dimensions.discard(fk)
@@ -1142,7 +1142,7 @@ class SQLGenerator:
                         # For has_many/has_one, foreign_key is the FK column in THIS model
                         fk = other_join.foreign_key or other_join.sql_expr
                         if fk not in columns_added:
-                            select_cols.append(f"{fk} AS {self._quote_alias(fk)}")
+                            select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
                             columns_added.add(fk)
 
             for other_model_name, other_model in self.graph.models.items():
@@ -1154,7 +1154,7 @@ class SQLGenerator:
                     junction_self_fk, junction_related_fk = other_join.junction_keys()
                     for fk in (junction_self_fk, junction_related_fk):
                         if fk and fk not in columns_added:
-                            select_cols.append(f"{fk} AS {self._quote_alias(fk)}")
+                            select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
                             columns_added.add(fk)
 
         # Determine table alias for {model} placeholder replacement
@@ -1331,10 +1331,14 @@ class SQLGenerator:
                 elif measure.agg == "count_distinct" and not measure.sql:
                     pk_cols = model.primary_key_columns
                     if len(pk_cols) == 1:
-                        base_sql = pk_cols[0]
+                        base_sql = self._quote_identifier(pk_cols[0])
                     else:
                         # For composite keys, concatenate columns for uniqueness
-                        base_sql = "CONCAT(" + ", '|', ".join(f"CAST({c} AS VARCHAR)" for c in pk_cols) + ")"
+                        base_sql = (
+                            "CONCAT("
+                            + ", '|', ".join(f"CAST({self._quote_identifier(c)} AS VARCHAR)" for c in pk_cols)
+                            + ")"
+                        )
                 else:
                     base_sql = replace_model_placeholder(measure.sql_expr)
 
@@ -1863,9 +1867,13 @@ class SQLGenerator:
                             pk_cols = model_obj.primary_key_columns
                             # For composite keys, concatenate columns for hashing
                             if len(pk_cols) == 1:
-                                pk = pk_cols[0]
+                                pk = self._quote_identifier(pk_cols[0])
                             else:
-                                pk = "CONCAT(" + ", '|', ".join(f"CAST({c} AS VARCHAR)" for c in pk_cols) + ")"
+                                pk = (
+                                    "CONCAT("
+                                    + ", '|', ".join(f"CAST({self._quote_identifier(c)} AS VARCHAR)" for c in pk_cols)
+                                    + ")"
+                                )
 
                             agg_expr = build_symmetric_aggregate_sql(
                                 measure_expr=f"{measure_name}_raw",

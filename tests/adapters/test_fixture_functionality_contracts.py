@@ -23,6 +23,7 @@ from sidemantic.adapters.osi import OSIAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.snowflake import SnowflakeAdapter
 from sidemantic.adapters.superset import SupersetAdapter
+from sidemantic.adapters.tableau import TableauAdapter
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 from sidemantic.sql.generator import SQLGenerator
 from tests.adapters.test_added_fixture_coverage import (
@@ -52,6 +53,7 @@ ADAPTER_FIXTURE_ROOTS = [
     ("rill", RillAdapter, {".yml", ".yaml"}),
     ("snowflake", SnowflakeAdapter, {".yml", ".yaml"}),
     ("superset", SupersetAdapter, {".yml", ".yaml"}),
+    ("tableau", TableauAdapter, {".tds"}),
     ("thoughtspot", ThoughtSpotAdapter, {".tml"}),
 ]
 
@@ -102,6 +104,7 @@ EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/rill/bids_canvas.yaml",
     "tests/fixtures/rill/bids_explore.yaml",
     "tests/fixtures/rill/nyc_trips_dashboard.yaml",
+    "tests/fixtures/tableau/real_world/document_api_multiple_connections.twb",
     "tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml",
 }
 
@@ -127,6 +130,8 @@ EXPECTED_LOW_SIGNAL_FIXTURES = {
     "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
     "tests/fixtures/omni/estore/topics/Events.topic.yaml",
     "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
+    "tests/fixtures/tableau/real_world/document_api_tableau10.tds",
+    "tests/fixtures/tableau/real_world/document_api_tableau93.tds",
 }
 
 NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
@@ -141,7 +146,13 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
         "ThoughtSpotAdapter",
     },
     "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter"},
-    "semantic_only_no_sources": {"AtScaleSMLAdapter", "LookMLAdapter", "MalloyAdapter", "OmniAdapter"},
+    "semantic_only_no_sources": {
+        "AtScaleSMLAdapter",
+        "LookMLAdapter",
+        "MalloyAdapter",
+        "OmniAdapter",
+        "TableauAdapter",
+    },
     "complex_or_nonportable_sql_fields": {"LookMLAdapter"},
 }
 
@@ -162,6 +173,7 @@ EXACT_SEMANTIC_ADAPTER_FIXTURES = {
     "RillAdapter": "tests/fixtures/rill/cost_monitoring.yaml",
     "SnowflakeAdapter": "tests/fixtures/snowflake/customer_loyalty_metrics.yaml",
     "SupersetAdapter": "tests/fixtures/superset/covid_dashboard.yaml",
+    "TableauAdapter": "tests/fixtures/tableau/kitchen_sink.tds",
     "ThoughtSpotAdapter": "tests/fixtures/thoughtspot/kitchen_sink.table.tml",
 }
 

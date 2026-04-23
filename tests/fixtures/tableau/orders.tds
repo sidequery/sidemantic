@@ -1,0 +1,32 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='orders' version='18.1'>
+  <connection class='postgres' dbname='analytics' server='localhost'>
+    <relation type='table' name='orders' table='[public].[orders]' />
+  </connection>
+  <column caption='Order ID' datatype='integer' name='[id]' role='dimension' type='ordinal' />
+  <column caption='Order Date' datatype='date' name='[order_date]' role='dimension' type='quantitative' />
+  <column caption='Amount' datatype='real' name='[amount]' role='measure' type='quantitative' aggregation='sum' />
+  <column caption='Order Count' datatype='integer' name='[order_count]' role='measure' type='quantitative' aggregation='count'>
+    <calculation class='tableau' formula='[id]' />
+  </column>
+  <metadata-records>
+    <metadata-record class='column'>
+      <local-name>[orders].[id]</local-name>
+      <local-type>integer</local-type>
+      <aggregation>Sum</aggregation>
+      <remote-alias>id</remote-alias>
+    </metadata-record>
+    <metadata-record class='column'>
+      <local-name>[orders].[order_date]</local-name>
+      <local-type>date</local-type>
+      <aggregation>Year</aggregation>
+      <remote-alias>order_date</remote-alias>
+    </metadata-record>
+    <metadata-record class='column'>
+      <local-name>[orders].[amount]</local-name>
+      <local-type>real</local-type>
+      <aggregation>Sum</aggregation>
+      <remote-alias>amount</remote-alias>
+    </metadata-record>
+  </metadata-records>
+</datasource>

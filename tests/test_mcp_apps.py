@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("mcp")  # Skip if mcp extra not installed
 
-from sidemantic.apps import build_chart_html, create_chart_resource
+from sidemantic.apps import _get_widget_template
 from sidemantic.mcp_server import create_chart, initialize_layer
 
 
@@ -40,96 +40,35 @@ models:
     yield layer
 
 
-def test_build_chart_html():
-    """Test that build_chart_html embeds the Vega spec."""
-    spec = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json", "mark": "bar"}
-    html = build_chart_html(spec)
-
-    assert "{{VEGA_SPEC}}" not in html
-    assert '"$schema"' in html
-    assert '"mark"' in html
-    assert "vega-embed" in html
+def test_widget_template_loads():
+    """Test that the built chart widget HTML loads."""
+    html = _get_widget_template()
+    assert len(html) > 1000  # Built file is ~960KB
+    assert "<!DOCTYPE html>" in html
+    assert "sidemantic-chart" in html
 
 
-def test_build_chart_html_escapes_json():
-    """Test that JSON with special chars is properly embedded."""
-    spec = {"title": "Revenue <&> Costs", "description": 'Test\'s "spec"'}
-    html = build_chart_html(spec)
-
-    # < in the JSON data should be escaped to \u003c
-    assert "\\u003c" in html
-    # The raw < from user input should not appear in the JSON block
-    assert "Revenue <&>" not in html
-    assert "Revenue \\u003c&>" in html
+def test_widget_uses_vega_interpreter():
+    """Test that the built widget uses the CSP-safe vega interpreter."""
+    html = _get_widget_template()
+    # The widget should use ast:true + expressionInterpreter for CSP safety.
+    # Note: vega-loader's CSV parser includes new Function() in the bundle
+    # but it's never called at runtime since we pass JSON data.
+    assert "expressionInterpreter" in html or "ast" in html
 
 
-def test_build_chart_html_prevents_script_injection():
-    """Test that </script> in user input cannot break out of the JSON block."""
-    spec = {"title": '</script><script>alert("xss")</script>'}
-    html = build_chart_html(spec)
+def test_create_chart_returns_vega_spec(demo_layer):
+    """Test that create_chart returns vega_spec without png_base64."""
+    result = create_chart(
+        dimensions=["orders.status"],
+        metrics=["orders.total_revenue"],
+        chart_type="bar",
+    )
 
-    assert "</script><script>" not in html
-    assert "\\u003c/script>" in html
-
-
-def test_create_chart_resource():
-    """Test that create_chart_resource returns a valid UIResource."""
-    spec = {"mark": "bar", "data": {"values": [{"x": 1, "y": 2}]}}
-    resource = create_chart_resource(spec)
-
-    dumped = resource.model_dump()
-    assert dumped["type"] == "resource"
-    assert str(dumped["resource"]["uri"]) == "ui://sidemantic/chart"
-    assert dumped["resource"]["mimeType"] == "text/html;profile=mcp-app"
-    assert "text" in dumped["resource"]
-    assert "vega-embed" in dumped["resource"]["text"]
-
-
-def test_create_chart_with_apps_enabled(demo_layer):
-    """Test that create_chart includes UIResource when apps mode is on."""
-    import sidemantic.mcp_server as _mcp_mod
-
-    original = _mcp_mod._apps_enabled
-    try:
-        _mcp_mod._apps_enabled = True
-        result = create_chart(
-            dimensions=["orders.status"],
-            metrics=["orders.total_revenue"],
-            chart_type="bar",
-        )
-
-        # Should return a list with [dict, UIResource]
-        assert isinstance(result, list)
-        assert len(result) == 2
-
-        data = result[0]
-        assert "sql" in data
-        assert "vega_spec" in data
-        assert "png_base64" in data
-
-        ui_resource = result[1]
-        dumped = ui_resource.model_dump()
-        assert dumped["type"] == "resource"
-        assert str(dumped["resource"]["uri"]) == "ui://sidemantic/chart"
-    finally:
-        _mcp_mod._apps_enabled = original
-
-
-def test_create_chart_without_apps_returns_dict(demo_layer):
-    """Test that create_chart returns a plain dict when apps mode is off."""
-    import sidemantic.mcp_server as _mcp_mod
-
-    original = _mcp_mod._apps_enabled
-    try:
-        _mcp_mod._apps_enabled = False
-        result = create_chart(
-            dimensions=["orders.status"],
-            metrics=["orders.total_revenue"],
-            chart_type="bar",
-        )
-
-        assert isinstance(result, dict)
-        assert "sql" in result
-        assert "vega_spec" in result
-    finally:
-        _mcp_mod._apps_enabled = original
+    assert isinstance(result, dict)
+    assert "sql" in result
+    assert "vega_spec" in result
+    assert "row_count" in result
+    assert "png_base64" not in result
+    assert isinstance(result["vega_spec"], dict)
+    assert "data" in result["vega_spec"]

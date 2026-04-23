@@ -271,7 +271,6 @@ def test_create_chart_basic(demo_layer):
     # Check all expected keys are present
     assert "sql" in result
     assert "vega_spec" in result
-    assert "png_base64" in result
     assert "row_count" in result
 
     # Verify SQL was generated
@@ -281,9 +280,6 @@ def test_create_chart_basic(demo_layer):
     # Verify vega spec is a dict
     assert isinstance(result["vega_spec"], dict)
     assert "data" in result["vega_spec"]
-
-    # Verify PNG is base64 encoded
-    assert result["png_base64"].startswith("data:image/png;base64,")
 
     # Verify row count
     assert result["row_count"] == 2  # Alice and Bob

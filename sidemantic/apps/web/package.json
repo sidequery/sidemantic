@@ -1,0 +1,22 @@
+{
+  "name": "sidemantic-chart-widget",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "ENTRY=chart vite build && ENTRY=explorer vite build",
+    "build:chart": "ENTRY=chart vite build",
+    "build:explorer": "ENTRY=explorer vite build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.3.2",
+    "vega": "^6.2.0",
+    "vega-embed": "^7.1.0",
+    "vega-interpreter": "^2.2.1",
+    "vega-lite": "^6.4.2"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0",
+    "vite-plugin-singlefile": "^2.3.0",
+    "typescript": "^5.9.3"
+  }
+}

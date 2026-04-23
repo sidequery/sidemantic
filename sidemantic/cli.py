@@ -328,13 +328,6 @@ def mcp_serve(
                     placeholders = ", ".join(["?" for _ in columns])
                     layer.adapter.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
-        # Enable apps mode if requested
-        if apps:
-            import sidemantic.mcp_server as _mcp_mod
-
-            _mcp_mod._apps_enabled = True
-            typer.echo("Interactive UI widgets enabled", err=True)
-
         # Determine transport
         if http or apps:
             if apps and not http:

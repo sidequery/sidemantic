@@ -1,6 +1,7 @@
 """MCP server for Sidemantic semantic layer."""
 
 import json
+import sys
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -11,9 +12,14 @@ from mcp.server.fastmcp import FastMCP
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.loaders import load_from_directory
 
+
+def _log(msg: str) -> None:
+    """Log to stderr (visible in Claude Desktop MCP logs)."""
+    print(f"[sidemantic] {msg}", file=sys.stderr, flush=True)
+
+
 # Global semantic layer instance
 _layer: SemanticLayer | None = None
-_apps_enabled: bool = False
 
 
 def initialize_layer(
@@ -391,7 +397,18 @@ def run_query(
     }
 
 
-@mcp.tool(structured_output=False, meta={"ui": {"resourceUri": "ui://sidemantic/chart"}})
+@mcp.tool(
+    structured_output=False,
+    meta={
+        "ui": {
+            "resourceUri": "ui://sidemantic/chart",
+            "csp": {
+                "connectDomains": [],
+                "resourceDomains": [],
+            },
+        },
+    },
+)
 def create_chart(
     dimensions: list[str] = [],
     metrics: list[str] = [],
@@ -433,7 +450,7 @@ def create_chart(
         png_base64: Base64-encoded PNG image
         row_count: Number of data points
     """
-    from sidemantic.charts import chart_to_base64_png, chart_to_vega
+    from sidemantic.charts import chart_to_vega
     from sidemantic.charts import create_chart as make_chart
 
     layer = get_layer()
@@ -478,24 +495,14 @@ def create_chart(
         height=height,
     )
 
-    # Export to both formats
+    # Export Vega spec (rendered interactively by MCP Apps widget)
     vega_spec = chart_to_vega(chart)
-    png_base64 = chart_to_base64_png(chart)
 
-    result = {
+    return {
         "sql": sql,
         "vega_spec": vega_spec,
-        "png_base64": png_base64,
         "row_count": len(row_dicts),
     }
-
-    # When apps mode is enabled, include an interactive UI widget
-    if _apps_enabled:
-        from sidemantic.apps import create_chart_resource
-
-        return [result, create_chart_resource(vega_spec)]
-
-    return result
 
 
 def _generate_chart_title(dimensions: list[str], metrics: list[str]) -> str:
@@ -699,7 +706,499 @@ def get_semantic_graph() -> dict[str, Any]:
     return result
 
 
-# --- MCP Resource: Catalog Metadata ---
+# --- Explorer state ---
+
+_explorer_state: dict | None = None
+
+
+def _table_to_ipc_base64(table, *, decimal_mode: str = "float") -> str:
+    """Serialize a PyArrow table to base64-encoded Arrow IPC bytes."""
+    import base64
+    import io
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    if any(pa.types.is_decimal(field.type) for field in table.schema):
+        arrays = []
+        fields = []
+        for field in table.schema:
+            column = table[field.name]
+            if pa.types.is_decimal(field.type):
+                cast_type = pa.string() if decimal_mode == "string" else pa.float64()
+                arrays.append(pc.cast(column, cast_type))
+                fields.append(pa.field(field.name, cast_type))
+            else:
+                arrays.append(column)
+                fields.append(field)
+        table = pa.table(arrays, schema=pa.schema(fields))
+
+    sink = io.BytesIO()
+    with pa.ipc.new_file(sink, table.schema) as writer:
+        writer.write_table(table)
+    return base64.b64encode(sink.getvalue()).decode("ascii")
+
+
+def _execute_arrow(layer, sql):
+    """Execute SQL via the layer adapter and return a PyArrow Table."""
+    result = layer.adapter.execute(sql)
+    reader = result.fetch_record_batch()
+    return reader.read_all()
+
+
+def _escape_sql_literal(value: str) -> str:
+    """Escape a string for use inside a SQL single-quoted literal."""
+    return value.replace("'", "''")
+
+
+def _build_explorer_filters(state: dict, *, exclude_dimension: str | None = None) -> list[str]:
+    """Build SQL filter expressions from explorer state.
+
+    State dict keys: model_name, time_dimension, filters, date_range, brush_selection.
+    """
+    filter_exprs: list[str] = []
+    model_name = state["model_name"]
+    time_dim = state.get("time_dimension")
+
+    # Determine effective date range (brush overrides date_range)
+    brush = state.get("brush_selection", [])
+    date_range = brush if len(brush) == 2 else state.get("date_range", [])
+
+    if time_dim and len(date_range) == 2:
+        start_str = str(date_range[0])
+        end_str = str(date_range[1])
+        start_literal = _format_date_literal(start_str)
+        end_literal = _format_date_literal(end_str)
+        filter_exprs.append(f"{model_name}.{time_dim} >= {start_literal} AND {model_name}.{time_dim} <= {end_literal}")
+
+    # Dimension filters
+    for dim_key, values in state.get("filters", {}).items():
+        if exclude_dimension and dim_key == exclude_dimension:
+            continue
+        if not values:
+            continue
+        if len(values) == 1:
+            if values[0] is None:
+                filter_exprs.append(f"{model_name}.{dim_key} IS NULL")
+            else:
+                safe = _escape_sql_literal(str(values[0]))
+                filter_exprs.append(f"{model_name}.{dim_key} = '{safe}'")
+        else:
+            clauses: list[str] = []
+            for v in values:
+                if v is None:
+                    clauses.append(f"{model_name}.{dim_key} IS NULL")
+                else:
+                    safe = _escape_sql_literal(str(v))
+                    clauses.append(f"{model_name}.{dim_key} = '{safe}'")
+            filter_exprs.append(f"({' OR '.join(clauses)})")
+
+    return filter_exprs
+
+
+def _format_date_literal(value: str) -> str:
+    """Format a date/datetime string as a SQL CAST expression."""
+    # Date-only: exactly 10 chars like "2024-01-01"
+    if len(value) == 10 and value[4] == "-" and value[7] == "-":
+        return f"CAST('{value}' AS DATE)"
+    return f"CAST('{value}' AS TIMESTAMP)"
+
+
+def _merge_metric_tables(tables: list, time_column: str) -> str:
+    """Merge per-metric Arrow tables into one table joined on the time column."""
+    import pyarrow as pa
+
+    if not tables:
+        return ""
+    if len(tables) == 1:
+        return _table_to_ipc_base64(tables[0], decimal_mode="float")
+
+    # Start with the first table's time column
+    merged = tables[0]
+    for t in tables[1:]:
+        # Each table has time_column + one metric column. Extract the metric column.
+        metric_cols = [f.name for f in t.schema if f.name != time_column]
+        for col_name in metric_cols:
+            if col_name not in [f.name for f in merged.schema]:
+                merged = merged.append_column(col_name, pa.nulls(merged.num_rows, type=pa.float64()))
+                # Build a lookup from time values to metric values
+                time_vals = t.column(time_column).to_pylist()
+                metric_vals = t.column(col_name).to_pylist()
+                lookup = dict(zip(time_vals, metric_vals))
+                # Fill in the values
+                merged_time = merged.column(time_column).to_pylist()
+                filled = [lookup.get(tv) for tv in merged_time]
+                idx = merged.schema.get_field_index(col_name)
+                merged = merged.set_column(idx, col_name, pa.array(filled, type=pa.float64()))
+
+    return _table_to_ipc_base64(merged, decimal_mode="float")
+
+
+def _detect_time_series_column(table, *, grain: str, time_dimension: str = "") -> str | None:
+    """Find the time-series column name from an Arrow schema."""
+    import pyarrow as pa
+
+    schema = getattr(table, "schema", None)
+    if schema is None:
+        return None
+
+    # Prefer the grain-suffixed column (e.g. timestamp__day)
+    suffix = f"__{grain}"
+    for field in schema:
+        if suffix in field.name:
+            return field.name
+
+    # Then try Arrow date/timestamp types
+    for field in schema:
+        if pa.types.is_date(field.type) or pa.types.is_timestamp(field.type):
+            return field.name
+
+    # Then match on time_dimension name
+    if time_dimension:
+        for field in schema:
+            if time_dimension in field.name:
+                return field.name
+
+    # Fall back to first column
+    if len(schema) > 0:
+        return schema[0].name
+
+    return None
+
+
+@mcp.tool(
+    structured_output=False,
+    meta={
+        "ui": {
+            "resourceUri": "ui://sidemantic/explorer",
+            "csp": {"connectDomains": [], "resourceDomains": []},
+        },
+    },
+)
+def explore_metrics(
+    model_name: str = "",
+    metrics: list[str] = [],
+    dimensions: list[str] = [],
+    time_dimension: str = "",
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
+    """Launch an interactive metrics explorer for a semantic model.
+
+    Opens a dashboard showing metric time series, totals, and dimension
+    leaderboards. All parameters are optional: without arguments, uses the
+    first model and auto-discovers metrics, dimensions, and time dimension.
+
+    Args:
+        model_name: Model to explore (defaults to first model)
+        metrics: Metric refs to show (e.g., ["orders.revenue"]). Defaults to all.
+        dimensions: Dimension refs for leaderboards. Defaults to categorical/boolean dims.
+        time_dimension: Time dimension name for series. Defaults to model default.
+        start_date: Start date filter (e.g., "2026-01-01"). Defaults to min date in data.
+        end_date: End date filter (e.g., "2026-03-30"). Defaults to max date in data.
+
+    Returns:
+        Explorer configuration and initial data for the interactive widget.
+    """
+    global _explorer_state
+
+    _log(f"explore_metrics called: model={model_name}, start={start_date}, end={end_date}")
+
+    layer = get_layer()
+    graph = layer.graph
+    model_names = list(graph.models.keys())
+    if not model_names:
+        raise ValueError("SemanticLayer has no models")
+
+    # Resolve model
+    if not model_name:
+        model_name = model_names[0]
+    model = graph.models.get(model_name)
+    if model is None:
+        raise ValueError(f"Model '{model_name}' not found. Available: {model_names}")
+
+    # Resolve metrics (cap at 8 to avoid timeout from too many individual queries)
+    if not metrics:
+        metrics = [f"{model_name}.{m.name}" for m in (model.metrics or [])][:8]
+
+    # Resolve dimensions (categorical/boolean only, cap at 8)
+    if not dimensions:
+        dimensions = [
+            f"{model_name}.{d.name}" for d in (model.dimensions or []) if d.type in ("categorical", "boolean")
+        ][:8]
+
+    # Resolve time dimension
+    if not time_dimension:
+        if model.default_time_dimension:
+            time_dimension = model.default_time_dimension
+        else:
+            time_dims = [d for d in (model.dimensions or []) if d.type == "time"]
+            if time_dims:
+                time_dimension = time_dims[0].name
+
+    # Build config
+    config = {
+        "model_name": model_name,
+        "time_dimension": time_dimension,
+        "time_dimension_ref": f"{model_name}.{time_dimension}" if time_dimension else None,
+    }
+
+    # Build metrics config
+    metrics_config = []
+    for metric_ref in metrics:
+        metric_name = metric_ref.split(".")[-1]
+        metrics_config.append(
+            {
+                "key": metric_name,
+                "ref": metric_ref,
+                "label": metric_name.replace("_", " ").title(),
+                "format": "number",
+            }
+        )
+
+    # Build dimensions config
+    dimensions_config = []
+    for dim_ref in dimensions:
+        dim_name = dim_ref.split(".")[-1]
+        dimensions_config.append(
+            {
+                "key": dim_name,
+                "ref": dim_ref,
+                "label": dim_name.replace("_", " ").title(),
+            }
+        )
+
+    # Time grain options
+    time_dim_obj = model.get_dimension(time_dimension) if time_dimension else None
+    time_grain_options = (
+        time_dim_obj.supported_granularities
+        if time_dim_obj and time_dim_obj.supported_granularities
+        else ["day", "week", "month", "quarter", "year"]
+    )
+    default_grain = model.default_grain or (time_dim_obj.granularity if time_dim_obj else None) or "day"
+    if default_grain not in time_grain_options:
+        time_grain_options = [default_grain] + [g for g in time_grain_options if g != default_grain]
+
+    # Default selected metric
+    selected_metric = metrics_config[0]["key"] if metrics_config else ""
+
+    # Compute date range: use provided dates or query the table
+    date_range: list[str] = []
+    if start_date and end_date:
+        date_range = [start_date, end_date]
+    elif time_dimension and model.table:
+        try:
+            from sidemantic.widget._widget import _quote_qualified_name
+
+            dialect = layer.dialect or "duckdb"
+            table_ref = _quote_qualified_name(model.table, dialect=dialect)
+            time_col = _quote_qualified_name(time_dimension, dialect=dialect)
+            range_sql = f"SELECT MIN({time_col}) as min_date, MAX({time_col}) as max_date FROM {table_ref}"
+            range_result = layer.adapter.execute(range_sql).fetchone()
+            if range_result and range_result[0] is not None and range_result[1] is not None:
+                min_val, max_val = range_result[0], range_result[1]
+                for val in (min_val, max_val):
+                    if isinstance(val, datetime):
+                        date_range.append(val.isoformat(sep=" "))
+                    elif isinstance(val, date):
+                        date_range.append(val.isoformat())
+                    else:
+                        date_range.append(str(val))
+        except Exception:
+            pass
+        # Apply partial overrides
+        if start_date and len(date_range) == 2:
+            date_range[0] = start_date
+        if end_date and len(date_range) == 2:
+            date_range[1] = end_date
+
+    # Store state for widget_query (data is fetched lazily via widget_query)
+    _explorer_state = {
+        "model_name": model_name,
+        "time_dimension": time_dimension,
+        "metrics_config": metrics_config,
+        "dimensions_config": dimensions_config,
+        "date_range": date_range,
+        "filters": {},
+        "brush_selection": [],
+    }
+
+    _log("explore_metrics: returning config (data will be fetched via widget_query)")
+
+    # Return config only - widget renders skeletons immediately, then calls widget_query for data
+    return {
+        "config": config,
+        "metrics_config": metrics_config,
+        "dimensions_config": dimensions_config,
+        "date_range": date_range,
+        "time_grain": default_grain,
+        "time_grain_options": time_grain_options,
+        "selected_metric": selected_metric,
+        "metric_series_data": "",
+        "metric_totals": {},
+        "dimension_data": {},
+        "status": "loading",
+    }
+
+
+@mcp.tool(
+    structured_output=False,
+    meta={"ui": {"visibility": ["app"]}},
+)
+def widget_query(
+    query_type: str = "metric",
+    metric_key: str = "",
+    selected_metric: str = "",
+    time_grain: str = "day",
+    dimension_key: str = "",
+    filters_json: str = "{}",
+    brush_selection_json: str = "[]",
+) -> dict[str, Any]:
+    """Fetch a single metric or dimension for the explorer widget (app-only).
+
+    query_type controls what to fetch:
+    - "metric": series + total for one metric (metric_key required)
+    - "dimension": leaderboard for one dimension (dimension_key + selected_metric required)
+
+    Args:
+        query_type: "metric" or "dimension"
+        metric_key: Metric key to query (for query_type="metric")
+        selected_metric: Active metric key (for query_type="dimension" leaderboards)
+        time_grain: Time granularity for metric series
+        dimension_key: Dimension key to query (for query_type="dimension")
+        filters_json: JSON-encoded dimension filters
+        brush_selection_json: JSON-encoded brush selection
+    """
+    global _explorer_state
+
+    if _explorer_state is None:
+        return {"status": "error", "error": "Explorer not initialized. Use explore_metrics first."}
+
+    layer = get_layer()
+    model_name = _explorer_state["model_name"]
+    time_dimension = _explorer_state["time_dimension"]
+    metrics_config = _explorer_state["metrics_config"]
+    dimensions_config = _explorer_state["dimensions_config"]
+
+    filters = json.loads(filters_json) if filters_json else {}
+    brush_selection = json.loads(brush_selection_json) if brush_selection_json else []
+    _explorer_state["filters"] = filters
+    _explorer_state["brush_selection"] = brush_selection
+
+    state = {
+        "model_name": model_name,
+        "time_dimension": time_dimension,
+        "filters": filters,
+        "date_range": _explorer_state.get("date_range", []),
+        "brush_selection": brush_selection,
+    }
+    date_filters = _build_explorer_filters(state)
+
+    if query_type == "metric" and metric_key:
+        # Find the metric config
+        mc = next((m for m in metrics_config if m["key"] == metric_key), None)
+        if not mc:
+            return {"status": "error", "error": f"Unknown metric: {metric_key}"}
+
+        metric_ref = mc["ref"]
+        time_dim_ref_grain = f"{model_name}.{time_dimension}__{time_grain}" if time_dimension else None
+        result: dict[str, Any] = {"metric_key": metric_key}
+
+        # Series
+        if time_dim_ref_grain:
+            try:
+                series_sql = layer.compile(
+                    metrics=[metric_ref],
+                    dimensions=[time_dim_ref_grain],
+                    filters=date_filters or None,
+                    order_by=[time_dim_ref_grain],
+                    limit=500,
+                )
+                series_table = _execute_arrow(layer, series_sql)
+                ts_col = _detect_time_series_column(series_table, grain=time_grain, time_dimension=time_dimension)
+                result["metric_series_data"] = _table_to_ipc_base64(series_table, decimal_mode="float")
+                result["time_series_column"] = ts_col
+            except Exception as e:
+                _log(f"  metric series FAIL {metric_key}: {e}")
+
+        # Total
+        try:
+            totals_sql = layer.compile(metrics=[metric_ref], dimensions=[], filters=date_filters or None)
+            totals_row = layer.adapter.execute(totals_sql).fetchone()
+            if totals_row:
+                value = _convert_to_json_compatible(totals_row[0])
+                if isinstance(value, Decimal):
+                    value = str(value)
+                result["metric_total"] = value
+        except Exception:
+            pass
+
+        result["status"] = "ready"
+        return result
+
+    if query_type == "dimension" and dimension_key:
+        dc = next((d for d in dimensions_config if d["key"] == dimension_key), None)
+        if not dc:
+            return {"status": "error", "error": f"Unknown dimension: {dimension_key}"}
+
+        selected_metric_ref = f"{model_name}.{selected_metric}" if selected_metric else ""
+        dim_filters = _build_explorer_filters(state, exclude_dimension=dimension_key)
+        result = {"dimension_key": dimension_key}
+
+        try:
+            dim_sql = layer.compile(
+                metrics=[selected_metric_ref],
+                dimensions=[dc["ref"]],
+                filters=dim_filters or None,
+                order_by=[f"{selected_metric_ref} DESC"],
+                limit=6,
+            )
+            dim_table = _execute_arrow(layer, dim_sql)
+            result["dimension_data"] = _table_to_ipc_base64(dim_table, decimal_mode="string")
+        except Exception:
+            result["dimension_data"] = ""
+
+        result["status"] = "ready"
+        return result
+
+    return {"status": "error", "error": f"Invalid query_type: {query_type}"}
+
+
+# --- MCP Resources ---
+
+
+@mcp.resource(
+    "ui://sidemantic/chart",
+    mime_type="text/html;profile=mcp-app",
+    meta={
+        "ui": {
+            "csp": {"connectDomains": [], "resourceDomains": []},
+        },
+        "mcpui.dev/ui-preferred-frame-size": ["100%", "500px"],
+    },
+)
+def chart_widget_resource() -> str:
+    """Interactive Vega-Lite chart widget for MCP Apps-compatible hosts."""
+    from sidemantic.apps import _get_widget_template
+
+    return _get_widget_template()
+
+
+@mcp.resource(
+    "ui://sidemantic/explorer",
+    mime_type="text/html;profile=mcp-app",
+    meta={
+        "ui": {
+            "csp": {"connectDomains": [], "resourceDomains": []},
+        },
+        "mcpui.dev/ui-preferred-frame-size": ["100%", "600px"],
+    },
+)
+def explorer_widget_resource() -> str:
+    """Interactive metrics explorer widget for MCP Apps-compatible hosts."""
+    from sidemantic.apps import _get_explorer_template
+
+    return _get_explorer_template()
 
 
 @mcp.resource("semantic://catalog")

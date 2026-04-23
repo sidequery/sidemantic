@@ -7,6 +7,8 @@ These tests verify the ADBC adapter interface using drivers installed via:
 The tests will use whichever method has SQLite available.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 # Check if adbc_driver_manager is available
@@ -417,3 +419,259 @@ def test_adbc_url_path_based_uri():
     adapter2 = ADBCAdapter.from_url(f"adbc://{driver_for_url}/:memory:")
     assert adapter2.dialect == "sqlite"
     adapter2.close()
+
+
+class _FakeCursor:
+    def __init__(self, rows=None, description=None, arrow_table=None, close_error=False):
+        self.rows = list(rows or [])
+        self.description = description or [("value",)]
+        self.arrow_table = arrow_table
+        self.close_error = close_error
+        self.closed = False
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return list(self.rows)
+
+    def close(self):
+        self.closed = True
+        if self.close_error:
+            raise RuntimeError("close failed")
+
+    def fetch_arrow_table(self):
+        return self.arrow_table
+
+
+def test_adbc_result_fetch_helpers_close_cursor():
+    import pyarrow as pa
+
+    from sidemantic.db.adbc import ADBCResult
+
+    cursor = _FakeCursor(rows=[(1,)], description=[("x",)], arrow_table=pa.table({"x": [1]}))
+    result = ADBCResult(cursor)
+    assert result.description == [("x",)]
+    assert result.fetchone() == (1,)
+    assert cursor.closed is True
+
+    cursor2 = _FakeCursor(rows=[(1,), (2,)])
+    result2 = ADBCResult(cursor2)
+    assert result2.fetchall() == [(1,), (2,)]
+    assert cursor2.closed is True
+
+    cursor3 = _FakeCursor(arrow_table=pa.table({"x": [1, 2]}), close_error=True)
+    result3 = ADBCResult(cursor3)
+    batch_reader = result3.fetch_record_batch()
+    assert batch_reader.read_all().to_pylist() == [{"x": 1}, {"x": 2}]
+    assert cursor3.closed is True
+
+
+def test_adbc_adapter_get_tables_uses_native_metadata():
+    from sidemantic.db.adbc import ADBCAdapter
+
+    adapter = ADBCAdapter.__new__(ADBCAdapter)
+    adapter.conn = SimpleNamespace(
+        adbc_get_objects=lambda: SimpleNamespace(
+            read_all=lambda: SimpleNamespace(
+                to_pydict=lambda: {
+                    "catalog_db_schemas": [
+                        [
+                            {
+                                "db_schema_name": "analytics",
+                                "db_schema_tables": [{"table_name": "orders"}, {"table_name": "customers"}],
+                            }
+                        ]
+                    ]
+                }
+            )
+        )
+    )
+
+    tables = adapter.get_tables()
+
+    assert tables == [
+        {"table_name": "orders", "schema": "analytics"},
+        {"table_name": "customers", "schema": "analytics"},
+    ]
+
+
+def test_adbc_adapter_get_tables_falls_back_to_information_schema(monkeypatch):
+    from sidemantic.db.adbc import ADBCAdapter
+
+    adapter = ADBCAdapter.__new__(ADBCAdapter)
+    adapter.conn = SimpleNamespace(adbc_get_objects=lambda: (_ for _ in ()).throw(RuntimeError("no metadata")))
+    captured = {}
+
+    class FakeResult:
+        def fetchall(self):
+            return [("orders", "analytics"), ("customers", "public")]
+
+    def fake_execute(sql):
+        captured["sql"] = sql
+        return FakeResult()
+
+    adapter.execute = fake_execute
+
+    tables = adapter.get_tables()
+
+    assert "information_schema.tables" in captured["sql"]
+    assert tables == [
+        {"table_name": "orders", "schema": "analytics"},
+        {"table_name": "customers", "schema": "public"},
+    ]
+
+
+def test_adbc_adapter_get_columns_uses_table_schema():
+    import pyarrow as pa
+
+    from sidemantic.db.adbc import ADBCAdapter
+
+    adapter = ADBCAdapter.__new__(ADBCAdapter)
+    adapter._driver_name = "sqlite"
+    adapter.conn = SimpleNamespace(
+        adbc_get_table_schema=lambda **kwargs: pa.schema([("id", pa.int64()), ("name", pa.string())])
+    )
+
+    columns = adapter.get_columns("orders")
+
+    assert columns == [
+        {"column_name": "id", "data_type": "int64"},
+        {"column_name": "name", "data_type": "string"},
+    ]
+
+
+def test_adbc_adapter_get_columns_uses_objects_metadata_fallback():
+    from sidemantic.db.adbc import ADBCAdapter
+
+    adapter = ADBCAdapter.__new__(ADBCAdapter)
+    adapter._driver_name = "sqlite"
+    adapter.conn = SimpleNamespace(
+        adbc_get_table_schema=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no schema")),
+        adbc_get_objects=lambda **kwargs: SimpleNamespace(
+            read_all=lambda: SimpleNamespace(
+                to_pydict=lambda: {
+                    "catalog_db_schemas": [
+                        [
+                            {
+                                "db_schema_name": "main",
+                                "db_schema_tables": [
+                                    {
+                                        "table_name": "orders",
+                                        "table_columns": [
+                                            {"column_name": "id", "xdbc_type_name": "INTEGER"},
+                                            {"column_name": "name", "xdbc_type_name": "TEXT"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ]
+                    ]
+                }
+            )
+        ),
+    )
+
+    columns = adapter.get_columns("orders", schema="main")
+
+    assert columns == [
+        {"column_name": "id", "data_type": "INTEGER"},
+        {"column_name": "name", "data_type": "TEXT"},
+    ]
+
+
+def test_adbc_adapter_get_columns_falls_back_to_sql_for_snowflake(monkeypatch):
+    from sidemantic.db.adbc import ADBCAdapter
+
+    adapter = ADBCAdapter.__new__(ADBCAdapter)
+    adapter._driver_name = "snowflake"
+    adapter.conn = SimpleNamespace(
+        adbc_get_table_schema=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no schema")),
+        adbc_get_objects=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no objects")),
+    )
+    captured = {}
+
+    class FakeResult:
+        def fetchall(self):
+            return [("ID", "NUMBER"), ("STATUS", "VARCHAR")]
+
+    def fake_execute(sql):
+        captured["sql"] = sql
+        return FakeResult()
+
+    adapter.execute = fake_execute
+
+    columns = adapter.get_columns("orders", schema="analytics")
+
+    assert "table_name IN ('ORDERS', 'orders')" in captured["sql"]
+    assert "table_schema IN ('ANALYTICS', 'analytics')" in captured["sql"]
+    assert columns == [
+        {"column_name": "ID", "data_type": "NUMBER"},
+        {"column_name": "STATUS", "data_type": "VARCHAR"},
+    ]
+
+
+def test_adbc_adapter_dialect_strips_package_prefix():
+    from sidemantic.db.adbc import ADBCAdapter
+
+    adapter = ADBCAdapter.__new__(ADBCAdapter)
+    adapter._driver_name = "adbc_driver_postgresql"
+
+    assert adapter.dialect == "postgres"
+
+
+def test_adbc_adapter_close_calls_connection():
+    from sidemantic.db.adbc import ADBCAdapter
+
+    closed = {"value": False}
+    adapter = ADBCAdapter.__new__(ADBCAdapter)
+    adapter.conn = SimpleNamespace(close=lambda: closed.__setitem__("value", True))
+
+    adapter.close()
+
+    assert closed["value"] is True
+
+
+def test_adbc_adapter_from_url_sqlite_defaults_to_memory(monkeypatch):
+    from sidemantic.db.adbc import ADBCAdapter
+
+    captured = {}
+    original_init = ADBCAdapter.__init__
+
+    def fake_init(self, driver, uri=None, **kwargs):
+        captured["driver"] = driver
+        captured["uri"] = uri
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(ADBCAdapter, "__init__", fake_init)
+    try:
+        adapter = ADBCAdapter.from_url("adbc://sqlite")
+    finally:
+        monkeypatch.setattr(ADBCAdapter, "__init__", original_init)
+
+    assert isinstance(adapter, ADBCAdapter)
+    assert captured["driver"] == "sqlite"
+    assert captured["uri"] == ":memory:"
+
+
+def test_adbc_adapter_from_url_adbc_query_params_become_db_kwargs(monkeypatch):
+    from sidemantic.db.adbc import ADBCAdapter
+
+    captured = {}
+    original_init = ADBCAdapter.__init__
+
+    def fake_init(self, driver, uri=None, **kwargs):
+        captured["driver"] = driver
+        captured["uri"] = uri
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(ADBCAdapter, "__init__", fake_init)
+    try:
+        adapter = ADBCAdapter.from_url("adbc://snowflake?account=myacct&warehouse=wh")
+    finally:
+        monkeypatch.setattr(ADBCAdapter, "__init__", original_init)
+
+    assert isinstance(adapter, ADBCAdapter)
+    assert captured["driver"] == "snowflake"
+    assert captured["uri"] is None
+    assert captured["kwargs"]["db_kwargs"] == {"account": "myacct", "warehouse": "wh"}

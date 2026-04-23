@@ -1,15 +1,24 @@
 """Tests for MCP server functionality."""
 
+# ruff: noqa: E402
+
 import json
 import tempfile
+from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-pytest.importorskip("mcp")  # Skip if mcp extra not installed
+from tests.optional_dep_stubs import ensure_fake_mcp
 
+ensure_fake_mcp()
+
+from sidemantic import Metric, Model
+from sidemantic.core.relationship import Relationship
 from sidemantic.mcp_server import (
+    _convert_to_json_compatible,
+    _format_join_condition,
     catalog_resource,
     create_chart,
     get_models,
@@ -19,6 +28,25 @@ from sidemantic.mcp_server import (
     run_sql,
     validate_query,
 )
+
+
+@pytest.fixture
+def stub_chart_rendering(monkeypatch):
+    import sidemantic.mcp_server as mcp_mod
+
+    def fake_make_chart(data, chart_type="auto", title=None, width=600, height=400):
+        return {
+            "mark": "bar" if chart_type == "auto" else chart_type,
+            "title": title,
+            "width": width,
+            "height": height,
+            "data": {"values": data},
+        }
+
+    monkeypatch.setattr("sidemantic.charts.create_chart", fake_make_chart)
+    monkeypatch.setattr("sidemantic.charts.chart_to_vega", lambda chart: chart)
+    monkeypatch.setattr("sidemantic.charts.chart_to_base64_png", lambda _chart: "data:image/png;base64,ZmFrZQ==")
+    monkeypatch.setattr(mcp_mod, "_apps_enabled", False)
 
 
 @pytest.fixture
@@ -259,7 +287,7 @@ def test_run_query_decimal_conversion(demo_layer):
         pytest.fail(f"Result is not JSON serializable: {e}")
 
 
-def test_create_chart_basic(demo_layer):
+def test_create_chart_basic(demo_layer, stub_chart_rendering):
     """Test creating a basic chart."""
     result = create_chart(
         dimensions=["orders.customer_name"],
@@ -289,7 +317,7 @@ def test_create_chart_basic(demo_layer):
     assert result["row_count"] == 2  # Alice and Bob
 
 
-def test_create_chart_decimal_conversion(demo_layer):
+def test_create_chart_decimal_conversion(demo_layer, stub_chart_rendering):
     """Test that create_chart converts Decimals to floats for JSON serialization."""
     result = create_chart(
         dimensions=["orders.customer_name"],
@@ -313,7 +341,7 @@ def test_create_chart_decimal_conversion(demo_layer):
         pytest.fail(f"create_chart result is not JSON serializable: {e}")
 
 
-def test_create_chart_with_filter(demo_layer):
+def test_create_chart_with_filter(demo_layer, stub_chart_rendering):
     """Test creating a chart with a filter."""
     result = create_chart(
         dimensions=["orders.customer_name"],
@@ -327,7 +355,7 @@ def test_create_chart_with_filter(demo_layer):
     assert "Alice" in result["sql"]
 
 
-def test_create_chart_time_series(demo_layer):
+def test_create_chart_time_series(demo_layer, stub_chart_rendering):
     """Test creating a time series chart."""
     result = create_chart(
         dimensions=["orders.order_date"],
@@ -585,3 +613,184 @@ def test_catalog_resource(demo_layer):
     col_names = [c["column_name"] for c in order_cols]
     assert "customer_name" in col_names
     assert "total_revenue" in col_names
+
+
+def test_convert_to_json_compatible_handles_common_scalar_types():
+    assert _convert_to_json_compatible(Decimal("12.5")) == 12.5
+    assert _convert_to_json_compatible(date(2024, 1, 2)) == "2024-01-02"
+    assert _convert_to_json_compatible(time(12, 30, 45)) == "12:30:45"
+    assert _convert_to_json_compatible(datetime(2024, 1, 2, 3, 4, 5)) == "2024-01-02T03:04:05"
+    assert _convert_to_json_compatible("plain") == "plain"
+
+
+def test_initialize_layer_builds_connection_from_db_path(tmp_path):
+    model_file = tmp_path / "orders.yml"
+    model_file.write_text(
+        """
+models:
+  - name: orders
+    table: orders_table
+    primary_key: id
+    dimensions:
+      - name: status
+        sql: status
+        type: categorical
+"""
+    )
+
+    layer = initialize_layer(str(tmp_path), db_path=":memory:")
+
+    assert layer.connection_string == "duckdb:///:memory:"
+    assert "orders" in layer.graph.models
+
+
+def test_format_join_condition_handles_all_relationship_shapes():
+    models = {
+        "orders": Model(name="orders", table="orders", primary_key="id"),
+        "customers": Model(name="customers", table="customers", primary_key="id"),
+        "line_items": Model(name="line_items", table="line_items", primary_key="id"),
+        "products": Model(name="products", table="products", primary_key="id"),
+        "order_products": Model(name="order_products", table="order_products", primary_key="id"),
+    }
+
+    assert (
+        _format_join_condition(
+            "orders",
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id"),
+            models,
+        )
+        == "orders.customer_id = customers.id"
+    )
+    assert (
+        _format_join_condition(
+            "orders",
+            Relationship(name="line_items", type="one_to_many", foreign_key="order_id"),
+            models,
+        )
+        == "line_items.order_id = orders.id"
+    )
+    assert (
+        _format_join_condition(
+            "orders",
+            Relationship(
+                name="products",
+                type="many_to_many",
+                through="order_products",
+                through_foreign_key="order_id",
+                related_foreign_key="product_id",
+            ),
+            models,
+        )
+        == "orders.id = order_products.order_id AND order_products.product_id = products.id"
+    )
+    assert _format_join_condition("orders", Relationship(name="missing", type="many_to_one"), models) is None
+
+
+def test_get_models_includes_join_conditions_and_source_metadata():
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        (tmpdir / "models.yml").write_text(
+            """
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: name
+        sql: name
+        type: categorical
+  - name: orders
+    table: orders
+    primary_key: id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+    dimensions:
+      - name: customer_id
+        sql: customer_id
+        type: categorical
+"""
+        )
+
+        layer = initialize_layer(str(tmpdir), db_path=":memory:")
+        layer.graph.models["orders"]._source_format = "yaml"
+        layer.graph.models["orders"]._source_file = str(tmpdir / "models.yml")
+
+        result = get_models(["orders"])
+        model = result["models"][0]
+        relationship = model["relationships"][0]
+
+        assert relationship["join_condition"] == "orders.customer_id = customers.id"
+        assert model["source_format"] == "yaml"
+        assert model["source_file"].endswith("models.yml")
+    finally:
+        import shutil
+
+        shutil.rmtree(tmpdir)
+
+
+def test_get_semantic_graph_includes_joinable_pairs_and_graph_metrics():
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        (tmpdir / "models.yml").write_text(
+            """
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: name
+        sql: name
+        type: categorical
+  - name: orders
+    table: orders
+    primary_key: id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+    dimensions:
+      - name: customer_id
+        sql: customer_id
+        type: categorical
+    metrics:
+      - name: order_count
+        agg: count
+"""
+        )
+        layer = initialize_layer(str(tmpdir), db_path=":memory:")
+        layer.add_metric(Metric(name="global_ratio", type="derived", sql="1"))
+
+        result = get_semantic_graph()
+
+        assert any(pair["from"] == "customers" and pair["to"] == "orders" for pair in result["joinable_pairs"])
+        assert any(metric["name"] == "global_ratio" for metric in result["graph_metrics"])
+    finally:
+        import shutil
+
+        shutil.rmtree(tmpdir)
+
+
+def test_create_chart_returns_ui_resource_when_apps_enabled(monkeypatch, demo_layer, stub_chart_rendering):
+    import sidemantic.mcp_server as mcp_mod
+
+    def fake_resource(spec):
+        return {"resource": spec["mark"]}
+
+    monkeypatch.setattr("sidemantic.apps.create_chart_resource", fake_resource)
+
+    old_value = mcp_mod._apps_enabled
+    mcp_mod._apps_enabled = True
+    try:
+        result = create_chart(
+            dimensions=["orders.customer_name"],
+            metrics=["orders.total_revenue"],
+            chart_type="bar",
+        )
+    finally:
+        mcp_mod._apps_enabled = old_value
+
+    assert isinstance(result, list)
+    assert result[0]["row_count"] == 2
+    assert result[1] == {"resource": "bar"}

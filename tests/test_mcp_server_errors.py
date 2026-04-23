@@ -1,8 +1,12 @@
 """Tests for MCP server error paths and helpers."""
 
+# ruff: noqa: E402
+
 import pytest
 
-pytest.importorskip("mcp")  # Skip if mcp extra not installed
+from tests.optional_dep_stubs import ensure_fake_mcp
+
+ensure_fake_mcp()
 
 from sidemantic import mcp_server
 

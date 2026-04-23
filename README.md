@@ -353,3 +353,5 @@ Sidemantic is an ambitious but young semantic layer project. You could encounter
 ```bash
 uv run pytest -v
 ```
+
+This prints line coverage for `sidemantic` with missing lines in the terminal.

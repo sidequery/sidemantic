@@ -7,6 +7,10 @@ from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.server.connection import SemanticLayerConnection
 
 
+def _sql_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def map_type(duckdb_type: str) -> str:
     """Map DuckDB types to PostgreSQL types."""
     type_lower = duckdb_type.lower()
@@ -70,11 +74,10 @@ def start_server(
 
     for schema_name, table_name in tbls:
         server._server.register_schema("sidemantic", schema_name)
-        # Use parameterized query to handle names with special characters (e.g., quotes)
-        cols_info = layer.adapter.raw_connection.execute(
+        cols_info = layer.adapter.execute(
             "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
-            "WHERE table_schema = ? AND table_name = ?",
-            [schema_name, table_name],
+            f"WHERE table_schema = {_sql_string_literal(schema_name)} "
+            f"AND table_name = {_sql_string_literal(table_name)}"
         ).fetchall()
         columns = []
         for col_name, data_type, is_nullable in cols_info:
@@ -113,7 +116,7 @@ def start_server(
     # Also register the magic 'metrics' table if there are graph-level metrics
     if layer.graph.metrics:
         metric_columns = []
-        for metric in layer.graph.metrics:
+        for metric in layer.graph.metrics.values():
             metric_columns.append({metric.name: {"type": "numeric", "nullable": True}})
 
         # Add all dimension columns from all models

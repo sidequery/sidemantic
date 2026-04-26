@@ -35,6 +35,7 @@ class QueryRewriter:
         self.graph = graph
         self.dialect = dialect
         self.generator = SQLGenerator(graph, dialect=dialect)
+        self._dialect_instance = self.generator._dialect_instance
 
     def rewrite(self, sql: str, strict: bool = True) -> str:
         """Rewrite user SQL to use semantic layer.
@@ -72,7 +73,7 @@ class QueryRewriter:
         # mistaken for statement separators.
         if ";" in sql:
             try:
-                statements = sqlglot.parse(sql, dialect=self.dialect)
+                statements = sqlglot.parse(sql, dialect=self._dialect_instance)
             except Exception:
                 if strict:
                     raise
@@ -86,7 +87,7 @@ class QueryRewriter:
 
         # Parse SQL
         try:
-            parsed = sqlglot.parse_one(sql, dialect=self.dialect)
+            parsed = sqlglot.parse_one(sql, dialect=self._dialect_instance)
         except Exception as e:
             if strict:
                 raise ValueError(f"Failed to parse SQL: {e}")
@@ -108,7 +109,7 @@ class QueryRewriter:
                 return sql
 
         # Projection-only SQL (no root FROM/CTE) should pass through unless Yardstick paths above matched.
-        if parsed.args.get("from") is None and parsed.args.get("with") is None:
+        if parsed.args.get("from_") is None and parsed.args.get("with_") is None:
             if any(isinstance(expr, exp.Star) for expr in parsed.expressions):
                 if strict:
                     raise ValueError("SELECT * requires a FROM clause with a single table")
@@ -116,7 +117,7 @@ class QueryRewriter:
             return sql
 
         # Check if this is a CTE-based query or has subqueries
-        has_ctes = parsed.args.get("with") is not None
+        has_ctes = parsed.args.get("with_") is not None
         has_subquery_in_from = self._has_subquery_in_from(parsed)
         has_subquery_in_joins = any(isinstance(join.this, exp.Subquery) for join in (parsed.args.get("joins") or []))
 
@@ -299,7 +300,7 @@ class QueryRewriter:
             return self.rewrite(transformed_sql, strict=strict)
 
         try:
-            parsed = sqlglot.parse_one(transformed_sql, dialect=self.dialect)
+            parsed = sqlglot.parse_one(transformed_sql, dialect=self._dialect_instance)
         except Exception as e:
             raise ValueError(f"Failed to parse Yardstick SQL: {e}") from e
 
@@ -325,7 +326,7 @@ class QueryRewriter:
             else:
                 rewritten_root = rewritten_scope
 
-        return rewritten_root.sql(dialect=self.dialect)
+        return rewritten_root.sql(dialect=self._dialect_instance)
 
     def _rewrite_yardstick_select_scope(
         self,
@@ -474,7 +475,7 @@ class QueryRewriter:
             )
 
         replacement_expr_cache = {
-            key: sqlglot.parse_one(value, dialect=self.dialect) for key, value in replacement_sql.items()
+            key: sqlglot.parse_one(value, dialect=self._dialect_instance) for key, value in replacement_sql.items()
         }
 
         def replace_placeholder(node: exp.Expression) -> exp.Expression:
@@ -728,7 +729,7 @@ class QueryRewriter:
             alias = table_expr.alias_or_name
             alias_to_model[alias] = model_name
 
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if from_clause:
             add_table(from_clause.this)
 
@@ -739,14 +740,14 @@ class QueryRewriter:
 
     def _has_single_source_relation(self, select: exp.Select) -> bool:
         """Return True only when SELECT scope has exactly one FROM relation and no JOINs."""
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause or from_clause.this is None:
             return False
         return len(select.args.get("joins") or []) == 0
 
     def _parse_relation_factor(self, relation_sql: str) -> exp.Expression:
-        probe = sqlglot.parse_one(f"SELECT 1 FROM {relation_sql}", dialect=self.dialect)
-        from_clause = probe.args.get("from")
+        probe = sqlglot.parse_one(f"SELECT 1 FROM {relation_sql}", dialect=self._dialect_instance)
+        from_clause = probe.args.get("from_")
         if not from_clause:
             raise ValueError(f"Failed to parse relation: {relation_sql}")
         return from_clause.this
@@ -770,7 +771,7 @@ class QueryRewriter:
                 return self._parse_relation_factor(f"{model.table} AS {alias}")
             return self._parse_relation_factor(f"{model_name} AS {alias}")
 
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if from_clause:
             from_clause.set("this", replace_table(from_clause.this))
 
@@ -835,7 +836,7 @@ class QueryRewriter:
         normalized = expression.copy()
         for column in normalized.find_all(exp.Column):
             column.set("table", None)
-        return normalized.sql(dialect=self.dialect).lower()
+        return normalized.sql(dialect=self._dialect_instance).lower()
 
     def _resolve_implicit_yardstick_measure_reference(
         self,
@@ -1004,7 +1005,7 @@ class QueryRewriter:
         if dimension_sql.lower() == f"{table_alias}.{column.name}".lower():
             return None
 
-        expr = sqlglot.parse_one(dimension_sql, dialect=self.dialect)
+        expr = sqlglot.parse_one(dimension_sql, dialect=self._dialect_instance)
         expr = self._rewrite_tables(
             expr,
             table_mapping={model_name: table_alias},
@@ -1080,7 +1081,7 @@ class QueryRewriter:
     def _resolve_yardstick_measure_call(self, argument_sql: str, source_models: dict[str, str]) -> tuple[str, str, str]:
         """Resolve AGGREGATE(argument) to (model_alias, model_name, measure_name)."""
         try:
-            arg_expr = sqlglot.parse_one(argument_sql, dialect=self.dialect)
+            arg_expr = sqlglot.parse_one(argument_sql, dialect=self._dialect_instance)
         except Exception as e:
             raise ValueError(f"Invalid AGGREGATE argument '{argument_sql}': {e}") from e
 
@@ -1180,7 +1181,7 @@ class QueryRewriter:
             visiting.add(visit_key)
             # Replace {model} placeholder (used by LookML adapter) with model alias
             _formula_sql = measure.sql.replace("{model}", model_alias)
-            formula_expr = sqlglot.parse_one(_formula_sql, dialect=self.dialect)
+            formula_expr = sqlglot.parse_one(_formula_sql, dialect=self._dialect_instance)
 
             def replace_measure_refs(node: exp.Expression) -> exp.Expression:
                 if not isinstance(node, exp.Column):
@@ -1206,10 +1207,10 @@ class QueryRewriter:
                     single_model_scope=single_model_scope,
                     visiting=visiting.copy(),
                 )
-                return sqlglot.parse_one(dep_sql, dialect=self.dialect)
+                return sqlglot.parse_one(dep_sql, dialect=self._dialect_instance)
 
             rewritten_formula = formula_expr.transform(replace_measure_refs)
-            return f"({rewritten_formula.sql(dialect=self.dialect)})"
+            return f"({rewritten_formula.sql(dialect=self._dialect_instance)})"
 
         agg_expr = self._build_yardstick_aggregation_expr(
             measure=measure,
@@ -1262,12 +1263,12 @@ class QueryRewriter:
                 table_mapping={model_alias: "_inner", model_name: "_inner"},
                 default_table="_inner" if single_model_scope else None,
             )
-            base_predicates.append(visible_expr.sql(dialect=self.dialect))
+            base_predicates.append(visible_expr.sql(dialect=self._dialect_instance))
 
         for measure_filter in measure.filters or []:
             # Replace {model} placeholder (used by LookML adapter) with inner alias
             _filter_sql = measure_filter.replace("{model}", "_inner")
-            filter_expr = sqlglot.parse_one(_filter_sql, dialect=self.dialect)
+            filter_expr = sqlglot.parse_one(_filter_sql, dialect=self._dialect_instance)
             if default_alias and single_model_scope:
                 filter_expr = self._qualify_unaliased_columns(filter_expr, default_alias)
             filter_expr = self._rewrite_tables(
@@ -1275,7 +1276,7 @@ class QueryRewriter:
                 table_mapping={model_alias: "_inner", model_name: "_inner"},
                 default_table="_inner" if single_model_scope else None,
             )
-            base_predicates.append(filter_expr.sql(dialect=self.dialect))
+            base_predicates.append(filter_expr.sql(dialect=self._dialect_instance))
 
         predicates = list(base_predicates) + list(set_modifier_predicates) + list(correlation_predicates)
         where_clause = f" WHERE {' AND '.join(predicates)}" if predicates else ""
@@ -1343,7 +1344,7 @@ class QueryRewriter:
     ) -> str:
         # Replace {model} placeholder (used by LookML adapter) with target alias
         sql_expr = sql_expr.replace("{model}", target_alias)
-        parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+        parsed = sqlglot.parse_one(sql_expr, dialect=self._dialect_instance)
         parsed = self._rewrite_tables(
             parsed,
             table_mapping={
@@ -1353,11 +1354,11 @@ class QueryRewriter:
             },
             default_table=target_alias,
         )
-        return parsed.sql(dialect=self.dialect)
+        return parsed.sql(dialect=self._dialect_instance)
 
     def _is_window_measure_expression(self, sql_expr: str) -> bool:
         # Strip {model} placeholder to avoid parse errors
-        parsed = sqlglot.parse_one(sql_expr.replace("{model}", "__model"), dialect=self.dialect)
+        parsed = sqlglot.parse_one(sql_expr.replace("{model}", "__model"), dialect=self._dialect_instance)
         return any(isinstance(node, exp.Window) for node in parsed.walk())
 
     def _build_yardstick_context_dimensions(
@@ -1408,13 +1409,13 @@ class QueryRewriter:
                 if signature in seen_signatures:
                     continue
                 seen_signatures.add(signature)
-                outer_sql = outer_expr.sql(dialect=self.dialect)
+                outer_sql = outer_expr.sql(dialect=self._dialect_instance)
                 projection_alias = projection_aliases.get(signature)
                 unsafe_aliases: set[str] = set()
                 for dimension in model.dimensions:
                     dim_expr = dimension.sql_expr
                     try:
-                        parsed_dim = sqlglot.parse_one(dim_expr, dialect=self.dialect)
+                        parsed_dim = sqlglot.parse_one(dim_expr, dialect=self._dialect_instance)
                         if isinstance(parsed_dim, exp.Column) and parsed_dim.name.lower() == dimension.name.lower():
                             unsafe_aliases.add(dimension.name.lower())
                     except Exception:
@@ -1422,13 +1423,13 @@ class QueryRewriter:
                             unsafe_aliases.add(dimension.name.lower())
 
                 if projection_alias and projection_alias.lower() not in unsafe_aliases:
-                    outer_sql = exp.to_identifier(projection_alias).sql(dialect=self.dialect)
+                    outer_sql = exp.to_identifier(projection_alias).sql(dialect=self._dialect_instance)
 
                 context_dimensions.append(
                     {
                         "signature": signature,
                         "outer_sql": outer_sql,
-                        "inner_sql": inner_expr.sql(dialect=self.dialect),
+                        "inner_sql": inner_expr.sql(dialect=self._dialect_instance),
                     }
                 )
 
@@ -1666,7 +1667,7 @@ class QueryRewriter:
 
             replacement = "NULL"
             try:
-                target_expr = sqlglot.parse_one(target_sql, dialect=self.dialect)
+                target_expr = sqlglot.parse_one(target_sql, dialect=self._dialect_instance)
                 signature = self._expr_signature_without_tables(target_expr)
                 if signature in context_signatures:
                     replacement = target_sql
@@ -1734,7 +1735,7 @@ class QueryRewriter:
                     continue
 
                 for target_sql in self._split_all_modifier_targets(modifier):
-                    target_expr = sqlglot.parse_one(target_sql, dialect=self.dialect)
+                    target_expr = sqlglot.parse_one(target_sql, dialect=self._dialect_instance)
                     if default_alias and single_model:
                         target_expr = self._qualify_unaliased_columns(target_expr, default_alias)
                     target_signature = self._expr_signature_without_tables(target_expr)
@@ -1747,7 +1748,7 @@ class QueryRewriter:
                 if has_all_global:
                     continue
                 where_sql = modifier[tokens[0].end + 1 :].strip()
-                where_expr = sqlglot.parse_one(where_sql, dialect=self.dialect)
+                where_expr = sqlglot.parse_one(where_sql, dialect=self._dialect_instance)
                 # In AT(WHERE ...), unqualified columns belong to the inner evaluation context.
                 # Keep explicitly-qualified outer aliases untouched so predicates can correlate
                 # (e.g. `prod_name = o.prod_name` from paper listing-style queries).
@@ -1756,7 +1757,7 @@ class QueryRewriter:
                     table_mapping={model_name: "_inner"},
                     default_table="_inner" if single_model else None,
                 )
-                where_predicates.append(where_expr.sql(dialect=self.dialect))
+                where_predicates.append(where_expr.sql(dialect=self._dialect_instance))
                 # Single WHERE modifier evaluates in a non-correlated context.
                 if single_where_modifier:
                     active_dimensions = []
@@ -1771,7 +1772,7 @@ class QueryRewriter:
                     # Support Yardstick predicate-style SET forms like:
                     # AT (SET region IN ('North', 'South'))
                     set_predicate_sql = modifier[tokens[0].end + 1 :].strip()
-                    set_predicate_expr = sqlglot.parse_one(set_predicate_sql, dialect=self.dialect)
+                    set_predicate_expr = sqlglot.parse_one(set_predicate_sql, dialect=self._dialect_instance)
 
                     if default_alias and single_model:
                         set_predicate_expr = self._qualify_unaliased_columns(set_predicate_expr, default_alias)
@@ -1794,17 +1795,17 @@ class QueryRewriter:
                         table_mapping={model_name: "_inner"},
                         default_table="_inner" if single_model else None,
                     )
-                    where_predicates.append(set_inner_predicate.sql(dialect=self.dialect))
+                    where_predicates.append(set_inner_predicate.sql(dialect=self._dialect_instance))
                     continue
 
-                left_expr = sqlglot.parse_one(left_sql, dialect=self.dialect)
+                left_expr = sqlglot.parse_one(left_sql, dialect=self._dialect_instance)
                 right_expr = sqlglot.parse_one(
                     self._rewrite_current_keyword(
                         right_sql,
                         context_dimensions,
                         fixed_context_signatures=fixed_context_signatures,
                     ),
-                    dialect=self.dialect,
+                    dialect=self._dialect_instance,
                 )
 
                 if default_alias and single_model:
@@ -1826,8 +1827,8 @@ class QueryRewriter:
                     table_mapping={model_name: model_alias},
                 )
                 set_predicates[left_signature] = (
-                    f"({left_inner.sql(dialect=self.dialect)}) IS NOT DISTINCT FROM "
-                    f"({right_outer.sql(dialect=self.dialect)})"
+                    f"({left_inner.sql(dialect=self._dialect_instance)}) IS NOT DISTINCT FROM "
+                    f"({right_outer.sql(dialect=self._dialect_instance)})"
                 )
                 continue
 
@@ -1843,7 +1844,7 @@ class QueryRewriter:
 
     def _has_subquery_in_from(self, select: exp.Select) -> bool:
         """Check if FROM clause contains a subquery."""
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause:
             return False
 
@@ -1865,7 +1866,7 @@ class QueryRewriter:
         if self._references_semantic_model(parsed):
             # Save user-defined CTEs before _rewrite_simple_query replaces
             # the entire query with fresh generator output.
-            original_with = parsed.args.get("with")
+            original_with = parsed.args.get("with_")
 
             rewritten_sql = self._rewrite_simple_query(parsed)
 
@@ -1873,8 +1874,8 @@ class QueryRewriter:
                 # Merge user CTEs into the generated SQL so references
                 # from filters/expressions (e.g. IN (SELECT ... FROM cte))
                 # remain valid.
-                rewritten = sqlglot.parse_one(rewritten_sql, dialect=self.dialect)
-                gen_with = rewritten.args.get("with")
+                rewritten = sqlglot.parse_one(rewritten_sql, dialect=self._dialect_instance)
+                gen_with = rewritten.args.get("with_")
                 if gen_with:
                     # Check for CTE name collisions between user and generated CTEs
                     user_names = {cte.alias for cte in original_with.expressions}
@@ -1891,12 +1892,12 @@ class QueryRewriter:
                     if original_with.args.get("recursive"):
                         gen_with.set("recursive", True)
                 else:
-                    rewritten.set("with", original_with.copy())
-                return rewritten.sql(dialect=self.dialect)
+                    rewritten.set("with_", original_with.copy())
+                return rewritten.sql(dialect=self._dialect_instance)
 
             return rewritten_sql
 
-        return parsed.sql(dialect=self.dialect)
+        return parsed.sql(dialect=self._dialect_instance)
 
     def _rewrite_select_tree(self, select: exp.Select):
         """Recursively rewrite semantic subqueries and CTEs (bottom-up).
@@ -1905,17 +1906,17 @@ class QueryRewriter:
         node if it directly references a semantic model.
         """
         # Recurse into CTEs
-        if select.args.get("with"):
-            for cte in select.args["with"].expressions:
+        if select.args.get("with_"):
+            for cte in select.args["with_"].expressions:
                 cte_query = cte.this
                 if isinstance(cte_query, exp.Select):
                     self._rewrite_select_tree(cte_query)
                     if self._references_semantic_model(cte_query):
                         rewritten_sql = self._rewrite_simple_query(cte_query)
-                        cte.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
+                        cte.set("this", sqlglot.parse_one(rewritten_sql, dialect=self._dialect_instance))
 
         # Recurse into FROM subquery
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if from_clause and isinstance(from_clause.this, exp.Subquery):
             subquery = from_clause.this
             subquery_select = subquery.this
@@ -1923,7 +1924,7 @@ class QueryRewriter:
                 self._rewrite_select_tree(subquery_select)
                 if self._references_semantic_model(subquery_select):
                     rewritten_sql = self._rewrite_simple_query(subquery_select)
-                    subquery.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
+                    subquery.set("this", sqlglot.parse_one(rewritten_sql, dialect=self._dialect_instance))
 
         # Recurse into JOIN subqueries
         for join in select.args.get("joins") or []:
@@ -1934,11 +1935,11 @@ class QueryRewriter:
                     self._rewrite_select_tree(join_select)
                     if self._references_semantic_model(join_select):
                         rewritten_sql = self._rewrite_simple_query(join_select)
-                        join_expr.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
+                        join_expr.set("this", sqlglot.parse_one(rewritten_sql, dialect=self._dialect_instance))
 
     def _references_semantic_model(self, select: exp.Select) -> bool:
         """Check if a SELECT statement references any semantic models."""
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause:
             return False
 
@@ -2057,7 +2058,7 @@ class QueryRewriter:
             # Extract table.column reference
             ref = self._resolve_column(column)
             if not ref:
-                raise ValueError(f"Cannot resolve column: {column.sql(dialect=self.dialect)}")
+                raise ValueError(f"Cannot resolve column: {column.sql(dialect=self._dialect_instance)}")
 
             # Store custom alias if provided
             if custom_alias:
@@ -2128,7 +2129,7 @@ class QueryRewriter:
             return self._extract_compound_filters(where)
 
         # Single condition
-        return [where.sql(dialect=self.dialect)]
+        return [where.sql(dialect=self._dialect_instance)]
 
     def _extract_compound_filters(self, condition: exp.Expression) -> list[str]:
         """Extract filters from compound AND/OR conditions.
@@ -2147,12 +2148,12 @@ class QueryRewriter:
                 if isinstance(expr, (exp.And, exp.Or)):
                     filters.extend(self._extract_compound_filters(expr))
                 else:
-                    filters.append(expr.sql(dialect=self.dialect))
+                    filters.append(expr.sql(dialect=self._dialect_instance))
         elif isinstance(condition, exp.Or):
             # OR must stay together as single filter
-            filters.append(condition.sql(dialect=self.dialect))
+            filters.append(condition.sql(dialect=self._dialect_instance))
         else:
-            filters.append(condition.sql(dialect=self.dialect))
+            filters.append(condition.sql(dialect=self._dialect_instance))
 
         return filters
 
@@ -2232,7 +2233,7 @@ class QueryRewriter:
             Table name or None if multiple tables or no FROM.
             Returns "metrics" if FROM metrics (special generic semantic layer table)
         """
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause:
             return None
 
@@ -2285,7 +2286,7 @@ class QueryRewriter:
 
         # Handle aggregate functions - must be pre-defined as measures
         if isinstance(column, exp.Func):
-            func_sql = column.sql(dialect=self.dialect)
+            func_sql = column.sql(dialect=self._dialect_instance)
             func_name = column.key.upper()
 
             # Extract the expression being aggregated
@@ -2297,7 +2298,7 @@ class QueryRewriter:
                 elif isinstance(arg, exp.Star):
                     arg_sql = "*"
                 else:
-                    arg_sql = arg.sql(dialect=self.dialect)
+                    arg_sql = arg.sql(dialect=self._dialect_instance)
             else:
                 arg_sql = "*"
 
@@ -2325,4 +2326,4 @@ class QueryRewriter:
         """
         if isinstance(column, exp.Column):
             return column.name
-        return column.sql(dialect=self.dialect)
+        return column.sql(dialect=self._dialect_instance)

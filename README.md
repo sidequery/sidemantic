@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/sidequery-sidemantic-badge.png)](https://mseep.ai/app/sidequery-sidemantic)
+
 # Sidemantic
 
 The universal metrics layer for consistent metrics across your data stack. Compatible with 15+ semantic model formats.

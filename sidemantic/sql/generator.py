@@ -44,13 +44,15 @@ class SQLGenerator:
         Returns:
             DATE_TRUNC SQL expression appropriate for the dialect
         """
+        if self.dialect == "bigquery":
+            return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
+
+        if self.dialect in {"spark", "databricks"}:
+            return f"DATE_TRUNC('{granularity.upper()}', {column_expr})"
+
         # Handle {model} placeholder or complex expressions - fall back to string
         if "{" in column_expr or "(" in column_expr:
-            # BigQuery: DATE_TRUNC(col, MONTH), others: DATE_TRUNC('month', col)
-            if self.dialect == "bigquery":
-                return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
-            else:
-                return f"DATE_TRUNC('{granularity}', {column_expr})"
+            return f"DATE_TRUNC('{granularity}', {column_expr})"
 
         # Parse the column expression to handle table.column references
         col = sqlglot.parse_one(column_expr, into=exp.Column, dialect=self.dialect)

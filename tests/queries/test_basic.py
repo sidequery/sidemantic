@@ -143,6 +143,32 @@ def test_time_dimension_duckdb_dialect(layer):
     assert "DATE_TRUNC('month'" in sql or "DATE_TRUNC('MONTH'" in sql, f"Expected DuckDB DATE_TRUNC syntax. Got: {sql}"
 
 
+@pytest.mark.parametrize("dialect", ["spark", "databricks"])
+def test_time_dimension_spark_family_dialects_use_date_trunc_for_day(layer, dialect):
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", sql="created_at", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.created_at"],
+        dialect=dialect,
+    )
+
+    assert "DATE_TRUNC('DAY', created_at)" in sql, f"Expected Spark DATE_TRUNC syntax. Got: {sql}"
+    assert "TRUNC(created_at, 'DAY')" not in sql, f"Should not use Spark TRUNC for day grain. Got: {sql}"
+
+
 def test_measure_aggregation():
     """Test measure SQL generation."""
     measure = Metric(name="revenue", agg="sum", sql="order_amount")

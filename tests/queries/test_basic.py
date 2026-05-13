@@ -165,8 +165,36 @@ def test_time_dimension_spark_family_dialects_use_date_trunc_for_day(layer, dial
         dialect=dialect,
     )
 
-    assert "DATE_TRUNC('DAY', created_at)" in sql, f"Expected Spark DATE_TRUNC syntax. Got: {sql}"
+    assert "CAST(DATE_TRUNC('DAY', created_at) AS DATE)" in sql, f"Expected Spark DATE_TRUNC syntax. Got: {sql}"
     assert "TRUNC(created_at, 'DAY')" not in sql, f"Should not use Spark TRUNC for day grain. Got: {sql}"
+
+
+@pytest.mark.parametrize("dialect", ["spark", "databricks"])
+@pytest.mark.parametrize("granularity", ["week", "month", "quarter", "year"])
+def test_time_dimension_spark_family_dialects_keep_trunc_for_supported_date_grains(layer, dialect, granularity):
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", sql="created_at", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=[f"orders.created_at__{granularity}"],
+        dialect=dialect,
+    )
+
+    expected_grain = granularity.upper()
+    assert f"TRUNC(created_at, '{expected_grain}')" in sql, f"Expected Spark TRUNC syntax. Got: {sql}"
+    assert f"DATE_TRUNC('{expected_grain}', created_at)" not in sql, f"Should preserve Spark TRUNC path. Got: {sql}"
 
 
 def test_measure_aggregation():

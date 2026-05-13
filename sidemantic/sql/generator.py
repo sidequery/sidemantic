@@ -35,20 +35,25 @@ class SQLGenerator:
         self.preagg_schema = preagg_schema
 
     def _date_trunc(self, granularity: str, column_expr: str) -> str:
-        """Generate dialect-specific DATE_TRUNC expression.
+        """Generate dialect-specific time truncation expression.
 
         Args:
             granularity: Time granularity (hour, day, week, month, quarter, year)
             column_expr: SQL column expression
 
         Returns:
-            DATE_TRUNC SQL expression appropriate for the dialect
+            Time truncation SQL expression appropriate for the dialect
         """
         if self.dialect == "bigquery":
             return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
 
         if self.dialect in {"spark", "databricks"}:
-            return f"DATE_TRUNC('{granularity.upper()}', {column_expr})"
+            spark_granularity = granularity.upper()
+            if spark_granularity in {"WEEK", "MONTH", "QUARTER", "YEAR"}:
+                return f"TRUNC({column_expr}, '{spark_granularity}')"
+            if spark_granularity == "DAY":
+                return f"CAST(DATE_TRUNC('DAY', {column_expr}) AS DATE)"
+            return f"DATE_TRUNC('{spark_granularity}', {column_expr})"
 
         # Handle {model} placeholder or complex expressions - fall back to string
         if "{" in column_expr or "(" in column_expr:

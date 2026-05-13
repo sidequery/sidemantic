@@ -216,7 +216,7 @@ def test_semantic_layer_day_time_dimension_executes_on_spark(spark_layer):
         dimensions=["bookings_time.created_at"],
         filters=["bookings_time.created_at > '2026-05-01'"],
     )
-    assert "DATE_TRUNC('DAY', created_at)" in sql
+    assert "CAST(DATE_TRUNC('DAY', created_at) AS DATE)" in sql
     assert "TRUNC(created_at, 'DAY')" not in sql
 
     result = spark_layer.query(
@@ -229,10 +229,49 @@ def test_semantic_layer_day_time_dimension_executes_on_spark(spark_layer):
     assert len(rows) == 2
     assert all(row[0] is not None for row in rows)
 
-    counts_by_day = {str(row[0])[:10]: row[1] for row in rows}
+    counts_by_day = {str(row[0]): row[1] for row in rows}
     assert counts_by_day == {
         "2026-05-01": 2,
         "2026-05-02": 0,
+    }
+
+
+def test_semantic_layer_month_time_dimension_preserves_date_results_on_spark(spark_layer):
+    """Test Spark-supported date grains keep date-shaped results."""
+    bookings_month = Model(
+        name="bookings_month",
+        table="""(
+            SELECT 1 as booking_id, CAST('2026-05-01 12:34:56' AS TIMESTAMP) as created_at UNION ALL
+            SELECT 2, CAST('2026-05-31 23:59:59' AS TIMESTAMP) UNION ALL
+            SELECT 3, CAST('2026-06-02 08:00:00' AS TIMESTAMP)
+        )""",
+        primary_key="booking_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", granularity="month"),
+        ],
+        metrics=[
+            Metric(name="bookings_count", agg="count"),
+        ],
+    )
+    spark_layer.add_model(bookings_month)
+
+    sql = spark_layer.compile(
+        metrics=["bookings_month.bookings_count"],
+        dimensions=["bookings_month.created_at"],
+    )
+    assert "TRUNC(created_at, 'MONTH')" in sql
+    assert "DATE_TRUNC('MONTH', created_at)" not in sql
+
+    result = spark_layer.query(
+        metrics=["bookings_month.bookings_count"],
+        dimensions=["bookings_month.created_at"],
+    )
+    rows = result.fetchall()
+
+    counts_by_month = {str(row[0]): row[1] for row in rows}
+    assert counts_by_month == {
+        "2026-05-01": 2,
+        "2026-06-01": 1,
     }
 
 

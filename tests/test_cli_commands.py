@@ -49,6 +49,26 @@ def test_workbench_calls_runner(monkeypatch, tmp_path):
     assert called["connection"] is None
 
 
+def test_workbench_missing_extra_prints_install_hint(monkeypatch, tmp_path):
+    from sidemantic.workbench import WorkbenchDependencyError
+
+    def fake_run_workbench(directory, demo_mode=False, connection=None):
+        raise WorkbenchDependencyError(
+            "Missing optional dependency for `sidemantic workbench`: textual. "
+            "Install the workbench extra or run it with uvx, for example: "
+            "`uvx --from 'sidemantic[workbench]' sidemantic workbench --demo`."
+        )
+
+    monkeypatch.setattr("sidemantic.workbench.run_workbench", fake_run_workbench)
+
+    _write_min_model(tmp_path)
+    result = runner.invoke(app, ["workbench", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Missing optional dependency" in result.output
+    assert "uvx --from 'sidemantic[workbench]' sidemantic workbench --demo" in result.output
+
+
 def test_validate_calls_runner(monkeypatch, tmp_path):
     pytest.importorskip("textual")
     called = {}

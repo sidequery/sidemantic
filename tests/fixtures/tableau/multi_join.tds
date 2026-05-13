@@ -1,0 +1,18 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='multi_join' version='18.1'>
+  <connection class='postgres' dbname='analytics' server='localhost'>
+    <relation type='join' join='inner'>
+      <clause type='join'>
+        <expression op='='>
+          <expression op='[orders].[customer_id]' />
+          <expression op='[customers].[id]' />
+        </expression>
+      </clause>
+      <relation type='table' name='orders' table='[public].[orders]' />
+      <relation type='table' name='customers' table='[public].[customers]' />
+    </relation>
+  </connection>
+  <column datatype='integer' name='[id]' role='dimension' type='ordinal' />
+  <column caption='Customer Name' datatype='string' name='[customer_name]' role='dimension' type='nominal' />
+  <column datatype='real' name='[amount]' role='measure' type='quantitative' aggregation='sum' />
+</datasource>

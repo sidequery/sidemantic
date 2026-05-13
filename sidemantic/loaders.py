@@ -94,6 +94,10 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
             adapter = HolisticsAdapter()
         elif suffix == ".tml":
             adapter = ThoughtSpotAdapter()
+        elif suffix in (".tds", ".twb", ".tdsx", ".twbx"):
+            from sidemantic.adapters.tableau import TableauAdapter
+
+            adapter = TableauAdapter()
         elif suffix in (".yml", ".yaml"):
             # Try to detect which format by reading the file
             content = file_path.read_text()

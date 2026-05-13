@@ -3403,6 +3403,7 @@ dev = [
     { name = "pyarrow" },
     { name = "pygls" },
     { name = "pytest" },
+    { name = "pytest-cov" },
     { name = "ruff" },
     { name = "uvicorn" },
 ]
@@ -3486,6 +3487,7 @@ dev = [
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "pygls", specifier = ">=2.0.0" },
     { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-cov", specifier = ">=5.0.0" },
     { name = "ruff", specifier = ">=0.14.0" },
     { name = "uvicorn", specifier = ">=0.34.0" },
 ]

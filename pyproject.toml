@@ -170,7 +170,10 @@ pythonpath = ["."]
 markers = [
     "integration: marks tests as integration tests requiring external services (deselect with '-m \"not integration\"')",
 ]
-addopts = "-m 'not integration'"  # Skip integration tests by default
+addopts = "-m 'not integration' --cov=sidemantic --cov-report=term-missing"  # Skip integration tests by default and show coverage
+
+[tool.coverage.run]
+source = ["sidemantic"]
 
 [tool.uv]
 prerelease = "if-necessary"
@@ -191,6 +194,7 @@ dev = [
     "pyarrow>=14.0.0",
     "pygls>=2.0.0",
     "pytest>=8.4.2",
+    "pytest-cov>=5.0.0",
     "ruff>=0.14.0",
     "uvicorn>=0.34.0",
 ]

@@ -143,6 +143,15 @@ class SemanticLayer:
             self.adapter.close()
 
     @property
+    def adapter(self):
+        """Database adapter accessor with legacy _adapter compatibility."""
+        return self._adapter
+
+    @adapter.setter
+    def adapter(self, value):
+        self._adapter = value
+
+    @property
     def conn(self):
         """Get raw database connection for backward compatibility."""
         return self.adapter.raw_connection

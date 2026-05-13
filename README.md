@@ -154,7 +154,7 @@ sidemantic migrator --queries legacy/ --generate-models output/
 
 **Workbench** (TUI with SQL editor + charts):
 ```bash
-uvx sidemantic workbench --demo
+uvx --from "sidemantic[workbench]" sidemantic workbench --demo
 ```
 
 **PostgreSQL server** (connect Tableau, DBeaver, etc.):

@@ -739,13 +739,17 @@ def tree(
     """
     Alias for 'workbench' command (deprecated).
     """
-    from sidemantic.workbench import run_workbench
+    from sidemantic.workbench import WorkbenchDependencyError, run_workbench
 
     if not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
 
-    run_workbench(directory)
+    try:
+        run_workbench(directory)
+    except WorkbenchDependencyError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -762,13 +766,17 @@ def validate(
       sidemantic validate
       sidemantic validate ./models --verbose
     """
-    from sidemantic.workbench import run_validation
+    from sidemantic.workbench import WorkbenchDependencyError, run_validation
 
     if not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
 
-    run_validation(directory, verbose=verbose)
+    try:
+        run_validation(directory, verbose=verbose)
+    except WorkbenchDependencyError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -790,9 +798,9 @@ def workbench(
       sidemantic workbench --demo
       sidemantic workbench ./models --db data/warehouse.db
       sidemantic workbench ./models --connection "postgres://localhost:5432/db"
-      uvx sidemantic workbench --demo
+      uvx --from 'sidemantic[workbench]' sidemantic workbench --demo
     """
-    from sidemantic.workbench import run_workbench
+    from sidemantic.workbench import WorkbenchDependencyError, run_workbench
 
     if demo:
         import sidemantic
@@ -813,7 +821,11 @@ def workbench(
                 raise typer.Exit(1)
 
         directory = demo_dir
-        run_workbench(directory, demo_mode=True, connection=None)
+        try:
+            run_workbench(directory, demo_mode=True, connection=None)
+        except WorkbenchDependencyError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
     elif not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
@@ -831,10 +843,14 @@ def workbench(
             connection_str = build_connection_string(_loaded_config)
 
         # Only pass connection if it's not None
-        if connection_str:
-            run_workbench(directory, connection=connection_str)
-        else:
-            run_workbench(directory)
+        try:
+            if connection_str:
+                run_workbench(directory, connection=connection_str)
+            else:
+                run_workbench(directory)
+        except WorkbenchDependencyError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
 
 
 # Pre-aggregation recommendation commands

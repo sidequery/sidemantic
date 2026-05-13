@@ -638,6 +638,15 @@ def _is_relation_tag(tag: str) -> bool:
     return False
 
 
+def _is_object_graph_tag(tag: str) -> bool:
+    """Check if an XML tag name represents a Tableau object-graph element."""
+    if tag == "object-graph":
+        return True
+    if tag.endswith("}object-graph"):
+        return True
+    return tag.endswith("object-graph") and ("." in tag or ":" in tag)
+
+
 def _find_relation_element(connection: ET.Element) -> ET.Element | None:
     """Find the <relation> element inside a connection, handling namespace prefixes.
 
@@ -1198,11 +1207,17 @@ class TableauAdapter(BaseAdapter):
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(tmpdir)
 
-            # Find the inner .tds or .twb file
+            # TWBX packages can contain workbook-level .twb files plus packaged
+            # datasource .tds files. Prefer the file type that matches the package.
             tmpdir_path = Path(tmpdir)
-            for inner_file in tmpdir_path.rglob("*"):
-                if inner_file.suffix.lower() in (".tds", ".twb"):
-                    return self._parse_xml(inner_file)
+            candidates = sorted(
+                inner_file for inner_file in tmpdir_path.rglob("*") if inner_file.suffix.lower() in (".tds", ".twb")
+            )
+            preferred_suffixes = (".twb", ".tds") if zip_path.suffix.lower() == ".twbx" else (".tds", ".twb")
+            for suffix in preferred_suffixes:
+                for inner_file in candidates:
+                    if inner_file.suffix.lower() == suffix:
+                        return self._parse_xml(inner_file)
 
         return SemanticGraph()
 
@@ -1230,8 +1245,7 @@ class TableauAdapter(BaseAdapter):
         # Find object-graph element (may have namespace prefix in tag name)
         og_elem = None
         for child in ds_elem:
-            tag = child.tag
-            if tag == "object-graph" or (tag.endswith("object-graph") and "true" in tag):
+            if _is_object_graph_tag(child.tag):
                 og_elem = child
                 break
 

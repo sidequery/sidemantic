@@ -125,6 +125,42 @@ def test_parse_twbx_zip(adapter, tmp_path):
     assert "orders" in graph.models
 
 
+def test_parse_twbx_prefers_workbook_over_packaged_datasource(adapter, tmp_path):
+    """A .twbx with both .tds and .twb members imports the workbook definition."""
+    twbx_path = tmp_path / "workbook.twbx"
+    with zipfile.ZipFile(twbx_path, "w") as zf:
+        zf.writestr(
+            "a.tds",
+            """<?xml version='1.0' encoding='utf-8' ?>
+<datasource name='packaged_datasource'>
+  <connection>
+    <relation name='packaged' type='table' table='[public].[packaged]' />
+  </connection>
+</datasource>
+""",
+        )
+        zf.writestr(
+            "workbook.twb",
+            """<?xml version='1.0' encoding='utf-8' ?>
+<workbook>
+  <datasources>
+    <datasource name='workbook_datasource'>
+      <connection>
+        <relation name='workbook_orders' type='table' table='[public].[workbook_orders]' />
+      </connection>
+    </datasource>
+  </datasources>
+</workbook>
+""",
+        )
+
+    graph = adapter.parse(twbx_path)
+
+    assert "workbook_datasource" in graph.models
+    assert "packaged_datasource" not in graph.models
+    assert graph.models["workbook_datasource"].table == "public.workbook_orders"
+
+
 # =============================================================================
 # TYPE MAPPING TESTS
 # =============================================================================
@@ -256,6 +292,75 @@ def test_multi_table_join(adapter):
     rel = model.relationships[0]
     assert rel.name == "customers"
     assert rel.type == "many_to_one"
+
+
+def test_collection_accepts_false_object_graph_tag(adapter, tmp_path):
+    """Collection datasources can use Tableau's .false...object-graph tag."""
+    tds_path = tmp_path / "false_object_graph.tds"
+    tds_path.write_text(
+        """<?xml version='1.0' encoding='utf-8' ?>
+<datasource name='false_object_graph'>
+  <connection>
+    <relation name='collection' type='collection'>
+      <relation name='Orders' type='table' table='[public].[orders]' />
+      <relation name='Customers' type='table' table='[public].[customers]' />
+    </relation>
+    <metadata-records>
+      <metadata-record class='column'>
+        <local-name>[Order ID]</local-name>
+        <parent-name>[Orders]</parent-name>
+        <remote-alias>order_id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+      <metadata-record class='column'>
+        <local-name>[Customer ID]</local-name>
+        <parent-name>[Orders]</parent-name>
+        <remote-alias>customer_id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+      <metadata-record class='column'>
+        <local-name>[ID]</local-name>
+        <parent-name>[Customers]</parent-name>
+        <remote-alias>id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+      <metadata-record class='column'>
+        <local-name>[Customer Name]</local-name>
+        <parent-name>[Customers]</parent-name>
+        <remote-alias>customer_name</remote-alias>
+        <local-type>string</local-type>
+      </metadata-record>
+    </metadata-records>
+  </connection>
+  <_.fcp.ObjectModelEncapsulateLegacy.false...object-graph>
+    <objects>
+      <object id='orders' caption='Orders' />
+      <object id='customers' caption='Customers' />
+    </objects>
+    <relationships>
+      <relationship>
+        <first-end-point object-id='orders' />
+        <second-end-point object-id='customers' />
+        <expression op='='>
+          <expression op='[Orders].[Customer ID]' />
+          <expression op='[Customers].[ID]' />
+        </expression>
+      </relationship>
+    </relationships>
+  </_.fcp.ObjectModelEncapsulateLegacy.false...object-graph>
+</datasource>
+"""
+    )
+
+    graph = adapter.parse(tds_path)
+    model = graph.models["false_object_graph"]
+
+    assert model.table is None
+    assert model.sql is not None
+    assert 'LEFT JOIN "public"."customers"' in model.sql
+    assert '"Customer Name"' in model.sql
+    assert len(model.relationships) == 1
+    assert model.relationships[0].name == "Customers"
 
 
 # =============================================================================

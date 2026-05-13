@@ -21,8 +21,9 @@ pytestmark = [
 # Use environment variable for URL
 SPARK_HOST = os.getenv("SPARK_HOST", "localhost")
 SPARK_PORT = os.getenv("SPARK_PORT", "10000")
-SPARK_PASSWORD = os.getenv("SPARK_PASSWORD", "spark")
-SPARK_URL = f"spark://default:{SPARK_PASSWORD}@{SPARK_HOST}:{SPARK_PORT}/default"
+SPARK_PASSWORD = os.getenv("SPARK_PASSWORD")
+SPARK_CREDENTIALS = f"default:{SPARK_PASSWORD}@" if SPARK_PASSWORD else "default@"
+SPARK_URL = f"spark://{SPARK_CREDENTIALS}{SPARK_HOST}:{SPARK_PORT}/default"
 
 
 @pytest.fixture(scope="module")
@@ -188,6 +189,51 @@ def test_semantic_layer_filters(spark_layer):
     rows = result.fetchall()
     assert len(rows) == 1
     assert rows[0][1] == 300  # Total for category A
+
+
+def test_semantic_layer_day_time_dimension_executes_on_spark(spark_layer):
+    """Test day-grain time dimensions execute against real Spark SQL."""
+    bookings_time = Model(
+        name="bookings_time",
+        table="""(
+            SELECT 1 as booking_id, 'paid' as state, CAST('2026-05-01 12:34:56' AS TIMESTAMP) as created_at UNION ALL
+            SELECT 2, 'paid', CAST('2026-05-01 23:59:59' AS TIMESTAMP) UNION ALL
+            SELECT 3, 'pending', CAST('2026-05-02 08:00:00' AS TIMESTAMP)
+        )""",
+        primary_key="booking_id",
+        dimensions=[
+            Dimension(name="state", type="categorical"),
+            Dimension(name="created_at", type="time", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="paid_bookings_count", agg="count", filters=["state = 'paid'"]),
+        ],
+    )
+    spark_layer.add_model(bookings_time)
+
+    sql = spark_layer.compile(
+        metrics=["bookings_time.paid_bookings_count"],
+        dimensions=["bookings_time.created_at"],
+        filters=["bookings_time.created_at > '2026-05-01'"],
+    )
+    assert "DATE_TRUNC('DAY', created_at)" in sql
+    assert "TRUNC(created_at, 'DAY')" not in sql
+
+    result = spark_layer.query(
+        metrics=["bookings_time.paid_bookings_count"],
+        dimensions=["bookings_time.created_at"],
+        filters=["bookings_time.created_at > '2026-05-01'"],
+    )
+    rows = result.fetchall()
+
+    assert len(rows) == 2
+    assert all(row[0] is not None for row in rows)
+
+    counts_by_day = {str(row[0])[:10]: row[1] for row in rows}
+    assert counts_by_day == {
+        "2026-05-01": 2,
+        "2026-05-02": 0,
+    }
 
 
 def test_semantic_layer_sql_generation(spark_layer):

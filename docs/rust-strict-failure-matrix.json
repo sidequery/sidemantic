@@ -39,7 +39,7 @@
         "external_dependency": 22
       },
       "strict_subsystem": null,
-      "summary": "286 passed, 22 skipped in 27.22s"
+      "summary": "286 passed, 22 skipped in 30.04s"
     },
     {
       "group": "adapters",
@@ -76,7 +76,7 @@
         "capability_gap": 2
       },
       "strict_subsystem": null,
-      "summary": "2077 passed, 4 skipped, 18 xfailed in 58.80s"
+      "summary": "2077 passed, 4 skipped, 18 xfailed in 70.71s (0:01:10)"
     },
     {
       "group": "core",
@@ -89,7 +89,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "300 passed, 2 warnings in 0.64s"
+      "summary": "300 passed, 2 warnings in 0.83s"
     },
     {
       "group": "dates",
@@ -102,7 +102,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "29 passed in 0.16s"
+      "summary": "29 passed in 0.21s"
     },
     {
       "group": "db",
@@ -174,7 +174,7 @@
         "integration_scope": 76
       },
       "strict_subsystem": null,
-      "summary": "225 passed, 98 skipped in 0.64s"
+      "summary": "225 passed, 98 skipped in 0.82s"
     },
     {
       "group": "integration",
@@ -187,7 +187,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "36 passed in 1.08s"
+      "summary": "36 passed in 1.39s"
     },
     {
       "group": "joins",
@@ -200,7 +200,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "26 passed in 0.52s"
+      "summary": "26 passed in 0.63s"
     },
     {
       "group": "lsp",
@@ -213,7 +213,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "29 passed in 0.17s"
+      "summary": "29 passed in 0.23s"
     },
     {
       "group": "metrics",
@@ -226,7 +226,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "112 passed in 1.27s"
+      "summary": "112 passed in 1.82s"
     },
     {
       "group": "optimizations",
@@ -239,7 +239,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "63 passed in 1.18s"
+      "summary": "63 passed in 1.81s"
     },
     {
       "group": "queries",
@@ -252,7 +252,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "198 passed in 5.44s"
+      "summary": "198 passed in 7.47s"
     },
     {
       "group": "server",
@@ -273,7 +273,7 @@
         "external_dependency": 7
       },
       "strict_subsystem": null,
-      "summary": "24 passed, 7 skipped in 1.01s"
+      "summary": "24 passed, 7 skipped in 1.66s"
     },
     {
       "group": "templates",
@@ -286,7 +286,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "41 passed, 37 warnings in 0.16s"
+      "summary": "41 passed, 37 warnings in 0.75s"
     },
     {
       "group": "widget",
@@ -299,7 +299,7 @@
       "skip_reasons": [],
       "skip_category_counts": {},
       "strict_subsystem": null,
-      "summary": "4 passed in 0.08s"
+      "summary": "4 passed in 0.16s"
     }
   ],
   "aggregate": {

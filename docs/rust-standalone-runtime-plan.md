@@ -62,7 +62,7 @@ Commands run in this worktree:
 - `cargo test --manifest-path sidemantic-rs/Cargo.toml --features runtime-server --test http_server`: pass.
   - Verifies HTTP missing-model startup failure, then starts the actual server on a dynamic loopback port and verifies readiness/health, models, graph, compile, parameter interpolation, semantic SQL rewrite, run errors, auth, CORS, body-size rejection, and error JSON paths.
 - `cargo test --manifest-path sidemantic-rs/Cargo.toml --features runtime-lsp --test lsp_protocol_smoke`: pass.
-  - Uses real LSP framing over stdio to verify initialize, diagnostics, hover, completions, formatting, symbols, signature help, current-document definition/references/rename/code action, repair clearing, unsupported YAML-style diagnostics, unknown-method errors, shutdown, and exit.
+  - Uses real LSP framing over stdio to verify initialize, diagnostics, hover, completions, formatting, symbols, signature help, current-document definition/references/rename/code action, repair clearing, unsupported YAML-style diagnostics, shutdown, and exit.
 - `cargo test --manifest-path sidemantic-rs/Cargo.toml --features workbench-tui --bin sidemantic workbench`: pass.
   - Covers deterministic workbench startup, key handling, output switching, and ratatui rendering on normal and small terminal buffers.
 - `cargo test --manifest-path sidemantic-rs/Cargo.toml --features workbench-tui --test workbench_pty_smoke`: pass.
@@ -167,7 +167,7 @@ Key blockers:
 - Added MCP, HTTP, LSP, workbench, package metadata, C ABI, and WASM negative-path tests.
 - Added startup failure tests for missing model paths in HTTP and MCP.
 - Added MCP catalog resource and chart protocol coverage.
-- Added LSP hover, formatting, symbols, signature help, current-document definition/references/rename/code action, unsupported YAML-style adapter-format diagnostic, and unknown-method tests.
+- Added LSP hover, formatting, symbols, signature help, current-document definition/references/rename/code action, and unsupported YAML-style adapter-format diagnostic tests.
 - Added PTY-level workbench coverage for launch, render, keypresses, quit, bad model path, no-DB execution disabled state, and DB-backed ADBC execution.
 - Fixed MCP structured result output so `sidemantic-mcp` starts and serves valid tool schemas.
 - Fixed SQL-definition parse no-progress behavior that could hang diagnostics on invalid/incomplete alphabetic input.
@@ -220,8 +220,8 @@ For a standalone product, define explicit contracts for:
 
 Immediate contract decisions:
 
-- `serve`: Python uses this for PostgreSQL wire protocol, Rust uses it for HTTP. Rename or align.
-- `api-serve`: Python exposes this as HTTP; Rust currently does not.
+- `serve`: Python uses this for PostgreSQL wire protocol, Rust uses it for HTTP. Rename or align before claiming CLI command parity.
+- `api-serve`: Python exposes this as HTTP; Rust currently does not. Tracked as follow-up rather than current functionality.
 - Positional model directories vs `--models` flags.
 - Python-compatible short flags like `-v` and `-c`.
 - Whether Rust MCP must match Python MCP tools.

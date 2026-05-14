@@ -227,7 +227,7 @@ Shortcuts:
 - `Up` / `Down`: move model selection
 - `Enter` (in model list): load `select * from <model>` template
 - `Ctrl+1`, `Ctrl+2`, `Ctrl+3`: switch layout mode
-- `Ctrl+M`, `Ctrl+V`, `Ctrl+L`: focus models, SQL editor, or results/logs
+- `Ctrl+M`, `Ctrl+V`, `Ctrl+L`: cycle chart mode, value column, or label column
 - `Esc` or `Ctrl+C`: quit
 
 ## WASM

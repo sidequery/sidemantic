@@ -13,18 +13,18 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 
 | Behavior | Python contract | Current Rust status | Next action |
 | --- | --- | --- | --- |
-| Process startup | `sidemantic api-serve DIRECTORY`, fails on bad model path | `pass`: bad model path covered by Rust HTTP smoke | Keep covered |
+| Process startup | HTTP API starts with a model directory and fails on a bad model path | `pass`: bad model path covered by Rust HTTP smoke. Current commands are `sidemantic server` / `sidemantic serve` and the `sidemantic-server` binary; `api-serve` is not implemented yet | Decide whether to add `api-serve` or keep Rust HTTP command naming separate |
 | Readiness | `GET /readyz -> {"status":"ok"}`, unauthenticated | `pass`: route and smoke coverage added | Keep covered |
 | Health | `GET /health -> status, version, dialect, model_count` | `pass`: Python-compatible shape covered | Keep covered |
 | Model list | `GET /models` with table/dimensions/metrics/relationships | `pass`: summary shape covered | Keep covered |
 | Single model | Python does not expose this route | `pass`: Rust extra route `/models/{model}` | Keep as Rust extension |
 | Graph | `GET /graph` with models, graph_metrics, joinable_pairs | `pass`: route and joinable-pair smoke added | Keep covered |
-| Structured compile | `POST /compile` with dimensions, metrics, where, filters, segments, order_by, limit, offset, ungrouped, parameters, preagg flag | `pass`: alias plus filters/segments/offset/ungrouped/preagg and parameter interpolation covered | Keep covered |
+| Structured compile | `POST /compile` with dimensions, metrics, where, filters, segments, order_by, limit, offset, ungrouped, parameters, preagg flag | `partial`: route, common fields, offset, ungrouped, and parameter interpolation are covered; `segments` and preagg routing are implemented but need direct HTTP assertions | Add targeted HTTP tests for segments and `use_preaggregations` |
 | Structured execute | `POST /query` executes via configured DB adapter, JSON or Arrow | `pass` for Rust contract: `/query` alias and DuckDB ADBC JSON E2E covered; Arrow stream output is an explicit non-goal for this Rust HTTP baseline | Revisit Arrow only if binary IPC becomes a product requirement |
 | Semantic SQL compile | `POST /sql/compile` rewrites SQL | `pass`: route and smoke coverage added | Keep covered |
 | Semantic SQL execute | `POST /sql` rewrites and executes | `pass`: DuckDB ADBC E2E covered | Keep covered |
 | Raw SQL execute | `POST /raw` executes select-only SQL without rewrite | `pass`: select-only guard and DuckDB ADBC E2E covered; Rust intentionally uses a conservative string guard until a parser-backed classifier is needed | Parser-backed classification is optional hardening |
-| Auth | Bearer token protects all routes except `/readyz` when configured | `pass`: `--auth-token` and env-backed middleware covered; unauthenticated `/readyz` remains open | Keep covered |
+| Auth | Bearer token protects application routes except `/readyz` when configured | `pass`: `--auth-token` and env-backed middleware covered; unauthenticated `/readyz` and CORS `OPTIONS` preflight remain open | Keep covered |
 | CORS | Configurable origins | `pass`: `--cors-origin` and env-backed response headers covered | Keep covered |
 | Body limit | Rejects large write payloads with 413 JSON | `pass`: `--max-request-body-bytes` and env-backed JSON 413 covered | Keep covered |
 | Error shape | Python uses JSON `error`/FastAPI detail depending path | `pass` for Rust contract: Rust returns JSON `error` bodies with route-specific messages; exact FastAPI `detail` shape is not a standalone Rust contract | Keep actionable JSON errors covered |
@@ -37,7 +37,7 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 | Initialize lifecycle | JSON-RPC initialize/initialized/shutdown | `pass` for smoke lifecycle | Keep covered |
 | Tool listing | Includes query, catalog, graph, SQL, chart tools | `pass`: query, graph, validation, SQL, chart tools, and catalog resource covered | Keep covered |
 | `get_models` | Enriched model/dimension/metric/segment/relationship metadata | `pass`: enriched details covered | Keep covered |
-| `run_query` | dimensions, metrics, where, filters, segments, order_by, limit, offset, ungrouped, dry_run | `pass`: payload fields and dry-run covered; DuckDB ADBC execution proven | Keep covered |
+| `run_query` | dimensions, metrics, where, filters, segments, order_by, limit, offset, ungrouped, dry_run | `partial`: core fields, offset, dry-run, and DuckDB ADBC execution are covered; MCP does not yet accept `parameters`, and not every structured field has a direct protocol assertion | Add MCP `parameters` support or document narrower schema; add targeted field tests |
 | `validate_query` | Returns `valid` and `errors` without executing | `pass`: tool and smoke coverage added | Keep covered |
 | `get_semantic_graph` | Returns graph payload | `pass`: tool and smoke coverage added | Keep covered |
 | `run_sql` | Rewrites semantic SQL, executes against configured DB | `pass`: DuckDB ADBC E2E covered | Keep covered |
@@ -51,7 +51,7 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 | Behavior | Python contract | Current Rust status | Next action |
 | --- | --- | --- | --- |
 | Lifecycle | initialize, initialized, shutdown | `pass` smoke | Keep covered |
-| Diagnostics | SQL definition diagnostics on open/change/save | `pass` for intended SQL-definition scope: parse diagnostics, repair clearing, unsupported adapter diagnostics, and unknown-method behavior are covered | Expand semantic diagnostics only if Rust LSP scope grows |
+| Diagnostics | SQL definition diagnostics on open/change/save | `partial` for intended SQL-definition scope: open/change parse diagnostics, repair clearing, and unsupported adapter diagnostics are covered; save-specific diagnostics need a direct assertion before claiming save coverage | Add `didSave` smoke assertion if save diagnostics are part of the contract |
 | Completion | SQL definition completions and Python constructor completions | `pass` for intended Rust LSP SQL-definition scope; Python constructor support is an explicit non-goal for this Rust standalone baseline | Keep SQL scope covered |
 | Hover | Keyword/property hover | `pass` for intended SQL-definition scope: keyword/property hover is covered | Add model/dimension/metric instance docs only if Rust LSP scope grows |
 | Formatting | Formats SQL definition documents | `pass`: canonical multiline formatting covered | Keep covered |
@@ -89,5 +89,13 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 
 ## Future Work
 
-1. Add richer MCP Apps chart UI parity only if clients require embedded UI resources instead of plain Vega-Lite plus PNG.
-2. Keep ADBC matrix expanding as drivers/services become available through env-configured CI.
+Detailed follow-up work is tracked in `docs/rust-standalone-followup-work.md`.
+
+Highest-priority follow-ups:
+
+1. Decide whether to add `api-serve` or keep Rust HTTP command naming separate from the Python HTTP command.
+2. Add MCP `parameters` support or keep MCP documented as a narrower structured query schema than HTTP.
+3. Add direct HTTP/MCP assertions for `segments`, pre-aggregation routing, and every field claimed in this matrix.
+4. Add LSP `didSave` and unknown-method assertions only if those are part of the Rust LSP contract.
+5. Add richer MCP Apps chart UI parity only if clients require embedded UI resources instead of plain Vega-Lite plus PNG.
+6. Keep ADBC matrix expanding as drivers/services become available through env-configured CI.

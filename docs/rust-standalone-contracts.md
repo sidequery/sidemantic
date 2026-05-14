@@ -11,7 +11,7 @@ The Rust runtime is a Rust-first product surface. Python compatibility is a refe
 | CLI | `sidemantic-rs/src/main.rs`, binary `sidemantic` | Primary standalone command-line interface for compile, rewrite, validate, query, pre-aggregation, migrator, info, workbench, service launchers | Supported baseline for compile/rewrite/validate/query dry-run/preagg/migrator/info; service launchers remain feature-gated |
 | HTTP API | `sidemantic-server` with `runtime-server`; DB execution requires `runtime-server-adbc` | Rust-native JSON API for model metadata, graph discovery, semantic compile/query, semantic SQL rewrite/run, and raw select-only SQL run | Experimental, feature-gated; real server protocol tests cover startup failure, readiness/health, graph/models, compile/query/sql/raw routes, built-without-ADBC errors, and DuckDB ADBC execution |
 | MCP | `sidemantic-mcp` with `mcp-server`; DB execution requires `mcp-adbc` | Rust-native MCP server backed by `SidemanticRuntime` | Experimental, feature-gated; stdio JSON-RPC tests cover startup failure, initialize, resources, tools/list, list/get/graph/validate/compile/run/sql/chart calls, built-without-ADBC errors, and DuckDB ADBC execution |
-| LSP | `sidemantic-lsp` with `runtime-lsp` feature | Stdio LSP for SQL definition authoring | Experimental, feature-gated; stdio LSP tests cover initialize, diagnostics, completion, hover, formatting, symbols, signature help, definition/references/rename/code action, unsupported adapter-format diagnostics, unknown-method errors, shutdown; current scope is SQL definitions in opened documents |
+| LSP | `sidemantic-lsp` with `runtime-lsp` feature | Stdio LSP for SQL definition authoring | Experimental, feature-gated; stdio LSP tests cover initialize, diagnostics, completion, hover, formatting, symbols, signature help, definition/references/rename/code action, unsupported adapter-format diagnostics, and shutdown; current scope is SQL definitions in opened documents |
 | Workbench | `sidemantic-workbench` and `sidemantic workbench` with `workbench-tui`; execution requires `workbench-adbc` | Standalone terminal UI for inspecting models, rewriting SQL, and optionally executing against ADBC | Experimental, feature-gated; deterministic app/key/render tests and PTY smoke cover launch, initial render, keypresses, quit, bad model path, no-DB disabled execution, and DuckDB ADBC execution |
 | DuckDB extension | `sidemantic-rs/src/ffi.rs`, `sidemantic-duckdb/` | C ABI and DuckDB extension functions for loading definitions and rewriting SQL | Supported baseline; mutation/replace/repeated-load, context-keyed FFI state, persistence, in-memory isolation, and invalid persisted-definition handling are tested |
 | WASM | `sidemantic-rs/src/wasm.rs` with `wasm` feature | Browser-compatible semantic helpers and limited compile/rewrite support | Supported limited subset; host parity, wasm build, wasm-bindgen happy paths, error paths, and unsupported rewrite shapes are tested |
@@ -46,7 +46,7 @@ Expected general conventions:
 Known contract decisions:
 
 - `serve` is ambiguous. Python `serve` means PostgreSQL wire protocol. Rust `serve` currently launches the HTTP API. Until Rust implements PostgreSQL wire protocol, `api-serve` should be the HTTP command and `serve` should either be reserved or clearly documented as Rust HTTP-only.
-- `api-serve` should be added as the Rust HTTP API spelling if Rust is intended to align with the user-facing Python CLI.
+- `api-serve` is not implemented in this branch. Treat it as a follow-up naming decision, not an available command.
 - `mcp-serve ./models` should work as an alias for launching MCP with a positional models path. The direct `sidemantic-mcp` binary accepts both `--models <path>` and a positional model path.
 - Pre-aggregation flags should normalize toward Python/user-facing names: `--queries`, `--min-count`, `--min-score`, `--top`, with Rust-specific aliases kept only for backward compatibility.
 
@@ -59,6 +59,7 @@ Standalone Rust HTTP API routes:
 - `GET /readyz`
 - `GET /health`
 - `GET /models`
+- `POST /models`
 - `GET /models/{model}`
 - `GET /graph`
 - `POST /compile`
@@ -75,7 +76,7 @@ Current intentional differences:
 
 - `/query` and `/raw` return JSON rows only. Arrow output is not implemented.
 - `/raw` uses a conservative select-only string guard rather than full parser-backed SQL statement classification.
-- Bearer auth, CORS allow-list headers, and JSON 413 body-size rejection are implemented and covered. Streaming output and graceful application shutdown remain unimplemented.
+- Bearer auth, CORS allow-list headers, and JSON 413 body-size rejection are implemented and covered. Application routes require bearer auth when configured, except `/readyz`; unauthenticated `OPTIONS` preflight is allowed for CORS. Streaming output and graceful application shutdown remain unimplemented.
 
 Structured query payload should cover:
 
@@ -104,7 +105,7 @@ Standalone Rust MCP tools/resources:
 - `create_chart`
 - `semantic://catalog` resource
 
-Tool schemas should share the same structured query payload as the HTTP API.
+Tool schemas should eventually share the same structured query payload as the HTTP API. Current MCP query tools are intentionally narrower than HTTP because they do not accept `parameters` yet, and `create_chart` fixes some query options internally. This is tracked as follow-up work rather than claimed parity.
 
 The current protocol tests use newline-delimited JSON-RPC over stdio and check startup failure for missing model paths, initialize, initialized notification handling, tool/resource listing, catalog resource reads, successful list/get/graph/validate/compile calls, built-without-ADBC errors for execution/chart tools, invalid metric errors, missing-resource errors, and unknown-tool errors. In a non-ADBC build, execution and chart tools return clear `mcp-adbc` build guidance errors after successful compile/rewrite. The ADBC E2E test supplies DuckDB `libduckdb` plus `duckdb_adbc_init`, seeds a real DuckDB file, and proves successful `run_query`, `run_sql`, and `create_chart` execution using `--dbopt path=<file>`.
 
@@ -135,7 +136,7 @@ Out of scope until explicitly implemented:
 - Cross-file workspace refactors.
 - Python constructor completions/signatures/symbol extraction.
 
-The current smoke test uses LSP `Content-Length` framing over stdio. It proves initialize capabilities, log notification after `initialized`, diagnostics on open/change, diagnostic clearing after repair, keyword/property hover, completion items in top-level and model contexts, formatting, document symbols, signature help, current-document definition/references/rename/code action, unopened-document completion behavior, unsupported YAML-style adapter-format diagnostics, unknown-method error handling, and shutdown/exit.
+The current smoke test uses LSP `Content-Length` framing over stdio. It proves initialize capabilities, log notification after `initialized`, diagnostics on open/change, diagnostic clearing after repair, keyword/property hover, completion items in top-level and model contexts, formatting, document symbols, signature help, current-document definition/references/rename/code action, unopened-document completion behavior, unsupported YAML-style adapter-format diagnostics, and shutdown/exit.
 
 ## DuckDB Contract
 
@@ -151,7 +152,7 @@ DuckDB extension functions must be scoped and predictable:
 - C++ must include `sidemantic-rs/include/sidemantic.h` rather than duplicating ABI declarations.
 - The DuckDB extension build must build or import the Rust staticlib as a declared dependency, not as an undocumented manual pre-step.
 
-Current implementation keys Rust FFI state by caller-provided context. The DuckDB extension derives a database/session context key from the active DuckDB database path or in-memory database instance, including parser-extension state for `SEMANTIC` statements and `ClientContext`/`ExpressionState` for table/scalar functions. Context-free C APIs remain compatibility wrappers over a default context.
+Current implementation keys Rust FFI state by caller-provided context. The DuckDB extension derives a database/session context key from the active DuckDB database path or in-memory database instance, including parser-extension state for `SEMANTIC` statements and `ClientContext`/`ExpressionState` for table/scalar functions. Context-free C APIs remain compatibility wrappers over a default context. Autoload currently behaves best-effort for invalid persisted blocks and mainly reports skipped blocks to stderr; user-visible autoload warning/reporting remains follow-up work.
 
 ## WASM Contract
 
@@ -214,3 +215,7 @@ Standalone Rust release readiness requires:
 - Release notes identify which surfaces are stable, experimental, or unsupported.
 
 For this baseline, CLI, DuckDB, default Python extension, and the documented WASM subset are the supported surfaces once their gates pass. Rust-native ADBC execution has a DuckDB proof across CLI, HTTP, MCP, and Python, but the execution surfaces stay experimental until compatibility, shutdown/lifecycle, and deeper interactive behavior are defined and tested.
+
+## Follow-Up Work
+
+Detailed follow-up work is tracked in `docs/rust-standalone-followup-work.md`. That document is the source of truth for known SQL parity gaps, MCP/HTTP schema differences, Python strict-mode cleanup, ADBC breadth, DuckDB/C ABI hardening, and CI/package hardening that are intentionally not completed in this baseline.

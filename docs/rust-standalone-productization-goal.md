@@ -2,6 +2,8 @@
 
 This is the next goal after the standalone test-hardening pass. Release automation is explicitly out of scope for now.
 
+Follow-up work discovered during inventory is tracked separately in `docs/rust-standalone-followup-work.md`. That file supersedes this goal document for remaining SQL parity, service-contract, Python bridge, ADBC breadth, DuckDB/C ABI, and CI/package hardening tasks.
+
 ## Objective
 
 Productize the already-imported standalone Rust Sidemantic runtime surfaces while preserving the current passing baseline.
@@ -133,4 +135,3 @@ Every surface should be labeled supported, experimental, or unsupported based on
   - `uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar`
   - `uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar`
   - `uv run pytest -v`
-

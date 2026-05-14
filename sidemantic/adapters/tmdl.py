@@ -290,9 +290,8 @@ def _collect_table_metadata(
             if child_type in ("column", "calculatedcolumn"):
                 props = _props(child)
                 dim_type, _ = _map_data_type(_string_prop(props.get("datatype")))
-                expression = _resolve_expression(child, props)
                 source_column = _string_prop(props.get("sourcecolumn"))
-                sql = source_column or expression or (child.name or "")
+                sql = source_column or (child.name or "")
                 column_sql[child.name or ""] = sql
                 if dim_type == "time" and child.name:
                     time_dimensions.add(child.name)

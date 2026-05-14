@@ -1,0 +1,342 @@
+{
+  "strict_env": {
+    "SIDEMANTIC_RS_STRICT_SUBSYSTEMS": "all",
+    "SIDEMANTIC_RS_REWRITER": "1",
+    "SIDEMANTIC_RS_NO_FALLBACK": "1"
+  },
+  "groups": [
+    {
+      "group": "root",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 286,
+      "skipped_tests": 22,
+      "deselected_tests": 0,
+      "skip_reasons": [
+        {
+          "reason": "No module named 'anywidget'",
+          "count": 8,
+          "category": "external_dependency"
+        },
+        {
+          "reason": "No module named 'riffq'",
+          "count": 6,
+          "category": "external_dependency"
+        },
+        {
+          "reason": "No module named 'mcp'",
+          "count": 5,
+          "category": "external_dependency"
+        },
+        {
+          "reason": "No module named 'textual'",
+          "count": 3,
+          "category": "external_dependency"
+        }
+      ],
+      "skip_category_counts": {
+        "external_dependency": 22
+      },
+      "strict_subsystem": null,
+      "summary": "286 passed, 22 skipped in 27.22s"
+    },
+    {
+      "group": "adapters",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 2077,
+      "skipped_tests": 4,
+      "deselected_tests": 0,
+      "skip_reasons": [
+        {
+          "reason": "Cube examples not found",
+          "count": 1,
+          "category": "fixture_gap"
+        },
+        {
+          "reason": "MetricFlow examples not found",
+          "count": 1,
+          "category": "fixture_gap"
+        },
+        {
+          "reason": "Nested aggregation not directly supported",
+          "count": 1,
+          "category": "capability_gap"
+        },
+        {
+          "reason": "Self-referential joins not currently supported - potential enhancement",
+          "count": 1,
+          "category": "capability_gap"
+        }
+      ],
+      "skip_category_counts": {
+        "fixture_gap": 2,
+        "capability_gap": 2
+      },
+      "strict_subsystem": null,
+      "summary": "2077 passed, 4 skipped, 18 xfailed in 58.80s"
+    },
+    {
+      "group": "core",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 300,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "300 passed, 2 warnings in 0.64s"
+    },
+    {
+      "group": "dates",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 29,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "29 passed in 0.16s"
+    },
+    {
+      "group": "db",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 225,
+      "skipped_tests": 98,
+      "deselected_tests": 0,
+      "skip_reasons": [
+        {
+          "reason": "adbc_driver_manager and sqlite driver (pip or dbc) required for ADBC connection tests",
+          "count": 20,
+          "category": "external_dependency"
+        },
+        {
+          "reason": "Set POSTGRES_TEST=1 and run docker compose up -d to run Postgres integration tests",
+          "count": 18,
+          "category": "integration_scope"
+        },
+        {
+          "reason": "Set SNOWFLAKE_TEST=1 to run Snowflake integration tests with fakesnow",
+          "count": 14,
+          "category": "integration_scope"
+        },
+        {
+          "reason": "Set BIGQUERY_TEST=1 and run docker compose up -d bigquery to run BigQuery integration tests",
+          "count": 12,
+          "category": "integration_scope"
+        },
+        {
+          "reason": "Set CLICKHOUSE_TEST=1 and run docker compose up -d clickhouse to run ClickHouse integration tests",
+          "count": 12,
+          "category": "integration_scope"
+        },
+        {
+          "reason": "Set SPARK_TEST=1 and run docker compose up -d spark to run Spark integration tests",
+          "count": 12,
+          "category": "integration_scope"
+        },
+        {
+          "reason": "Set ADBC_TEST=1 to run ADBC CI smoke tests",
+          "count": 3,
+          "category": "integration_scope"
+        },
+        {
+          "reason": "Set DATABRICKS_TEST=1 and DATABRICKS_URL to run Databricks integration tests (requires real Databricks workspace)",
+          "count": 3,
+          "category": "integration_scope"
+        },
+        {
+          "reason": "Requires pyarrow (optional dependency)",
+          "count": 2,
+          "category": "external_dependency"
+        },
+        {
+          "reason": "PostgreSQL adapter available, tested in integration tests",
+          "count": 1,
+          "category": "integration_scope"
+        },
+        {
+          "reason": "Set POSTGRES_TEST=1 to run Postgres integration tests",
+          "count": 1,
+          "category": "integration_scope"
+        }
+      ],
+      "skip_category_counts": {
+        "external_dependency": 22,
+        "integration_scope": 76
+      },
+      "strict_subsystem": null,
+      "summary": "225 passed, 98 skipped in 0.64s"
+    },
+    {
+      "group": "integration",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 36,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "36 passed in 1.08s"
+    },
+    {
+      "group": "joins",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 26,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "26 passed in 0.52s"
+    },
+    {
+      "group": "lsp",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 29,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "29 passed in 0.17s"
+    },
+    {
+      "group": "metrics",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 112,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "112 passed in 1.27s"
+    },
+    {
+      "group": "optimizations",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 63,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "63 passed in 1.18s"
+    },
+    {
+      "group": "queries",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 198,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "198 passed in 5.44s"
+    },
+    {
+      "group": "server",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 24,
+      "skipped_tests": 7,
+      "deselected_tests": 0,
+      "skip_reasons": [
+        {
+          "reason": "No module named 'riffq'",
+          "count": 7,
+          "category": "external_dependency"
+        }
+      ],
+      "skip_category_counts": {
+        "external_dependency": 7
+      },
+      "strict_subsystem": null,
+      "summary": "24 passed, 7 skipped in 1.01s"
+    },
+    {
+      "group": "templates",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 41,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "41 passed, 37 warnings in 0.16s"
+    },
+    {
+      "group": "widget",
+      "status": "pass",
+      "returncode": 0,
+      "failed_tests": 0,
+      "passed_tests": 4,
+      "skipped_tests": 0,
+      "deselected_tests": 0,
+      "skip_reasons": [],
+      "skip_category_counts": {},
+      "strict_subsystem": null,
+      "summary": "4 passed in 0.08s"
+    }
+  ],
+  "aggregate": {
+    "all_groups_pass": true,
+    "total_failed_tests": 0,
+    "total_passed_tests": 3450,
+    "total_skipped_tests": 131,
+    "total_deselected_tests": 0,
+    "skip_category_counts": {
+      "external_dependency": 51,
+      "fixture_gap": 2,
+      "capability_gap": 2,
+      "integration_scope": 76
+    },
+    "deselected_category_counts": {},
+    "unavoidable_skip_count": 127,
+    "known_blocking_skip_count": 4,
+    "ambiguous_skip_count": 0,
+    "ambiguous_deselected_count": 0
+  },
+  "execution_gate": {
+    "status": "pass",
+    "requires_all_groups_pass": true,
+    "notes": "Probe command exit status tracks strict runnable test failures. Skip coverage remains classified in criterion_1_gate."
+  },
+  "criterion_1_gate": {
+    "status": "partial",
+    "all_groups_pass": true,
+    "requires_zero_skips_and_deselected_for_full_pass": true,
+    "blocking_skipped_tests": 131,
+    "blocking_deselected_tests": 0,
+    "unavoidable_skip_count": 127,
+    "known_blocking_skip_count": 4,
+    "ambiguous_skip_count": 0,
+    "known_blocking_deselected_count": 0,
+    "ambiguous_deselected_count": 0,
+    "deselected_scope_note": "Probe runs db group with '-o addopts=' to avoid pyproject marker deselection; non-zero deselected indicates an explicit test selection filter outside this probe.",
+    "notes": "Criterion 1 is only full-pass when strict suite is green with zero skipped and zero deselected tests."
+  }
+}

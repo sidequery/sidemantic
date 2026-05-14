@@ -100,3 +100,65 @@ SELECT * FROM sidemantic_models();
 orders
 products
 test_model
+
+# Test repeated YAML load replaces same-name model instead of failing on duplicates
+statement ok
+SELECT * FROM sidemantic_load('
+models:
+  - name: reloadable
+    table: orders
+    primary_key: order_id
+    metrics:
+      - name: order_count
+        agg: count
+');
+
+statement ok
+SELECT * FROM sidemantic_load('
+models:
+  - name: reloadable
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+');
+
+query R
+SEMANTIC SELECT reloadable.revenue FROM reloadable;
+----
+225.00
+
+# Test SEMANTIC MODEL active-model switching and repeated use/rewrite sequence
+statement ok
+SEMANTIC CREATE MODEL sql_orders (name sql_orders, table orders, primary_key order_id);
+
+statement ok
+SEMANTIC CREATE METRIC sql_revenue AS SUM(amount);
+
+statement ok
+SEMANTIC CREATE DIMENSION status AS status;
+
+query IR
+SEMANTIC SELECT sql_orders.status, sql_orders.sql_revenue FROM sql_orders ORDER BY sql_orders.status;
+----
+completed	150.00
+pending	75.00
+
+statement ok
+SEMANTIC CREATE OR REPLACE MODEL sql_orders (name sql_orders, table orders, primary_key order_id);
+
+statement ok
+SEMANTIC MODEL sql_orders;
+
+statement ok
+SEMANTIC CREATE OR REPLACE METRIC sql_order_count AS COUNT(*);
+
+query I
+SEMANTIC SELECT sql_orders.sql_order_count FROM sql_orders;
+----
+3

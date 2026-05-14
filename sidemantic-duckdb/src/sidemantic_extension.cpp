@@ -4,30 +4,35 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/extension_statement.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "sidemantic.h"
 
-// Rust FFI
-extern "C" {
-    struct SidemanticRewriteResult {
-        char *sql;
-        char *error;
-        bool was_rewritten;
-    };
-
-    char *sidemantic_load_yaml(const char *yaml);
-    char *sidemantic_load_file(const char *path);
-    void sidemantic_clear(void);
-    bool sidemantic_is_model(const char *table_name);
-    char *sidemantic_list_models(void);
-    SidemanticRewriteResult sidemantic_rewrite(const char *sql);
-    void sidemantic_free(char *ptr);
-    void sidemantic_free_result(SidemanticRewriteResult result);
-    char *sidemantic_define(const char *definition_sql, const char *db_path, bool replace);
-    char *sidemantic_autoload(const char *db_path);
-    char *sidemantic_add_definition(const char *definition_sql, const char *db_path, bool is_replace);
-    char *sidemantic_use(const char *model_name);
-}
+#include <cstdint>
 
 namespace duckdb {
+
+static std::string DatabasePath(DatabaseInstance &db) {
+    auto &db_config = db.config;
+    if (!db_config.options.database_path.empty()) {
+        return db_config.options.database_path;
+    }
+    return "";
+}
+
+static std::string ContextKey(DatabaseInstance &db) {
+    auto path = DatabasePath(db);
+    if (!path.empty()) {
+        return "duckdb:" + path;
+    }
+    return "duckdb:memory:" + std::to_string(reinterpret_cast<uintptr_t>(&db));
+}
+
+static const char *ContextKeyPtr(const std::string &context_key) {
+    return context_key.empty() ? nullptr : context_key.c_str();
+}
+
+static const SidemanticParserInfo *ParserInfo(ParserExtensionInfo *info) {
+    return dynamic_cast<const SidemanticParserInfo *>(info);
+}
 
 //=============================================================================
 // TABLE FUNCTION: sidemantic_load(yaml)
@@ -59,7 +64,8 @@ static void SidemanticLoadFunction(ClientContext &context, TableFunctionInput &d
     }
     data.done = true;
 
-    char *error = sidemantic_load_yaml(data.yaml_content.c_str());
+    auto context_key = ContextKey(*context.db);
+    char *error = sidemantic_load_yaml_for_context(ContextKeyPtr(context_key), data.yaml_content.c_str());
     if (error) {
         string error_msg(error);
         sidemantic_free(error);
@@ -100,7 +106,8 @@ static void SidemanticLoadFileFunction(ClientContext &context, TableFunctionInpu
     }
     data.done = true;
 
-    char *error = sidemantic_load_file(data.file_path.c_str());
+    auto context_key = ContextKey(*context.db);
+    char *error = sidemantic_load_file_for_context(ContextKeyPtr(context_key), data.file_path.c_str());
     if (error) {
         string error_msg(error);
         sidemantic_free(error);
@@ -136,7 +143,8 @@ static void SidemanticModelsFunction(ClientContext &context, TableFunctionInput 
     }
     data.done = true;
 
-    char *models_str = sidemantic_list_models();
+    auto context_key = ContextKey(*context.db);
+    char *models_str = sidemantic_list_models_for_context(ContextKeyPtr(context_key));
     if (!models_str) {
         output.SetCardinality(0);
         return;
@@ -176,7 +184,12 @@ static void SidemanticRewriteSqlFunction(DataChunk &args, ExpressionState &state
     auto &sql_vector = args.data[0];
     UnaryExecutor::Execute<string_t, string_t>(
         sql_vector, result, args.size(), [&](string_t sql) {
-            SidemanticRewriteResult res = sidemantic_rewrite(sql.GetString().c_str());
+            std::string context_key;
+            if (state.HasContext()) {
+                context_key = ContextKey(*state.GetContext().db);
+            }
+            SidemanticRewriteResult res =
+                sidemantic_rewrite_for_context(ContextKeyPtr(context_key), sql.GetString().c_str());
 
             if (res.error) {
                 string error_msg(res.error);
@@ -429,11 +442,13 @@ static int IsCreateModelStatement(const std::string &query, std::string &definit
     return is_replace ? 2 : 1;
 }
 
-// Global to store database path for parser extension (set during extension load)
-static std::string g_db_path;
-
-ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
+ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *info,
                                             const std::string &query) {
+    auto parser_info = ParserInfo(info);
+    const char *context_key_ptr = parser_info ? ContextKeyPtr(parser_info->context_key) : nullptr;
+    const char *db_path_ptr =
+        parser_info && !parser_info->db_path.empty() ? parser_info->db_path.c_str() : nullptr;
+
     // Check for SEMANTIC prefix
     std::string stripped_query;
     if (!StartsWithSemantic(query, stripped_query)) {
@@ -448,9 +463,8 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
     if (create_type > 0) {
         // This is a CREATE MODEL statement - handle specially
         bool replace = (create_type == 2);
-        const char *db_path_ptr = g_db_path.empty() ? nullptr : g_db_path.c_str();
 
-        char *error = sidemantic_define(definition.c_str(), db_path_ptr, replace);
+        char *error = sidemantic_define_for_context(context_key_ptr, definition.c_str(), db_path_ptr, replace);
         if (error) {
             string error_msg(error);
             sidemantic_free(error);
@@ -489,7 +503,7 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
         }
 
         if (!model_name.empty()) {
-            char *error = sidemantic_use(model_name.c_str());
+            char *error = sidemantic_use_for_context(context_key_ptr, model_name.c_str());
             if (error) {
                 string error_msg(error);
                 sidemantic_free(error);
@@ -512,9 +526,8 @@ not_model_switch:
     bool is_replace = false;
     std::string def_type = IsDefinitionStatement(stripped_query, definition, is_replace);
     if (!def_type.empty()) {
-        const char *db_path_ptr = g_db_path.empty() ? nullptr : g_db_path.c_str();
-
-        char *error = sidemantic_add_definition(definition.c_str(), db_path_ptr, is_replace);
+        char *error =
+            sidemantic_add_definition_for_context(context_key_ptr, definition.c_str(), db_path_ptr, is_replace);
         if (error) {
             string error_msg(error);
             sidemantic_free(error);
@@ -533,7 +546,7 @@ not_model_switch:
     }
 
     // Regular SEMANTIC SELECT query - try to rewrite using sidemantic
-    SidemanticRewriteResult result = sidemantic_rewrite(stripped_query.c_str());
+    SidemanticRewriteResult result = sidemantic_rewrite_for_context(context_key_ptr, stripped_query.c_str());
 
     // If there was an error, return it
     if (result.error) {
@@ -606,17 +619,12 @@ static void LoadInternal(ExtensionLoader &loader) {
     auto &db = loader.GetDatabaseInstance();
     auto &config = DBConfig::GetConfig(db);
 
-    // Capture database path for CREATE MODEL statements
-    auto &db_config = db.config;
-    if (!db_config.options.database_path.empty()) {
-        g_db_path = db_config.options.database_path;
-    } else {
-        g_db_path.clear();
-    }
+    auto db_path = DatabasePath(db);
+    auto context_key = ContextKey(db);
 
     // Auto-load definitions from file if it exists
-    const char *db_path_ptr = g_db_path.empty() ? nullptr : g_db_path.c_str();
-    char *error = sidemantic_autoload(db_path_ptr);
+    const char *db_path_ptr = db_path.empty() ? nullptr : db_path.c_str();
+    char *error = sidemantic_autoload_for_context(ContextKeyPtr(context_key), db_path_ptr);
     if (error) {
         // Log warning but don't fail extension load
         // fprintf(stderr, "Warning: failed to autoload sidemantic definitions: %s\n", error);
@@ -624,7 +632,7 @@ static void LoadInternal(ExtensionLoader &loader) {
     }
 
     // Register parser extension
-    SidemanticParserExtension parser;
+    SidemanticParserExtension parser(db_path, context_key);
     config.parser_extensions.push_back(parser);
 
     // Register operator extension

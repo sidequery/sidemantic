@@ -84,6 +84,8 @@ uv run skills/sidemantic-webapp-builder/scripts/scaffold_static_app.py \
   --title "Metrics Dashboard"
 ```
 
+The scaffold copies readable source from `assets/templates/static-dashboard/` and the static component kit. If you need a richer generated app, edit those copied source files in the target project; do not bury application JavaScript in Python strings or generated HTML fragments.
+
 4. Choose the app shape:
 
 - Existing app: follow its framework, routing, styling, and data-fetch patterns.
@@ -187,7 +189,7 @@ The CLI `sidemantic query` auto-adds default time dimensions for metrics when a 
 
 - `scripts/inspect_layer.py`: inspect models, compile app query shapes, execute samples with `--execute`, or require execution with `--require-execute`.
 - `scripts/copy_components.py`: copy React + Tailwind or static component source from `assets/components/` into a project.
-- `scripts/scaffold_static_app.py`: create a small static dashboard from an executed app spec. It writes `index.html`, `styles.css`, `sidemantic-components.js`, `app.js`, and `data/app-spec.json`.
+- `scripts/scaffold_static_app.py`: create a small static dashboard from an executed app spec by copying templates and components. It writes `index.html`, `styles.css`, `sidemantic-components.js`, `app.js`, and `data/app-spec.json`.
 - `scripts/verify_static_app.py`: dependency-free fallback verifier for static dashboards. It checks files, executed result samples, true totals, non-id leaderboard dimensions, and expected DOM/data bindings.
 - `scripts/verify_static_interactions.mjs`: Playwright smoke test for standard static component contracts. It verifies real data changes for filter, leaderboard, metric, reset, and chart-bounds behavior.
 
@@ -195,6 +197,7 @@ The CLI `sidemantic query` auto-adds default time dimensions for metrics when a 
 
 - `assets/components/react-tailwind/`: copyable React source for analytics apps using Tailwind v3.
 - `assets/components/static/`: copyable plain JS/CSS kit for generated demos and no-build static pages.
+- `assets/templates/static-dashboard/`: readable static app templates used by `scaffold_static_app.py`.
 
 After copying assets into a project, treat them as that project's code. Modify them to match local component APIs, naming, tests, and design system constraints.
 

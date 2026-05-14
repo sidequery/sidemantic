@@ -220,7 +220,7 @@ uv run skills/sidemantic-webapp-builder/scripts/scaffold_static_app.py docs/side
 uv run skills/sidemantic-webapp-builder/scripts/verify_static_app.py dist/sidemantic-dashboard
 ```
 
-The scaffold intentionally stays plain HTML/CSS/JS and consumes the copied static component kit. Use it as a proof point, demo baseline, or fixture before adapting the same query contract into an existing product app.
+The scaffold intentionally stays plain HTML/CSS/JS and consumes copied files from `assets/templates/static-dashboard/` plus the static component kit. Use it as a proof point, demo baseline, or fixture before adapting the same query contract into an existing product app.
 
 Browser-only path:
 

@@ -106,7 +106,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     checks["has_leaderboard_rows_selector"] = 'data-testid="leaderboard-rows"' in source
     checks["has_metric_data_binding"] = "dataset.metric" in source or "data-metric" in source
     checks["has_dimension_data_binding"] = "dataset.dimension" in source or "data-dimension" in source
-    checks["avoids_data_inner_html"] = "card.innerHTML" not in source and "item.innerHTML" not in source
+    checks["avoids_inner_html"] = "innerHTML" not in source
     checks["sparkline_bounded_if_present"] = ".sdm-sparkline" not in source or (
         "overflow: hidden" in source and 'setAttribute("viewBox"' in source
     )

@@ -12,6 +12,7 @@ from typing import Any
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 STATIC_COMPONENT_ROOT = SKILL_ROOT / "assets" / "components" / "static"
+STATIC_TEMPLATE_ROOT = SKILL_ROOT / "assets" / "templates" / "static-dashboard"
 
 
 def _select_candidate(spec: dict[str, Any], model: str | None) -> dict[str, Any]:
@@ -36,85 +37,20 @@ def _require_query(candidate: dict[str, Any], name: str) -> dict[str, Any]:
     return query
 
 
+def _render_template(template_name: str, replacements: dict[str, str]) -> str:
+    template_path = STATIC_TEMPLATE_ROOT / template_name
+    content = template_path.read_text(encoding="utf-8")
+    for token, value in replacements.items():
+        content = content.replace("{{" + token + "}}", value)
+    return content
+
+
 def _write_index(path: Path, title: str) -> None:
-    safe_title = html.escape(title)
-    path.write_text(
-        f"""<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{safe_title}</title>
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body>
-    <main class="sdm-shell">
-      <header class="sdm-shell__header">
-        <div>
-          <p class="sdm-eyebrow">Sidemantic</p>
-          <h1>{safe_title}</h1>
-        </div>
-        <p class="sdm-status" data-testid="app-status">Loading app spec...</p>
-      </header>
-      <section class="sdm-metric-grid" data-testid="metric-totals"></section>
-      <section class="sdm-leaderboard" data-testid="dimension-leaderboard">
-        <div class="sdm-section-heading">
-          <h2 data-testid="leaderboard-title">Leaderboard</h2>
-          <p data-testid="leaderboard-subtitle"></p>
-        </div>
-        <div data-testid="leaderboard-rows"></div>
-      </section>
-      <details class="sdm-debug-panel">
-        <summary>Generated SQL</summary>
-        <pre data-testid="query-debug"></pre>
-      </details>
-    </main>
-    <script type="module" src="app.js"></script>
-  </body>
-</html>
-""",
-        encoding="utf-8",
-    )
+    path.write_text(_render_template("index.html", {"TITLE": html.escape(title)}), encoding="utf-8")
 
 
 def _write_app(path: Path) -> None:
-    path.write_text(
-        """import { renderLeaderboard, renderMetricCards, renderQueryDebug } from "./sidemantic-components.js";
-
-const statusEl = document.querySelector('[data-testid="app-status"]');
-const totalsEl = document.querySelector('[data-testid="metric-totals"]');
-const leaderboardEl = document.querySelector('[data-testid="leaderboard-rows"]');
-const leaderboardTitleEl = document.querySelector('[data-testid="leaderboard-title"]');
-const leaderboardSubtitleEl = document.querySelector('[data-testid="leaderboard-subtitle"]');
-const debugEl = document.querySelector('[data-testid="query-debug"]');
-
-async function main() {
-  const response = await fetch("data/app-spec.json");
-  if (!response.ok) throw new Error(`Failed to load app spec: ${response.status}`);
-  const spec = await response.json();
-  const candidate = spec.app_candidates?.[0];
-  if (!candidate) throw new Error("App spec has no app candidates");
-  const queries = candidate.queries || {};
-
-  renderMetricCards(totalsEl, queries.metric_totals);
-  renderLeaderboard(leaderboardEl, queries.dimension_leaderboard, {
-    titleEl: leaderboardTitleEl,
-    subtitleEl: leaderboardSubtitleEl,
-  });
-  renderQueryDebug(debugEl, {
-    metric_totals: queries.metric_totals,
-    dimension_leaderboard: queries.dimension_leaderboard,
-  });
-  statusEl.textContent = `${candidate.model} ready`;
-}
-
-main().catch((error) => {
-  statusEl.textContent = error.message;
-  statusEl.dataset.error = "true";
-});
-""",
-        encoding="utf-8",
-    )
+    path.write_text(_render_template("app.js", {}), encoding="utf-8")
 
 
 def scaffold(args: argparse.Namespace) -> None:

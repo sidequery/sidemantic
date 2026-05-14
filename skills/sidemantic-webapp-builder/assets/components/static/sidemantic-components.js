@@ -26,7 +26,7 @@ export function requireResult(queryName, query) {
 export function renderMetricCards(container, query, options = {}) {
   const result = requireResult("metric_totals", query);
   const row = result.sample_rows[0] || {};
-  container.innerHTML = "";
+  container.replaceChildren();
 
   for (const metric of query.metrics || []) {
     const key = query.output_aliases?.[metric] || metric.split(".").at(-1);
@@ -77,7 +77,7 @@ export function renderLeaderboard(container, query, options = {}) {
     options.subtitleEl.textContent = options.metricLabel || `Ranked by ${labelize(metricKey)}`;
   }
 
-  container.innerHTML = "";
+  container.replaceChildren();
   for (const row of rows) {
     const value = Number(row[metricKey]) || 0;
     const item = document.createElement(options.interactive ? "button" : "div");
@@ -104,7 +104,7 @@ export function renderLeaderboard(container, query, options = {}) {
 }
 
 export function renderFilterPills(container, filters, onRemove) {
-  container.innerHTML = "";
+  container.replaceChildren();
   for (const [dimension, values] of Object.entries(filters || {})) {
     for (const value of values || []) {
       const pill = document.createElement("span");

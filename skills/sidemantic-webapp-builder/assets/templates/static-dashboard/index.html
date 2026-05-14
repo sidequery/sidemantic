@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{TITLE}}</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="sdm-shell">
+      <header class="sdm-shell__header">
+        <div>
+          <p class="sdm-eyebrow">Sidemantic</p>
+          <h1>{{TITLE}}</h1>
+        </div>
+        <p class="sdm-status" data-testid="app-status">Loading app spec...</p>
+      </header>
+      <section class="sdm-metric-grid" data-testid="metric-totals"></section>
+      <section class="sdm-leaderboard" data-testid="dimension-leaderboard">
+        <div class="sdm-section-heading">
+          <h2 data-testid="leaderboard-title">Leaderboard</h2>
+          <p data-testid="leaderboard-subtitle"></p>
+        </div>
+        <div data-testid="leaderboard-rows"></div>
+      </section>
+      <details class="sdm-debug-panel">
+        <summary>Generated SQL</summary>
+        <pre data-testid="query-debug"></pre>
+      </details>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

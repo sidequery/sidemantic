@@ -198,7 +198,7 @@ class Metric(BaseModel):
                 raise ValueError("ratio metric requires 'numerator' field")
             if not self.denominator:
                 raise ValueError("ratio metric requires 'denominator' field")
-        if self.type == "derived" and not self.sql:
+        if self.type == "derived" and not self.sql and not self.has_untranslated_dax:
             raise ValueError("derived metric requires 'sql' field")
         if self.type == "cumulative" and not self.sql and not self.window_expression:
             raise ValueError("cumulative metric requires 'sql' or 'window_expression' field")
@@ -345,6 +345,11 @@ class Metric(BaseModel):
         if self.agg == "count" and not self.sql:
             return "*"
         return self.sql or self.name
+
+    @property
+    def has_untranslated_dax(self) -> bool:
+        """Whether this metric preserves DAX source without a SQL translation."""
+        return self.expression_language == "dax" and bool(self.dax) and not self.sql and not self.agg
 
     @property
     def is_simple_aggregation(self) -> bool:

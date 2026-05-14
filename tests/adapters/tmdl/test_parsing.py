@@ -18,6 +18,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.loaders import load_from_directory
+from sidemantic.validation import QueryValidationError
 
 # =============================================================================
 # BASIC PARSING TESTS
@@ -58,7 +59,7 @@ def test_import_tmdl_directory():
     sales_ly = sales.get_metric("Sales LY")
     assert sales_ly.type == "derived"
     assert sales_ly.expression_language == "dax"
-    assert sales_ly.sql == sales_ly.dax
+    assert sales_ly.sql is None
     assert "SAMEPERIODLASTYEAR" in sales_ly.dax
 
     backtick = sales.get_metric("Backtick Measure")
@@ -81,6 +82,14 @@ def test_import_tmdl_directory_does_not_warn_for_model_relationship_refs():
         if warning.get("code") == "relationship_parse_skip" and warning.get("context") == "relationship"
     ]
     assert relationship_warnings == []
+
+
+def test_tmdl_untranslated_dax_metric_is_not_compiled_as_sql():
+    layer = SemanticLayer()
+    load_from_directory(layer, "tests/fixtures/tmdl")
+
+    with pytest.raises(QueryValidationError, match="DAX expression but has no SQL translation"):
+        layer.compile(metrics=["Sales.Sales LY"])
 
 
 def test_tmdl_export_preserves_model_ref_table_literals_and_order():
@@ -506,7 +515,9 @@ def test_tmdl_measure_derived_expression():
         graph = adapter.parse(temp_path)
         metric = graph.models["test"].get_metric("avg_price")
         assert metric.type == "derived"
-        assert "SUM" in metric.sql
+        assert metric.expression_language == "dax"
+        assert metric.sql is None
+        assert "SUM" in metric.dax
     finally:
         temp_path.unlink()
 
@@ -538,7 +549,7 @@ def test_tmdl_measure_preserves_complex_dax_source():
         assert sales_ly_inline.type == "derived"
         assert sales_ly_inline.expression_language == "dax"
         assert sales_ly_inline.dax == "CALCULATE(SUM('Sales'[Amount]), SAMEPERIODLASTYEAR('Sales'[Order Date]))"
-        assert sales_ly_inline.sql == sales_ly_inline.dax
+        assert sales_ly_inline.sql is None
         assert [metric.name for metric in model.metrics] == ["Sales LY Inline"]
     finally:
         temp_path.unlink()
@@ -572,7 +583,7 @@ def test_tmdl_measure_preserves_totalytd_dax_source():
         assert metric.type == "derived"
         assert metric.expression_language == "dax"
         assert metric.dax == "TOTALYTD(CALCULATE(SUM(Sales[Amount]), Sales[ProductKey] = 1), Sales[OrderDate])"
-        assert metric.sql == metric.dax
+        assert metric.sql is None
     finally:
         temp_path.unlink()
 

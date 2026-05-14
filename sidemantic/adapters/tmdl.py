@@ -585,16 +585,15 @@ def _measure_to_metric(
     metric = Metric(
         name=node.name or "",
         agg=agg,
-        sql=sql or expression if not agg else sql,
+        sql=sql,
         dax=expression,
+        expression_language="dax",
         type=metric_type,
         description=node.description or _string_prop(_props(node).get("description")),
         label=_string_prop(_props(node).get("caption")),
         format=_string_prop(_props(node).get("formatstring")),
         public=not _is_true(props.get("ishidden")),
     )
-    if expression:
-        metric.expression_language = "dax"
     metric._source_format = "TMDL"
     if node.location and node.location.file:
         try:

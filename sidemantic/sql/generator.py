@@ -2229,6 +2229,12 @@ class SQLGenerator:
         Returns:
             SQL expression string
         """
+        if getattr(metric, "has_untranslated_dax", False):
+            raise ValueError(
+                f"Metric '{metric.name}' contains DAX expression but has no SQL translation. "
+                "DAX lowering is not available in this build."
+            )
+
         if metric.type == "ratio":
             # numerator / NULLIF(denominator, 0)
             if not metric.numerator or not metric.denominator:

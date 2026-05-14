@@ -116,7 +116,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = YardstickAdapter(dialect=layer.dialect or "duckdb")
             else:
                 # Sidemantic SQL files (pure SQL or with YAML frontmatter)
-                adapter = SidemanticAdapter(lower_dax=False)
+                adapter = SidemanticAdapter()
         elif suffix == ".json":
             content = file_path.read_text()
             if '"ldm"' in content and '"datasets"' in content:
@@ -150,7 +150,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = CubeAdapter()
             # Check for Sidemantic native format (explicit models: key)
             elif "models:" in content:
-                adapter = SidemanticAdapter(lower_dax=False)
+                adapter = SidemanticAdapter()
             elif "metrics:" in content and "type: " in content:
                 adapter = MetricFlowAdapter()
             elif "base_sql_table:" in content and "measures:" in content:
@@ -205,8 +205,6 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
 
-    _lower_dax_models(all_models, all_metrics, all_parameters)
-
     # Add all models to the layer (now with relationships)
     for model in all_models.values():
         if model.name not in layer.graph.models:
@@ -225,19 +223,6 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
     # Rebuild adjacency graph to recognize all inferred relationships
     layer.graph.build_adjacency()
-
-
-def _lower_dax_models(all_models: dict, all_metrics: dict, all_parameters: dict) -> None:
-    if not all_models and not all_metrics:
-        return
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.dax.modeling import lower_dax_graph_expressions
-
-    graph = SemanticGraph()
-    graph.models.update(all_models)
-    graph.metrics.update(all_metrics)
-    graph.parameters.update(all_parameters)
-    lower_dax_graph_expressions(graph)
 
 
 def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dict) -> None:

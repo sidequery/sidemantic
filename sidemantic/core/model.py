@@ -21,7 +21,7 @@ class Model(BaseModel):
     name: str = Field(..., description="Unique model name")
     table: str | None = Field(None, description="Physical table name (schema.table)")
     sql: str | None = Field(None, description="SQL expression for derived tables")
-    dax: str | None = Field(None, description="DAX table expression source text to lower into SQL")
+    dax: str | None = Field(None, description="DAX table expression source text")
     expression_language: Literal["sql", "dax"] | None = Field(
         None, description="Expression language for sql/dax derived table authoring"
     )

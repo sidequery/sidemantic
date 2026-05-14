@@ -13,15 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = ROOT / "fixtures" / "external_powerbi"
 
 TMDL_FIXTURES = [
-    pytest.param(
-        "microsoft-analysis-services-sales", 11, 29, 5, 1, {"dax_translation_fallback": 2}, id="analysis-services"
-    ),
+    pytest.param("microsoft-analysis-services-sales", 11, 29, 5, 1, {}, id="analysis-services"),
     pytest.param("microsoft-fabric-samples-bank-customer-churn", 1, 4, 0, 0, {}, id="fabric-samples"),
     pytest.param("pbi-tools-adventureworks-dw2020", 7, 0, 8, 2, {}, id="adventureworks"),
     pytest.param("pbip-lineage-explorer-sample", 6, 7, 3, 0, {}, id="pbip-lineage"),
-    pytest.param(
-        "ruiromano-pbip-demo-agentic-model01", 4, 15, 4, 1, {"dax_translation_fallback": 2}, id="pbip-demo-agentic"
-    ),
+    pytest.param("ruiromano-pbip-demo-agentic-model01", 4, 15, 4, 1, {}, id="pbip-demo-agentic"),
 ]
 
 

@@ -12,13 +12,6 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.dax import (
-    DaxTranslationError,
-    RelationshipEdge,
-    translate_dax_metric,
-    translate_dax_scalar,
-    translate_dax_table,
-)
 
 if TYPE_CHECKING:
     from sidemantic_dax.ast import Expr as DaxExpr
@@ -54,8 +47,6 @@ class TMDLAdapter(BaseAdapter):
         table_nodes = [
             node for node in _find_nodes(merged_nodes, {"table", "calculatedtable"}) if not _is_ref_only(node)
         ]
-        table_names = {node.name for node in table_nodes if node.name}
-        relationship_edges = _collect_relationship_edges(relationship_nodes, known_tables=table_names)
         column_sql_by_table, measure_names_by_table, measure_aggs_by_table, time_dimensions_by_table = (
             _collect_table_metadata(table_nodes)
         )
@@ -68,7 +59,6 @@ class TMDLAdapter(BaseAdapter):
                 measure_names_by_table,
                 measure_aggs_by_table,
                 time_dimensions_by_table,
-                relationship_edges,
                 warnings,
             )
             model._source_format = "TMDL"
@@ -330,7 +320,6 @@ def _table_to_model(
     measure_names_by_table: dict[str, set[str]],
     measure_aggs_by_table: dict[str, dict[str, str]],
     time_dimensions_by_table: dict[str, set[str]],
-    relationship_edges: list[RelationshipEdge],
     warnings: list[TmdlImportWarning],
 ) -> Model:
     props = _props(node)
@@ -365,7 +354,6 @@ def _table_to_model(
                 measure_names_by_table,
                 measure_aggs_by_table,
                 time_dimensions_by_table,
-                relationship_edges,
                 warnings,
             )
             if parsed_metrics:
@@ -375,11 +363,15 @@ def _table_to_model(
 
     model_sql = None
     model_table = node.name or None
-    model_required_models: list[str] | None = None
+    model_dax = None
+    model_expression_language = None
     if node.type.lower() == "calculatedtable":
+        model_table = None
         expression_obj = _resolve_expression_object(node, props)
         expr_text = expression_obj.text if expression_obj else None
         original_expression = expr_text
+        model_dax = expr_text
+        model_expression_language = "dax" if expr_text else None
         if expr_text:
             try:
                 dax_expr = _parse_dax_expression(expr_text, node, "table")
@@ -404,40 +396,14 @@ def _table_to_model(
                 )
                 dax_expr = None
             if dax_expr is not None:
-                try:
-                    translation = translate_dax_table(
-                        dax_expr,
-                        model_name=None,
-                        column_sql_by_table=column_sql_by_table,
-                        measure_names_by_table=measure_names_by_table,
-                        relationship_edges=relationship_edges,
-                    )
-                    model_sql = translation.sql
-                    model_required_models = sorted(translation.required_models)
-                    _append_dax_translation_warnings(
-                        warnings,
-                        node,
-                        context="calculated_table",
-                        model_name=node.name,
-                        translation_warnings=translation.warnings,
-                    )
-                except DaxTranslationError as exc:
-                    _append_import_warning(
-                        warnings,
-                        node,
-                        code="dax_translation_fallback",
-                        context="calculated_table",
-                        message=str(exc),
-                        model_name=node.name,
-                    )
-                    model_sql = None
-        if model_sql:
-            model_table = None
+                model_sql = None
 
     model = Model(
         name=node.name or "",
         table=model_table,
         sql=model_sql,
+        dax=model_dax,
+        expression_language=model_expression_language,
         description=description,
         primary_key=primary_key or "id",
         dimensions=dimensions,
@@ -460,15 +426,11 @@ def _table_to_model(
         if original_expression:
             model._tmdl_expression = original_expression
             model.dax = original_expression
-            model._dax_skip_native_lowering = True
-            model._dax_lowered = model_sql is not None
         expression_obj = _resolve_expression_object(node, props)
         if expression_obj is not None:
             model._tmdl_expression_obj = _clone_tmdl_value(expression_obj)
         if "dax_expr" in locals() and dax_expr is not None:
             model._dax_ast = dax_expr
-        if model_required_models:
-            model._dax_required_models = model_required_models
     table_props = _node_passthrough_properties(node, {"description", "expression"})
     if table_props:
         model._tmdl_properties = table_props
@@ -524,27 +486,8 @@ def _column_to_dimension(
             dax_expr = None
     else:
         dax_expr = None
-    dax_lowered = False
-    if dax_expr is not None and expression:
-        try:
-            sql = translate_dax_scalar(
-                dax_expr,
-                model_name=table_name,
-                column_sql_by_table=column_sql_by_table,
-                measure_names_by_table=measure_names_by_table,
-                time_dimensions_by_table=time_dimensions_by_table,
-            )
-            dax_lowered = True
-        except DaxTranslationError as exc:
-            _append_import_warning(
-                warnings,
-                node,
-                code="dax_translation_fallback",
-                context="column",
-                message=str(exc),
-                model_name=table_name,
-            )
-            sql = source_column or expression
+    if expression and not sql:
+        sql = source_column or expression
     if not sql:
         sql = node.name or ""
 
@@ -560,8 +503,7 @@ def _column_to_dimension(
         public=not _is_true(props.get("ishidden")),
     )
     if expression:
-        dimension._dax_skip_native_lowering = True
-        dimension._dax_lowered = dax_lowered
+        dimension.expression_language = "dax"
     dimension._source_format = "TMDL"
     if node.location and node.location.file:
         try:
@@ -607,7 +549,6 @@ def _measure_to_metric(
     measure_names_by_table: dict[str, set[str]],
     measure_aggs_by_table: dict[str, dict[str, str]],
     time_dimensions_by_table: dict[str, set[str]],
-    relationship_edges: list[RelationshipEdge],
     warnings: list[TmdlImportWarning],
 ) -> list[Metric]:
     props = _props(node)
@@ -639,108 +580,6 @@ def _measure_to_metric(
             model_name=table_name,
         )
         dax_expr = None
-    translation = None
-    if dax_expr is not None:
-        try:
-            translation = translate_dax_metric(
-                dax_expr,
-                model_name=table_name,
-                column_sql_by_table=column_sql_by_table,
-                measure_names_by_table=measure_names_by_table,
-                measure_aggs_by_table=measure_aggs_by_table,
-                time_dimensions_by_table=time_dimensions_by_table,
-                relationship_edges=relationship_edges,
-            )
-        except DaxTranslationError as exc:
-            _append_import_warning(
-                warnings,
-                node,
-                code="dax_translation_fallback",
-                context="measure",
-                message=str(exc),
-                model_name=table_name,
-            )
-            translation = None
-
-    if translation:
-        metric_type = translation.type
-        if metric_type is None and translation.sql and not translation.agg:
-            metric_type = "derived"
-        inline_metrics: list[Metric] = []
-        base_metric_ref = translation.base_metric
-        if (
-            metric_type == "time_comparison"
-            and not base_metric_ref
-            and translation.inline_base_agg
-            and translation.inline_base_sql
-        ):
-            base_metric_name = _inline_base_metric_name(
-                node.name or "metric", measure_names_by_table.get(table_name, set())
-            )
-            base_metric_ref = f"{table_name}.{base_metric_name}"
-            inline_metrics.append(
-                Metric(
-                    name=base_metric_name,
-                    agg=translation.inline_base_agg,
-                    sql=translation.inline_base_sql,
-                    filters=translation.inline_base_filters or None,
-                )
-            )
-
-        metric = Metric(
-            name=node.name or "",
-            agg=translation.agg,
-            sql=translation.sql,
-            dax=expression,
-            type=metric_type,
-            base_metric=base_metric_ref,
-            comparison_type=translation.comparison_type,
-            calculation=translation.calculation,
-            time_offset=translation.time_offset,
-            window=translation.window,
-            grain_to_date=translation.grain_to_date,
-            window_order=translation.window_order,
-            filters=translation.filters or None,
-            relationship_overrides=translation.relationship_overrides or None,
-            required_models=sorted(translation.required_models) if translation.required_models else None,
-            description=node.description or _string_prop(_props(node).get("description")),
-            label=_string_prop(_props(node).get("caption")),
-            format=_string_prop(_props(node).get("formatstring")),
-            public=not _is_true(props.get("ishidden")),
-        )
-        metric._dax_lowered = True
-        metric._dax_skip_native_lowering = True
-        metric._source_format = "TMDL"
-        if node.location and node.location.file:
-            try:
-                metric._source_file = str(Path(node.location.file).relative_to(root))
-            except ValueError:
-                metric._source_file = node.location.file
-        if dax_expr is not None:
-            metric._dax_ast = dax_expr
-        if node.name_raw:
-            metric._tmdl_name_raw = node.name_raw
-        if node.leading_comments:
-            metric._tmdl_leading_comments = list(node.leading_comments)
-        metric._tmdl_expression = expression
-        if expression_obj is not None:
-            metric._tmdl_expression_obj = _clone_tmdl_value(expression_obj)
-        measure_props = _node_passthrough_properties(
-            node, {"caption", "formatstring", "description", "expression", "ishidden"}
-        )
-        if measure_props:
-            metric._tmdl_properties = measure_props
-        raw_value_props = _node_raw_value_properties(node)
-        if raw_value_props:
-            metric._tmdl_raw_value_properties = raw_value_props
-        property_order = [prop.name.lower() for prop in node.properties if isinstance(prop.name, str)]
-        if property_order:
-            metric._tmdl_property_order = property_order
-        if node.children:
-            metric._tmdl_child_nodes = [_clone_tmdl_node(child) for child in node.children]
-        inline_metrics.append(metric)
-        return inline_metrics
-
     agg, sql = _extract_dax_agg(expression, table_name, dax_expr)
     metric_type = None if agg else "derived"
     metric = Metric(
@@ -755,8 +594,7 @@ def _measure_to_metric(
         public=not _is_true(props.get("ishidden")),
     )
     if expression:
-        metric._dax_skip_native_lowering = True
-        metric._dax_lowered = False
+        metric.expression_language = "dax"
     metric._source_format = "TMDL"
     if node.location and node.location.file:
         try:
@@ -786,23 +624,6 @@ def _measure_to_metric(
     if node.children:
         metric._tmdl_child_nodes = [_clone_tmdl_node(child) for child in node.children]
     return [metric]
-
-
-def _inline_base_metric_name(metric_name: str, existing_names: set[str]) -> str:
-    stem_chars: list[str] = []
-    for ch in metric_name:
-        if ch.isalnum():
-            stem_chars.append(ch.lower())
-        else:
-            stem_chars.append("_")
-    stem = "".join(stem_chars).strip("_") or "metric"
-    candidate = f"__{stem}_base"
-    if candidate not in existing_names:
-        return candidate
-    idx = 2
-    while f"{candidate}_{idx}" in existing_names:
-        idx += 1
-    return f"{candidate}_{idx}"
 
 
 def _apply_relationships(
@@ -986,38 +807,6 @@ def _clone_tmdl_node(node: TmdlNode) -> TmdlNode:
     )
 
 
-def _collect_relationship_edges(
-    nodes: list[TmdlNode], *, known_tables: set[str] | None = None
-) -> list[RelationshipEdge]:
-    edges: list[RelationshipEdge] = []
-    for node in nodes:
-        props = _props(node)
-        if _is_false(props.get("isactive")):
-            continue
-        from_ref = _string_prop(props.get("fromcolumn"))
-        to_ref = _string_prop(props.get("tocolumn"))
-        from_table, from_column = _parse_column_reference(from_ref)
-        to_table, to_column = _parse_column_reference(to_ref)
-        if not from_table or not from_column or not to_table or not to_column:
-            continue
-        if known_tables is not None and (from_table not in known_tables or to_table not in known_tables):
-            continue
-        if not _map_relationship_type(
-            _string_prop(props.get("fromcardinality")),
-            _string_prop(props.get("tocardinality")),
-        ):
-            continue
-        edges.append(
-            RelationshipEdge(
-                from_table=from_table,
-                from_column=from_column,
-                to_table=to_table,
-                to_column=to_column,
-            )
-        )
-    return edges
-
-
 def _find_default_time_dimension(dimensions: list[Dimension]) -> str | None:
     for dimension in dimensions:
         if dimension.type == "time":
@@ -1163,27 +952,6 @@ def _append_import_warning(
         warning["line"] = node.location.line
         warning["column"] = node.location.column
     warnings.append(warning)
-
-
-def _append_dax_translation_warnings(
-    warnings: list[TmdlImportWarning],
-    node: TmdlNode,
-    *,
-    context: str,
-    model_name: str | None,
-    translation_warnings: list[dict[str, Any]],
-) -> None:
-    for translation_warning in translation_warnings:
-        if not isinstance(translation_warning, dict):
-            continue
-        _append_import_warning(
-            warnings,
-            node,
-            code=str(translation_warning.get("code") or "dax_translation_warning"),
-            context=context,
-            message=str(translation_warning.get("message") or "DAX translation warning"),
-            model_name=model_name,
-        )
 
 
 def _append_export_warning(
@@ -1536,7 +1304,7 @@ def _export_table(model: Model) -> str:
     model_name_raw = getattr(model, "_tmdl_name_raw", None)
     model_expression_obj = _dax_expression_for_export(model)
     is_calculated_table = node_type == "calculatedtable" or (
-        model_expression_obj is not None and getattr(model, "expression_language", None) == "dax"
+        model_expression_obj is not None and (getattr(model, "expression_language", None) == "dax" or not model.table)
     )
     if is_calculated_table and model_expression_obj and model_expression_obj.text.strip():
         _append_expression_assignment(

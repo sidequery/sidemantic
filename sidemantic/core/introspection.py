@@ -36,10 +36,7 @@ def _include_graph_metric(metric: Metric, requested_models: set[str]) -> bool:
     owner_model = _metric_owner_model(metric)
     if owner_model and owner_model in requested_models:
         return True
-    required_models = getattr(metric, "required_models", None) or []
-    if not required_models:
-        return True
-    return set(required_models).issubset(requested_models)
+    return owner_model is None
 
 
 def _metric_owner_model(metric: Metric) -> str | None:
@@ -130,10 +127,6 @@ def _describe_metric(
         "window_order": metric.window_order,
         "filters": metric.filters or [],
         "drill_fields": metric.drill_fields or [],
-        "required_models": metric.required_models,
-        "relationship_overrides": [
-            _relationship_override_info(override) for override in metric.relationship_overrides or []
-        ],
         "public": metric.public,
     }
     _add_common_fields(info, metric, warnings, context="measure", model_name=model_name, inherited_from=model)
@@ -209,12 +202,6 @@ def _add_common_fields(
     if tmdl_expression or dax_expression:
         info["original_expression"] = tmdl_expression or dax_expression
 
-    lowered = bool(getattr(obj, "_dax_lowered", False))
-    if lowered:
-        info["dax_lowered"] = True
-    if required_models := getattr(obj, "_dax_required_models", None):
-        info["dax_required_models"] = required_models
-
     tmdl_metadata = _tmdl_metadata(obj)
     if tmdl_metadata:
         info["tmdl"] = tmdl_metadata
@@ -227,8 +214,6 @@ def _add_common_fields(
         model_name=model_name,
         alternate_names=alternate_warning_names,
     )
-    if "import_warnings" not in info and (tmdl_expression or dax_expression):
-        info["faithful_lowering"] = True
 
 
 def _tmdl_metadata(obj: Any) -> dict[str, Any]:
@@ -277,12 +262,9 @@ def _add_warning_fields(
         return
     info["import_warnings"] = matched
     info["unsupported"] = any(
-        warning.get("code")
-        in {"dax_parse_error", "dax_parser_unavailable", "dax_translation_fallback", "relationship_parse_skip"}
+        warning.get("code") in {"dax_parse_error", "dax_parser_unavailable", "relationship_parse_skip"}
         for warning in matched
     )
-    if context in {"column", "measure", "calculated_table", "relationship"}:
-        info["faithful_lowering"] = not info["unsupported"]
 
 
 def _dax_expression_text(obj: Any) -> str | None:
@@ -340,7 +322,3 @@ def _json_safe(value: Any) -> Any:
 
 def _drop_none(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item is not None and item != []}
-
-
-def _relationship_override_info(override: Any) -> dict[str, Any]:
-    return _json_safe(override)

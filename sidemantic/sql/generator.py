@@ -5,9 +5,7 @@ import logging
 import sqlglot
 from sqlglot import exp, select
 
-from sidemantic.core.metric import Metric
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
-from sidemantic.core.relationship import RelationshipOverride
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
@@ -35,64 +33,6 @@ class SQLGenerator:
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
-        self._generate_cache: dict[tuple[object, ...], str] = {}
-        self._identifier_sql_cache: dict[tuple[str, str], str] = {}
-
-    def _freeze_for_cache(self, value):
-        """Convert request values into stable, hashable cache keys."""
-        if isinstance(value, dict):
-            return tuple(sorted((str(k), self._freeze_for_cache(v)) for k, v in value.items()))
-        if isinstance(value, list | tuple):
-            return tuple(self._freeze_for_cache(item) for item in value)
-        if isinstance(value, set):
-            return tuple(sorted(self._freeze_for_cache(item) for item in value))
-        try:
-            hash(value)
-        except TypeError:
-            return repr(value)
-        return value
-
-    def _generate_cache_key(
-        self,
-        metrics,
-        dimensions,
-        filters,
-        segments,
-        order_by,
-        limit,
-        offset,
-        parameters,
-        ungrouped,
-        use_preaggregations,
-        aliases,
-        skip_default_time_dimensions,
-        relationship_overrides,
-    ) -> tuple[object, ...]:
-        return (
-            getattr(self.graph, "_revision", 0),
-            self.dialect,
-            self.preagg_database,
-            self.preagg_schema,
-            self._freeze_for_cache(metrics or ()),
-            self._freeze_for_cache(dimensions or ()),
-            self._freeze_for_cache(filters or ()),
-            self._freeze_for_cache(segments or ()),
-            self._freeze_for_cache(order_by or ()),
-            limit,
-            offset,
-            self._freeze_for_cache(parameters or {}),
-            ungrouped,
-            use_preaggregations,
-            self._freeze_for_cache(aliases or {}),
-            skip_default_time_dimensions,
-            self._freeze_for_cache(relationship_overrides or ()),
-        )
-
-    def _cache_generated_sql(self, cache_key: tuple[object, ...], sql: str) -> str:
-        if len(self._generate_cache) >= 256:
-            self._generate_cache.pop(next(iter(self._generate_cache)))
-        self._generate_cache[cache_key] = sql
-        return sql
 
     def _date_trunc(self, granularity: str, column_expr: str) -> str:
         """Generate dialect-specific time truncation expression.
@@ -261,18 +201,9 @@ class SQLGenerator:
         Delegates to sqlglot which handles reserved words (e.g., 'order')
         and special characters automatically.
         """
-        cache_key = (self.dialect, name)
-        cached = self._identifier_sql_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
         if self._is_simple_identifier(name):
-            sql = sqlglot.to_identifier(name, quoted=False).sql(dialect=self.dialect)
-        else:
-            sql = sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
-
-        self._identifier_sql_cache[cache_key] = sql
-        return sql
+            return sqlglot.to_identifier(name, quoted=False).sql(dialect=self.dialect)
+        return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
 
     def _cte_name(self, model_name: str) -> str:
         """Get the CTE identifier name for a model."""
@@ -281,107 +212,6 @@ class SQLGenerator:
     def _cte_ref(self, model_name: str, column_name: str) -> str:
         """Build a quoted reference to a CTE column."""
         return f"{self._quote_identifier(self._cte_name(model_name))}.{self._quote_identifier(column_name)}"
-
-    def _metric_for_ref(self, metric_ref: str, model_context: str | None = None) -> tuple[Metric | None, str | None]:
-        if "." in metric_ref:
-            model_name, metric_name = metric_ref.split(".", 1)
-            try:
-                model = self.graph.get_model(model_name)
-            except KeyError:
-                model = None
-            if model is not None:
-                metric = model.get_metric(metric_name)
-                if metric is not None:
-                    return metric, model_name
-            try:
-                return self.graph.get_metric(metric_ref), None
-            except KeyError:
-                return None, None
-
-        if model_context:
-            try:
-                model = self.graph.get_model(model_context)
-            except KeyError:
-                model = None
-            if model is not None:
-                metric = model.get_metric(metric_ref)
-                if metric is not None:
-                    return metric, model_context
-
-        try:
-            return self.graph.get_metric(metric_ref), None
-        except KeyError:
-            pass
-
-        matches = []
-        for model_name, model in self.graph.models.items():
-            metric = model.get_metric(metric_ref)
-            if metric is not None:
-                matches.append((metric, model_name))
-        if len(matches) == 1:
-            return matches[0]
-        return None, None
-
-    def _collect_relationship_overrides(self, metric_refs: list[str]) -> list[RelationshipOverride]:
-        overrides: list[RelationshipOverride] = []
-        seen_overrides: set[tuple[str, str, str, str, str | None, str | None]] = set()
-        visited_metrics: set[tuple[str | None, str]] = set()
-
-        def add_override(override: RelationshipOverride) -> None:
-            key = (
-                override.from_model,
-                override.from_column,
-                override.to_model,
-                override.to_column,
-                override.join_type,
-                override.direction,
-            )
-            if key in seen_overrides:
-                return
-            seen_overrides.add(key)
-            overrides.append(override)
-
-        def visit_ref(metric_ref: str, model_context: str | None = None) -> None:
-            metric, owner_model = self._metric_for_ref(metric_ref, model_context)
-            if metric is None:
-                return
-            key = (owner_model, metric.name)
-            if key in visited_metrics:
-                return
-            visited_metrics.add(key)
-
-            for override in metric.relationship_overrides or []:
-                add_override(override)
-
-            if metric.type == "ratio":
-                if metric.numerator:
-                    visit_ref(metric.numerator, owner_model)
-                if metric.denominator:
-                    visit_ref(metric.denominator, owner_model)
-            elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
-                for dependency in metric.get_dependencies(self.graph, owner_model):
-                    visit_ref(dependency, owner_model)
-
-        for metric_ref in metric_refs:
-            visit_ref(metric_ref)
-
-        return overrides
-
-    @staticmethod
-    def _relationship_overrides_cache_key(
-        relationship_overrides: list[RelationshipOverride],
-    ) -> tuple[tuple[str, str, str, str, str | None, str | None], ...]:
-        return tuple(
-            (
-                override.from_model,
-                override.from_column,
-                override.to_model,
-                override.to_column,
-                override.join_type,
-                override.direction,
-            )
-            for override in relationship_overrides
-        )
 
     def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
         """Auto-include default_time_dimension from models if not already present.
@@ -509,26 +339,6 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
-        relationship_overrides = self._collect_relationship_overrides(metrics)
-
-        cache_key = self._generate_cache_key(
-            metrics,
-            dimensions,
-            filters,
-            segments,
-            order_by,
-            limit,
-            offset,
-            parameters,
-            ungrouped,
-            use_preaggregations,
-            aliases,
-            skip_default_time_dimensions,
-            self._relationship_overrides_cache_key(relationship_overrides),
-        )
-        cached = self._generate_cache.get(cache_key)
-        if cached is not None:
-            return cached
 
         # Auto-include default_time_dimension from metrics if not already present
         if not skip_default_time_dimensions:
@@ -635,8 +445,7 @@ class SQLGenerator:
         needs_window_functions = any(metric_needs_window(m) for m in metrics)
 
         if needs_window_functions:
-            sql = self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset, aliases)
-            return self._cache_generated_sql(cache_key, sql)
+            return self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset, aliases)
 
         # Parse dimension references and extract granularities
         parsed_dims = self._parse_dimension_refs(dimensions)
@@ -646,8 +455,8 @@ class SQLGenerator:
 
         # Check if we need symmetric aggregation (pre-aggregation approach)
         # This is needed when metrics come from different models at different join levels
-        if self._needs_preaggregation_for_fanout(metrics, dimensions, relationship_overrides):
-            sql = self._generate_with_preaggregation(
+        if self._needs_preaggregation_for_fanout(metrics, dimensions):
+            return self._generate_with_preaggregation(
                 metrics=metrics,
                 dimensions=dimensions,
                 filters=filters,
@@ -657,7 +466,6 @@ class SQLGenerator:
                 offset=offset,
                 aliases=aliases,
             )
-            return self._cache_generated_sql(cache_key, sql)
 
         # Try to use pre-aggregation if enabled (single model queries only)
         if use_preaggregations and len(model_names) == 1 and not ungrouped:
@@ -675,7 +483,7 @@ class SQLGenerator:
                 instrumentation = self._generate_instrumentation_comment(
                     models=[model_names[0]], metrics=metrics, dimensions=dimensions, used_preagg=True
                 )
-                return self._cache_generated_sql(cache_key, preagg_sql + "\n" + instrumentation)
+                return preagg_sql + "\n" + instrumentation
 
         if not model_names:
             raise ValueError("No models found for query")
@@ -689,7 +497,7 @@ class SQLGenerator:
             for model_b in list(model_names)[i + 1 :]:
                 # Find join path and add intermediate models
                 try:
-                    join_path = self.graph.find_relationship_path(model_a, model_b, relationship_overrides)
+                    join_path = self.graph.find_relationship_path(model_a, model_b)
                     for jp in join_path:
                         all_models.add(jp.from_model)
                         all_models.add(jp.to_model)
@@ -758,7 +566,6 @@ class SQLGenerator:
                 order_by=order_by,
                 all_models=all_models,
                 metric_filter_columns=metric_filter_cols,
-                relationship_overrides=relationship_overrides,
             )
             cte_sqls.append(cte_sql)
 
@@ -775,7 +582,6 @@ class SQLGenerator:
             offset=offset,
             ungrouped=ungrouped,
             aliases=aliases,
-            relationship_overrides=relationship_overrides,
         )
 
         # Combine CTEs and main query
@@ -792,7 +598,7 @@ class SQLGenerator:
         )
         full_sql = full_sql + "\n" + instrumentation
 
-        return self._cache_generated_sql(cache_key, full_sql)
+        return full_sql
 
     def _parse_dimension_refs(self, dimensions: list[str]) -> list[tuple[str, str | None]]:
         """Parse dimension references to extract granularities.
@@ -911,70 +717,37 @@ class SQLGenerator:
                 models.append(model_name)
                 seen.add(model_name)
 
-        def collect_models_from_metric_object(metric: Metric, model_context: str | None, visited: set[str]):
-            metric_key = f"{model_context or ''}.{metric.name}"
-            if metric_key in visited:
-                return
-            visited.add(metric_key)
-
-            for required_model in metric.required_models or []:
-                add_model(required_model)
-
-            for override in metric.relationship_overrides or []:
-                add_model(override.from_model)
-                add_model(override.to_model)
-
-            if metric.type == "ratio":
-                if metric.numerator:
-                    collect_models_from_metric(metric.numerator, model_context, visited)
-                if metric.denominator:
-                    collect_models_from_metric(metric.denominator, model_context, visited)
-            elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
-                for ref_metric in metric.get_dependencies(self.graph, model_context):
-                    collect_models_from_metric(ref_metric, model_context, visited)
-                if metric.sql:
-                    for model_name in self._extract_models_from_sql(metric.sql):
-                        add_model(model_name)
-            elif metric.agg and metric.sql:
-                for model_name in self._extract_models_from_sql(metric.sql):
-                    add_model(model_name)
-
-        def collect_models_from_metric_with_visited(metric_ref: str, model_context: str | None, visited: set[str]):
-            """Recursively collect models needed from a metric with cycle protection."""
+        def collect_models_from_metric(metric_ref: str):
+            """Recursively collect models needed from a metric."""
             if "." in metric_ref:
                 # Direct measure reference (model.measure)
-                model_name, measure_name = metric_ref.split(".", 1)
-                add_model(model_name)
-                try:
-                    model = self.graph.get_model(model_name)
-                except KeyError:
-                    model = None
-                if model:
-                    metric = model.get_metric(measure_name)
-                    if metric:
-                        collect_models_from_metric_object(metric, model_name, visited)
+                add_model(metric_ref.split(".")[0])
             else:
                 # It's a metric, need to resolve its dependencies
                 try:
                     metric = self.graph.get_metric(metric_ref)
                     if metric:
-                        collect_models_from_metric_object(metric, model_context, visited)
+                        if metric.type == "ratio":
+                            if metric.numerator:
+                                collect_models_from_metric(metric.numerator)
+                            if metric.denominator:
+                                collect_models_from_metric(metric.denominator)
+                        elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+                            # Derived or untyped metrics with sql - auto-detect dependencies
+                            for ref_metric in metric.get_dependencies(self.graph):
+                                collect_models_from_metric(ref_metric)
+                            # Inline SQL expression metrics (e.g., SUM(orders.amount))
+                            # can have empty dependencies, so also parse model refs directly.
+                            if metric.sql:
+                                for model_name in self._extract_models_from_sql(metric.sql):
+                                    add_model(model_name)
+                        elif metric.agg and metric.sql:
+                            # Graph-level simple aggregations can qualify fields
+                            # (e.g., SUM(orders.amount)); include those models.
+                            for model_name in self._extract_models_from_sql(metric.sql):
+                                add_model(model_name)
                 except KeyError:
-                    if model_context:
-                        try:
-                            model = self.graph.get_model(model_context)
-                        except KeyError:
-                            model = None
-                        if model:
-                            metric = model.get_metric(metric_ref)
-                            if metric:
-                                collect_models_from_metric_object(metric, model_context, visited)
-
-        def collect_models_from_metric(
-            metric_ref: str, model_context: str | None = None, visited: set[str] | None = None
-        ):
-            """Recursively collect models needed from a metric."""
-            collect_models_from_metric_with_visited(metric_ref, model_context, visited or set())
+                    pass
 
         # Collect from dimensions first (since they define the grain)
         for dim in dimensions:
@@ -1313,7 +1086,6 @@ class SQLGenerator:
         order_by: list[str] | None = None,
         all_models: set[str] | None = None,
         metric_filter_columns: set[str] | None = None,
-        relationship_overrides: list[RelationshipOverride] | None = None,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -1325,8 +1097,6 @@ class SQLGenerator:
             order_by: Order by fields (for determining needed dimensions)
             all_models: All models in query (for determining if joins needed)
             metric_filter_columns: Columns needed for metric-level filters
-            relationship_overrides: Query-local relationship edges that may need
-                additional join key columns in this CTE
 
         Returns:
             CTE SQL string
@@ -1334,7 +1104,6 @@ class SQLGenerator:
         model = self.graph.get_model(model_name)
         all_models = all_models or {model_name}
         needs_joins = len(all_models) > 1
-        relationship_overrides = relationship_overrides or []
 
         # Find which dimensions are actually needed
         needed_dimensions = self._find_needed_dimensions(
@@ -1394,17 +1163,6 @@ class SQLGenerator:
                         if fk and fk not in columns_added:
                             select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
                             columns_added.add(fk)
-
-        for override in relationship_overrides:
-            if override.from_model == model_name:
-                join_key = override.from_column
-            elif override.to_model == model_name:
-                join_key = override.to_column
-            else:
-                continue
-            if join_key not in columns_added:
-                select_cols.append(f"{join_key} AS {self._quote_alias(join_key)}")
-                columns_added.add(join_key)
 
         # Determine table alias for {model} placeholder replacement
         # In CTEs, we're selecting from the raw table (or subquery AS t)
@@ -1653,12 +1411,7 @@ class SQLGenerator:
 
         return cte_sql
 
-    def _has_fanout_joins(
-        self,
-        base_model_name: str,
-        other_models: list[str],
-        relationship_overrides: list[RelationshipOverride] | None = None,
-    ) -> dict[str, bool]:
+    def _has_fanout_joins(self, base_model_name: str, other_models: list[str]) -> dict[str, bool]:
         """Determine which models need symmetric aggregates due to fan-out.
 
         When one-to-many joins exist from the base model, measures from
@@ -1679,11 +1432,7 @@ class SQLGenerator:
 
         for other_model in other_models:
             try:
-                join_path = self.graph.find_relationship_path(
-                    base_model_name,
-                    other_model,
-                    relationship_overrides,
-                )
+                join_path = self.graph.find_relationship_path(base_model_name, other_model)
                 if not join_path:
                     continue
                 # Check all hops: any one_to_many in the path creates fan-out
@@ -1711,12 +1460,7 @@ class SQLGenerator:
 
         return needs_symmetric
 
-    def _needs_preaggregation_for_fanout(
-        self,
-        metrics: list[str],
-        dimensions: list[str],
-        relationship_overrides: list[RelationshipOverride] | None = None,
-    ) -> bool:
+    def _needs_preaggregation_for_fanout(self, metrics: list[str], dimensions: list[str]) -> bool:
         """Determine if pre-aggregation is needed to avoid fan-out.
 
         Pre-aggregation is needed when:
@@ -1757,7 +1501,7 @@ class SQLGenerator:
             for model_b in metric_model_list[i + 1 :]:
                 try:
                     # Check path from A to B
-                    join_path = self.graph.find_relationship_path(model_a, model_b, relationship_overrides)
+                    join_path = self.graph.find_relationship_path(model_a, model_b)
                     if join_path:
                         # If any hop is many_to_one (from A's perspective), model_a metrics
                         # would be replicated when joining to model_b
@@ -1768,7 +1512,7 @@ class SQLGenerator:
                                 return True
 
                     # Check reverse path
-                    join_path_reverse = self.graph.find_relationship_path(model_b, model_a, relationship_overrides)
+                    join_path_reverse = self.graph.find_relationship_path(model_b, model_a)
                     if join_path_reverse:
                         for jp in join_path_reverse:
                             if jp.relationship == "many_to_one":
@@ -1789,7 +1533,6 @@ class SQLGenerator:
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
-        relationship_overrides: list[RelationshipOverride] | None = None,
     ) -> str:
         """Generate SQL using pre-aggregation to avoid fan-out.
 
@@ -2016,7 +1759,6 @@ class SQLGenerator:
         offset: int | None = None,
         ungrouped: bool = False,
         aliases: dict[str, str] | None = None,
-        relationship_overrides: list[RelationshipOverride] | None = None,
     ) -> str:
         """Build main SELECT using SQLGlot builder API.
 
@@ -2032,14 +1774,13 @@ class SQLGenerator:
             offset: Row offset
             ungrouped: If True, return raw rows without aggregation
             aliases: Custom aliases for fields (dict mapping field reference to alias)
-            relationship_overrides: Query-local relationship edges for pathing
 
         Returns:
             SQL SELECT statement
         """
         aliases = aliases or {}
         # Detect if symmetric aggregates are needed
-        symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models, relationship_overrides)
+        symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
 
         # Check for dimension/metric name collisions across models
         # If there are collisions, prefix with model name
@@ -2180,7 +1921,7 @@ class SQLGenerator:
             joined_models = {base_model_name}
 
             for other_model in other_models:
-                join_path = self.graph.find_relationship_path(base_model_name, other_model, relationship_overrides)
+                join_path = self.graph.find_relationship_path(base_model_name, other_model)
                 if join_path:
                     # Apply each join in the path
                     for jp in join_path:
@@ -2203,7 +1944,7 @@ class SQLGenerator:
                         join_cond = " AND ".join(join_conditions)
 
                         # Use INNER JOIN if this model has filters applied, otherwise LEFT JOIN
-                        join_type = jp.join_type_override or ("inner" if jp.to_model in models_with_filters else "left")
+                        join_type = "inner" if jp.to_model in models_with_filters else "left"
                         query = query.join(right_table, on=join_cond, join_type=join_type)
                         joined_models.add(jp.to_model)
 

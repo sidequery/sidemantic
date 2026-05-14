@@ -72,11 +72,9 @@ jobs:
           SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
           cd /tmp
           uv run --no-project --find-links /tmp/sidemantic-dax-dist --with "${SIDEMANTIC_WHEEL}[dax]" -- python - <<'PY'
-          from sidemantic import SemanticLayer
           import sidemantic_dax
 
           sidemantic_dax.parse_expression("1")
-          assert SemanticLayer().compile_dax_query('EVALUATE ROW("one", 1)') == "SELECT 1 AS one"
           PY
 
   update-schema:

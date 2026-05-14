@@ -26,7 +26,7 @@ def test_model_has_default_primary_key(layer):
 
 
 def test_model_validation_no_table(layer):
-    """Test that models without table or sql are rejected."""
+    """Test that models without table, sql, or dax are rejected."""
     invalid_model = Model(
         name="orders",
         primary_key="id",
@@ -37,7 +37,7 @@ def test_model_validation_no_table(layer):
     with pytest.raises(ModelValidationError) as exc_info:
         layer.add_model(invalid_model)
 
-    assert "must have either 'table' or 'sql' defined" in str(exc_info.value)
+    assert "must have 'table', 'sql', or 'dax' defined" in str(exc_info.value)
 
 
 def test_metric_validation_simple_no_measure():

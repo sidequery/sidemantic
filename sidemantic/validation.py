@@ -68,9 +68,9 @@ def validate_model(model: "Model") -> list[str]:
     if not model.primary_key:
         errors.append(f"Model '{model.name}' must have a primary_key defined")
 
-    # Check for table or SQL
-    if not model.table and not model.sql:
-        errors.append(f"Model '{model.name}' must have either 'table' or 'sql' defined")
+    # Check for table, SQL, or preserved DAX expression source.
+    if not model.table and not model.sql and not model.dax:
+        errors.append(f"Model '{model.name}' must have 'table', 'sql', or 'dax' defined")
 
     # Check that dimensions have valid types
     for dim in model.dimensions:

@@ -135,7 +135,7 @@ DAX/TMDL support lives behind the `dax` extra because it includes a native Rust 
 uv add "sidemantic[dax]"
 ```
 
-Native Sidemantic YAML can define DAX expressions directly. Supported DAX is lowered to executable Sidemantic SQL semantics at load time, while the original DAX is preserved for export and UI metadata:
+Native Sidemantic YAML can preserve DAX expression source text for Power BI interoperability:
 
 ```yaml
 models:
@@ -151,7 +151,7 @@ models:
         dax: "SUM('sales'[amount])"
 ```
 
-Power BI TMDL projects can be loaded from a project root or `definition/` folder. Embedded DAX measures, calculated columns, calculated tables, relationships, and TMDL passthrough metadata are imported and exposed through model metadata:
+Power BI TMDL projects can be loaded from a project root or `definition/` folder. Embedded DAX measures, calculated columns, calculated tables, relationships, and TMDL passthrough metadata are parsed and preserved in model metadata:
 
 ```python
 from sidemantic import SemanticLayer, load_from_directory
@@ -167,13 +167,6 @@ TMDL can also round-trip back to disk:
 from sidemantic.adapters.tmdl import TMDLAdapter
 
 TMDLAdapter().export(layer.graph, "exported_tmdl/")
-```
-
-Run DAX `EVALUATE` queries through the CLI:
-
-```bash
-sidemantic dax-query "EVALUATE SUMMARIZECOLUMNS('sales'[category], \"Revenue\", [revenue])" --models models/ --db data.duckdb
-sidemantic dax-query "EVALUATE VALUES('sales'[category])" --models models/ --dry-run
 ```
 
 ## CLI
@@ -196,9 +189,6 @@ sidemantic validate models/
 
 # Model info
 sidemantic info models/
-
-# DAX query
-sidemantic dax-query "EVALUATE VALUES('orders'[status])" --models models/ --db data.duckdb
 
 # Pre-aggregation recommendations
 sidemantic preagg recommend --db data.duckdb

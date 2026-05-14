@@ -56,10 +56,10 @@ def test_import_tmdl_directory():
     assert total_sales.format == "$#,##0.00"
 
     sales_ly = sales.get_metric("Sales LY")
-    assert sales_ly.type == "time_comparison"
-    assert sales_ly.base_metric == "Sales.Total Sales"
-    assert sales_ly.comparison_type == "yoy"
-    assert sales_ly.calculation == "previous_value"
+    assert sales_ly.type == "derived"
+    assert sales_ly.expression_language == "dax"
+    assert sales_ly.sql == sales_ly.dax
+    assert "SAMEPERIODLASTYEAR" in sales_ly.dax
 
     backtick = sales.get_metric("Backtick Measure")
     assert backtick.agg == "sum"
@@ -245,17 +245,15 @@ def test_tmdl_realistic_fixture_import_export_contract(tmp_path):
     sales = graph.models["Sales"]
     assert sales.description == "Sales fact table"
     assert sales.get_dimension("Amount x2").dax == "Sales[Amount] * 2"
-    assert sales.get_dimension("Amount x2").sql == "(Amount * 2)"
+    assert sales.get_dimension("Amount x2").sql == "Sales[Amount] * 2"
     assert sales.get_metric("Total Sales").dax == "SUM(Sales[Amount])"
     assert sales.get_metric("Total Sales").sql == "Amount"
     assert getattr(sales, "_tmdl_child_nodes")[0].name == "TableTag"
 
     calculated = graph.models["Sales By Category"]
-    assert calculated.sql == (
-        "SELECT Products.Category, SUM(Sales.Amount) AS Revenue FROM Products "
-        "LEFT JOIN Sales ON Products.ProductKey = Sales.ProductKey GROUP BY Products.Category"
-    )
-    assert getattr(calculated, "_dax_required_models") == ["Products", "Sales"]
+    assert calculated.table is None
+    assert calculated.sql is None
+    assert calculated.dax == 'SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))'
     assert getattr(calculated, "_tmdl_child_nodes")[0].name == "CalculationTag"
 
     sales_products = next(rel for rel in sales.relationships if rel.name == "Products")
@@ -269,8 +267,10 @@ def test_tmdl_realistic_fixture_import_export_contract(tmp_path):
     total_sales = next(metric for metric in sales_info["metrics"] if metric["name"] == "Total Sales")
     assert sales_info["source_format"] == "TMDL"
     assert products_rel["tmdl"]["child_nodes"][0]["name"] == "RelationshipLineage"
-    assert total_sales["faithful_lowering"] is True
+    assert total_sales["dax"] == "SUM(Sales[Amount])"
+    assert total_sales["expression_language"] == "dax"
     assert calculated_info["kind"] == "calculated_table"
+    assert calculated_info["dax"] == 'SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))'
     assert calculated_info["tmdl"]["child_nodes"][0]["name"] == "CalculationTag"
 
     layer = SemanticLayer()
@@ -360,11 +360,8 @@ def test_tmdl_calculated_table_multitable_summarizecolumns():
         model = graph.models["SalesByCategory"]
 
         assert model.table is None
-        assert model.sql is not None
-        assert "LEFT JOIN" in model.sql
-        assert "Products.ProductKey" in model.sql
-        assert "Sales.ProductKey" in model.sql
-        assert "GROUP BY Products.Category" in model.sql
+        assert model.sql is None
+        assert model.dax == 'SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))'
 
         description = describe_graph(graph)
         model_info = next(item for item in description["models"] if item["name"] == "SalesByCategory")
@@ -373,8 +370,7 @@ def test_tmdl_calculated_table_multitable_summarizecolumns():
         assert (
             model_info["original_expression"] == 'SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))'
         )
-        assert model_info["dax_lowered"] is True
-        assert model_info["dax_required_models"] == ["Products", "Sales"]
+        assert model_info["dax"] == 'SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))'
     finally:
         temp_path.unlink()
 
@@ -515,7 +511,7 @@ def test_tmdl_measure_derived_expression():
         temp_path.unlink()
 
 
-def test_tmdl_measure_time_comparison_with_inline_aggregate_base():
+def test_tmdl_measure_preserves_complex_dax_source():
     tmdl = textwrap.dedent(
         """
         table 'Sales'
@@ -539,19 +535,16 @@ def test_tmdl_measure_time_comparison_with_inline_aggregate_base():
         model = graph.models["Sales"]
 
         sales_ly_inline = model.get_metric("Sales LY Inline")
-        assert sales_ly_inline.type == "time_comparison"
-        assert sales_ly_inline.base_metric == "Sales.__sales_ly_inline_base"
-        assert sales_ly_inline.comparison_type == "yoy"
-        assert sales_ly_inline.calculation == "previous_value"
-
-        inline_base = model.get_metric("__sales_ly_inline_base")
-        assert inline_base.agg == "sum"
-        assert inline_base.sql == "Amount"
+        assert sales_ly_inline.type == "derived"
+        assert sales_ly_inline.expression_language == "dax"
+        assert sales_ly_inline.dax == "CALCULATE(SUM('Sales'[Amount]), SAMEPERIODLASTYEAR('Sales'[Order Date]))"
+        assert sales_ly_inline.sql == sales_ly_inline.dax
+        assert [metric.name for metric in model.metrics] == ["Sales LY Inline"]
     finally:
         temp_path.unlink()
 
 
-def test_tmdl_measure_totalytd_preserves_filters():
+def test_tmdl_measure_preserves_totalytd_dax_source():
     tmdl = textwrap.dedent(
         """
         table Sales
@@ -576,11 +569,10 @@ def test_tmdl_measure_totalytd_preserves_filters():
         adapter = TMDLAdapter()
         graph = adapter.parse(temp_path)
         metric = graph.models["Sales"].get_metric("SalesYTDFiltered")
-        assert metric.type == "cumulative"
-        assert metric.grain_to_date == "year"
-        assert metric.agg == "sum"
-        assert metric.sql == "Amount"
-        assert metric.filters == ["(ProductKey = 1)"]
+        assert metric.type == "derived"
+        assert metric.expression_language == "dax"
+        assert metric.dax == "TOTALYTD(CALCULATE(SUM(Sales[Amount]), Sales[ProductKey] = 1), Sales[OrderDate])"
+        assert metric.sql == metric.dax
     finally:
         temp_path.unlink()
 
@@ -623,50 +615,6 @@ def test_tmdl_import_many_to_many_relationship_preserves_join_keys():
         assert rel.type == "many_to_many"
         assert rel.foreign_key == "ProductKey"
         assert rel.primary_key == "SalesKey"
-    finally:
-        temp_path.unlink()
-
-
-def test_tmdl_import_collects_dax_translation_fallback_warnings(monkeypatch):
-    tmdl = textwrap.dedent(
-        """
-        table Sales
-            column Amount
-                dataType: decimal
-                sourceColumn: Amount
-            calculatedColumn BadColumn = BADFUNC(Sales[Amount])
-            measure BadMeasure = BADFUNC(Sales[Amount])
-        calculatedTable BadTable = BADTABLE(Sales)
-        """
-    )
-
-    monkeypatch.setattr(tmdl_module, "_parse_dax_expression", lambda expression, node, context: object())
-    monkeypatch.setattr(
-        tmdl_module,
-        "translate_dax_scalar",
-        lambda *args, **kwargs: (_ for _ in ()).throw(tmdl_module.DaxTranslationError("scalar unsupported")),
-    )
-    monkeypatch.setattr(
-        tmdl_module,
-        "translate_dax_metric",
-        lambda *args, **kwargs: (_ for _ in ()).throw(tmdl_module.DaxTranslationError("metric unsupported")),
-    )
-    monkeypatch.setattr(
-        tmdl_module,
-        "translate_dax_table",
-        lambda *args, **kwargs: (_ for _ in ()).throw(tmdl_module.DaxTranslationError("table unsupported")),
-    )
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
-        f.write(tmdl)
-        temp_path = Path(f.name)
-
-    try:
-        graph = TMDLAdapter().parse(temp_path)
-        warnings = getattr(graph, "import_warnings")
-        assert len(warnings) == 3
-        assert {warning["context"] for warning in warnings} == {"column", "measure", "calculated_table"}
-        assert {warning["code"] for warning in warnings} == {"dax_translation_fallback"}
     finally:
         temp_path.unlink()
 
@@ -757,7 +705,7 @@ def test_tmdl_import_collects_relationship_skip_warnings():
         temp_path.unlink()
 
 
-def test_tmdl_calculated_table_lowering_ignores_inactive_relationship_edges(tmp_path):
+def test_tmdl_inactive_relationship_is_preserved_and_excluded_from_graph_paths(tmp_path):
     pytest.importorskip("sidemantic_dax")
     _write_tmdl_dax_relationship_fixture(
         tmp_path,
@@ -774,14 +722,17 @@ def test_tmdl_calculated_table_lowering_ignores_inactive_relationship_edges(tmp_
     graph = TMDLAdapter().parse(tmp_path)
 
     warnings = getattr(graph, "import_warnings")
-    assert [warning["code"] for warning in warnings] == ["dax_unrelated_cross_join"]
-    assert warnings[0]["context"] == "calculated_table"
+    assert warnings == []
     assert [(rel.name, rel.active) for rel in graph.models["Sales"].relationships] == [("Products", False)]
-    assert "CROSS JOIN" in graph.models["Sales By Category"].sql
-    assert "LEFT JOIN" not in graph.models["Sales By Category"].sql
+    assert graph.models["Sales By Category"].sql is None
+    assert (
+        graph.models["Sales By Category"].dax == 'SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))'
+    )
+    with pytest.raises(ValueError, match="No join path found"):
+        graph.find_relationship_path("Sales", "Products")
 
 
-def test_tmdl_calculated_table_lowering_ignores_invalid_relationship_edges(tmp_path):
+def test_tmdl_invalid_relationship_edges_are_skipped(tmp_path):
     pytest.importorskip("sidemantic_dax")
     _write_tmdl_dax_relationship_fixture(
         tmp_path,
@@ -797,13 +748,14 @@ def test_tmdl_calculated_table_lowering_ignores_invalid_relationship_edges(tmp_p
     graph = TMDLAdapter().parse(tmp_path)
     warnings = getattr(graph, "import_warnings")
 
-    assert [warning["code"] for warning in warnings] == ["dax_unrelated_cross_join", "relationship_parse_skip"]
-    assert warnings[0]["context"] == "calculated_table"
-    assert warnings[1]["context"] == "relationship"
-    assert "unsupported cardinality" in warnings[1]["message"]
+    assert [warning["code"] for warning in warnings] == ["relationship_parse_skip"]
+    assert warnings[0]["context"] == "relationship"
+    assert "unsupported cardinality" in warnings[0]["message"]
     assert graph.models["Sales"].relationships == []
-    assert "CROSS JOIN" in graph.models["Sales By Category"].sql
-    assert "LEFT JOIN" not in graph.models["Sales By Category"].sql
+    assert graph.models["Sales By Category"].sql is None
+    assert (
+        graph.models["Sales By Category"].dax == 'SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))'
+    )
 
 
 def _write_tmdl_dax_relationship_fixture(root: Path, relationship_text: str) -> None:
@@ -978,14 +930,12 @@ def test_tmdl_import_valid_relationship_cardinalities_do_not_emit_skip_warnings(
         temp_path.unlink()
 
 
-def test_tmdl_warning_fixture_collects_real_unsupported_dax_warnings():
+def test_tmdl_warning_fixture_collects_relationship_warnings():
+    pytest.importorskip("sidemantic_dax")
     graph = TMDLAdapter().parse("tests/fixtures/tmdl_warning")
 
     warnings = getattr(graph, "import_warnings")
     assert [(warning["code"], warning["context"], warning["name"]) for warning in warnings] == [
-        ("dax_translation_fallback", "calculated_table", "Bad Table"),
-        ("dax_translation_fallback", "column", "Bad Column"),
-        ("dax_translation_fallback", "measure", "Bad Measure"),
         ("relationship_parse_skip", "relationship", "Bad-Relationship"),
     ]
     assert all(warning.get("file") for warning in warnings)
@@ -1040,8 +990,7 @@ def test_tmdl_loader_auto_detects_standalone_tmdl_files(tmp_path):
     assert revenue["source_format"] == "TMDL"
     assert revenue["source_file"] == "Sales.tmdl"
     assert revenue["dax"] == "SUM(Sales[Amount])"
-    assert revenue["dax_lowered"] is True
-    assert revenue["faithful_lowering"] is True
+    assert revenue["expression_language"] == "dax"
 
 
 def test_tmdl_loader_preserves_graph_passthrough_for_export(tmp_path):
@@ -1230,20 +1179,19 @@ def test_tmdl_import_warnings_are_model_qualified_for_duplicate_names(monkeypatc
             column Amount
                 dataType: decimal
                 sourceColumn: Amount
-            measure Revenue = UNSUPPORTED(Sales[Amount])
+            measure Revenue = BROKEN(Sales[Amount])
         table Returns
             column Amount
                 dataType: decimal
                 sourceColumn: Amount
-            measure Revenue = UNSUPPORTED(Returns[Amount])
+            measure Revenue = BROKEN(Returns[Amount])
         """
     )
 
-    monkeypatch.setattr(tmdl_module, "_parse_dax_expression", lambda expression, node, context: object())
     monkeypatch.setattr(
         tmdl_module,
-        "translate_dax_metric",
-        lambda *args, **kwargs: (_ for _ in ()).throw(tmdl_module.DaxTranslationError("metric unsupported")),
+        "_parse_dax_expression",
+        lambda expression, node, context: (_ for _ in ()).throw(ValueError("metric parse unsupported")),
     )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:

@@ -1,7 +1,6 @@
 """CLI for sidemantic semantic layer operations."""
 
 from pathlib import Path
-from typing import Any
 
 import typer
 
@@ -23,86 +22,6 @@ app = typer.Typer(
 
 # Global state for config (set in callback, used in commands)
 _loaded_config: SidemanticConfig | None = None
-
-
-def _parse_dax_query(text: str) -> Any:
-    from sidemantic.dax.runtime import parse_dax_query
-
-    return parse_dax_query(text)
-
-
-def _translate_dax_query_ast(query_ast: Any, layer: SemanticLayer) -> Any:
-    from sidemantic.dax.runtime import translate_dax_query_ast
-
-    return translate_dax_query_ast(query_ast, layer.graph)
-
-
-def _get_import_warnings(layer: SemanticLayer) -> list[dict[str, Any]]:
-    warnings = getattr(layer.graph, "import_warnings", None)
-    if not isinstance(warnings, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for warning in warnings:
-        if isinstance(warning, dict):
-            out.append(warning)
-    return out
-
-
-def _emit_import_warnings(layer: SemanticLayer, limit: int = 8) -> None:
-    warnings = _get_import_warnings(layer)
-    if not warnings:
-        return
-    typer.echo(f"Warning: {len(warnings)} model import warning(s).", err=True)
-    for warning in warnings[:limit]:
-        code = warning.get("code", "warning")
-        context = warning.get("context", "model")
-        name = warning.get("name", "<unnamed>")
-        message = warning.get("message", "")
-        file = warning.get("file")
-        line = warning.get("line")
-        column = warning.get("column")
-        location = ""
-        if file and line and column:
-            location = f" ({file}:{line}:{column})"
-        elif file:
-            location = f" ({file})"
-        typer.echo(f"  - [{code}] {context} {name}: {message}{location}", err=True)
-    if len(warnings) > limit:
-        typer.echo(f"  - ... {len(warnings) - limit} more warning(s)", err=True)
-
-
-def _emit_dax_query_warnings(warnings: Any, limit: int = 8) -> None:
-    if not isinstance(warnings, list) or not warnings:
-        return
-    structured = [warning for warning in warnings if isinstance(warning, dict)]
-    if not structured:
-        return
-    typer.echo(f"Warning: {len(structured)} DAX query warning(s).", err=True)
-    for warning in structured[:limit]:
-        code = warning.get("code", "warning")
-        context = warning.get("context", "query")
-        message = warning.get("message", "")
-        detail = ", ".join(
-            f"{key}={value}"
-            for key in ("base_table", "table", "model", "name")
-            if (value := warning.get(key)) is not None
-        )
-        suffix = f" ({detail})" if detail else ""
-        typer.echo(f"  - [{code}] {context}: {message}{suffix}", err=True)
-    if len(structured) > limit:
-        typer.echo(f"  - ... {len(structured) - limit} more warning(s)", err=True)
-
-
-def _load_models_path(layer: SemanticLayer, models_path: Path) -> None:
-    """Load a directory of model files or a single supported model file into an existing layer."""
-    if models_path.is_dir():
-        load_from_directory(layer, str(models_path))
-        return
-    if models_path.is_file():
-        loaded_layer = SemanticLayer.from_yaml(models_path, connection=layer.adapter)
-        layer.graph = loaded_layer.graph
-        return
-    raise ValueError(f"Model path {models_path} does not exist")
 
 
 @app.callback()
@@ -464,7 +383,7 @@ def query(
       sidemantic query "SELECT revenue FROM orders" --dry-run
     """
     if not models.exists():
-        typer.echo(f"Error: Model path {models} does not exist", err=True)
+        typer.echo(f"Error: Directory {models} does not exist", err=True)
         raise typer.Exit(1)
 
     try:
@@ -498,7 +417,7 @@ def query(
             )
         else:
             layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
-        _load_models_path(layer, models)
+        load_from_directory(layer, str(models))
 
         if not layer.graph.models:
             typer.echo("Error: No models found", err=True)
@@ -535,99 +454,6 @@ def query(
             writer.writerow(columns)
             writer.writerows(rows)
 
-    except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-
-@app.command("dax-query")
-def dax_query(
-    dax: str = typer.Argument(..., help="DAX query to execute"),
-    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
-    output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
-    connection: str = typer.Option(
-        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
-    ),
-    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show translated SQL without executing"),
-    evaluate: int = typer.Option(1, "--evaluate", help="1-based EVALUATE statement index to execute"),
-):
-    """
-    Execute a DAX query and output results as CSV.
-
-    Examples:
-      sidemantic dax-query "EVALUATE VALUES('orders'[status])"
-      sidemantic dax-query "EVALUATE VALUES('orders'[status])" --db data.duckdb
-      sidemantic dax-query "EVALUATE VALUES('orders'[status])" --dry-run
-      sidemantic dax-query "EVALUATE ...; EVALUATE ..." --evaluate 2
-    """
-    if evaluate < 1:
-        typer.echo("Error: --evaluate must be >= 1", err=True)
-        raise typer.Exit(1)
-
-    if not models.exists():
-        typer.echo(f"Error: Model path {models} does not exist", err=True)
-        raise typer.Exit(1)
-
-    try:
-        connection_str = None
-        init_sql = None
-        if connection:
-            connection_str = connection
-        elif db:
-            connection_str = f"duckdb:///{db.absolute()}"
-        elif _loaded_config and _loaded_config.connection:
-            connection_str = build_connection_string(_loaded_config)
-            init_sql = get_init_sql(_loaded_config)
-        else:
-            data_dir = models / "data"
-            if data_dir.exists():
-                db_files = list(data_dir.glob("*.db"))
-                if db_files:
-                    connection_str = f"duckdb:///{db_files[0].absolute()}"
-
-        preagg_db = _loaded_config.preagg_database if _loaded_config else None
-        preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
-        if connection_str:
-            layer = SemanticLayer(
-                connection=connection_str,
-                preagg_database=preagg_db,
-                preagg_schema=preagg_sch,
-                init_sql=init_sql,
-            )
-        else:
-            layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
-        _load_models_path(layer, models)
-        _emit_import_warnings(layer)
-
-        if not layer.graph.models:
-            typer.echo("Error: No models found", err=True)
-            raise typer.Exit(1)
-
-        dax_payload = layer.compile_dax_query_payload(dax, evaluate=evaluate)
-        translated_sql = str(dax_payload["sql"])
-        _emit_dax_query_warnings(dax_payload.get("warnings"))
-        if dry_run:
-            typer.echo(translated_sql)
-            return
-
-        result = layer.adapter.execute(translated_sql)
-        columns = [desc[0] for desc in result.description]
-        rows = result.fetchall()
-
-        import csv
-        import sys
-
-        if output:
-            with open(output, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(columns)
-                writer.writerows(rows)
-            typer.echo(f"Results written to {output}", err=True)
-        else:
-            writer = csv.writer(sys.stdout)
-            writer.writerow(columns)
-            writer.writerows(rows)
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)

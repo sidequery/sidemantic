@@ -11,7 +11,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
-from sidemantic.core.relationship import Relationship, RelationshipOverride
+from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.sql_definitions import (
@@ -95,9 +95,6 @@ class SidemanticAdapter(BaseAdapter):
     ```
     """
 
-    def __init__(self, lower_dax: bool = True):
-        self.lower_dax = lower_dax
-
     def parse(self, source: str | Path) -> SemanticGraph:
         """Parse Sidemantic YAML or SQL into semantic graph.
 
@@ -160,7 +157,6 @@ class SidemanticAdapter(BaseAdapter):
                         graph.add_parameter(param)
                     # Segments need to be attached to models, skip if no model
 
-            self._lower_dax_if_enabled(graph)
             return graph
 
         # Handle YAML files
@@ -203,15 +199,7 @@ class SidemanticAdapter(BaseAdapter):
             # Note: segments need to be attached to models
             # For now, skip graph-level segments
 
-        self._lower_dax_if_enabled(graph)
         return graph
-
-    def _lower_dax_if_enabled(self, graph: SemanticGraph) -> None:
-        if not self.lower_dax:
-            return
-        from sidemantic.dax.modeling import lower_dax_graph_expressions
-
-        lower_dax_graph_expressions(graph)
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Sidemantic YAML.
@@ -306,8 +294,6 @@ class SidemanticAdapter(BaseAdapter):
                 drill_fields=measure_def.get("drill_fields"),
                 non_additive_dimension=measure_def.get("non_additive_dimension"),
                 metadata=measure_def.get("metadata"),
-                relationship_overrides=_parse_relationship_overrides(measure_def.get("relationship_overrides")),
-                required_models=measure_def.get("required_models"),
                 base_metric=measure_def.get("base_metric"),
                 comparison_type=measure_def.get("comparison_type"),
                 time_offset=measure_def.get("time_offset"),
@@ -473,8 +459,6 @@ class SidemanticAdapter(BaseAdapter):
             value_format_name=metric_def.get("value_format_name"),
             drill_fields=metric_def.get("drill_fields"),
             non_additive_dimension=metric_def.get("non_additive_dimension"),
-            relationship_overrides=_parse_relationship_overrides(metric_def.get("relationship_overrides")),
-            required_models=metric_def.get("required_models"),
         )
 
     def _parse_parameter(self, parameter_def: dict) -> Parameter | None:
@@ -621,12 +605,6 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["drill_fields"] = measure.drill_fields
                 if measure.non_additive_dimension:
                     measure_def["non_additive_dimension"] = measure.non_additive_dimension
-                if measure.relationship_overrides:
-                    measure_def["relationship_overrides"] = [
-                        _relationship_override_dict(override) for override in measure.relationship_overrides
-                    ]
-                if measure.required_models:
-                    measure_def["required_models"] = measure.required_models
                 if measure.type:
                     measure_def["type"] = measure.type
                 if measure.base_metric:
@@ -787,26 +765,10 @@ class SidemanticAdapter(BaseAdapter):
             result["window"] = measure.window
         if measure.filters:
             result["filters"] = measure.filters
-        if measure.relationship_overrides:
-            result["relationship_overrides"] = [
-                _relationship_override_dict(override) for override in measure.relationship_overrides
-            ]
-        if measure.required_models:
-            result["required_models"] = measure.required_models
         if not measure.public:
             result["public"] = measure.public
 
         return result
-
-
-def _parse_relationship_overrides(value) -> list[RelationshipOverride] | None:
-    if not value:
-        return None
-    return [item if isinstance(item, RelationshipOverride) else RelationshipOverride(**item) for item in value]
-
-
-def _relationship_override_dict(override: RelationshipOverride) -> dict:
-    return override.model_dump(exclude_none=True)
 
 
 def _dax_text(obj) -> str | None:

@@ -1,7 +1,7 @@
 //! Model inheritance support
 //!
 //! Allows models to extend other models, inheriting dimensions, metrics,
-//! relationships, and segments. Child values override parent values.
+//! relationships, segments, and pre-aggregations. Child values override parent values.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,22 +11,58 @@ use crate::error::{Result, SidemanticError};
 /// Merge a child model with its parent.
 ///
 /// Child inherits all fields from parent, with child values taking precedence.
-/// List fields (dimensions, metrics, relationships, segments) are merged by name,
+/// List fields (dimensions, metrics, relationships, segments, pre-aggregations) are merged by name,
 /// with child items overriding parent items of the same name.
 pub fn merge_model(child: &Model, parent: &Model) -> Model {
     // Start with parent's table/sql, override with child if set
     let table = child.table.clone().or_else(|| parent.table.clone());
     let sql = child.sql.clone().or_else(|| parent.sql.clone());
-    let primary_key = if child.primary_key != "id" {
-        child.primary_key.clone()
+    let source_uri = child
+        .source_uri
+        .clone()
+        .or_else(|| parent.source_uri.clone());
+    let extends = child.extends.clone();
+    let child_primary_key_columns = if child.primary_key_columns.is_empty() {
+        vec![child.primary_key.clone()]
     } else {
-        parent.primary_key.clone()
+        child.primary_key_columns.clone()
     };
+    let parent_primary_key_columns = if parent.primary_key_columns.is_empty() {
+        vec![parent.primary_key.clone()]
+    } else {
+        parent.primary_key_columns.clone()
+    };
+    let child_overrides_primary_key = child_primary_key_columns.len() > 1
+        || child_primary_key_columns
+            .first()
+            .map(|value| value.as_str())
+            != Some("id");
+    let primary_key_columns = if child_overrides_primary_key {
+        child_primary_key_columns
+    } else {
+        parent_primary_key_columns
+    };
+    let primary_key = primary_key_columns
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "id".to_string());
+    let unique_keys = child
+        .unique_keys
+        .clone()
+        .or_else(|| parent.unique_keys.clone());
     let description = child
         .description
         .clone()
         .or_else(|| parent.description.clone());
     let label = child.label.clone().or_else(|| parent.label.clone());
+    let default_time_dimension = child
+        .default_time_dimension
+        .clone()
+        .or_else(|| parent.default_time_dimension.clone());
+    let default_grain = child
+        .default_grain
+        .clone()
+        .or_else(|| parent.default_grain.clone());
 
     // Merge dimensions by name (child overrides parent)
     let mut dimensions_map: HashMap<String, _> = parent
@@ -72,15 +108,33 @@ pub fn merge_model(child: &Model, parent: &Model) -> Model {
     }
     let segments: Vec<_> = segments_map.into_values().collect();
 
+    // Merge pre-aggregations by name
+    let mut pre_aggs_map: HashMap<String, _> = parent
+        .pre_aggregations
+        .iter()
+        .map(|p| (p.name.clone(), p.clone()))
+        .collect();
+    for pre_agg in &child.pre_aggregations {
+        pre_aggs_map.insert(pre_agg.name.clone(), pre_agg.clone());
+    }
+    let pre_aggregations: Vec<_> = pre_aggs_map.into_values().collect();
+
     Model {
         name: child.name.clone(),
         table,
         sql,
+        source_uri,
+        extends,
         primary_key,
+        primary_key_columns,
+        unique_keys,
         dimensions,
         metrics,
         relationships,
         segments,
+        pre_aggregations,
+        default_time_dimension,
+        default_grain,
         label,
         description,
     }

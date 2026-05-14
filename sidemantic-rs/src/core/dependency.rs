@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use polyglot_sql::{DialectType, Expression, ExpressionWalk};
+use polyglot_sql::{parse, traversal, DialectType, Expression};
 
 use super::model::{Metric, MetricType};
 use super::SemanticGraph;
@@ -15,6 +15,15 @@ use super::SemanticGraph;
 /// For qualified references (model.metric), returns the full reference.
 /// For unqualified references, attempts to resolve using the graph.
 pub fn extract_dependencies(metric: &Metric, graph: Option<&SemanticGraph>) -> HashSet<String> {
+    extract_dependencies_with_context(metric, graph, None)
+}
+
+/// Extract dependencies with optional model context for unqualified reference resolution.
+pub fn extract_dependencies_with_context(
+    metric: &Metric,
+    graph: Option<&SemanticGraph>,
+    model_context: Option<&str>,
+) -> HashSet<String> {
     let mut deps = HashSet::new();
 
     match metric.r#type {
@@ -40,7 +49,7 @@ pub fn extract_dependencies(metric: &Metric, graph: Option<&SemanticGraph>) -> H
                     // Resolve references using graph if available
                     if let Some(g) = graph {
                         for ref_name in refs {
-                            let resolved = resolve_reference(&ref_name, g);
+                            let resolved = resolve_reference(&ref_name, g, model_context);
                             deps.insert(resolved);
                         }
                     } else {
@@ -56,6 +65,8 @@ pub fn extract_dependencies(metric: &Metric, graph: Option<&SemanticGraph>) -> H
             // Cumulative metrics depend on the base metric in sql field
             if let Some(ref sql) = metric.sql {
                 deps.insert(sql.clone());
+            } else if let Some(ref base_metric) = metric.base_metric {
+                deps.insert(base_metric.clone());
             }
         }
         MetricType::TimeComparison => {
@@ -63,6 +74,9 @@ pub fn extract_dependencies(metric: &Metric, graph: Option<&SemanticGraph>) -> H
             if let Some(ref base) = metric.base_metric {
                 deps.insert(base.clone());
             }
+        }
+        MetricType::Conversion => {
+            // Conversion metrics are modeled via event filters, not metric dependencies.
         }
     }
 
@@ -87,43 +101,55 @@ fn has_operators(s: &str) -> bool {
 /// Uses polyglot-sql to parse the expression and find all column identifiers.
 fn extract_column_references(sql: &str) -> HashSet<String> {
     let mut refs = HashSet::new();
+    let normalized_sql = sql.replace("${CUBE}.", "").replace("${CUBE}", "");
+
+    // polyglot-sql traversal can recurse indefinitely on some PostgreSQL cast
+    // forms (expr::type). Fall back to the tokenizer path for these expressions.
+    if normalized_sql.contains("::") {
+        return extract_simple_references(&normalized_sql);
+    }
 
     // Wrap in SELECT to make it valid SQL
-    let wrapped = format!("SELECT {sql}");
+    let wrapped = format!("SELECT {normalized_sql}");
 
-    let Ok(expressions) = polyglot_sql::parse(&wrapped, DialectType::Generic) else {
+    let Ok(statements) = parse(&wrapped, DialectType::Generic) else {
         // If parsing fails, try simple extraction
-        return extract_simple_references(sql);
+        return extract_simple_references(&normalized_sql);
     };
 
-    for expr in expressions {
-        if let Expression::Select(select) = expr {
-            for item in &select.expressions {
-                extract_refs_from_expr(item, &mut refs);
+    for statement in &statements {
+        if let Expression::Select(select) = statement {
+            for projection in &select.expressions {
+                for column_ref in traversal::get_columns(projection) {
+                    if let Expression::Column(column) = column_ref {
+                        let candidate = if let Some(table) = &column.table {
+                            if table.name.is_empty() {
+                                column.name.name.clone()
+                            } else {
+                                format!("{}.{}", table.name, column.name.name)
+                            }
+                        } else {
+                            column.name.name.clone()
+                        };
+                        if let Some(cleaned) = sanitize_reference(&candidate) {
+                            refs.insert(cleaned);
+                        }
+                    }
+                }
             }
         }
+    }
+
+    if refs.is_empty() {
+        return extract_simple_references(&normalized_sql);
     }
 
     refs
 }
 
-/// Recursively extract column references from an expression using DFS
-fn extract_refs_from_expr(expr: &Expression, refs: &mut HashSet<String>) {
-    for node in expr.dfs() {
-        match node {
-            Expression::Identifier(ident) => {
-                refs.insert(ident.name.clone());
-            }
-            Expression::Column(col) => {
-                if let Some(table) = &col.table {
-                    refs.insert(format!("{}.{}", table.name, col.name.name));
-                } else {
-                    refs.insert(col.name.name.clone());
-                }
-            }
-            _ => {}
-        }
-    }
+/// Public wrapper used by language bindings for dependency analysis helpers.
+pub fn extract_column_references_from_expr(sql: &str) -> HashSet<String> {
+    extract_column_references(sql)
 }
 
 /// Simple fallback extraction for when parsing fails
@@ -144,8 +170,11 @@ fn extract_simple_references(sql: &str) -> HashSet<String> {
             if c.is_alphanumeric() || c == '_' || c == '.' {
                 current.push(c);
             } else {
-                if !current.is_empty() && !is_keyword(&current) && !is_number(&current) {
-                    refs.insert(current.clone());
+                let is_function_call = c == '(';
+                if !is_function_call {
+                    if let Some(cleaned) = sanitize_reference(&current) {
+                        refs.insert(cleaned);
+                    }
                 }
                 current.clear();
             }
@@ -154,18 +183,35 @@ fn extract_simple_references(sql: &str) -> HashSet<String> {
         prev_char = c;
     }
 
-    if !current.is_empty() && !is_keyword(&current) && !is_number(&current) {
-        refs.insert(current);
+    if let Some(cleaned) = sanitize_reference(&current) {
+        refs.insert(cleaned);
     }
 
     refs
 }
 
+fn sanitize_reference(raw: &str) -> Option<String> {
+    let mut candidate = raw.trim();
+    while let Some(stripped) = candidate.strip_prefix('.') {
+        candidate = stripped;
+    }
+    if candidate.is_empty() {
+        return None;
+    }
+    if is_keyword(candidate) || is_number(candidate) || is_cast_type(candidate) {
+        return None;
+    }
+    if candidate.eq_ignore_ascii_case("cube") {
+        return None;
+    }
+    Some(candidate.to_string())
+}
+
 /// Check if string is a SQL keyword
 fn is_keyword(s: &str) -> bool {
     let keywords = [
-        "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "NULLIF", "CASE", "WHEN", "THEN",
-        "ELSE", "END", "AS", "SUM", "COUNT", "AVG", "MIN", "MAX", "DISTINCT",
+        "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "CASE", "WHEN", "THEN", "ELSE",
+        "END", "AS", "DISTINCT",
     ];
     keywords.iter().any(|k| k.eq_ignore_ascii_case(s))
 }
@@ -175,14 +221,44 @@ fn is_number(s: &str) -> bool {
     s.parse::<f64>().is_ok()
 }
 
+fn is_cast_type(s: &str) -> bool {
+    let cast_types = [
+        "float",
+        "double",
+        "decimal",
+        "numeric",
+        "integer",
+        "int",
+        "bigint",
+        "smallint",
+        "real",
+        "boolean",
+        "bool",
+        "date",
+        "time",
+        "timestamp",
+        "varchar",
+        "text",
+    ];
+    cast_types.iter().any(|ty| ty.eq_ignore_ascii_case(s))
+}
+
 /// Resolve a reference using the semantic graph
 ///
 /// If the reference is already qualified (model.metric), returns as-is.
 /// Otherwise, searches all models for a matching metric.
-fn resolve_reference(ref_name: &str, graph: &SemanticGraph) -> String {
+fn resolve_reference(ref_name: &str, graph: &SemanticGraph, model_context: Option<&str>) -> String {
     // Already qualified
     if ref_name.contains('.') {
         return ref_name.to_string();
+    }
+
+    if let Some(context_model_name) = model_context {
+        if let Some(model) = graph.get_model(context_model_name) {
+            if model.get_metric(ref_name).is_some() {
+                return format!("{context_model_name}.{ref_name}");
+            }
+        }
     }
 
     // Search models for matching metric
@@ -296,5 +372,15 @@ mod tests {
         let refs = extract_column_references("(revenue - cost) / revenue");
         assert!(refs.contains("revenue"));
         assert!(refs.contains("cost"));
+    }
+
+    #[test]
+    fn test_extract_column_references_ignores_cube_placeholder_and_cast_type() {
+        let refs = extract_column_references(
+            "COUNT(CASE WHEN ${CUBE}.status = 'approved' THEN 1 END)::float / NULLIF(COUNT(*), 0)",
+        );
+        assert!(refs.contains("status"));
+        assert!(!refs.contains("CUBE"));
+        assert!(!refs.contains("float"));
     }
 }

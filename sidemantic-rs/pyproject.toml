@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "sidemantic-rs"
+version = "0.1.0"
+description = "Standalone Rust runtime bindings for Sidemantic"
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.11"
+
+[tool.maturin]
+module-name = "sidemantic_rs"
+features = ["python-adbc"]

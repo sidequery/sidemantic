@@ -32,6 +32,7 @@ class Relationship(BaseModel):
     related_foreign_key: str | None = Field(
         default=None, description="Foreign key in junction model pointing to related model"
     )
+    active: bool = Field(default=True, description="Whether the relationship is active by default")
     metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     @property
@@ -83,3 +84,16 @@ class Relationship(BaseModel):
         if self.type != "many_to_many":
             return None, None
         return self.through_foreign_key or self.foreign_key, self.related_foreign_key
+
+
+class RelationshipOverride(BaseModel):
+    """Overrides join behavior for a relationship in a metric/query context."""
+
+    from_model: str = Field(description="Source model name")
+    from_column: str = Field(description="Source model column")
+    to_model: str = Field(description="Target model name")
+    to_column: str = Field(description="Target model column")
+    join_type: Literal["inner", "left", "right", "full"] | None = Field(
+        default=None, description="Optional join type override"
+    )
+    direction: str | None = Field(default=None, description="Optional filter direction hint")

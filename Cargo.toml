@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "sidemantic-rs",
+    "crates/dax-parser",
+    "crates/dax-pyo3",
+]
+resolver = "2"

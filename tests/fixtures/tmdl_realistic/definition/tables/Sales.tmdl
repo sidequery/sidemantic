@@ -1,0 +1,37 @@
+/// Sales fact table
+table Sales
+    annotation TableTag
+        value: "fact"
+    column SalesKey
+        dataType: int64
+        isKey
+        sourceColumn: SalesKey
+    column ProductKey
+        dataType: int64
+        sourceColumn: ProductKey
+    column OrderDate
+        dataType: date
+        sourceColumn: OrderDate
+    column Quantity
+        dataType: int64
+        sourceColumn: Quantity
+    column Amount
+        dataType: decimal
+        sourceColumn: Amount
+        formatString: "$#,##0.00"
+    calculatedColumn 'Amount x2' = Sales[Amount] * 2
+        dataType: decimal
+    measure 'Total Sales' = SUM(Sales[Amount])
+        formatString: "$#,##0.00"
+    measure 'Order Count' = COUNTROWS(Sales)
+    measure 'Sales LY' =
+        VAR ly = CALCULATE([Total Sales], SAMEPERIODLASTYEAR(Calendar[Date]))
+        RETURN ly
+    partition Sales = m
+        mode: import
+        source =
+            let
+                Source = Sql.Database("localhost", "retail"),
+                Sales = Source{[Schema="dbo",Item="Sales"]}[Data]
+            in
+                Sales

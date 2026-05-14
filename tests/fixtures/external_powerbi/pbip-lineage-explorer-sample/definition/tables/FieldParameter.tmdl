@@ -1,0 +1,21 @@
+table 'Sales Metrics'
+	column Value
+		dataType: int64
+	column Metric
+		dataType: string
+		expression: NAMEOF([Total Sales]) & NAMEOF([Avg Sales]) & NAMEOF([Total Quantity])
+	measure 'Selected Metric' =
+		SWITCH(
+			SELECTEDVALUE('Sales Metrics'[Value]),
+			0, [Total Sales],
+			1, [Avg Sales],
+			2, [Total Quantity]
+		)
+	partition 'Sales Metrics' = calculated
+		mode: import
+		source =
+			{
+				("sales_kpi_01", NAMEOF('Sales'[Total Sales]), 0),
+				("sales_kpi_02", NAMEOF('Sales'[Avg Sales]), 1),
+				("sales_kpi_03", NAMEOF('Sales'[Total Quantity]), 2)
+			}

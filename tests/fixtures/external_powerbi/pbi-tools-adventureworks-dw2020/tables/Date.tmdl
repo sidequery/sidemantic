@@ -1,0 +1,88 @@
+﻿/// Filters the Sales table using sales order date
+table Date
+
+	column Date
+		dataType: dateTime
+		formatString: Long Date
+		summarizeBy: none
+		sourceColumn: Date
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column DateKey
+		dataType: int64
+		isHidden
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: DateKey
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_ChangedProperties = ["IsHidden"]
+
+	column 'Fiscal Quarter'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Fiscal Quarter
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Fiscal Year'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Fiscal Year
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Full Date'
+		dataType: string
+		isDefaultLabel
+		summarizeBy: none
+		sourceColumn: Full Date
+
+		annotation SummarizationSetBy = Automatic
+
+	column Month
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Month
+
+		annotation SummarizationSetBy = Automatic
+
+	column MonthKey
+		dataType: int64
+		isHidden
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: MonthKey
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_ChangedProperties = ["IsHidden"]
+
+	hierarchy Fiscal
+
+		level Quarter
+			column: 'Fiscal Quarter'
+
+		level Month
+			column: Month
+
+		level Date
+			column: 'Full Date'
+
+	partition Date = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(Web.Contents(HttpSource & "Date.csv"),[Delimiter=",", Columns=7, Encoding=65001, QuoteStyle=QuoteStyle.None]),
+				    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+				    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"DateKey", Int64.Type}, {"Date", type datetime}, {"Fiscal Year", type text}, {"Fiscal Quarter", type text}, {"Month", type text}, {"MonthKey", Int64.Type}, {"Full Date", type text}}),
+				    #"Extracted Date" = Table.TransformColumns(#"Changed Type",{{"Date", DateTime.Date, type date}})
+				in
+				    #"Extracted Date"
+
+	annotation PBI_ResultType = Table
+

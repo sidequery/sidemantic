@@ -8,7 +8,7 @@ description = "A SQL-first semantic layer in Rust"
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
-polyglot-sql = "0.1"
+polyglot-sql = "0.3.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"

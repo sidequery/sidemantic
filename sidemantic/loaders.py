@@ -1,5 +1,6 @@
 """Auto-discovery loaders for semantic layer definitions."""
 
+import copy
 import logging
 import runpy
 import sys
@@ -38,6 +39,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.snowflake import SnowflakeAdapter
     from sidemantic.adapters.superset import SupersetAdapter
     from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
+    from sidemantic.adapters.tmdl import TMDLAdapter
     from sidemantic.adapters.yardstick import YardstickAdapter
 
     directory = Path(directory)
@@ -48,24 +50,61 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     all_models = {}
     all_metrics = {}
     all_parameters = {}
+    import_warnings: list[dict[str, object]] = []
 
     # Check for SML repository (catalog.yml/atscale.yml or object_type files)
     if _try_load_sml(layer, directory, all_models):
         return
+
+    # TMDL projects are folder-based. Parse a project root once instead of
+    # treating each .tmdl file as an independent model.
+    tmdl_root = None
+    definition_dir = directory / "definition"
+    if definition_dir.is_dir() and list(definition_dir.rglob("*.tmdl")):
+        tmdl_root = definition_dir
+    elif list(directory.rglob("*.tmdl")):
+        tmdl_root = directory
+
+    if tmdl_root:
+        try:
+            graph = TMDLAdapter().parse(tmdl_root)
+            _merge_graph_passthrough_metadata(layer.graph, graph)
+            _extend_import_warnings(import_warnings, graph)
+            for model in graph.models.values():
+                if not hasattr(model, "_source_format"):
+                    model._source_format = "TMDL"
+                if not hasattr(model, "_source_file"):
+                    model._source_file = str(tmdl_root.relative_to(directory))
+            all_models.update(graph.models)
+            all_metrics.update(graph.metrics)
+            all_parameters.update(graph.parameters)
+        except Exception as e:
+            _append_import_warning(
+                import_warnings,
+                code="tmdl_parse_error",
+                message=str(e),
+                source_format="TMDL",
+                source_file=str(tmdl_root.relative_to(directory)),
+            )
+            logging.warning("Could not parse TMDL models in %s: %s", tmdl_root, e)
 
     # Find and parse all files
     for file_path in directory.rglob("*"):
         if not file_path.is_file():
             continue
 
-        if _try_load_python_file(file_path, directory, all_models):
+        if _try_load_python_file(file_path, directory, all_models, import_warnings):
             continue
 
         # Detect format and parse
         adapter = None
         suffix = file_path.suffix.lower()
 
-        if suffix == ".lkml":
+        if suffix == ".tmdl":
+            if tmdl_root:
+                continue
+            adapter = TMDLAdapter()
+        elif suffix == ".lkml":
             adapter = LookMLAdapter()
         elif suffix == ".malloy":
             from sidemantic.adapters.malloy import MalloyAdapter
@@ -77,7 +116,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = YardstickAdapter(dialect=layer.dialect or "duckdb")
             else:
                 # Sidemantic SQL files (pure SQL or with YAML frontmatter)
-                adapter = SidemanticAdapter()
+                adapter = SidemanticAdapter(lower_dax=False)
         elif suffix == ".json":
             content = file_path.read_text()
             if '"ldm"' in content and '"datasets"' in content:
@@ -111,7 +150,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = CubeAdapter()
             # Check for Sidemantic native format (explicit models: key)
             elif "models:" in content:
-                adapter = SidemanticAdapter()
+                adapter = SidemanticAdapter(lower_dax=False)
             elif "metrics:" in content and "type: " in content:
                 adapter = MetricFlowAdapter()
             elif "base_sql_table:" in content and "measures:" in content:
@@ -138,10 +177,12 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 adapter = OmniAdapter()
 
         if adapter:
+            adapter_name = adapter.__class__.__name__.replace("Adapter", "")
             try:
                 graph = adapter.parse(str(file_path))
+                _merge_graph_passthrough_metadata(layer.graph, graph)
+                _extend_import_warnings(import_warnings, graph)
                 # Track source format for each model
-                adapter_name = adapter.__class__.__name__.replace("Adapter", "")
                 for model in graph.models.values():
                     if not hasattr(model, "_source_format"):
                         model._source_format = adapter_name
@@ -151,11 +192,20 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
             except Exception as e:
+                _append_import_warning(
+                    import_warnings,
+                    code="adapter_parse_error",
+                    message=str(e),
+                    source_format=adapter_name,
+                    source_file=str(file_path.relative_to(directory)),
+                )
                 # Skip files that fail to parse
                 logging.warning("Could not parse %s: %s", file_path, e)
 
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
+
+    _lower_dax_models(all_models, all_metrics, all_parameters)
 
     # Add all models to the layer (now with relationships)
     for model in all_models.values():
@@ -171,8 +221,23 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         if parameter.name not in layer.graph.parameters:
             layer.graph.add_parameter(parameter)
 
+    _merge_import_warnings(layer.graph, import_warnings)
+
     # Rebuild adjacency graph to recognize all inferred relationships
     layer.graph.build_adjacency()
+
+
+def _lower_dax_models(all_models: dict, all_metrics: dict, all_parameters: dict) -> None:
+    if not all_models and not all_metrics:
+        return
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.dax.modeling import lower_dax_graph_expressions
+
+    graph = SemanticGraph()
+    graph.models.update(all_models)
+    graph.metrics.update(all_metrics)
+    graph.parameters.update(all_parameters)
+    lower_dax_graph_expressions(graph)
 
 
 def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dict) -> None:
@@ -264,7 +329,9 @@ def _extract_models_from_python_namespace(namespace: dict, fallback_models: dict
     return extracted
 
 
-def _try_load_python_file(file_path: Path, directory: Path, all_models: dict) -> bool:
+def _try_load_python_file(
+    file_path: Path, directory: Path, all_models: dict, import_warnings: list[dict[str, object]]
+) -> bool:
     """Load semantic definitions from a Python file if it looks like Sidemantic code."""
     if not _looks_like_python_semantic_definition(file_path):
         return False
@@ -280,6 +347,13 @@ def _try_load_python_file(file_path: Path, directory: Path, all_models: dict) ->
         with captured_layer:
             namespace = runpy.run_path(str(file_path))
     except Exception as e:
+        _append_import_warning(
+            import_warnings,
+            code="python_parse_error",
+            message=str(e),
+            source_format="Python",
+            source_file=str(file_path.relative_to(directory)),
+        )
         logging.warning("Could not parse %s: %s", file_path, e)
         return False
     finally:
@@ -332,6 +406,53 @@ def _try_load_sml(layer: "SemanticLayer", directory: Path, all_models: dict) -> 
                 return True
 
     return False
+
+
+def _extend_import_warnings(target: list[dict[str, object]], graph: object) -> None:
+    warnings = getattr(graph, "import_warnings", None)
+    if not isinstance(warnings, list):
+        return
+    for warning in warnings:
+        if isinstance(warning, dict):
+            target.append(dict(warning))
+
+
+def _append_import_warning(
+    target: list[dict[str, object]],
+    *,
+    code: str,
+    message: str,
+    source_format: str,
+    source_file: str,
+    context: str = "loader",
+) -> None:
+    target.append(
+        {
+            "code": code,
+            "context": context,
+            "source_format": source_format,
+            "source_file": source_file,
+            "message": message,
+        }
+    )
+
+
+def _merge_import_warnings(graph: object, warnings: list[dict[str, object]]) -> None:
+    existing = getattr(graph, "import_warnings", [])
+    merged: list[dict[str, object]] = []
+    if isinstance(existing, list):
+        for warning in existing:
+            if isinstance(warning, dict):
+                merged.append(dict(warning))
+    merged.extend(warnings)
+    graph.import_warnings = merged
+
+
+def _merge_graph_passthrough_metadata(target_graph: object, source_graph: object) -> None:
+    for name, value in vars(source_graph).items():
+        if not name.startswith("_tmdl_"):
+            continue
+        setattr(target_graph, name, copy.deepcopy(value))
 
 
 def _infer_relationships(models: dict) -> None:

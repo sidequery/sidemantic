@@ -1,0 +1,19 @@
+[package]
+name = "dax-pyo3"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for dax-parser"
+license = "AGPL-3.0-only"
+repository = "https://github.com/sidequery/sidemantic"
+publish = false
+
+[lib]
+name = "sidemantic_dax"
+crate-type = ["cdylib"]
+
+[dependencies]
+dax-parser = { path = "../dax-parser" }
+pyo3 = { version = "0.21", features = ["extension-module", "abi3-py311"] }
+pythonize = "0.21"
+serde_json = "1.0"
+serde = "1.0"

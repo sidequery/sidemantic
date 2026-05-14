@@ -2,7 +2,7 @@
 
 The universal metrics layer for consistent metrics across your data stack. Compatible with 15+ semantic model formats.
 
-- **Supported Formats:** Sidemantic (YAML, Python or SQL), Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
+- **Supported Formats:** Sidemantic (YAML, Python or SQL), Power BI TMDL, Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, OSI, AtScale SML, ThoughtSpot TML
 - **Databases:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL (also via ADBC)
 
 [Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/repository/docker/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
@@ -21,6 +21,11 @@ uv add sidemantic
 Malloy support (uv):
 ```bash
 uv add "sidemantic[malloy]"
+```
+
+DAX and Power BI TMDL support (uv):
+```bash
+uv add "sidemantic[dax]"
 ```
 
 HTTP API server (uv):
@@ -122,6 +127,55 @@ load_from_directory(layer, "models/")
 result = layer.sql("SELECT revenue, status FROM orders")
 ```
 
+## DAX And TMDL
+
+DAX/TMDL support lives behind the `dax` extra because it includes a native Rust parser:
+
+```bash
+uv add "sidemantic[dax]"
+```
+
+Native Sidemantic YAML can define DAX expressions directly. Supported DAX is lowered to executable Sidemantic SQL semantics at load time, while the original DAX is preserved for export and UI metadata:
+
+```yaml
+models:
+  - name: sales
+    table: sales
+    primary_key: id
+    dimensions:
+      - name: doubled_amount
+        type: numeric
+        dax: "'sales'[amount] * 2"
+    metrics:
+      - name: revenue
+        dax: "SUM('sales'[amount])"
+```
+
+Power BI TMDL projects can be loaded from a project root or `definition/` folder. Embedded DAX measures, calculated columns, calculated tables, relationships, and TMDL passthrough metadata are imported and exposed through model metadata:
+
+```python
+from sidemantic import SemanticLayer, load_from_directory
+
+layer = SemanticLayer(connection="duckdb:///warehouse.duckdb")
+load_from_directory(layer, "powerbi_project/")
+print(layer.describe_models(["Sales"]))
+```
+
+TMDL can also round-trip back to disk:
+
+```python
+from sidemantic.adapters.tmdl import TMDLAdapter
+
+TMDLAdapter().export(layer.graph, "exported_tmdl/")
+```
+
+Run DAX `EVALUATE` queries through the CLI:
+
+```bash
+sidemantic dax-query "EVALUATE SUMMARIZECOLUMNS('sales'[category], \"Revenue\", [revenue])" --models models/ --db data.duckdb
+sidemantic dax-query "EVALUATE VALUES('sales'[category])" --models models/ --dry-run
+```
+
 ## CLI
 
 ```bash
@@ -142,6 +196,9 @@ sidemantic validate models/
 
 # Model info
 sidemantic info models/
+
+# DAX query
+sidemantic dax-query "EVALUATE VALUES('orders'[status])" --models models/ --db data.duckdb
 
 # Pre-aggregation recommendations
 sidemantic preagg recommend --db data.duckdb
@@ -236,7 +293,7 @@ See `examples/` for more.
 
 ## Multi-Format Support
 
-Auto-detects: Sidemantic (SQL/YAML), Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML
+Auto-detects: Sidemantic (SQL/YAML), Power BI TMDL, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML
 
 ```bash
 sidemantic query "SELECT revenue FROM orders" --models ./my_models

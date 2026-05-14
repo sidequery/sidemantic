@@ -1,0 +1,12 @@
+# source: docs/docs/index.md
+func.name(arg1 + 1 + 2  + 3, func(), func(10000000000000), arg2)
+---
+# source: docs/docs/index.md
+func.name(
+        arg1 + 
+        1 +
+            2 + 3,
+        func(),
+        func(10000000000000),
+        arg2
+    )

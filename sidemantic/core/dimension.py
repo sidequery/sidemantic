@@ -14,6 +14,10 @@ class Dimension(BaseModel):
     name: str = Field(..., description="Unique dimension name within model")
     type: Literal["categorical", "time", "boolean", "numeric"] = Field(..., description="Dimension type")
     sql: str | None = Field(None, description="SQL expression (defaults to name; accepts 'expr' as alias)")
+    dax: str | None = Field(None, description="DAX expression source text to lower into SQL")
+    expression_language: Literal["sql", "dax"] | None = Field(
+        None, description="Expression language for sql/expr/dax authoring"
+    )
     granularity: Literal["second", "minute", "hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Base granularity for time dimensions"
     )

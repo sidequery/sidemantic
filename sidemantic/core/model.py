@@ -21,6 +21,10 @@ class Model(BaseModel):
     name: str = Field(..., description="Unique model name")
     table: str | None = Field(None, description="Physical table name (schema.table)")
     sql: str | None = Field(None, description="SQL expression for derived tables")
+    dax: str | None = Field(None, description="DAX table expression source text to lower into SQL")
+    expression_language: Literal["sql", "dax"] | None = Field(
+        None, description="Expression language for sql/dax derived table authoring"
+    )
     source_uri: str | None = Field(None, description="Remote data source URI (e.g., https://, s3://, gs://)")
     description: str | None = Field(None, description="Human-readable description")
     extends: str | None = Field(None, description="Parent model to inherit from")

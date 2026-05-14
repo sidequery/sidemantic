@@ -1,0 +1,6 @@
+﻿expression HttpSource = "https://raw.githubusercontent.com/pbi-tools/adventureworksdw2020-pbix/main/data/" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Text
+

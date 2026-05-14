@@ -1,0 +1,4 @@
+model 'Warning Fixture'
+    ref table Sales
+    ref table 'Bad Table'
+    ref relationship 'Bad-Relationship'

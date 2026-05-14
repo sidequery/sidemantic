@@ -1,0 +1,12 @@
+/// Calendar dimension
+table Calendar
+    column Date
+        dataType: date
+        isKey
+        sourceColumn: Date
+    column Year
+        dataType: int64
+        sourceColumn: Year
+    column MonthName
+        dataType: string
+        sourceColumn: MonthName

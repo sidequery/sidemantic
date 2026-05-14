@@ -1,0 +1,87 @@
+# source: query-docs/query-languages/dax/dax-queries.md (EVALUATE example)
+EVALUATE
+	'Sales Order'
+---
+# source: query-docs/query-languages/dax/dax-queries.md (ORDER BY example)
+EVALUATE
+	SUMMARIZECOLUMNS(
+		// Group by columns
+		'Date'[Month Name],
+		'Date'[Month of Year],
+		'Product'[Category],
+
+		// Optional filters
+		FILTER(
+			VALUES('Product'[Category]),
+			[Category] = "Clothing"
+		),
+
+		// Measures or explicit DAX formulas to aggregate and analyze the data by row
+		"Orders", [Orders],
+		"Avg Profit per Order", DIVIDE(
+			[Total Sales Profit],
+			[Orders]
+		)
+	)
+
+	// DAX queries do not use sort order defined in Power BI,
+	// sort by columns must be included in the DAX query to be used in order by
+	ORDER BY 'Date'[Month of Year] ASC
+---
+# source: query-docs/query-languages/dax/dax-queries.md (TOPN ORDER BY example)
+EVALUATE
+	TOPN(
+		100,
+		'Sales Order',
+		// The way the data is sorted before the top 100 rows are selected
+		'Sales Order'[SalesOrderLineKey], ASC
+	)
+	// The way the data is sorted for the results
+	ORDER BY
+		'Sales Order'[Sales Order] ASC,
+		'Sales Order'[Sales Order Line] ASC
+---
+# source: query-docs/query-languages/dax/dax-queries.md (START AT example)
+EVALUATE
+	'Sales Order'
+	ORDER BY 'Sales Order'[Sales Order] ASC
+	// Start at this order, orders before this order will not be displayed
+	START AT "SO43661"
+---
+# source: query-docs/query-languages/dax/dax-queries.md (DEFINE example)
+DEFINE
+	VAR _firstyear = MIN('Date'[Fiscal Year])
+	VAR _lastyear = MAX('Date'[Fiscal Year])
+	TABLE 'Unbought products' = FILTER('Product', [Orders] + 0 = 0)
+	COLUMN 'Unbought products'[Year Range] = _firstyear & " - " & _lastyear
+	MEASURE 'Unbought products'[Unbought products] = COUNTROWS('Unbought products')
+
+EVALUATE
+	'Unbought products'
+
+EVALUATE
+	{[Unbought products]}
+---
+# source: query-docs/query-languages/dax/dax-queries.md (DEFINE MEASURE example)
+DEFINE
+	MEASURE 'Pick a sales measure'[Orders] = DISTINCTCOUNT('Sales Order'[Sales Order])
+	MEASURE 'Pick a sales measure'[Customers] = CALCULATE(
+			COUNTROWS(Customer),
+			FILTER(
+				'Sales',
+				[Orders] > 0
+			)
+		)
+	MEASURE 'Pick a sales measure'[Orders per Customer] = DIVIDE(
+			[Orders],
+			[Customers],
+			0
+		)
+
+EVALUATE
+	SUMMARIZECOLUMNS(
+		'Date'[Fiscal Year],
+		"Orders", [Orders],
+		"Customers", [Customers],
+		"Orders per Customer", [Orders per Customer]
+	)

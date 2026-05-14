@@ -208,3 +208,102 @@ def test_adjacency_built_on_find_path():
     path = graph.find_relationship_path("orders", "customers")
     assert len(path) == 1
     assert graph._adjacency_dirty is False
+
+
+def test_one_to_many_path_can_use_tmdl_from_column_override():
+    """Imported TMDL relationships preserve explicit fromColumn join keys."""
+    from sidemantic.core.relationship import Relationship
+
+    graph = SemanticGraph()
+
+    relationship = Relationship(name="customers", type="one_to_many", foreign_key="product_key")
+    relationship._tmdl_from_column = "product_key"
+    products = Model(
+        name="products",
+        table="products",
+        primary_key="internal_product_id",
+        relationships=[relationship],
+    )
+    customers = Model(name="customers", table="customers", primary_key="customer_id")
+
+    graph.add_model(products)
+    graph.add_model(customers)
+
+    path = graph.find_relationship_path("products", "customers")
+    assert [(hop.from_columns, hop.to_columns) for hop in path] == [(["product_key"], ["product_key"])]
+
+
+def test_inactive_relationship_is_not_used_for_default_path():
+    """Inactive imported relationships must not participate in normal SQL pathing."""
+    from sidemantic.core.relationship import Relationship
+
+    graph = SemanticGraph()
+    sales = Model(
+        name="sales",
+        table="sales",
+        primary_key="id",
+        relationships=[
+            Relationship(
+                name="calendar",
+                type="many_to_one",
+                foreign_key="ship_date_key",
+                primary_key="date_key",
+                active=False,
+            )
+        ],
+    )
+    calendar = Model(name="calendar", table="calendar", primary_key="date_key")
+
+    graph.add_model(sales)
+    graph.add_model(calendar)
+
+    with pytest.raises(ValueError, match="No join path found"):
+        graph.find_relationship_path("sales", "calendar")
+
+
+def test_relationship_override_can_activate_query_local_path():
+    """Metric-local overrides provide a join path without reactivating the graph edge."""
+    from sidemantic.core.relationship import Relationship, RelationshipOverride
+
+    graph = SemanticGraph()
+    sales = Model(
+        name="sales",
+        table="sales",
+        primary_key="id",
+        relationships=[
+            Relationship(
+                name="calendar",
+                type="many_to_one",
+                foreign_key="order_date_key",
+                primary_key="date_key",
+            ),
+            Relationship(
+                name="calendar",
+                type="many_to_one",
+                foreign_key="ship_date_key",
+                primary_key="date_key",
+                active=False,
+            ),
+        ],
+    )
+    calendar = Model(name="calendar", table="calendar", primary_key="date_key")
+
+    graph.add_model(sales)
+    graph.add_model(calendar)
+
+    default_path = graph.find_relationship_path("sales", "calendar")
+    override_path = graph.find_relationship_path(
+        "sales",
+        "calendar",
+        [
+            RelationshipOverride(
+                from_model="sales",
+                from_column="ship_date_key",
+                to_model="calendar",
+                to_column="date_key",
+            )
+        ],
+    )
+
+    assert [(hop.from_columns, hop.to_columns) for hop in default_path] == [(["order_date_key"], ["date_key"])]
+    assert [(hop.from_columns, hop.to_columns) for hop in override_path] == [(["ship_date_key"], ["date_key"])]

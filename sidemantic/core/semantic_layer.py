@@ -209,6 +209,8 @@ class SemanticLayer:
         if model.auto_dimensions:
             self._introspect_dimensions(model)
 
+        self._lower_model_dax(model)
+
         errors = validate_model(model)
         if errors:
             raise ModelValidationError(
@@ -216,6 +218,16 @@ class SemanticLayer:
             )
 
         self.graph.add_model(model)
+
+    def _lower_model_dax(self, model: Model) -> None:
+        from sidemantic.core.semantic_graph import SemanticGraph
+        from sidemantic.dax.modeling import lower_dax_model_expressions
+
+        graph = SemanticGraph()
+        graph.models.update(self.graph.models)
+        graph.metrics.update(self.graph.metrics)
+        graph.models[model.name] = model
+        lower_dax_model_expressions(model, graph)
 
     def _normalize_model_table(self, model: Model) -> None:
         """Normalize model.table for the active dialect when needed."""
@@ -425,6 +437,8 @@ class SemanticLayer:
             if existing.model_dump() == measure.model_dump():
                 return
 
+        self._lower_graph_metric_dax(measure)
+
         errors = validate_metric(measure, self.graph)
         if errors:
             raise MetricValidationError(
@@ -432,6 +446,16 @@ class SemanticLayer:
             )
 
         self.graph.add_metric(measure)
+
+    def _lower_graph_metric_dax(self, measure: Metric) -> None:
+        from sidemantic.core.semantic_graph import SemanticGraph
+        from sidemantic.dax.modeling import lower_dax_graph_expressions
+
+        graph = SemanticGraph()
+        graph.models.update(self.graph.models)
+        graph.metrics.update(self.graph.metrics)
+        graph.metrics[measure.name] = measure
+        lower_dax_graph_expressions(graph)
 
     def query(
         self,
@@ -479,6 +503,113 @@ class SemanticLayer:
         )
 
         return self.adapter.execute(sql)
+
+    def translate_dax_query(self, dax: str):
+        """Parse and translate a DAX query against this semantic graph.
+
+        Returns a ``QueryTranslation`` with one SQL payload per DAX EVALUATE
+        statement. This is the reusable API behind CLI/MCP/Sidequery DAX query
+        execution.
+        """
+        from sidemantic.dax.runtime import parse_dax_query, translate_dax_query_ast
+
+        return translate_dax_query_ast(parse_dax_query(dax), self.graph)
+
+    def compile_dax_query(self, dax: str, evaluate: int = 1) -> str:
+        """Compile one DAX EVALUATE statement to SQL without executing it."""
+        sql, _warnings = self._compile_dax_query_with_warnings(dax, evaluate=evaluate)
+        return sql
+
+    def compile_dax_query_payload(self, dax: str, evaluate: int = 1) -> dict[str, object]:
+        """Compile one DAX EVALUATE statement to JSON-friendly SQL metadata."""
+        sql, warnings = self._compile_dax_query_with_warnings(dax, evaluate=evaluate)
+        return {
+            "sql": sql,
+            "warnings": warnings,
+            "import_warnings": self.get_import_warnings(),
+        }
+
+    def _compile_dax_query_with_warnings(self, dax: str, evaluate: int = 1) -> tuple[str, list[dict[str, object]]]:
+        """Compile one DAX EVALUATE and collect query-level warnings."""
+        if evaluate < 1:
+            raise ValueError("evaluate must be >= 1")
+
+        translation = self.translate_dax_query(dax)
+        if not translation.evaluates:
+            raise ValueError("DAX query contains no EVALUATE statements")
+        if evaluate > len(translation.evaluates):
+            raise ValueError(
+                f"evaluate index {evaluate} is out of range; query has {len(translation.evaluates)} EVALUATE statement(s)"
+            )
+        evaluate_translation = translation.evaluates[evaluate - 1]
+        warnings = [
+            *self._normalize_dax_warnings(getattr(translation, "warnings", [])),
+            *self._normalize_dax_warnings(getattr(evaluate_translation, "warnings", [])),
+        ]
+        return evaluate_translation.sql, warnings
+
+    def query_dax(self, dax: str, evaluate: int = 1):
+        """Execute one DAX EVALUATE statement against the semantic layer."""
+        return self.adapter.execute(self.compile_dax_query(dax, evaluate=evaluate))
+
+    def run_dax_query(self, dax: str, evaluate: int = 1, dry_run: bool = False) -> dict[str, object]:
+        """Compile and optionally execute one DAX EVALUATE statement.
+
+        Returns a JSON-friendly payload for UI, MCP, and FFI callers.
+        """
+        sql, warnings = self._compile_dax_query_with_warnings(dax, evaluate=evaluate)
+        import_warnings = self.get_import_warnings()
+        if dry_run:
+            return {
+                "sql": sql,
+                "rows": [],
+                "row_count": 0,
+                "warnings": warnings,
+                "import_warnings": import_warnings,
+            }
+
+        result = self.adapter.execute(sql)
+        rows = result.fetchall()
+        columns = [desc[0] for desc in result.description]
+        row_dicts = [
+            {column: self._result_value_to_json_compatible(value) for column, value in zip(columns, row)}
+            for row in rows
+        ]
+
+        return {
+            "sql": sql,
+            "rows": row_dicts,
+            "row_count": len(row_dicts),
+            "warnings": warnings,
+            "import_warnings": import_warnings,
+        }
+
+    @staticmethod
+    def _normalize_dax_warnings(warnings: object) -> list[dict[str, object]]:
+        if not isinstance(warnings, list):
+            return []
+        return [dict(warning) for warning in warnings if isinstance(warning, dict)]
+
+    @staticmethod
+    def _result_value_to_json_compatible(value):
+        from datetime import date, datetime, time
+        from decimal import Decimal
+
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, (date, datetime, time)):
+            return value.isoformat()
+        return value
+
+    def get_import_warnings(self) -> list[dict[str, object]]:
+        """Return structured warnings produced while importing model definitions."""
+        return list(getattr(self.graph, "import_warnings", []) or [])
+
+    def describe_models(self, model_names: list[str] | None = None) -> dict[str, object]:
+        """Return UI/FFI-friendly model metadata, including source and DAX/TMDL state."""
+        from sidemantic.core.introspection import describe_graph
+
+        return describe_graph(self.graph, model_names=model_names)
 
     def compile(
         self,
@@ -816,10 +947,10 @@ class SemanticLayer:
         path: str | Path,
         connection: str | BaseDatabaseAdapter | None = None,  # type: ignore # noqa: F821
     ) -> SemanticLayer:
-        """Load semantic layer from native YAML file.
+        """Load semantic layer from a native YAML or standalone TMDL file.
 
         Args:
-            path: Path to YAML file
+            path: Path to YAML, SQL, or standalone TMDL file
             connection: Database connection string, adapter instance, or None
                 (overrides connection in YAML file). Pass an adapter instance
                 when your model files don't include connection config, e.g.:
@@ -828,24 +959,30 @@ class SemanticLayer:
         Returns:
             SemanticLayer instance
         """
-        import yaml
-
-        from sidemantic.adapters.sidemantic import SidemanticAdapter, substitute_env_vars
-
-        adapter = SidemanticAdapter()
-        graph = adapter.parse(path)
-
-        # If connection not provided as parameter, try to read from YAML file
-        # (skip for .sql files which may have multi-document YAML frontmatter)
         path_obj = Path(path)
-        if connection is None and path_obj.suffix in (".yml", ".yaml"):
-            with open(path) as f:
-                content = f.read()
-            # Substitute environment variables
-            content = substitute_env_vars(content)
-            data = yaml.safe_load(content)
-            if data and "connection" in data:
-                connection = data["connection"]
+        if path_obj.suffix.lower() == ".tmdl":
+            from sidemantic.adapters.tmdl import TMDLAdapter
+
+            graph = TMDLAdapter().parse(path)
+        else:
+            import yaml
+
+            from sidemantic.adapters.sidemantic import SidemanticAdapter, substitute_env_vars
+
+            adapter = SidemanticAdapter()
+            graph = adapter.parse(path)
+            cls._mark_loaded_file_source(graph, source_format="Sidemantic", source_file=path_obj.name)
+
+            # If connection not provided as parameter, try to read from YAML file
+            # (skip for .sql files which may have multi-document YAML frontmatter)
+            if connection is None and path_obj.suffix in (".yml", ".yaml"):
+                with open(path) as f:
+                    content = f.read()
+                # Substitute environment variables
+                content = substitute_env_vars(content)
+                data = yaml.safe_load(content)
+                if data and "connection" in data:
+                    connection = data["connection"]
 
         # Convert dict-style connection config to URL string
         if isinstance(connection, dict):
@@ -859,6 +996,19 @@ class SemanticLayer:
         layer.graph = graph
 
         return layer
+
+    @staticmethod
+    def _mark_loaded_file_source(graph, *, source_format: str, source_file: str) -> None:
+        for model in graph.models.values():
+            if not hasattr(model, "_source_format"):
+                model._source_format = source_format
+            if not hasattr(model, "_source_file"):
+                model._source_file = source_file
+        for metric in graph.metrics.values():
+            if not hasattr(metric, "_source_format"):
+                metric._source_format = source_format
+            if not hasattr(metric, "_source_file"):
+                metric._source_file = source_file
 
     @staticmethod
     def _connection_dict_to_url(config: dict) -> str:

@@ -11,7 +11,7 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
-from sidemantic.core.relationship import Relationship
+from sidemantic.core.relationship import Relationship, RelationshipOverride
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.sql_definitions import (
@@ -95,6 +95,9 @@ class SidemanticAdapter(BaseAdapter):
     ```
     """
 
+    def __init__(self, lower_dax: bool = True):
+        self.lower_dax = lower_dax
+
     def parse(self, source: str | Path) -> SemanticGraph:
         """Parse Sidemantic YAML or SQL into semantic graph.
 
@@ -157,6 +160,7 @@ class SidemanticAdapter(BaseAdapter):
                         graph.add_parameter(param)
                     # Segments need to be attached to models, skip if no model
 
+            self._lower_dax_if_enabled(graph)
             return graph
 
         # Handle YAML files
@@ -199,7 +203,15 @@ class SidemanticAdapter(BaseAdapter):
             # Note: segments need to be attached to models
             # For now, skip graph-level segments
 
+        self._lower_dax_if_enabled(graph)
         return graph
+
+    def _lower_dax_if_enabled(self, graph: SemanticGraph) -> None:
+        if not self.lower_dax:
+            return
+        from sidemantic.dax.modeling import lower_dax_graph_expressions
+
+        lower_dax_graph_expressions(graph)
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Sidemantic YAML.
@@ -247,6 +259,7 @@ class SidemanticAdapter(BaseAdapter):
                 through=relationship_def.get("through"),
                 through_foreign_key=relationship_def.get("through_foreign_key"),
                 related_foreign_key=relationship_def.get("related_foreign_key"),
+                active=relationship_def.get("active", True),
             )
             joins.append(join)
 
@@ -257,12 +270,15 @@ class SidemanticAdapter(BaseAdapter):
                 name=dim_def.get("name"),
                 type=dim_def.get("type", "categorical"),  # Default to categorical
                 sql=dim_def.get("sql") or dim_def.get("expr"),
+                dax=dim_def.get("dax"),
+                expression_language=dim_def.get("expression_language"),
                 granularity=dim_def.get("granularity"),
                 supported_granularities=dim_def.get("supported_granularities"),
                 description=dim_def.get("description"),
                 label=dim_def.get("label"),
                 format=dim_def.get("format"),
                 value_format_name=dim_def.get("value_format_name"),
+                public=dim_def.get("public", True),
                 parent=dim_def.get("parent"),
                 metadata=dim_def.get("metadata"),
                 window=dim_def.get("window"),
@@ -277,6 +293,8 @@ class SidemanticAdapter(BaseAdapter):
                 extends=measure_def.get("extends"),
                 agg=measure_def.get("agg"),
                 sql=measure_def.get("sql") or measure_def.get("expr"),
+                dax=measure_def.get("dax"),
+                expression_language=measure_def.get("expression_language"),
                 type=measure_def.get("type"),
                 filters=measure_def.get("filters"),
                 fill_nulls_with=measure_def.get("fill_nulls_with"),
@@ -284,9 +302,12 @@ class SidemanticAdapter(BaseAdapter):
                 label=measure_def.get("label"),
                 format=measure_def.get("format"),
                 value_format_name=measure_def.get("value_format_name"),
+                public=measure_def.get("public", True),
                 drill_fields=measure_def.get("drill_fields"),
                 non_additive_dimension=measure_def.get("non_additive_dimension"),
                 metadata=measure_def.get("metadata"),
+                relationship_overrides=_parse_relationship_overrides(measure_def.get("relationship_overrides")),
+                required_models=measure_def.get("required_models"),
                 base_metric=measure_def.get("base_metric"),
                 comparison_type=measure_def.get("comparison_type"),
                 time_offset=measure_def.get("time_offset"),
@@ -376,6 +397,8 @@ class SidemanticAdapter(BaseAdapter):
             name=name,
             table=model_def.get("table"),
             sql=model_def.get("sql"),
+            dax=model_def.get("dax"),
+            expression_language=model_def.get("expression_language"),
             source_uri=model_def.get("source_uri"),
             description=model_def.get("description"),
             extends=model_def.get("extends"),
@@ -414,6 +437,8 @@ class SidemanticAdapter(BaseAdapter):
             label=metric_def.get("label"),
             metadata=metric_def.get("metadata"),
             sql=metric_def.get("sql") or metric_def.get("expr") or metric_def.get("measure"),
+            dax=metric_def.get("dax"),
+            expression_language=metric_def.get("expression_language"),
             agg=metric_def.get("agg"),
             numerator=metric_def.get("numerator"),
             denominator=metric_def.get("denominator"),
@@ -443,10 +468,13 @@ class SidemanticAdapter(BaseAdapter):
             window_order=metric_def.get("window_order"),
             filters=metric_def.get("filters"),
             fill_nulls_with=metric_def.get("fill_nulls_with"),
+            public=metric_def.get("public", True),
             format=metric_def.get("format"),
             value_format_name=metric_def.get("value_format_name"),
             drill_fields=metric_def.get("drill_fields"),
             non_additive_dimension=metric_def.get("non_additive_dimension"),
+            relationship_overrides=_parse_relationship_overrides(metric_def.get("relationship_overrides")),
+            required_models=metric_def.get("required_models"),
         )
 
     def _parse_parameter(self, parameter_def: dict) -> Parameter | None:
@@ -484,10 +512,14 @@ class SidemanticAdapter(BaseAdapter):
             Model definition dictionary
         """
         result = {"name": model.name}
+        model_dax = _dax_text(model)
 
-        if model.table:
+        if model_dax:
+            result["dax"] = model_dax
+            result["expression_language"] = "dax"
+        elif model.table:
             result["table"] = model.table
-        if model.sql:
+        if model.sql and not model_dax:
             result["sql"] = model.sql
         if model.source_uri:
             result["source_uri"] = model.source_uri
@@ -516,7 +548,7 @@ class SidemanticAdapter(BaseAdapter):
                         if relationship.related_foreign_key
                         else {}
                     ),
-                    **({"metadata": relationship.metadata} if relationship.metadata else {}),
+                    **({"active": relationship.active} if relationship.active is not True else {}),
                 }
                 for relationship in model.relationships
             ]
@@ -533,7 +565,11 @@ class SidemanticAdapter(BaseAdapter):
                     "name": dim.name,
                     "type": dim.type,
                 }
-                if dim.sql:
+                dim_dax = _dax_text(dim)
+                if dim_dax:
+                    dim_def["dax"] = dim_dax
+                    dim_def["expression_language"] = "dax"
+                elif dim.sql:
                     dim_def["sql"] = dim.sql
                 if dim.granularity:
                     dim_def["granularity"] = dim.granularity
@@ -551,6 +587,8 @@ class SidemanticAdapter(BaseAdapter):
                     dim_def["parent"] = dim.parent
                 if dim.window:
                     dim_def["window"] = dim.window
+                if not dim.public:
+                    dim_def["public"] = dim.public
                 result["dimensions"].append(dim_def)
 
         # Export metrics (model-level aggregations)
@@ -561,7 +599,11 @@ class SidemanticAdapter(BaseAdapter):
                     "name": measure.name,
                     "agg": measure.agg,
                 }
-                if measure.sql:
+                measure_dax = _dax_text(measure)
+                if measure_dax:
+                    measure_def["dax"] = measure_dax
+                    measure_def["expression_language"] = "dax"
+                elif measure.sql:
                     measure_def["sql"] = measure.sql
                 if measure.filters:
                     measure_def["filters"] = measure.filters
@@ -579,6 +621,12 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["drill_fields"] = measure.drill_fields
                 if measure.non_additive_dimension:
                     measure_def["non_additive_dimension"] = measure.non_additive_dimension
+                if measure.relationship_overrides:
+                    measure_def["relationship_overrides"] = [
+                        _relationship_override_dict(override) for override in measure.relationship_overrides
+                    ]
+                if measure.required_models:
+                    measure_def["required_models"] = measure.required_models
                 if measure.type:
                     measure_def["type"] = measure.type
                 if measure.base_metric:
@@ -628,6 +676,8 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["window_frame"] = measure.window_frame
                 if measure.window_order:
                     measure_def["window_order"] = measure.window_order
+                if not measure.public:
+                    measure_def["public"] = measure.public
                 result["metrics"].append(measure_def)
 
         # Export model-level default_time_dimension
@@ -715,17 +765,55 @@ class SidemanticAdapter(BaseAdapter):
         if measure.having:
             result["having"] = measure.having
         if measure.sql:
-            result["sql"] = measure.sql
-            # Auto-detect and export dependencies for derived measures
-            if measure.type == "derived":
-                dependencies = measure.get_dependencies(graph)
-                if dependencies:
-                    result["metrics"] = list(dependencies)
+            measure_dax = _dax_text(measure)
+            if measure_dax:
+                result["dax"] = measure_dax
+                result["expression_language"] = "dax"
+            else:
+                result["sql"] = measure.sql
+                # Auto-detect and export dependencies for derived measures
+                if measure.type == "derived":
+                    dependencies = measure.get_dependencies(graph)
+                    if dependencies:
+                        result["metrics"] = list(dependencies)
+        else:
+            measure_dax = _dax_text(measure)
+            if measure_dax:
+                result["dax"] = measure_dax
+                result["expression_language"] = "dax"
         if measure.agg:
             result["agg"] = measure.agg
         if measure.window:
             result["window"] = measure.window
         if measure.filters:
             result["filters"] = measure.filters
+        if measure.relationship_overrides:
+            result["relationship_overrides"] = [
+                _relationship_override_dict(override) for override in measure.relationship_overrides
+            ]
+        if measure.required_models:
+            result["required_models"] = measure.required_models
+        if not measure.public:
+            result["public"] = measure.public
 
         return result
+
+
+def _parse_relationship_overrides(value) -> list[RelationshipOverride] | None:
+    if not value:
+        return None
+    return [item if isinstance(item, RelationshipOverride) else RelationshipOverride(**item) for item in value]
+
+
+def _relationship_override_dict(override: RelationshipOverride) -> dict:
+    return override.model_dump(exclude_none=True)
+
+
+def _dax_text(obj) -> str | None:
+    dax = getattr(obj, "dax", None)
+    if isinstance(dax, str) and dax.strip():
+        return dax
+    expression = getattr(obj, "_dax_expression", None)
+    if isinstance(expression, str) and expression.strip():
+        return expression
+    return None

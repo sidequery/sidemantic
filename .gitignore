@@ -35,6 +35,7 @@ examples/juv.tmp*.py
 # Package installers
 *.pkg
 .claude/settings.local.json
+crates/dax-pyo3/python/sidemantic_dax/_native*.so
 
 # Docker volumes
 docker-compose.override.yml

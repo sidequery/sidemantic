@@ -62,8 +62,9 @@ jobs:
 
             console.log('Testing basic imports...');
             await pyodide.runPythonAsync(`
-              from sidemantic import Model, Dimension, Metric, Relationship
+              from sidemantic import Model, Dimension, Metric, Relationship, SemanticLayer
               from sidemantic.core.semantic_graph import SemanticGraph
+              from sidemantic.loaders import load_from_directory
               print('✓ Core imports successful')
 
               # Test creating a model (doesn't need duckdb)
@@ -87,6 +88,11 @@ jobs:
               graph = SemanticGraph()
               graph.add_model(model)
               print('✓ SemanticGraph successful')
+
+              layer = SemanticLayer()
+              layer.graph.add_model(model)
+              assert callable(load_from_directory)
+              print('✓ SemanticLayer and loader imports successful')
 
               print('All Pyodide imports and basic operations work!')
             `);

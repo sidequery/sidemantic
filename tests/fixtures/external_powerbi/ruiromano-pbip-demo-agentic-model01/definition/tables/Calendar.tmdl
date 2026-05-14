@@ -1,0 +1,148 @@
+table Calendar
+
+	column Day
+		dataType: int64
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Day
+
+	column Month
+		dataType: int64
+		isHidden
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Month
+
+	column Quarter
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Quarter
+
+	column Year
+		dataType: int64
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Year
+
+	column Date
+		dataType: dateTime
+		isHidden
+		isKey
+		formatString: Long Date
+		summarizeBy: none
+		sourceColumn: Date
+
+	column 'Month Name'
+		dataType: string
+		isHidden
+		summarizeBy: none
+		sourceColumn: Month Name
+		sortByColumn: Month
+
+	column Year-Month
+		dataType: dateTime
+		formatString: mmm yyyy
+		summarizeBy: none
+		sourceColumn: Year-Month
+
+	column 'Week Number'
+		dataType: int64
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Week Number
+
+	column 'Day of Week'
+		dataType: int64
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Day of Week
+
+	column 'Day Name'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Day Name
+		sortByColumn: 'Day of Week'
+
+	column 'Is Weekend'
+		dataType: boolean
+		isHidden
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		summarizeBy: none
+		sourceColumn: Is Weekend
+
+	column 'Fiscal Year'
+		dataType: int64
+		isHidden
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Fiscal Year
+
+	column 'Fiscal Quarter'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Fiscal Quarter
+
+	hierarchy Year-Month-Day
+
+		level Year
+			column: Year
+
+		level Month
+			column: Month
+
+		level Day
+			column: Day
+
+	partition Calendar-c9bc757b-0dad-4b99-8287-18a451a3c5c3 = m
+		mode: import
+		source = ```
+				let
+					P_Today = DateTime.LocalNow(),
+					StartDate = #date(Date.Year(P_Today) - 3, 1, 1),
+					EndDate = #date(Date.Year(P_Today), 12, 31),
+					// Generate a list of dates
+					DateList = List.Dates(StartDate, Duration.Days(EndDate - StartDate) + 1, #duration(1, 0, 0, 0)),
+					// Convert list to a table
+					Calendar = Table.FromList(DateList, Splitter.SplitByNothing(), {"Date"}),
+					// Add columns for different date attributes
+					AddYear = Table.AddColumn(Calendar, "Year", each Date.Year([Date])),
+					AddMonth = Table.AddColumn(AddYear, "Month", each Date.Month([Date])),
+					AddDay = Table.AddColumn(AddMonth, "Day", each Date.Day([Date])),
+					AddMonthName = Table.AddColumn(AddDay, "Month Name", each Date.ToText([Date], "MMM")),
+					AddYearMonth = Table.AddColumn(
+						AddMonthName, "Year-Month", each Text.From(Date.Year([Date])) & " " & Date.ToText([Date], "MMM")
+					),
+					//AddYearMonthKey = Table.AddColumn(AddYearMonth, "Year-Month Key", each Date.Year([Date]) * 100 + Date.Month([Date])),
+					AddQuarter = Table.AddColumn(AddYearMonth, "Quarter", each "Q" & Text.From(Date.QuarterOfYear([Date]))),
+					AddWeek = Table.AddColumn(AddQuarter, "Week Number", each Date.WeekOfYear([Date])),
+					AddDayOfWeek = Table.AddColumn(AddWeek, "Day of Week", each Date.DayOfWeek([Date]) + 1),
+					AddDayName = Table.AddColumn(AddDayOfWeek, "Day Name", each Date.ToText([Date], "dddd")),
+					AddIsWeekend = Table.AddColumn(AddDayName, "Is Weekend", each if Date.DayOfWeek([Date]) >= 5 then true else false),
+					// Add fiscal year and period adjustments
+					AddFiscalYear = Table.AddColumn(
+						AddIsWeekend, "Fiscal Year", each if Date.Month([Date]) >= 7 then Date.Year([Date]) + 1 else Date.Year([Date])
+					),
+					AddFiscalQuarter = Table.AddColumn(
+						AddFiscalYear, "Fiscal Quarter", each "FQ" & Text.From(Number.IntegerDivide((Date.Month([Date]) + 5), 3))
+					),
+					#"Changed Type" = Table.TransformColumnTypes(
+						AddFiscalQuarter,
+						{
+							{"Date", type date},
+							{"Year", Int64.Type},
+							{"Month", Int64.Type},
+							{"Day", Int64.Type},
+							{"Month Name", type text},
+							{"Year-Month", type date},
+							{"Quarter", type text},
+							{"Week Number", Int64.Type},
+							{"Day of Week", Int64.Type},
+							{"Day Name", type text},
+							{"Is Weekend", type logical},
+							{"Fiscal Year", Int64.Type},
+							{"Fiscal Quarter", type text}
+						}
+					)
+				in
+					#"Changed Type"
+			```

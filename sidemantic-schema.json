@@ -1,1893 +1,34 @@
 {
-  "$defs": {
-    "Dimension": {
-      "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
-      "properties": {
-        "description": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Human-readable description",
-          "title": "Description"
-        },
-        "format": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
-          "title": "Format"
-        },
-        "granularity": {
-          "anyOf": [
-            {
-              "enum": [
-                "second",
-                "minute",
-                "hour",
-                "day",
-                "week",
-                "month",
-                "quarter",
-                "year"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Base granularity for time dimensions",
-          "title": "Granularity"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Display label",
-          "title": "Label"
-        },
-        "meta": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Arbitrary metadata for extensions",
-          "title": "Meta"
-        },
-        "metadata": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Adapter-specific metadata payload",
-          "title": "Metadata"
-        },
-        "name": {
-          "description": "Unique dimension name within model",
-          "title": "Name",
-          "type": "string"
-        },
-        "parent": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Parent dimension for hierarchies (e.g., 'state' parent is 'country')",
-          "title": "Parent"
-        },
-        "public": {
-          "default": true,
-          "description": "Whether dimension is visible in API/UI",
-          "title": "Public",
-          "type": "boolean"
-        },
-        "sql": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "SQL expression (defaults to name; accepts 'expr' as alias)",
-          "title": "Sql"
-        },
-        "supported_granularities": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Supported granularities for time dimensions",
-          "title": "Supported Granularities"
-        },
-        "type": {
-          "description": "Dimension type",
-          "enum": [
-            "categorical",
-            "time",
-            "boolean",
-            "numeric"
-          ],
-          "title": "Type",
-          "type": "string"
-        },
-        "value_format_name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
-          "title": "Value Format Name"
-        },
-        "window": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Window function expression (e.g., 'LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)')",
-          "title": "Window"
-        }
-      },
-      "required": [
-        "name",
-        "type"
-      ],
-      "title": "Dimension",
-      "type": "object"
-    },
-    "Index": {
-      "description": "Index definition for pre-aggregation performance.",
-      "properties": {
-        "columns": {
-          "description": "Columns to index",
-          "items": {
-            "type": "string"
-          },
-          "title": "Columns",
-          "type": "array"
-        },
-        "name": {
-          "description": "Index name",
-          "title": "Name",
-          "type": "string"
-        },
-        "type": {
-          "default": "regular",
-          "description": "Index type",
-          "enum": [
-            "regular",
-            "aggregate"
-          ],
-          "title": "Type",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "columns"
-      ],
-      "title": "Index",
-      "type": "object"
-    },
-    "Metric": {
-      "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
-      "properties": {
-        "activity_event": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
-          "title": "Activity Event"
-        },
-        "agg": {
-          "anyOf": [
-            {
-              "enum": [
-                "sum",
-                "count",
-                "count_distinct",
-                "avg",
-                "min",
-                "max",
-                "median",
-                "stddev",
-                "stddev_pop",
-                "variance",
-                "variance_pop"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Aggregation function (for simple measures)",
-          "title": "Agg"
-        },
-        "base_event": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Starting event filter",
-          "title": "Base Event"
-        },
-        "base_metric": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Base metric for time comparison",
-          "title": "Base Metric"
-        },
-        "calculation": {
-          "anyOf": [
-            {
-              "enum": [
-                "difference",
-                "percent_change",
-                "ratio"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Comparison calculation (default: percent_change)",
-          "title": "Calculation"
-        },
-        "cohort_event": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
-          "title": "Cohort Event"
-        },
-        "comparison_type": {
-          "anyOf": [
-            {
-              "enum": [
-                "yoy",
-                "mom",
-                "wow",
-                "dod",
-                "qoq",
-                "prior_period"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Type of time comparison",
-          "title": "Comparison Type"
-        },
-        "conversion_event": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Target event filter",
-          "title": "Conversion Event"
-        },
-        "conversion_window": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Conversion time window",
-          "title": "Conversion Window"
-        },
-        "denominator": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Denominator measure for ratio",
-          "title": "Denominator"
-        },
-        "description": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Human-readable description",
-          "title": "Description"
-        },
-        "drill_fields": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Fields to show when drilling into this metric",
-          "title": "Drill Fields"
-        },
-        "entity": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Entity to track (e.g., 'user_id')",
-          "title": "Entity"
-        },
-        "entity_dimensions": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
-          "title": "Entity Dimensions"
-        },
-        "extends": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Parent metric to inherit from",
-          "title": "Extends"
-        },
-        "fill_nulls_with": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Default value when result is NULL",
-          "title": "Fill Nulls With"
-        },
-        "filters": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional WHERE clause filters",
-          "title": "Filters"
-        },
-        "format": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
-          "title": "Format"
-        },
-        "grain_to_date": {
-          "anyOf": [
-            {
-              "enum": [
-                "day",
-                "week",
-                "month",
-                "quarter",
-                "year"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Grain for period-to-date (e.g., 'month' for MTD)",
-          "title": "Grain To Date"
-        },
-        "having": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "HAVING filter on inner aggregation for cohort metrics",
-          "title": "Having"
-        },
-        "inner_metrics": {
-          "anyOf": [
-            {
-              "items": {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
-          "title": "Inner Metrics"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Display label",
-          "title": "Label"
-        },
-        "meta": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Arbitrary metadata for extensions",
-          "title": "Meta"
-        },
-        "metadata": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Adapter-specific metadata payload",
-          "title": "Metadata"
-        },
-        "name": {
-          "description": "Unique measure name",
-          "title": "Name",
-          "type": "string"
-        },
-        "non_additive_dimension": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
-          "title": "Non Additive Dimension"
-        },
-        "numerator": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Numerator measure for ratio",
-          "title": "Numerator"
-        },
-        "offset_window": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Time offset for denominator (e.g., '1 month')",
-          "title": "Offset Window"
-        },
-        "periods": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
-          "title": "Periods"
-        },
-        "public": {
-          "default": true,
-          "description": "Whether metric is visible in API/UI",
-          "title": "Public",
-          "type": "boolean"
-        },
-        "retention_granularity": {
-          "anyOf": [
-            {
-              "enum": [
-                "day",
-                "week",
-                "month"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Time granularity for retention periods (day, week, month)",
-          "title": "Retention Granularity"
-        },
-        "sql": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "SQL expression or formula (accepts 'expr' as alias)",
-          "title": "Sql"
-        },
-        "steps": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
-          "title": "Steps"
-        },
-        "time_offset": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Custom time offset (e.g., '1 month')",
-          "title": "Time Offset"
-        },
-        "type": {
-          "anyOf": [
-            {
-              "enum": [
-                "ratio",
-                "derived",
-                "cumulative",
-                "time_comparison",
-                "conversion",
-                "retention",
-                "cohort"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Metric type for complex calculations",
-          "title": "Type"
-        },
-        "value_format_name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
-          "title": "Value Format Name"
-        },
-        "window": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Time window for cumulative (e.g., '7 days')",
-          "title": "Window"
-        },
-        "window_expression": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Raw SQL expression for window function (e.g., 'AVG(total_bids) FILTER (WHERE active)')",
-          "title": "Window Expression"
-        },
-        "window_frame": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Window frame clause (e.g., 'RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW')",
-          "title": "Window Frame"
-        },
-        "window_order": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Window ORDER BY column (defaults to model's default_time_dimension)",
-          "title": "Window Order"
-        }
-      },
-      "required": [
-        "name"
-      ],
-      "title": "Metric",
-      "type": "object"
-    },
-    "Parameter": {
-      "description": "Parameter definition for user input.\n\nDEPRECATED: Use Jinja templates instead of Parameters.\n\nParameters can be referenced in filters, SQL expressions, and metric definitions\nto create dynamic, user-configurable queries.",
-      "properties": {
-        "allowed_values": {
-          "anyOf": [
-            {
-              "items": {},
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "List of allowed values (for dropdown/select)",
-          "title": "Allowed Values"
-        },
-        "default_to_today": {
-          "default": false,
-          "description": "Default to current date (for date parameters)",
-          "title": "Default To Today",
-          "type": "boolean"
-        },
-        "default_value": {
-          "default": null,
-          "description": "Default value if not provided",
-          "title": "Default Value"
-        },
-        "description": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Human-readable description",
-          "title": "Description"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Display label for UI",
-          "title": "Label"
-        },
-        "name": {
-          "description": "Unique parameter name",
-          "title": "Name",
-          "type": "string"
-        },
-        "type": {
-          "description": "Parameter data type",
-          "enum": [
-            "string",
-            "number",
-            "date",
-            "unquoted",
-            "yesno"
-          ],
-          "title": "Type",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "type"
-      ],
-      "title": "Parameter",
-      "type": "object"
-    },
-    "PreAggregation": {
-      "description": "Pre-aggregation definition for automatic query optimization.\n\nPre-aggregations are materialized rollup tables that store pre-computed\naggregations. The query engine automatically routes queries to matching\npre-aggregations for significant performance improvements.\n\nExample:\n    >>> PreAggregation(\n    ...     name=\"daily_rollup\",\n    ...     measures=[\"count\", \"revenue\"],\n    ...     dimensions=[\"status\", \"region\"],\n    ...     time_dimension=\"created_at\",\n    ...     granularity=\"day\",\n    ...     partition_granularity=\"month\",\n    ...     refresh_key=RefreshKey(every=\"1 hour\", incremental=True)\n    ... )",
-      "properties": {
-        "build_range_end": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "SQL expression for end of data range to aggregate",
-          "title": "Build Range End"
-        },
-        "build_range_start": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "SQL expression for start of data range to aggregate",
-          "title": "Build Range Start"
-        },
-        "dimensions": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Dimensions to group by (e.g., ['status', 'region'])",
-          "title": "Dimensions"
-        },
-        "granularity": {
-          "anyOf": [
-            {
-              "enum": [
-                "hour",
-                "day",
-                "week",
-                "month",
-                "quarter",
-                "year"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Time granularity for aggregation",
-          "title": "Granularity"
-        },
-        "indexes": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/Index"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Index definitions for query performance",
-          "title": "Indexes"
-        },
-        "measures": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Measures to pre-aggregate (e.g., ['count', 'revenue'])",
-          "title": "Measures"
-        },
-        "name": {
-          "description": "Unique pre-aggregation name",
-          "title": "Name",
-          "type": "string"
-        },
-        "partition_granularity": {
-          "anyOf": [
-            {
-              "enum": [
-                "day",
-                "week",
-                "month",
-                "quarter",
-                "year"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Partition size for incremental refresh",
-          "title": "Partition Granularity"
-        },
-        "refresh_key": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RefreshKey"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Refresh strategy configuration"
-        },
-        "scheduled_refresh": {
-          "default": true,
-          "description": "Whether to enable scheduled refresh",
-          "title": "Scheduled Refresh",
-          "type": "boolean"
-        },
-        "time_dimension": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Time dimension for temporal grouping",
-          "title": "Time Dimension"
-        },
-        "type": {
-          "default": "rollup",
-          "description": "Pre-aggregation type",
-          "enum": [
-            "rollup",
-            "original_sql",
-            "rollup_join",
-            "lambda"
-          ],
-          "title": "Type",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name"
-      ],
-      "title": "PreAggregation",
-      "type": "object"
-    },
-    "RefreshKey": {
-      "description": "Refresh strategy configuration for pre-aggregations.",
-      "properties": {
-        "every": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Refresh interval (e.g., '1 hour', '1 day', '30 minutes')",
-          "title": "Every"
-        },
-        "incremental": {
-          "default": false,
-          "description": "Whether to use incremental refresh (only update changed partitions)",
-          "title": "Incremental",
-          "type": "boolean"
-        },
-        "sql": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "SQL query that returns a value to trigger refresh when changed",
-          "title": "Sql"
-        },
-        "update_window": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Time window to refresh incrementally (e.g., '7 day', '1 month')",
-          "title": "Update Window"
-        }
-      },
-      "title": "RefreshKey",
-      "type": "object"
-    },
-    "Relationship": {
-      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
-      "properties": {
-        "foreign_key": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
-          "title": "Foreign Key"
-        },
-        "metadata": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Adapter-specific metadata payload",
-          "title": "Metadata"
-        },
-        "name": {
-          "description": "Name of the related model",
-          "title": "Name",
-          "type": "string"
-        },
-        "primary_key": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Primary key column(s) in related model (defaults to id)",
-          "title": "Primary Key"
-        },
-        "related_foreign_key": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Foreign key in junction model pointing to related model",
-          "title": "Related Foreign Key"
-        },
-        "through": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Junction model for many_to_many relationships",
-          "title": "Through"
-        },
-        "through_foreign_key": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Foreign key in junction model pointing to this model",
-          "title": "Through Foreign Key"
-        },
-        "type": {
-          "description": "Type of relationship",
-          "enum": [
-            "many_to_one",
-            "one_to_one",
-            "one_to_many",
-            "many_to_many"
-          ],
-          "title": "Type",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "type"
-      ],
-      "title": "Relationship",
-      "type": "object"
-    },
-    "Segment": {
-      "description": "Segment definition - predefined reusable filter.\n\nSegments are named filters that can be applied to queries to consistently\nfilter data according to business definitions.\n\nExample:\n    active_users = Segment(\n        name=\"active_users\",\n        sql=\"{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30\"\n    )",
-      "properties": {
-        "description": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Human-readable description",
-          "title": "Description"
-        },
-        "name": {
-          "description": "Unique segment name",
-          "title": "Name",
-          "type": "string"
-        },
-        "public": {
-          "default": true,
-          "description": "Whether segment is visible in API/UI",
-          "title": "Public",
-          "type": "boolean"
-        },
-        "sql": {
-          "description": "SQL WHERE clause expression",
-          "title": "Sql",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "sql"
-      ],
-      "title": "Segment",
-      "type": "object"
-    }
-  },
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sidemantic Semantic Layer",
   "description": "Schema for Sidemantic semantic layer YAML configuration",
+  "type": "object",
   "properties": {
-    "metrics": {
-      "description": "Top-level metric definitions (optional - can also define in models)",
-      "items": {
-        "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
-        "properties": {
-          "activity_event": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
-            "title": "Activity Event"
-          },
-          "agg": {
-            "anyOf": [
-              {
-                "enum": [
-                  "sum",
-                  "count",
-                  "count_distinct",
-                  "avg",
-                  "min",
-                  "max",
-                  "median",
-                  "stddev",
-                  "stddev_pop",
-                  "variance",
-                  "variance_pop"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Aggregation function (for simple measures)",
-            "title": "Agg"
-          },
-          "base_event": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Starting event filter",
-            "title": "Base Event"
-          },
-          "base_metric": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Base metric for time comparison",
-            "title": "Base Metric"
-          },
-          "calculation": {
-            "anyOf": [
-              {
-                "enum": [
-                  "difference",
-                  "percent_change",
-                  "ratio"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Comparison calculation (default: percent_change)",
-            "title": "Calculation"
-          },
-          "cohort_event": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
-            "title": "Cohort Event"
-          },
-          "comparison_type": {
-            "anyOf": [
-              {
-                "enum": [
-                  "yoy",
-                  "mom",
-                  "wow",
-                  "dod",
-                  "qoq",
-                  "prior_period"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Type of time comparison",
-            "title": "Comparison Type"
-          },
-          "conversion_event": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Target event filter",
-            "title": "Conversion Event"
-          },
-          "conversion_window": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Conversion time window",
-            "title": "Conversion Window"
-          },
-          "denominator": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Denominator measure for ratio",
-            "title": "Denominator"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Human-readable description",
-            "title": "Description"
-          },
-          "drill_fields": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Fields to show when drilling into this metric",
-            "title": "Drill Fields"
-          },
-          "entity": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Entity to track (e.g., 'user_id')",
-            "title": "Entity"
-          },
-          "entity_dimensions": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
-            "title": "Entity Dimensions"
-          },
-          "extends": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Parent metric to inherit from",
-            "title": "Extends"
-          },
-          "fill_nulls_with": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Default value when result is NULL",
-            "title": "Fill Nulls With"
-          },
-          "filters": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Optional WHERE clause filters",
-            "title": "Filters"
-          },
-          "format": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
-            "title": "Format"
-          },
-          "grain_to_date": {
-            "anyOf": [
-              {
-                "enum": [
-                  "day",
-                  "week",
-                  "month",
-                  "quarter",
-                  "year"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Grain for period-to-date (e.g., 'month' for MTD)",
-            "title": "Grain To Date"
-          },
-          "having": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "HAVING filter on inner aggregation for cohort metrics",
-            "title": "Having"
-          },
-          "inner_metrics": {
-            "anyOf": [
-              {
-                "items": {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
-            "title": "Inner Metrics"
-          },
-          "label": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Display label",
-            "title": "Label"
-          },
-          "meta": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Arbitrary metadata for extensions",
-            "title": "Meta"
-          },
-          "metadata": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Adapter-specific metadata payload",
-            "title": "Metadata"
-          },
-          "name": {
-            "description": "Unique measure name",
-            "title": "Name",
-            "type": "string"
-          },
-          "non_additive_dimension": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
-            "title": "Non Additive Dimension"
-          },
-          "numerator": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Numerator measure for ratio",
-            "title": "Numerator"
-          },
-          "offset_window": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Time offset for denominator (e.g., '1 month')",
-            "title": "Offset Window"
-          },
-          "periods": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
-            "title": "Periods"
-          },
-          "public": {
-            "default": true,
-            "description": "Whether metric is visible in API/UI",
-            "title": "Public",
-            "type": "boolean"
-          },
-          "retention_granularity": {
-            "anyOf": [
-              {
-                "enum": [
-                  "day",
-                  "week",
-                  "month"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Time granularity for retention periods (day, week, month)",
-            "title": "Retention Granularity"
-          },
-          "sql": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "SQL expression or formula (accepts 'expr' as alias)",
-            "title": "Sql"
-          },
-          "steps": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
-            "title": "Steps"
-          },
-          "time_offset": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Custom time offset (e.g., '1 month')",
-            "title": "Time Offset"
-          },
-          "type": {
-            "anyOf": [
-              {
-                "enum": [
-                  "ratio",
-                  "derived",
-                  "cumulative",
-                  "time_comparison",
-                  "conversion",
-                  "retention",
-                  "cohort"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Metric type for complex calculations",
-            "title": "Type"
-          },
-          "value_format_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
-            "title": "Value Format Name"
-          },
-          "window": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Time window for cumulative (e.g., '7 days')",
-            "title": "Window"
-          },
-          "window_expression": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Raw SQL expression for window function (e.g., 'AVG(total_bids) FILTER (WHERE active)')",
-            "title": "Window Expression"
-          },
-          "window_frame": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Window frame clause (e.g., 'RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW')",
-            "title": "Window Frame"
-          },
-          "window_order": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Window ORDER BY column (defaults to model's default_time_dimension)",
-            "title": "Window Order"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "Metric",
-        "type": "object"
-      },
-      "type": "array"
-    },
     "models": {
+      "type": "array",
       "description": "Model definitions",
       "items": {
         "$defs": {
           "Dimension": {
             "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
             "properties": {
-              "description": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Human-readable description",
-                "title": "Description"
+              "name": {
+                "description": "Unique dimension name within model",
+                "title": "Name",
+                "type": "string"
               },
-              "format": {
+              "type": {
+                "description": "Dimension type",
+                "enum": [
+                  "categorical",
+                  "time",
+                  "boolean",
+                  "numeric"
+                ],
+                "title": "Type",
+                "type": "string"
+              },
+              "sql": {
                 "anyOf": [
                   {
                     "type": "string"
@@ -1897,8 +38,38 @@
                   }
                 ],
                 "default": null,
-                "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
-                "title": "Format"
+                "description": "SQL expression (defaults to name; accepts 'expr' as alias)",
+                "title": "Sql"
+              },
+              "dax": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "DAX expression source text to lower into SQL",
+                "title": "Dax"
+              },
+              "expression_language": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "sql",
+                      "dax"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Expression language for sql/expr/dax authoring",
+                "title": "Expression Language"
               },
               "granularity": {
                 "anyOf": [
@@ -1923,84 +94,6 @@
                 "description": "Base granularity for time dimensions",
                 "title": "Granularity"
               },
-              "label": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Display label",
-                "title": "Label"
-              },
-              "meta": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Arbitrary metadata for extensions",
-                "title": "Meta"
-              },
-              "metadata": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Adapter-specific metadata payload",
-                "title": "Metadata"
-              },
-              "name": {
-                "description": "Unique dimension name within model",
-                "title": "Name",
-                "type": "string"
-              },
-              "parent": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Parent dimension for hierarchies (e.g., 'state' parent is 'country')",
-                "title": "Parent"
-              },
-              "public": {
-                "default": true,
-                "description": "Whether dimension is visible in API/UI",
-                "title": "Public",
-                "type": "boolean"
-              },
-              "sql": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "SQL expression (defaults to name; accepts 'expr' as alias)",
-                "title": "Sql"
-              },
               "supported_granularities": {
                 "anyOf": [
                   {
@@ -2017,16 +110,58 @@
                 "description": "Supported granularities for time dimensions",
                 "title": "Supported Granularities"
               },
-              "type": {
-                "description": "Dimension type",
-                "enum": [
-                  "categorical",
-                  "time",
-                  "boolean",
-                  "numeric"
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ],
-                "title": "Type",
-                "type": "string"
+                "default": null,
+                "description": "Human-readable description",
+                "title": "Description"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Display label",
+                "title": "Label"
+              },
+              "metadata": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Adapter-specific metadata payload",
+                "title": "Metadata"
+              },
+              "format": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
+                "title": "Format"
               },
               "value_format_name": {
                 "anyOf": [
@@ -2041,6 +176,33 @@
                 "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
                 "title": "Value Format Name"
               },
+              "parent": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Parent dimension for hierarchies (e.g., 'state' parent is 'country')",
+                "title": "Parent"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Arbitrary metadata for extensions",
+                "title": "Meta"
+              },
               "window": {
                 "anyOf": [
                   {
@@ -2053,6 +215,12 @@
                 "default": null,
                 "description": "Window function expression (e.g., 'LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)')",
                 "title": "Window"
+              },
+              "public": {
+                "default": true,
+                "description": "Whether dimension is visible in API/UI",
+                "title": "Public",
+                "type": "boolean"
               }
             },
             "required": [
@@ -2065,6 +233,11 @@
           "Index": {
             "description": "Index definition for pre-aggregation performance.",
             "properties": {
+              "name": {
+                "description": "Index name",
+                "title": "Name",
+                "type": "string"
+              },
               "columns": {
                 "description": "Columns to index",
                 "items": {
@@ -2072,11 +245,6 @@
                 },
                 "title": "Columns",
                 "type": "array"
-              },
-              "name": {
-                "description": "Index name",
-                "title": "Name",
-                "type": "string"
               },
               "type": {
                 "default": "regular",
@@ -2099,7 +267,12 @@
           "Metric": {
             "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
             "properties": {
-              "activity_event": {
+              "name": {
+                "description": "Unique measure name",
+                "title": "Name",
+                "type": "string"
+              },
+              "extends": {
                 "anyOf": [
                   {
                     "type": "string"
@@ -2109,8 +282,8 @@
                   }
                 ],
                 "default": null,
-                "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
-                "title": "Activity Event"
+                "description": "Parent metric to inherit from",
+                "title": "Extends"
               },
               "agg": {
                 "anyOf": [
@@ -2138,414 +311,6 @@
                 "description": "Aggregation function (for simple measures)",
                 "title": "Agg"
               },
-              "base_event": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Starting event filter",
-                "title": "Base Event"
-              },
-              "base_metric": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Base metric for time comparison",
-                "title": "Base Metric"
-              },
-              "calculation": {
-                "anyOf": [
-                  {
-                    "enum": [
-                      "difference",
-                      "percent_change",
-                      "ratio"
-                    ],
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Comparison calculation (default: percent_change)",
-                "title": "Calculation"
-              },
-              "cohort_event": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
-                "title": "Cohort Event"
-              },
-              "comparison_type": {
-                "anyOf": [
-                  {
-                    "enum": [
-                      "yoy",
-                      "mom",
-                      "wow",
-                      "dod",
-                      "qoq",
-                      "prior_period"
-                    ],
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Type of time comparison",
-                "title": "Comparison Type"
-              },
-              "conversion_event": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Target event filter",
-                "title": "Conversion Event"
-              },
-              "conversion_window": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Conversion time window",
-                "title": "Conversion Window"
-              },
-              "denominator": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Denominator measure for ratio",
-                "title": "Denominator"
-              },
-              "description": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Human-readable description",
-                "title": "Description"
-              },
-              "drill_fields": {
-                "anyOf": [
-                  {
-                    "items": {
-                      "type": "string"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Fields to show when drilling into this metric",
-                "title": "Drill Fields"
-              },
-              "entity": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Entity to track (e.g., 'user_id')",
-                "title": "Entity"
-              },
-              "entity_dimensions": {
-                "anyOf": [
-                  {
-                    "items": {
-                      "type": "string"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
-                "title": "Entity Dimensions"
-              },
-              "extends": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Parent metric to inherit from",
-                "title": "Extends"
-              },
-              "fill_nulls_with": {
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Default value when result is NULL",
-                "title": "Fill Nulls With"
-              },
-              "filters": {
-                "anyOf": [
-                  {
-                    "items": {
-                      "type": "string"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Optional WHERE clause filters",
-                "title": "Filters"
-              },
-              "format": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
-                "title": "Format"
-              },
-              "grain_to_date": {
-                "anyOf": [
-                  {
-                    "enum": [
-                      "day",
-                      "week",
-                      "month",
-                      "quarter",
-                      "year"
-                    ],
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Grain for period-to-date (e.g., 'month' for MTD)",
-                "title": "Grain To Date"
-              },
-              "having": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "HAVING filter on inner aggregation for cohort metrics",
-                "title": "Having"
-              },
-              "inner_metrics": {
-                "anyOf": [
-                  {
-                    "items": {
-                      "additionalProperties": true,
-                      "type": "object"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
-                "title": "Inner Metrics"
-              },
-              "label": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Display label",
-                "title": "Label"
-              },
-              "meta": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Arbitrary metadata for extensions",
-                "title": "Meta"
-              },
-              "metadata": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Adapter-specific metadata payload",
-                "title": "Metadata"
-              },
-              "name": {
-                "description": "Unique measure name",
-                "title": "Name",
-                "type": "string"
-              },
-              "non_additive_dimension": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
-                "title": "Non Additive Dimension"
-              },
-              "numerator": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Numerator measure for ratio",
-                "title": "Numerator"
-              },
-              "offset_window": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Time offset for denominator (e.g., '1 month')",
-                "title": "Offset Window"
-              },
-              "periods": {
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
-                "title": "Periods"
-              },
-              "public": {
-                "default": true,
-                "description": "Whether metric is visible in API/UI",
-                "title": "Public",
-                "type": "boolean"
-              },
-              "retention_granularity": {
-                "anyOf": [
-                  {
-                    "enum": [
-                      "day",
-                      "week",
-                      "month"
-                    ],
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Time granularity for retention periods (day, week, month)",
-                "title": "Retention Granularity"
-              },
               "sql": {
                 "anyOf": [
                   {
@@ -2559,7 +324,53 @@
                 "description": "SQL expression or formula (accepts 'expr' as alias)",
                 "title": "Sql"
               },
-              "steps": {
+              "dax": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "DAX expression source text to lower into SQL",
+                "title": "Dax"
+              },
+              "expression_language": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "sql",
+                      "dax"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Expression language for sql/expr/dax authoring",
+                "title": "Expression Language"
+              },
+              "relationship_overrides": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/RelationshipOverride"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Relationship overrides for this metric",
+                "title": "Relationship Overrides"
+              },
+              "required_models": {
                 "anyOf": [
                   {
                     "items": {
@@ -2572,21 +383,8 @@
                   }
                 ],
                 "default": null,
-                "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
-                "title": "Steps"
-              },
-              "time_offset": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Custom time offset (e.g., '1 month')",
-                "title": "Time Offset"
+                "description": "Additional models required for this metric",
+                "title": "Required Models"
               },
               "type": {
                 "anyOf": [
@@ -2610,7 +408,7 @@
                 "description": "Metric type for complex calculations",
                 "title": "Type"
               },
-              "value_format_name": {
+              "numerator": {
                 "anyOf": [
                   {
                     "type": "string"
@@ -2620,8 +418,34 @@
                   }
                 ],
                 "default": null,
-                "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
-                "title": "Value Format Name"
+                "description": "Numerator measure for ratio",
+                "title": "Numerator"
+              },
+              "denominator": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Denominator measure for ratio",
+                "title": "Denominator"
+              },
+              "offset_window": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Time offset for denominator (e.g., '1 month')",
+                "title": "Offset Window"
               },
               "window": {
                 "anyOf": [
@@ -2635,6 +459,26 @@
                 "default": null,
                 "description": "Time window for cumulative (e.g., '7 days')",
                 "title": "Window"
+              },
+              "grain_to_date": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "day",
+                      "week",
+                      "month",
+                      "quarter",
+                      "year"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Grain for period-to-date (e.g., 'month' for MTD)",
+                "title": "Grain To Date"
               },
               "window_expression": {
                 "anyOf": [
@@ -2674,6 +518,393 @@
                 "default": null,
                 "description": "Window ORDER BY column (defaults to model's default_time_dimension)",
                 "title": "Window Order"
+              },
+              "base_metric": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Base metric for time comparison",
+                "title": "Base Metric"
+              },
+              "comparison_type": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "yoy",
+                      "mom",
+                      "wow",
+                      "dod",
+                      "qoq",
+                      "prior_period"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Type of time comparison",
+                "title": "Comparison Type"
+              },
+              "time_offset": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Custom time offset (e.g., '1 month')",
+                "title": "Time Offset"
+              },
+              "calculation": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "difference",
+                      "percent_change",
+                      "ratio",
+                      "previous_value"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Comparison calculation (default: percent_change)",
+                "title": "Calculation"
+              },
+              "entity": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Entity to track (e.g., 'user_id')",
+                "title": "Entity"
+              },
+              "base_event": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Starting event filter",
+                "title": "Base Event"
+              },
+              "conversion_event": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Target event filter",
+                "title": "Conversion Event"
+              },
+              "conversion_window": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Conversion time window",
+                "title": "Conversion Window"
+              },
+              "steps": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
+                "title": "Steps"
+              },
+              "cohort_event": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
+                "title": "Cohort Event"
+              },
+              "activity_event": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
+                "title": "Activity Event"
+              },
+              "periods": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
+                "title": "Periods"
+              },
+              "retention_granularity": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "day",
+                      "week",
+                      "month"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Time granularity for retention periods (day, week, month)",
+                "title": "Retention Granularity"
+              },
+              "inner_metrics": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
+                "title": "Inner Metrics"
+              },
+              "entity_dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
+                "title": "Entity Dimensions"
+              },
+              "having": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "HAVING filter on inner aggregation for cohort metrics",
+                "title": "Having"
+              },
+              "filters": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional WHERE clause filters",
+                "title": "Filters"
+              },
+              "fill_nulls_with": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Default value when result is NULL",
+                "title": "Fill Nulls With"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Human-readable description",
+                "title": "Description"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Display label",
+                "title": "Label"
+              },
+              "metadata": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Adapter-specific metadata payload",
+                "title": "Metadata"
+              },
+              "format": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
+                "title": "Format"
+              },
+              "value_format_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
+                "title": "Value Format Name"
+              },
+              "drill_fields": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Fields to show when drilling into this metric",
+                "title": "Drill Fields"
+              },
+              "non_additive_dimension": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
+                "title": "Non Additive Dimension"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Arbitrary metadata for extensions",
+                "title": "Meta"
+              },
+              "public": {
+                "default": true,
+                "description": "Whether metric is visible in API/UI",
+                "title": "Public",
+                "type": "boolean"
               }
             },
             "required": [
@@ -2685,31 +916,38 @@
           "PreAggregation": {
             "description": "Pre-aggregation definition for automatic query optimization.\n\nPre-aggregations are materialized rollup tables that store pre-computed\naggregations. The query engine automatically routes queries to matching\npre-aggregations for significant performance improvements.\n\nExample:\n    >>> PreAggregation(\n    ...     name=\"daily_rollup\",\n    ...     measures=[\"count\", \"revenue\"],\n    ...     dimensions=[\"status\", \"region\"],\n    ...     time_dimension=\"created_at\",\n    ...     granularity=\"day\",\n    ...     partition_granularity=\"month\",\n    ...     refresh_key=RefreshKey(every=\"1 hour\", incremental=True)\n    ... )",
             "properties": {
-              "build_range_end": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "SQL expression for end of data range to aggregate",
-                "title": "Build Range End"
+              "name": {
+                "description": "Unique pre-aggregation name",
+                "title": "Name",
+                "type": "string"
               },
-              "build_range_start": {
+              "type": {
+                "default": "rollup",
+                "description": "Pre-aggregation type",
+                "enum": [
+                  "rollup",
+                  "original_sql",
+                  "rollup_join",
+                  "lambda"
+                ],
+                "title": "Type",
+                "type": "string"
+              },
+              "measures": {
                 "anyOf": [
                   {
-                    "type": "string"
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   },
                   {
                     "type": "null"
                   }
                 ],
                 "default": null,
-                "description": "SQL expression for start of data range to aggregate",
-                "title": "Build Range Start"
+                "description": "Measures to pre-aggregate (e.g., ['count', 'revenue'])",
+                "title": "Measures"
               },
               "dimensions": {
                 "anyOf": [
@@ -2726,6 +964,19 @@
                 "default": null,
                 "description": "Dimensions to group by (e.g., ['status', 'region'])",
                 "title": "Dimensions"
+              },
+              "time_dimension": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Time dimension for temporal grouping",
+                "title": "Time Dimension"
               },
               "granularity": {
                 "anyOf": [
@@ -2747,43 +998,6 @@
                 "default": null,
                 "description": "Time granularity for aggregation",
                 "title": "Granularity"
-              },
-              "indexes": {
-                "anyOf": [
-                  {
-                    "items": {
-                      "$ref": "#/$defs/Index"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Index definitions for query performance",
-                "title": "Indexes"
-              },
-              "measures": {
-                "anyOf": [
-                  {
-                    "items": {
-                      "type": "string"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Measures to pre-aggregate (e.g., ['count', 'revenue'])",
-                "title": "Measures"
-              },
-              "name": {
-                "description": "Unique pre-aggregation name",
-                "title": "Name",
-                "type": "string"
               },
               "partition_granularity": {
                 "anyOf": [
@@ -2823,7 +1037,23 @@
                 "title": "Scheduled Refresh",
                 "type": "boolean"
               },
-              "time_dimension": {
+              "indexes": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/Index"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Index definitions for query performance",
+                "title": "Indexes"
+              },
+              "build_range_start": {
                 "anyOf": [
                   {
                     "type": "string"
@@ -2833,20 +1063,21 @@
                   }
                 ],
                 "default": null,
-                "description": "Time dimension for temporal grouping",
-                "title": "Time Dimension"
+                "description": "SQL expression for start of data range to aggregate",
+                "title": "Build Range Start"
               },
-              "type": {
-                "default": "rollup",
-                "description": "Pre-aggregation type",
-                "enum": [
-                  "rollup",
-                  "original_sql",
-                  "rollup_join",
-                  "lambda"
+              "build_range_end": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ],
-                "title": "Type",
-                "type": "string"
+                "default": null,
+                "description": "SQL expression for end of data range to aggregate",
+                "title": "Build Range End"
               }
             },
             "required": [
@@ -2871,12 +1102,6 @@
                 "description": "Refresh interval (e.g., '1 hour', '1 day', '30 minutes')",
                 "title": "Every"
               },
-              "incremental": {
-                "default": false,
-                "description": "Whether to use incremental refresh (only update changed partitions)",
-                "title": "Incremental",
-                "type": "boolean"
-              },
               "sql": {
                 "anyOf": [
                   {
@@ -2889,6 +1114,12 @@
                 "default": null,
                 "description": "SQL query that returns a value to trigger refresh when changed",
                 "title": "Sql"
+              },
+              "incremental": {
+                "default": false,
+                "description": "Whether to use incremental refresh (only update changed partitions)",
+                "title": "Incremental",
+                "type": "boolean"
               },
               "update_window": {
                 "anyOf": [
@@ -2910,6 +1141,22 @@
           "Relationship": {
             "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
             "properties": {
+              "name": {
+                "description": "Name of the related model",
+                "title": "Name",
+                "type": "string"
+              },
+              "type": {
+                "description": "Type of relationship",
+                "enum": [
+                  "many_to_one",
+                  "one_to_one",
+                  "one_to_many",
+                  "many_to_many"
+                ],
+                "title": "Type",
+                "type": "string"
+              },
               "foreign_key": {
                 "anyOf": [
                   {
@@ -2929,25 +1176,6 @@
                 "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
                 "title": "Foreign Key"
               },
-              "metadata": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Adapter-specific metadata payload",
-                "title": "Metadata"
-              },
-              "name": {
-                "description": "Name of the related model",
-                "title": "Name",
-                "type": "string"
-              },
               "primary_key": {
                 "anyOf": [
                   {
@@ -2966,19 +1194,6 @@
                 "default": null,
                 "description": "Primary key column(s) in related model (defaults to id)",
                 "title": "Primary Key"
-              },
-              "related_foreign_key": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Foreign key in junction model pointing to related model",
-                "title": "Related Foreign Key"
               },
               "through": {
                 "anyOf": [
@@ -3006,16 +1221,38 @@
                 "description": "Foreign key in junction model pointing to this model",
                 "title": "Through Foreign Key"
               },
-              "type": {
-                "description": "Type of relationship",
-                "enum": [
-                  "many_to_one",
-                  "one_to_one",
-                  "one_to_many",
-                  "many_to_many"
+              "related_foreign_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ],
-                "title": "Type",
-                "type": "string"
+                "default": null,
+                "description": "Foreign key in junction model pointing to related model",
+                "title": "Related Foreign Key"
+              },
+              "active": {
+                "default": true,
+                "description": "Whether the relationship is active by default",
+                "title": "Active",
+                "type": "boolean"
+              },
+              "metadata": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Adapter-specific metadata payload",
+                "title": "Metadata"
               }
             },
             "required": [
@@ -3025,9 +1262,84 @@
             "title": "Relationship",
             "type": "object"
           },
+          "RelationshipOverride": {
+            "description": "Overrides join behavior for a relationship in a metric/query context.",
+            "properties": {
+              "from_model": {
+                "description": "Source model name",
+                "title": "From Model",
+                "type": "string"
+              },
+              "from_column": {
+                "description": "Source model column",
+                "title": "From Column",
+                "type": "string"
+              },
+              "to_model": {
+                "description": "Target model name",
+                "title": "To Model",
+                "type": "string"
+              },
+              "to_column": {
+                "description": "Target model column",
+                "title": "To Column",
+                "type": "string"
+              },
+              "join_type": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "inner",
+                      "left",
+                      "right",
+                      "full"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional join type override",
+                "title": "Join Type"
+              },
+              "direction": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional filter direction hint",
+                "title": "Direction"
+              }
+            },
+            "required": [
+              "from_model",
+              "from_column",
+              "to_model",
+              "to_column"
+            ],
+            "title": "RelationshipOverride",
+            "type": "object"
+          },
           "Segment": {
             "description": "Segment definition - predefined reusable filter.\n\nSegments are named filters that can be applied to queries to consistently\nfilter data according to business definitions.\n\nExample:\n    active_users = Segment(\n        name=\"active_users\",\n        sql=\"{model}.status = 'active' AND {model}.last_login > CURRENT_DATE - 30\"\n    )",
             "properties": {
+              "name": {
+                "description": "Unique segment name",
+                "title": "Name",
+                "type": "string"
+              },
+              "sql": {
+                "description": "SQL WHERE clause expression",
+                "title": "Sql",
+                "type": "string"
+              },
               "description": {
                 "anyOf": [
                   {
@@ -3041,21 +1353,11 @@
                 "description": "Human-readable description",
                 "title": "Description"
               },
-              "name": {
-                "description": "Unique segment name",
-                "title": "Name",
-                "type": "string"
-              },
               "public": {
                 "default": true,
                 "description": "Whether segment is visible in API/UI",
                 "title": "Public",
                 "type": "boolean"
-              },
-              "sql": {
-                "description": "SQL WHERE clause expression",
-                "title": "Sql",
-                "type": "string"
               }
             },
             "required": [
@@ -3068,11 +1370,207 @@
         },
         "description": "Model (dataset) definition.\n\nModels are the foundation of the semantic layer, mapping to physical tables\nor SQL expressions. Auto-registers with the current semantic layer context if available.",
         "properties": {
-          "auto_dimensions": {
-            "default": false,
-            "description": "Auto-discover dimensions from database schema when added to a SemanticLayer",
-            "title": "Auto Dimensions",
-            "type": "boolean"
+          "name": {
+            "description": "Unique model name",
+            "title": "Name",
+            "type": "string"
+          },
+          "table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Physical table name (schema.table)",
+            "title": "Table"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL expression for derived tables",
+            "title": "Sql"
+          },
+          "dax": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "DAX table expression source text to lower into SQL",
+            "title": "Dax"
+          },
+          "expression_language": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sql",
+                  "dax"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expression language for sql/dax derived table authoring",
+            "title": "Expression Language"
+          },
+          "source_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Remote data source URI (e.g., https://, s3://, gs://)",
+            "title": "Source Uri"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Human-readable description",
+            "title": "Description"
+          },
+          "extends": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Parent model to inherit from",
+            "title": "Extends"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Adapter-specific metadata payload",
+            "title": "Metadata"
+          },
+          "relationships": {
+            "description": "Relationships to other models",
+            "items": {
+              "$ref": "#/$defs/Relationship"
+            },
+            "title": "Relationships",
+            "type": "array"
+          },
+          "primary_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "default": "id",
+            "description": "Primary key column(s)",
+            "title": "Primary Key"
+          },
+          "unique_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Unique key constraints (each is a list of columns)",
+            "title": "Unique Keys"
+          },
+          "dimensions": {
+            "description": "Dimension definitions",
+            "items": {
+              "$ref": "#/$defs/Dimension"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "metrics": {
+            "description": "Measure definitions",
+            "items": {
+              "$ref": "#/$defs/Metric"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "segments": {
+            "description": "Segment (named filter) definitions",
+            "items": {
+              "$ref": "#/$defs/Segment"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "pre_aggregations": {
+            "description": "Pre-aggregation definitions for query optimization",
+            "items": {
+              "$ref": "#/$defs/PreAggregation"
+            },
+            "title": "Pre Aggregations",
+            "type": "array"
+          },
+          "default_time_dimension": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Default time dimension for metrics (auto-included in queries)",
+            "title": "Default Time Dimension"
           },
           "default_grain": {
             "anyOf": [
@@ -3097,52 +1595,11 @@
             "description": "Default time granularity when using default_time_dimension",
             "title": "Default Grain"
           },
-          "default_time_dimension": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Default time dimension for metrics (auto-included in queries)",
-            "title": "Default Time Dimension"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Human-readable description",
-            "title": "Description"
-          },
-          "dimensions": {
-            "description": "Dimension definitions",
-            "items": {
-              "$ref": "#/$defs/Dimension"
-            },
-            "title": "Dimensions",
-            "type": "array"
-          },
-          "extends": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Parent model to inherit from",
-            "title": "Extends"
+          "auto_dimensions": {
+            "default": false,
+            "description": "Auto-discover dimensions from database schema when added to a SemanticLayer",
+            "title": "Auto Dimensions",
+            "type": "boolean"
           },
           "meta": {
             "anyOf": [
@@ -3157,6 +1614,637 @@
             "default": null,
             "description": "Arbitrary metadata for extensions",
             "title": "Meta"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "Model",
+        "type": "object"
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "description": "Top-level metric definitions (optional - can also define in models)",
+      "items": {
+        "$defs": {
+          "RelationshipOverride": {
+            "description": "Overrides join behavior for a relationship in a metric/query context.",
+            "properties": {
+              "from_model": {
+                "description": "Source model name",
+                "title": "From Model",
+                "type": "string"
+              },
+              "from_column": {
+                "description": "Source model column",
+                "title": "From Column",
+                "type": "string"
+              },
+              "to_model": {
+                "description": "Target model name",
+                "title": "To Model",
+                "type": "string"
+              },
+              "to_column": {
+                "description": "Target model column",
+                "title": "To Column",
+                "type": "string"
+              },
+              "join_type": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "inner",
+                      "left",
+                      "right",
+                      "full"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional join type override",
+                "title": "Join Type"
+              },
+              "direction": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional filter direction hint",
+                "title": "Direction"
+              }
+            },
+            "required": [
+              "from_model",
+              "from_column",
+              "to_model",
+              "to_column"
+            ],
+            "title": "RelationshipOverride",
+            "type": "object"
+          }
+        },
+        "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
+        "properties": {
+          "name": {
+            "description": "Unique measure name",
+            "title": "Name",
+            "type": "string"
+          },
+          "extends": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Parent metric to inherit from",
+            "title": "Extends"
+          },
+          "agg": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sum",
+                  "count",
+                  "count_distinct",
+                  "avg",
+                  "min",
+                  "max",
+                  "median",
+                  "stddev",
+                  "stddev_pop",
+                  "variance",
+                  "variance_pop"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Aggregation function (for simple measures)",
+            "title": "Agg"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL expression or formula (accepts 'expr' as alias)",
+            "title": "Sql"
+          },
+          "dax": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "DAX expression source text to lower into SQL",
+            "title": "Dax"
+          },
+          "expression_language": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sql",
+                  "dax"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expression language for sql/expr/dax authoring",
+            "title": "Expression Language"
+          },
+          "relationship_overrides": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/RelationshipOverride"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relationship overrides for this metric",
+            "title": "Relationship Overrides"
+          },
+          "required_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Additional models required for this metric",
+            "title": "Required Models"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ratio",
+                  "derived",
+                  "cumulative",
+                  "time_comparison",
+                  "conversion",
+                  "retention",
+                  "cohort"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Metric type for complex calculations",
+            "title": "Type"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Numerator measure for ratio",
+            "title": "Numerator"
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Denominator measure for ratio",
+            "title": "Denominator"
+          },
+          "offset_window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Time offset for denominator (e.g., '1 month')",
+            "title": "Offset Window"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Time window for cumulative (e.g., '7 days')",
+            "title": "Window"
+          },
+          "grain_to_date": {
+            "anyOf": [
+              {
+                "enum": [
+                  "day",
+                  "week",
+                  "month",
+                  "quarter",
+                  "year"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Grain for period-to-date (e.g., 'month' for MTD)",
+            "title": "Grain To Date"
+          },
+          "window_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Raw SQL expression for window function (e.g., 'AVG(total_bids) FILTER (WHERE active)')",
+            "title": "Window Expression"
+          },
+          "window_frame": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Window frame clause (e.g., 'RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW')",
+            "title": "Window Frame"
+          },
+          "window_order": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Window ORDER BY column (defaults to model's default_time_dimension)",
+            "title": "Window Order"
+          },
+          "base_metric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Base metric for time comparison",
+            "title": "Base Metric"
+          },
+          "comparison_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yoy",
+                  "mom",
+                  "wow",
+                  "dod",
+                  "qoq",
+                  "prior_period"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Type of time comparison",
+            "title": "Comparison Type"
+          },
+          "time_offset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Custom time offset (e.g., '1 month')",
+            "title": "Time Offset"
+          },
+          "calculation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "difference",
+                  "percent_change",
+                  "ratio",
+                  "previous_value"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Comparison calculation (default: percent_change)",
+            "title": "Calculation"
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Entity to track (e.g., 'user_id')",
+            "title": "Entity"
+          },
+          "base_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Starting event filter",
+            "title": "Base Event"
+          },
+          "conversion_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Target event filter",
+            "title": "Conversion Event"
+          },
+          "conversion_window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Conversion time window",
+            "title": "Conversion Window"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
+            "title": "Steps"
+          },
+          "cohort_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
+            "title": "Cohort Event"
+          },
+          "activity_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
+            "title": "Activity Event"
+          },
+          "periods": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
+            "title": "Periods"
+          },
+          "retention_granularity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "day",
+                  "week",
+                  "month"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Time granularity for retention periods (day, week, month)",
+            "title": "Retention Granularity"
+          },
+          "inner_metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
+            "title": "Inner Metrics"
+          },
+          "entity_dimensions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
+            "title": "Entity Dimensions"
+          },
+          "having": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "HAVING filter on inner aggregation for cohort metrics",
+            "title": "Having"
+          },
+          "filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional WHERE clause filters",
+            "title": "Filters"
+          },
+          "fill_nulls_with": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Default value when result is NULL",
+            "title": "Fill Nulls With"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Human-readable description",
+            "title": "Description"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Display label",
+            "title": "Label"
           },
           "metadata": {
             "anyOf": [
@@ -3172,60 +2260,49 @@
             "description": "Adapter-specific metadata payload",
             "title": "Metadata"
           },
-          "metrics": {
-            "description": "Measure definitions",
-            "items": {
-              "$ref": "#/$defs/Metric"
-            },
-            "title": "Metrics",
-            "type": "array"
-          },
-          "name": {
-            "description": "Unique model name",
-            "title": "Name",
-            "type": "string"
-          },
-          "pre_aggregations": {
-            "description": "Pre-aggregation definitions for query optimization",
-            "items": {
-              "$ref": "#/$defs/PreAggregation"
-            },
-            "title": "Pre Aggregations",
-            "type": "array"
-          },
-          "primary_key": {
+          "format": {
             "anyOf": [
               {
                 "type": "string"
               },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
+            "title": "Format"
+          },
+          "value_format_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
+            "title": "Value Format Name"
+          },
+          "drill_fields": {
+            "anyOf": [
               {
                 "items": {
                   "type": "string"
                 },
                 "type": "array"
+              },
+              {
+                "type": "null"
               }
             ],
-            "default": "id",
-            "description": "Primary key column(s)",
-            "title": "Primary Key"
+            "default": null,
+            "description": "Fields to show when drilling into this metric",
+            "title": "Drill Fields"
           },
-          "relationships": {
-            "description": "Relationships to other models",
-            "items": {
-              "$ref": "#/$defs/Relationship"
-            },
-            "title": "Relationships",
-            "type": "array"
-          },
-          "segments": {
-            "description": "Segment (named filter) definitions",
-            "items": {
-              "$ref": "#/$defs/Segment"
-            },
-            "title": "Segments",
-            "type": "array"
-          },
-          "source_uri": {
+          "non_additive_dimension": {
             "anyOf": [
               {
                 "type": "string"
@@ -3235,92 +2312,59 @@
               }
             ],
             "default": null,
-            "description": "Remote data source URI (e.g., https://, s3://, gs://)",
-            "title": "Source Uri"
+            "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
+            "title": "Non Additive Dimension"
           },
-          "sql": {
+          "meta": {
             "anyOf": [
               {
-                "type": "string"
+                "additionalProperties": true,
+                "type": "object"
               },
               {
                 "type": "null"
               }
             ],
             "default": null,
-            "description": "SQL expression for derived tables",
-            "title": "Sql"
+            "description": "Arbitrary metadata for extensions",
+            "title": "Meta"
           },
-          "table": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Physical table name (schema.table)",
-            "title": "Table"
-          },
-          "unique_keys": {
-            "anyOf": [
-              {
-                "items": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Unique key constraints (each is a list of columns)",
-            "title": "Unique Keys"
+          "public": {
+            "default": true,
+            "description": "Whether metric is visible in API/UI",
+            "title": "Public",
+            "type": "boolean"
           }
         },
         "required": [
           "name"
         ],
-        "title": "Model",
+        "title": "Metric",
         "type": "object"
-      },
-      "type": "array"
+      }
     },
     "parameters": {
+      "type": "array",
       "description": "Parameter definitions for dynamic queries",
       "items": {
         "description": "Parameter definition for user input.\n\nDEPRECATED: Use Jinja templates instead of Parameters.\n\nParameters can be referenced in filters, SQL expressions, and metric definitions\nto create dynamic, user-configurable queries.",
         "properties": {
-          "allowed_values": {
-            "anyOf": [
-              {
-                "items": {},
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
+          "name": {
+            "description": "Unique parameter name",
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "description": "Parameter data type",
+            "enum": [
+              "string",
+              "number",
+              "date",
+              "unquoted",
+              "yesno"
             ],
-            "default": null,
-            "description": "List of allowed values (for dropdown/select)",
-            "title": "Allowed Values"
-          },
-          "default_to_today": {
-            "default": false,
-            "description": "Default to current date (for date parameters)",
-            "title": "Default To Today",
-            "type": "boolean"
-          },
-          "default_value": {
-            "default": null,
-            "description": "Default value if not provided",
-            "title": "Default Value"
+            "title": "Type",
+            "type": "string"
           },
           "description": {
             "anyOf": [
@@ -3348,22 +2392,30 @@
             "description": "Display label for UI",
             "title": "Label"
           },
-          "name": {
-            "description": "Unique parameter name",
-            "title": "Name",
-            "type": "string"
+          "default_value": {
+            "default": null,
+            "description": "Default value if not provided",
+            "title": "Default Value"
           },
-          "type": {
-            "description": "Parameter data type",
-            "enum": [
-              "string",
-              "number",
-              "date",
-              "unquoted",
-              "yesno"
+          "allowed_values": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Type",
-            "type": "string"
+            "default": null,
+            "description": "List of allowed values (for dropdown/select)",
+            "title": "Allowed Values"
+          },
+          "default_to_today": {
+            "default": false,
+            "description": "Default to current date (for date parameters)",
+            "title": "Default To Today",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3372,13 +2424,1152 @@
         ],
         "title": "Parameter",
         "type": "object"
-      },
-      "type": "array"
+      }
     }
   },
   "required": [
     "models"
   ],
-  "title": "Sidemantic Semantic Layer",
-  "type": "object"
+  "$defs": {
+    "Dimension": {
+      "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
+      "properties": {
+        "name": {
+          "description": "Unique dimension name within model",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Dimension type",
+          "enum": [
+            "categorical",
+            "time",
+            "boolean",
+            "numeric"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL expression (defaults to name; accepts 'expr' as alias)",
+          "title": "Sql"
+        },
+        "dax": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "DAX expression source text to lower into SQL",
+          "title": "Dax"
+        },
+        "expression_language": {
+          "anyOf": [
+            {
+              "enum": [
+                "sql",
+                "dax"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expression language for sql/expr/dax authoring",
+          "title": "Expression Language"
+        },
+        "granularity": {
+          "anyOf": [
+            {
+              "enum": [
+                "second",
+                "minute",
+                "hour",
+                "day",
+                "week",
+                "month",
+                "quarter",
+                "year"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Base granularity for time dimensions",
+          "title": "Granularity"
+        },
+        "supported_granularities": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Supported granularities for time dimensions",
+          "title": "Supported Granularities"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable description",
+          "title": "Description"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display label",
+          "title": "Label"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Adapter-specific metadata payload",
+          "title": "Metadata"
+        },
+        "format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
+          "title": "Format"
+        },
+        "value_format_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
+          "title": "Value Format Name"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Parent dimension for hierarchies (e.g., 'state' parent is 'country')",
+          "title": "Parent"
+        },
+        "meta": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Arbitrary metadata for extensions",
+          "title": "Meta"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Window function expression (e.g., 'LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)')",
+          "title": "Window"
+        },
+        "public": {
+          "default": true,
+          "description": "Whether dimension is visible in API/UI",
+          "title": "Public",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "Dimension",
+      "type": "object"
+    },
+    "Metric": {
+      "$defs": {
+        "RelationshipOverride": {
+          "description": "Overrides join behavior for a relationship in a metric/query context.",
+          "properties": {
+            "from_model": {
+              "description": "Source model name",
+              "title": "From Model",
+              "type": "string"
+            },
+            "from_column": {
+              "description": "Source model column",
+              "title": "From Column",
+              "type": "string"
+            },
+            "to_model": {
+              "description": "Target model name",
+              "title": "To Model",
+              "type": "string"
+            },
+            "to_column": {
+              "description": "Target model column",
+              "title": "To Column",
+              "type": "string"
+            },
+            "join_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "inner",
+                    "left",
+                    "right",
+                    "full"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional join type override",
+              "title": "Join Type"
+            },
+            "direction": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional filter direction hint",
+              "title": "Direction"
+            }
+          },
+          "required": [
+            "from_model",
+            "from_column",
+            "to_model",
+            "to_column"
+          ],
+          "title": "RelationshipOverride",
+          "type": "object"
+        }
+      },
+      "description": "Measure definition - supports simple aggregations and complex metric types.\n\nMeasures can be:\n- Simple aggregations: SUM(amount), COUNT(*), AVG(price)\n- Ratios: revenue / order_count\n- Derived formulas: (revenue - cost) / revenue\n- Cumulative: running totals, period-to-date\n- Time comparisons: YoY, MoM growth\n- Conversion funnels: signup -> purchase rate\n\nAuto-registers as a graph-level metric with the current semantic layer context if available.",
+      "properties": {
+        "name": {
+          "description": "Unique measure name",
+          "title": "Name",
+          "type": "string"
+        },
+        "extends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Parent metric to inherit from",
+          "title": "Extends"
+        },
+        "agg": {
+          "anyOf": [
+            {
+              "enum": [
+                "sum",
+                "count",
+                "count_distinct",
+                "avg",
+                "min",
+                "max",
+                "median",
+                "stddev",
+                "stddev_pop",
+                "variance",
+                "variance_pop"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Aggregation function (for simple measures)",
+          "title": "Agg"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL expression or formula (accepts 'expr' as alias)",
+          "title": "Sql"
+        },
+        "dax": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "DAX expression source text to lower into SQL",
+          "title": "Dax"
+        },
+        "expression_language": {
+          "anyOf": [
+            {
+              "enum": [
+                "sql",
+                "dax"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expression language for sql/expr/dax authoring",
+          "title": "Expression Language"
+        },
+        "relationship_overrides": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/RelationshipOverride"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Relationship overrides for this metric",
+          "title": "Relationship Overrides"
+        },
+        "required_models": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Additional models required for this metric",
+          "title": "Required Models"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "enum": [
+                "ratio",
+                "derived",
+                "cumulative",
+                "time_comparison",
+                "conversion",
+                "retention",
+                "cohort"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Metric type for complex calculations",
+          "title": "Type"
+        },
+        "numerator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Numerator measure for ratio",
+          "title": "Numerator"
+        },
+        "denominator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Denominator measure for ratio",
+          "title": "Denominator"
+        },
+        "offset_window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Time offset for denominator (e.g., '1 month')",
+          "title": "Offset Window"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Time window for cumulative (e.g., '7 days')",
+          "title": "Window"
+        },
+        "grain_to_date": {
+          "anyOf": [
+            {
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "quarter",
+                "year"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Grain for period-to-date (e.g., 'month' for MTD)",
+          "title": "Grain To Date"
+        },
+        "window_expression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Raw SQL expression for window function (e.g., 'AVG(total_bids) FILTER (WHERE active)')",
+          "title": "Window Expression"
+        },
+        "window_frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Window frame clause (e.g., 'RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW')",
+          "title": "Window Frame"
+        },
+        "window_order": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Window ORDER BY column (defaults to model's default_time_dimension)",
+          "title": "Window Order"
+        },
+        "base_metric": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Base metric for time comparison",
+          "title": "Base Metric"
+        },
+        "comparison_type": {
+          "anyOf": [
+            {
+              "enum": [
+                "yoy",
+                "mom",
+                "wow",
+                "dod",
+                "qoq",
+                "prior_period"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Type of time comparison",
+          "title": "Comparison Type"
+        },
+        "time_offset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom time offset (e.g., '1 month')",
+          "title": "Time Offset"
+        },
+        "calculation": {
+          "anyOf": [
+            {
+              "enum": [
+                "difference",
+                "percent_change",
+                "ratio",
+                "previous_value"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comparison calculation (default: percent_change)",
+          "title": "Calculation"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Entity to track (e.g., 'user_id')",
+          "title": "Entity"
+        },
+        "base_event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Starting event filter",
+          "title": "Base Event"
+        },
+        "conversion_event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Target event filter",
+          "title": "Conversion Event"
+        },
+        "conversion_window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Conversion time window",
+          "title": "Conversion Window"
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
+          "title": "Steps"
+        },
+        "cohort_event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL filter for cohort-defining event (e.g., \"event = 'install'\")",
+          "title": "Cohort Event"
+        },
+        "activity_event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL filter for activity event (default: any event, e.g., \"event IS NOT NULL\")",
+          "title": "Activity Event"
+        },
+        "periods": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Number of retention periods to compute (e.g., 28 for 28-day)",
+          "title": "Periods"
+        },
+        "retention_granularity": {
+          "anyOf": [
+            {
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Time granularity for retention periods (day, week, month)",
+          "title": "Retention Granularity"
+        },
+        "inner_metrics": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-entity aggregations for cohort metrics (list of {name, agg, sql})",
+          "title": "Inner Metrics"
+        },
+        "entity_dimensions": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
+          "title": "Entity Dimensions"
+        },
+        "having": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HAVING filter on inner aggregation for cohort metrics",
+          "title": "Having"
+        },
+        "filters": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional WHERE clause filters",
+          "title": "Filters"
+        },
+        "fill_nulls_with": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Default value when result is NULL",
+          "title": "Fill Nulls With"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable description",
+          "title": "Description"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display label",
+          "title": "Label"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Adapter-specific metadata payload",
+          "title": "Metadata"
+        },
+        "format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display format string (e.g., '$#,##0.00', '0.00%')",
+          "title": "Format"
+        },
+        "value_format_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Named format (e.g., 'usd', 'percent', 'decimal_2')",
+          "title": "Value Format Name"
+        },
+        "drill_fields": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fields to show when drilling into this metric",
+          "title": "Drill Fields"
+        },
+        "non_additive_dimension": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dimension across which this metric cannot be summed (e.g., time for averages)",
+          "title": "Non Additive Dimension"
+        },
+        "meta": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Arbitrary metadata for extensions",
+          "title": "Meta"
+        },
+        "public": {
+          "default": true,
+          "description": "Whether metric is visible in API/UI",
+          "title": "Public",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Metric",
+      "type": "object"
+    },
+    "Relationship": {
+      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
+      "properties": {
+        "name": {
+          "description": "Name of the related model",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Type of relationship",
+          "enum": [
+            "many_to_one",
+            "one_to_one",
+            "one_to_many",
+            "many_to_many"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
+          "title": "Foreign Key"
+        },
+        "primary_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Primary key column(s) in related model (defaults to id)",
+          "title": "Primary Key"
+        },
+        "through": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Junction model for many_to_many relationships",
+          "title": "Through"
+        },
+        "through_foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key in junction model pointing to this model",
+          "title": "Through Foreign Key"
+        },
+        "related_foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key in junction model pointing to related model",
+          "title": "Related Foreign Key"
+        },
+        "active": {
+          "default": true,
+          "description": "Whether the relationship is active by default",
+          "title": "Active",
+          "type": "boolean"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Adapter-specific metadata payload",
+          "title": "Metadata"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "Relationship",
+      "type": "object"
+    },
+    "Parameter": {
+      "description": "Parameter definition for user input.\n\nDEPRECATED: Use Jinja templates instead of Parameters.\n\nParameters can be referenced in filters, SQL expressions, and metric definitions\nto create dynamic, user-configurable queries.",
+      "properties": {
+        "name": {
+          "description": "Unique parameter name",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Parameter data type",
+          "enum": [
+            "string",
+            "number",
+            "date",
+            "unquoted",
+            "yesno"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable description",
+          "title": "Description"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display label for UI",
+          "title": "Label"
+        },
+        "default_value": {
+          "default": null,
+          "description": "Default value if not provided",
+          "title": "Default Value"
+        },
+        "allowed_values": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "List of allowed values (for dropdown/select)",
+          "title": "Allowed Values"
+        },
+        "default_to_today": {
+          "default": false,
+          "description": "Default to current date (for date parameters)",
+          "title": "Default To Today",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "Parameter",
+      "type": "object"
+    }
+  }
 }

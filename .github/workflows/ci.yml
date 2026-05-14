@@ -11,10 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -24,8 +27,24 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Install core dependencies
         run: uv sync --extra dev
+
+      - name: Check core import without DAX extra
+        run: |
+          uv run python - <<'PY'
+          import sys
+
+          from sidemantic import Dimension, Metric, Model
+
+          assert Model.__name__ == "Model"
+          assert Dimension.__name__ == "Dimension"
+          assert Metric.__name__ == "Metric"
+          assert "sidemantic_dax" not in sys.modules
+          PY
+
+      - name: Install DAX dependencies
+        run: uv sync --extra dev --extra dax
 
       - name: Check version consistency
         run: |
@@ -46,6 +65,20 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+      - name: Run installed-wheel DAX smoke
+        run: |
+          uv build crates/dax-pyo3 --out-dir /tmp/sidemantic-dax-dist
+          uv build --out-dir /tmp/sidemantic-dist
+          SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
+          cd /tmp
+          uv run --no-project --find-links /tmp/sidemantic-dax-dist --with "${SIDEMANTIC_WHEEL}[dax]" -- python - <<'PY'
+          from sidemantic import SemanticLayer
+          import sidemantic_dax
+
+          sidemantic_dax.parse_expression("1")
+          assert SemanticLayer().compile_dax_query('EVALUATE ROW("one", 1)') == "SELECT 1 AS one"
+          PY
+
   update-schema:
     name: Update JSON Schema
     needs: python
@@ -58,6 +91,9 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -67,7 +103,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra dax
 
       - name: Generate and commit schema if needed
         run: |
@@ -93,19 +129,22 @@ jobs:
         with:
           filters: |
             rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - 'sidemantic-rs/**'
+              - 'tests/dax/fixtures/**'
             duckdb:
               - 'sidemantic-duckdb/**'
               - 'sidemantic-rs/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
 
   rust:
-    name: Rust (sidemantic-rs)
+    name: Rust
     needs: check-rust-changes
     if: needs.check-rust-changes.outputs.rust_changed == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sidemantic-rs
 
     steps:
       - uses: actions/checkout@v4
@@ -116,16 +155,16 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: sidemantic-rs
+          workspaces: .
 
       - name: Run cargo fmt check
         run: cargo fmt --check
 
       - name: Run cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy -p sidemantic -p dax-parser -p dax-pyo3 --all-targets -- -D warnings
 
       - name: Run cargo test
-        run: cargo test
+        run: cargo test -p sidemantic -p dax-parser -p dax-pyo3
         env:
           RUST_MIN_STACK: 16777216
 
@@ -155,7 +194,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: sidemantic-rs
+          workspaces: .
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build

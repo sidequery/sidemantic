@@ -1,0 +1,19 @@
+model 'Retail Analytics'
+    defaultPowerBIDataSourceVersion: powerBI_V3
+    ref table Sales
+    ref table Products
+    ref table Calendar
+    ref table 'Sales By Category'
+    ref relationship 'Sales-Products'
+    ref relationship 'Sales-Calendar'
+    perspective Executive
+        annotation Scope
+            value: "leadership"
+    culture en-US
+        annotation Locale
+            value: "en-US"
+
+role 'Sales Managers'
+    modelPermission: read
+    annotation RoleTag
+        value: "managed"

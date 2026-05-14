@@ -6,7 +6,15 @@ from dataclasses import dataclass
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
+from sidemantic.core.relationship import RelationshipOverride
 from sidemantic.core.table_calculation import TableCalculation
+
+
+def _relationship_local_key_columns(model: Model, relationship: object) -> list[str]:
+    tmdl_from_column = getattr(relationship, "_tmdl_from_column", None)
+    if isinstance(tmdl_from_column, str) and tmdl_from_column.strip():
+        return [tmdl_from_column]
+    return model.primary_key_columns
 
 
 @dataclass
@@ -18,6 +26,7 @@ class JoinPath:
     from_columns: list[str]  # Foreign key column(s) in from_model
     to_columns: list[str]  # Primary/unique key column(s) in to_model
     relationship: str  # many_to_one, one_to_many, one_to_one
+    join_type_override: str | None = None
 
     # Backwards compatibility properties (return first column)
     @property
@@ -43,9 +52,17 @@ class SemanticGraph:
         self.metrics: dict[str, Metric] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
+        self.import_warnings: list[dict[str, object]] = []
+        self._revision = 0
         self._adjacency: dict[
-            str, list[tuple[str, list[str], list[str], str]]
-        ] = {}  # model -> [(to_model, from_keys, to_keys, rel_type)]
+            str, list[tuple[str, list[str], list[str], str, str | None]]
+        ] = {}  # model -> [(to_model, from_keys, to_keys, rel_type, join_type_override)]
+        self._relationship_path_cache: dict[tuple[int, str, str], tuple[JoinPath, ...]] = {}
+
+    def _mark_structure_dirty(self) -> None:
+        self._revision += 1
+        self._adjacency_dirty = True
+        self._relationship_path_cache.clear()
 
     def add_model(self, model: Model) -> None:
         """Add a model to the graph.
@@ -68,7 +85,7 @@ class SemanticGraph:
                     if metric.name not in self.metrics:
                         self.metrics[metric.name] = metric
 
-        self._adjacency_dirty = True
+        self._mark_structure_dirty()
 
     def add_metric(self, measure: Metric) -> None:
         """Add a measure to the graph.
@@ -80,6 +97,7 @@ class SemanticGraph:
             raise ValueError(f"Measure {measure.name} already exists")
 
         self.metrics[measure.name] = measure
+        self._revision += 1
 
     def add_table_calculation(self, calc: TableCalculation) -> None:
         """Add a table calculation to the graph.
@@ -91,6 +109,7 @@ class SemanticGraph:
             raise ValueError(f"Table calculation {calc.name} already exists")
 
         self.table_calculations[calc.name] = calc
+        self._revision += 1
 
     def get_table_calculation(self, name: str) -> TableCalculation:
         """Get a table calculation by name.
@@ -122,6 +141,7 @@ class SemanticGraph:
             raise ValueError(f"Parameter {param.name} already exists")
 
         self.parameters[param.name] = param
+        self._revision += 1
 
     def get_parameter(self, name: str) -> Parameter:
         """Get a parameter by name.
@@ -194,13 +214,19 @@ class SemanticGraph:
         if not hasattr(self, "_adjacency"):
             self._adjacency = {}
         self._adjacency.clear()
+        self._relationship_path_cache.clear()
 
         def add_edge(
-            from_model: str, to_model: str, from_keys: list[str], to_keys: list[str], relationship_type: str
+            from_model: str,
+            to_model: str,
+            from_keys: list[str],
+            to_keys: list[str],
+            relationship_type: str,
+            join_type_override: str | None = None,
         ) -> None:
             if from_model not in self._adjacency:
                 self._adjacency[from_model] = []
-            self._adjacency[from_model].append((to_model, from_keys, to_keys, relationship_type))
+            self._adjacency[from_model].append((to_model, from_keys, to_keys, relationship_type, join_type_override))
 
         def invert_relationship(relationship_type: str) -> str:
             if relationship_type == "many_to_one":
@@ -212,6 +238,8 @@ class SemanticGraph:
         # Build adjacency from join relationships
         for model_name, model in self.models.items():
             for relationship in model.relationships:
+                if not relationship.active:
+                    continue
                 related_model = relationship.name
                 if related_model not in self.models:
                     continue  # Skip if related model doesn't exist yet
@@ -258,18 +286,26 @@ class SemanticGraph:
                 else:
                     # one_to_one or one_to_many: related model has foreign key pointing here
                     # Example: customers one_to_many orders (customers.id <- orders.customer_id)
-                    local_keys = model.primary_key_columns  # Use model's primary key
+                    local_keys = _relationship_local_key_columns(model, relationship)
                     remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
 
                 add_edge(model_name, related_model, local_keys, remote_keys, relationship.type)
                 add_edge(related_model, model_name, remote_keys, local_keys, invert_relationship(relationship.type))
 
-    def find_relationship_path(self, from_model: str, to_model: str) -> list[JoinPath]:
+    def find_relationship_path(
+        self,
+        from_model: str,
+        to_model: str,
+        relationship_overrides: list[RelationshipOverride] | None = None,
+    ) -> list[JoinPath]:
         """Find join path between two models using BFS.
 
         Args:
             from_model: Source model name
             to_model: Target model name
+            relationship_overrides: Query-local relationship edges that take
+                precedence over active graph relationships between the same
+                model pair.
 
         Returns:
             List of JoinPath objects representing the join sequence
@@ -289,6 +325,16 @@ class SemanticGraph:
         if to_model not in self.models:
             raise KeyError(f"Model {to_model} not found")
 
+        adjacency = self._adjacency
+        if relationship_overrides:
+            adjacency = self._adjacency_with_relationship_overrides(relationship_overrides)
+
+        cache_key = (self._revision, from_model, to_model)
+        if not relationship_overrides:
+            cached = self._relationship_path_cache.get(cache_key)
+            if cached is not None:
+                return list(cached)
+
         # BFS to find shortest path
         queue = deque([(from_model, [])])
         visited = {from_model}
@@ -296,10 +342,10 @@ class SemanticGraph:
         while queue:
             current, path = queue.popleft()
 
-            if current not in self._adjacency:
+            if current not in adjacency:
                 continue
 
-            for next_model, from_keys, to_keys, relationship_type in self._adjacency[current]:
+            for next_model, from_keys, to_keys, relationship_type, join_type_override in adjacency[current]:
                 if next_model in visited:
                     continue
 
@@ -312,15 +358,55 @@ class SemanticGraph:
                         from_columns=from_keys,
                         to_columns=to_keys,
                         relationship=relationship_type,
+                        join_type_override=join_type_override,
                     )
                 ]
 
                 if next_model == to_model:
+                    if not relationship_overrides:
+                        self._relationship_path_cache[cache_key] = tuple(new_path)
                     return new_path
 
                 queue.append((next_model, new_path))
 
         raise ValueError(f"No join path found between {from_model} and {to_model}")
+
+    def _adjacency_with_relationship_overrides(
+        self, relationship_overrides: list[RelationshipOverride]
+    ) -> dict[str, list[tuple[str, list[str], list[str], str, str | None]]]:
+        adjacency = {model: list(edges) for model, edges in self._adjacency.items()}
+
+        for override in relationship_overrides:
+            if override.from_model not in self.models or override.to_model not in self.models:
+                continue
+
+            from_model = override.from_model
+            to_model = override.to_model
+            pair = frozenset((from_model, to_model))
+
+            for model_name, edges in list(adjacency.items()):
+                adjacency[model_name] = [edge for edge in edges if frozenset((model_name, edge[0])) != pair]
+
+            adjacency.setdefault(from_model, []).append(
+                (
+                    to_model,
+                    [override.from_column],
+                    [override.to_column],
+                    "many_to_one",
+                    override.join_type,
+                )
+            )
+            adjacency.setdefault(to_model, []).append(
+                (
+                    from_model,
+                    [override.to_column],
+                    [override.from_column],
+                    "one_to_many",
+                    override.join_type,
+                )
+            )
+
+        return adjacency
 
     def find_all_models_for_query(self, dimensions: list[str], measures: list[str]) -> set[str]:
         """Find all models needed for a query.

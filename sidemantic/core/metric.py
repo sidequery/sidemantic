@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from .dependency_analyzer import extract_metric_dependencies
+from .relationship import RelationshipOverride
 
 
 class Metric(BaseModel):
@@ -50,6 +51,14 @@ class Metric(BaseModel):
         | None
     ) = Field(None, description="Aggregation function (for simple measures)")
     sql: str | None = Field(None, description="SQL expression or formula (accepts 'expr' as alias)")
+    dax: str | None = Field(None, description="DAX expression source text to lower into SQL")
+    expression_language: Literal["sql", "dax"] | None = Field(
+        None, description="Expression language for sql/expr/dax authoring"
+    )
+    relationship_overrides: list[RelationshipOverride] | None = Field(
+        None, description="Relationship overrides for this metric"
+    )
+    required_models: list[str] | None = Field(None, description="Additional models required for this metric")
 
     @model_validator(mode="before")
     @classmethod
@@ -83,10 +92,11 @@ class Metric(BaseModel):
             # Step 2: Parse aggregation from SQL if needed
             agg_val = data.get("agg")
             type_val = data.get("type")
+            language_val = data.get("expression_language")
 
             # Parse if sql is provided and agg is not set
             # Allow parsing for simple metrics (no type) OR cumulative metrics (to support AVG/COUNT windows)
-            if sql_val and not agg_val and (not type_val or type_val == "cumulative"):
+            if sql_val and language_val != "dax" and not agg_val and (not type_val or type_val == "cumulative"):
                 try:
                     import sqlglot
                     from sqlglot import expressions as exp
@@ -271,7 +281,7 @@ class Metric(BaseModel):
         None, description="Type of time comparison"
     )
     time_offset: str | None = Field(None, description="Custom time offset (e.g., '1 month')")
-    calculation: Literal["difference", "percent_change", "ratio"] | None = Field(
+    calculation: Literal["difference", "percent_change", "ratio", "previous_value"] | None = Field(
         None, description="Comparison calculation (default: percent_change)"
     )
 

@@ -460,7 +460,7 @@ def _column_to_dimension(
     expression = expression_obj.text if expression_obj else None
 
     source_column = _string_prop(props.get("sourcecolumn"))
-    sql = source_column or expression
+    sql = source_column
     if expression:
         try:
             dax_expr = _parse_dax_expression(expression, node, "column")
@@ -486,9 +486,7 @@ def _column_to_dimension(
             dax_expr = None
     else:
         dax_expr = None
-    if expression and not sql:
-        sql = source_column or expression
-    if not sql:
+    if not sql and not expression:
         sql = node.name or ""
 
     dimension = Dimension(
@@ -496,14 +494,13 @@ def _column_to_dimension(
         type=dim_type,
         sql=sql,
         dax=expression,
+        expression_language="dax" if expression else None,
         granularity=granularity,
         description=node.description or _string_prop(props.get("description")),
         label=_string_prop(props.get("caption")),
         format=_string_prop(props.get("formatstring")),
         public=not _is_true(props.get("ishidden")),
     )
-    if expression:
-        dimension.expression_language = "dax"
     dimension._source_format = "TMDL"
     if node.location and node.location.file:
         try:

@@ -18,6 +18,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.loaders import load_from_directory
+from sidemantic.sql.generator import SQLGenerator
 from sidemantic.validation import QueryValidationError
 
 # =============================================================================
@@ -90,6 +91,21 @@ def test_tmdl_untranslated_dax_metric_is_not_compiled_as_sql():
 
     with pytest.raises(QueryValidationError, match="DAX expression but has no SQL translation"):
         layer.compile(metrics=["Sales.Sales LY"])
+
+
+def test_tmdl_untranslated_dax_dimension_is_not_compiled_as_sql():
+    layer = SemanticLayer()
+    load_from_directory(layer, "tests/fixtures/tmdl_realistic")
+
+    amount_x2 = layer.graph.models["Sales"].get_dimension("Amount x2")
+    assert amount_x2.sql is None
+    assert amount_x2.has_untranslated_dax
+
+    with pytest.raises(QueryValidationError, match="DAX expression but has no SQL translation"):
+        layer.compile(metrics=["Sales.Total Sales"], dimensions=["Sales.Amount x2"])
+
+    with pytest.raises(ValueError, match="DAX expression but has no SQL translation"):
+        SQLGenerator(layer.graph).generate(metrics=["Sales.Total Sales"], dimensions=["Sales.Amount x2"])
 
 
 def test_tmdl_export_preserves_model_ref_table_literals_and_order():
@@ -254,7 +270,7 @@ def test_tmdl_realistic_fixture_import_export_contract(tmp_path):
     sales = graph.models["Sales"]
     assert sales.description == "Sales fact table"
     assert sales.get_dimension("Amount x2").dax == "Sales[Amount] * 2"
-    assert sales.get_dimension("Amount x2").sql == "Sales[Amount] * 2"
+    assert sales.get_dimension("Amount x2").sql is None
     assert sales.get_metric("Total Sales").dax == "SUM(Sales[Amount])"
     assert sales.get_metric("Total Sales").sql == "Amount"
     assert getattr(sales, "_tmdl_child_nodes")[0].name == "TableTag"
@@ -302,6 +318,7 @@ def test_tmdl_realistic_fixture_import_export_contract(tmp_path):
     reparsed_calculated = reparsed_graph.models["Sales By Category"]
     reparsed_rel = next(rel for rel in reparsed_sales.relationships if rel.name == "Products")
     assert reparsed_sales.get_dimension("Amount x2").dax == "Sales[Amount] * 2"
+    assert reparsed_sales.get_dimension("Amount x2").sql is None
     assert reparsed_sales.get_metric("Total Sales").dax == "SUM(Sales[Amount])"
     assert getattr(reparsed_calculated, "_tmdl_child_nodes")[0].name == "CalculationTag"
     assert getattr(reparsed_rel, "_tmdl_child_nodes")[0].name == "RelationshipLineage"
@@ -1951,6 +1968,7 @@ models:
     sales = reparsed.models["Sales"]
     positive_sales = reparsed.models["Positive Sales"]
     assert sales.get_dimension("Net").dax == "Sales[Amount] - 1"
+    assert sales.get_dimension("Net").sql is None
     assert sales.get_metric("Avg Price").dax == "DIVIDE(SUM(Sales[Amount]), SUM(Sales[Quantity]), 0)"
     assert positive_sales.dax == "FILTER(Sales, Sales[Amount] > 0)"
     assert positive_sales.table is None
@@ -2469,6 +2487,7 @@ def test_tmdl_export_script_preserves_realistic_project_metadata(tmp_path):
     reparsed_calculated = reparsed.models["Sales By Category"]
     reparsed_rel = next(rel for rel in reparsed_sales.relationships if rel.name == "Products")
     assert reparsed_sales.get_dimension("Amount x2").dax == "Sales[Amount] * 2"
+    assert reparsed_sales.get_dimension("Amount x2").sql is None
     assert reparsed_sales.get_metric("Total Sales").dax == "SUM(Sales[Amount])"
     assert getattr(reparsed_calculated, "_tmdl_child_nodes")[0].name == "CalculationTag"
     assert getattr(reparsed_rel, "_tmdl_child_nodes")[0].name == "RelationshipLineage"

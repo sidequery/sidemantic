@@ -87,6 +87,11 @@ class Dimension(BaseModel):
         return self.sql or self.name
 
     @property
+    def has_untranslated_dax(self) -> bool:
+        """Whether this dimension preserves DAX source without a SQL translation."""
+        return self.expression_language == "dax" and bool(self.dax) and not self.sql
+
+    @property
     def window_sql_expr(self) -> str:
         """Get the window SQL expression if set, otherwise fall back to sql_expr.
 

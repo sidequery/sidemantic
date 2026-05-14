@@ -267,6 +267,13 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
                 "DAX lowering is not available in this build."
             )
 
+    def _add_untranslated_dax_dimension_error(dim_ref: str, dimension) -> None:
+        if getattr(dimension, "has_untranslated_dax", False):
+            errors.append(
+                f"Dimension '{dim_ref}' contains DAX expression but has no SQL translation. "
+                "DAX lowering is not available in this build."
+            )
+
     # Validate metric references
     for metric_ref in metrics:
         if "." in metric_ref:
@@ -309,8 +316,14 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
             model = graph.models.get(model_name)
             if not model:
                 errors.append(f"Model '{model_name}' not found (referenced in '{dim_ref}')")
-            elif not model.get_dimension(dim_name):
-                errors.append(f"Dimension '{dim_name}' not found in model '{model_name}' (referenced in '{dim_ref}')")
+            else:
+                dimension = model.get_dimension(dim_name)
+                if not dimension:
+                    errors.append(
+                        f"Dimension '{dim_name}' not found in model '{model_name}' (referenced in '{dim_ref}')"
+                    )
+                else:
+                    _add_untranslated_dax_dimension_error(dim_ref, dimension)
         else:
             errors.append(f"Dimension reference '{dim_ref}' must be in 'model.dimension' format")
 

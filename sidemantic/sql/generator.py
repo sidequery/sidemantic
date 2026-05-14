@@ -1179,6 +1179,7 @@ class SQLGenerator:
         # Add only needed dimension columns
         for dimension in model.dimensions:
             if dimension.name in needed_dimensions and dimension.name not in columns_added:
+                self._ensure_sql_dimension(model_name, dimension)
                 # For time dimensions with granularity, apply DATE_TRUNC
                 # Use window_sql_expr for CTE projection so window functions
                 # (LEAD, LAG, etc.) are evaluated here.
@@ -1202,6 +1203,7 @@ class SQLGenerator:
 
             if not dimension:
                 continue
+            self._ensure_sql_dimension(model_name, dimension)
 
             if gran and dimension.type == "time":
                 # Apply time granularity (in addition to base column)
@@ -1311,6 +1313,7 @@ class SQLGenerator:
                 continue
             dim = model.get_dimension(col_name)
             if dim:
+                self._ensure_sql_dimension(model_name, dim)
                 dim_sql = replace_model_placeholder(dim.window_sql_expr)
                 select_cols.append(f"{dim_sql} AS {self._quote_alias(col_name)}")
                 columns_added.add(col_name)
@@ -2218,6 +2221,13 @@ class SQLGenerator:
             # is equivalent to COUNT(*) for single-model queries but correct for joins.
             return f"COUNT({raw_col})"
         return f"{agg_func}({raw_col})"
+
+    def _ensure_sql_dimension(self, model_name: str, dimension) -> None:
+        if getattr(dimension, "has_untranslated_dax", False):
+            raise ValueError(
+                f"Dimension '{model_name}.{dimension.name}' contains DAX expression but has no SQL translation. "
+                "DAX lowering is not available in this build."
+            )
 
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.

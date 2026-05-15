@@ -553,6 +553,8 @@ class SidemanticAdapter(BaseAdapter):
                 if dim_dax:
                     dim_def["dax"] = dim_dax
                     dim_def["expression_language"] = "dax"
+                    if dim.sql:
+                        dim_def["sql"] = dim.sql
                 elif dim.sql:
                     dim_def["sql"] = dim.sql
                 if dim.granularity:
@@ -587,6 +589,8 @@ class SidemanticAdapter(BaseAdapter):
                 if measure_dax:
                     measure_def["dax"] = measure_dax
                     measure_def["expression_language"] = "dax"
+                    if measure.sql:
+                        measure_def["sql"] = measure.sql
                 elif measure.sql:
                     measure_def["sql"] = measure.sql
                 if measure.filters:
@@ -747,6 +751,7 @@ class SidemanticAdapter(BaseAdapter):
             if measure_dax:
                 result["dax"] = measure_dax
                 result["expression_language"] = "dax"
+                result["sql"] = measure.sql
             else:
                 result["sql"] = measure.sql
                 # Auto-detect and export dependencies for derived measures

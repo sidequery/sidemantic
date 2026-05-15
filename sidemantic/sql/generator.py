@@ -1102,6 +1102,7 @@ class SQLGenerator:
             CTE SQL string
         """
         model = self.graph.get_model(model_name)
+        self._ensure_sql_model(model_name, model)
         all_models = all_models or {model_name}
         needs_joins = len(all_models) > 1
 
@@ -2229,6 +2230,13 @@ class SQLGenerator:
                 "DAX lowering is not available in this build."
             )
 
+    def _ensure_sql_model(self, model_name: str, model) -> None:
+        if getattr(model, "has_untranslated_dax", False):
+            raise ValueError(
+                f"Model '{model_name}' contains DAX table expression but has no SQL/table translation. "
+                "DAX table lowering is not available in this build."
+            )
+
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.
 
@@ -2511,6 +2519,7 @@ class SQLGenerator:
 
         if not model or not metric:
             raise ValueError(f"No model found for cohort metric {metric_name}")
+        self._ensure_sql_model(model_name or model.name, model)
 
         # Validate entity identifier
         if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
@@ -2796,6 +2805,7 @@ FROM (
 
         if not model:
             raise ValueError(f"No model found for retention metric {metric_name}")
+        self._ensure_sql_model(model.name, model)
 
         # Defaults (use `is not None` to avoid converting 0 to the default)
         periods = metric.periods if metric.periods is not None else 28
@@ -3008,6 +3018,7 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
 
         if not model:
             raise ValueError(f"No model found for conversion metric {metric_name}")
+        self._ensure_sql_model(model.name, model)
 
         # Build SQL with self-join pattern
         # base_events: filter for base_event
@@ -3203,6 +3214,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         if not model:
             raise ValueError(f"No model found for conversion metric {metric_name}")
+        self._ensure_sql_model(model.name, model)
 
         # Find timestamp dimension: prefer model.default_time_dimension, fall back to first time dim
         timestamp_dim = None

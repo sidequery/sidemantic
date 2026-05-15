@@ -764,6 +764,11 @@ class QueryRewriter:
 
             model = self.graph.get_model(model_name)
             alias = table_expr.alias_or_name
+            if getattr(model, "has_untranslated_dax", False):
+                raise ValueError(
+                    f"Model '{model_name}' contains DAX table expression but has no SQL/table translation. "
+                    "DAX table lowering is not available in this build."
+                )
             if model.sql:
                 return self._parse_relation_factor(f"({model.sql}) AS {alias}")
             if model.table:

@@ -1015,7 +1015,10 @@ def _extract_dax_agg(
         return None, None
 
     if func_lower == "countrows":
-        return agg, None
+        table = _parse_dax_table_ref(arg)
+        if table and table.lower() == table_name.lower():
+            return agg, None
+        return None, None
 
     table, column = _parse_dax_column_ref(arg)
     if not column:
@@ -1024,7 +1027,7 @@ def _extract_dax_agg(
     if table and table.lower() == table_name.lower():
         return agg, column
     if table:
-        return agg, f"{table}.{column}"
+        return None, None
     return agg, column
 
 
@@ -1070,13 +1073,21 @@ def _extract_dax_agg_from_ast(expr: Any, table_name: str) -> tuple[str | None, s
     if not agg:
         return None
 
-    if func == "countrows":
-        return agg, None
-
     if len(expr.args) != 1:
         return None
 
     arg = unwrap(expr.args[0])
+    if func == "countrows":
+        if isinstance(arg, dax_ast.TableRef):
+            table = arg.table.name
+        elif isinstance(arg, dax_ast.Identifier):
+            table = arg.name
+        else:
+            return None
+        if table.lower() == table_name.lower():
+            return agg, None
+        return None
+
     if isinstance(arg, dax_ast.TableColumnRef):
         table = arg.table.name
         column = arg.column
@@ -1092,7 +1103,7 @@ def _extract_dax_agg_from_ast(expr: Any, table_name: str) -> tuple[str | None, s
     if table and table.lower() == table_name.lower():
         return agg, column
     if table:
-        return agg, f"{table}.{column}"
+        return None
     return agg, column
 
 
@@ -1147,6 +1158,13 @@ def _parse_dax_column_ref(expression: str) -> tuple[str | None, str | None]:
             return _unquote_identifier(parts[0]), _unquote_identifier(parts[1])
 
     return None, _unquote_identifier(expr)
+
+
+def _parse_dax_table_ref(expression: str) -> str | None:
+    expr = expression.strip()
+    if not expr or any(char in expr for char in "([."):
+        return None
+    return _unquote_identifier(expr)
 
 
 def _parse_column_reference(value: str | None) -> tuple[str | None, str | None]:

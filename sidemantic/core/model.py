@@ -81,6 +81,11 @@ class Model(BaseModel):
             return [self.primary_key]
         return self.primary_key
 
+    @property
+    def has_untranslated_dax(self) -> bool:
+        """Whether this model preserves DAX source without a SQL/table translation."""
+        return bool(self.dax) and not self.sql and not self.table
+
     def get_dimension(self, name: str) -> Dimension | None:
         """Get dimension by name."""
         for dimension in self.dimensions:

@@ -7,9 +7,11 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 import sidemantic.adapters.tmdl as tmdl_module
 from sidemantic import SemanticLayer
+from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.adapters.tmdl import TMDLAdapter
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.introspection import describe_graph
@@ -106,6 +108,38 @@ def test_tmdl_untranslated_dax_dimension_is_not_compiled_as_sql():
 
     with pytest.raises(ValueError, match="DAX expression but has no SQL translation"):
         SQLGenerator(layer.graph).generate(metrics=["Sales.Total Sales"], dimensions=["Sales.Amount x2"])
+
+
+def test_tmdl_dax_only_calculated_table_is_not_compiled_as_sql():
+    tmdl = textwrap.dedent(
+        """
+        calculatedTable SalesByCategory = SUMMARIZECOLUMNS(Products[Category], "Revenue", SUM(Sales[Amount]))
+            column Category
+                dataType: string
+            column Revenue
+                dataType: decimal
+            measure Revenue = SUM(SalesByCategory[Revenue])
+        """
+    )
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+        model = graph.models["SalesByCategory"]
+        assert model.has_untranslated_dax
+
+        layer = SemanticLayer()
+        layer.graph = graph
+        with pytest.raises(QueryValidationError, match="DAX table expression but has no SQL/table translation"):
+            layer.compile(metrics=["SalesByCategory.Revenue"], dimensions=["SalesByCategory.Category"])
+
+        with pytest.raises(ValueError, match="DAX table expression but has no SQL/table translation"):
+            SQLGenerator(graph).generate(metrics=["SalesByCategory.Revenue"], dimensions=["SalesByCategory.Category"])
+    finally:
+        temp_path.unlink()
 
 
 def test_tmdl_export_preserves_model_ref_table_literals_and_order():
@@ -508,6 +542,112 @@ def test_tmdl_measure_aggregation_mapping():
         assert median_amount.sql == "amount"
     finally:
         temp_path.unlink()
+
+
+def test_tmdl_countrows_only_translates_current_table_counts():
+    tmdl = textwrap.dedent(
+        """
+        table Sales
+            column SaleID
+                dataType: int64
+            column Amount
+                dataType: decimal
+            measure 'Sales Rows' = COUNTROWS(Sales)
+            measure 'Product Rows' = COUNTROWS(Products)
+            measure 'Filtered Sales Rows' = COUNTROWS(FILTER(Sales, Sales[Amount] > 0))
+        table Products
+            column ProductID
+                dataType: int64
+        """
+    )
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+        sales = graph.models["Sales"]
+
+        sales_rows = sales.get_metric("Sales Rows")
+        assert sales_rows.agg == "count"
+        assert sales_rows.sql is None
+        assert not sales_rows.has_untranslated_dax
+
+        product_rows = sales.get_metric("Product Rows")
+        assert product_rows.type == "derived"
+        assert product_rows.agg is None
+        assert product_rows.sql is None
+        assert product_rows.has_untranslated_dax
+
+        filtered_rows = sales.get_metric("Filtered Sales Rows")
+        assert filtered_rows.type == "derived"
+        assert filtered_rows.agg is None
+        assert filtered_rows.sql is None
+        assert filtered_rows.has_untranslated_dax
+    finally:
+        temp_path.unlink()
+
+
+def test_tmdl_cross_table_dax_aggregate_stays_untranslated():
+    tmdl = textwrap.dedent(
+        """
+        table Sales
+            column SaleID
+                dataType: int64
+            measure 'Product Price' = SUM(Products[Price])
+        table Products
+            column Price
+                dataType: decimal
+        """
+    )
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tmdl", delete=False) as f:
+        f.write(tmdl)
+        temp_path = Path(f.name)
+
+    try:
+        graph = TMDLAdapter().parse(temp_path)
+        metric = graph.models["Sales"].get_metric("Product Price")
+        assert metric.type == "derived"
+        assert metric.agg is None
+        assert metric.sql is None
+        assert metric.has_untranslated_dax
+    finally:
+        temp_path.unlink()
+
+
+def test_sidemantic_yaml_export_preserves_dax_metric_sql_translation(tmp_path):
+    tmdl = textwrap.dedent(
+        """
+        table Sales
+            column Amount
+                dataType: decimal
+                sourceColumn: Amount
+            measure Revenue = SUM(Sales[Amount])
+        """
+    )
+
+    source = tmp_path / "Sales.tmdl"
+    source.write_text(tmdl)
+    graph = TMDLAdapter().parse(source)
+
+    output = tmp_path / "models.yml"
+    SidemanticAdapter().export(graph, output)
+
+    data = yaml.safe_load(output.read_text())
+    sales = data["models"][0]
+    revenue = sales["metrics"][0]
+    assert revenue["dax"] == "SUM(Sales[Amount])"
+    assert revenue["expression_language"] == "dax"
+    assert revenue["sql"] == "Amount"
+
+    reparsed = SidemanticAdapter().parse(output)
+    metric = reparsed.models["Sales"].get_metric("Revenue")
+    assert metric.agg == "sum"
+    assert metric.sql == "Amount"
+    assert metric.dax == "SUM(Sales[Amount])"
+    assert not metric.has_untranslated_dax
 
 
 def test_tmdl_measure_derived_expression():

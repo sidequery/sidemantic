@@ -59,3 +59,43 @@ print(json.dumps({{
         "models": ["orders"],
         "sidemantic_dax_loaded": False,
     }
+
+
+def test_semantic_layer_can_construct_without_duckdb_runtime():
+    code = """
+import builtins
+import json
+
+real_import = builtins.__import__
+
+def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "duckdb":
+        raise ModuleNotFoundError("No module named 'duckdb'", name="duckdb")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = blocked_import
+
+from sidemantic import SemanticLayer
+
+layer = SemanticLayer()
+try:
+    layer.adapter.execute("select 1")
+except ModuleNotFoundError as exc:
+    error_name = exc.name
+else:
+    error_name = None
+
+print(json.dumps({
+    "dialect": layer.dialect,
+    "adapter": type(layer.adapter).__name__,
+    "error_name": error_name,
+}))
+"""
+
+    result = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+
+    assert json.loads(result.stdout) == {
+        "dialect": "duckdb",
+        "adapter": "UnavailableDatabaseAdapter",
+        "error_name": "duckdb",
+    }

@@ -74,9 +74,23 @@ class SemanticLayer:
                     for stmt in init_sql:
                         self.adapter.execute(stmt)
             elif connection.startswith("duckdb://"):
-                from sidemantic.db.duckdb import DuckDBAdapter
+                try:
+                    from sidemantic.db.duckdb import DuckDBAdapter
+                except ModuleNotFoundError as exc:
+                    if exc.name != "duckdb":
+                        raise
+                    from sidemantic.db.unavailable import UnavailableDatabaseAdapter
 
-                self.adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
+                    self.adapter = UnavailableDatabaseAdapter(
+                        dialect="duckdb",
+                        package="duckdb",
+                        install_hint="Install with `pip install duckdb` or use a database adapter available in this environment.",
+                    )
+                    if init_sql:
+                        for stmt in init_sql:
+                            self.adapter.execute(stmt)
+                else:
+                    self.adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
                 self.dialect = dialect or "duckdb"
             elif connection.startswith(("postgres://", "postgresql://")):
                 from sidemantic.db.postgres import PostgreSQLAdapter

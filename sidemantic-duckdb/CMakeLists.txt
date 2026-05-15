@@ -11,7 +11,33 @@ include_directories(src/include)
 
 # Path to sidemantic-rs
 set(SIDEMANTIC_RS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sidemantic-rs")
-set(SIDEMANTIC_LIB "${SIDEMANTIC_RS_DIR}/target/release/libsidemantic.a")
+set(SIDEMANTIC_WORKSPACE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/..")
+execute_process(
+    COMMAND cargo metadata --format-version 1 --no-deps
+    WORKING_DIRECTORY "${SIDEMANTIC_RS_DIR}"
+    OUTPUT_VARIABLE SIDEMANTIC_CARGO_METADATA
+    ERROR_QUIET
+    RESULT_VARIABLE SIDEMANTIC_CARGO_METADATA_RESULT)
+
+set(SIDEMANTIC_LIB_CANDIDATES)
+if(SIDEMANTIC_CARGO_METADATA_RESULT EQUAL 0)
+    string(REGEX MATCH "\"target_directory\":\"([^\"]+)\"" _SIDEMANTIC_TARGET_MATCH "${SIDEMANTIC_CARGO_METADATA}")
+    if(_SIDEMANTIC_TARGET_MATCH)
+        list(APPEND SIDEMANTIC_LIB_CANDIDATES "${CMAKE_MATCH_1}/release/libsidemantic.a")
+    endif()
+endif()
+list(APPEND SIDEMANTIC_LIB_CANDIDATES
+    "${SIDEMANTIC_RS_DIR}/target/release/libsidemantic.a"
+    "${SIDEMANTIC_WORKSPACE_DIR}/target/release/libsidemantic.a")
+foreach(SIDEMANTIC_LIB_CANDIDATE ${SIDEMANTIC_LIB_CANDIDATES})
+    if(EXISTS "${SIDEMANTIC_LIB_CANDIDATE}")
+        set(SIDEMANTIC_LIB "${SIDEMANTIC_LIB_CANDIDATE}")
+        break()
+    endif()
+endforeach()
+if(NOT SIDEMANTIC_LIB)
+    message(FATAL_ERROR "libsidemantic.a not found. Run `cargo build --release` before building the DuckDB extension.")
+endif()
 set(SIDEMANTIC_INCLUDE "${SIDEMANTIC_RS_DIR}/include")
 
 # Include Rust library headers

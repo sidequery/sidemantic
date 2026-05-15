@@ -3,12 +3,30 @@ name = "sidemantic"
 version = "0.1.0"
 edition = "2021"
 description = "A SQL-first semantic layer in Rust"
+license = "AGPL-3.0-only"
+repository = "https://github.com/sidequery/sidemantic"
+homepage = "https://sidemantic.com"
+readme = "README.md"
 
 [lib]
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
+python-adbc = ["python", "adbc-exec"]
+adbc-exec = ["dep:adbc_driver_manager", "dep:adbc_core", "dep:arrow-array", "dep:arrow-schema"]
+wasm = ["dep:wasm-bindgen"]
+mcp-server = ["dep:rmcp", "dep:tokio"]
+mcp-adbc = ["mcp-server", "adbc-exec"]
+runtime-server = ["dep:axum", "dep:tokio"]
+runtime-server-adbc = ["runtime-server", "adbc-exec"]
+runtime-lsp = ["dep:tokio", "dep:tower-lsp"]
+workbench-tui = ["dep:ratatui", "dep:crossterm"]
+workbench-adbc = ["workbench-tui", "adbc-exec"]
 
 [dependencies]
-polyglot-sql = "0.1"
+polyglot-sql = "0.1.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
@@ -17,3 +35,44 @@ once_cell = "1.19"
 regex = "1.10"
 lazy_static = "1.5"
 nom = "7.1"
+pyo3 = { version = "0.23", optional = true, features = ["abi3-py311", "extension-module"] }
+adbc_driver_manager = { version = "0.22.0", optional = true }
+adbc_core = { version = "0.22.0", optional = true }
+arrow-array = { version = ">=53.1.0, <58", default-features = false, optional = true }
+arrow-schema = { version = ">=53.1.0, <58", default-features = false, optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+minijinja = { version = "2.5", features = ["builtins", "serde"] }
+wasm-bindgen = { version = "0.2", optional = true }
+rmcp = { version = "0.16.0", optional = true, features = ["transport-io"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std"] }
+axum = { version = "0.8.1", optional = true, features = ["json"] }
+tower-lsp = { version = "0.20.0", optional = true }
+ratatui = { version = "0.29.0", optional = true }
+crossterm = { version = "0.28.1", optional = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[[bin]]
+name = "sidemantic-mcp"
+path = "src/bin/sidemantic-mcp.rs"
+required-features = ["mcp-server"]
+
+[[bin]]
+name = "sidemantic-server"
+path = "src/bin/sidemantic-server.rs"
+required-features = ["runtime-server"]
+
+[[bin]]
+name = "sidemantic-lsp"
+path = "src/bin/sidemantic-lsp.rs"
+required-features = ["runtime-lsp"]
+
+[[bin]]
+name = "sidemantic"
+path = "src/main.rs"
+
+[[bin]]
+name = "sidemantic-workbench"
+path = "src/bin/sidemantic-workbench.rs"
+required-features = ["workbench-tui"]

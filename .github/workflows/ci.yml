@@ -112,6 +112,13 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -122,12 +129,82 @@ jobs:
         run: cargo fmt --check
 
       - name: Run cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run cargo test
         run: cargo test
         env:
           RUST_MIN_STACK: 16777216
+
+      - name: Check package metadata
+        run: cargo test --test package_metadata
+
+      - name: Check crate package dry run
+        run: cargo package --locked --no-verify
+
+      - name: Check standalone feature surfaces
+        run: |
+          cargo check --no-default-features --all-targets
+          cargo check --features python --lib
+          cargo check --features python-adbc --lib
+          cargo check --features mcp-server --bin sidemantic-mcp --test mcp_protocol
+          cargo check --features mcp-adbc --bin sidemantic-mcp
+          cargo check --features runtime-server --bin sidemantic-server --test http_server
+          cargo check --features runtime-server-adbc --bin sidemantic-server
+          cargo check --features runtime-lsp --bin sidemantic-lsp --test lsp_protocol_smoke
+          cargo check --features workbench-tui --bin sidemantic --bin sidemantic-workbench
+          cargo check --features workbench-adbc --bin sidemantic --bin sidemantic-workbench
+
+      - name: Install DuckDB ADBC driver
+        run: |
+          curl -L https://github.com/duckdb/duckdb/releases/download/v1.4.2/libduckdb-linux-amd64.zip -o /tmp/libduckdb.zip
+          unzip -q /tmp/libduckdb.zip -d /tmp/libduckdb
+          echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
+
+      - name: Run standalone protocol and UI tests
+        run: |
+          cargo test --features mcp-server --test mcp_protocol
+          cargo test --features runtime-server --test http_server
+          cargo test --features runtime-lsp --test lsp_protocol_smoke
+          cargo test --features workbench-tui --bin sidemantic workbench
+          cargo test --features workbench-adbc --bin sidemantic workbench
+          cargo test --features workbench-tui --test workbench_pty_smoke
+          cargo test --features workbench-adbc --test workbench_pty_smoke
+          cargo test --features adbc-exec --test adbc_driver_matrix
+          cargo test --features mcp-adbc,runtime-server-adbc --test adbc_duckdb_e2e
+
+      - name: Smoke C ABI header and static library
+        run: |
+          cargo build --release --lib
+          cc -std=c11 -Wall -Wextra -I include tests/c_abi_smoke.c target/release/libsidemantic.a -lpthread -ldl -lm -lrt -o /tmp/sidemantic_c_abi_smoke
+          /tmp/sidemantic_c_abi_smoke
+
+      - name: Check WASM build
+        run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown --lib
+
+      - name: Install wasm-bindgen test runner
+        run: cargo install wasm-bindgen-cli --version 0.2.110
+
+      - name: Run WASM runtime tests
+        run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown --features wasm --test wasm_bindgen_runtime
+
+      - name: Check Python extension build
+        run: uvx maturin build --out dist
+
+      - name: Smoke Python extension wheel
+        run: uv run --no-project --with dist/*.whl tests/python_wheel_smoke.py
+
+      - name: Check lightweight Python extension build
+        run: uvx maturin build --no-default-features --features python --out dist-python
+
+      - name: Smoke lightweight Python extension wheel
+        run: uv run --no-project --with dist-python/*.whl tests/python_wheel_python_smoke.py
+
+      - name: Check Python extension ADBC build
+        run: uvx maturin build --no-default-features --features python-adbc --out dist-adbc
+
+      - name: Smoke Python extension ADBC wheel
+        run: uv run --no-project --with dist-adbc/*.whl tests/python_wheel_adbc_smoke.py
 
   duckdb-extension:
     name: DuckDB Extension
@@ -159,10 +236,6 @@ jobs:
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build
-
-      - name: Build Rust library
-        working-directory: sidemantic-rs
-        run: cargo build --release
 
       - name: Build DuckDB extension
         working-directory: sidemantic-duckdb

@@ -3,6 +3,7 @@
 Parses user SQL and rewrites it to use the semantic layer.
 """
 
+import os
 from dataclasses import dataclass
 
 import sqlglot
@@ -10,6 +11,7 @@ from sqlglot import exp
 from sqlglot.tokens import TokenType
 
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.generator import SQLGenerator
 
@@ -35,6 +37,18 @@ class QueryRewriter:
         self.graph = graph
         self.dialect = dialect
         self.generator = SQLGenerator(graph, dialect=dialect)
+        self._use_rust_rewriter = os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1"
+        self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
+        self._rust_module = None
+        self._rust_models_yaml: str | None = None
+
+        if self._use_rust_rewriter:
+            try:
+                self._rust_module = get_rust_module()
+                self._rust_models_yaml = graph_to_rust_yaml(self.graph)
+            except Exception:
+                if self._rust_no_fallback:
+                    raise
 
     def rewrite(self, sql: str, strict: bool = True) -> str:
         """Rewrite user SQL to use semantic layer.
@@ -115,6 +129,18 @@ class QueryRewriter:
                 return sql
             return sql
 
+        references_semantic_model = self._select_tree_references_semantic_model(parsed)
+        if not references_semantic_model:
+            return sql
+
+        self._raise_on_user_cte_name_collision(parsed)
+
+        if self._use_rust_rewriter:
+            rust_sql = self._prepare_sql_for_rust(parsed, sql)
+            rust_rewritten = self._rewrite_with_rust(rust_sql, strict=strict)
+            if rust_rewritten is not None:
+                return rust_rewritten
+
         # Check if this is a CTE-based query or has subqueries
         has_ctes = parsed.args.get("with") is not None
         has_subquery_in_from = self._has_subquery_in_from(parsed)
@@ -123,9 +149,6 @@ class QueryRewriter:
         if has_ctes or has_subquery_in_from or has_subquery_in_joins:
             # Handle CTEs and subqueries
             return self._rewrite_with_ctes_or_subqueries(parsed)
-
-        if not self._references_semantic_model(parsed):
-            return sql
 
         # Otherwise, treat as simple semantic layer query
         return self._rewrite_simple_query(parsed)
@@ -1897,6 +1920,78 @@ class QueryRewriter:
             return rewritten_sql
 
         return parsed.sql(dialect=self.dialect)
+
+    def _select_tree_references_semantic_model(self, select: exp.Select) -> bool:
+        if self._references_semantic_model(select):
+            return True
+
+        for nested_select in select.find_all(exp.Select):
+            if nested_select is select:
+                continue
+            if self._references_semantic_model(nested_select):
+                return True
+
+        return False
+
+    def _raise_on_user_cte_name_collision(self, select: exp.Select) -> None:
+        with_clause = select.args.get("with")
+        if not with_clause:
+            return
+
+        reserved_names = {self.generator._cte_name(model_name) for model_name in self.graph.models}
+        for cte in with_clause.expressions:
+            if cte.alias in reserved_names:
+                raise ValueError(
+                    f"CTE name '{cte.alias}' conflicts with an internally "
+                    f"generated name. Please choose a different CTE name."
+                )
+
+    def _rewrite_with_rust(self, sql: str, strict: bool = True) -> str | None:
+        """Rewrite using sidemantic-rs bindings, returning None to allow Python fallback."""
+        if not self._rust_module:
+            if strict and self._rust_no_fallback:
+                raise ValueError("Rust rewriter backend is not initialized")
+            return None
+
+        try:
+            models_yaml = self._rust_models_yaml
+            if models_yaml is None:
+                models_yaml = graph_to_rust_yaml(self.graph)
+                self._rust_models_yaml = models_yaml
+            return self._rust_module.rewrite_with_yaml(models_yaml, sql)
+        except Exception as e:
+            if self._rust_no_fallback:
+                raise ValueError(f"Rust rewriter failed: {e}") from e
+            return None
+
+    def _prepare_sql_for_rust(self, parsed: exp.Select, original_sql: str) -> str:
+        """Normalize Python-only graph metric shorthand to SQL sidemantic-rs can rewrite."""
+        if self._extract_from_table(parsed) != "metrics":
+            return original_sql
+
+        changed = False
+        rewritten_projections: list[exp.Expression] = []
+
+        for projection in parsed.expressions:
+            alias_name = projection.alias_or_name if isinstance(projection, exp.Alias) else None
+            node = projection.this if isinstance(projection, exp.Alias) else projection
+
+            if isinstance(node, exp.Column) and not node.table and node.name in self.graph.metrics:
+                graph_metric = self.graph.metrics[node.name]
+                if graph_metric.sql:
+                    metric_expr = sqlglot.parse_one(graph_metric.sql, dialect=self.dialect)
+                    rewritten_projections.append(exp.alias_(metric_expr, alias_name or node.name, copy=False))
+                    changed = True
+                    continue
+
+            rewritten_projections.append(projection)
+
+        if not changed:
+            return original_sql
+
+        rewritten = parsed.copy()
+        rewritten.set("expressions", rewritten_projections)
+        return rewritten.sql(dialect=self.dialect)
 
     def _rewrite_select_tree(self, select: exp.Select):
         """Recursively rewrite semantic subqueries and CTEs (bottom-up).

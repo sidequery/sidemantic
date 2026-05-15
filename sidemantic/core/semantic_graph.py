@@ -9,6 +9,13 @@ from sidemantic.core.parameter import Parameter
 from sidemantic.core.table_calculation import TableCalculation
 
 
+def _relationship_local_key_columns(model: Model, relationship: object) -> list[str]:
+    tmdl_from_column = getattr(relationship, "_tmdl_from_column", None)
+    if isinstance(tmdl_from_column, str) and tmdl_from_column.strip():
+        return [tmdl_from_column]
+    return model.primary_key_columns
+
+
 @dataclass
 class JoinPath:
     """Represents a join between two models."""
@@ -43,6 +50,7 @@ class SemanticGraph:
         self.metrics: dict[str, Metric] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
+        self.import_warnings: list[dict[str, object]] = []
         self._adjacency: dict[
             str, list[tuple[str, list[str], list[str], str]]
         ] = {}  # model -> [(to_model, from_keys, to_keys, rel_type)]
@@ -212,6 +220,9 @@ class SemanticGraph:
         # Build adjacency from join relationships
         for model_name, model in self.models.items():
             for relationship in model.relationships:
+                if not relationship.active:
+                    continue
+
                 related_model = relationship.name
                 if related_model not in self.models:
                     continue  # Skip if related model doesn't exist yet
@@ -258,7 +269,7 @@ class SemanticGraph:
                 else:
                     # one_to_one or one_to_many: related model has foreign key pointing here
                     # Example: customers one_to_many orders (customers.id <- orders.customer_id)
-                    local_keys = model.primary_key_columns  # Use model's primary key
+                    local_keys = _relationship_local_key_columns(model, relationship)
                     remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
 
                 add_edge(model_name, related_model, local_keys, remote_keys, relationship.type)

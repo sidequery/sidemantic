@@ -32,6 +32,7 @@ class Relationship(BaseModel):
     related_foreign_key: str | None = Field(
         default=None, description="Foreign key in junction model pointing to related model"
     )
+    active: bool = Field(default=True, description="Whether the relationship is active by default")
     metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     @property

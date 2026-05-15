@@ -1,0 +1,1 @@
+expression HttpSource = "https://raw.githubusercontent.com/pbi-tools/sales-sample/data/" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]

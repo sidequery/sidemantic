@@ -3,6 +3,19 @@
     "Dimension": {
       "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
       "properties": {
+        "dax": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "DAX expression source text",
+          "title": "Dax"
+        },
         "description": {
           "anyOf": [
             {
@@ -15,6 +28,23 @@
           "default": null,
           "description": "Human-readable description",
           "title": "Description"
+        },
+        "expression_language": {
+          "anyOf": [
+            {
+              "enum": [
+                "sql",
+                "dax"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expression language for sql/expr/dax authoring",
+          "title": "Expression Language"
         },
         "format": {
           "anyOf": [
@@ -371,6 +401,19 @@
           "description": "Conversion time window",
           "title": "Conversion Window"
         },
+        "dax": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "DAX expression source text",
+          "title": "Dax"
+        },
         "denominator": {
           "anyOf": [
             {
@@ -441,6 +484,23 @@
           "default": null,
           "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
           "title": "Entity Dimensions"
+        },
+        "expression_language": {
+          "anyOf": [
+            {
+              "enum": [
+                "sql",
+                "dax"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expression language for sql/expr/dax authoring",
+          "title": "Expression Language"
         },
         "extends": {
           "anyOf": [
@@ -1118,6 +1178,12 @@
     "Relationship": {
       "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
       "properties": {
+        "active": {
+          "default": true,
+          "description": "Whether the relationship is active by default",
+          "title": "Active",
+          "type": "boolean"
+        },
         "foreign_key": {
           "anyOf": [
             {
@@ -1425,6 +1491,19 @@
             "description": "Conversion time window",
             "title": "Conversion Window"
           },
+          "dax": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "DAX expression source text",
+            "title": "Dax"
+          },
           "denominator": {
             "anyOf": [
               {
@@ -1495,6 +1574,23 @@
             "default": null,
             "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
             "title": "Entity Dimensions"
+          },
+          "expression_language": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sql",
+                  "dax"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expression language for sql/expr/dax authoring",
+            "title": "Expression Language"
           },
           "extends": {
             "anyOf": [
@@ -1874,6 +1970,19 @@
           "Dimension": {
             "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
             "properties": {
+              "dax": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "DAX expression source text",
+                "title": "Dax"
+              },
               "description": {
                 "anyOf": [
                   {
@@ -1886,6 +1995,23 @@
                 "default": null,
                 "description": "Human-readable description",
                 "title": "Description"
+              },
+              "expression_language": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "sql",
+                      "dax"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Expression language for sql/expr/dax authoring",
+                "title": "Expression Language"
               },
               "format": {
                 "anyOf": [
@@ -2242,6 +2368,19 @@
                 "description": "Conversion time window",
                 "title": "Conversion Window"
               },
+              "dax": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "DAX expression source text",
+                "title": "Dax"
+              },
               "denominator": {
                 "anyOf": [
                   {
@@ -2312,6 +2451,23 @@
                 "default": null,
                 "description": "Dimensions to carry through from inner to outer aggregation in cohort metrics",
                 "title": "Entity Dimensions"
+              },
+              "expression_language": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "sql",
+                      "dax"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Expression language for sql/expr/dax authoring",
+                "title": "Expression Language"
               },
               "extends": {
                 "anyOf": [
@@ -2910,6 +3066,12 @@
           "Relationship": {
             "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
             "properties": {
+              "active": {
+                "default": true,
+                "description": "Whether the relationship is active by default",
+                "title": "Active",
+                "type": "boolean"
+              },
               "foreign_key": {
                 "anyOf": [
                   {
@@ -3074,6 +3236,19 @@
             "title": "Auto Dimensions",
             "type": "boolean"
           },
+          "dax": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "DAX table expression source text",
+            "title": "Dax"
+          },
           "default_grain": {
             "anyOf": [
               {
@@ -3130,6 +3305,23 @@
             },
             "title": "Dimensions",
             "type": "array"
+          },
+          "expression_language": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sql",
+                  "dax"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expression language for sql/dax derived table authoring",
+            "title": "Expression Language"
           },
           "extends": {
             "anyOf": [

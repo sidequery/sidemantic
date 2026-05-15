@@ -50,6 +50,10 @@ class Metric(BaseModel):
         | None
     ) = Field(None, description="Aggregation function (for simple measures)")
     sql: str | None = Field(None, description="SQL expression or formula (accepts 'expr' as alias)")
+    dax: str | None = Field(None, description="DAX expression source text")
+    expression_language: Literal["sql", "dax"] | None = Field(
+        None, description="Expression language for sql/expr/dax authoring"
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -83,10 +87,11 @@ class Metric(BaseModel):
             # Step 2: Parse aggregation from SQL if needed
             agg_val = data.get("agg")
             type_val = data.get("type")
+            language_val = data.get("expression_language")
 
             # Parse if sql is provided and agg is not set
             # Allow parsing for simple metrics (no type) OR cumulative metrics (to support AVG/COUNT windows)
-            if sql_val and not agg_val and (not type_val or type_val == "cumulative"):
+            if sql_val and language_val != "dax" and not agg_val and (not type_val or type_val == "cumulative"):
                 try:
                     import sqlglot
                     from sqlglot import expressions as exp
@@ -193,7 +198,7 @@ class Metric(BaseModel):
                 raise ValueError("ratio metric requires 'numerator' field")
             if not self.denominator:
                 raise ValueError("ratio metric requires 'denominator' field")
-        if self.type == "derived" and not self.sql:
+        if self.type == "derived" and not self.sql and not self.has_untranslated_dax:
             raise ValueError("derived metric requires 'sql' field")
         if self.type == "cumulative" and not self.sql and not self.window_expression:
             raise ValueError("cumulative metric requires 'sql' or 'window_expression' field")
@@ -340,6 +345,11 @@ class Metric(BaseModel):
         if self.agg == "count" and not self.sql:
             return "*"
         return self.sql or self.name
+
+    @property
+    def has_untranslated_dax(self) -> bool:
+        """Whether this metric preserves DAX source without a SQL translation."""
+        return self.expression_language == "dax" and bool(self.dax) and not self.sql and not self.agg
 
     @property
     def is_simple_aggregation(self) -> bool:

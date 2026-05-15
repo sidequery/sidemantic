@@ -21,6 +21,10 @@ class Model(BaseModel):
     name: str = Field(..., description="Unique model name")
     table: str | None = Field(None, description="Physical table name (schema.table)")
     sql: str | None = Field(None, description="SQL expression for derived tables")
+    dax: str | None = Field(None, description="DAX table expression source text")
+    expression_language: Literal["sql", "dax"] | None = Field(
+        None, description="Expression language for sql/dax derived table authoring"
+    )
     source_uri: str | None = Field(None, description="Remote data source URI (e.g., https://, s3://, gs://)")
     description: str | None = Field(None, description="Human-readable description")
     extends: str | None = Field(None, description="Parent model to inherit from")
@@ -76,6 +80,11 @@ class Model(BaseModel):
         if isinstance(self.primary_key, str):
             return [self.primary_key]
         return self.primary_key
+
+    @property
+    def has_untranslated_dax(self) -> bool:
+        """Whether this model preserves DAX source without a SQL/table translation."""
+        return bool(self.dax) and not self.sql and not self.table
 
     def get_dimension(self, name: str) -> Dimension | None:
         """Get dimension by name."""

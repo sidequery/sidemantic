@@ -198,8 +198,11 @@ impl<'a> QueryRewriter<'a> {
                         this: rewritten_inner,
                         alias: alias.alias.clone(),
                         column_aliases: alias.column_aliases.clone(),
+                        alias_explicit_as: alias.alias_explicit_as,
+                        alias_keyword: alias.alias_keyword.clone(),
                         pre_alias_comments: alias.pre_alias_comments.clone(),
                         trailing_comments: alias.trailing_comments.clone(),
+                        inferred_type: alias.inferred_type.clone(),
                     })));
                 }
                 Expression::Star(_) => result.push(item.clone()),
@@ -275,6 +278,7 @@ impl<'a> QueryRewriter<'a> {
                         filter: None,
                         ignore_nulls: None,
                         original_name: None,
+                        inferred_type: None,
                     }));
                 }
 
@@ -289,6 +293,7 @@ impl<'a> QueryRewriter<'a> {
                     ignore_nulls: None,
                     having_max: None,
                     limit: None,
+                    inferred_type: None,
                 };
 
                 match agg {
@@ -300,6 +305,7 @@ impl<'a> QueryRewriter<'a> {
                         filter: None,
                         ignore_nulls: None,
                         original_name: None,
+                        inferred_type: None,
                     })),
                     crate::core::Aggregation::CountDistinct => {
                         Expression::Count(Box::new(CountFunc {
@@ -309,6 +315,7 @@ impl<'a> QueryRewriter<'a> {
                             filter: None,
                             ignore_nulls: None,
                             original_name: None,
+                            inferred_type: None,
                         }))
                     }
                     crate::core::Aggregation::Avg => Expression::Avg(Box::new(make_agg(col_expr))),
@@ -423,7 +430,7 @@ impl<'a> QueryRewriter<'a> {
                                     );
 
                                     new_joins.push(Join {
-                                        this: Expression::Table(join_table),
+                                        this: Expression::Table(Box::new(join_table)),
                                         on: Some(join_condition),
                                         using: vec![],
                                         kind: JoinKind::Left,
@@ -445,7 +452,7 @@ impl<'a> QueryRewriter<'a> {
                     let mut new_table = make_table_ref(model.table_name());
                     new_table.alias = table_ref.alias.clone();
                     new_table.alias_explicit_as = table_ref.alias_explicit_as;
-                    new_from_exprs.push(Expression::Table(new_table));
+                    new_from_exprs.push(Expression::Table(Box::new(new_table)));
                 } else {
                     new_from_exprs.push(expr.clone());
                 }
@@ -487,6 +494,7 @@ impl<'a> QueryRewriter<'a> {
             left_comments: vec![],
             operator_comments: vec![],
             trailing_comments: vec![],
+            inferred_type: None,
         }))
     }
 
@@ -576,7 +584,9 @@ impl<'a> QueryRewriter<'a> {
             };
             if !self.is_aggregation(expr) {
                 // Use positional reference
-                group_by_exprs.push(Expression::Literal(Literal::Number((i + 1).to_string())));
+                group_by_exprs.push(Expression::Literal(Box::new(Literal::Number(
+                    (i + 1).to_string(),
+                ))));
             }
         }
 

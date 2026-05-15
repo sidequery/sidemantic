@@ -1,0 +1,11 @@
+relationship Sales_Products
+	fromColumn: Sales.ProductID
+	toColumn: Products.ProductID
+
+relationship Sales_Customers
+	fromColumn: Sales.CustomerID
+	toColumn: Customers.CustomerID
+
+relationship Sales_DateTable
+	fromColumn: Sales.OrderDate
+	toColumn: DateTable.Date

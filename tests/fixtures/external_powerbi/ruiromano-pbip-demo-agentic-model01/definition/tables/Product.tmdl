@@ -1,0 +1,120 @@
+table Product
+
+	measure '# Products' = COUNTROWS('Product')
+		formatString: #,##0
+
+	column Product
+		dataType: string
+		isDefaultLabel
+		summarizeBy: none
+		sourceColumn: Product
+
+	column ProductKey
+		dataType: int64
+		isHidden
+		isKey
+		formatString: 0
+		isAvailableInMdx: false
+		summarizeBy: none
+		sourceColumn: ProductKey
+
+	column 'Product Code'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Product Code
+
+	column Manufacturer
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Manufacturer
+
+	column Brand
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Brand
+
+	column Color
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Color
+
+	column 'Weight Unit Measure'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Weight Unit Measure
+
+	column Weight
+		dataType: decimal
+		summarizeBy: none
+		sourceColumn: Weight
+
+	column 'Unit Cost'
+		dataType: decimal
+		summarizeBy: none
+		sourceColumn: Unit Cost
+
+	column 'Unit Price'
+		dataType: decimal
+		summarizeBy: none
+		sourceColumn: Unit Price
+
+	column 'Subcategory Code'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Subcategory Code
+
+	column Subcategory
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Subcategory
+
+	column 'Category Code'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Category Code
+
+	column Category
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Category
+
+	partition Product-171f48b3-e0ea-4ea3-b9a0-c8c673eb0648 = m
+		mode: import
+		source =
+				let
+					Source = Csv.Document(
+						Web.Contents(HttpSource, [RelativePath = "RAW-Product.csv"]),
+						[
+							Delimiter = ",",
+							Columns = 14,
+							Encoding = 65001,
+							QuoteStyle = QuoteStyle.None
+						]
+					),
+					#"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+					#"Changed Column Types" = Table.TransformColumnTypes(
+						#"Promoted Headers",
+						{
+							{"ProductKey", Int64.Type},
+							{"Product Code", type text},
+							{"Product Name", type text},
+							{"Manufacturer", type text},
+							{"Brand", type text},
+							{"Color", type text},
+							{"Weight Unit Measure", type text},
+							{"Weight", Currency.Type},
+							{"Unit Cost", Currency.Type},
+							{"Unit Price", Currency.Type},
+							{"Subcategory Code", type text},
+							{"Subcategory", type text},
+							{"Category Code", type text},
+							{"Category", type text}
+						}
+					),
+					#"Renamed Columns" = Table.RenameColumns(#"Changed Column Types", {{"Product Name", "Product"}})
+				in
+					#"Renamed Columns"
+
+	annotation PBI_ResultType = Table
+
+	annotation PBI_NavigationStepName = Navigation

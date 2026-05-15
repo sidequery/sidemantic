@@ -74,9 +74,23 @@ class SemanticLayer:
                     for stmt in init_sql:
                         self.adapter.execute(stmt)
             elif connection.startswith("duckdb://"):
-                from sidemantic.db.duckdb import DuckDBAdapter
+                try:
+                    from sidemantic.db.duckdb import DuckDBAdapter
+                except ModuleNotFoundError as exc:
+                    if exc.name != "duckdb":
+                        raise
+                    from sidemantic.db.unavailable import UnavailableDatabaseAdapter
 
-                self.adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
+                    self.adapter = UnavailableDatabaseAdapter(
+                        dialect="duckdb",
+                        package="duckdb",
+                        install_hint="Install with `pip install duckdb` or use a database adapter available in this environment.",
+                    )
+                    if init_sql:
+                        for stmt in init_sql:
+                            self.adapter.execute(stmt)
+                else:
+                    self.adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
                 self.dialect = dialect or "duckdb"
             elif connection.startswith(("postgres://", "postgresql://")):
                 from sidemantic.db.postgres import PostgreSQLAdapter
@@ -480,6 +494,16 @@ class SemanticLayer:
 
         return self.adapter.execute(sql)
 
+    def get_import_warnings(self) -> list[dict[str, object]]:
+        """Return structured warnings produced while importing model definitions."""
+        return list(getattr(self.graph, "import_warnings", []) or [])
+
+    def describe_models(self, model_names: list[str] | None = None) -> dict[str, object]:
+        """Return UI/FFI-friendly model metadata, including source and DAX/TMDL state."""
+        from sidemantic.core.introspection import describe_graph
+
+        return describe_graph(self.graph, model_names=model_names)
+
     def compile(
         self,
         metrics: list[str] | None = None,
@@ -816,10 +840,10 @@ class SemanticLayer:
         path: str | Path,
         connection: str | BaseDatabaseAdapter | None = None,  # type: ignore # noqa: F821
     ) -> SemanticLayer:
-        """Load semantic layer from native YAML file.
+        """Load semantic layer from a native YAML or standalone TMDL file.
 
         Args:
-            path: Path to YAML file
+            path: Path to YAML, SQL, or standalone TMDL file
             connection: Database connection string, adapter instance, or None
                 (overrides connection in YAML file). Pass an adapter instance
                 when your model files don't include connection config, e.g.:
@@ -828,24 +852,30 @@ class SemanticLayer:
         Returns:
             SemanticLayer instance
         """
-        import yaml
-
-        from sidemantic.adapters.sidemantic import SidemanticAdapter, substitute_env_vars
-
-        adapter = SidemanticAdapter()
-        graph = adapter.parse(path)
-
-        # If connection not provided as parameter, try to read from YAML file
-        # (skip for .sql files which may have multi-document YAML frontmatter)
         path_obj = Path(path)
-        if connection is None and path_obj.suffix in (".yml", ".yaml"):
-            with open(path) as f:
-                content = f.read()
-            # Substitute environment variables
-            content = substitute_env_vars(content)
-            data = yaml.safe_load(content)
-            if data and "connection" in data:
-                connection = data["connection"]
+        if path_obj.suffix.lower() == ".tmdl":
+            from sidemantic.adapters.tmdl import TMDLAdapter
+
+            graph = TMDLAdapter().parse(path)
+        else:
+            import yaml
+
+            from sidemantic.adapters.sidemantic import SidemanticAdapter, substitute_env_vars
+
+            adapter = SidemanticAdapter()
+            graph = adapter.parse(path)
+            cls._mark_loaded_file_source(graph, source_format="Sidemantic", source_file=path_obj.name)
+
+            # If connection not provided as parameter, try to read from YAML file
+            # (skip for .sql files which may have multi-document YAML frontmatter)
+            if connection is None and path_obj.suffix in (".yml", ".yaml"):
+                with open(path) as f:
+                    content = f.read()
+                # Substitute environment variables
+                content = substitute_env_vars(content)
+                data = yaml.safe_load(content)
+                if data and "connection" in data:
+                    connection = data["connection"]
 
         # Convert dict-style connection config to URL string
         if isinstance(connection, dict):
@@ -859,6 +889,19 @@ class SemanticLayer:
         layer.graph = graph
 
         return layer
+
+    @staticmethod
+    def _mark_loaded_file_source(graph, *, source_format: str, source_file: str) -> None:
+        for model in graph.models.values():
+            if not hasattr(model, "_source_format"):
+                model._source_format = source_format
+            if not hasattr(model, "_source_file"):
+                model._source_file = source_file
+        for metric in graph.metrics.values():
+            if not hasattr(metric, "_source_format"):
+                metric._source_format = source_format
+            if not hasattr(metric, "_source_file"):
+                metric._source_file = source_file
 
     @staticmethod
     def _connection_dict_to_url(config: dict) -> str:

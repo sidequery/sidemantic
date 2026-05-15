@@ -3310,6 +3310,9 @@ databricks = [
     { name = "databricks-sql-connector" },
     { name = "pyarrow" },
 ]
+dax = [
+    { name = "sidemantic-dax" },
+]
 dev = [
     { name = "antlr4-python3-runtime" },
     { name = "fakesnow" },
@@ -3337,6 +3340,7 @@ full = [
     { name = "plotext" },
     { name = "pyarrow" },
     { name = "pygls" },
+    { name = "sidemantic-dax" },
     { name = "textual", extra = ["syntax"] },
     { name = "textual-plotext" },
     { name = "uvicorn" },
@@ -3457,7 +3461,8 @@ requires-dist = [
     { name = "riffq", marker = "extra == 'serve'", specifier = ">=0.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "sidemantic", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
-    { name = "sidemantic", extras = ["workbench", "mcp", "apps", "charts", "lsp", "lookml", "malloy", "metricflow", "widget", "api"], marker = "extra == 'full'" },
+    { name = "sidemantic", extras = ["workbench", "mcp", "apps", "charts", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "api"], marker = "extra == 'full'" },
+    { name = "sidemantic-dax", marker = "extra == 'dax'", directory = "crates/dax-pyo3" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0.0" },
     { name = "sqlglot", specifier = "==27.12.0" },
     { name = "textual", extras = ["syntax"], marker = "extra == 'workbench'", specifier = ">=1.0.0" },
@@ -3469,7 +3474,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.34.0" },
     { name = "vl-convert-python", marker = "extra == 'charts'", specifier = ">=1.0.0" },
 ]
-provides-extras = ["dev", "workbench", "mcp", "apps", "charts", "serve", "api", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "lookml", "malloy", "metricflow", "widget", "all-databases", "full"]
+provides-extras = ["dev", "workbench", "mcp", "apps", "charts", "serve", "api", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "all-databases", "full"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3491,6 +3496,11 @@ dev = [
     { name = "ruff", specifier = ">=0.14.0" },
     { name = "uvicorn", specifier = ">=0.34.0" },
 ]
+
+[[package]]
+name = "sidemantic-dax"
+version = "0.1.0"
+source = { directory = "crates/dax-pyo3" }
 
 [[package]]
 name = "six"

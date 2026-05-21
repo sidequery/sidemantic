@@ -123,10 +123,14 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
 
     leaderboard_dimension = (leaderboard.get("dimensions") or [""])[0]
     dimension_type = _dimension_type(spec, model_name, leaderboard_dimension)
-    checks["leaderboard_non_id"] = _is_non_id_dimension(spec, model_name, leaderboard_dimension)
+    explicit_leaderboard_dimension = bool(candidate.get("explicit_leaderboard_dimension"))
+    checks["leaderboard_non_id"] = explicit_leaderboard_dimension or _is_non_id_dimension(
+        spec, model_name, leaderboard_dimension
+    )
     checks["leaderboard_categorical_or_boolean"] = dimension_type in ("categorical", "boolean")
     report["leaderboard_dimension"] = leaderboard_dimension
     report["leaderboard_dimension_type"] = dimension_type
+    report["explicit_leaderboard_dimension"] = explicit_leaderboard_dimension
 
     source = "\n".join(
         path.read_text(encoding="utf-8") for path in (index_path, app_js_path, component_js_path, styles_path)

@@ -88,6 +88,7 @@ def test_leaderboard_dimension_honors_explicit_identifier_like_dimension() -> No
     )
 
     assert candidate["default_leaderboard_dimension"] == "events.user_id"
+    assert candidate["explicit_leaderboard_dimension"] is True
     assert candidate["recommended_dimensions"][0] == "events.user_id"
     assert candidate["available_leaderboard_dimensions"][0]["identifier_like"] is True
     assert candidate["queries"]["dimension_leaderboard"]["dimensions"] == ["events.user_id"]
@@ -186,6 +187,8 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
     assert 'data-testid="data-preview"' in index_html
     assert "interactive: true" in app_js
     assert "onSelect: setFilter" in app_js
+    assert "metricTotalsForFilters" in app_js
+    assert "renderMetricCards(totalsEl, filteredTotals" in app_js
     assert "renderFilterPills(filterPillsEl, state.filters, removeFilter)" in app_js
     assert "connection" not in public_spec
     assert "connection" not in public_spec["app_candidates"][1]
@@ -252,6 +255,58 @@ def test_inspector_leaderboard_query_includes_all_selected_metrics() -> None:
     )
 
     assert candidate["queries"]["dimension_leaderboard"]["metrics"] == ["events.count", "events.revenue"]
+
+
+def test_static_verifier_allows_explicit_identifier_leaderboard_dimension(tmp_path: Path) -> None:
+    scaffold_module = _load_script_module(
+        "scaffold_static_app.py", "sidemantic_webapp_builder_scaffold_static_app_explicit_id"
+    )
+    verify_module = _load_script_module(
+        "verify_static_app.py", "sidemantic_webapp_builder_verify_static_app_explicit_id"
+    )
+    spec_path = tmp_path / "app-spec.json"
+    output_dir = tmp_path / "dashboard"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "name": "events",
+                        "primary_key": "id",
+                        "dimensions": [{"name": "user_id", "type": "categorical"}],
+                    }
+                ],
+                "app_candidates": [
+                    {
+                        "model": "events",
+                        "explicit_leaderboard_dimension": True,
+                        "queries": {
+                            "metric_totals": _metric_totals_query("events"),
+                            "dimension_leaderboard": {
+                                **_leaderboard_query("events"),
+                                "dimensions": ["events.user_id"],
+                                "output_aliases": {"events.user_id": "category", "events.count": "count"},
+                            },
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    scaffold_module.scaffold(
+        SimpleNamespace(
+            app_spec=spec_path,
+            model="events",
+            output=output_dir,
+            title=None,
+        )
+    )
+
+    report = verify_module.verify(SimpleNamespace(app_dir=output_dir, app_spec=None))
+    assert report["explicit_leaderboard_dimension"] is True
+    assert report["checks"]["leaderboard_non_id"] is True
 
 
 def test_column_chart_components_support_negative_values() -> None:

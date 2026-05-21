@@ -77,6 +77,34 @@ function filterPreviewResult(query) {
   };
 }
 
+function metricTotalsForFilters(totalsQuery, leaderboardQuery) {
+  const dimensionRef = leaderboardQuery?.dimensions?.[0];
+  const filterValues = state.filters[dimensionRef] || [];
+  const leaderboardRows = leaderboardQuery?.result?.sample_rows || [];
+  if (filterValues.length === 0 || leaderboardRows.length === 0) return totalsQuery;
+
+  const dimensionKey = aliasFor(leaderboardQuery, dimensionRef);
+  const accepted = new Set(filterValues.map((value) => String(value)));
+  const filteredRows = leaderboardRows.filter((row) => accepted.has(String(row[dimensionKey] ?? "")));
+  if (filteredRows.length === 0) return totalsQuery;
+
+  const metricRow = {};
+  for (const metric of totalsQuery?.metrics || []) {
+    const totalsKey = aliasFor(totalsQuery, metric);
+    const leaderboardKey = aliasFor(leaderboardQuery, metric);
+    metricRow[totalsKey] = filteredRows.reduce((sum, row) => sum + numericValue(row[leaderboardKey]), 0);
+  }
+
+  return {
+    ...totalsQuery,
+    result: {
+      ...totalsQuery.result,
+      sample_rows: [metricRow],
+      sample_row_count: 1,
+    },
+  };
+}
+
 function setFilter({ dimension, value }) {
   if (!dimension) return;
   state.filters = { ...state.filters, [dimension]: [String(value ?? "")] };
@@ -106,9 +134,10 @@ function render() {
   const queries = state.queries;
   const leaderboardMetric = selectedLeaderboardMetric(queries.dimension_leaderboard);
   const leaderboardQuery = leaderboardQueryForMetric(queries.dimension_leaderboard, leaderboardMetric);
+  const filteredTotals = metricTotalsForFilters(queries.metric_totals, queries.dimension_leaderboard);
   const previewQuery = queries.preview_rows || queries.dimension_leaderboard;
 
-  renderMetricCards(totalsEl, queries.metric_totals, {
+  renderMetricCards(totalsEl, filteredTotals, {
     selectedMetric: state.selectedMetric,
     onSelect: ({ metric }) => {
       state.selectedMetric = metric;

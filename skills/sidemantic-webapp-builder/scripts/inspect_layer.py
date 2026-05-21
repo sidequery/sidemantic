@@ -216,6 +216,7 @@ def _candidate_for_model(
     candidate_leaderboard_dimensions = _sort_leaderboard_dimensions(
         preferred_leaderboard_dimensions or all_leaderboard_dimensions
     )
+    explicit_leaderboard_dimension = False
     if leaderboard_dimension:
         requested = [
             dim
@@ -223,6 +224,7 @@ def _candidate_for_model(
             if _matches_dimension(leaderboard_dimension, model_name=model_name, dim=dim)
         ]
         if requested:
+            explicit_leaderboard_dimension = True
             candidate_leaderboard_dimensions = [
                 *requested,
                 *[dim for dim in candidate_leaderboard_dimensions if dim not in requested],
@@ -297,6 +299,7 @@ def _candidate_for_model(
         "default_leaderboard_dimension": _ref(model_name, leaderboard_dimensions[0].name)
         if leaderboard_dimensions
         else None,
+        "explicit_leaderboard_dimension": explicit_leaderboard_dimension,
         "time_dimension": _ref(model_name, time_dim.name) if time_dim is not None else None,
         "time_grain": grain,
         "queries": queries,

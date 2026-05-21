@@ -203,6 +203,7 @@ def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
     assert "'[data-testid=\"metric-totals\"] [data-metric]'" in source
     assert "assertRequiredInteraction" in source
     assert "single metric card" in source
+    assert "firstUnselectedIndex" in source
     assert source.index("const leaderboard = await clickLeaderboardRow") < source.index(
         "const filter = await clickFirstFilterRemove"
     )
@@ -215,6 +216,10 @@ def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
         )
     ]
     assert '"selectedRowCount"' not in leaderboard_assertion
+    assert "rows.nth(rowIndex).click" in leaderboard_block
+
+    metric_block = source[source.index("async function clickMetricCard") : source.index("async function clickReset")]
+    assert "metrics.nth(metricIndex).click" in metric_block
 
 
 def test_column_chart_components_support_negative_values() -> None:

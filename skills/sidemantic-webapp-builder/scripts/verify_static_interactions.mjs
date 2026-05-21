@@ -70,6 +70,10 @@ async function expectChange(name, before, after, fields) {
   }
 }
 
+async function firstUnselectedIndex(locator) {
+  return locator.evaluateAll((nodes) => nodes.findIndex((node) => node.getAttribute("data-selected") !== "true"));
+}
+
 function assertRequiredInteraction(name, result) {
   if (result.skipped) {
     throw new Error(`${name} interaction was skipped: ${result.reason}`);
@@ -143,8 +147,10 @@ async function clickFirstFilterRemove(page, timeout) {
 async function clickLeaderboardRow(page, timeout) {
   const rows = page.locator('[data-testid="leaderboard-rows"] button[data-dimension]');
   if ((await rows.count()) === 0) return { skipped: true, reason: "no interactive leaderboard rows" };
+  const rowIndex = await firstUnselectedIndex(rows);
+  if (rowIndex < 0) return { skipped: true, reason: "no unselected leaderboard rows" };
   const before = await snapshot(page);
-  await rows.first().click({ timeout });
+  await rows.nth(rowIndex).click({ timeout });
   const after = await snapshot(page);
   if (after.selectedRowCount < 1) {
     throw new Error("Clicking a leaderboard row did not mark any row selected.");
@@ -160,8 +166,10 @@ async function clickMetricCard(page, timeout) {
     return { skipped: true, optional: true, reason: "single metric card" };
   }
   if ((await metrics.count()) < 2) return { skipped: true, reason: "fewer than two interactive metric cards" };
+  const metricIndex = await firstUnselectedIndex(metrics);
+  if (metricIndex < 0) return { skipped: true, reason: "no unselected interactive metric cards" };
   const before = await snapshot(page);
-  await metrics.nth(1).click({ timeout });
+  await metrics.nth(metricIndex).click({ timeout });
   const after = await snapshot(page);
   if (after.selectedMetricCount < 1) {
     throw new Error("Clicking a metric card did not mark any metric selected.");

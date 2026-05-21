@@ -58,46 +58,77 @@ def test_execute_sample_uses_adapter_fetchone_without_fetchmany() -> None:
     }
 
 
-def _executed_query(model: str):
+def _metric_totals_query(model: str):
+    return {
+        "metrics": [f"{model}.count"],
+        "dimensions": [],
+        "sql": f"select count(*) as count from {model}",
+        "result": {
+            "columns": ["count"],
+            "sample_rows": [{"count": 1}],
+            "sample_row_count": 1,
+        },
+    }
+
+
+def _leaderboard_query(model: str):
     return {
         "metrics": [f"{model}.count"],
         "dimensions": [f"{model}.category"],
+        "sql": f"select category, count(*) as count from {model} group by category",
         "result": {
             "columns": ["category", "count"],
             "sample_rows": [{"category": "A", "count": 1}],
+            "sample_row_count": 1,
         },
     }
 
 
 def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> None:
-    module = _load_script_module("scaffold_static_app.py", "sidemantic_webapp_builder_scaffold_static_app")
+    scaffold_module = _load_script_module("scaffold_static_app.py", "sidemantic_webapp_builder_scaffold_static_app")
+    verify_module = _load_script_module("verify_static_app.py", "sidemantic_webapp_builder_verify_static_app")
     spec_path = tmp_path / "app-spec.json"
     output_dir = tmp_path / "dashboard"
     spec_path.write_text(
         json.dumps(
             {
+                "models": [
+                    {
+                        "name": "first_model",
+                        "primary_key": "id",
+                        "dimensions": [{"name": "category", "type": "categorical"}],
+                    },
+                    {
+                        "name": "requested_model",
+                        "primary_key": "id",
+                        "dimensions": [{"name": "category", "type": "categorical"}],
+                    },
+                ],
                 "app_candidates": [
                     {
                         "model": "first_model",
                         "queries": {
-                            "metric_totals": _executed_query("first_model"),
-                            "dimension_leaderboard": _executed_query("first_model"),
+                            "metric_totals": {"metrics": ["first_model.count"], "dimensions": []},
+                            "dimension_leaderboard": {
+                                "metrics": ["first_model.count"],
+                                "dimensions": ["first_model.category"],
+                            },
                         },
                     },
                     {
                         "model": "requested_model",
                         "queries": {
-                            "metric_totals": _executed_query("requested_model"),
-                            "dimension_leaderboard": _executed_query("requested_model"),
+                            "metric_totals": _metric_totals_query("requested_model"),
+                            "dimension_leaderboard": _leaderboard_query("requested_model"),
                         },
                     },
-                ]
+                ],
             }
         ),
         encoding="utf-8",
     )
 
-    module.scaffold(
+    scaffold_module.scaffold(
         SimpleNamespace(
             app_spec=spec_path,
             model="requested_model",
@@ -111,3 +142,7 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
 
     assert 'data-model="requested_model"' in index_html
     assert "candidates.find((item) => item.model === selectedModel)" in app_js
+
+    report = verify_module.verify(SimpleNamespace(app_dir=output_dir, app_spec=None))
+    assert report["selected_model"] == "requested_model"
+    assert all(report["checks"].values())

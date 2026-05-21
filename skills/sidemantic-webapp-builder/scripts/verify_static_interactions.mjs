@@ -51,6 +51,9 @@ async function snapshot(page) {
     previewText: await safeText(page.locator('[data-testid="data-preview"]')),
     filterCount: await page.locator('[data-testid="filter-pills"] [data-dimension]').count(),
     selectedMetricCount: await page.locator('[data-testid="metric-totals"] [data-selected="true"]').count(),
+    selectedMetricIdentity: await page
+      .locator('[data-testid="metric-totals"] [data-selected="true"]')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-metric") || "").join("|")),
     selectedRowCount: await page.locator('[data-testid="leaderboard-rows"] [data-selected="true"]').count(),
     columnChartCount: await page.locator("svg.sdm-column-chart").count(),
     sparklineCount: await page.locator("svg.sdm-sparkline").count(),
@@ -142,7 +145,7 @@ async function clickMetricCard(page, timeout) {
   if (after.selectedMetricCount < 1) {
     throw new Error("Clicking a metric card did not mark any metric selected.");
   }
-  await expectChange("Clicking a metric card", before, after, ["leaderboardText", "selectedMetricCount"]);
+  await expectChange("Clicking a metric card", before, after, ["leaderboardText", "selectedMetricIdentity"]);
   return { skipped: false, before, after };
 }
 
@@ -152,7 +155,12 @@ async function clickReset(page, timeout) {
   const before = await snapshot(page);
   await reset.first().click({ timeout });
   const after = await snapshot(page);
-  await expectChange("Clicking reset", before, after, ["metricText", "previewText", "filterCount", "selectedMetricCount"]);
+  await expectChange("Clicking reset", before, after, [
+    "metricText",
+    "previewText",
+    "filterCount",
+    "selectedMetricIdentity",
+  ]);
   return { skipped: false, before, after };
 }
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +15,29 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _first_candidate(spec: dict[str, Any]) -> dict[str, Any] | None:
+class _DashboardShellParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.selected_model: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "main":
+            return
+        attr_map = dict(attrs)
+        if attr_map.get("data-testid") == "dashboard-shell":
+            self.selected_model = attr_map.get("data-model")
+
+
+def _selected_model(index_path: Path) -> str | None:
+    parser = _DashboardShellParser()
+    parser.feed(index_path.read_text(encoding="utf-8"))
+    return parser.selected_model
+
+
+def _candidate_for_model(spec: dict[str, Any], selected_model: str | None) -> dict[str, Any] | None:
     candidates = spec.get("app_candidates") or []
+    if selected_model:
+        return next((candidate for candidate in candidates if candidate.get("model") == selected_model), None)
     return candidates[0] if candidates else None
 
 
@@ -70,8 +92,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         return report
 
     spec = _load_json(spec_path)
-    candidate = _first_candidate(spec)
+    selected_model = _selected_model(index_path)
+    report["selected_model"] = selected_model
+    candidate = _candidate_for_model(spec, selected_model)
     checks["has_app_candidate"] = candidate is not None
+    checks["selected_model_candidate"] = selected_model is None or (
+        candidate is not None and candidate.get("model") == selected_model
+    )
     if candidate is None:
         return report
 

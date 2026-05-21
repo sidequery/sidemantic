@@ -70,6 +70,21 @@ async function expectChange(name, before, after, fields) {
   }
 }
 
+async function waitForSnapshotChange(name, page, before, fields, timeout) {
+  let after = await snapshot(page);
+  if (changed(before, after, fields)) return after;
+
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(Math.min(100, Math.max(1, deadline - Date.now())));
+    after = await snapshot(page);
+    if (changed(before, after, fields)) return after;
+  }
+
+  await expectChange(name, before, after, fields);
+  return after;
+}
+
 async function firstUnselectedIndex(locator) {
   return locator.evaluateAll((nodes) => nodes.findIndex((node) => node.getAttribute("data-selected") !== "true"));
 }
@@ -134,13 +149,13 @@ async function clickFirstFilterRemove(page, timeout) {
   if ((await removeButtons.count()) === 0) return { skipped: true, reason: "no removable filter pills" };
   const before = await snapshot(page);
   await removeButtons.first().click({ timeout });
-  const after = await snapshot(page);
-  await expectChange("Removing a filter pill", before, after, [
-    "metricText",
-    "leaderboardText",
-    "previewText",
-    "filterCount",
-  ]);
+  const after = await waitForSnapshotChange(
+    "Removing a filter pill",
+    page,
+    before,
+    ["metricText", "leaderboardText", "previewText", "filterCount"],
+    timeout,
+  );
   return { skipped: false, before, after };
 }
 
@@ -151,11 +166,16 @@ async function clickLeaderboardRow(page, timeout) {
   if (rowIndex < 0) return { skipped: true, reason: "no unselected leaderboard rows" };
   const before = await snapshot(page);
   await rows.nth(rowIndex).click({ timeout });
-  const after = await snapshot(page);
+  const after = await waitForSnapshotChange(
+    "Clicking a leaderboard row",
+    page,
+    before,
+    ["metricText", "previewText", "filterCount"],
+    timeout,
+  );
   if (after.selectedRowCount < 1) {
     throw new Error("Clicking a leaderboard row did not mark any row selected.");
   }
-  await expectChange("Clicking a leaderboard row", before, after, ["metricText", "previewText", "filterCount"]);
   return { skipped: false, before, after };
 }
 
@@ -170,11 +190,16 @@ async function clickMetricCard(page, timeout) {
   if (metricIndex < 0) return { skipped: true, reason: "no unselected interactive metric cards" };
   const before = await snapshot(page);
   await metrics.nth(metricIndex).click({ timeout });
-  const after = await snapshot(page);
+  const after = await waitForSnapshotChange(
+    "Clicking a metric card",
+    page,
+    before,
+    ["leaderboardText", "selectedMetricIdentity"],
+    timeout,
+  );
   if (after.selectedMetricCount < 1) {
     throw new Error("Clicking a metric card did not mark any metric selected.");
   }
-  await expectChange("Clicking a metric card", before, after, ["leaderboardText", "selectedMetricIdentity"]);
   return { skipped: false, before, after };
 }
 
@@ -183,13 +208,13 @@ async function clickReset(page, timeout) {
   if ((await reset.count()) === 0) return { skipped: true, reason: "no reset control" };
   const before = await snapshot(page);
   await reset.first().click({ timeout });
-  const after = await snapshot(page);
-  await expectChange("Clicking reset", before, after, [
-    "metricText",
-    "previewText",
-    "filterCount",
-    "selectedMetricIdentity",
-  ]);
+  const after = await waitForSnapshotChange(
+    "Clicking reset",
+    page,
+    before,
+    ["metricText", "previewText", "filterCount", "selectedMetricIdentity"],
+    timeout,
+  );
   return { skipped: false, before, after };
 }
 

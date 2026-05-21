@@ -70,7 +70,11 @@ export function renderLeaderboard(container, query, options = {}) {
   const dimensionKey = query.output_aliases?.[dimensionRef] || dimensionRef?.split(".").at(-1);
   const metricKey = query.output_aliases?.[metricRef] || metricRef?.split(".").at(-1);
   const rows = result.sample_rows || [];
-  const max = Math.max(...rows.map((row) => Number(row[metricKey]) || 0), 1);
+  const values = rows.map((row) => {
+    const value = Number(row[metricKey]);
+    return Number.isFinite(value) ? value : 0;
+  });
+  const maxMagnitude = Math.max(0, ...values.map((value) => Math.abs(value))) || 1;
 
   if (options.titleEl) options.titleEl.textContent = options.dimensionLabel || labelize(dimensionKey);
   if (options.subtitleEl) {
@@ -78,13 +82,14 @@ export function renderLeaderboard(container, query, options = {}) {
   }
 
   container.replaceChildren();
-  for (const row of rows) {
-    const value = Number(row[metricKey]) || 0;
+  for (const [index, row] of rows.entries()) {
+    const value = values[index] ?? 0;
     const item = document.createElement(options.interactive ? "button" : "div");
     item.className = "sdm-leaderboard-row";
     item.dataset.dimension = dimensionRef;
+    item.dataset.tone = value < 0 ? "negative" : "positive";
     item.dataset.value = row[dimensionKey] ?? "";
-    item.style.setProperty("--bar-width", `${Math.round((value / max) * 100)}%`);
+    item.style.setProperty("--bar-width", `${Math.round((Math.abs(value) / maxMagnitude) * 100)}%`);
     if (options.selectedValue !== undefined && String(options.selectedValue) === String(row[dimensionKey])) {
       item.dataset.selected = "true";
     }

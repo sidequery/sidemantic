@@ -204,6 +204,8 @@ def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
     assert "assertRequiredInteraction" in source
     assert "single metric card" in source
     assert "firstUnselectedIndex" in source
+    assert "waitForSnapshotChange" in source
+    assert "page.waitForTimeout" in source
     assert source.index("const leaderboard = await clickLeaderboardRow") < source.index(
         "const filter = await clickFirstFilterRemove"
     )
@@ -211,9 +213,9 @@ def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
         source.index("async function clickLeaderboardRow") : source.index("async function clickMetricCard")
     ]
     leaderboard_assertion = leaderboard_block[
-        leaderboard_block.index('await expectChange("Clicking a leaderboard row"') : leaderboard_block.index(
-            "return { skipped: false, before, after };"
-        )
+        leaderboard_block.index(
+            'await waitForSnapshotChange(\n    "Clicking a leaderboard row"'
+        ) : leaderboard_block.index("return { skipped: false, before, after };")
     ]
     assert '"selectedRowCount"' not in leaderboard_assertion
     assert "rows.nth(rowIndex).click" in leaderboard_block
@@ -237,3 +239,19 @@ def test_column_chart_components_support_negative_values() -> None:
         )
 
     assert '.sdm-column-chart rect[data-tone="negative"]' in static_css
+
+
+def test_leaderboard_components_support_negative_values() -> None:
+    root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
+    static_source = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+    static_css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
+    react_source = (root / "react-tailwind" / "leaderboard.tsx").read_text(encoding="utf-8")
+
+    for source in (static_source, react_source):
+        assert "maxMagnitude" in source
+        assert "Math.abs(" in source
+
+    assert 'item.dataset.tone = value < 0 ? "negative" : "positive";' in static_source
+    assert '.sdm-leaderboard-row[data-tone="negative"]::before' in static_css
+    assert 'const tone = metricValue < 0 ? "negative" : "positive";' in react_source
+    assert "data-tone={tone}" in react_source

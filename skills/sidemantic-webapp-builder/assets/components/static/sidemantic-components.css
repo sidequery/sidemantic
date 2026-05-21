@@ -169,6 +169,10 @@ button.sdm-leaderboard-row {
   background: rgba(79, 70, 229, 0.1);
 }
 
+.sdm-leaderboard-row[data-tone="negative"]::before {
+  background: rgba(185, 28, 28, 0.1);
+}
+
 .sdm-leaderboard-row span,
 .sdm-leaderboard-row strong {
   position: relative;

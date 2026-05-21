@@ -45,8 +45,17 @@ def _render_template(template_name: str, replacements: dict[str, str]) -> str:
     return content
 
 
-def _write_index(path: Path, title: str) -> None:
-    path.write_text(_render_template("index.html", {"TITLE": html.escape(title)}), encoding="utf-8")
+def _write_index(path: Path, title: str, model_name: str) -> None:
+    path.write_text(
+        _render_template(
+            "index.html",
+            {
+                "MODEL": html.escape(model_name, quote=True),
+                "TITLE": html.escape(title, quote=True),
+            },
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_app(path: Path) -> None:
@@ -65,7 +74,7 @@ def scaffold(args: argparse.Namespace) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     shutil.copyfile(spec_path, data_dir / "app-spec.json")
-    _write_index(output_dir / "index.html", args.title or f"{candidate['model']} Dashboard")
+    _write_index(output_dir / "index.html", args.title or f"{candidate['model']} Dashboard", candidate["model"])
     shutil.copyfile(STATIC_COMPONENT_ROOT / "sidemantic-components.css", output_dir / "styles.css")
     shutil.copyfile(STATIC_COMPONENT_ROOT / "sidemantic-components.js", output_dir / "sidemantic-components.js")
     _write_app(output_dir / "app.js")

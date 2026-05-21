@@ -70,6 +70,12 @@ async function expectChange(name, before, after, fields) {
   }
 }
 
+function assertRequiredInteraction(name, result) {
+  if (result.skipped) {
+    throw new Error(`${name} interaction was skipped: ${result.reason}`);
+  }
+}
+
 async function assertNoPersistentStateGallery(page) {
   const stateTexts = [
     "Loading: metrics are refreshing with stable layout.",
@@ -208,10 +214,14 @@ async function main() {
     const initial = await snapshot(page);
     await assertNoPersistentStateGallery(page);
     await assertChartsBounded(page);
-    const filter = await clickFirstFilterRemove(page, args.timeout);
     const leaderboard = await clickLeaderboardRow(page, args.timeout);
+    assertRequiredInteraction("Leaderboard row", leaderboard);
+    const filter = await clickFirstFilterRemove(page, args.timeout);
+    assertRequiredInteraction("Filter removal", filter);
     const metric = await clickMetricCard(page, args.timeout);
+    assertRequiredInteraction("Metric card", metric);
     const reset = await clickReset(page, args.timeout);
+    assertRequiredInteraction("Reset", reset);
     const final = await snapshot(page);
 
     if (consoleErrors.length > 0) {

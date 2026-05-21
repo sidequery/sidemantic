@@ -201,3 +201,7 @@ def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
 
     assert "waitForRenderedDashboard" in source
     assert "'[data-testid=\"metric-totals\"] [data-metric]'" in source
+    assert "assertRequiredInteraction" in source
+    assert source.index("const leaderboard = await clickLeaderboardRow") < source.index(
+        "const filter = await clickFirstFilterRemove"
+    )

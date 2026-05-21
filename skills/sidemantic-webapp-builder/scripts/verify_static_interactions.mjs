@@ -160,6 +160,10 @@ async function clickLeaderboardRow(page, timeout) {
 
 async function clickMetricCard(page, timeout) {
   const metrics = page.locator('[data-testid="metric-totals"] button[data-metric]');
+  const metricCards = page.locator('[data-testid="metric-totals"] [data-metric]');
+  if ((await metricCards.count()) === 1) {
+    return { skipped: true, optional: true, reason: "single metric card" };
+  }
   if ((await metrics.count()) < 2) return { skipped: true, reason: "fewer than two interactive metric cards" };
   const before = await snapshot(page);
   await metrics.nth(1).click({ timeout });
@@ -216,12 +220,20 @@ async function main() {
     await assertChartsBounded(page);
     const leaderboard = await clickLeaderboardRow(page, args.timeout);
     assertRequiredInteraction("Leaderboard row", leaderboard);
+    const reset = await clickReset(page, args.timeout);
+    assertRequiredInteraction("Reset", reset);
+    const filteredLeaderboard = await clickLeaderboardRow(page, args.timeout);
+    assertRequiredInteraction("Leaderboard row for filter removal", filteredLeaderboard);
     const filter = await clickFirstFilterRemove(page, args.timeout);
     assertRequiredInteraction("Filter removal", filter);
     const metric = await clickMetricCard(page, args.timeout);
-    assertRequiredInteraction("Metric card", metric);
-    const reset = await clickReset(page, args.timeout);
-    assertRequiredInteraction("Reset", reset);
+    if (!metric.optional) {
+      assertRequiredInteraction("Metric card", metric);
+    }
+    const metricReset = metric.skipped ? { skipped: true, reason: metric.reason } : await clickReset(page, args.timeout);
+    if (!metric.skipped) {
+      assertRequiredInteraction("Metric reset", metricReset);
+    }
     const final = await snapshot(page);
 
     if (consoleErrors.length > 0) {
@@ -239,8 +251,10 @@ async function main() {
             noPersistentStateGallery: true,
             filter,
             leaderboard,
+            filteredLeaderboard,
             metric,
             reset,
+            metricReset,
           },
           final,
         },

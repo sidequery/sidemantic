@@ -45,6 +45,15 @@ def _query(candidate: dict[str, Any], name: str) -> dict[str, Any]:
     return (candidate.get("queries") or {}).get(name) or {}
 
 
+def _has_executed_result(query: dict[str, Any]) -> bool:
+    result = query.get("result")
+    if not isinstance(result, dict):
+        return False
+    columns = result.get("columns")
+    sample_rows = result.get("sample_rows")
+    return isinstance(columns, list) and bool(columns) and isinstance(sample_rows, list)
+
+
 def _dimension_type(spec: dict[str, Any], model_name: str, dimension_ref: str) -> str | None:
     if "." not in dimension_ref:
         return None
@@ -106,12 +115,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     totals = _query(candidate, "metric_totals")
     leaderboard = _query(candidate, "dimension_leaderboard")
 
-    checks["totals_executed"] = bool(totals.get("result", {}).get("columns")) and bool(
-        totals.get("result", {}).get("sample_rows")
-    )
-    checks["leaderboard_executed"] = bool(leaderboard.get("result", {}).get("columns")) and bool(
-        leaderboard.get("result", {}).get("sample_rows")
-    )
+    checks["totals_executed"] = _has_executed_result(totals)
+    checks["leaderboard_executed"] = _has_executed_result(leaderboard)
     checks["totals_true_total"] = (
         totals.get("result", {}).get("sample_row_count") == 1 and "group by" not in (totals.get("sql") or "").lower()
     )

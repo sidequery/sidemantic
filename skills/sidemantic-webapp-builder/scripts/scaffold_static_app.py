@@ -13,6 +13,7 @@ from typing import Any
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 STATIC_COMPONENT_ROOT = SKILL_ROOT / "assets" / "components" / "static"
 STATIC_TEMPLATE_ROOT = SKILL_ROOT / "assets" / "templates" / "static-dashboard"
+SENSITIVE_APP_SPEC_KEYS = {"connection"}
 
 
 def _select_candidate(spec: dict[str, Any], model: str | None) -> dict[str, Any]:
@@ -45,6 +46,18 @@ def _render_template(template_name: str, replacements: dict[str, str]) -> str:
     return content
 
 
+def _browser_safe_spec(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _browser_safe_spec(item) for key, item in value.items() if key not in SENSITIVE_APP_SPEC_KEYS}
+    if isinstance(value, list):
+        return [_browser_safe_spec(item) for item in value]
+    return value
+
+
+def _write_app_spec(path: Path, spec: dict[str, Any]) -> None:
+    path.write_text(json.dumps(_browser_safe_spec(spec), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _write_index(path: Path, title: str, model_name: str) -> None:
     path.write_text(
         _render_template(
@@ -73,7 +86,7 @@ def scaffold(args: argparse.Namespace) -> None:
     data_dir = output_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    shutil.copyfile(spec_path, data_dir / "app-spec.json")
+    _write_app_spec(data_dir / "app-spec.json", spec)
     _write_index(output_dir / "index.html", args.title or f"{candidate['model']} Dashboard", candidate["model"])
     shutil.copyfile(STATIC_COMPONENT_ROOT / "sidemantic-components.css", output_dir / "styles.css")
     shutil.copyfile(STATIC_COMPONENT_ROOT / "sidemantic-components.js", output_dir / "sidemantic-components.js")

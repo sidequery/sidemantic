@@ -71,15 +71,16 @@ def _metric_totals_query(model: str):
     }
 
 
-def _leaderboard_query(model: str):
+def _leaderboard_query(model: str, sample_rows: list[dict[str, object]] | None = None):
+    rows = [{"category": "A", "count": 1}] if sample_rows is None else sample_rows
     return {
         "metrics": [f"{model}.count"],
         "dimensions": [f"{model}.category"],
         "sql": f"select category, count(*) as count from {model} group by category",
         "result": {
             "columns": ["category", "count"],
-            "sample_rows": [{"category": "A", "count": 1}],
-            "sample_row_count": 1,
+            "sample_rows": rows,
+            "sample_row_count": len(rows),
         },
     }
 
@@ -92,6 +93,7 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
     spec_path.write_text(
         json.dumps(
             {
+                "connection": "postgresql://user:secret@example.com/warehouse",
                 "models": [
                     {
                         "name": "first_model",
@@ -117,9 +119,10 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
                     },
                     {
                         "model": "requested_model",
+                        "connection": "postgresql://nested:secret@example.com/warehouse",
                         "queries": {
                             "metric_totals": _metric_totals_query("requested_model"),
-                            "dimension_leaderboard": _leaderboard_query("requested_model"),
+                            "dimension_leaderboard": _leaderboard_query("requested_model", sample_rows=[]),
                         },
                     },
                 ],
@@ -139,9 +142,12 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
 
     index_html = (output_dir / "index.html").read_text(encoding="utf-8")
     app_js = (output_dir / "app.js").read_text(encoding="utf-8")
+    public_spec = json.loads((output_dir / "data" / "app-spec.json").read_text(encoding="utf-8"))
 
     assert 'data-model="requested_model"' in index_html
     assert "candidates.find((item) => item.model === selectedModel)" in app_js
+    assert "connection" not in public_spec
+    assert "connection" not in public_spec["app_candidates"][1]
 
     report = verify_module.verify(SimpleNamespace(app_dir=output_dir, app_spec=None))
     assert report["selected_model"] == "requested_model"

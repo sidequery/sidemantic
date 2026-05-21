@@ -82,10 +82,22 @@ def _json_value(value: Any) -> Any:
     return value
 
 
+def _column_name(description: Any) -> str:
+    name = getattr(description, "name", None)
+    if name:
+        return str(name)
+    return str(description[0])
+
+
 def _execute_sample(layer: Any, sql: str, *, sample_rows: int) -> dict[str, Any]:
     result = layer.adapter.execute(sql)
-    columns = [desc[0] for desc in result.description]
-    rows = result.fetchmany(sample_rows)
+    columns = [_column_name(desc) for desc in result.description]
+    rows = []
+    for _ in range(max(sample_rows, 0)):
+        row = layer.adapter.fetchone(result)
+        if row is None:
+            break
+        rows.append(row)
     return {
         "columns": columns,
         "sample_rows": [

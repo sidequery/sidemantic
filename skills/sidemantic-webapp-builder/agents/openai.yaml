@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sidemantic Webapp Builder"
+  short_description: "Build Sidemantic webapps with copyable components"
+  default_prompt: "Use $sidemantic-webapp-builder to copy analytics components into my project and build an interactive webapp from my Sidemantic models."

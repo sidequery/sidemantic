@@ -181,6 +181,12 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
 
     assert 'data-model="requested_model"' in index_html
     assert "candidates.find((item) => item.model === selectedModel)" in app_js
+    assert 'data-testid="filter-pills"' in index_html
+    assert 'data-action="reset"' in index_html
+    assert 'data-testid="data-preview"' in index_html
+    assert "interactive: true" in app_js
+    assert "onSelect: setFilter" in app_js
+    assert "renderFilterPills(filterPillsEl, state.filters, removeFilter)" in app_js
     assert "connection" not in public_spec
     assert "connection" not in public_spec["app_candidates"][1]
 
@@ -222,6 +228,30 @@ def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
 
     metric_block = source[source.index("async function clickMetricCard") : source.index("async function clickReset")]
     assert "metrics.nth(metricIndex).click" in metric_block
+
+
+def test_inspector_leaderboard_query_includes_all_selected_metrics() -> None:
+    module = _load_script_module("inspect_layer.py", "sidemantic_webapp_builder_inspect_layer_metric_set")
+    model = SimpleNamespace(
+        table="events",
+        primary_key="id",
+        metrics=[SimpleNamespace(name="count"), SimpleNamespace(name="revenue")],
+        dimensions=[SimpleNamespace(name="category", type="categorical")],
+    )
+
+    candidate = module._candidate_for_model(
+        _Generator(),
+        SimpleNamespace(),
+        "events",
+        model,
+        max_metrics=2,
+        max_dimensions=12,
+        execute=False,
+        sample_rows=5,
+        leaderboard_dimension=None,
+    )
+
+    assert candidate["queries"]["dimension_leaderboard"]["metrics"] == ["events.count", "events.revenue"]
 
 
 def test_column_chart_components_support_negative_values() -> None:

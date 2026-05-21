@@ -267,7 +267,7 @@ def _candidate_for_model(
             layer=layer,
             execute=execute,
             sample_rows=sample_rows,
-            metrics=[selected_metric],
+            metrics=metric_refs,
             dimensions=[dim_ref],
             order_by=[f"{selected_metric} DESC"],
             limit=6,

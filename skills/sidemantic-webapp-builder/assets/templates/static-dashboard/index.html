@@ -15,6 +15,10 @@
         </div>
         <p class="sdm-status" data-testid="app-status">Loading app spec...</p>
       </header>
+      <section class="sdm-toolbar" aria-label="Dashboard controls">
+        <div class="sdm-filter-row" data-testid="filter-pills"></div>
+        <button class="sdm-reset-button" type="button" data-action="reset">Reset filters</button>
+      </section>
       <section class="sdm-metric-grid" data-testid="metric-totals"></section>
       <section class="sdm-leaderboard" data-testid="dimension-leaderboard">
         <div class="sdm-section-heading">
@@ -22,6 +26,9 @@
           <p data-testid="leaderboard-subtitle"></p>
         </div>
         <div data-testid="leaderboard-rows"></div>
+      </section>
+      <section class="sdm-data-table-wrap">
+        <table class="sdm-data-table" data-testid="data-preview"></table>
       </section>
       <details class="sdm-debug-panel">
         <summary>Generated SQL</summary>

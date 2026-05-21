@@ -136,6 +136,11 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     checks["has_metric_totals_selector"] = 'data-testid="metric-totals"' in source
     checks["has_leaderboard_selector"] = 'data-testid="dimension-leaderboard"' in source
     checks["has_leaderboard_rows_selector"] = 'data-testid="leaderboard-rows"' in source
+    checks["has_filter_pills_selector"] = 'data-testid="filter-pills"' in source
+    checks["has_reset_control"] = 'data-action="reset"' in source
+    checks["has_preview_selector"] = 'data-testid="data-preview"' in source
+    checks["wires_interactive_leaderboard"] = "interactive: true" in source and "onSelect: setFilter" in source
+    checks["wires_interactive_metric_cards"] = "onSelect: ({ metric })" in source
     checks["has_metric_data_binding"] = "dataset.metric" in source or "data-metric" in source
     checks["has_dimension_data_binding"] = "dataset.dimension" in source or "data-dimension" in source
     checks["avoids_inner_html"] = "innerHTML" not in source

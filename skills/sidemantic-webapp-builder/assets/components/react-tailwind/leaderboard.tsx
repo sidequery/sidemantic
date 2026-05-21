@@ -2,13 +2,14 @@ import { aliasFor, formatValue, labelize, type SidemanticQuerySpec } from "./typ
 
 type LeaderboardProps = {
   query: SidemanticQuerySpec;
+  metricRef?: string;
   selectedValue?: string;
   onSelect?: (selection: { dimension: string; value: string; row: Record<string, unknown> }) => void;
 };
 
-export function Leaderboard({ query, selectedValue, onSelect }: LeaderboardProps) {
+export function Leaderboard({ query, metricRef: selectedMetricRef, selectedValue, onSelect }: LeaderboardProps) {
   const dimensionRef = query.dimensions?.[0] || "";
-  const metricRef = query.metrics?.[0] || "";
+  const metricRef = selectedMetricRef || query.metrics?.[0] || "";
   const dimensionKey = aliasFor(query, dimensionRef);
   const metricKey = aliasFor(query, metricRef);
   const rows = query.result?.sample_rows || [];

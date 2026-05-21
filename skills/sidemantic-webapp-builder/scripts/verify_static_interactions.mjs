@@ -103,6 +103,22 @@ async function assertChartsBounded(page) {
   }
 }
 
+async function waitForRenderedDashboard(page, timeout) {
+  await page.waitForFunction(
+    () => {
+      const status = document.querySelector('[data-testid="app-status"]');
+      if (status?.dataset.error === "true") return true;
+      return document.querySelectorAll('[data-testid="metric-totals"] [data-metric]').length > 0;
+    },
+    undefined,
+    { timeout },
+  );
+  const errorText = await safeText(page.locator('[data-testid="app-status"][data-error="true"]'));
+  if (errorText) {
+    throw new Error(`Dashboard failed to render: ${errorText}`);
+  }
+}
+
 async function clickFirstFilterRemove(page, timeout) {
   const removeButtons = page.locator('[data-testid="filter-pills"] button');
   if ((await removeButtons.count()) === 0) return { skipped: true, reason: "no removable filter pills" };
@@ -187,7 +203,7 @@ async function main() {
 
   try {
     await page.goto(args.url, { waitUntil: "load", timeout: args.timeout });
-    await page.locator('[data-testid="metric-totals"]').waitFor({ timeout: args.timeout });
+    await waitForRenderedDashboard(page, args.timeout);
 
     const initial = await snapshot(page);
     await assertNoPersistentStateGallery(page);

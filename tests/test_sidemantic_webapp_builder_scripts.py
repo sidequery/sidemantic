@@ -42,6 +42,11 @@ class _Adapter:
         return result.fetchone()
 
 
+class _Generator:
+    def generate(self, *, metrics, dimensions, **_kwargs):
+        return f"select {', '.join([*dimensions, *metrics])}"
+
+
 def test_execute_sample_uses_adapter_fetchone_without_fetchmany() -> None:
     module = _load_script_module("inspect_layer.py", "sidemantic_webapp_builder_inspect_layer")
     layer = SimpleNamespace(adapter=_Adapter())
@@ -56,6 +61,36 @@ def test_execute_sample_uses_adapter_fetchone_without_fetchmany() -> None:
         ],
         "sample_row_count": 2,
     }
+
+
+def test_leaderboard_dimension_honors_explicit_identifier_like_dimension() -> None:
+    module = _load_script_module("inspect_layer.py", "sidemantic_webapp_builder_inspect_layer_dimensions")
+    model = SimpleNamespace(
+        table="events",
+        primary_key="id",
+        metrics=[SimpleNamespace(name="count")],
+        dimensions=[
+            SimpleNamespace(name="category", type="categorical"),
+            SimpleNamespace(name="user_id", type="categorical"),
+        ],
+    )
+
+    candidate = module._candidate_for_model(
+        _Generator(),
+        SimpleNamespace(),
+        "events",
+        model,
+        max_metrics=1,
+        max_dimensions=12,
+        execute=False,
+        sample_rows=5,
+        leaderboard_dimension="events.user_id",
+    )
+
+    assert candidate["default_leaderboard_dimension"] == "events.user_id"
+    assert candidate["recommended_dimensions"][0] == "events.user_id"
+    assert candidate["available_leaderboard_dimensions"][0]["identifier_like"] is True
+    assert candidate["queries"]["dimension_leaderboard"]["dimensions"] == ["events.user_id"]
 
 
 def _metric_totals_query(model: str):
@@ -152,3 +187,17 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
     report = verify_module.verify(SimpleNamespace(app_dir=output_dir, app_spec=None))
     assert report["selected_model"] == "requested_model"
     assert all(report["checks"].values())
+
+
+def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "skills"
+        / "sidemantic-webapp-builder"
+        / "scripts"
+        / "verify_static_interactions.mjs"
+    )
+    source = path.read_text(encoding="utf-8")
+
+    assert "waitForRenderedDashboard" in source
+    assert "'[data-testid=\"metric-totals\"] [data-metric]'" in source

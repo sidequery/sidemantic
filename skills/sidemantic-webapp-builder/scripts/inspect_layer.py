@@ -219,7 +219,7 @@ def _candidate_for_model(
     if leaderboard_dimension:
         requested = [
             dim
-            for dim in candidate_leaderboard_dimensions
+            for dim in all_leaderboard_dimensions
             if _matches_dimension(leaderboard_dimension, model_name=model_name, dim=dim)
         ]
         if requested:

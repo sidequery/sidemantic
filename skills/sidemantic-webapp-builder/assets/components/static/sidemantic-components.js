@@ -159,7 +159,16 @@ export function renderColumnChart(svg, rows, options = {}) {
   const padBottom = options.paddingBottom ?? 28;
   const labelKey = options.labelKey || "label";
   const valueKey = options.valueKey || "value";
-  const max = Math.max(...data.map((row) => Number(row[valueKey]) || 0), 1);
+  const values = data.map((row) => {
+    const value = Number(row[valueKey]);
+    return Number.isFinite(value) ? value : 0;
+  });
+  const min = Math.min(0, ...values);
+  const max = Math.max(0, ...values);
+  const span = max - min || 1;
+  const plotHeight = height - padTop - padBottom;
+  const yForValue = (value) => padTop + (1 - (value - min) / span) * plotHeight;
+  const baselineY = yForValue(0);
   const slot = (width - padX * 2) / Math.max(data.length, 1);
   const barWidth = Math.max(10, Math.min(42, slot * 0.56));
 
@@ -167,11 +176,22 @@ export function renderColumnChart(svg, rows, options = {}) {
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("preserveAspectRatio", "none");
 
+  if (min < 0) {
+    const baseline = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    baseline.classList.add("sdm-column-chart__baseline");
+    baseline.setAttribute("x1", String(padX));
+    baseline.setAttribute("x2", String(width - padX));
+    baseline.setAttribute("y1", baselineY.toFixed(1));
+    baseline.setAttribute("y2", baselineY.toFixed(1));
+    svg.appendChild(baseline);
+  }
+
   data.forEach((row, index) => {
-    const value = Number(row[valueKey]) || 0;
-    const barHeight = ((height - padTop - padBottom) * value) / max;
+    const value = values[index] ?? 0;
+    const valueY = yForValue(value);
+    const barHeight = Math.abs(valueY - baselineY);
     const x = padX + slot * index + (slot - barWidth) / 2;
-    const y = height - padBottom - barHeight;
+    const y = Math.min(valueY, baselineY);
 
     const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     rect.setAttribute("x", x.toFixed(1));
@@ -179,6 +199,7 @@ export function renderColumnChart(svg, rows, options = {}) {
     rect.setAttribute("width", barWidth.toFixed(1));
     rect.setAttribute("height", barHeight.toFixed(1));
     rect.setAttribute("rx", "3");
+    rect.dataset.tone = value < 0 ? "negative" : "positive";
     rect.dataset.label = row[labelKey] ?? "";
     rect.dataset.value = String(value);
     svg.appendChild(rect);

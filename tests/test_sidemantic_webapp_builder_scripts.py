@@ -206,3 +206,29 @@ def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
     assert source.index("const leaderboard = await clickLeaderboardRow") < source.index(
         "const filter = await clickFirstFilterRemove"
     )
+    leaderboard_block = source[
+        source.index("async function clickLeaderboardRow") : source.index("async function clickMetricCard")
+    ]
+    leaderboard_assertion = leaderboard_block[
+        leaderboard_block.index('await expectChange("Clicking a leaderboard row"') : leaderboard_block.index(
+            "return { skipped: false, before, after };"
+        )
+    ]
+    assert '"selectedRowCount"' not in leaderboard_assertion
+
+
+def test_column_chart_components_support_negative_values() -> None:
+    root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
+    static_source = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
+    static_css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
+    react_source = (root / "react-tailwind" / "column-chart.tsx").read_text(encoding="utf-8")
+
+    for source in (static_source, react_source):
+        assert "Math.min(0, ...values)" in source
+        assert "baselineY" in source
+        assert "Math.abs(valueY - baselineY)" in source
+        assert 'data-tone={value < 0 ? "negative" : "positive"}' in source or (
+            'rect.dataset.tone = value < 0 ? "negative" : "positive";' in source
+        )
+
+    assert '.sdm-column-chart rect[data-tone="negative"]' in static_css

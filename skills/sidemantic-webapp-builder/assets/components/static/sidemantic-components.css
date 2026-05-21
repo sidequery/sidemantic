@@ -238,6 +238,16 @@ button.sdm-leaderboard-row {
   fill: var(--sdm-accent);
 }
 
+.sdm-column-chart rect[data-tone="negative"] {
+  fill: var(--sdm-negative);
+}
+
+.sdm-column-chart__baseline {
+  stroke: var(--sdm-border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
 .sdm-column-chart text {
   fill: var(--sdm-muted);
   font-size: 10px;

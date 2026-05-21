@@ -149,12 +149,7 @@ async function clickLeaderboardRow(page, timeout) {
   if (after.selectedRowCount < 1) {
     throw new Error("Clicking a leaderboard row did not mark any row selected.");
   }
-  await expectChange("Clicking a leaderboard row", before, after, [
-    "metricText",
-    "previewText",
-    "filterCount",
-    "selectedRowCount",
-  ]);
+  await expectChange("Clicking a leaderboard row", before, after, ["metricText", "previewText", "filterCount"]);
   return { skipped: false, before, after };
 }
 

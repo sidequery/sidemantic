@@ -126,6 +126,7 @@ jobs:
         env:
           CLICKHOUSE_DB: default
           CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: clickhouse
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
         ports:
           - 8123:8123
@@ -184,7 +185,6 @@ jobs:
         env:
           CLICKHOUSE_DB: default
           CLICKHOUSE_USER: default
-          CLICKHOUSE_PASSWORD: clickhouse
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
         ports:
           - 8123:8123

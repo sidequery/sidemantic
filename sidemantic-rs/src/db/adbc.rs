@@ -53,20 +53,53 @@ fn adbc_error(context: &str, err: impl std::fmt::Display) -> SidemanticError {
     SidemanticError::InvalidConfig(format!("{context}: {err}"))
 }
 
+fn is_duckdb_driver(driver: &str, entrypoint: Option<&str>) -> bool {
+    driver.to_ascii_lowercase().contains("duckdb")
+        || entrypoint
+            .map(|entrypoint| entrypoint.to_ascii_lowercase().contains("duckdb"))
+            .unwrap_or(false)
+}
+
+fn has_database_option(options: &[(OptionDatabase, OptionValue)], key: &str) -> bool {
+    options.iter().any(|(option, _)| option.as_ref() == key)
+}
+
+fn database_options_with_uri(
+    driver: &str,
+    entrypoint: Option<&str>,
+    uri: Option<String>,
+    mut database_options: Vec<(OptionDatabase, OptionValue)>,
+) -> Vec<(OptionDatabase, OptionValue)> {
+    let Some(uri) = uri else {
+        return database_options;
+    };
+
+    if is_duckdb_driver(driver, entrypoint) {
+        if !has_database_option(&database_options, "path") {
+            database_options.push((
+                OptionDatabase::Other("path".to_string()),
+                OptionValue::String(uri),
+            ));
+        }
+    } else if !has_database_option(&database_options, OptionDatabase::Uri.as_ref()) {
+        database_options.push((OptionDatabase::Uri, OptionValue::String(uri)));
+    }
+
+    database_options
+}
+
 pub fn execute_with_adbc(request: AdbcExecutionRequest) -> Result<AdbcExecutionResult> {
     let AdbcExecutionRequest {
         driver,
         sql,
         uri,
         entrypoint,
-        mut database_options,
+        database_options,
         connection_options,
     } = request;
 
-    if let Some(uri) = uri {
-        database_options.push((OptionDatabase::Uri, OptionValue::String(uri)));
-    }
-
+    let database_options =
+        database_options_with_uri(&driver, entrypoint.as_deref(), uri, database_options);
     let entrypoint_bytes = entrypoint.as_deref().map(str::as_bytes);
     let mut managed_driver = ManagedDriver::load_from_name(
         &driver,
@@ -143,14 +176,12 @@ pub fn execute_with_adbc_arrow_ipc(request: AdbcExecutionRequest) -> Result<Adbc
         sql,
         uri,
         entrypoint,
-        mut database_options,
+        database_options,
         connection_options,
     } = request;
 
-    if let Some(uri) = uri {
-        database_options.push((OptionDatabase::Uri, OptionValue::String(uri)));
-    }
-
+    let database_options =
+        database_options_with_uri(&driver, entrypoint.as_deref(), uri, database_options);
     let entrypoint_bytes = entrypoint.as_deref().map(str::as_bytes);
     let mut managed_driver = ManagedDriver::load_from_name(
         &driver,
@@ -471,6 +502,58 @@ fn array_cell_to_value(
 mod tests {
     use super::*;
     use arrow_schema::DataType;
+
+    fn assert_single_string_database_option(
+        options: &[(OptionDatabase, OptionValue)],
+        key: &str,
+        expected_value: &str,
+    ) {
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].0.as_ref(), key);
+        let OptionValue::String(actual_value) = &options[0].1 else {
+            panic!("expected string option value, got {:?}", options[0].1);
+        };
+        assert_eq!(actual_value, expected_value);
+    }
+
+    #[test]
+    fn test_duckdb_uri_maps_to_path_database_option() {
+        let options = database_options_with_uri(
+            "/tmp/libduckdb.so",
+            Some("duckdb_adbc_init"),
+            Some("/tmp/warehouse.duckdb".to_string()),
+            Vec::new(),
+        );
+
+        assert_single_string_database_option(&options, "path", "/tmp/warehouse.duckdb");
+    }
+
+    #[test]
+    fn test_duckdb_uri_preserves_explicit_path_option() {
+        let options = database_options_with_uri(
+            "adbc_driver_duckdb",
+            None,
+            Some("/tmp/ignored.duckdb".to_string()),
+            vec![(
+                OptionDatabase::Other("path".to_string()),
+                OptionValue::String("/tmp/explicit.duckdb".to_string()),
+            )],
+        );
+
+        assert_single_string_database_option(&options, "path", "/tmp/explicit.duckdb");
+    }
+
+    #[test]
+    fn test_non_duckdb_uri_uses_canonical_uri_option() {
+        let options = database_options_with_uri(
+            "adbc_driver_sqlite",
+            None,
+            Some(":memory:".to_string()),
+            Vec::new(),
+        );
+
+        assert_single_string_database_option(&options, OptionDatabase::Uri.as_ref(), ":memory:");
+    }
 
     #[test]
     fn test_decimal128_to_string() {

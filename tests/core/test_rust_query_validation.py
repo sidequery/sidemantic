@@ -28,7 +28,10 @@ def _build_layer() -> SemanticLayer:
             name="orders",
             table="orders",
             primary_key="order_id",
-            dimensions=[Dimension(name="status", type="categorical")],
+            dimensions=[
+                Dimension(name="status", type="categorical"),
+                Dimension(name="created_at", type="time", granularity="second"),
+            ],
             metrics=[Metric(name="revenue", agg="sum", sql="amount")],
         )
     )
@@ -88,6 +91,27 @@ def test_query_validation_with_rust_matches_python_error_text(monkeypatch):
         layer.compile(metrics=["missing_metric"], dimensions=["orders.status"])
 
     assert "Metric 'missing_metric' not found" in str(exc_info.value)
+
+
+def test_query_validation_with_rust_accepts_subhour_time_granularities(monkeypatch):
+    import sidemantic.rust_bridge as rust_bridge
+
+    monkeypatch.setenv("SIDEMANTIC_RS_QUERY_VALIDATION", "1")
+    monkeypatch.delenv("SIDEMANTIC_RS_STRICT_SUBSYSTEMS", raising=False)
+    monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
+    _clear_strict_cache()
+    monkeypatch.setattr(
+        rust_bridge,
+        "validate_query_with_rust",
+        lambda _graph, metrics, dimensions: []
+        if metrics == ["orders.revenue"] and dimensions == ["orders.created_at__minute"]
+        else ["unexpected query"],
+    )
+
+    layer = _build_layer()
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.created_at__minute"])
+
+    assert "DATE_TRUNC('MINUTE'" in sql
 
 
 def test_validate_query_with_rust_prefers_reference_entrypoint(monkeypatch):

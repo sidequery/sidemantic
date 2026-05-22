@@ -631,6 +631,86 @@ fn collect_unique_models(models: Vec<Model>) -> Result<HashMap<String, Model>> {
     Ok(map)
 }
 
+fn owners_from_dotted_reference(
+    reference: &str,
+    models: &HashMap<String, Model>,
+) -> Option<String> {
+    let (model_name, _) = reference.split_once('.')?;
+    models
+        .contains_key(model_name)
+        .then(|| model_name.to_string())
+}
+
+fn owners_from_sql_fragment(
+    fragment: &str,
+    models: &HashMap<String, Model>,
+) -> Result<HashSet<String>> {
+    let model_ref_regex = Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
+        .map_err(|e| SidemanticError::Validation(format!("Invalid ownership regex: {e}")))?;
+    Ok(model_ref_regex
+        .captures_iter(fragment)
+        .filter_map(|captures| captures.get(1).map(|model_name| model_name.as_str()))
+        .filter(|model_name| models.contains_key(*model_name))
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn model_owners_for_entity(
+    entity: Option<&str>,
+    models: &HashMap<String, Model>,
+) -> HashSet<String> {
+    let Some(entity) = entity else {
+        return HashSet::new();
+    };
+    if let Some(owner) = owners_from_dotted_reference(entity, models) {
+        return HashSet::from([owner]);
+    }
+    models
+        .iter()
+        .filter(|(_, model)| {
+            model
+                .dimensions
+                .iter()
+                .any(|dimension| dimension.name == entity)
+        })
+        .map(|(model_name, _)| model_name.clone())
+        .collect()
+}
+
+fn metric_reference_strings(metric: &Metric) -> Vec<&str> {
+    let mut references = vec![
+        metric.sql.as_deref(),
+        metric.base_metric.as_deref(),
+        metric.numerator.as_deref(),
+        metric.denominator.as_deref(),
+        metric.entity.as_deref(),
+        metric.base_event.as_deref(),
+        metric.conversion_event.as_deref(),
+        metric.cohort_event.as_deref(),
+        metric.activity_event.as_deref(),
+        metric.having.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+
+    if let Some(steps) = metric.steps.as_ref() {
+        references.extend(steps.iter().map(String::as_str));
+    }
+    if let Some(inner_metrics) = metric.inner_metrics.as_ref() {
+        references.extend(
+            inner_metrics
+                .iter()
+                .filter_map(|inner| inner.sql.as_deref()),
+        );
+    }
+    if let Some(entity_dimensions) = metric.entity_dimensions.as_ref() {
+        references.extend(entity_dimensions.iter().map(String::as_str));
+    }
+
+    references
+}
+
 fn resolve_metric_owners(
     metric_name: &str,
     top_level_metrics: &HashMap<String, Metric>,
@@ -671,8 +751,8 @@ fn resolve_metric_owners(
     let deps = extract_dependencies(metric, None);
     let mut owners = HashSet::new();
     for dep in deps {
-        if let Some((model_name, _)) = dep.split_once('.') {
-            owners.insert(model_name.to_string());
+        if let Some(owner) = owners_from_dotted_reference(&dep, models) {
+            owners.insert(owner);
             continue;
         }
 
@@ -695,19 +775,16 @@ fn resolve_metric_owners(
     }
 
     if owners.is_empty() {
-        for reference in [
-            metric.sql.as_deref(),
-            metric.base_metric.as_deref(),
-            metric.numerator.as_deref(),
-            metric.denominator.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some((model_name, _)) = reference.split_once('.') {
-                owners.insert(model_name.to_string());
+        for reference in metric_reference_strings(metric) {
+            if let Some(owner) = owners_from_dotted_reference(reference, models) {
+                owners.insert(owner);
             }
+            owners.extend(owners_from_sql_fragment(reference, models)?);
         }
+    }
+
+    if owners.is_empty() {
+        owners.extend(model_owners_for_entity(metric.entity.as_deref(), models));
     }
 
     if owners.is_empty() && models.len() == 1 {
@@ -1095,6 +1172,62 @@ metrics:
 
         let customers = graph.get_model("customers").unwrap();
         assert!(customers.get_metric("revenue_yoy").is_none());
+    }
+
+    #[test]
+    fn test_load_from_string_assigns_complex_top_level_metrics_by_entity_dimension() {
+        let yaml = r#"
+models:
+  - name: events
+    table: events
+    primary_key: event_id
+    dimensions:
+      - name: user_id
+        type: categorical
+      - name: platform
+        type: categorical
+      - name: event_type
+        type: categorical
+
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: order_id
+        type: categorical
+
+metrics:
+  - name: signup_conversion
+    type: conversion
+    entity: user_id
+    base_event: event_type = 'signup'
+    conversion_event: event_type = 'purchase'
+    conversion_window: 7 days
+  - name: signup_retention
+    type: retention
+    entity: user_id
+    cohort_event: event_type = 'signup'
+  - name: multi_platform_users
+    type: cohort
+    entity: user_id
+    inner_metrics:
+      - name: platform_count
+        agg: count_distinct
+        sql: platform
+    having: platform_count >= 2
+    agg: count
+"#;
+
+        let graph = load_from_string(yaml).unwrap();
+        let events = graph.get_model("events").unwrap();
+        assert!(events.get_metric("signup_conversion").is_some());
+        assert!(events.get_metric("signup_retention").is_some());
+        assert!(events.get_metric("multi_platform_users").is_some());
+
+        let orders = graph.get_model("orders").unwrap();
+        assert!(orders.get_metric("signup_conversion").is_none());
+        assert!(orders.get_metric("signup_retention").is_none());
+        assert!(orders.get_metric("multi_platform_users").is_none());
     }
 
     #[test]

@@ -94,9 +94,69 @@ def test_rust_compile_payload_includes_preaggregation_flags(monkeypatch):
             return "SELECT 1"
 
     layer._rust_module = FakeRustModule()
-    sql = layer.compile(metrics=["orders.revenue"], use_preaggregations=True)
+    sql = layer.compile(metrics=["orders.revenue"], offset=10, use_preaggregations=True)
 
     assert sql.startswith("SELECT 1")
+    assert "OFFSET" not in sql
+    assert captured["offset"] == 10
     assert captured["use_preaggregations"] is True
     assert "preagg_database" in captured
     assert "preagg_schema" in captured
+
+
+def test_rust_compile_payload_includes_complex_metric_fields(monkeypatch):
+    _configure_strict_sql_entrypoint(monkeypatch)
+    monkeypatch.setattr(semantic_layer_module, "get_rust_module", lambda: object())
+    layer = SemanticLayer(auto_register=False)
+    layer.add_model(
+        Model(
+            name="events",
+            table="events",
+            primary_key="event_id",
+            metrics=[
+                Metric(
+                    name="signup_funnel",
+                    type="conversion",
+                    entity="user_id",
+                    steps=["event_type = 'signup'", "event_type = 'purchase'"],
+                ),
+                Metric(
+                    name="signup_retention",
+                    type="retention",
+                    entity="user_id",
+                    cohort_event="event_type = 'signup'",
+                    activity_event="event_type = 'active'",
+                    periods=7,
+                    retention_granularity="day",
+                ),
+                Metric(
+                    name="multi_platform_users",
+                    type="cohort",
+                    entity="user_id",
+                    inner_metrics=[{"name": "platform_count", "agg": "count_distinct", "sql": "platform"}],
+                    having="platform_count >= 2",
+                    agg="count",
+                ),
+            ],
+        )
+    )
+    captured = {}
+
+    class FakeRustModule:
+        def compile_with_yaml(self, models_yaml, _query_yaml):
+            captured.update(yaml.safe_load(models_yaml))
+            return "SELECT 1"
+
+    layer._rust_module = FakeRustModule()
+    sql = layer.compile(metrics=["events.signup_funnel"])
+
+    assert sql.startswith("SELECT 1")
+    metrics = {metric["name"]: metric for metric in captured["models"][0]["metrics"]}
+    assert metrics["signup_funnel"]["steps"] == ["event_type = 'signup'", "event_type = 'purchase'"]
+    assert metrics["signup_retention"]["cohort_event"] == "event_type = 'signup'"
+    assert metrics["signup_retention"]["periods"] == 7
+    assert metrics["signup_retention"]["retention_granularity"] == "day"
+    assert metrics["multi_platform_users"]["inner_metrics"] == [
+        {"name": "platform_count", "agg": "count_distinct", "sql": "platform"}
+    ]
+    assert metrics["multi_platform_users"]["having"] == "platform_count >= 2"

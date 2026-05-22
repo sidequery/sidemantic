@@ -75,8 +75,8 @@ pub fn extract_dependencies_with_context(
                 deps.insert(base.clone());
             }
         }
-        MetricType::Conversion => {
-            // Conversion metrics are modeled via event filters, not metric dependencies.
+        MetricType::Conversion | MetricType::Retention | MetricType::Cohort => {
+            // Complex event/cohort metrics are modeled via event filters, not metric dependencies.
         }
     }
 

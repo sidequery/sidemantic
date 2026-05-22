@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-05-14",
+  "last_updated": "2026-05-22",
   "purpose": "Tracks which Python-facing subsystems may be required in strict Rust mode. This file is read by sidemantic/rust_parity.py and updated with latest strict-probe evidence by scripts/rust_strict_probe.py.",
   "subsystems": {
     "sql_generator_entrypoint": {
@@ -18,7 +18,7 @@
       ],
       "known_limits": [
         "DuckDB-oriented SQL baseline, not full dialect parity.",
-        "Python bridge still appends offset outside the native Rust payload.",
+        "Conversion, retention, and cohort have Rust modeling and SQL generation, but execution parity coverage is still thinner than Python's advanced metric suites.",
         "skip_default_time_dimensions is not passed through the Python bridge yet."
       ]
     },
@@ -56,7 +56,7 @@
       "known_limits": [
         "Not yet wired to SIDEMANTIC_RS_STRICT_SUBSYSTEMS.",
         "Rust rewriter intentionally rejects some aggregate-expression rewrites that Python handles.",
-        "ORDER BY semantic expression handling needs more coverage."
+        "Strict rewriter activation still requires SIDEMANTIC_RS_REWRITER=1 by policy."
       ]
     }
   },

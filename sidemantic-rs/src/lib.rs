@@ -51,10 +51,10 @@ pub use config::{
     load_from_directory, load_from_directory_with_metadata, load_from_file, load_from_string,
 };
 pub use core::{
-    build_symmetric_aggregate_sql, merge_model, resolve_model_inheritance, Aggregation, Dimension,
-    DimensionType, JoinPath, JoinStep, Metric, MetricType, Model, Parameter, ParameterType,
-    Relationship, RelationshipType, RelativeDate, Segment, SemanticGraph, SqlDialect,
-    SymmetricAggType, TableCalcType, TableCalculation,
+    build_symmetric_aggregate_sql, merge_model, resolve_model_inheritance, Aggregation,
+    CohortInnerMetric, Dimension, DimensionType, JoinPath, JoinStep, Metric, MetricType, Model,
+    Parameter, ParameterType, Relationship, RelationshipType, RelativeDate, Segment, SemanticGraph,
+    SqlDialect, SymmetricAggType, TableCalcType, TableCalculation,
 };
 pub use error::{Result, SidemanticError};
 pub use runtime::{
@@ -128,4 +128,7 @@ pub use wasm::{
 };
 
 #[cfg(feature = "adbc-exec")]
-pub use db::{execute_with_adbc, AdbcExecutionRequest, AdbcExecutionResult, AdbcValue};
+pub use db::{
+    execute_with_adbc, execute_with_adbc_arrow_ipc, AdbcArrowIpcResult, AdbcExecutionRequest,
+    AdbcExecutionResult, AdbcValue,
+};

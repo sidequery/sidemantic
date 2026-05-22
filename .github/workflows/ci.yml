@@ -161,6 +161,16 @@ jobs:
           unzip -q /tmp/libduckdb.zip -d /tmp/libduckdb
           echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
 
+      - name: Install SQLite ADBC driver
+        run: |
+          uv run --no-project --with adbc-driver-sqlite python - <<'PY' >> "$GITHUB_ENV"
+          import adbc_driver_sqlite
+
+          print(f"SIDEMANTIC_TEST_ADBC_SQLITE_DRIVER={adbc_driver_sqlite._driver_path()}")
+          print("SIDEMANTIC_TEST_ADBC_SQLITE_URI=:memory:")
+          print("SIDEMANTIC_TEST_ADBC_REQUIRE=duckdb,sqlite")
+          PY
+
       - name: Run standalone protocol and UI tests
         run: |
           cargo test --features mcp-server --test mcp_protocol

@@ -10,8 +10,8 @@ use std::sync::Arc;
 #[cfg(feature = "runtime-server-adbc")]
 use adbc_core::options::{OptionConnection, OptionDatabase, OptionValue};
 use axum::body::{to_bytes, Body};
-use axum::extract::{Path, Request, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use sidemantic::runtime::interpolate_query_filters;
 #[cfg(feature = "runtime-server-adbc")]
-use sidemantic::{execute_with_adbc, AdbcExecutionRequest, AdbcValue};
+use sidemantic::{execute_with_adbc, execute_with_adbc_arrow_ipc, AdbcExecutionRequest, AdbcValue};
 use sidemantic::{Metric, Model, Relationship, RelationshipType, SemanticQuery, SidemanticRuntime};
 
 #[cfg(feature = "runtime-server-adbc")]
@@ -31,6 +31,8 @@ type DatabaseOption = (String, String);
 type ConnectionOption = (OptionConnection, OptionValue);
 #[cfg(not(feature = "runtime-server-adbc"))]
 type ConnectionOption = (String, String);
+
+const ARROW_STREAM_MEDIA_TYPE: &str = "application/vnd.apache.arrow.stream";
 
 #[cfg_attr(not(feature = "runtime-server-adbc"), allow(dead_code))]
 #[derive(Debug, Clone)]
@@ -95,6 +97,17 @@ struct SQLRequest {
     query: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ResponseFormatParams {
+    format: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ResponseFormat {
+    Json,
+    Arrow,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct GetModelsRequest {
     #[serde(default)]
@@ -123,6 +136,49 @@ fn json_error_response(status: StatusCode, message: impl Into<String>) -> Respon
         }),
     )
         .into_response()
+}
+
+fn resolve_response_format(
+    params: &ResponseFormatParams,
+    headers: &HeaderMap,
+) -> Result<ResponseFormat, (StatusCode, Json<ErrorResponse>)> {
+    if let Some(format) = params.format.as_deref() {
+        return match format.to_ascii_lowercase().as_str() {
+            "json" => Ok(ResponseFormat::Json),
+            "arrow" => Ok(ResponseFormat::Arrow),
+            other => Err(json_error(
+                StatusCode::BAD_REQUEST,
+                format!("unsupported response format '{other}'"),
+            )),
+        };
+    }
+
+    let wants_arrow = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.contains(ARROW_STREAM_MEDIA_TYPE))
+        .unwrap_or(false);
+    if wants_arrow {
+        Ok(ResponseFormat::Arrow)
+    } else {
+        Ok(ResponseFormat::Json)
+    }
+}
+
+#[cfg(feature = "runtime-server-adbc")]
+fn arrow_response(bytes: Vec<u8>, row_count: usize) -> Response {
+    let mut response = Body::from(bytes).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(ARROW_STREAM_MEDIA_TYPE),
+    );
+    headers.insert(
+        "x-sidemantic-row-count",
+        HeaderValue::from_str(&row_count.to_string()).expect("row count header should be valid"),
+    );
+    headers.insert("x-sidemantic-dialect", HeaderValue::from_static("generic"));
+    response
 }
 
 fn cors_allowed_origin(controls: &HttpControls, request: &Request) -> Option<HeaderValue> {
@@ -565,66 +621,14 @@ async fn compile_query(
 
 async fn run_query(
     State(state): State<Arc<AppState>>,
+    Query(format_params): Query<ResponseFormatParams>,
+    headers: HeaderMap,
     Json(request): Json<QueryRequest>,
-) -> Result<Json<JsonValue>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let response_format = resolve_response_format(&format_params, &headers)?;
     let sql = compile_request(&state.runtime, &request)
         .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
-
-    #[cfg(not(feature = "runtime-server-adbc"))]
-    {
-        let _ = sql;
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            "ADBC execution support is not enabled. Rebuild with feature 'runtime-server-adbc' to use /query/run.",
-        ));
-    }
-
-    #[cfg(feature = "runtime-server-adbc")]
-    {
-        let Some(driver) = state.adbc_driver.clone() else {
-            return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            "ADBC driver is not configured. Set SIDEMANTIC_SERVER_ADBC_DRIVER or pass --driver.",
-        ));
-        };
-
-        let result = execute_with_adbc(AdbcExecutionRequest {
-            driver,
-            sql: sql.clone(),
-            uri: state.adbc_uri.clone(),
-            entrypoint: state.adbc_entrypoint.clone(),
-            database_options: state.database_options.clone(),
-            connection_options: state.connection_options.clone(),
-        })
-        .map_err(|e| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to execute query via ADBC: {e}"),
-            )
-        })?;
-
-        let rows = result
-            .rows
-            .iter()
-            .map(|row| {
-                let mut row_map = JsonMap::new();
-                for (idx, column) in result.columns.iter().enumerate() {
-                    let value = row
-                        .get(idx)
-                        .map(adbc_value_to_json)
-                        .unwrap_or(JsonValue::Null);
-                    row_map.insert(column.clone(), value);
-                }
-                JsonValue::Object(row_map)
-            })
-            .collect::<Vec<_>>();
-
-        Ok(Json(json!({
-            "sql": sql,
-            "rows": rows,
-            "row_count": rows.len()
-        })))
-    }
+    execute_sql_response(&state, sql, None, "/query/run", response_format)
 }
 
 async fn compile_sql(
@@ -644,8 +648,11 @@ async fn compile_sql(
 
 async fn run_sql(
     State(state): State<Arc<AppState>>,
+    Query(format_params): Query<ResponseFormatParams>,
+    headers: HeaderMap,
     Json(request): Json<SQLRequest>,
-) -> Result<Json<JsonValue>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let response_format = resolve_response_format(&format_params, &headers)?;
     let original_sql = normalize_sql(&request.query)
         .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
     let sql = state.runtime.rewrite(&original_sql).map_err(|e| {
@@ -654,18 +661,81 @@ async fn run_sql(
             format!("failed to rewrite SQL: {e}"),
         )
     })?;
-    execute_sql_json(&state, sql, Some(original_sql), "/sql")
+    execute_sql_response(&state, sql, Some(original_sql), "/sql", response_format)
 }
 
 async fn run_raw_sql(
     State(state): State<Arc<AppState>>,
+    Query(format_params): Query<ResponseFormatParams>,
+    headers: HeaderMap,
     Json(request): Json<SQLRequest>,
-) -> Result<Json<JsonValue>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let response_format = resolve_response_format(&format_params, &headers)?;
     let sql = normalize_sql(&request.query)
         .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
     require_select_only_sql(&sql)
         .map_err(|message| json_error(StatusCode::BAD_REQUEST, message))?;
-    execute_sql_json(&state, sql, None, "/raw")
+    execute_sql_response(&state, sql, None, "/raw", response_format)
+}
+
+fn execute_sql_response(
+    state: &AppState,
+    sql: String,
+    original_sql: Option<String>,
+    route_name: &str,
+    response_format: ResponseFormat,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    match response_format {
+        ResponseFormat::Json => {
+            execute_sql_json(state, sql, original_sql, route_name).map(IntoResponse::into_response)
+        }
+        ResponseFormat::Arrow => execute_sql_arrow(state, sql, route_name),
+    }
+}
+
+fn execute_sql_arrow(
+    state: &AppState,
+    sql: String,
+    route_name: &str,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let _ = route_name;
+    #[cfg(not(feature = "runtime-server-adbc"))]
+    {
+        let _ = (state, sql);
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "ADBC execution support is not enabled. Rebuild with feature 'runtime-server-adbc' to use {route_name}."
+            ),
+        ));
+    }
+
+    #[cfg(feature = "runtime-server-adbc")]
+    {
+        let Some(driver) = state.adbc_driver.clone() else {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "ADBC driver is not configured. Set SIDEMANTIC_SERVER_ADBC_DRIVER or pass --driver.",
+            ));
+        };
+
+        let result = execute_with_adbc_arrow_ipc(AdbcExecutionRequest {
+            driver,
+            sql,
+            uri: state.adbc_uri.clone(),
+            entrypoint: state.adbc_entrypoint.clone(),
+            database_options: state.database_options.clone(),
+            connection_options: state.connection_options.clone(),
+        })
+        .map_err(|e| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to execute query via ADBC: {e}"),
+            )
+        })?;
+
+        Ok(arrow_response(result.bytes, result.row_count))
+    }
 }
 
 fn execute_sql_json(

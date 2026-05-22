@@ -13,7 +13,7 @@ Current limits:
 - MCP, HTTP server, LSP, and workbench are experimental feature-gated surfaces for this baseline. They compile and have real protocol or deterministic UI smoke tests, including DuckDB ADBC execution where applicable, but they are not compatibility-complete product surfaces yet.
 - Python bindings are split: the normal wheel builds with `python-adbc` for compatibility and executes through `execute_with_adbc`; the lower-level `python` feature builds the lightweight PyO3 module without ADBC/Arrow and exposes an `execute_with_adbc` stub that fails with build-feature guidance.
 - HTTP, MCP, and workbench compile without ADBC/Arrow. Database execution is explicitly opt-in through `runtime-server-adbc`, `mcp-adbc`, or `workbench-adbc`.
-- Rust HTTP/MCP now cover the core Python-facing metadata/query/SQL/catalog/chart shapes, including HTTP bearer auth, CORS allow-list headers, and request body limits. Intentional differences remain: HTTP has no Arrow output yet, and MCP chart output uses a Rust-rendered PNG preview rather than Python Altair/vl-convert or MCP Apps UI resources.
+- Rust HTTP/MCP now cover the core Python-facing metadata/query/SQL/catalog/chart shapes, including HTTP bearer auth, CORS allow-list headers, request body limits, MCP query parameters, and HTTP buffered Arrow IPC output. Intentional differences remain: true chunked HTTP streaming is not implemented, and MCP chart output uses a Rust-rendered PNG preview rather than Python Altair/vl-convert or MCP Apps UI resources.
 
 ## Build
 
@@ -172,7 +172,7 @@ Feature split:
 - CLI `run` and `query` execution use `adbc-exec`.
 - Python `execute_with_adbc` executes only with `python-adbc`; this is the default `maturin build` feature for the wheel. Lightweight `python` builds keep the symbol present but return a built-without-ADBC error.
 - MCP `run_query`, `run_sql`, and `create_chart` execution are available only with `mcp-adbc`; without it, compile, metadata, validation, graph, and catalog resource paths still work and execution/chart tools return built-without-ADBC errors. ADBC builds accept either `--uri` or driver-specific `--dbopt` values such as `path=<duckdb file>`.
-- HTTP `/query`, `/query/run`, `/sql`, and `/raw` execution are available only with `runtime-server-adbc`; without it, model, graph, and compile/rewrite routes still work and execution returns a built-without-ADBC error. ADBC builds accept either `--uri` or driver-specific `--dbopt` values such as `path=<duckdb file>`.
+- HTTP `/query`, `/query/run`, `/sql`, and `/raw` execution are available only with `runtime-server-adbc`; without it, model, graph, and compile/rewrite routes still work and execution returns a built-without-ADBC error. ADBC builds accept either `--uri` or driver-specific `--dbopt` values such as `path=<duckdb file>`. Execution routes return JSON by default and buffered Arrow IPC when `?format=arrow` or `Accept: application/vnd.apache.arrow.stream` is used.
 - Workbench execution is available only with `workbench-adbc`; without it, model browsing and SQL rewrite still work.
 
 ## Preagg Refresh

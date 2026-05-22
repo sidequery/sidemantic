@@ -189,6 +189,11 @@ def main():
         assert diagnostic["source"] == "sidemantic-rs", diagnostic
         assert diagnostic["message"].startswith("Parse error:"), diagnostic
 
+        client.notify("textDocument/didSave", {"textDocument": {"uri": uri}})
+        diagnostics = client.wait_for_notification("textDocument/publishDiagnostics")
+        diagnostic = diagnostics["params"]["diagnostics"][0]
+        assert diagnostic["message"].startswith("Parse error:"), diagnostic
+
         client.notify(
             "textDocument/didChange",
             {

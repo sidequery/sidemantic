@@ -9,7 +9,7 @@ The Rust runtime is a Rust-first product surface. Python compatibility is a refe
 | Surface | Rust entrypoint | Intended contract | Current status |
 | --- | --- | --- | --- |
 | CLI | `sidemantic-rs/src/main.rs`, binary `sidemantic` | Primary standalone command-line interface for compile, rewrite, validate, query, pre-aggregation, migrator, info, workbench, service launchers | Supported baseline for compile/rewrite/validate/query dry-run/preagg/migrator/info; service launchers remain feature-gated |
-| HTTP API | `sidemantic-server` with `runtime-server`; DB execution requires `runtime-server-adbc` | Rust-native JSON API for model metadata, graph discovery, semantic compile/query, semantic SQL rewrite/run, and raw select-only SQL run | Experimental, feature-gated; real server protocol tests cover startup failure, readiness/health, graph/models, compile/query/sql/raw routes, built-without-ADBC errors, and DuckDB ADBC execution |
+| HTTP API | `sidemantic-server` with `runtime-server`; DB execution requires `runtime-server-adbc` | Rust-native JSON and Arrow IPC API for model metadata, graph discovery, semantic compile/query, semantic SQL rewrite/run, and raw select-only SQL run | Experimental, feature-gated; real server protocol tests cover startup failure, readiness/health, graph/models, compile/query/sql/raw routes, built-without-ADBC errors, DuckDB ADBC execution, and buffered Arrow IPC response negotiation |
 | MCP | `sidemantic-mcp` with `mcp-server`; DB execution requires `mcp-adbc` | Rust-native MCP server backed by `SidemanticRuntime` | Experimental, feature-gated; stdio JSON-RPC tests cover startup failure, initialize, resources, tools/list, list/get/graph/validate/compile/run/sql/chart calls, built-without-ADBC errors, and DuckDB ADBC execution |
 | LSP | `sidemantic-lsp` with `runtime-lsp` feature | Stdio LSP for SQL definition authoring | Experimental, feature-gated; stdio LSP tests cover initialize, diagnostics, completion, hover, formatting, symbols, signature help, definition/references/rename/code action, unsupported adapter-format diagnostics, and shutdown; current scope is SQL definitions in opened documents |
 | Workbench | `sidemantic-workbench` and `sidemantic workbench` with `workbench-tui`; execution requires `workbench-adbc` | Standalone terminal UI for inspecting models, rewriting SQL, and optionally executing against ADBC | Experimental, feature-gated; deterministic app/key/render tests and PTY smoke cover launch, initial render, keypresses, quit, bad model path, no-DB disabled execution, and DuckDB ADBC execution |
@@ -70,13 +70,15 @@ Standalone Rust HTTP API routes:
 - `POST /sql`
 - `POST /raw`
 
-The protocol tests start the real server on a dynamic loopback port, verify startup failure for missing model paths, verify success and error JSON for these routes, and kill the child process as the lifecycle contract for this baseline. In a non-ADBC build, execution routes return clear `runtime-server-adbc` build guidance errors after successful compile/rewrite. The ADBC E2E test supplies DuckDB `libduckdb` plus `duckdb_adbc_init`, seeds a real DuckDB file, and proves successful structured query, semantic SQL, and raw SQL execution using `--dbopt path=<file>`.
+The protocol tests start the real server on a dynamic loopback port, verify startup failure for missing model paths, verify success and error JSON for these routes, and kill the child process as the lifecycle contract for this baseline. In a non-ADBC build, execution routes return clear `runtime-server-adbc` build guidance errors after successful compile/rewrite. The ADBC E2E test supplies DuckDB `libduckdb` plus `duckdb_adbc_init`, seeds a real DuckDB file, and proves successful structured query, semantic SQL, raw SQL execution, and Arrow IPC response decoding using `--dbopt path=<file>`.
 
 Current intentional differences:
 
-- `/query` and `/raw` return JSON rows only. Arrow output is not implemented.
+- `/query`, `/query/run`, `/sql`, and `/raw` return JSON rows by default.
+- `?format=arrow` or `Accept: application/vnd.apache.arrow.stream` returns an Arrow IPC stream-format body with `Content-Type: application/vnd.apache.arrow.stream`, `X-Sidemantic-Row-Count`, and `X-Sidemantic-Dialect`.
+- Arrow IPC output is buffered in memory before the HTTP response is returned, matching the existing Python API contract. True chunked transport streaming is not implemented.
 - `/raw` uses a conservative select-only string guard rather than full parser-backed SQL statement classification.
-- Bearer auth, CORS allow-list headers, and JSON 413 body-size rejection are implemented and covered. Application routes require bearer auth when configured, except `/readyz`; unauthenticated `OPTIONS` preflight is allowed for CORS. Streaming output and graceful application shutdown remain unimplemented.
+- Bearer auth, CORS allow-list headers, and JSON 413 body-size rejection are implemented and covered. Application routes require bearer auth when configured, except `/readyz`; unauthenticated `OPTIONS` preflight is allowed for CORS. Graceful application shutdown remains unimplemented.
 
 Structured query payload should cover:
 
@@ -105,7 +107,7 @@ Standalone Rust MCP tools/resources:
 - `create_chart`
 - `semantic://catalog` resource
 
-Tool schemas should eventually share the same structured query payload as the HTTP API. Current MCP query tools are intentionally narrower than HTTP because they do not accept `parameters` yet, and `create_chart` fixes some query options internally. This is tracked as follow-up work rather than claimed parity.
+Tool schemas share the HTTP structured query fields needed for compile/run/chart, including parameter interpolation, segments, ordering, offset, ungrouped, and dry-run behavior where each tool exposes them. `create_chart` still fixes some display-oriented query options internally.
 
 The current protocol tests use newline-delimited JSON-RPC over stdio and check startup failure for missing model paths, initialize, initialized notification handling, tool/resource listing, catalog resource reads, successful list/get/graph/validate/compile calls, built-without-ADBC errors for execution/chart tools, invalid metric errors, missing-resource errors, and unknown-tool errors. In a non-ADBC build, execution and chart tools return clear `mcp-adbc` build guidance errors after successful compile/rewrite. The ADBC E2E test supplies DuckDB `libduckdb` plus `duckdb_adbc_init`, seeds a real DuckDB file, and proves successful `run_query`, `run_sql`, and `create_chart` execution using `--dbopt path=<file>`.
 
@@ -148,11 +150,11 @@ DuckDB extension functions must be scoped and predictable:
 - `SEMANTIC CREATE METRIC`, `SEMANTIC CREATE DIMENSION`, and `SEMANTIC CREATE SEGMENT` must update existing models without duplicate-model errors.
 - `sidemantic_clear` must clear all active graph state, including active model selection.
 - In-memory DuckDB databases should keep `SEMANTIC CREATE` definitions session-local and must not persist or autoload `./sidemantic_definitions.sql` from the working directory.
-- Autoload errors should be visible unless an explicit best-effort mode is selected.
+- Autoload errors are best-effort but must emit a visible warning when persisted definitions cannot be loaded.
 - C++ must include `sidemantic-rs/include/sidemantic.h` rather than duplicating ABI declarations.
 - The DuckDB extension build must build or import the Rust staticlib as a declared dependency, not as an undocumented manual pre-step.
 
-Current implementation keys Rust FFI state by caller-provided context. The DuckDB extension derives a database/session context key from the active DuckDB database path or in-memory database instance, including parser-extension state for `SEMANTIC` statements and `ClientContext`/`ExpressionState` for table/scalar functions. Context-free C APIs remain compatibility wrappers over a default context. Autoload currently behaves best-effort for invalid persisted blocks and mainly reports skipped blocks to stderr; user-visible autoload warning/reporting remains follow-up work.
+Current implementation keys Rust FFI state by caller-provided context. The DuckDB extension derives a database/session context key from the active DuckDB database path or in-memory database instance, including parser-extension state for `SEMANTIC` statements and `ClientContext`/`ExpressionState` for table/scalar functions. Context-free C APIs remain compatibility wrappers over a default context. Autoload behaves best-effort for invalid persisted blocks and reports failures to stderr during extension load.
 
 ## WASM Contract
 

@@ -19,8 +19,8 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 | Model list | `GET /models` with table/dimensions/metrics/relationships | `pass`: summary shape covered | Keep covered |
 | Single model | Python does not expose this route | `pass`: Rust extra route `/models/{model}` | Keep as Rust extension |
 | Graph | `GET /graph` with models, graph_metrics, joinable_pairs | `pass`: route and joinable-pair smoke added | Keep covered |
-| Structured compile | `POST /compile` with dimensions, metrics, where, filters, segments, order_by, limit, offset, ungrouped, parameters, preagg flag | `partial`: route, common fields, offset, ungrouped, and parameter interpolation are covered; `segments` and preagg routing are implemented but need direct HTTP assertions | Add targeted HTTP tests for segments and `use_preaggregations` |
-| Structured execute | `POST /query` executes via configured DB adapter, JSON or Arrow | `pass` for Rust contract: `/query` alias and DuckDB ADBC JSON E2E covered; Arrow stream output is an explicit non-goal for this Rust HTTP baseline | Revisit Arrow only if binary IPC becomes a product requirement |
+| Structured compile | `POST /compile` with dimensions, metrics, where, filters, segments, order_by, limit, offset, ungrouped, parameters, preagg flag | `pass`: route, common fields, offset, ungrouped, segment resolution, parameter interpolation, and preagg flag plumbing are covered | Keep covered; add materialized preagg execution fixtures later |
+| Structured execute | `POST /query` executes via configured DB adapter, JSON or Arrow | `pass`: `/query` alias and DuckDB ADBC JSON E2E covered; Arrow IPC stream-format responses are implemented for `/query`, `/sql`, and `/raw` with Python-compatible media type and headers | Keep buffered Arrow IPC covered; true chunked transport streaming remains follow-up |
 | Semantic SQL compile | `POST /sql/compile` rewrites SQL | `pass`: route and smoke coverage added | Keep covered |
 | Semantic SQL execute | `POST /sql` rewrites and executes | `pass`: DuckDB ADBC E2E covered | Keep covered |
 | Raw SQL execute | `POST /raw` executes select-only SQL without rewrite | `pass`: select-only guard and DuckDB ADBC E2E covered; Rust intentionally uses a conservative string guard until a parser-backed classifier is needed | Parser-backed classification is optional hardening |
@@ -37,7 +37,7 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 | Initialize lifecycle | JSON-RPC initialize/initialized/shutdown | `pass` for smoke lifecycle | Keep covered |
 | Tool listing | Includes query, catalog, graph, SQL, chart tools | `pass`: query, graph, validation, SQL, chart tools, and catalog resource covered | Keep covered |
 | `get_models` | Enriched model/dimension/metric/segment/relationship metadata | `pass`: enriched details covered | Keep covered |
-| `run_query` | dimensions, metrics, where, filters, segments, order_by, limit, offset, ungrouped, dry_run | `partial`: core fields, offset, dry-run, and DuckDB ADBC execution are covered; MCP does not yet accept `parameters`, and not every structured field has a direct protocol assertion | Add MCP `parameters` support or document narrower schema; add targeted field tests |
+| `run_query` | dimensions, metrics, where, filters, segments, parameters, order_by, limit, offset, ungrouped, dry_run | `pass`: core fields, segments, parameters, offset, dry-run, and DuckDB ADBC execution are covered | Keep covered |
 | `validate_query` | Returns `valid` and `errors` without executing | `pass`: tool and smoke coverage added | Keep covered |
 | `get_semantic_graph` | Returns graph payload | `pass`: tool and smoke coverage added | Keep covered |
 | `run_sql` | Rewrites semantic SQL, executes against configured DB | `pass`: DuckDB ADBC E2E covered | Keep covered |
@@ -51,7 +51,7 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 | Behavior | Python contract | Current Rust status | Next action |
 | --- | --- | --- | --- |
 | Lifecycle | initialize, initialized, shutdown | `pass` smoke | Keep covered |
-| Diagnostics | SQL definition diagnostics on open/change/save | `partial` for intended SQL-definition scope: open/change parse diagnostics, repair clearing, and unsupported adapter diagnostics are covered; save-specific diagnostics need a direct assertion before claiming save coverage | Add `didSave` smoke assertion if save diagnostics are part of the contract |
+| Diagnostics | SQL definition diagnostics on open/change/save | `pass` for intended SQL-definition scope: open/change/save parse diagnostics, repair clearing, and unsupported adapter diagnostics are covered | Keep covered |
 | Completion | SQL definition completions and Python constructor completions | `pass` for intended Rust LSP SQL-definition scope; Python constructor support is an explicit non-goal for this Rust standalone baseline | Keep SQL scope covered |
 | Hover | Keyword/property hover | `pass` for intended SQL-definition scope: keyword/property hover is covered | Add model/dimension/metric instance docs only if Rust LSP scope grows |
 | Formatting | Formats SQL definition documents | `pass`: canonical multiline formatting covered | Keep covered |
@@ -80,12 +80,12 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 
 | Driver/service | Existing Python coverage | Rust target | Local status | CI/status action |
 | --- | --- | --- | --- | --- |
-| DuckDB | Python adapter supports DuckDB URL/dialect; local Python wheel `adbc_driver_duckdb` is installed | Direct Rust ADBC, CLI `run`, HTTP structured/SQL/raw, MCP structured/SQL/chart, workbench smoke | `pass`: real DuckDB shared library found and E2E green | Keep in local and CI when DuckDB dylib/so is available |
-| SQLite | Python adapter tests target SQLite ADBC package/DBC path | Rust ADBC if SQLite ADBC driver shared library is available | `skip`: only native `libsqlite3` found locally, no SQLite ADBC driver library/package | Env-gated Rust matrix test skips until `SIDEMANTIC_TEST_ADBC_SQLITE_DRIVER` is set |
-| PostgreSQL | `tests/db/test_adbc_ci_smoke.py` gated by `ADBC_TEST=1`, URL/env/service required | Rust ADBC URL/option parsing plus live execution when driver/service env exists | `skip`: no local ADBC driver/service credentials | Env-gated Rust matrix test skips until `SIDEMANTIC_TEST_ADBC_POSTGRES_DRIVER` is set |
-| BigQuery | Python ADBC CI smoke gated by env/credentials | Rust ADBC URL/option parsing plus live execution when credentials exist | `skip`: no local ADBC driver/credentials | Env-gated Rust matrix test skips until `SIDEMANTIC_TEST_ADBC_BIGQUERY_DRIVER` is set |
-| Snowflake | Python ADBC CI smoke gated by env/credentials | Rust ADBC URL/option parsing plus live execution when credentials exist | `skip`: no local ADBC driver/credentials | Env-gated Rust matrix test skips until `SIDEMANTIC_TEST_ADBC_SNOWFLAKE_DRIVER` is set |
-| ClickHouse | Python ADBC CI smoke gated by env/service | Rust ADBC URL/option parsing plus live execution when driver/service env exists | `skip`: no local ADBC driver/service | Env-gated Rust matrix test skips until `SIDEMANTIC_TEST_ADBC_CLICKHOUSE_DRIVER` is set |
+| DuckDB | Python adapter supports DuckDB URL/dialect | Direct Rust ADBC, CLI `run`, HTTP structured/SQL/raw JSON and Arrow, MCP structured/SQL/chart, workbench smoke | `pass` when `SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER` points at `libduckdb`; no local driver path found in the current worktree run | CI downloads DuckDB `libduckdb` and requires DuckDB in the Rust matrix |
+| SQLite | Python adapter tests target SQLite ADBC package/DBC path | Rust ADBC driver-manager execution | `pass`: local transient `adbc-driver-sqlite` probe passed with `SIDEMANTIC_TEST_ADBC_SQLITE_URI=:memory:` | CI installs `adbc-driver-sqlite` and requires SQLite in the Rust matrix |
+| PostgreSQL | `tests/db/test_adbc_ci_smoke.py` gated by `ADBC_TEST=1`, URL/env/service required | Rust ADBC URL execution against live Postgres service | `skip` locally: no service/credentials in this worktree | Integration CI installs `adbc-driver-postgresql`, uses the Postgres service, and requires Postgres in the Rust matrix |
+| BigQuery | Python ADBC CI smoke gated by env/credentials | Rust ADBC URL/option parsing plus live execution when credentials or emulator compatibility exist | `skip`: driver package exists, but emulator compatibility is not proven | Keep env-gated until emulator compatibility or secret-backed credentials are proven |
+| Snowflake | Python ADBC CI smoke gated by env/credentials | Rust ADBC URL/option parsing plus live execution when credentials exist | `skip`: driver package exists, but fakesnow does not prove C-driver compatibility | Keep env/secret-gated |
+| ClickHouse | Python ADBC CI smoke gated by env/service | Rust ADBC URL/option parsing plus live execution when driver/service env exists | `skip`: no PyPI `adbc-driver-clickhouse` package found | Keep env-gated until a C ADBC driver source is chosen |
 
 ## Future Work
 
@@ -94,8 +94,7 @@ Detailed follow-up work is tracked in `docs/rust-standalone-followup-work.md`.
 Highest-priority follow-ups:
 
 1. Decide whether to add `api-serve` or keep Rust HTTP command naming separate from the Python HTTP command.
-2. Add MCP `parameters` support or keep MCP documented as a narrower structured query schema than HTTP.
-3. Add direct HTTP/MCP assertions for `segments`, pre-aggregation routing, and every field claimed in this matrix.
-4. Add LSP `didSave` and unknown-method assertions only if those are part of the Rust LSP contract.
-5. Add richer MCP Apps chart UI parity only if clients require embedded UI resources instead of plain Vega-Lite plus PNG.
-6. Keep ADBC matrix expanding as drivers/services become available through env-configured CI.
+2. Add materialized pre-aggregation execution fixtures, not just compile-path flag assertions.
+3. Add richer MCP Apps chart UI parity only if clients require embedded UI resources instead of plain Vega-Lite plus PNG.
+4. Keep ADBC matrix expanding as drivers/services become available through env-configured CI.
+5. Add true chunked HTTP streaming only if product requirements exceed Python's buffered Arrow IPC response contract.

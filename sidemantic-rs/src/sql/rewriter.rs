@@ -1,6 +1,6 @@
 //! Query rewriter: rewrites SQL using semantic layer definitions
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[cfg(not(target_arch = "wasm32"))]
 use polyglot_sql::parse as polyglot_parse;
@@ -85,6 +85,7 @@ impl<'a> QueryRewriter<'a> {
                 if let Some(having) = &select.having {
                     self.collect_model_refs_from_expr(&having.this, &mut referenced_models);
                 }
+                self.collect_order_by_model_refs(select.order_by.as_ref(), &mut referenced_models);
 
                 if referenced_models.is_empty() {
                     return Err(SidemanticError::Validation(
@@ -137,6 +138,7 @@ impl<'a> QueryRewriter<'a> {
         if let Some(having) = &select.having {
             self.collect_model_refs_from_expr(&having.this, &mut referenced_models);
         }
+        self.collect_order_by_model_refs(select.order_by.as_ref(), &mut referenced_models);
 
         // Find models that need to be joined (referenced but not in FROM)
         let base_model = model_refs.first().map(|(m, _)| m.clone());
@@ -155,8 +157,15 @@ impl<'a> QueryRewriter<'a> {
             model_refs.push((model_name.clone(), alias));
         }
 
+        let original_projection = select.expressions.clone();
+        let projection_aliases = self.projection_alias_lookup(&original_projection, &model_refs);
+        let output_aliases = projection_aliases
+            .values()
+            .cloned()
+            .collect::<HashSet<String>>();
+
         // Rewrite SELECT items
-        select.expressions = self.rewrite_projection(&select.expressions, &model_refs)?;
+        select.expressions = self.rewrite_projection(&original_projection, &model_refs)?;
 
         // Rewrite FROM clause with JOINs
         self.rewrite_from_with_joins(
@@ -178,6 +187,18 @@ impl<'a> QueryRewriter<'a> {
             select.having = Some(Having {
                 this: self.rewrite_expr(having.this, &model_refs)?,
             });
+        }
+
+        if let Some(mut order_by) = select.order_by.take() {
+            for ordered in &mut order_by.expressions {
+                ordered.this = self.rewrite_order_by_expr(
+                    ordered.this.clone(),
+                    &model_refs,
+                    &projection_aliases,
+                    &output_aliases,
+                )?;
+            }
+            select.order_by = Some(order_by);
         }
 
         if select.expressions.is_empty() {
@@ -388,6 +409,66 @@ impl<'a> QueryRewriter<'a> {
         }
     }
 
+    fn collect_order_by_model_refs(
+        &self,
+        order_by: Option<&polyglot_sql::expressions::OrderBy>,
+        models: &mut HashSet<String>,
+    ) {
+        if let Some(order_by) = order_by {
+            for ordered in &order_by.expressions {
+                self.collect_model_refs_from_expr(&ordered.this, models);
+            }
+        }
+    }
+
+    fn projection_alias_lookup(
+        &self,
+        projection: &[Expression],
+        model_refs: &[(String, String)],
+    ) -> HashMap<SemanticFieldKey, String> {
+        let mut aliases = HashMap::new();
+
+        for item in projection {
+            match item {
+                Expression::Star(_) if model_refs.len() == 1 => {
+                    let (model_name, _) = (&model_refs[0].0, &model_refs[0].1);
+                    if let Some(model) = self.graph.get_model(model_name) {
+                        for dimension in &model.dimensions {
+                            aliases.insert(
+                                semantic_field_key(model_name, &dimension.name, None),
+                                dimension.name.clone(),
+                            );
+                        }
+                        for metric in &model.metrics {
+                            aliases.insert(
+                                semantic_field_key(model_name, &metric.name, None),
+                                metric.name.clone(),
+                            );
+                        }
+                    }
+                }
+                Expression::Alias(alias) => {
+                    if let Some(key) = semantic_field_key_for_expr(&alias.this, model_refs) {
+                        aliases.insert(key, alias.alias.name.clone());
+                    }
+                }
+                Expression::Column(column) => {
+                    if let Some((model_name, _, base_field, granularity)) =
+                        resolve_model_field(column, model_refs)
+                    {
+                        aliases.insert(
+                            semantic_field_key(model_name, base_field, granularity),
+                            column.name.name.clone(),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        aliases
+    }
+
     /// Rewrite SELECT projection items
     fn rewrite_projection(
         &self,
@@ -544,7 +625,9 @@ impl<'a> QueryRewriter<'a> {
             | MetricType::Ratio
             | MetricType::Cumulative
             | MetricType::TimeComparison
-            | MetricType::Conversion => {
+            | MetricType::Conversion
+            | MetricType::Retention
+            | MetricType::Cohort => {
                 if let Some(expr) = parse_select_expr(&metric.to_sql(Some(alias))) {
                     return expr;
                 }
@@ -833,6 +916,31 @@ impl<'a> QueryRewriter<'a> {
         Ok(binary)
     }
 
+    fn rewrite_order_by_expr(
+        &self,
+        expr: Expression,
+        model_refs: &[(String, String)],
+        projection_aliases: &HashMap<SemanticFieldKey, String>,
+        output_aliases: &HashSet<String>,
+    ) -> Result<Expression> {
+        if let Expression::Column(column) = &expr {
+            if column.table.is_none() && output_aliases.contains(&column.name.name) {
+                return Ok(expr);
+            }
+
+            if let Some((model_name, _, base_field, granularity)) =
+                resolve_model_field(column, model_refs)
+            {
+                let key = semantic_field_key(model_name, base_field, granularity);
+                if let Some(alias) = projection_aliases.get(&key) {
+                    return Ok(Expression::identifier(alias.clone()));
+                }
+            }
+        }
+
+        self.rewrite_expr(expr, model_refs)
+    }
+
     /// Check if expression is an aggregation function
     fn is_aggregation(&self, expr: &Expression) -> bool {
         match expr {
@@ -949,6 +1057,31 @@ fn resolve_model_field<'a>(
     }
 
     None
+}
+
+type SemanticFieldKey = (String, String, Option<String>);
+
+fn semantic_field_key(
+    model_name: &str,
+    base_field: &str,
+    granularity: Option<&str>,
+) -> SemanticFieldKey {
+    (
+        model_name.to_string(),
+        base_field.to_string(),
+        granularity.map(ToString::to_string),
+    )
+}
+
+fn semantic_field_key_for_expr(
+    expr: &Expression,
+    model_refs: &[(String, String)],
+) -> Option<SemanticFieldKey> {
+    let Expression::Column(column) = expr else {
+        return None;
+    };
+    let (model_name, _, base_field, granularity) = resolve_model_field(column, model_refs)?;
+    Some(semantic_field_key(model_name, base_field, granularity))
 }
 
 fn split_granularity(field: &str) -> (&str, Option<&str>) {
@@ -1332,5 +1465,55 @@ mod tests {
         assert!(rewritten.contains("order_items.order_id AS order_id"));
         assert!(rewritten.contains("order_items.item_id AS item_id"));
         assert!(rewritten.contains("GROUP BY 1"));
+    }
+
+    #[test]
+    fn test_order_by_projected_semantic_refs_rewrite_to_output_aliases() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.revenue AS total, orders.status FROM orders ORDER BY orders.revenue DESC, orders.status ASC";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(
+            rewritten.contains("ORDER BY total DESC, status ASC"),
+            "expected ORDER BY aliases, got: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("ORDER BY orders.revenue"),
+            "semantic metric reference leaked into ORDER BY: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn test_order_by_projected_alias_is_preserved() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.revenue AS total, orders.status FROM orders ORDER BY total DESC";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(
+            rewritten.contains("ORDER BY total DESC"),
+            "expected projected alias ORDER BY, got: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn test_order_by_order_only_semantic_metric_rewrites_to_aggregate() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.status FROM orders ORDER BY orders.revenue DESC";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(
+            rewritten.contains("ORDER BY SUM(orders.amount) DESC"),
+            "expected aggregate ORDER BY, got: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("ORDER BY orders.revenue"),
+            "semantic metric reference leaked into ORDER BY: {rewritten}"
+        );
     }
 }

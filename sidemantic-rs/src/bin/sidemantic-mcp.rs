@@ -26,6 +26,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use sidemantic::runtime::interpolate_query_filters;
 #[cfg(feature = "mcp-adbc")]
 use sidemantic::{
     chart_auto_detect_columns, chart_encoding_type, chart_format_label, chart_select_type,
@@ -101,6 +102,8 @@ struct QueryRequest {
     dry_run: bool,
     #[serde(default)]
     use_preaggregations: bool,
+    #[serde(default)]
+    parameters: JsonMap<String, JsonValue>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -134,6 +137,8 @@ struct ChartRequest {
     limit: Option<usize>,
     #[serde(default)]
     offset: Option<usize>,
+    #[serde(default)]
+    parameters: JsonMap<String, JsonValue>,
     #[serde(default = "default_chart_type")]
     chart_type: String,
     #[serde(default)]
@@ -176,6 +181,24 @@ impl SidemanticMcpServer {
                 filters.push(where_clause.clone());
             }
         }
+        let parameter_values = request
+            .parameters
+            .iter()
+            .map(|(key, value)| {
+                serde_yaml::to_value(value)
+                    .map(|value| (key.clone(), value))
+                    .map_err(|e| {
+                        McpError::invalid_params(
+                            format!("failed to parse query parameter '{key}': {e}"),
+                            None,
+                        )
+                    })
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let filters = interpolate_query_filters(self.runtime.graph(), filters, &parameter_values)
+            .map_err(|e| {
+            McpError::invalid_params(format!("failed to interpolate query parameters: {e}"), None)
+        })?;
 
         let mut query = SemanticQuery::new()
             .with_dimensions(request.dimensions.clone())
@@ -407,6 +430,7 @@ impl SidemanticMcpServer {
             order_by: request.order_by.clone(),
             limit: request.limit,
             offset: request.offset,
+            parameters: request.parameters.clone(),
             ungrouped: false,
             dry_run: false,
             use_preaggregations: false,

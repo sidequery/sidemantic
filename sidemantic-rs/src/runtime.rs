@@ -442,12 +442,14 @@ fn benefit_score(pattern: &PreaggPatternRecord, count: usize) -> f64 {
 
 fn granularity_rank(granularity: &str) -> usize {
     match granularity {
-        "hour" => 0,
-        "day" => 1,
-        "week" => 2,
-        "month" => 3,
-        "quarter" => 4,
-        "year" => 5,
+        "second" => 0,
+        "minute" => 1,
+        "hour" => 2,
+        "day" => 3,
+        "week" => 4,
+        "month" => 5,
+        "quarter" => 6,
+        "year" => 7,
         _ => 99,
     }
 }
@@ -599,6 +601,8 @@ fn parse_metric_type_for_dependencies(payload: &MetricDependencyPayload) -> Metr
         Some("cumulative") => MetricType::Cumulative,
         Some("time_comparison" | "timecomparison") => MetricType::TimeComparison,
         Some("conversion") => MetricType::Conversion,
+        Some("retention") => MetricType::Retention,
+        Some("cohort") => MetricType::Cohort,
         _ => {
             if payload.agg.is_none() && payload.sql.is_some() {
                 MetricType::Derived
@@ -2201,6 +2205,14 @@ fn payload_optional_string(mapping: &serde_yaml::Mapping, key: &str) -> Option<S
         .map(str::to_owned)
 }
 
+fn payload_sequence_len(mapping: &serde_yaml::Mapping, key: &str) -> Option<usize> {
+    let key_value = serde_yaml::Value::String(key.to_owned());
+    mapping
+        .get(&key_value)
+        .and_then(serde_yaml::Value::as_sequence)
+        .map(Vec::len)
+}
+
 fn relationship_helper_type_name(payload: &RelationshipHelperPayload) -> &str {
     payload
         .relationship_type
@@ -3378,14 +3390,58 @@ pub fn validate_metric_payload(metric_yaml: &str) -> Result<bool> {
                         "conversion metric requires 'entity' field".to_string(),
                     ));
                 }
-                if !payload_has_non_empty_string(mapping, "base_event") {
+                if let Some(step_count) = payload_sequence_len(mapping, "steps") {
+                    if step_count < 2 {
+                        return Err(SidemanticError::Validation(
+                            "conversion metric 'steps' requires at least 2 steps".to_string(),
+                        ));
+                    }
+                    if payload_has_non_empty_string(mapping, "conversion_window") {
+                        return Err(SidemanticError::Validation(
+                            "conversion metric cannot specify both 'steps' and 'conversion_window'"
+                                .to_string(),
+                        ));
+                    }
+                } else if !payload_has_non_empty_string(mapping, "base_event")
+                    || !payload_has_non_empty_string(mapping, "conversion_event")
+                {
                     return Err(SidemanticError::Validation(
-                        "conversion metric requires 'base_event' field".to_string(),
+                        "conversion metric requires 'steps' or both 'base_event' and 'conversion_event'"
+                            .to_string(),
                     ));
                 }
-                if !payload_has_non_empty_string(mapping, "conversion_event") {
+            }
+            "retention" => {
+                if !payload_has_non_empty_string(mapping, "entity") {
                     return Err(SidemanticError::Validation(
-                        "conversion metric requires 'conversion_event' field".to_string(),
+                        "retention metric requires 'entity' field".to_string(),
+                    ));
+                }
+                if !payload_has_non_empty_string(mapping, "cohort_event") {
+                    return Err(SidemanticError::Validation(
+                        "retention metric requires 'cohort_event' field".to_string(),
+                    ));
+                }
+            }
+            "cohort" => {
+                if !payload_has_non_empty_string(mapping, "entity") {
+                    return Err(SidemanticError::Validation(
+                        "cohort metric requires 'entity' field".to_string(),
+                    ));
+                }
+                if payload_sequence_len(mapping, "inner_metrics").unwrap_or(0) == 0 {
+                    return Err(SidemanticError::Validation(
+                        "cohort metric requires 'inner_metrics' field".to_string(),
+                    ));
+                }
+                if !payload_has_non_empty_string(mapping, "having") {
+                    return Err(SidemanticError::Validation(
+                        "cohort metric requires 'having' field".to_string(),
+                    ));
+                }
+                if !payload_has_non_empty_string(mapping, "agg") {
+                    return Err(SidemanticError::Validation(
+                        "cohort metric requires 'agg' field for outer aggregation".to_string(),
                     ));
                 }
             }
@@ -5245,7 +5301,7 @@ fn strip_dimension_granularity_suffix(reference: &str) -> &str {
     if let Some((base_ref, granularity)) = reference.rsplit_once("__") {
         if matches!(
             granularity,
-            "hour" | "day" | "week" | "month" | "quarter" | "year"
+            "second" | "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year"
         ) {
             return base_ref;
         }
@@ -5567,10 +5623,10 @@ pub fn validate_query_references(
         if let Some((base_ref, granularity)) = dim_ref.rsplit_once("__") {
             if !matches!(
                 granularity,
-                "hour" | "day" | "week" | "month" | "quarter" | "year"
+                "second" | "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year"
             ) {
                 errors.push(format!(
-                    "Invalid time granularity '{granularity}' in '{dim_ref}'. Must be one of: hour, day, week, month, quarter, year"
+                    "Invalid time granularity '{granularity}' in '{dim_ref}'. Must be one of: second, minute, hour, day, week, month, quarter, year"
                 ));
             }
             dim_ref_for_lookup = base_ref.to_string();
@@ -6126,6 +6182,53 @@ agg: sum
         assert!(metric_err
             .to_string()
             .contains("derived metric requires 'sql' field"));
+        assert!(validate_metric_payload(
+            r#"
+name: signup_funnel
+type: conversion
+entity: user_id
+steps:
+  - event_type = 'signup'
+  - event_type = 'purchase'
+"#
+        )
+        .unwrap());
+        let conversion_err = validate_metric_payload(
+            r#"
+name: bad_funnel
+type: conversion
+entity: user_id
+steps:
+  - event_type = 'signup'
+"#,
+        )
+        .unwrap_err();
+        assert!(conversion_err
+            .to_string()
+            .contains("conversion metric 'steps' requires at least 2 steps"));
+        assert!(validate_metric_payload(
+            r#"
+name: retention
+type: retention
+entity: user_id
+cohort_event: event_type = 'signup'
+"#
+        )
+        .unwrap());
+        assert!(validate_metric_payload(
+            r#"
+name: cohort
+type: cohort
+entity: user_id
+inner_metrics:
+  - name: platform_count
+    agg: count_distinct
+    sql: platform
+having: platform_count >= 2
+agg: count
+"#
+        )
+        .unwrap());
 
         let parameter_yaml = r#"
 name: region
@@ -7103,6 +7206,35 @@ metrics:
             &["orders.status".to_string()],
         );
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn test_runtime_validation_accepts_subhour_time_granularity_suffixes() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: second
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"#;
+        let runtime = SidemanticRuntime::from_yaml(yaml).unwrap();
+        for granularity in ["second", "minute"] {
+            let errors = runtime.validate_query_references(
+                &["orders.revenue".to_string()],
+                &[format!("orders.created_at__{granularity}")],
+            );
+            assert!(
+                errors.is_empty(),
+                "unexpected errors for {granularity}: {errors:?}"
+            );
+        }
     }
 
     #[test]

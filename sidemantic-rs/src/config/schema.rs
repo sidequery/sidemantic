@@ -5,9 +5,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Aggregation, ComparisonCalculation, ComparisonType, Dimension, DimensionType, Metric,
-    MetricType, Model, Parameter, ParameterType, PreAggregation, PreAggregationType, RefreshKey,
-    Relationship, RelationshipType, Segment, TimeGrain,
+    Aggregation, CohortInnerMetric, ComparisonCalculation, ComparisonType, Dimension,
+    DimensionType, Metric, MetricType, Model, Parameter, ParameterType, PreAggregation,
+    PreAggregationType, RefreshKey, Relationship, RelationshipType, Segment, TimeGrain,
 };
 
 // =============================================================================
@@ -118,6 +118,15 @@ pub struct MetricConfig {
     pub base_event: Option<String>,
     pub conversion_event: Option<String>,
     pub conversion_window: Option<String>,
+    pub steps: Option<Vec<String>>,
+    pub cohort_event: Option<String>,
+    pub activity_event: Option<String>,
+    pub periods: Option<usize>,
+    pub retention_granularity: Option<String>,
+    pub granularity: Option<String>,
+    pub inner_metrics: Option<Vec<CohortInnerMetricConfig>>,
+    pub entity_dimensions: Option<Vec<String>>,
+    pub having: Option<String>,
     pub fill_nulls_with: Option<serde_json::Value>,
     pub format: Option<String>,
     pub value_format_name: Option<String>,
@@ -127,6 +136,13 @@ pub struct MetricConfig {
     pub filters: Vec<String>,
     pub description: Option<String>,
     pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CohortInnerMetricConfig {
+    pub name: String,
+    pub agg: Option<String>,
+    pub sql: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -388,6 +404,8 @@ impl MetricConfig {
             Some("cumulative") => MetricType::Cumulative,
             Some("time_comparison") => MetricType::TimeComparison,
             Some("conversion") => MetricType::Conversion,
+            Some("retention") => MetricType::Retention,
+            Some("cohort") => MetricType::Cohort,
             _ => {
                 if self.agg.is_none() && self.sql.is_some() {
                     MetricType::Derived
@@ -407,6 +425,16 @@ impl MetricConfig {
             .calculation
             .as_deref()
             .and_then(parse_comparison_calculation);
+        let inner_metrics = self.inner_metrics.map(|items| {
+            items
+                .into_iter()
+                .map(|item| CohortInnerMetric {
+                    name: item.name,
+                    agg: item.agg.as_deref().map(parse_aggregation),
+                    sql: item.sql,
+                })
+                .collect()
+        });
 
         Metric {
             name: self.name,
@@ -432,6 +460,14 @@ impl MetricConfig {
             base_event: self.base_event,
             conversion_event: self.conversion_event,
             conversion_window: self.conversion_window,
+            steps: self.steps,
+            cohort_event: self.cohort_event,
+            activity_event: self.activity_event,
+            periods: self.periods,
+            retention_granularity: self.retention_granularity.or(self.granularity),
+            inner_metrics,
+            entity_dimensions: self.entity_dimensions,
+            having: self.having,
             fill_nulls_with: self.fill_nulls_with,
             format: self.format,
             value_format_name: self.value_format_name,
@@ -665,6 +701,14 @@ impl CubeMeasure {
             base_event: None,
             conversion_event: None,
             conversion_window: None,
+            steps: None,
+            cohort_event: None,
+            activity_event: None,
+            periods: None,
+            retention_granularity: None,
+            inner_metrics: None,
+            entity_dimensions: None,
+            having: None,
             fill_nulls_with: None,
             format: None,
             value_format_name: None,

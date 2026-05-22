@@ -32,9 +32,9 @@ use polyglot_sql::Expression;
 use polyglot_sql::{parse as polyglot_parse, DialectType};
 
 use crate::core::{
-    Aggregation, ComparisonCalculation, ComparisonType, Dimension, DimensionType, Index, Metric,
-    MetricType, Model, Parameter, ParameterType, PreAggregation, PreAggregationType, RefreshKey,
-    Relationship, RelationshipType, Segment, TimeGrain,
+    Aggregation, CohortInnerMetric, ComparisonCalculation, ComparisonType, Dimension,
+    DimensionType, Index, Metric, MetricType, Model, Parameter, ParameterType, PreAggregation,
+    PreAggregationType, RefreshKey, Relationship, RelationshipType, Segment, TimeGrain,
 };
 use crate::error::{Result, SidemanticError};
 
@@ -307,6 +307,8 @@ fn parse_metric_type(value: Option<&String>) -> MetricType {
             MetricType::TimeComparison
         }
         Some(metric_type) if metric_type == "conversion" => MetricType::Conversion,
+        Some(metric_type) if metric_type == "retention" => MetricType::Retention,
+        Some(metric_type) if metric_type == "cohort" => MetricType::Cohort,
         _ => MetricType::Simple,
     }
 }
@@ -1093,6 +1095,49 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
     metric.base_event = props.get("base_event").cloned();
     metric.conversion_event = props.get("conversion_event").cloned();
     metric.conversion_window = props.get("conversion_window").cloned();
+    if let Some(steps) = props.get("steps") {
+        let parsed = json_value_to_string_list(parse_literal(steps));
+        if !parsed.is_empty() {
+            metric.steps = Some(parsed);
+        }
+    }
+    metric.cohort_event = props.get("cohort_event").cloned();
+    metric.activity_event = props.get("activity_event").cloned();
+    metric.periods = props.get("periods").and_then(|value| value.parse().ok());
+    metric.retention_granularity = props
+        .get("retention_granularity")
+        .or_else(|| props.get("granularity"))
+        .cloned();
+    if let Some(entity_dimensions) = props.get("entity_dimensions") {
+        let parsed = json_value_to_string_list(parse_literal(entity_dimensions));
+        if !parsed.is_empty() {
+            metric.entity_dimensions = Some(parsed);
+        }
+    }
+    if let Some(inner_metrics) = props.get("inner_metrics") {
+        let parsed = parse_literal(inner_metrics);
+        if let serde_json::Value::Array(items) = parsed {
+            let inner = items
+                .into_iter()
+                .filter_map(|item| {
+                    let serde_json::Value::Object(obj) = item else {
+                        return None;
+                    };
+                    let name = obj.get("name").and_then(json_value_to_string)?;
+                    let agg = obj
+                        .get("agg")
+                        .and_then(json_value_to_string)
+                        .and_then(|value| parse_metric_aggregation(Some(&value)));
+                    let sql = obj.get("sql").and_then(json_value_to_string);
+                    Some(CohortInnerMetric { name, agg, sql })
+                })
+                .collect::<Vec<_>>();
+            if !inner.is_empty() {
+                metric.inner_metrics = Some(inner);
+            }
+        }
+    }
+    metric.having = props.get("having").cloned();
     metric.description = props.get("description").cloned();
     metric.label = props.get("label").cloned();
     metric.format = props.get("format").cloned();
@@ -1148,7 +1193,7 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
         metric.r#type = MetricType::Derived;
     }
 
-    if !matches!(metric.r#type, MetricType::Simple) {
+    if !matches!(metric.r#type, MetricType::Simple | MetricType::Cohort) {
         metric.agg = None;
     }
 
@@ -1392,6 +1437,28 @@ mod tests {
         let revenue = model.get_metric("revenue").unwrap();
         assert_eq!(revenue.agg, Some(Aggregation::Sum));
         assert_eq!(revenue.sql, Some("amount".to_string()));
+    }
+
+    #[test]
+    fn test_parse_cohort_metric_preserves_outer_aggregation() {
+        let sql = r#"
+            MODEL (name events, table events);
+            METRIC (
+                name scored_users,
+                type cohort,
+                entity user_id,
+                inner_metrics [{ name total_score, agg sum, sql score }],
+                having total_score > 10,
+                agg avg,
+                sql cohort_sub.total_score
+            );
+        "#;
+
+        let model = parse_sql_model(sql).unwrap();
+        let metric = model.get_metric("scored_users").unwrap();
+        assert_eq!(metric.r#type, MetricType::Cohort);
+        assert_eq!(metric.agg, Some(Aggregation::Avg));
+        assert_eq!(metric.sql, Some("cohort_sub.total_score".to_string()));
     }
 
     #[test]

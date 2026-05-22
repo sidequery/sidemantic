@@ -58,6 +58,8 @@ class SemanticLayer:
         from sidemantic.db.base import BaseDatabaseAdapter
 
         self.graph = SemanticGraph()
+        self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
+        self._sql_rewrite_cache_limit = 256
         self.use_preaggregations = use_preaggregations
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
@@ -233,6 +235,7 @@ class SemanticLayer:
             )
 
         self.graph.add_model(model)
+        self._sql_rewrite_cache.clear()
 
     def _normalize_model_table(self, model: Model) -> None:
         """Normalize model.table for the active dialect when needed."""
@@ -449,6 +452,7 @@ class SemanticLayer:
             )
 
         self.graph.add_metric(measure)
+        self._sql_rewrite_cache.clear()
 
     def query(
         self,
@@ -681,6 +685,7 @@ class SemanticLayer:
             "segments": segments or [],
             "order_by": order_by or [],
             "limit": limit,
+            "offset": offset,
             "ungrouped": ungrouped,
             "use_preaggregations": bool(use_preaggregations),
             "preagg_database": self.preagg_database,
@@ -691,9 +696,6 @@ class SemanticLayer:
             models_yaml = graph_to_rust_yaml(self.graph)
             query_yaml = yaml.safe_dump(payload, sort_keys=False)
             sql = self._rust_module.compile_with_yaml(models_yaml, query_yaml)
-
-            if offset is not None:
-                sql = f"{sql}\nOFFSET {offset}"
 
             target_dialect = dialect or self.dialect
             if target_dialect != self.dialect:
@@ -1201,8 +1203,20 @@ class SemanticLayer:
         """
         from sidemantic.sql.query_rewriter import QueryRewriter
 
-        rewriter = QueryRewriter(self.graph, dialect=self.dialect)
-        rewritten_sql = rewriter.rewrite(query)
+        cache_key = (
+            getattr(self.graph, "_version", 0),
+            self.dialect,
+            os.getenv("SIDEMANTIC_RS_REWRITER", "0"),
+            os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
+            query,
+        )
+        rewritten_sql = self._sql_rewrite_cache.get(cache_key)
+        if rewritten_sql is None:
+            rewriter = QueryRewriter(self.graph, dialect=self.dialect)
+            rewritten_sql = rewriter.rewrite(query)
+            if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
+                self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
+            self._sql_rewrite_cache[cache_key] = rewritten_sql
 
         return self.adapter.execute(rewritten_sql)
 

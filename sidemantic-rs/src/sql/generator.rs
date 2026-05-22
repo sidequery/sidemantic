@@ -3,8 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::core::{
-    build_symmetric_aggregate_sql_with_key_expr, Aggregation, JoinPath, MetricType,
-    RelationshipType, RelativeDate, SemanticGraph, SqlDialect, SymmetricAggType, TableCalculation,
+    build_symmetric_aggregate_sql_with_key_expr, Aggregation, CohortInnerMetric, JoinPath, Metric,
+    MetricType, Model, RelationshipType, RelativeDate, SemanticGraph, SqlDialect, SymmetricAggType,
+    TableCalculation,
 };
 use crate::error::{Result, SidemanticError};
 
@@ -499,7 +500,10 @@ impl<'a> SqlGenerator<'a> {
                     let denom_sql = self.expand_derived_metric(denom, &metric_ref.model)?;
                     format!("({num_sql}) / NULLIF({denom_sql}, 0)")
                 }
-                MetricType::Cumulative | MetricType::TimeComparison => {
+                MetricType::Cumulative
+                | MetricType::TimeComparison
+                | MetricType::Retention
+                | MetricType::Cohort => {
                     // Complex metric types use to_sql which generates placeholder SQL
                     metric.to_sql(Some(&alias))
                 }
@@ -1252,6 +1256,8 @@ impl<'a> SqlGenerator<'a> {
             if metric.r#type == MetricType::Cumulative
                 || metric.r#type == MetricType::TimeComparison
                 || metric.r#type == MetricType::Conversion
+                || metric.r#type == MetricType::Retention
+                || metric.r#type == MetricType::Cohort
                 || (metric.r#type == MetricType::Ratio && metric.offset_window.is_some())
             {
                 return Ok(true);
@@ -1502,6 +1508,8 @@ impl<'a> SqlGenerator<'a> {
         let mut time_comparison_metrics: Vec<MetricRef> = Vec::new();
         let mut offset_ratio_metrics: Vec<MetricRef> = Vec::new();
         let mut conversion_metrics: Vec<MetricRef> = Vec::new();
+        let mut retention_metrics: Vec<MetricRef> = Vec::new();
+        let mut cohort_metrics: Vec<MetricRef> = Vec::new();
 
         for metric_ref in metric_refs {
             let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
@@ -1574,6 +1582,12 @@ impl<'a> SqlGenerator<'a> {
                 MetricType::Conversion => {
                     conversion_metrics.push(metric_ref.clone());
                 }
+                MetricType::Retention => {
+                    retention_metrics.push(metric_ref.clone());
+                }
+                MetricType::Cohort => {
+                    cohort_metrics.push(metric_ref.clone());
+                }
                 _ => {
                     let explicit_ref = format!("{}.{}", metric_ref.model, metric_ref.name);
                     if seen_metrics.insert(explicit_ref.clone()) {
@@ -1583,9 +1597,78 @@ impl<'a> SqlGenerator<'a> {
             }
         }
 
+        if let Some(retention_metric_ref) = retention_metrics.first() {
+            if retention_metrics.len() > 1 {
+                return Err(SidemanticError::Validation(
+                    "Only one retention metric can be queried at a time".to_string(),
+                ));
+            }
+            if !base_metrics.is_empty()
+                || !cumulative_metrics.is_empty()
+                || !time_comparison_metrics.is_empty()
+                || !offset_ratio_metrics.is_empty()
+                || !conversion_metrics.is_empty()
+                || !cohort_metrics.is_empty()
+            {
+                return Err(SidemanticError::Validation(
+                    "Retention metrics cannot be combined with other metrics in a single query"
+                        .to_string(),
+                ));
+            }
+            return self.generate_retention_query(
+                retention_metric_ref,
+                &query.filters,
+                &query.order_by,
+                query.limit,
+                query.offset,
+            );
+        }
+
         if let Some(conversion_metric_ref) = conversion_metrics.first() {
+            if conversion_metrics.len() > 1 {
+                return Err(SidemanticError::Validation(
+                    "Only one conversion metric can be queried at a time".to_string(),
+                ));
+            }
+            if !base_metrics.is_empty()
+                || !cumulative_metrics.is_empty()
+                || !time_comparison_metrics.is_empty()
+                || !offset_ratio_metrics.is_empty()
+                || !cohort_metrics.is_empty()
+            {
+                return Err(SidemanticError::Validation(
+                    "Conversion metrics cannot be combined with other metrics in a single query"
+                        .to_string(),
+                ));
+            }
             return self.generate_conversion_query(
                 conversion_metric_ref,
+                dimension_refs,
+                &query.filters,
+                &query.order_by,
+                query.limit,
+                query.offset,
+            );
+        }
+
+        if let Some(cohort_metric_ref) = cohort_metrics.first() {
+            if cohort_metrics.len() > 1 {
+                return Err(SidemanticError::Validation(
+                    "Only one cohort metric can be queried at a time".to_string(),
+                ));
+            }
+            if !base_metrics.is_empty()
+                || !cumulative_metrics.is_empty()
+                || !time_comparison_metrics.is_empty()
+                || !offset_ratio_metrics.is_empty()
+            {
+                return Err(SidemanticError::Validation(
+                    "Cohort metrics cannot be combined with other metrics in a single query"
+                        .to_string(),
+                ));
+            }
+            return self.generate_cohort_query(
+                cohort_metric_ref,
                 dimension_refs,
                 &query.filters,
                 &query.order_by,
@@ -1731,8 +1814,10 @@ impl<'a> SqlGenerator<'a> {
                     time_granularity.as_deref(),
                 );
                 let prev_alias = format!("{}_prev_value", metric_ref.alias);
+                let window_clause =
+                    self.lag_window_clause(dimension_refs, &time_col, Some(lag_offset));
                 lag_selects.push(format!(
-                    "LAG(base.{base_alias}, {lag_offset}) OVER (ORDER BY {time_col}) AS {prev_alias}"
+                    "LAG(base.{base_alias}, {lag_offset}) OVER ({window_clause}) AS {prev_alias}"
                 ));
             }
 
@@ -1760,8 +1845,9 @@ impl<'a> SqlGenerator<'a> {
                 })?;
                 let denom_alias = self.metric_alias_from_ref(denominator);
                 let prev_alias = format!("{}_prev_denom", metric_ref.alias);
+                let window_clause = self.lag_window_clause(dimension_refs, &time_col, None);
                 lag_selects.push(format!(
-                    "LAG(base.{denom_alias}) OVER (ORDER BY {time_col}) AS {prev_alias}"
+                    "LAG(base.{denom_alias}) OVER ({window_clause}) AS {prev_alias}"
                 ));
             }
 
@@ -1956,6 +2042,48 @@ impl<'a> SqlGenerator<'a> {
         ))
     }
 
+    fn lag_window_clause(
+        &self,
+        dimension_refs: &[DimensionRef],
+        time_col: &str,
+        _lag_offset: Option<i64>,
+    ) -> String {
+        let partition_cols = self.time_comparison_partition_columns(dimension_refs, time_col);
+        if partition_cols.is_empty() {
+            return format!("ORDER BY {time_col}");
+        }
+
+        format!(
+            "PARTITION BY {} ORDER BY {time_col}",
+            partition_cols.join(", ")
+        )
+    }
+
+    fn time_comparison_partition_columns(
+        &self,
+        dimension_refs: &[DimensionRef],
+        time_col: &str,
+    ) -> Vec<String> {
+        let mut partition_cols = Vec::new();
+        for dim_ref in dimension_refs {
+            let dim_col = format!("base.{}", dim_ref.alias);
+            if dim_col == time_col {
+                continue;
+            }
+            let Some(model) = self.graph.get_model(&dim_ref.model) else {
+                continue;
+            };
+            let Some(dimension) = model.get_dimension(&dim_ref.name) else {
+                continue;
+            };
+            if dimension.r#type == crate::core::DimensionType::Time {
+                continue;
+            }
+            partition_cols.push(dim_col);
+        }
+        partition_cols
+    }
+
     fn calculate_lag_offset(
         &self,
         comparison_type: Option<&crate::core::ComparisonType>,
@@ -2010,7 +2138,7 @@ impl<'a> SqlGenerator<'a> {
         &self,
         metric_ref: &MetricRef,
         dimension_refs: &[DimensionRef],
-        _filters: &[String],
+        filters: &[String],
         order_by: &[String],
         limit: Option<usize>,
         offset: Option<usize>,
@@ -2030,6 +2158,23 @@ impl<'a> SqlGenerator<'a> {
                 metric_ref.alias
             ))
         })?;
+        if let Some(steps) = metric.steps.as_ref() {
+            if steps.len() < 2 {
+                return Err(SidemanticError::Validation(
+                    "conversion metric 'steps' requires at least 2 steps".to_string(),
+                ));
+            }
+            return self.generate_multistep_conversion_query(
+                model,
+                metric,
+                metric_ref,
+                dimension_refs,
+                filters,
+                order_by,
+                limit,
+                offset,
+            );
+        }
         let base_event = metric.base_event.as_ref().ok_or_else(|| {
             SidemanticError::Validation(format!(
                 "Conversion metric {} missing required fields",
@@ -2050,6 +2195,8 @@ impl<'a> SqlGenerator<'a> {
         let window_parts: Vec<&str> = conversion_window.split_whitespace().collect();
         let window_num = window_parts.first().copied().unwrap_or("7");
         let window_unit = window_parts.get(1).copied().unwrap_or("days");
+        self.validate_identifier(entity, "entity")?;
+        self.validate_interval_parts(window_num, window_unit)?;
 
         let mut event_type_dim: Option<String> = None;
         let mut timestamp_dim: Option<String> = None;
@@ -2073,11 +2220,10 @@ impl<'a> SqlGenerator<'a> {
             )
         })?;
 
-        let from_clause = if let Some(model_sql) = model.sql.as_ref() {
-            format!("({model_sql}) AS t")
-        } else {
-            model.table_name().to_string()
-        };
+        let from_clause = self.model_from_clause(model, Some("t"));
+        let mut all_filters = filters.to_vec();
+        all_filters.extend(metric.filters.clone());
+        let filter_clause = self.raw_filter_suffix(model, &all_filters, "\n    AND ")?;
 
         let mut dim_entries: Vec<(String, String)> = Vec::new();
         for dim_ref in dimension_refs {
@@ -2165,11 +2311,683 @@ impl<'a> SqlGenerator<'a> {
         let offset_clause = offset
             .map(|value| format!("\nOFFSET {value}"))
             .unwrap_or_default();
+        let base_event_lit = self.escape_sql_literal(base_event);
+        let conversion_event_lit = self.escape_sql_literal(conversion_event);
+        let interval = self.interval_sql(window_num, window_unit);
 
         Ok(format!(
-            "WITH base_events AS (\n  SELECT\n    {entity} AS entity,\n    {timestamp_dim} AS event_time{extra_base_cols}\n  FROM {from_clause}\n  WHERE {event_type_dim} = '{base_event}'\n),\nconversion_events AS (\n  SELECT\n    {entity} AS entity,\n    {timestamp_dim} AS event_time{extra_conv_cols}\n  FROM {from_clause}\n  WHERE {event_type_dim} = '{conversion_event}'\n),\nconversions AS (\n  SELECT DISTINCT\n    base.entity{extra_conversions_cols}\n  FROM base_events base\n  JOIN conversion_events conv\n    ON base.entity = conv.entity\n    AND conv.event_time BETWEEN base.event_time AND base.event_time + INTERVAL '{window_num} {window_unit}'\n)\nSELECT\n{dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {}\nFROM base_events\nLEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{offset_clause}",
+            "WITH base_events AS (\n  SELECT\n    {entity} AS entity,\n    {timestamp_dim} AS event_time{extra_base_cols}\n  FROM {from_clause}\n  WHERE {event_type_dim} = '{base_event_lit}'{filter_clause}\n),\nconversion_events AS (\n  SELECT\n    {entity} AS entity,\n    {timestamp_dim} AS event_time{extra_conv_cols}\n  FROM {from_clause}\n  WHERE {event_type_dim} = '{conversion_event_lit}'{filter_clause}\n),\nconversions AS (\n  SELECT DISTINCT\n    base.entity{extra_conversions_cols}\n  FROM base_events base\n  JOIN conversion_events conv\n    ON base.entity = conv.entity\n    AND conv.event_time BETWEEN base.event_time AND base.event_time + {interval}\n)\nSELECT\n{dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {}\nFROM base_events\nLEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{offset_clause}",
             metric.name
         ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn generate_multistep_conversion_query(
+        &self,
+        model: &Model,
+        metric: &Metric,
+        metric_ref: &MetricRef,
+        dimension_refs: &[DimensionRef],
+        filters: &[String],
+        order_by: &[String],
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<String> {
+        let entity = metric.entity.as_deref().ok_or_else(|| {
+            SidemanticError::Validation(format!(
+                "Conversion metric {} missing required fields",
+                metric_ref.alias
+            ))
+        })?;
+        self.validate_identifier(entity, "entity")?;
+        let steps = metric.steps.as_ref().ok_or_else(|| {
+            SidemanticError::Validation(format!(
+                "Conversion metric {} missing required fields",
+                metric_ref.alias
+            ))
+        })?;
+        let timestamp_dim = self.default_time_dimension(model).ok_or_else(|| {
+            SidemanticError::Validation(format!(
+                "Multi-step conversion funnel requires a time dimension on model '{}' to enforce chronological step ordering",
+                model.name
+            ))
+        })?;
+        let timestamp_sql = self.raw_dimension_sql(model, timestamp_dim.sql_expr());
+        let entity_sql = model
+            .get_dimension(entity)
+            .map(|dimension| self.raw_dimension_sql(model, dimension.sql_expr()))
+            .unwrap_or_else(|| entity.to_string());
+
+        let dim_entries = self.conversion_dimension_entries(model, dimension_refs);
+        let dim_aliases: Vec<String> = dim_entries.iter().map(|(alias, _)| alias.clone()).collect();
+        let mut all_filters = filters.to_vec();
+        all_filters.extend(metric.filters.clone());
+        let filter_clause = self.raw_filter_suffix(model, &all_filters, " AND ")?;
+        let source_filter_predicate = {
+            let raw_filters = self.raw_filters_for_model(model, &all_filters)?;
+            if raw_filters.is_empty() {
+                "TRUE".to_string()
+            } else {
+                raw_filters
+                    .into_iter()
+                    .map(|filter| format!("({filter})"))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            }
+        };
+
+        let mut ctes = Vec::new();
+        let first_from = self.model_from_clause(model, Some("t"));
+        let dim_source_aliases = dim_entries
+            .iter()
+            .enumerate()
+            .map(|(idx, (alias, sql_col))| (alias.clone(), format!("__dim_{idx}"), sql_col.clone()))
+            .collect::<Vec<_>>();
+        let mut source_projection_parts = vec![
+            "*".to_string(),
+            format!("{timestamp_sql} AS __ts"),
+            format!("{entity_sql} AS __entity"),
+        ];
+        for (_, source_alias, sql_col) in &dim_source_aliases {
+            source_projection_parts.push(format!("{sql_col} AS {source_alias}"));
+        }
+        let source_projection = source_projection_parts.join(", ");
+
+        for (index, step_expr) in steps.iter().enumerate() {
+            let step_number = index + 1;
+            if step_number == 1 {
+                let mut select_parts = vec![
+                    format!("{entity_sql} AS entity"),
+                    format!("MIN({timestamp_sql}) AS step_1_ts"),
+                ];
+                for (alias, sql_col) in &dim_entries {
+                    select_parts.push(format!("{sql_col} AS {alias}"));
+                }
+                let mut group_parts = vec![entity_sql.clone()];
+                for (_, sql_col) in &dim_entries {
+                    group_parts.push(sql_col.clone());
+                }
+                ctes.push(format!(
+                    "step_1 AS (\n  SELECT\n    {}\n  FROM {first_from}\n  WHERE ({}){filter_clause}\n  GROUP BY\n    {}\n)",
+                    select_parts.join(",\n    "),
+                    self.raw_filter_for_model(model, step_expr)?,
+                    group_parts.join(",\n    ")
+                ));
+            } else {
+                let previous = format!("step_{}", step_number - 1);
+                let step_predicate = self.raw_filter_for_model(model, step_expr)?;
+                let source_from = if let Some(model_sql) = model.sql.as_ref() {
+                    format!(
+                        "(SELECT {source_projection}, ({step_predicate}) AS __step_match, ({source_filter_predicate}) AS __filter_match FROM ({model_sql}) AS _src) AS s"
+                    )
+                } else {
+                    format!(
+                        "(SELECT {source_projection}, ({step_predicate}) AS __step_match, ({source_filter_predicate}) AS __filter_match FROM {}) AS s",
+                        model.table_name()
+                    )
+                };
+                let mut select_parts = vec![
+                    "s.__entity AS entity".to_string(),
+                    format!("MIN(s.__ts) AS step_{step_number}_ts"),
+                ];
+                for alias in &dim_aliases {
+                    select_parts.push(format!("{previous}.{alias}"));
+                }
+                let mut group_parts = vec!["s.__entity".to_string()];
+                for alias in &dim_aliases {
+                    group_parts.push(format!("{previous}.{alias}"));
+                }
+                let mut join_condition = format!(
+                    "s.__entity = {previous}.entity\n    AND s.__ts >= {previous}.step_{}_ts",
+                    step_number - 1
+                );
+                for (alias, source_alias, _) in &dim_source_aliases {
+                    join_condition.push_str(&format!(
+                        "\n    AND s.{source_alias} IS NOT DISTINCT FROM {previous}.{alias}"
+                    ));
+                }
+                ctes.push(format!(
+                    "step_{step_number} AS (\n  SELECT\n    {}\n  FROM {source_from}\n  JOIN {previous} ON {join_condition}\n  WHERE s.__step_match AND s.__filter_match\n  GROUP BY\n    {}\n)",
+                    select_parts.join(",\n    "),
+                    group_parts.join(",\n    ")
+                ));
+            }
+        }
+
+        let step_count = steps.len();
+        let mut select_parts = Vec::new();
+        for alias in &dim_aliases {
+            select_parts.push(format!("step_1.{alias}"));
+        }
+        select_parts.push("COUNT(DISTINCT step_1.entity) AS total_entities".to_string());
+        for step in 1..=step_count {
+            select_parts.push(format!(
+                "COUNT(DISTINCT step_{step}.entity) AS step_{step}_count"
+            ));
+        }
+        select_parts.push(format!(
+            "COUNT(DISTINCT step_{step_count}.entity) AS {}",
+            metric.name
+        ));
+
+        let mut joins = Vec::new();
+        for step in 2..=step_count {
+            let previous = format!("step_{}", step - 1);
+            let current = format!("step_{step}");
+            let mut join_on = format!("{previous}.entity = {current}.entity");
+            for alias in &dim_aliases {
+                join_on.push_str(&format!(
+                    "\n    AND {previous}.{alias} IS NOT DISTINCT FROM {current}.{alias}"
+                ));
+            }
+            joins.push(format!("LEFT JOIN {current} ON {join_on}"));
+        }
+        let join_section = if joins.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}", joins.join("\n"))
+        };
+        let group_by = if dim_aliases.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nGROUP BY\n  {}",
+                (1..=dim_aliases.len())
+                    .map(|idx| idx.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",\n  ")
+            )
+        };
+        let order_clause = self.simple_order_clause(order_by);
+        let limit_clause = limit
+            .map(|value| format!("\nLIMIT {value}"))
+            .unwrap_or_default();
+        let offset_clause = offset
+            .map(|value| format!("\nOFFSET {value}"))
+            .unwrap_or_default();
+
+        Ok(format!(
+            "WITH {}\nSELECT\n  {}\nFROM step_1{join_section}{group_by}{order_clause}{limit_clause}{offset_clause}",
+            ctes.join(",\n"),
+            select_parts.join(",\n  ")
+        ))
+    }
+
+    fn generate_retention_query(
+        &self,
+        metric_ref: &MetricRef,
+        filters: &[String],
+        order_by: &[String],
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<String> {
+        let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
+            let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
+            SidemanticError::model_not_found(&metric_ref.model, &available)
+        })?;
+        let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
+            let available: Vec<&str> = model.metrics.iter().map(|m| m.name.as_str()).collect();
+            SidemanticError::metric_not_found(&metric_ref.model, &metric_ref.name, &available)
+        })?;
+        let entity = metric.entity.as_ref().ok_or_else(|| {
+            SidemanticError::Validation(format!(
+                "Retention metric {} missing required fields (entity, cohort_event)",
+                metric_ref.alias
+            ))
+        })?;
+        let cohort_event = metric.cohort_event.as_ref().ok_or_else(|| {
+            SidemanticError::Validation(format!(
+                "Retention metric {} missing required fields (entity, cohort_event)",
+                metric_ref.alias
+            ))
+        })?;
+        self.validate_identifier(entity, "entity")?;
+        let periods = metric.periods.unwrap_or(28);
+        if periods < 1 {
+            return Err(SidemanticError::Validation(format!(
+                "Invalid periods value: {periods}"
+            )));
+        }
+        let granularity = metric.retention_granularity.as_deref().unwrap_or("day");
+        let timestamp_dim = self.default_time_dimension(model).ok_or_else(|| {
+            SidemanticError::Validation(
+                "Retention metrics require a time dimension on the model".to_string(),
+            )
+        })?;
+        let entity_sql = model
+            .get_dimension(entity)
+            .map(|dimension| self.raw_dimension_sql(model, dimension.sql_expr()))
+            .unwrap_or_else(|| entity.to_string());
+        let entity_select = if entity_sql == *entity {
+            entity.to_string()
+        } else {
+            format!("{entity_sql} AS {entity}")
+        };
+        let ts_sql = self.raw_dimension_sql(model, timestamp_dim.sql_expr());
+        let (trunc_expr, diff_expr, periods_label) = match granularity {
+            "day" => (
+                format!("CAST({ts_sql} AS DATE)"),
+                "(a.active_date - c.cohort_date)".to_string(),
+                "days_since",
+            ),
+            "week" => (
+                format!("CAST({} AS DATE)", self.date_trunc_sql("week", &ts_sql)),
+                "((a.active_date - c.cohort_date) / 7)".to_string(),
+                "weeks_since",
+            ),
+            "month" => (
+                format!("CAST({} AS DATE)", self.date_trunc_sql("month", &ts_sql)),
+                "(EXTRACT(YEAR FROM a.active_date) - EXTRACT(YEAR FROM c.cohort_date)) * 12 + (EXTRACT(MONTH FROM a.active_date) - EXTRACT(MONTH FROM c.cohort_date))".to_string(),
+                "months_since",
+            ),
+            _ => {
+                return Err(SidemanticError::Validation(format!(
+                    "Unsupported retention granularity: {granularity}"
+                )))
+            }
+        };
+        let from_clause = self.model_from_clause(model, Some("t"));
+        let activity_event = metric.activity_event.as_deref().unwrap_or("TRUE");
+        let mut all_filters = filters.to_vec();
+        all_filters.extend(metric.filters.clone());
+        let filter_clause = self.raw_filter_suffix(model, &all_filters, " AND ")?;
+        let order_clause = if order_by.is_empty() {
+            "\nORDER BY r.cohort_date, r.periods_since".to_string()
+        } else {
+            self.simple_order_clause(order_by)
+        };
+        let limit_clause = limit
+            .map(|value| format!("\nLIMIT {value}"))
+            .unwrap_or_default();
+        let offset_clause = offset
+            .map(|value| format!("\nOFFSET {value}"))
+            .unwrap_or_default();
+
+        Ok(format!(
+            "WITH cohorts AS (\n  SELECT {entity_select}, MIN({trunc_expr}) AS cohort_date\n  FROM {from_clause}\n  WHERE {}{filter_clause}\n  GROUP BY {entity_sql}\n),\nactivity AS (\n  SELECT DISTINCT {entity_select}, {trunc_expr} AS active_date\n  FROM {from_clause}\n  WHERE {}{filter_clause}\n),\nretention AS (\n  SELECT\n    c.cohort_date,\n    CAST({diff_expr} AS INTEGER) AS periods_since,\n    COUNT(DISTINCT c.{entity}) AS active_users\n  FROM cohorts c\n  JOIN activity a ON c.{entity} = a.{entity} AND a.active_date >= c.cohort_date\n  WHERE CAST({diff_expr} AS INTEGER) <= {periods}\n  GROUP BY 1, 2\n),\ncohort_sizes AS (\n  SELECT cohort_date, COUNT(DISTINCT {entity}) AS cohort_size\n  FROM cohorts GROUP BY 1\n)\nSELECT\n  r.cohort_date,\n  r.periods_since AS {periods_label},\n  r.active_users,\n  c.cohort_size,\n  ROUND(r.active_users * 100.0 / c.cohort_size, 1) AS retention_pct\nFROM retention r\nJOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}{offset_clause}",
+            self.raw_filter_for_model(model, cohort_event)?,
+            self.raw_filter_for_model(model, activity_event)?
+        ))
+    }
+
+    fn generate_cohort_query(
+        &self,
+        metric_ref: &MetricRef,
+        dimension_refs: &[DimensionRef],
+        filters: &[String],
+        order_by: &[String],
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<String> {
+        let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
+            let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
+            SidemanticError::model_not_found(&metric_ref.model, &available)
+        })?;
+        let metric = model.get_metric(&metric_ref.name).ok_or_else(|| {
+            let available: Vec<&str> = model.metrics.iter().map(|m| m.name.as_str()).collect();
+            SidemanticError::metric_not_found(&metric_ref.model, &metric_ref.name, &available)
+        })?;
+        let entity = metric.entity.as_ref().ok_or_else(|| {
+            SidemanticError::Validation(format!(
+                "Cohort metric {} missing required fields",
+                metric_ref.alias
+            ))
+        })?;
+        self.validate_identifier(entity, "entity")?;
+        let inner_metrics = metric.inner_metrics.as_ref().ok_or_else(|| {
+            SidemanticError::Validation("cohort metric requires 'inner_metrics' field".to_string())
+        })?;
+        let having = metric.having.as_ref().ok_or_else(|| {
+            SidemanticError::Validation("cohort metric requires 'having' field".to_string())
+        })?;
+        let entity_sql = model
+            .get_dimension(entity)
+            .map(|dimension| self.raw_dimension_sql(model, dimension.sql_expr()))
+            .unwrap_or_else(|| entity.to_string());
+        let from_clause = self.model_from_clause(model, Some("t"));
+        let mut cohort_dimension_refs = Vec::new();
+        if let Some(entity_dimensions) = metric.entity_dimensions.as_ref() {
+            for entity_dimension in entity_dimensions {
+                let (dim_model, dim_name) =
+                    if let Some((model_name, dim_name)) = entity_dimension.split_once('.') {
+                        (model_name.to_string(), dim_name.to_string())
+                    } else {
+                        (model.name.clone(), entity_dimension.clone())
+                    };
+                cohort_dimension_refs.push(DimensionRef {
+                    model: dim_model,
+                    name: dim_name.clone(),
+                    granularity: None,
+                    alias: dim_name,
+                });
+            }
+        }
+        for dim_ref in dimension_refs {
+            if cohort_dimension_refs
+                .iter()
+                .any(|existing| existing.model == dim_ref.model && existing.alias == dim_ref.alias)
+            {
+                continue;
+            }
+            cohort_dimension_refs.push(dim_ref.clone());
+        }
+        let dim_entries = self.cohort_dimension_entries(model, &cohort_dimension_refs)?;
+        let mut select_parts = vec![format!("{entity_sql} AS entity")];
+        for (alias, sql_col) in &dim_entries {
+            select_parts.push(format!("{sql_col} AS {alias}"));
+        }
+        for inner in inner_metrics {
+            select_parts.push(self.cohort_inner_metric_sql(model, inner)?);
+        }
+        let mut group_parts = vec![entity_sql.clone()];
+        for (_, sql_col) in &dim_entries {
+            group_parts.push(sql_col.clone());
+        }
+        let mut all_filters = filters.to_vec();
+        all_filters.extend(metric.filters.clone());
+        let filter_clause = if all_filters.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n  WHERE {}",
+                self.raw_filters_for_model(model, &all_filters)?
+                    .join(" AND ")
+            )
+        };
+
+        let mut final_selects = Vec::new();
+        for (alias, _) in &dim_entries {
+            final_selects.push(format!("cohort_sub.{alias}"));
+        }
+        final_selects.push(format!(
+            "{} AS {}",
+            self.cohort_outer_metric_sql(metric)?,
+            metric.name
+        ));
+        let group_by = if dim_entries.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nGROUP BY {}",
+                (1..=dim_entries.len())
+                    .map(|idx| idx.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let order_clause = self.simple_order_clause(order_by);
+        let limit_clause = limit
+            .map(|value| format!("\nLIMIT {value}"))
+            .unwrap_or_default();
+        let offset_clause = offset
+            .map(|value| format!("\nOFFSET {value}"))
+            .unwrap_or_default();
+
+        Ok(format!(
+            "WITH cohort_sub AS (\n  SELECT\n    {}\n  FROM {from_clause}{filter_clause}\n  GROUP BY\n    {}\n  HAVING {}\n)\nSELECT\n  {}\nFROM cohort_sub{group_by}{order_clause}{limit_clause}{offset_clause}",
+            select_parts.join(",\n    "),
+            group_parts.join(",\n    "),
+            self.raw_filter_for_model(model, having)?,
+            final_selects.join(",\n  ")
+        ))
+    }
+
+    fn default_time_dimension<'b>(&self, model: &'b Model) -> Option<&'b crate::core::Dimension> {
+        if let Some(default_name) = model.default_time_dimension.as_deref() {
+            if let Some(dimension) = model.get_dimension(default_name) {
+                return Some(dimension);
+            }
+        }
+        model
+            .dimensions
+            .iter()
+            .find(|dimension| dimension.r#type == crate::core::DimensionType::Time)
+    }
+
+    fn model_from_clause(&self, model: &Model, alias: Option<&str>) -> String {
+        if let Some(model_sql) = model.sql.as_ref() {
+            if let Some(alias) = alias {
+                format!("({model_sql}) AS {alias}")
+            } else {
+                format!("({model_sql})")
+            }
+        } else {
+            model.table_name().to_string()
+        }
+    }
+
+    fn conversion_dimension_entries(
+        &self,
+        model: &Model,
+        dimension_refs: &[DimensionRef],
+    ) -> Vec<(String, String)> {
+        let mut entries = Vec::new();
+        for dim_ref in dimension_refs {
+            if dim_ref.model != model.name {
+                continue;
+            }
+            let Some(dim_obj) = model.get_dimension(&dim_ref.name) else {
+                continue;
+            };
+            let mut sql_col = self.raw_dimension_sql(model, dim_obj.sql_expr());
+            let alias = if let Some(gran) = dim_ref.granularity.as_ref() {
+                if dim_obj.r#type == crate::core::DimensionType::Time {
+                    sql_col = self.date_trunc_sql(gran, &sql_col);
+                    format!("{}__{gran}", dim_ref.name)
+                } else {
+                    dim_ref.name.clone()
+                }
+            } else {
+                dim_ref.name.clone()
+            };
+            entries.push((alias, sql_col));
+        }
+        entries
+    }
+
+    fn cohort_dimension_entries(
+        &self,
+        model: &Model,
+        dimension_refs: &[DimensionRef],
+    ) -> Result<Vec<(String, String)>> {
+        let mut entries = Vec::new();
+        for dim_ref in dimension_refs {
+            if dim_ref.model != model.name {
+                return Err(SidemanticError::Validation(format!(
+                    "Cohort metric does not support dimensions from model '{}' (expected '{}')",
+                    dim_ref.model, model.name
+                )));
+            }
+            let Some(dim_obj) = model.get_dimension(&dim_ref.name) else {
+                return Err(SidemanticError::Validation(format!(
+                    "Dimension '{}' not found on model '{}'",
+                    dim_ref.name, model.name
+                )));
+            };
+            let mut sql_col = self.raw_dimension_sql(model, dim_obj.sql_expr());
+            let alias = if let Some(granularity) = dim_ref.granularity.as_ref() {
+                if dim_obj.r#type == crate::core::DimensionType::Time {
+                    sql_col = self.date_trunc_sql(granularity, &sql_col);
+                    format!("{}__{granularity}", dim_ref.name)
+                } else {
+                    dim_ref.name.clone()
+                }
+            } else {
+                dim_ref.name.clone()
+            };
+            entries.push((alias, sql_col));
+        }
+        Ok(entries)
+    }
+
+    fn raw_dimension_sql(&self, model: &Model, expr: &str) -> String {
+        expr.replace("{model}.", "")
+            .replace("{model}", "")
+            .replace(&format!("{}.", model.name), "")
+    }
+
+    fn raw_filters_for_model(&self, model: &Model, filters: &[String]) -> Result<Vec<String>> {
+        filters
+            .iter()
+            .map(|filter| self.raw_filter_for_model(model, filter))
+            .collect()
+    }
+
+    fn raw_filter_suffix(&self, model: &Model, filters: &[String], prefix: &str) -> Result<String> {
+        let filters = self.raw_filters_for_model(model, filters)?;
+        if filters.is_empty() {
+            Ok(String::new())
+        } else {
+            Ok(format!(
+                "{prefix}{}",
+                filters
+                    .into_iter()
+                    .map(|filter| format!("({filter})"))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            ))
+        }
+    }
+
+    fn raw_filter_for_model(&self, model: &Model, filter: &str) -> Result<String> {
+        let mut result = filter
+            .replace("{model}.", "")
+            .replace("{model}", "")
+            .replace(&format!("{}.", model.name), "")
+            .replace(&format!("{}_cte.", model.name), "");
+        for dimension in &model.dimensions {
+            let source = dimension.sql_expr();
+            if source != dimension.name {
+                let pattern =
+                    regex::Regex::new(&format!(r"\b{}\b", regex::escape(&dimension.name)))
+                        .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))?;
+                result = pattern
+                    .replace_all(&result, self.raw_dimension_sql(model, source))
+                    .into_owned();
+            }
+        }
+        Ok(self.expand_relative_dates(&result))
+    }
+
+    fn cohort_inner_metric_sql(&self, model: &Model, inner: &CohortInnerMetric) -> Result<String> {
+        let agg = inner.agg.as_ref().unwrap_or(&Aggregation::Count);
+        let resolve_sql = |sql: &str| -> Result<String> {
+            if let Some(dimension) = model.get_dimension(sql) {
+                return Ok(self.raw_dimension_sql(model, dimension.sql_expr()));
+            }
+            self.raw_filter_for_model(model, sql)
+        };
+        let expr = match agg {
+            Aggregation::Count => match inner.sql.as_deref() {
+                Some(sql) => resolve_sql(sql)?,
+                None => "*".to_string(),
+            },
+            Aggregation::CountDistinct => {
+                let Some(sql) = inner.sql.as_ref() else {
+                    return Err(SidemanticError::Validation(
+                        "count_distinct inner cohort metric requires a 'sql' field".to_string(),
+                    ));
+                };
+                let sql = resolve_sql(sql)?;
+                return Ok(format!("COUNT(DISTINCT {sql}) AS {}", inner.name));
+            }
+            _ => {
+                let Some(sql) = inner.sql.as_ref() else {
+                    return Err(SidemanticError::Validation(format!(
+                        "Inner metric '{}' uses an aggregation that requires a 'sql' field",
+                        inner.name
+                    )));
+                };
+                resolve_sql(sql)?
+            }
+        };
+        Ok(format!("{}({expr}) AS {}", agg.as_sql(), inner.name))
+    }
+
+    fn cohort_outer_metric_sql(&self, metric: &Metric) -> Result<String> {
+        let agg = metric.agg.as_ref().unwrap_or(&Aggregation::Count);
+        match agg {
+            Aggregation::Count => Ok("COUNT(DISTINCT cohort_sub.entity)".to_string()),
+            Aggregation::CountDistinct => {
+                let Some(sql) = metric.sql.as_ref() else {
+                    return Err(SidemanticError::Validation(
+                        "cohort metric with count_distinct agg requires a 'sql' field".to_string(),
+                    ));
+                };
+                Ok(format!("COUNT(DISTINCT {})", self.cohort_outer_expr(sql)))
+            }
+            _ => {
+                let Some(sql) = metric.sql.as_ref() else {
+                    return Err(SidemanticError::Validation(
+                        "cohort metric with non-count agg requires a 'sql' field".to_string(),
+                    ));
+                };
+                Ok(format!("{}({})", agg.as_sql(), self.cohort_outer_expr(sql)))
+            }
+        }
+    }
+
+    fn cohort_outer_expr(&self, expr: &str) -> String {
+        expr.replace("{model}.", "cohort_sub.")
+            .replace("{model}", "cohort_sub")
+    }
+
+    fn date_trunc_sql(&self, granularity: &str, column_expr: &str) -> String {
+        format!("DATE_TRUNC('{granularity}', {column_expr})")
+    }
+
+    fn interval_sql(&self, num: &str, unit: &str) -> String {
+        format!("INTERVAL '{num} {unit}'")
+    }
+
+    fn simple_order_clause(&self, order_by: &[String]) -> String {
+        if order_by.is_empty() {
+            return String::new();
+        }
+        let mut order_fields = Vec::new();
+        for field in order_by {
+            let mut parts = field.split_whitespace();
+            let field_ref = parts.next().unwrap_or(field);
+            let suffix = parts.collect::<Vec<&str>>().join(" ");
+            let field_name = field_ref.split('.').next_back().unwrap_or(field_ref);
+            if suffix.is_empty() {
+                order_fields.push(field_name.to_string());
+            } else {
+                order_fields.push(format!("{field_name} {suffix}"));
+            }
+        }
+        format!("\nORDER BY {}", order_fields.join(", "))
+    }
+
+    fn validate_identifier(&self, value: &str, label: &str) -> Result<()> {
+        let valid = regex::Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+            .expect("valid identifier regex")
+            .is_match(value);
+        if valid {
+            Ok(())
+        } else {
+            Err(SidemanticError::Validation(format!(
+                "Invalid {label} identifier: {value}"
+            )))
+        }
+    }
+
+    fn validate_interval_parts(&self, num: &str, unit: &str) -> Result<()> {
+        if !num.chars().all(|ch| ch.is_ascii_digit()) {
+            return Err(SidemanticError::Validation(format!(
+                "Invalid window number: {num}"
+            )));
+        }
+        if !unit.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            return Err(SidemanticError::Validation(format!(
+                "Invalid window unit: {unit}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn escape_sql_literal(&self, value: &str) -> String {
+        value.replace('\'', "''")
     }
 
     fn apply_default_time_dimensions(
@@ -3172,7 +3990,7 @@ impl<'a> SqlGenerator<'a> {
         }
 
         // Replace longer tokens first to avoid partial replacement collisions.
-        replacements.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        replacements.sort_by_key(|item| std::cmp::Reverse(item.0.len()));
         for (token, replacement) in replacements {
             let pattern = regex::Regex::new(&format!(r"\b{}\b", regex::escape(&token)))
                 .expect("escaped token regex");
@@ -3388,7 +4206,10 @@ impl<'a> SqlGenerator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Dimension, Metric, Model, Relationship};
+    use crate::core::{
+        Aggregation, CohortInnerMetric, ComparisonType, Dimension, Metric, MetricType, Model,
+        Relationship,
+    };
 
     fn create_test_graph() -> SemanticGraph {
         let mut graph = SemanticGraph::new();
@@ -3544,6 +4365,246 @@ mod tests {
         assert!(
             !sql.contains("ORDER BY orders.revenue"),
             "semantic metric ref leaked into ORDER BY: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_time_comparison_lag_partitions_by_non_time_dimensions() {
+        let mut graph = SemanticGraph::new();
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(Dimension::time("order_date").with_sql("created_at"))
+            .with_dimension(Dimension::categorical("status"))
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_metric(Metric::time_comparison(
+                "revenue_mom",
+                "revenue",
+                ComparisonType::Mom,
+            ));
+        graph.add_model(orders).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.revenue_mom".into()])
+            .with_dimensions(vec![
+                "orders.order_date__month".into(),
+                "orders.status".into(),
+            ]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(
+            sql.contains(
+                "LAG(base.revenue, 1) OVER (PARTITION BY base.status ORDER BY base.order_date__month)"
+            ),
+            "time comparison lag must partition by non-time dimensions: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_conversion_query_applies_filters_limit_and_offset() {
+        let mut graph = SemanticGraph::new();
+        let events = Model::new("events", "event_id")
+            .with_table("events")
+            .with_dimension(Dimension::categorical("user_id"))
+            .with_dimension(Dimension::categorical("event_type"))
+            .with_dimension(Dimension::time("event_date"))
+            .with_dimension(Dimension::categorical("region"))
+            .with_metric(Metric {
+                name: "signup_conversion".to_string(),
+                r#type: MetricType::Conversion,
+                agg: None,
+                entity: Some("user_id".to_string()),
+                base_event: Some("signup".to_string()),
+                conversion_event: Some("purchase".to_string()),
+                conversion_window: Some("7 days".to_string()),
+                filters: vec!["events.region = 'US'".to_string()],
+                ..Metric::new("signup_conversion")
+            });
+        graph.add_model(events).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["events.signup_conversion".into()])
+            .with_dimensions(vec!["events.region".into()])
+            .with_filters(vec!["events.event_date >= '2024-01-01'".into()])
+            .with_order_by(vec!["events.signup_conversion DESC".into()])
+            .with_limit(5)
+            .with_offset(10);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("event_type = 'signup'"), "{sql}");
+        assert!(sql.contains("event_type = 'purchase'"), "{sql}");
+        assert!(sql.contains("(event_date >= '2024-01-01')"), "{sql}");
+        assert!(sql.contains("(region = 'US')"), "{sql}");
+        assert!(
+            sql.contains("base_events.region IS NOT DISTINCT FROM conversions.region"),
+            "{sql}"
+        );
+        assert!(sql.contains("ORDER BY signup_conversion DESC"), "{sql}");
+        assert!(sql.contains("LIMIT 5"), "{sql}");
+        assert!(sql.contains("OFFSET 10"), "{sql}");
+    }
+
+    #[test]
+    fn test_multistep_conversion_query_generates_step_ctes() {
+        let mut graph = SemanticGraph::new();
+        let events = Model::new("events", "event_id")
+            .with_table("events")
+            .with_dimension(Dimension::categorical("user_id"))
+            .with_dimension(Dimension::categorical("event_type"))
+            .with_dimension(Dimension::time("event_date"))
+            .with_dimension(Dimension::categorical("region"))
+            .with_metric(Metric {
+                name: "signup_funnel".to_string(),
+                r#type: MetricType::Conversion,
+                agg: None,
+                entity: Some("user_id".to_string()),
+                steps: Some(vec![
+                    "event_type = 'signup'".to_string(),
+                    "event_type = 'purchase'".to_string(),
+                ]),
+                ..Metric::new("signup_funnel")
+            });
+        graph.add_model(events).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["events.signup_funnel".into()])
+            .with_dimensions(vec!["events.region".into()])
+            .with_filters(vec!["events.region = 'US'".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("step_1 AS"), "{sql}");
+        assert!(sql.contains("step_2 AS"), "{sql}");
+        assert!(sql.contains("s.__ts >= step_1.step_1_ts"), "{sql}");
+        assert!(
+            sql.contains("s.__dim_0 IS NOT DISTINCT FROM step_1.region"),
+            "{sql}"
+        );
+        assert!(sql.contains("s.__step_match AND s.__filter_match"), "{sql}");
+        assert!(
+            sql.contains("COUNT(DISTINCT step_2.entity) AS signup_funnel"),
+            "{sql}"
+        );
+        assert!(sql.contains("LEFT JOIN step_2"), "{sql}");
+    }
+
+    #[test]
+    fn test_retention_query_generates_retention_ctes() {
+        let mut graph = SemanticGraph::new();
+        let events = Model::new("events", "event_id")
+            .with_table("events")
+            .with_dimension(Dimension::categorical("user_id"))
+            .with_dimension(Dimension::categorical("event_type"))
+            .with_dimension(Dimension::time("event_date"))
+            .with_metric(Metric {
+                name: "signup_retention".to_string(),
+                r#type: MetricType::Retention,
+                agg: None,
+                entity: Some("user_id".to_string()),
+                cohort_event: Some("event_type = 'signup'".to_string()),
+                activity_event: Some("event_type = 'active'".to_string()),
+                periods: Some(7),
+                retention_granularity: Some("day".to_string()),
+                ..Metric::new("signup_retention")
+            });
+        graph.add_model(events).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["events.signup_retention".into()])
+            .with_limit(5)
+            .with_offset(10);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("WITH cohorts AS"), "{sql}");
+        assert!(sql.contains("retention AS"), "{sql}");
+        assert!(sql.contains("cohort_sizes AS"), "{sql}");
+        assert!(sql.contains("r.periods_since AS days_since"), "{sql}");
+        assert!(sql.contains("retention_pct"), "{sql}");
+        assert!(sql.contains("<= 7"), "{sql}");
+        assert!(sql.contains("OFFSET 10"), "{sql}");
+    }
+
+    #[test]
+    fn test_cohort_query_generates_inner_and_outer_aggregation() {
+        let mut graph = SemanticGraph::new();
+        let events = Model::new("events", "event_id")
+            .with_table("events")
+            .with_dimension(Dimension::categorical("user_id"))
+            .with_dimension(Dimension::categorical("platform").with_sql("raw_platform"))
+            .with_dimension(Dimension::categorical("region"))
+            .with_metric(Metric {
+                name: "multi_platform_users".to_string(),
+                r#type: MetricType::Cohort,
+                agg: Some(Aggregation::Count),
+                entity: Some("user_id".to_string()),
+                inner_metrics: Some(vec![CohortInnerMetric {
+                    name: "platform_count".to_string(),
+                    agg: Some(Aggregation::CountDistinct),
+                    sql: Some("platform".to_string()),
+                }]),
+                entity_dimensions: Some(vec!["region".to_string()]),
+                having: Some("platform_count >= 2".to_string()),
+                ..Metric::new("multi_platform_users")
+            });
+        graph.add_model(events).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new().with_metrics(vec!["events.multi_platform_users".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("WITH cohort_sub AS"), "{sql}");
+        assert!(
+            sql.contains("COUNT(DISTINCT raw_platform) AS platform_count"),
+            "{sql}"
+        );
+        assert!(sql.contains("region AS region"), "{sql}");
+        assert!(sql.contains("cohort_sub.region"), "{sql}");
+        assert!(sql.contains("HAVING platform_count >= 2"), "{sql}");
+        assert!(
+            sql.contains("COUNT(DISTINCT cohort_sub.entity) AS multi_platform_users"),
+            "{sql}"
+        );
+        assert!(sql.contains("GROUP BY 1"), "{sql}");
+    }
+
+    #[test]
+    fn test_conversion_metric_cannot_mix_with_regular_metric() {
+        let mut graph = SemanticGraph::new();
+        let events = Model::new("events", "event_id")
+            .with_table("events")
+            .with_dimension(Dimension::categorical("user_id"))
+            .with_dimension(Dimension::categorical("event_type"))
+            .with_dimension(Dimension::time("event_date"))
+            .with_metric(Metric::count("event_count"))
+            .with_metric(Metric {
+                name: "signup_conversion".to_string(),
+                r#type: MetricType::Conversion,
+                agg: None,
+                entity: Some("user_id".to_string()),
+                base_event: Some("signup".to_string()),
+                conversion_event: Some("purchase".to_string()),
+                ..Metric::new("signup_conversion")
+            });
+        graph.add_model(events).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new().with_metrics(vec![
+            "events.signup_conversion".into(),
+            "events.event_count".into(),
+        ]);
+
+        let err = generator.generate(&query).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Conversion metrics cannot be combined"),
+            "{err}"
         );
     }
 

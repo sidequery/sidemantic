@@ -6,7 +6,7 @@
 //! Callers must ensure pointers are valid. Documented in header.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -348,6 +348,233 @@ fn model_definition_ranges(content: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DefinitionKind {
+    Metric,
+    Dimension,
+    Segment,
+}
+
+fn definition_kind(sql: &str) -> Option<DefinitionKind> {
+    if starts_with_definition_keyword(sql, "METRIC") {
+        Some(DefinitionKind::Metric)
+    } else if starts_with_definition_keyword(sql, "DIMENSION") {
+        Some(DefinitionKind::Dimension)
+    } else if starts_with_definition_keyword(sql, "SEGMENT") {
+        Some(DefinitionKind::Segment)
+    } else {
+        None
+    }
+}
+
+fn starts_with_definition_keyword(sql: &str, keyword: &str) -> bool {
+    let trimmed = sql.trim_start();
+    if trimmed.len() < keyword.len() {
+        return false;
+    }
+
+    let prefix = &trimmed[..keyword.len()];
+    if !prefix.eq_ignore_ascii_case(keyword) {
+        return false;
+    }
+
+    trimmed[keyword.len()..]
+        .chars()
+        .next()
+        .map(|ch| ch.is_whitespace())
+        .unwrap_or(true)
+}
+
+fn statement_ranges(block: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = None;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for (idx, ch) in block.char_indices() {
+        if start.is_none() && !ch.is_whitespace() {
+            start = Some(idx);
+        }
+
+        if in_single_quote {
+            if ch == '\'' {
+                in_single_quote = false;
+            }
+            continue;
+        }
+        if in_double_quote {
+            if ch == '"' {
+                in_double_quote = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' => in_single_quote = true,
+            '"' => in_double_quote = true,
+            ';' => {
+                if let Some(statement_start) = start.take() {
+                    ranges.push((statement_start, idx + ch.len_utf8()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(statement_start) = start {
+        if !block[statement_start..].trim().is_empty() {
+            ranges.push((statement_start, block.len()));
+        }
+    }
+
+    ranges
+}
+
+fn persist_model_item_definition_to_file(
+    path: &Path,
+    model_name: &str,
+    kind: DefinitionKind,
+    item_names: &[String],
+    definition: &str,
+    is_replace: bool,
+) -> std::io::Result<()> {
+    if !path.exists() {
+        return append_definition_to_file(path, definition);
+    }
+
+    let content = fs::read_to_string(path)?;
+    let item_names: HashSet<&str> = item_names.iter().map(String::as_str).collect();
+    let (_, adjusted_definition) = extract_model_prefix(definition.trim());
+    let mut result = String::new();
+    let mut cursor = 0;
+    let mut inserted = false;
+
+    for (start, end) in model_definition_ranges(&content) {
+        result.push_str(&content[cursor..start]);
+
+        let block = &content[start..end];
+        let block_model_name = parse_sql_model(block).ok().map(|model| model.name);
+        let cleaned = if is_replace {
+            remove_item_definitions_from_block(
+                block,
+                block_model_name.as_deref(),
+                model_name,
+                kind,
+                &item_names,
+            )
+        } else {
+            block.to_string()
+        };
+
+        if block_model_name.as_deref() == Some(model_name) {
+            result.push_str(&insert_definition_at_block_end(
+                &cleaned,
+                &adjusted_definition,
+            ));
+            inserted = true;
+        } else {
+            result.push_str(&cleaned);
+        }
+
+        cursor = end;
+    }
+    result.push_str(&content[cursor..]);
+
+    fs::write(path, result.trim_end())?;
+
+    if !inserted {
+        append_definition_to_file(path, definition)?;
+    }
+
+    Ok(())
+}
+
+fn remove_item_definitions_from_block(
+    block: &str,
+    block_model_name: Option<&str>,
+    target_model_name: &str,
+    kind: DefinitionKind,
+    item_names: &HashSet<&str>,
+) -> String {
+    if item_names.is_empty() {
+        return block.to_string();
+    }
+
+    let mut result = String::new();
+    let mut cursor = 0;
+
+    for (start, end) in statement_ranges(block) {
+        result.push_str(&block[cursor..start]);
+        let statement = &block[start..end];
+        if !should_remove_item_statement(
+            statement,
+            block_model_name,
+            target_model_name,
+            kind,
+            item_names,
+        ) {
+            result.push_str(statement);
+        }
+        cursor = end;
+    }
+    result.push_str(&block[cursor..]);
+
+    result
+}
+
+fn should_remove_item_statement(
+    statement: &str,
+    block_model_name: Option<&str>,
+    target_model_name: &str,
+    kind: DefinitionKind,
+    item_names: &HashSet<&str>,
+) -> bool {
+    if definition_kind(statement) != Some(kind) {
+        return false;
+    }
+
+    let (explicit_model, adjusted_statement) = extract_model_prefix(statement.trim());
+    let belongs_to_target = explicit_model
+        .as_deref()
+        .map(|model| model == target_model_name)
+        .unwrap_or(block_model_name == Some(target_model_name));
+    if !belongs_to_target {
+        return false;
+    }
+
+    let dummy_sql = format!("MODEL (name {target_model_name}, table dummy);\n{adjusted_statement}");
+    let Ok(parsed) = parse_sql_model(&dummy_sql) else {
+        return false;
+    };
+
+    match kind {
+        DefinitionKind::Metric => parsed
+            .metrics
+            .iter()
+            .any(|metric| item_names.contains(metric.name.as_str())),
+        DefinitionKind::Dimension => parsed
+            .dimensions
+            .iter()
+            .any(|dimension| item_names.contains(dimension.name.as_str())),
+        DefinitionKind::Segment => parsed
+            .segments
+            .iter()
+            .any(|segment| item_names.contains(segment.name.as_str())),
+    }
+}
+
+fn insert_definition_at_block_end(block: &str, definition: &str) -> String {
+    let trimmed_len = block.trim_end().len();
+    let (body, trailing) = block.split_at(trimmed_len);
+    let trimmed_definition = definition.trim();
+
+    if body.is_empty() {
+        return format!("{trimmed_definition}{trailing}");
+    }
+
+    format!("{body}\n\n{trimmed_definition}{trailing}")
+}
+
 /// Append a definition to the file
 fn append_definition_to_file(path: &Path, definition: &str) -> std::io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -431,7 +658,7 @@ pub extern "C" fn sidemantic_autoload_for_context(
 /// Split content into individual model definitions
 fn split_definitions(content: &str) -> Vec<&str> {
     let mut definitions = Vec::new();
-    let mut start = 0;
+    let mut start = None;
 
     // Find each MODEL keyword and split there
     let content_upper = content.to_uppercase();
@@ -450,17 +677,17 @@ fn split_definitions(content: &str) -> Vec<&str> {
                 || content.as_bytes()[actual_pos + 5] == b'\n');
 
         if is_start && is_followed_by_space {
-            if start < actual_pos && start > 0 {
-                definitions.push(&content[start..actual_pos]);
+            if let Some(previous_start) = start {
+                definitions.push(&content[previous_start..actual_pos]);
             }
-            start = actual_pos;
+            start = Some(actual_pos);
         }
 
         search_start = actual_pos + 1;
     }
 
     // Don't forget the last definition
-    if start < content.len() {
+    if let Some(start) = start {
         definitions.push(&content[start..]);
     }
 
@@ -555,28 +782,37 @@ pub extern "C" fn sidemantic_add_definition_for_context(
     // Extract what was added and update the model
     let mut updated_model = model.clone();
 
+    let mut persisted_kind = None;
+    let mut persisted_item_names = Vec::new();
+
     if sql_upper.starts_with("METRIC") {
+        persisted_kind = Some(DefinitionKind::Metric);
         for metric in parsed.metrics {
             if is_replace {
                 // Remove existing metric with same name
                 updated_model.metrics.retain(|m| m.name != metric.name);
             }
+            persisted_item_names.push(metric.name.clone());
             updated_model.metrics.push(metric);
         }
     } else if sql_upper.starts_with("DIMENSION") {
+        persisted_kind = Some(DefinitionKind::Dimension);
         for dim in parsed.dimensions {
             if is_replace {
                 // Remove existing dimension with same name
                 updated_model.dimensions.retain(|d| d.name != dim.name);
             }
+            persisted_item_names.push(dim.name.clone());
             updated_model.dimensions.push(dim);
         }
     } else if sql_upper.starts_with("SEGMENT") {
+        persisted_kind = Some(DefinitionKind::Segment);
         for seg in parsed.segments {
             if is_replace {
                 // Remove existing segment with same name
                 updated_model.segments.retain(|s| s.name != seg.name);
             }
+            persisted_item_names.push(seg.name.clone());
             updated_model.segments.push(seg);
         }
     }
@@ -585,9 +821,22 @@ pub extern "C" fn sidemantic_add_definition_for_context(
         return to_c_string(&format!("Error updating model: {e}"));
     }
 
-    // Append to definitions file
+    // Persist the definition with the owning model so autoload sees the same graph.
     if let Some(definitions_path) = get_definitions_path(db_path) {
-        if let Err(e) = append_definition_to_file(&definitions_path, &sql_str) {
+        let result = if let Some(kind) = persisted_kind {
+            persist_model_item_definition_to_file(
+                &definitions_path,
+                &model_name,
+                kind,
+                &persisted_item_names,
+                &sql_str,
+                is_replace,
+            )
+        } else {
+            append_definition_to_file(&definitions_path, &sql_str)
+        };
+
+        if let Err(e) = result {
             return to_c_string(&format!("Error writing to definitions file: {e}"));
         }
     }
@@ -1049,6 +1298,174 @@ models:
     }
 
     #[test]
+    fn test_replace_metric_dimension_and_segment_updates_persisted_definitions() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let db_path = unique_db_path("replace_item_persistence");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
+        let model =
+            CString::new("MODEL (name orders, table orders, primary_key order_id);").unwrap();
+        assert_success(sidemantic_define(model.as_ptr(), db_path.as_ptr(), false));
+
+        let old_metric = CString::new("METRIC revenue AS SUM(gross_amount);").unwrap();
+        assert_success(sidemantic_add_definition(
+            old_metric.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+        let new_metric = CString::new("METRIC revenue AS SUM(net_amount);").unwrap();
+        assert_success(sidemantic_add_definition(
+            new_metric.as_ptr(),
+            db_path.as_ptr(),
+            true,
+        ));
+
+        let old_dimension = CString::new("DIMENSION status AS raw_status;").unwrap();
+        assert_success(sidemantic_add_definition(
+            old_dimension.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+        let new_dimension = CString::new("DIMENSION status AS clean_status;").unwrap();
+        assert_success(sidemantic_add_definition(
+            new_dimension.as_ptr(),
+            db_path.as_ptr(),
+            true,
+        ));
+
+        let old_segment =
+            CString::new("SEGMENT (name target_segment, sql old_flag = true);").unwrap();
+        assert_success(sidemantic_add_definition(
+            old_segment.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+        let new_segment =
+            CString::new("SEGMENT (name target_segment, sql new_flag = true);").unwrap();
+        assert_success(sidemantic_add_definition(
+            new_segment.as_ptr(),
+            db_path.as_ptr(),
+            true,
+        ));
+
+        let content = fs::read_to_string(&definitions_path).unwrap();
+        assert!(!content.contains("gross_amount"), "{content}");
+        assert!(!content.contains("raw_status"), "{content}");
+        assert!(!content.contains("old_flag"), "{content}");
+        assert!(content.contains("net_amount"), "{content}");
+        assert!(content.contains("clean_status"), "{content}");
+        assert!(content.contains("new_flag"), "{content}");
+        assert_eq!(content.matches("METRIC revenue").count(), 1, "{content}");
+        assert_eq!(content.matches("DIMENSION status").count(), 1, "{content}");
+        assert_eq!(
+            content.matches("SEGMENT (name target_segment").count(),
+            1,
+            "{content}"
+        );
+
+        let persisted_model = parse_sql_model(&content).unwrap();
+        assert_eq!(
+            persisted_model.metrics[0].sql.as_deref(),
+            Some("net_amount")
+        );
+        assert_eq!(
+            persisted_model.dimensions[0].sql.as_deref(),
+            Some("clean_status")
+        );
+        assert_eq!(persisted_model.segments[0].sql, "new_flag = true");
+
+        sidemantic_clear();
+        assert_success(sidemantic_autoload(db_path.as_ptr()));
+
+        let metric_sql = take_rewrite_sql(sidemantic_rewrite(
+            CString::new("SELECT orders.revenue FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(metric_sql.contains("net_amount"), "{metric_sql}");
+        assert!(!metric_sql.contains("gross_amount"), "{metric_sql}");
+
+        let dimension_sql = take_rewrite_sql(sidemantic_rewrite(
+            CString::new("SELECT orders.status FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(dimension_sql.contains("clean_status"), "{dimension_sql}");
+        assert!(!dimension_sql.contains("raw_status"), "{dimension_sql}");
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
+    fn test_prefixed_definition_persists_under_target_model_block() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let db_path = unique_db_path("prefixed_item_persistence");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
+        let orders =
+            CString::new("MODEL (name orders, table orders, primary_key order_id);").unwrap();
+        let customers =
+            CString::new("MODEL (name customers, table customers, primary_key customer_id);")
+                .unwrap();
+        assert_success(sidemantic_define(orders.as_ptr(), db_path.as_ptr(), false));
+        assert_success(sidemantic_define(
+            customers.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+
+        let metric = CString::new("METRIC orders.revenue AS SUM(amount);").unwrap();
+        assert_success(sidemantic_add_definition(
+            metric.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+
+        let content = fs::read_to_string(&definitions_path).unwrap();
+        let blocks = split_definitions(&content);
+        let orders_model = blocks
+            .iter()
+            .find_map(|block| {
+                let model = parse_sql_model(block).ok()?;
+                (model.name == "orders").then_some(model)
+            })
+            .unwrap();
+        let customers_model = blocks
+            .iter()
+            .find_map(|block| {
+                let model = parse_sql_model(block).ok()?;
+                (model.name == "customers").then_some(model)
+            })
+            .unwrap();
+
+        assert_eq!(orders_model.metrics.len(), 1);
+        assert_eq!(orders_model.metrics[0].name, "revenue");
+        assert!(customers_model.metrics.is_empty());
+        assert!(!content.contains("orders.revenue"), "{content}");
+
+        sidemantic_clear();
+        assert_success(sidemantic_autoload(db_path.as_ptr()));
+
+        let rewritten = take_rewrite_sql(sidemantic_rewrite(
+            CString::new("SELECT orders.revenue FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(rewritten.contains("SUM"), "{rewritten}");
+        assert!(rewritten.contains("amount"), "{rewritten}");
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
     fn test_clear_resets_active_model() {
         let _guard = test_lock();
         sidemantic_clear();
@@ -1243,6 +1660,77 @@ models:
             sql.as_ptr(),
         ));
         assert!(rewritten.contains("SUM"), "{rewritten}");
+
+        sidemantic_clear_for_context(context.as_ptr());
+        let _ = fs::remove_file(definitions_path);
+    }
+
+    #[test]
+    fn test_autoload_loads_all_persisted_models() {
+        let _guard = test_lock();
+
+        let context = CString::new("duckdb:autoload-all-models").unwrap();
+        sidemantic_clear_for_context(context.as_ptr());
+
+        let db_path = unique_db_path("autoload_all_models");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+        fs::write(
+            &definitions_path,
+            "MODEL (name orders, table orders, primary_key order_id);\nMETRIC revenue AS SUM(amount);\n\nMODEL (name customers, table customers, primary_key customer_id);\nMETRIC customer_count AS COUNT(*);",
+        )
+        .unwrap();
+
+        assert_success(sidemantic_autoload_for_context(
+            context.as_ptr(),
+            db_path.as_ptr(),
+        ));
+
+        let orders_sql = CString::new("SELECT orders.revenue FROM orders").unwrap();
+        let orders_rewrite = take_rewrite_sql(sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            orders_sql.as_ptr(),
+        ));
+        assert!(orders_rewrite.contains("amount"), "{orders_rewrite}");
+
+        let customers_sql = CString::new("SELECT customers.customer_count FROM customers").unwrap();
+        let customers_rewrite = take_rewrite_sql(sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            customers_sql.as_ptr(),
+        ));
+        assert!(customers_rewrite.contains("COUNT"), "{customers_rewrite}");
+
+        sidemantic_clear_for_context(context.as_ptr());
+        let _ = fs::remove_file(definitions_path);
+    }
+
+    #[test]
+    fn test_autoload_invalid_definition_is_best_effort() {
+        let _guard = test_lock();
+
+        let context = CString::new("duckdb:autoload-invalid-best-effort").unwrap();
+        sidemantic_clear_for_context(context.as_ptr());
+
+        let db_path = unique_db_path("autoload_invalid_best_effort");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+        fs::write(
+            &definitions_path,
+            "MODEL (name events, table events, primary_key event_id);\nMETRIC event_count AS COUNT(*);\n\nMODEL (",
+        )
+        .unwrap();
+
+        assert_success(sidemantic_autoload_for_context(
+            context.as_ptr(),
+            db_path.as_ptr(),
+        ));
+
+        let sql = CString::new("SELECT events.event_count FROM events").unwrap();
+        let rewritten = take_rewrite_sql(sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            sql.as_ptr(),
+        ));
+        assert!(rewritten.contains("COUNT"), "{rewritten}");
 
         sidemantic_clear_for_context(context.as_ptr());
         let _ = fs::remove_file(definitions_path);

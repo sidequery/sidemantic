@@ -6,6 +6,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "sidemantic.h"
 
+#include <cstdio>
 #include <cstdint>
 
 namespace duckdb {
@@ -627,7 +628,7 @@ static void LoadInternal(ExtensionLoader &loader) {
     char *error = sidemantic_autoload_for_context(ContextKeyPtr(context_key), db_path_ptr);
     if (error) {
         // Log warning but don't fail extension load
-        // fprintf(stderr, "Warning: failed to autoload sidemantic definitions: %s\n", error);
+        std::fprintf(stderr, "Warning: failed to autoload sidemantic definitions: %s\n", error);
         sidemantic_free(error);
     }
 

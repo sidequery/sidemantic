@@ -22,6 +22,11 @@ pub fn write_retail_fixture(dir: &Path) -> PathBuf {
     fs::write(
         &models_path,
         r#"
+parameters:
+  - name: status_param
+    type: string
+  - name: min_customer_id
+    type: number
 models:
   - name: orders
     table: orders
@@ -37,6 +42,9 @@ models:
         sql: amount
       - name: order_count
         agg: count
+    segments:
+      - name: completed
+        sql: "{model}.status = 'complete'"
     relationships:
       - name: customers
         type: many_to_one

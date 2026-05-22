@@ -6,7 +6,8 @@ from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
-from sidemantic.rust_bridge import models_to_rust_yaml
+from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.rust_bridge import graph_to_rust_yaml, models_to_rust_yaml
 
 
 def test_models_to_rust_yaml_preserves_extended_core_metadata():
@@ -76,3 +77,64 @@ def test_models_to_rust_yaml_preserves_extended_core_metadata():
     assert preagg_payload["refresh_key"]["every"] == "1 hour"
     assert preagg_payload["refresh_key"]["incremental"] is True
     assert preagg_payload["indexes"] == [{"name": "idx_status", "columns": ["status"], "type": "regular"}]
+
+
+def test_graph_to_rust_yaml_assigns_complex_metrics_by_entity_dimension():
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="events",
+            table="events",
+            primary_key="event_id",
+            dimensions=[
+                Dimension(name="user_id", type="categorical"),
+                Dimension(name="event_type", type="categorical"),
+                Dimension(name="platform", type="categorical"),
+            ],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="order_id", type="categorical")],
+        )
+    )
+    graph.add_metric(
+        Metric(
+            name="signup_conversion",
+            type="conversion",
+            entity="user_id",
+            base_event="event_type = 'signup'",
+            conversion_event="event_type = 'purchase'",
+            conversion_window="7 days",
+        )
+    )
+    graph.add_metric(
+        Metric(
+            name="signup_retention",
+            type="retention",
+            entity="user_id",
+            cohort_event="event_type = 'signup'",
+        )
+    )
+    graph.add_metric(
+        Metric(
+            name="multi_platform_users",
+            type="cohort",
+            entity="user_id",
+            inner_metrics=[{"name": "platform_count", "agg": "count_distinct", "sql": "platform"}],
+            having="platform_count >= 2",
+            agg="count",
+        )
+    )
+
+    payload = yaml.safe_load(graph_to_rust_yaml(graph))
+    models = {model["name"]: model for model in payload["models"]}
+    event_metric_names = {metric["name"] for metric in models["events"]["metrics"]}
+    order_metric_names = {metric["name"] for metric in models["orders"].get("metrics", [])}
+
+    assert {"signup_conversion", "signup_retention", "multi_platform_users"} <= event_metric_names
+    assert not {"signup_conversion", "signup_retention", "multi_platform_users"} & order_metric_names
+    assert payload.get("metrics") in (None, [])

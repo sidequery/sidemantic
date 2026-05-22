@@ -240,3 +240,23 @@ jobs:
           CLICKHOUSE_PASSWORD: "clickhouse"
           SNOWFLAKE_TEST: "1"
         run: uv run pytest -m integration tests/db/test_adbc_ci_smoke.py -v
+
+      - name: Install Rust for Rust ADBC probe
+        if: matrix.db == 'postgres'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Export Postgres ADBC driver for Rust
+        if: matrix.db == 'postgres'
+        run: |
+          uv pip install adbc-driver-postgresql
+          uv run python - <<'PY' >> "$GITHUB_ENV"
+          import adbc_driver_postgresql
+
+          print(f"SIDEMANTIC_TEST_ADBC_POSTGRES_DRIVER={adbc_driver_postgresql._driver_path()}")
+          PY
+          echo "SIDEMANTIC_TEST_ADBC_POSTGRES_URI=postgresql://test:test@localhost:5432/sidemantic_test" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=postgres" >> "$GITHUB_ENV"
+
+      - name: Run Rust ADBC Postgres probe
+        if: matrix.db == 'postgres'
+        run: cargo test --manifest-path sidemantic-rs/Cargo.toml --features adbc-exec --test adbc_driver_matrix

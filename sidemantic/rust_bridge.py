@@ -67,6 +67,48 @@ def _assign_top_level_metrics_for_rust(graph: SemanticGraph) -> tuple[dict[str, 
                 owners.append(model_name)
         return owners
 
+    def model_owners_for_entity(entity: str | None) -> set[str]:
+        if not isinstance(entity, str):
+            return set()
+        dotted_owner = owner_from_dotted_reference(entity)
+        if dotted_owner:
+            return {dotted_owner}
+        return {
+            model.name
+            for model in graph.models.values()
+            if any(dimension.name == entity for dimension in model.dimensions)
+        }
+
+    def metric_reference_strings(metric) -> list[str]:
+        references = []
+        for attr in (
+            "sql",
+            "base_metric",
+            "numerator",
+            "denominator",
+            "entity",
+            "base_event",
+            "conversion_event",
+            "cohort_event",
+            "activity_event",
+            "having",
+        ):
+            value = getattr(metric, attr, None)
+            if isinstance(value, str):
+                references.append(value)
+        steps = getattr(metric, "steps", None)
+        if isinstance(steps, list):
+            references.extend(step for step in steps if isinstance(step, str))
+        for inner in getattr(metric, "inner_metrics", None) or []:
+            if isinstance(inner, dict):
+                value = inner.get("sql")
+                if isinstance(value, str):
+                    references.append(value)
+        entity_dimensions = getattr(metric, "entity_dimensions", None)
+        if isinstance(entity_dimensions, list):
+            references.extend(value for value in entity_dimensions if isinstance(value, str))
+        return references
+
     def preferred_ratio_owner(metric) -> str | None:
         if isinstance(metric.denominator, str):
             owner = owner_from_dotted_reference(metric.denominator)
@@ -104,13 +146,14 @@ def _assign_top_level_metrics_for_rust(graph: SemanticGraph) -> tuple[dict[str, 
                 continue
             owners.update(model_metric_owners(dep))
 
-        for reference in (metric.sql, metric.base_metric, metric.numerator, metric.denominator):
-            if not isinstance(reference, str):
-                continue
+        for reference in metric_reference_strings(metric):
             dotted_owner = owner_from_dotted_reference(reference)
             if dotted_owner:
                 owners.add(dotted_owner)
             owners.update(owners_from_sql_fragment(reference))
+
+        if not owners:
+            owners.update(model_owners_for_entity(getattr(metric, "entity", None)))
 
         if not owners and len(graph.models) == 1:
             owners.add(next(iter(graph.models)))
@@ -787,6 +830,14 @@ def _serialize_metric(metric, *, primary_key_columns: list[str] | None) -> dict:
         "base_event": metric.base_event,
         "conversion_event": metric.conversion_event,
         "conversion_window": metric.conversion_window,
+        "steps": metric.steps,
+        "cohort_event": metric.cohort_event,
+        "activity_event": metric.activity_event,
+        "periods": metric.periods,
+        "retention_granularity": metric.retention_granularity,
+        "inner_metrics": metric.inner_metrics,
+        "entity_dimensions": metric.entity_dimensions,
+        "having": metric.having,
         "fill_nulls_with": metric.fill_nulls_with,
         "format": metric.format,
         "value_format_name": metric.value_format_name,

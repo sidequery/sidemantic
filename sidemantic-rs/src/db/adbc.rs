@@ -11,6 +11,7 @@ use arrow_array::{
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt16Array,
     UInt32Array, UInt64Array, UInt8Array,
 };
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, TimeUnit};
 
 use crate::error::{Result, SidemanticError};
@@ -30,6 +31,12 @@ pub enum AdbcValue {
 pub struct AdbcExecutionResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<AdbcValue>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdbcArrowIpcResult {
+    pub bytes: Vec<u8>,
+    pub row_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +135,84 @@ pub fn execute_with_adbc(request: AdbcExecutionRequest) -> Result<AdbcExecutionR
     }
 
     Ok(AdbcExecutionResult { columns, rows })
+}
+
+pub fn execute_with_adbc_arrow_ipc(request: AdbcExecutionRequest) -> Result<AdbcArrowIpcResult> {
+    let AdbcExecutionRequest {
+        driver,
+        sql,
+        uri,
+        entrypoint,
+        mut database_options,
+        connection_options,
+    } = request;
+
+    if let Some(uri) = uri {
+        database_options.push((OptionDatabase::Uri, OptionValue::String(uri)));
+    }
+
+    let entrypoint_bytes = entrypoint.as_deref().map(str::as_bytes);
+    let mut managed_driver = ManagedDriver::load_from_name(
+        &driver,
+        entrypoint_bytes,
+        AdbcVersion::V110,
+        LOAD_FLAG_DEFAULT,
+        None,
+    )
+    .or_else(|_| {
+        ManagedDriver::load_from_name(
+            &driver,
+            entrypoint_bytes,
+            AdbcVersion::V100,
+            LOAD_FLAG_DEFAULT,
+            None,
+        )
+    })
+    .map_err(|e| adbc_error("failed to load ADBC driver", e))?;
+
+    let database = if database_options.is_empty() {
+        managed_driver.new_database()
+    } else {
+        managed_driver.new_database_with_opts(database_options)
+    }
+    .map_err(|e| adbc_error("failed to create ADBC database", e))?;
+
+    let mut connection = if connection_options.is_empty() {
+        database.new_connection()
+    } else {
+        database.new_connection_with_opts(connection_options)
+    }
+    .map_err(|e| adbc_error("failed to create ADBC connection", e))?;
+
+    let mut statement = connection
+        .new_statement()
+        .map_err(|e| adbc_error("failed to create ADBC statement", e))?;
+    statement
+        .set_sql_query(&sql)
+        .map_err(|e| adbc_error("failed to set SQL query", e))?;
+    let mut reader = statement
+        .execute()
+        .map_err(|e| adbc_error("failed to execute SQL query", e))?;
+
+    let schema = reader.schema();
+    let mut bytes = Vec::new();
+    let mut writer = StreamWriter::try_new(&mut bytes, &schema)
+        .map_err(|e| adbc_error("failed to create Arrow IPC writer", e))?;
+    let mut row_count = 0;
+
+    for batch in &mut reader {
+        let batch = batch.map_err(|e| adbc_error("failed reading Arrow batch", e))?;
+        row_count += batch.num_rows();
+        writer
+            .write(&batch)
+            .map_err(|e| adbc_error("failed writing Arrow IPC batch", e))?;
+    }
+    writer
+        .finish()
+        .map_err(|e| adbc_error("failed finishing Arrow IPC stream", e))?;
+    drop(writer);
+
+    Ok(AdbcArrowIpcResult { bytes, row_count })
 }
 
 fn decimal128_to_string(value: i128, scale: i8) -> String {

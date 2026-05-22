@@ -17,9 +17,9 @@ pub use dependency::{
 pub use graph::{JoinPath, JoinStep, SemanticGraph};
 pub use inheritance::{merge_model, resolve_model_inheritance};
 pub use model::{
-    Aggregation, ComparisonCalculation, ComparisonType, Dimension, DimensionType, Index, Metric,
-    MetricType, Model, PreAggregation, PreAggregationType, RefreshKey, Relationship,
-    RelationshipType, TimeGrain,
+    Aggregation, CohortInnerMetric, ComparisonCalculation, ComparisonType, Dimension,
+    DimensionType, Index, Metric, MetricType, Model, PreAggregation, PreAggregationType,
+    RefreshKey, Relationship, RelationshipType, TimeGrain,
 };
 pub use parameter::{Parameter, ParameterType};
 pub use relative_date::RelativeDate;

@@ -147,6 +147,8 @@ pub enum MetricType {
     #[serde(alias = "timecomparison")]
     TimeComparison,
     Conversion,
+    Retention,
+    Cohort,
 }
 
 /// Time comparison type
@@ -180,6 +182,16 @@ pub enum TimeGrain {
     Month,
     Quarter,
     Year,
+}
+
+/// Inner per-entity aggregate for cohort metrics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CohortInnerMetric {
+    pub name: String,
+    #[serde(default)]
+    pub agg: Option<Aggregation>,
+    #[serde(default)]
+    pub sql: Option<String>,
 }
 
 /// A metric represents a business measure (aggregation)
@@ -251,6 +263,34 @@ pub struct Metric {
     /// Conversion window (e.g. "7 days")
     #[serde(default)]
     pub conversion_window: Option<String>,
+    /// N-step funnel filter expressions.
+    #[serde(default)]
+    pub steps: Option<Vec<String>>,
+
+    // Retention metric fields
+    /// Cohort-defining event predicate.
+    #[serde(default)]
+    pub cohort_event: Option<String>,
+    /// Activity event predicate.
+    #[serde(default)]
+    pub activity_event: Option<String>,
+    /// Number of retention periods to include.
+    #[serde(default)]
+    pub periods: Option<usize>,
+    /// Retention time grain.
+    #[serde(default)]
+    pub retention_granularity: Option<String>,
+
+    // Cohort metric fields
+    /// Per-entity inner aggregations.
+    #[serde(default)]
+    pub inner_metrics: Option<Vec<CohortInnerMetric>>,
+    /// Dimensions carried through from inner to outer aggregation.
+    #[serde(default)]
+    pub entity_dimensions: Option<Vec<String>>,
+    /// HAVING predicate applied to the inner aggregation.
+    #[serde(default)]
+    pub having: Option<String>,
 
     // Display formatting
     /// Default value when result is NULL
@@ -296,6 +336,14 @@ impl Metric {
             base_event: None,
             conversion_event: None,
             conversion_window: None,
+            steps: None,
+            cohort_event: None,
+            activity_event: None,
+            periods: None,
+            retention_granularity: None,
+            inner_metrics: None,
+            entity_dimensions: None,
+            having: None,
             fill_nulls_with: None,
             format: None,
             value_format_name: None,
@@ -499,9 +547,8 @@ impl Metric {
                     }
                 }
             }
-            MetricType::Conversion => {
-                // Conversion metrics are expanded by SQL generator special-case logic.
-                "NULL /* conversion metric */".to_string()
+            MetricType::Conversion | MetricType::Retention | MetricType::Cohort => {
+                "NULL /* complex metric */".to_string()
             }
         }
     }

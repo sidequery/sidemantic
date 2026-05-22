@@ -253,6 +253,11 @@ fn mcp_server_exercises_tool_protocol_and_errors() {
             "arguments": {
                 "dimensions": ["orders.status"],
                 "metrics": ["orders.revenue"],
+                "filters": ["orders.status = {{ status_param }}"],
+                "parameters": { "status_param": "complete" },
+                "segments": ["orders.completed"],
+                "order_by": ["orders.revenue desc"],
+                "use_preaggregations": true,
                 "limit": 5
             }
         }),
@@ -262,7 +267,12 @@ fn mcp_server_exercises_tool_protocol_and_errors() {
         .as_str()
         .expect("compile tool should return sql");
     assert!(sql.contains("SUM"), "{sql}");
+    assert!(sql.contains("status = 'complete'"), "{sql}");
     assert!(sql.contains("GROUP BY"), "{sql}");
+    assert!(
+        sql.to_ascii_uppercase().contains("ORDER BY REVENUE DESC"),
+        "{sql}"
+    );
     assert!(sql.contains("LIMIT 5"), "{sql}");
 
     let dry_run = client.request(
@@ -274,6 +284,8 @@ fn mcp_server_exercises_tool_protocol_and_errors() {
                 "dimensions": ["orders.status"],
                 "metrics": ["orders.revenue"],
                 "where": "orders.customer_id > 0",
+                "filters": ["orders.status = {{ status_param }}"],
+                "parameters": { "status_param": "complete" },
                 "offset": 2,
                 "dry_run": true
             }
@@ -284,7 +296,26 @@ fn mcp_server_exercises_tool_protocol_and_errors() {
         .as_str()
         .expect("dry run should return sql");
     assert!(sql.contains("WHERE"), "{sql}");
+    assert!(sql.contains("status = 'complete'"), "{sql}");
     assert!(sql.contains("OFFSET 2"), "{sql}");
+
+    let ungrouped = client.request(
+        18,
+        "tools/call",
+        json!({
+            "name": "compile_query",
+            "arguments": {
+                "dimensions": ["orders.status"],
+                "metrics": ["orders.revenue"],
+                "ungrouped": true
+            }
+        }),
+    );
+    let ungrouped_payload = structured_content(&ungrouped);
+    let sql = ungrouped_payload["sql"]
+        .as_str()
+        .expect("ungrouped compile tool should return sql");
+    assert!(!sql.to_ascii_uppercase().contains("GROUP BY"), "{sql}");
 
     let valid = client.request(
         11,
@@ -379,6 +410,25 @@ fn mcp_server_exercises_tool_protocol_and_errors() {
         .as_str()
         .unwrap_or("")
         .contains("mcp-adbc"));
+
+    let chart_parameter_error = client.request(
+        19,
+        "tools/call",
+        json!({
+            "name": "create_chart",
+            "arguments": {
+                "dimensions": ["orders.status"],
+                "metrics": ["orders.revenue"],
+                "filters": ["orders.customer_id > {{ min_customer_id }}"],
+                "parameters": { "min_customer_id": "not-a-number" }
+            }
+        }),
+    );
+    assert_eq!(chart_parameter_error["error"]["code"], -32602);
+    assert!(chart_parameter_error["error"]["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("failed to interpolate query parameters"));
 
     let resources = client.request(15, "resources/list", json!({}));
     let resource_items = resources["result"]["resources"]

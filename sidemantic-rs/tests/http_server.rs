@@ -224,6 +224,48 @@ fn http_server_exercises_real_endpoints_and_errors() {
     let (status, body, _) = http_request(
         &bind,
         "POST",
+        "/compile",
+        Some(json!({
+            "dimensions": ["orders.status"],
+            "metrics": ["orders.revenue"],
+            "segments": ["orders.completed"],
+            "filters": ["orders.status = {{ status_param }}"],
+            "parameters": { "status_param": "complete" },
+            "order_by": ["orders.status asc"],
+            "use_preaggregations": true,
+            "limit": 3
+        })),
+    );
+    assert_eq!(status, 200);
+    let sql = body["sql"]
+        .as_str()
+        .expect("compile response should include segment/parameter sql");
+    assert!(sql.contains("status = 'complete'"), "{sql}");
+    assert!(
+        sql.to_ascii_uppercase().contains("ORDER BY STATUS ASC"),
+        "{sql}"
+    );
+    assert!(sql.contains("LIMIT 3"), "{sql}");
+
+    let (status, body, _) = http_request(
+        &bind,
+        "POST",
+        "/compile",
+        Some(json!({
+            "dimensions": ["orders.status"],
+            "metrics": ["orders.revenue"],
+            "ungrouped": true
+        })),
+    );
+    assert_eq!(status, 200);
+    let sql = body["sql"]
+        .as_str()
+        .expect("ungrouped compile response should include sql");
+    assert!(!sql.to_ascii_uppercase().contains("GROUP BY"), "{sql}");
+
+    let (status, body, _) = http_request(
+        &bind,
+        "POST",
         "/query/compile",
         Some(json!({ "metrics": ["orders.unknown_metric"] })),
     );
@@ -244,6 +286,18 @@ fn http_server_exercises_real_endpoints_and_errors() {
         .as_str()
         .unwrap_or("")
         .contains("runtime-server-adbc"));
+
+    let (status, body, _) = http_request(
+        &bind,
+        "POST",
+        "/query?format=xml",
+        Some(json!({ "metrics": ["orders.revenue"] })),
+    );
+    assert_eq!(status, 400);
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("unsupported response format 'xml'"));
 
     let (status, body, _) = http_request(
         &bind,

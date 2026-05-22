@@ -3,7 +3,7 @@
 mod common;
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
@@ -12,11 +12,13 @@ use std::thread;
 use std::time::Duration;
 
 use adbc_core::options::{OptionDatabase, OptionValue};
+use arrow_ipc::reader::StreamReader;
 use common::{command_with_clean_sidemantic_env, free_loopback_addr, unique_temp_dir, ChildGuard};
 use serde_json::{json, Value};
 use sidemantic::{execute_with_adbc, AdbcExecutionRequest};
 
 const DUCKDB_ENTRYPOINT: &str = "duckdb_adbc_init";
+const ARROW_STREAM_MEDIA_TYPE: &str = "application/vnd.apache.arrow.stream";
 
 fn duckdb_driver_path() -> Option<String> {
     std::env::var("SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER")
@@ -100,9 +102,35 @@ fn run_cli(driver: &str, models_path: &Path, db_path: &Path) {
 }
 
 fn http_request(addr: &str, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
+    let (status, _head, body) = http_request_raw(addr, method, path, body, "application/json");
+    let json_body = serde_json::from_slice(&body).unwrap_or_else(|err| {
+        panic!(
+            "response body should be JSON: {err}\nraw response:\n{}",
+            String::from_utf8_lossy(&body)
+        )
+    });
+    (status, json_body)
+}
+
+fn http_arrow_request(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (u16, String, Vec<u8>) {
+    http_request_raw(addr, method, path, body, ARROW_STREAM_MEDIA_TYPE)
+}
+
+fn http_request_raw(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    accept: &str,
+) -> (u16, String, Vec<u8>) {
     let body = body.map(|value| value.to_string());
     let mut request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nAccept: application/json\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nAccept: {accept}\r\n"
     );
     if let Some(body) = body.as_ref() {
         request.push_str("Content-Type: application/json\r\n");
@@ -121,23 +149,59 @@ fn http_request(addr: &str, method: &str, path: &str, body: Option<Value>) -> (u
         .write_all(request.as_bytes())
         .expect("request should be written");
 
-    let mut response = String::new();
+    let mut response = Vec::new();
     stream
-        .read_to_string(&mut response)
+        .read_to_end(&mut response)
         .expect("response should be read");
-    let (head, body) = response
-        .split_once("\r\n\r\n")
+    let separator = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
         .expect("response should contain headers and body");
+    let head = String::from_utf8_lossy(&response[..separator]).to_string();
+    let body = response[separator + 4..].to_vec();
     let status = head
         .lines()
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .expect("status code should be parsed");
-    let json_body = serde_json::from_str(body.trim()).unwrap_or_else(|err| {
-        panic!("response body should be JSON: {err}\nraw response:\n{response}")
-    });
-    (status, json_body)
+    (status, head, body)
+}
+
+fn assert_arrow_response(
+    status: u16,
+    head: &str,
+    body: &[u8],
+    expected_row_count: usize,
+    expected_fields: &[&str],
+) {
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(body));
+    let normalized_head = head.to_ascii_lowercase();
+    assert!(
+        normalized_head.contains("content-type: application/vnd.apache.arrow.stream"),
+        "{head}"
+    );
+    assert!(
+        normalized_head.contains(&format!("x-sidemantic-row-count: {expected_row_count}")),
+        "{head}"
+    );
+
+    let mut reader =
+        StreamReader::try_new(Cursor::new(body), None).expect("Arrow IPC stream should decode");
+    let schema = reader.schema();
+    let field_names = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(field_names, expected_fields);
+
+    let mut row_count = 0;
+    for batch in &mut reader {
+        let batch = batch.expect("Arrow record batch should decode");
+        row_count += batch.num_rows();
+    }
+    assert_eq!(row_count, expected_row_count);
 }
 
 fn wait_for_server(addr: &str) {
@@ -215,6 +279,37 @@ fn run_http(driver: &str, models_path: &Path, db_path: &Path) {
     assert_eq!(body["row_count"], 1);
     assert_eq!(body["rows"][0]["status"], "complete");
     assert_eq!(body["rows"][0]["amount"], 10.5);
+
+    let (status, head, body) = http_arrow_request(
+        &bind,
+        "POST",
+        "/query?format=arrow",
+        Some(json!({
+            "dimensions": ["orders.status"],
+            "metrics": ["orders.revenue"]
+        })),
+    );
+    assert_arrow_response(status, &head, &body, 2, &["status", "revenue"]);
+
+    let (status, head, body) = http_arrow_request(
+        &bind,
+        "POST",
+        "/sql",
+        Some(json!({
+            "query": "select orders.status, orders.revenue from orders"
+        })),
+    );
+    assert_arrow_response(status, &head, &body, 2, &["status", "revenue"]);
+
+    let (status, head, body) = http_arrow_request(
+        &bind,
+        "POST",
+        "/raw?format=arrow",
+        Some(json!({
+            "query": "select status, amount from orders order by order_id limit 1"
+        })),
+    );
+    assert_arrow_response(status, &head, &body, 1, &["status", "amount"]);
 
     child.kill_and_wait();
 }

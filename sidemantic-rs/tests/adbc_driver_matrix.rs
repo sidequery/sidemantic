@@ -124,11 +124,32 @@ fn default_database_options(probe: &DriverProbe) -> Vec<(OptionDatabase, OptionV
         .collect()
 }
 
+fn required_drivers() -> Vec<String> {
+    env_value("SIDEMANTIC_TEST_ADBC_REQUIRE")
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[test]
 fn rust_adbc_driver_matrix_executes_configured_drivers() {
+    let required = required_drivers();
+    let mut executed = Vec::new();
+
     for probe in DRIVER_PROBES {
         let driver_var = format!("{}_DRIVER", probe.env_prefix);
         let Some(driver) = env_value(&driver_var) else {
+            if required.iter().any(|name| name == probe.name) {
+                panic!(
+                    "{} ADBC probe is required but {} is not set",
+                    probe.name, driver_var
+                );
+            }
             eprintln!(
                 "skipping {} ADBC probe; {} is not set",
                 probe.name, driver_var
@@ -164,6 +185,14 @@ fn rust_adbc_driver_matrix_executes_configured_drivers() {
             !result.rows.is_empty(),
             "{} ADBC probe should return at least one row",
             probe.name
+        );
+        executed.push(probe.name);
+    }
+
+    for required_driver in required {
+        assert!(
+            executed.iter().any(|name| *name == required_driver),
+            "required ADBC probe {required_driver} did not execute"
         );
     }
 }

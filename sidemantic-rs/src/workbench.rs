@@ -411,16 +411,12 @@ impl WorkbenchApp {
 
     fn handle_models_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Down => {
-                if !self.models.is_empty() {
-                    self.selected_model_index =
-                        (self.selected_model_index + 1).min(self.models.len() - 1);
-                }
+            KeyCode::Down if !self.models.is_empty() => {
+                self.selected_model_index =
+                    (self.selected_model_index + 1).min(self.models.len() - 1);
             }
-            KeyCode::Up => {
-                if self.selected_model_index > 0 {
-                    self.selected_model_index -= 1;
-                }
+            KeyCode::Up if self.selected_model_index > 0 => {
+                self.selected_model_index -= 1;
             }
             KeyCode::Enter => self.apply_model_template(),
             _ => {}

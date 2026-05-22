@@ -104,6 +104,22 @@ def test_rust_compile_payload_includes_preaggregation_flags(monkeypatch):
     assert "preagg_schema" in captured
 
 
+def test_rust_compile_transpiles_from_rust_output_dialect(monkeypatch):
+    _configure_strict_sql_entrypoint(monkeypatch)
+    layer = _build_layer(monkeypatch)
+    layer.dialect = "bigquery"
+
+    class FakeRustModule:
+        def compile_with_yaml(self, _models_yaml, _query_yaml):
+            return "SELECT DATE_TRUNC('month', order_date) AS order_month FROM orders_cte"
+
+    layer._rust_module = FakeRustModule()
+    sql = layer.compile(metrics=["orders.revenue"], dialect=None)
+
+    assert "DATE_TRUNC(order_date, MONTH)" in sql
+    assert "DATE_TRUNC('month', order_date)" not in sql
+
+
 def test_rust_compile_payload_includes_complex_metric_fields(monkeypatch):
     _configure_strict_sql_entrypoint(monkeypatch)
     monkeypatch.setattr(semantic_layer_module, "get_rust_module", lambda: object())

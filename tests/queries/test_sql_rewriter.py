@@ -1397,6 +1397,23 @@ def test_semantic_root_with_user_cte_preserved(semantic_layer):
     assert rows[0]["revenue"] == 250.00
 
 
+def test_semantic_root_allows_unrelated_generated_cte_name(semantic_layer):
+    """User CTE names are rejected only when this query actually generates the same CTE."""
+    sql = """
+        WITH customers_cte AS (
+            SELECT 'completed' AS status
+        )
+        SELECT orders.revenue
+        FROM orders
+        WHERE orders.status IN (SELECT status FROM customers_cte)
+    """
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00
+
+
 def test_semantic_root_with_recursive_cte_preserved(semantic_layer):
     """WITH RECURSIVE flag is preserved when merging user CTEs."""
     sql = """

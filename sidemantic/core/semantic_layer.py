@@ -15,6 +15,8 @@ from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
 from sidemantic.rust_parity import is_strict_for
 from sidemantic.sql.generator import SQLGenerator
 
+_RUST_SQL_OUTPUT_DIALECT = "duckdb"
+
 
 class SemanticLayer:
     """Main semantic layer interface.
@@ -698,10 +700,10 @@ class SemanticLayer:
             sql = self._rust_module.compile_with_yaml(models_yaml, query_yaml)
 
             target_dialect = dialect or self.dialect
-            if target_dialect != self.dialect:
+            if target_dialect != _RUST_SQL_OUTPUT_DIALECT:
                 import sqlglot
 
-                sql = sqlglot.transpile(sql, read=self.dialect, write=target_dialect)[0]
+                sql = sqlglot.transpile(sql, read=_RUST_SQL_OUTPUT_DIALECT, write=target_dialect)[0]
                 if target_dialect == "bigquery":
                     sql = sql.replace("TIMESTAMP_TRUNC(", "DATE_TRUNC(")
 

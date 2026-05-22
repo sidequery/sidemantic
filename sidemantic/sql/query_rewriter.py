@@ -1938,13 +1938,40 @@ class QueryRewriter:
         if not with_clause:
             return
 
-        reserved_names = {self.generator._cte_name(model_name) for model_name in self.graph.models}
+        reserved_names = self._generated_cte_names_for_select_tree(select)
         for cte in with_clause.expressions:
             if cte.alias in reserved_names:
                 raise ValueError(
                     f"CTE name '{cte.alias}' conflicts with an internally "
                     f"generated name. Please choose a different CTE name."
                 )
+
+    def _generated_cte_names_for_select_tree(self, select: exp.Select) -> set[str]:
+        reserved_names: set[str] = set()
+        for nested_select in select.find_all(exp.Select):
+            if not self._references_semantic_model(nested_select):
+                continue
+            reserved_names.update(self._generated_cte_names_for_semantic_select(nested_select))
+        return reserved_names
+
+    def _generated_cte_names_for_semantic_select(self, select: exp.Select) -> set[str]:
+        had_inferred_table = hasattr(self, "inferred_table")
+        previous_inferred_table = getattr(self, "inferred_table", None)
+        try:
+            self.inferred_table = self._extract_from_table(select)
+            metrics, dimensions, _aliases = self._extract_metrics_and_dimensions(select)
+            filters = self._extract_filters(select)
+            model_names = self.generator._find_required_models(metrics, dimensions, filters)
+            return {
+                self.generator._cte_name(model_name) for model_name in model_names if model_name in self.graph.models
+            }
+        except Exception:
+            return set()
+        finally:
+            if had_inferred_table:
+                self.inferred_table = previous_inferred_table
+            elif hasattr(self, "inferred_table"):
+                del self.inferred_table
 
     def _rewrite_with_rust(self, sql: str, strict: bool = True) -> str | None:
         """Rewrite using sidemantic-rs bindings, returning None to allow Python fallback."""

@@ -176,8 +176,8 @@ jobs:
           cargo test --features mcp-server --test mcp_protocol
           cargo test --features runtime-server --test http_server
           cargo test --features runtime-lsp --test lsp_protocol_smoke
-          cargo test --features workbench-tui --bin sidemantic workbench
-          cargo test --features workbench-adbc --bin sidemantic workbench
+          cargo test --features workbench-tui --test cli_smoke workbench
+          cargo test --features workbench-adbc --test cli_smoke workbench
           cargo test --features workbench-tui --test workbench_pty_smoke
           cargo test --features workbench-adbc --test workbench_pty_smoke
           cargo test --features adbc-exec --test adbc_driver_matrix

@@ -6,7 +6,6 @@ build-backend = "maturin"
 name = "sidemantic-rs"
 version = "0.1.0"
 description = "Standalone Rust runtime bindings for Sidemantic"
-readme = "README.md"
 license = "AGPL-3.0-only"
 requires-python = ">=3.11"
 

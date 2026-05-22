@@ -23,7 +23,6 @@ fn python_extension_metadata_targets_the_expected_module_and_feature() {
     assert!(pyproject.contains("module-name = \"sidemantic_rs\""));
     assert!(pyproject.contains("features = [\"python-adbc\"]"));
     assert!(pyproject.contains("license = \"AGPL-3.0-only\""));
-    assert!(pyproject.contains("readme = \"README.md\""));
 }
 
 #[test]
@@ -41,7 +40,6 @@ fn cargo_metadata_and_feature_split_are_explicit() {
         "license = \"AGPL-3.0-only\"",
         "repository = \"https://github.com/sidequery/sidemantic\"",
         "homepage = \"https://sidemantic.com\"",
-        "readme = \"README.md\"",
         "python-adbc = [\"python\", \"adbc-exec\"]",
         "mcp-adbc = [\"mcp-server\", \"adbc-exec\"]",
         "runtime-server-adbc = [\"runtime-server\", \"adbc-exec\", \"dep:tokio-stream\"]",

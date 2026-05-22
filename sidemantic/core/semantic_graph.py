@@ -43,9 +43,15 @@ class SemanticGraph:
         self.metrics: dict[str, Metric] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
+        self._version = 0
+        self._adjacency_dirty = True
         self._adjacency: dict[
             str, list[tuple[str, list[str], list[str], str]]
         ] = {}  # model -> [(to_model, from_keys, to_keys, rel_type)]
+
+    def _mark_dirty(self) -> None:
+        self._version += 1
+        self._adjacency_dirty = True
 
     def add_model(self, model: Model) -> None:
         """Add a model to the graph.
@@ -68,7 +74,7 @@ class SemanticGraph:
                     if metric.name not in self.metrics:
                         self.metrics[metric.name] = metric
 
-        self._adjacency_dirty = True
+        self._mark_dirty()
 
     def add_metric(self, measure: Metric) -> None:
         """Add a measure to the graph.
@@ -80,6 +86,7 @@ class SemanticGraph:
             raise ValueError(f"Measure {measure.name} already exists")
 
         self.metrics[measure.name] = measure
+        self._mark_dirty()
 
     def add_table_calculation(self, calc: TableCalculation) -> None:
         """Add a table calculation to the graph.
@@ -91,6 +98,7 @@ class SemanticGraph:
             raise ValueError(f"Table calculation {calc.name} already exists")
 
         self.table_calculations[calc.name] = calc
+        self._mark_dirty()
 
     def get_table_calculation(self, name: str) -> TableCalculation:
         """Get a table calculation by name.
@@ -122,6 +130,7 @@ class SemanticGraph:
             raise ValueError(f"Parameter {param.name} already exists")
 
         self.parameters[param.name] = param
+        self._mark_dirty()
 
     def get_parameter(self, name: str) -> Parameter:
         """Get a parameter by name.

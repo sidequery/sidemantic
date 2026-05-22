@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable
 from pathlib import Path
+
+import yaml
 
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
+from sidemantic.rust_parity import is_strict_for
 from sidemantic.sql.generator import SQLGenerator
+
+_RUST_SQL_OUTPUT_DIALECT = "duckdb"
 
 
 class SemanticLayer:
@@ -52,9 +60,31 @@ class SemanticLayer:
         from sidemantic.db.base import BaseDatabaseAdapter
 
         self.graph = SemanticGraph()
+        self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
+        self._sql_rewrite_cache_limit = 256
         self.use_preaggregations = use_preaggregations
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
+        self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
+        self._use_rust_sql_generator = (
+            os.getenv("SIDEMANTIC_RS_SQL_GENERATOR", "0") == "1" or self._strict_rust_sql_generator_entrypoint
+        )
+        self._use_rust_query_validation = (
+            os.getenv("SIDEMANTIC_RS_QUERY_VALIDATION", "0") == "1" or self._strict_rust_query_validation
+        )
+        self._rust_sql_verify = (
+            os.getenv("SIDEMANTIC_RS_SQL_GENERATOR_VERIFY", "1") == "1"
+            and not self._strict_rust_sql_generator_entrypoint
+        )
+        self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
+        self._rust_module = None
+        if self._use_rust_sql_generator:
+            try:
+                self._rust_module = get_rust_module()
+            except Exception:
+                if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                    raise
 
         # Initialize adapter from connection string or use provided adapter
         if isinstance(connection, BaseDatabaseAdapter):
@@ -216,6 +246,7 @@ class SemanticLayer:
             )
 
         self.graph.add_model(model)
+        self._sql_rewrite_cache.clear()
 
     def _normalize_model_table(self, model: Model) -> None:
         """Normalize model.table for the active dialect when needed."""
@@ -432,6 +463,7 @@ class SemanticLayer:
             )
 
         self.graph.add_metric(measure)
+        self._sql_rewrite_cache.clear()
 
     def query(
         self,
@@ -524,13 +556,99 @@ class SemanticLayer:
         dimensions = dimensions or []
 
         # Validate query
-        errors = validate_query(metrics, dimensions, self.graph)
+        errors = self._validate_query(metrics, dimensions, validate_query)
         if errors:
             raise QueryValidationError("Query validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
 
         # Determine if pre-aggregations should be used
         use_preaggs = use_preaggregations if use_preaggregations is not None else self.use_preaggregations
 
+        inner_sql = None
+        if self._use_rust_sql_generator:
+            inner_sql = self._compile_with_rust(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                dialect=dialect,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=use_preaggs,
+            )
+            if inner_sql is None and self._strict_rust_sql_generator_entrypoint:
+                raise ValueError("Rust SQL generator returned no SQL in strict mode")
+            if inner_sql is not None and self._rust_sql_verify:
+                python_sql = self._compile_with_python(
+                    metrics=metrics,
+                    dimensions=dimensions,
+                    filters=filters,
+                    segments=segments,
+                    order_by=order_by,
+                    limit=limit,
+                    offset=offset,
+                    dialect=dialect,
+                    ungrouped=ungrouped,
+                    parameters=parameters,
+                    use_preaggregations=use_preaggs,
+                )
+                if inner_sql.strip() != python_sql.strip():
+                    if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                        raise ValueError("Rust SQL generator output mismatch with Python SQL generator")
+                    inner_sql = python_sql
+
+        if inner_sql is None:
+            inner_sql = self._compile_with_python(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                segments=segments,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                dialect=dialect,
+                ungrouped=ungrouped,
+                parameters=parameters,
+                use_preaggregations=use_preaggs,
+            )
+
+        return self._apply_post_process(inner_sql, post_process)
+
+    def _validate_query(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        python_validate_query: Callable[[list[str], list[str], SemanticGraph], list[str]],
+    ) -> list[str]:
+        from sidemantic.validation import QueryValidationError
+
+        if self._use_rust_query_validation:
+            try:
+                from sidemantic.rust_bridge import validate_query_with_rust
+
+                return validate_query_with_rust(self.graph, metrics, dimensions)
+            except Exception as e:
+                if self._strict_rust_query_validation or self._rust_no_fallback:
+                    raise QueryValidationError(f"Rust query validation failed: {e}") from e
+
+        return python_validate_query(metrics, dimensions, self.graph)
+
+    def _compile_with_python(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        segments: list[str] | None,
+        order_by: list[str] | None,
+        limit: int | None,
+        offset: int | None,
+        dialect: str | None,
+        ungrouped: bool,
+        parameters: dict[str, any] | None,
+        use_preaggregations: bool,
+    ) -> str:
         generator = SQLGenerator(
             self.graph,
             dialect=dialect or self.dialect,
@@ -538,7 +656,7 @@ class SemanticLayer:
             preagg_schema=self.preagg_schema,
         )
 
-        inner_sql = generator.generate(
+        return generator.generate(
             metrics=metrics,
             dimensions=dimensions,
             filters=filters,
@@ -548,9 +666,84 @@ class SemanticLayer:
             offset=offset,
             ungrouped=ungrouped,
             parameters=parameters,
-            use_preaggregations=use_preaggs,
+            use_preaggregations=use_preaggregations,
         )
 
+    def _compile_with_rust(
+        self,
+        metrics: list[str] | None,
+        dimensions: list[str] | None,
+        filters: list[str] | None,
+        segments: list[str] | None,
+        order_by: list[str] | None,
+        limit: int | None,
+        offset: int | None,
+        dialect: str | None,
+        ungrouped: bool,
+        parameters: dict[str, any] | None,
+        use_preaggregations: bool,
+    ) -> str | None:
+        if not self._rust_module:
+            if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                raise ValueError("Rust SQL generator backend is not initialized")
+            return None
+
+        payload = {
+            "metrics": metrics or [],
+            "dimensions": dimensions or [],
+            "filters": list(filters or []),
+            "parameter_values": parameters or {},
+            "segments": segments or [],
+            "order_by": order_by or [],
+            "limit": limit,
+            "offset": offset,
+            "ungrouped": ungrouped,
+            "use_preaggregations": bool(use_preaggregations),
+            "preagg_database": self.preagg_database,
+            "preagg_schema": self.preagg_schema,
+        }
+
+        try:
+            models_yaml = graph_to_rust_yaml(self.graph)
+            query_yaml = yaml.safe_dump(payload, sort_keys=False)
+            sql = self._rust_module.compile_with_yaml(models_yaml, query_yaml)
+
+            target_dialect = dialect or self.dialect
+            if target_dialect != _RUST_SQL_OUTPUT_DIALECT:
+                import sqlglot
+
+                sql = sqlglot.transpile(sql, read=_RUST_SQL_OUTPUT_DIALECT, write=target_dialect)[0]
+                if target_dialect == "bigquery":
+                    sql = sql.replace("TIMESTAMP_TRUNC(", "DATE_TRUNC(")
+
+            if "-- sidemantic:" not in sql:
+                generator = SQLGenerator(
+                    self.graph,
+                    dialect=dialect or self.dialect,
+                    preagg_database=self.preagg_database,
+                    preagg_schema=self.preagg_schema,
+                )
+                segment_filters = generator._resolve_segments(segments or [])
+                all_filters = list(filters or []) + segment_filters
+                model_names = generator._find_required_models(metrics or [], dimensions or [], all_filters)
+                sql = (
+                    sql
+                    + "\n"
+                    + generator._generate_instrumentation_comment(
+                        model_names,
+                        metrics or [],
+                        dimensions or [],
+                        used_preagg=False,
+                    )
+                )
+
+            return sql
+        except Exception as e:
+            if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                raise ValueError(f"Rust SQL generator failed: {e}") from e
+            return None
+
+    def _apply_post_process(self, inner_sql: str, post_process: str | None) -> str:
         if post_process is not None:
             if "{inner}" not in post_process:
                 raise ValueError("post_process must contain a {inner} placeholder")
@@ -1021,8 +1214,20 @@ class SemanticLayer:
         """
         from sidemantic.sql.query_rewriter import QueryRewriter
 
-        rewriter = QueryRewriter(self.graph, dialect=self.dialect)
-        rewritten_sql = rewriter.rewrite(query)
+        cache_key = (
+            getattr(self.graph, "_version", 0),
+            self.dialect,
+            os.getenv("SIDEMANTIC_RS_REWRITER", "0"),
+            os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
+            query,
+        )
+        rewritten_sql = self._sql_rewrite_cache.get(cache_key)
+        if rewritten_sql is None:
+            rewriter = QueryRewriter(self.graph, dialect=self.dialect)
+            rewritten_sql = rewriter.rewrite(query)
+            if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
+                self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
+            self._sql_rewrite_cache[cache_key] = rewritten_sql
 
         return self.adapter.execute(rewritten_sql)
 

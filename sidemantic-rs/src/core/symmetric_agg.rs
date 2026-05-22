@@ -48,6 +48,8 @@ pub enum SymmetricAggType {
     Avg,
     Count,
     CountDistinct,
+    Min,
+    Max,
 }
 
 /// Build SQL for symmetric aggregate to prevent double-counting in fan-out joins.
@@ -73,11 +75,28 @@ pub fn build_symmetric_aggregate_sql(
     model_alias: Option<&str>,
     dialect: SqlDialect,
 ) -> String {
-    // Add table prefix if provided
-    let pk_col = match model_alias {
+    let primary_key_expr = match model_alias {
         Some(alias) => format!("{alias}.{primary_key}"),
         None => primary_key.to_string(),
     };
+    build_symmetric_aggregate_sql_with_key_expr(
+        measure_expr,
+        &primary_key_expr,
+        agg_type,
+        model_alias,
+        dialect,
+    )
+}
+
+/// Build SQL for symmetric aggregate when the deduplication key is already a SQL expression.
+pub fn build_symmetric_aggregate_sql_with_key_expr(
+    measure_expr: &str,
+    primary_key_expr: &str,
+    agg_type: SymmetricAggType,
+    model_alias: Option<&str>,
+    dialect: SqlDialect,
+) -> String {
+    let pk_col = primary_key_expr.to_string();
     let measure_col = match model_alias {
         Some(alias) => format!("{alias}.{measure_expr}"),
         None => measure_expr.to_string(),
@@ -87,43 +106,54 @@ pub fn build_symmetric_aggregate_sql(
     let (hash_expr, multiplier) = match dialect {
         SqlDialect::BigQuery => (
             format!("FARM_FINGERPRINT(CAST({pk_col} AS STRING))"),
-            "1048576".to_string(), // 2^20
+            "1000000000000".to_string(),
         ),
         SqlDialect::Postgres => (
-            format!("hashtext({pk_col}::text)::bigint"),
-            "1024".to_string(), // 2^10 (smaller to avoid overflow)
+            format!("hashtext({pk_col}::text)::numeric"),
+            "1000000000000".to_string(),
         ),
         SqlDialect::Snowflake => (
-            format!("(HASH({pk_col}) % 1000000000)"), // Modulo to constrain range
-            "100".to_string(),                        // Small multiplier
+            format!("HASH({pk_col})::NUMBER(38, 0)"),
+            "1000000000000".to_string(),
         ),
         SqlDialect::ClickHouse => (
             format!("halfMD5(CAST({pk_col} AS String))"),
-            "1048576".to_string(),
+            "1000000000000".to_string(),
         ),
         SqlDialect::Databricks | SqlDialect::Spark => (
             format!("xxhash64(CAST({pk_col} AS STRING))"),
-            "1048576".to_string(),
+            "1000000000000".to_string(),
         ),
         SqlDialect::DuckDB => (
             format!("HASH({pk_col})::HUGEINT"),
-            "(1::HUGEINT << 20)".to_string(),
+            "(1::HUGEINT << 40)".to_string(),
         ),
+    };
+
+    let symmetric_base_expr = match dialect {
+        SqlDialect::DuckDB => {
+            format!("CAST(({hash_expr} * {multiplier}) AS DECIMAL(38, 6))")
+        }
+        _ => format!("({hash_expr} * {multiplier})"),
+    };
+    let symmetric_measure_expr = match dialect {
+        SqlDialect::DuckDB => format!("CAST({measure_col} AS DECIMAL(38, 6))"),
+        _ => measure_col.clone(),
     };
 
     match agg_type {
         SymmetricAggType::Sum => {
             // SUM(DISTINCT HASH(pk) * multiplier + value) - SUM(DISTINCT HASH(pk) * multiplier)
             format!(
-                "(SUM(DISTINCT ({hash_expr} * {multiplier}) + {measure_col}) - \
-                 SUM(DISTINCT ({hash_expr} * {multiplier})))"
+                "(SUM(DISTINCT {symmetric_base_expr} + {symmetric_measure_expr}) - \
+                 SUM(DISTINCT {symmetric_base_expr}))"
             )
         }
         SymmetricAggType::Avg => {
             // Sum divided by distinct count
             let sum_expr = format!(
-                "(SUM(DISTINCT ({hash_expr} * {multiplier}) + {measure_col}) - \
-                 SUM(DISTINCT ({hash_expr} * {multiplier})))"
+                "(SUM(DISTINCT {symmetric_base_expr} + {symmetric_measure_expr}) - \
+                 SUM(DISTINCT {symmetric_base_expr}))"
             );
             format!("{sum_expr} / NULLIF(COUNT(DISTINCT {pk_col}), 0)")
         }
@@ -135,6 +165,8 @@ pub fn build_symmetric_aggregate_sql(
             // Count distinct on the measure itself - no symmetric aggregate needed
             format!("COUNT(DISTINCT {measure_col})")
         }
+        SymmetricAggType::Min => format!("MIN({measure_col})"),
+        SymmetricAggType::Max => format!("MAX({measure_col})"),
     }
 }
 
@@ -163,7 +195,8 @@ mod tests {
         );
         assert!(sql.contains("SUM(DISTINCT"));
         assert!(sql.contains("HASH(order_id)::HUGEINT"));
-        assert!(sql.contains("+ amount"));
+        assert!(sql.contains("+ CAST(amount AS DECIMAL(38, 6))"));
+        assert!(sql.contains("CAST((HASH(order_id)::HUGEINT * (1::HUGEINT << 40))"));
     }
 
     #[test]
@@ -214,5 +247,42 @@ mod tests {
             SqlDialect::Postgres,
         );
         assert!(sql.contains("hashtext"));
+    }
+
+    #[test]
+    fn test_min_passthrough() {
+        let sql = build_symmetric_aggregate_sql(
+            "amount",
+            "order_id",
+            SymmetricAggType::Min,
+            None,
+            SqlDialect::DuckDB,
+        );
+        assert_eq!(sql, "MIN(amount)");
+    }
+
+    #[test]
+    fn test_max_passthrough_with_alias() {
+        let sql = build_symmetric_aggregate_sql(
+            "amount",
+            "order_id",
+            SymmetricAggType::Max,
+            Some("orders_cte"),
+            SqlDialect::DuckDB,
+        );
+        assert_eq!(sql, "MAX(orders_cte.amount)");
+    }
+
+    #[test]
+    fn test_symmetric_sum_with_key_expression() {
+        let sql = build_symmetric_aggregate_sql_with_key_expr(
+            "amount",
+            "CONCAT(CAST(o.order_id AS VARCHAR), '|', CAST(o.item_id AS VARCHAR))",
+            SymmetricAggType::Sum,
+            Some("o"),
+            SqlDialect::DuckDB,
+        );
+        assert!(sql.contains("HASH(CONCAT("));
+        assert!(sql.contains("CAST(o.amount AS DECIMAL(38, 6))"));
     }
 }

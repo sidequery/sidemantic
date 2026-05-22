@@ -33,6 +33,65 @@ class SQLGenerator:
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self._generate_cache: dict[tuple[object, ...], str] = {}
+        self._generate_cache_limit = 256
+
+    @staticmethod
+    def _freeze_cache_value(value):
+        if isinstance(value, dict):
+            items = (
+                (SQLGenerator._freeze_cache_value(k), SQLGenerator._freeze_cache_value(v)) for k, v in value.items()
+            )
+            return tuple(sorted(items, key=repr))
+        if isinstance(value, (list, tuple)):
+            return tuple(SQLGenerator._freeze_cache_value(item) for item in value)
+        if isinstance(value, set):
+            return tuple(sorted((SQLGenerator._freeze_cache_value(item) for item in value), key=repr))
+        try:
+            hash(value)
+            return value
+        except TypeError:
+            return repr(value)
+
+    def _generate_cache_key(
+        self,
+        metrics,
+        dimensions,
+        filters,
+        segments,
+        order_by,
+        limit,
+        offset,
+        parameters,
+        ungrouped,
+        use_preaggregations,
+        aliases,
+        skip_default_time_dimensions,
+    ) -> tuple[object, ...]:
+        return (
+            getattr(self.graph, "_version", 0),
+            self.dialect,
+            self.preagg_database,
+            self.preagg_schema,
+            self._freeze_cache_value(metrics),
+            self._freeze_cache_value(dimensions),
+            self._freeze_cache_value(filters),
+            self._freeze_cache_value(segments),
+            self._freeze_cache_value(order_by),
+            limit,
+            offset,
+            self._freeze_cache_value(parameters),
+            ungrouped,
+            use_preaggregations,
+            self._freeze_cache_value(aliases),
+            skip_default_time_dimensions,
+        )
+
+    def _cache_generate_result(self, cache_key: tuple[object, ...], sql: str) -> str:
+        if len(self._generate_cache) >= self._generate_cache_limit:
+            self._generate_cache.pop(next(iter(self._generate_cache)))
+        self._generate_cache[cache_key] = sql
+        return sql
 
     def _date_trunc(self, granularity: str, column_expr: str) -> str:
         """Generate dialect-specific time truncation expression.
@@ -339,6 +398,23 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+        cache_key = self._generate_cache_key(
+            metrics,
+            dimensions,
+            filters,
+            segments,
+            order_by,
+            limit,
+            offset,
+            parameters,
+            ungrouped,
+            use_preaggregations,
+            aliases,
+            skip_default_time_dimensions,
+        )
+        cached = self._generate_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         # Auto-include default_time_dimension from metrics if not already present
         if not skip_default_time_dimensions:
@@ -445,7 +521,10 @@ class SQLGenerator:
         needs_window_functions = any(metric_needs_window(m) for m in metrics)
 
         if needs_window_functions:
-            return self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset, aliases)
+            return self._cache_generate_result(
+                cache_key,
+                self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset, aliases),
+            )
 
         # Parse dimension references and extract granularities
         parsed_dims = self._parse_dimension_refs(dimensions)
@@ -456,15 +535,18 @@ class SQLGenerator:
         # Check if we need symmetric aggregation (pre-aggregation approach)
         # This is needed when metrics come from different models at different join levels
         if self._needs_preaggregation_for_fanout(metrics, dimensions):
-            return self._generate_with_preaggregation(
-                metrics=metrics,
-                dimensions=dimensions,
-                filters=filters,
-                segments=None,  # Already resolved into filters above
-                order_by=order_by,
-                limit=limit,
-                offset=offset,
-                aliases=aliases,
+            return self._cache_generate_result(
+                cache_key,
+                self._generate_with_preaggregation(
+                    metrics=metrics,
+                    dimensions=dimensions,
+                    filters=filters,
+                    segments=None,  # Already resolved into filters above
+                    order_by=order_by,
+                    limit=limit,
+                    offset=offset,
+                    aliases=aliases,
+                ),
             )
 
         # Try to use pre-aggregation if enabled (single model queries only)
@@ -483,7 +565,7 @@ class SQLGenerator:
                 instrumentation = self._generate_instrumentation_comment(
                     models=[model_names[0]], metrics=metrics, dimensions=dimensions, used_preagg=True
                 )
-                return preagg_sql + "\n" + instrumentation
+                return self._cache_generate_result(cache_key, preagg_sql + "\n" + instrumentation)
 
         if not model_names:
             raise ValueError("No models found for query")
@@ -598,7 +680,7 @@ class SQLGenerator:
         )
         full_sql = full_sql + "\n" + instrumentation
 
-        return full_sql
+        return self._cache_generate_result(cache_key, full_sql)
 
     def _parse_dimension_refs(self, dimensions: list[str]) -> list[tuple[str, str | None]]:
         """Parse dimension references to extract granularities.

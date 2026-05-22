@@ -185,7 +185,6 @@ jobs:
         env:
           CLICKHOUSE_DB: default
           CLICKHOUSE_USER: default
-          CLICKHOUSE_PASSWORD: clickhouse
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
         ports:
           - 8123:8123
@@ -221,6 +220,10 @@ jobs:
       - name: Install ADBC driver (best effort)
         run: |
           DB="${{ matrix.db }}"
+          if [ "$DB" = "clickhouse" ]; then
+            uvx dbc install --pre clickhouse
+            exit 0
+          fi
           PKG_DB="$DB"
           if [ "$DB" = "postgres" ]; then
             PKG_DB="postgresql"
@@ -237,6 +240,64 @@ jobs:
           BIGQUERY_DATASET: "test_dataset"
           CLICKHOUSE_HOST: "localhost"
           CLICKHOUSE_PORT: "8123"
-          CLICKHOUSE_PASSWORD: "clickhouse"
           SNOWFLAKE_TEST: "1"
         run: uv run pytest -m integration tests/db/test_adbc_ci_smoke.py -v
+
+      - name: Install Rust for Rust ADBC probe
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Export Postgres ADBC driver for Rust
+        if: matrix.db == 'postgres'
+        run: |
+          uv pip install adbc-driver-postgresql
+          uv run python - <<'PY' >> "$GITHUB_ENV"
+          import adbc_driver_postgresql
+
+          print(f"SIDEMANTIC_TEST_ADBC_POSTGRES_DRIVER={adbc_driver_postgresql._driver_path()}")
+          PY
+          echo "SIDEMANTIC_TEST_ADBC_POSTGRES_URI=postgresql://test:test@localhost:5432/sidemantic_test" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=postgres" >> "$GITHUB_ENV"
+
+      - name: Export BigQuery ADBC driver for Rust
+        if: matrix.db == 'bigquery'
+        env:
+          BIGQUERY_ADBC_CREDENTIALS_JSON: ${{ secrets.BIGQUERY_ADBC_CREDENTIALS_JSON }}
+          BIGQUERY_ADBC_PROJECT: ${{ vars.BIGQUERY_ADBC_PROJECT }}
+          BIGQUERY_ADBC_DATASET: ${{ vars.BIGQUERY_ADBC_DATASET }}
+        run: |
+          if [ -z "$BIGQUERY_ADBC_CREDENTIALS_JSON" ] || [ -z "$BIGQUERY_ADBC_PROJECT" ] || [ -z "$BIGQUERY_ADBC_DATASET" ]; then
+            echo "Skipping Rust BigQuery ADBC probe; BIGQUERY_ADBC_CREDENTIALS_JSON secret plus BIGQUERY_ADBC_PROJECT/BIGQUERY_ADBC_DATASET vars are required."
+            exit 0
+          fi
+          uvx dbc install bigquery
+          CREDENTIALS_FILE="$(mktemp)"
+          printf '%s' "$BIGQUERY_ADBC_CREDENTIALS_JSON" > "$CREDENTIALS_FILE"
+          echo "::add-mask::$BIGQUERY_ADBC_CREDENTIALS_JSON"
+          echo "SIDEMANTIC_TEST_ADBC_BIGQUERY_DRIVER=bigquery" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_BIGQUERY_DBOPTS=adbc.bigquery.sql.project_id=$BIGQUERY_ADBC_PROJECT,adbc.bigquery.sql.dataset_id=$BIGQUERY_ADBC_DATASET,adbc.bigquery.sql.auth_type=adbc.bigquery.sql.auth_type.json_credential_file,adbc.bigquery.sql.auth_credentials=$CREDENTIALS_FILE" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=bigquery" >> "$GITHUB_ENV"
+
+      - name: Export Snowflake ADBC driver for Rust
+        if: matrix.db == 'snowflake'
+        env:
+          SNOWFLAKE_ADBC_URI: ${{ secrets.SNOWFLAKE_ADBC_URI }}
+        run: |
+          if [ -z "$SNOWFLAKE_ADBC_URI" ]; then
+            echo "Skipping Rust Snowflake ADBC probe; SNOWFLAKE_ADBC_URI secret is required."
+            exit 0
+          fi
+          uvx dbc install snowflake
+          echo "::add-mask::$SNOWFLAKE_ADBC_URI"
+          echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_DRIVER=snowflake" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_URI=$SNOWFLAKE_ADBC_URI" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=snowflake" >> "$GITHUB_ENV"
+
+      - name: Export ClickHouse ADBC driver for Rust
+        if: matrix.db == 'clickhouse'
+        run: |
+          echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_DRIVER=clickhouse" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_URI=http://localhost:8123/" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=clickhouse" >> "$GITHUB_ENV"
+
+      - name: Run Rust ADBC probe
+        run: cargo test --manifest-path sidemantic-rs/Cargo.toml --features adbc-exec --test adbc_driver_matrix

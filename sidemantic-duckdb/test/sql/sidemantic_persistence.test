@@ -1,0 +1,61 @@
+# name: test/sql/sidemantic_persistence.test
+# description: Test sidemantic extension persistence and autoload behavior
+# group: [sidemantic]
+
+load __TEST_DIR__/sidemantic_persistence.duckdb
+
+require sidemantic
+
+statement ok
+CREATE TABLE events (event_id INT, amount INT);
+
+statement ok
+INSERT INTO events VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+SEMANTIC CREATE MODEL events (name events, table events, primary_key event_id);
+
+statement ok
+SEMANTIC CREATE METRIC event_count AS COUNT(*);
+
+query I
+SEMANTIC SELECT events.event_count FROM events;
+----
+3
+
+restart
+
+require sidemantic
+
+query I
+SELECT * FROM sidemantic_models();
+----
+events
+
+query I
+SEMANTIC SELECT events.event_count FROM events;
+----
+3
+
+statement ok
+SEMANTIC CREATE OR REPLACE MODEL events (name events, table events, primary_key event_id);
+
+statement ok
+SEMANTIC MODEL events;
+
+statement ok
+SEMANTIC CREATE OR REPLACE METRIC total_amount AS SUM(amount);
+
+query I
+SEMANTIC SELECT events.total_amount FROM events;
+----
+60
+
+restart
+
+require sidemantic
+
+query I
+SEMANTIC SELECT events.total_amount FROM events;
+----
+60

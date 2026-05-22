@@ -185,7 +185,45 @@ fn assert_arrow_response(
         normalized_head.contains(&format!("x-sidemantic-row-count: {expected_row_count}")),
         "{head}"
     );
+    assert!(
+        normalized_head.contains("x-sidemantic-arrow-transport: buffered"),
+        "{head}"
+    );
 
+    assert_arrow_payload(body, expected_row_count, expected_fields);
+}
+
+fn assert_chunked_arrow_response(
+    status: u16,
+    head: &str,
+    body: &[u8],
+    expected_row_count: usize,
+    expected_fields: &[&str],
+) {
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(body));
+    let normalized_head = head.to_ascii_lowercase();
+    assert!(
+        normalized_head.contains("content-type: application/vnd.apache.arrow.stream"),
+        "{head}"
+    );
+    assert!(
+        normalized_head.contains("transfer-encoding: chunked"),
+        "{head}"
+    );
+    assert!(
+        normalized_head.contains("x-sidemantic-arrow-transport: chunked"),
+        "{head}"
+    );
+    assert!(
+        !normalized_head.contains("x-sidemantic-row-count"),
+        "streaming responses should not buffer to compute row-count headers: {head}"
+    );
+
+    let decoded_body = decode_chunked_body(body);
+    assert_arrow_payload(&decoded_body, expected_row_count, expected_fields);
+}
+
+fn assert_arrow_payload(body: &[u8], expected_row_count: usize, expected_fields: &[&str]) {
     let mut reader =
         StreamReader::try_new(Cursor::new(body), None).expect("Arrow IPC stream should decode");
     let schema = reader.schema();
@@ -202,6 +240,38 @@ fn assert_arrow_response(
         row_count += batch.num_rows();
     }
     assert_eq!(row_count, expected_row_count);
+}
+
+fn decode_chunked_body(body: &[u8]) -> Vec<u8> {
+    let mut decoded = Vec::new();
+    let mut offset = 0;
+    loop {
+        let line_end = body[offset..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .map(|position| offset + position)
+            .expect("chunk size line should end with CRLF");
+        let size_line =
+            std::str::from_utf8(&body[offset..line_end]).expect("chunk size should be UTF-8");
+        let size_hex = size_line.split(';').next().unwrap_or(size_line).trim();
+        let size = usize::from_str_radix(size_hex, 16).unwrap_or_else(|err| {
+            panic!("chunk size should be hex, got '{size_hex}': {err}");
+        });
+        offset = line_end + 2;
+        if size == 0 {
+            break;
+        }
+
+        let data_end = offset + size;
+        assert!(
+            data_end + 2 <= body.len(),
+            "chunk declares more bytes than response body contains"
+        );
+        decoded.extend_from_slice(&body[offset..data_end]);
+        assert_eq!(&body[data_end..data_end + 2], b"\r\n");
+        offset = data_end + 2;
+    }
+    decoded
 }
 
 fn wait_for_server(addr: &str) {
@@ -294,6 +364,17 @@ fn run_http(driver: &str, models_path: &Path, db_path: &Path) {
     let (status, head, body) = http_arrow_request(
         &bind,
         "POST",
+        "/query?format=arrow&transport=chunked",
+        Some(json!({
+            "dimensions": ["orders.status"],
+            "metrics": ["orders.revenue"]
+        })),
+    );
+    assert_chunked_arrow_response(status, &head, &body, 2, &["status", "revenue"]);
+
+    let (status, head, body) = http_arrow_request(
+        &bind,
+        "POST",
         "/sql",
         Some(json!({
             "query": "select orders.status, orders.revenue from orders"
@@ -310,6 +391,16 @@ fn run_http(driver: &str, models_path: &Path, db_path: &Path) {
         })),
     );
     assert_arrow_response(status, &head, &body, 1, &["status", "amount"]);
+
+    let (status, head, body) = http_arrow_request(
+        &bind,
+        "POST",
+        "/raw?format=arrow&stream=true",
+        Some(json!({
+            "query": "select status, amount from orders order by order_id limit 1"
+        })),
+    );
+    assert_chunked_arrow_response(status, &head, &body, 1, &["status", "amount"]);
 
     child.kill_and_wait();
 }

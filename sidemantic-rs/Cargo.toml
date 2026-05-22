@@ -20,7 +20,7 @@ wasm = ["dep:wasm-bindgen"]
 mcp-server = ["dep:rmcp", "dep:tokio"]
 mcp-adbc = ["mcp-server", "adbc-exec"]
 runtime-server = ["dep:axum", "dep:tokio"]
-runtime-server-adbc = ["runtime-server", "adbc-exec"]
+runtime-server-adbc = ["runtime-server", "adbc-exec", "dep:tokio-stream"]
 runtime-lsp = ["dep:tokio", "dep:tower-lsp"]
 workbench-tui = ["dep:ratatui", "dep:crossterm"]
 workbench-adbc = ["workbench-tui", "adbc-exec"]
@@ -45,7 +45,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 minijinja = { version = "2.5", features = ["builtins", "serde"] }
 wasm-bindgen = { version = "0.2", optional = true }
 rmcp = { version = "0.16.0", optional = true, features = ["transport-io"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "io-std", "sync"] }
+tokio-stream = { version = "0.1", optional = true }
 axum = { version = "0.8.1", optional = true, features = ["json"] }
 tower-lsp = { version = "0.20.0", optional = true }
 ratatui = { version = "0.29.0", optional = true }

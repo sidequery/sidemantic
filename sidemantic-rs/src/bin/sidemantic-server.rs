@@ -4,11 +4,15 @@
 
 use std::collections::HashMap;
 use std::env;
+#[cfg(feature = "runtime-server-adbc")]
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(feature = "runtime-server-adbc")]
 use adbc_core::options::{OptionConnection, OptionDatabase, OptionValue};
+#[cfg(feature = "runtime-server-adbc")]
+use axum::body::Bytes;
 use axum::body::{to_bytes, Body};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
@@ -20,8 +24,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use sidemantic::runtime::interpolate_query_filters;
 #[cfg(feature = "runtime-server-adbc")]
-use sidemantic::{execute_with_adbc, execute_with_adbc_arrow_ipc, AdbcExecutionRequest, AdbcValue};
+use sidemantic::{
+    execute_with_adbc, execute_with_adbc_arrow_ipc, write_adbc_arrow_ipc, AdbcExecutionRequest,
+    AdbcValue,
+};
 use sidemantic::{Metric, Model, Relationship, RelationshipType, SemanticQuery, SidemanticRuntime};
+#[cfg(feature = "runtime-server-adbc")]
+use tokio_stream::wrappers::ReceiverStream;
 
 #[cfg(feature = "runtime-server-adbc")]
 type DatabaseOption = (OptionDatabase, OptionValue);
@@ -33,6 +42,8 @@ type ConnectionOption = (OptionConnection, OptionValue);
 type ConnectionOption = (String, String);
 
 const ARROW_STREAM_MEDIA_TYPE: &str = "application/vnd.apache.arrow.stream";
+#[cfg(feature = "runtime-server-adbc")]
+const ARROW_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
 #[cfg_attr(not(feature = "runtime-server-adbc"), allow(dead_code))]
 #[derive(Debug, Clone)]
@@ -100,12 +111,20 @@ struct SQLRequest {
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ResponseFormatParams {
     format: Option<String>,
+    transport: Option<String>,
+    stream: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ArrowTransport {
+    Buffered,
+    Chunked,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ResponseFormat {
     Json,
-    Arrow,
+    Arrow(ArrowTransport),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,27 +161,81 @@ fn resolve_response_format(
     params: &ResponseFormatParams,
     headers: &HeaderMap,
 ) -> Result<ResponseFormat, (StatusCode, Json<ErrorResponse>)> {
-    if let Some(format) = params.format.as_deref() {
-        return match format.to_ascii_lowercase().as_str() {
-            "json" => Ok(ResponseFormat::Json),
-            "arrow" => Ok(ResponseFormat::Arrow),
-            other => Err(json_error(
-                StatusCode::BAD_REQUEST,
-                format!("unsupported response format '{other}'"),
-            )),
+    let response_format = if let Some(format) = params.format.as_deref() {
+        match format.to_ascii_lowercase().as_str() {
+            "json" => ResponseFormat::Json,
+            "arrow" => ResponseFormat::Arrow(resolve_arrow_transport(params)?),
+            other => {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    format!("unsupported response format '{other}'"),
+                ));
+            }
+        }
+    } else {
+        let wants_arrow = headers
+            .get(header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.contains(ARROW_STREAM_MEDIA_TYPE))
+            .unwrap_or(false);
+        if wants_arrow {
+            ResponseFormat::Arrow(resolve_arrow_transport(params)?)
+        } else {
+            ResponseFormat::Json
+        }
+    };
+
+    if response_format == ResponseFormat::Json
+        && (params.transport.is_some() || params.stream.is_some())
+    {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "chunked transport streaming is only supported for Arrow responses",
+        ));
+    }
+
+    Ok(response_format)
+}
+
+fn resolve_arrow_transport(
+    params: &ResponseFormatParams,
+) -> Result<ArrowTransport, (StatusCode, Json<ErrorResponse>)> {
+    let mut transport = ArrowTransport::Buffered;
+
+    if let Some(value) = params.transport.as_deref() {
+        transport = match value.to_ascii_lowercase().as_str() {
+            "buffered" | "buffer" => ArrowTransport::Buffered,
+            "chunked" | "stream" | "streaming" => ArrowTransport::Chunked,
+            other => {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    format!("unsupported Arrow transport '{other}'"),
+                ));
+            }
         };
     }
 
-    let wants_arrow = headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.contains(ARROW_STREAM_MEDIA_TYPE))
-        .unwrap_or(false);
-    if wants_arrow {
-        Ok(ResponseFormat::Arrow)
-    } else {
-        Ok(ResponseFormat::Json)
+    if let Some(value) = params.stream.as_deref() {
+        let stream_transport = match value.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "chunked" | "stream" | "streaming" => ArrowTransport::Chunked,
+            "false" | "0" | "no" | "buffered" | "buffer" => ArrowTransport::Buffered,
+            other => {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    format!("unsupported Arrow stream option '{other}'"),
+                ));
+            }
+        };
+        if params.transport.is_some() && transport != stream_transport {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "conflicting Arrow transport and stream options",
+            ));
+        }
+        transport = stream_transport;
     }
+
+    Ok(transport)
 }
 
 #[cfg(feature = "runtime-server-adbc")]
@@ -178,7 +251,82 @@ fn arrow_response(bytes: Vec<u8>, row_count: usize) -> Response {
         HeaderValue::from_str(&row_count.to_string()).expect("row count header should be valid"),
     );
     headers.insert("x-sidemantic-dialect", HeaderValue::from_static("generic"));
+    headers.insert(
+        "x-sidemantic-arrow-transport",
+        HeaderValue::from_static("buffered"),
+    );
     response
+}
+
+#[cfg(feature = "runtime-server-adbc")]
+fn arrow_chunked_response(
+    receiver: tokio::sync::mpsc::Receiver<Result<Bytes, io::Error>>,
+) -> Response {
+    let stream = ReceiverStream::new(receiver);
+    let mut response = Body::from_stream(stream).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(ARROW_STREAM_MEDIA_TYPE),
+    );
+    headers.insert("x-sidemantic-dialect", HeaderValue::from_static("generic"));
+    headers.insert(
+        "x-sidemantic-arrow-transport",
+        HeaderValue::from_static("chunked"),
+    );
+    response
+}
+
+#[cfg(feature = "runtime-server-adbc")]
+struct ArrowChunkWriter {
+    sender: tokio::sync::mpsc::Sender<Result<Bytes, io::Error>>,
+    buffer: Vec<u8>,
+    chunk_size: usize,
+}
+
+#[cfg(feature = "runtime-server-adbc")]
+impl ArrowChunkWriter {
+    fn new(sender: tokio::sync::mpsc::Sender<Result<Bytes, io::Error>>) -> Self {
+        Self {
+            sender,
+            buffer: Vec::with_capacity(ARROW_STREAM_CHUNK_BYTES),
+            chunk_size: ARROW_STREAM_CHUNK_BYTES,
+        }
+    }
+
+    fn flush_buffer(&mut self) -> io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        let mut chunk = Vec::with_capacity(self.chunk_size);
+        std::mem::swap(&mut self.buffer, &mut chunk);
+        self.sender
+            .blocking_send(Ok(Bytes::from(chunk)))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "HTTP client disconnected"))
+    }
+}
+
+#[cfg(feature = "runtime-server-adbc")]
+impl Write for ArrowChunkWriter {
+    fn write(&mut self, mut buf: &[u8]) -> io::Result<usize> {
+        let bytes_written = buf.len();
+        while !buf.is_empty() {
+            let remaining = self.chunk_size - self.buffer.len();
+            let take = remaining.min(buf.len());
+            self.buffer.extend_from_slice(&buf[..take]);
+            buf = &buf[take..];
+
+            if self.buffer.len() >= self.chunk_size {
+                self.flush_buffer()?;
+            }
+        }
+        Ok(bytes_written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flush_buffer()
+    }
 }
 
 fn cors_allowed_origin(controls: &HttpControls, request: &Request) -> Option<HeaderValue> {
@@ -689,7 +837,12 @@ fn execute_sql_response(
         ResponseFormat::Json => {
             execute_sql_json(state, sql, original_sql, route_name).map(IntoResponse::into_response)
         }
-        ResponseFormat::Arrow => execute_sql_arrow(state, sql, route_name),
+        ResponseFormat::Arrow(ArrowTransport::Buffered) => {
+            execute_sql_arrow(state, sql, route_name)
+        }
+        ResponseFormat::Arrow(ArrowTransport::Chunked) => {
+            execute_sql_arrow_chunked(state, sql, route_name)
+        }
     }
 }
 
@@ -735,6 +888,55 @@ fn execute_sql_arrow(
         })?;
 
         Ok(arrow_response(result.bytes, result.row_count))
+    }
+}
+
+fn execute_sql_arrow_chunked(
+    state: &AppState,
+    sql: String,
+    route_name: &str,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let _ = route_name;
+    #[cfg(not(feature = "runtime-server-adbc"))]
+    {
+        let _ = (state, sql);
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "ADBC execution support is not enabled. Rebuild with feature 'runtime-server-adbc' to use {route_name}."
+            ),
+        ));
+    }
+
+    #[cfg(feature = "runtime-server-adbc")]
+    {
+        let Some(driver) = state.adbc_driver.clone() else {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "ADBC driver is not configured. Set SIDEMANTIC_SERVER_ADBC_DRIVER or pass --driver.",
+            ));
+        };
+
+        let request = AdbcExecutionRequest {
+            driver,
+            sql,
+            uri: state.adbc_uri.clone(),
+            entrypoint: state.adbc_entrypoint.clone(),
+            database_options: state.database_options.clone(),
+            connection_options: state.connection_options.clone(),
+        };
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        tokio::task::spawn_blocking(move || {
+            let writer = ArrowChunkWriter::new(sender.clone());
+            if let Err(err) = write_adbc_arrow_ipc(request, writer) {
+                let _ = sender.blocking_send(Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("failed to execute query via ADBC: {err}"),
+                )));
+            }
+        });
+
+        Ok(arrow_chunked_response(receiver))
     }
 }
 

@@ -13,6 +13,7 @@ use arrow_array::{
 };
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, TimeUnit};
+use std::io::Write;
 
 use crate::error::{Result, SidemanticError};
 
@@ -171,6 +172,12 @@ pub fn execute_with_adbc(request: AdbcExecutionRequest) -> Result<AdbcExecutionR
 }
 
 pub fn execute_with_adbc_arrow_ipc(request: AdbcExecutionRequest) -> Result<AdbcArrowIpcResult> {
+    let mut bytes = Vec::new();
+    let row_count = write_adbc_arrow_ipc(request, &mut bytes)?;
+    Ok(AdbcArrowIpcResult { bytes, row_count })
+}
+
+pub fn write_adbc_arrow_ipc<W: Write>(request: AdbcExecutionRequest, writer: W) -> Result<usize> {
     let AdbcExecutionRequest {
         driver,
         sql,
@@ -226,8 +233,7 @@ pub fn execute_with_adbc_arrow_ipc(request: AdbcExecutionRequest) -> Result<Adbc
         .map_err(|e| adbc_error("failed to execute SQL query", e))?;
 
     let schema = reader.schema();
-    let mut bytes = Vec::new();
-    let mut writer = StreamWriter::try_new(&mut bytes, &schema)
+    let mut writer = StreamWriter::try_new(writer, &schema)
         .map_err(|e| adbc_error("failed to create Arrow IPC writer", e))?;
     let mut row_count = 0;
 
@@ -241,9 +247,11 @@ pub fn execute_with_adbc_arrow_ipc(request: AdbcExecutionRequest) -> Result<Adbc
     writer
         .finish()
         .map_err(|e| adbc_error("failed finishing Arrow IPC stream", e))?;
-    drop(writer);
+    let _ = writer
+        .into_inner()
+        .map_err(|e| adbc_error("failed finishing Arrow IPC stream", e))?;
 
-    Ok(AdbcArrowIpcResult { bytes, row_count })
+    Ok(row_count)
 }
 
 fn decimal128_to_string(value: i128, scale: i8) -> String {

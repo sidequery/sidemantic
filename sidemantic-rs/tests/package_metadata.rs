@@ -44,7 +44,7 @@ fn cargo_metadata_and_feature_split_are_explicit() {
         "readme = \"README.md\"",
         "python-adbc = [\"python\", \"adbc-exec\"]",
         "mcp-adbc = [\"mcp-server\", \"adbc-exec\"]",
-        "runtime-server-adbc = [\"runtime-server\", \"adbc-exec\"]",
+        "runtime-server-adbc = [\"runtime-server\", \"adbc-exec\", \"dep:tokio-stream\"]",
         "workbench-adbc = [\"workbench-tui\", \"adbc-exec\"]",
     ] {
         assert!(cargo_toml.contains(expected), "missing {expected}");

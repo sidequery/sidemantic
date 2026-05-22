@@ -109,7 +109,7 @@ Unverified gates:
 
 - Browser-specific WASM execution beyond the node-compatible wasm-bindgen runner.
 - Full release publish automation for all artifacts.
-- HTTP streaming output and graceful application shutdown. Auth, CORS, and body-size limits are implemented for the current HTTP baseline.
+- HTTP graceful application shutdown. Auth, CORS, body-size limits, buffered Arrow IPC, and opt-in chunked Arrow transport streaming are implemented for the current HTTP baseline.
 - External ADBC drivers beyond DuckDB `libduckdb`; Rust matrix tests are env-gated and skip with concrete reasons when driver libraries/credentials are unavailable.
 
 ## Standalone Readiness Assessment

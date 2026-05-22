@@ -129,6 +129,6 @@ pub use wasm::{
 
 #[cfg(feature = "adbc-exec")]
 pub use db::{
-    execute_with_adbc, execute_with_adbc_arrow_ipc, AdbcArrowIpcResult, AdbcExecutionRequest,
-    AdbcExecutionResult, AdbcValue,
+    execute_with_adbc, execute_with_adbc_arrow_ipc, write_adbc_arrow_ipc, AdbcArrowIpcResult,
+    AdbcExecutionRequest, AdbcExecutionResult, AdbcValue,
 };

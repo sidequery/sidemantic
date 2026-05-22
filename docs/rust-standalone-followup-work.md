@@ -20,7 +20,7 @@ This document is the follow-up inventory for the Rust standalone runtime PR. It 
 | DuckDB persistence replace | Repeated metric/dimension/segment replacement edits persisted definitions without stale shadowing; prefixed definitions persist inside the target model block | `sidemantic-rs/src/ffi.rs` tests |
 | DuckDB autoload visibility | Invalid persisted definitions are best-effort and emit a visible warning from the DuckDB extension | `sidemantic-duckdb/src/sidemantic_extension.cpp`, `sidemantic-rs/src/ffi.rs` tests |
 | Conversion/retention/cohort modeling | Rust model/schema/parser/runtime/bridge/generator paths now model conversion, retention, and cohort metrics, including graph-level owner inference by entity dimension | `sidemantic-rs/src/core/model.rs`, `sidemantic-rs/src/sql/generator.rs`, `sidemantic/rust_bridge.py` |
-| HTTP Arrow IPC | `/query`, `/query/run`, `/sql`, and `/raw` negotiate buffered Arrow IPC stream-format responses | `sidemantic-rs/src/db/adbc.rs`, `sidemantic-rs/tests/adbc_duckdb_e2e.rs` |
+| HTTP Arrow IPC | `/query`, `/query/run`, `/sql`, and `/raw` negotiate buffered Arrow IPC stream-format responses; `?format=arrow&transport=chunked` and `?format=arrow&stream=true` opt into chunked transport streaming | `sidemantic-rs/src/db/adbc.rs`, `sidemantic-rs/src/bin/sidemantic-server.rs`, `sidemantic-rs/tests/adbc_duckdb_e2e.rs` |
 | ADBC breadth | DuckDB and SQLite are fail-closed in Rust CI; Postgres and ClickHouse are fail-closed in integration CI; BigQuery/Snowflake are secret-gated with documented reasons | `.github/workflows/ci.yml`, `.github/workflows/integration.yml`, `sidemantic-rs/tests/adbc_driver_matrix.rs` |
 
 ## P1: SQL Generation And Rewrite Parity
@@ -44,7 +44,7 @@ HTTP, MCP, LSP, and workbench are executable and tested. They should still be de
 | --- | --- | --- |
 | HTTP | Add materialized pre-aggregation execution fixtures. Current tests assert compile-path flag and segment/parameter behavior, not a real preagg table selection. | A fixture proves `use_preaggregations` picks a materialized preagg when available. |
 | HTTP | Replace `/raw` select-only string guard with parser-backed statement classification if raw SQL becomes a product promise. | Non-SELECT statements are rejected by parser classification, not substring scanning. |
-| HTTP | Add true chunked transport streaming only if required. Current parity is buffered Arrow IPC stream format, matching Python. | Large results can be streamed without buffering the full body. |
+| HTTP | Decide whether chunked Arrow responses should expose row counts through trailers or a side channel. Current chunked mode intentionally omits `X-Sidemantic-Row-Count`. | Clients that depend on row-count headers need either buffered Arrow or a trailer-aware path. |
 | MCP | Add richer MCP Apps chart UI resources only if clients need embedded UI. | `create_chart` either stays Vega-Lite plus PNG or emits a tested UI resource. |
 | LSP | Add unknown-method assertions if docs claim them. | `sidemantic-rs/tests/lsp_protocol_smoke.py` proves behavior. |
 | LSP | Add cross-file indexing only if Rust LSP scope grows beyond opened SQL documents. | Definition/references/rename tests span multiple files. |

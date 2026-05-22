@@ -20,7 +20,7 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 | Single model | Python does not expose this route | `pass`: Rust extra route `/models/{model}` | Keep as Rust extension |
 | Graph | `GET /graph` with models, graph_metrics, joinable_pairs | `pass`: route and joinable-pair smoke added | Keep covered |
 | Structured compile | `POST /compile` with dimensions, metrics, where, filters, segments, order_by, limit, offset, ungrouped, parameters, preagg flag | `pass`: route, common fields, offset, ungrouped, segment resolution, parameter interpolation, and preagg flag plumbing are covered | Keep covered; add materialized preagg execution fixtures later |
-| Structured execute | `POST /query` executes via configured DB adapter, JSON or Arrow | `pass`: `/query` alias and DuckDB ADBC JSON E2E covered; Arrow IPC stream-format responses are implemented for `/query`, `/sql`, and `/raw` with Python-compatible media type and headers | Keep buffered Arrow IPC covered; true chunked transport streaming remains follow-up |
+| Structured execute | `POST /query` executes via configured DB adapter, JSON or Arrow | `pass`: `/query` alias and DuckDB ADBC JSON E2E covered; buffered Arrow IPC stream-format responses are implemented for `/query`, `/sql`, and `/raw` with Python-compatible media type and headers; `?format=arrow&transport=chunked` opt-in streams Arrow IPC over HTTP chunked transfer encoding | Keep buffered Arrow IPC covered; decide whether chunked Arrow needs row-count trailers |
 | Semantic SQL compile | `POST /sql/compile` rewrites SQL | `pass`: route and smoke coverage added | Keep covered |
 | Semantic SQL execute | `POST /sql` rewrites and executes | `pass`: DuckDB ADBC E2E covered | Keep covered |
 | Raw SQL execute | `POST /raw` executes select-only SQL without rewrite | `pass`: select-only guard and DuckDB ADBC E2E covered; Rust intentionally uses a conservative string guard until a parser-backed classifier is needed | Parser-backed classification is optional hardening |
@@ -97,4 +97,4 @@ Highest-priority follow-ups:
 2. Add materialized pre-aggregation execution fixtures, not just compile-path flag assertions.
 3. Add richer MCP Apps chart UI parity only if clients require embedded UI resources instead of plain Vega-Lite plus PNG.
 4. Keep BigQuery and Snowflake ADBC probes expanding through secret-configured CI.
-5. Add true chunked HTTP streaming only if product requirements exceed Python's buffered Arrow IPC response contract.
+5. Decide whether chunked HTTP Arrow responses should expose row counts through trailers or a side channel.

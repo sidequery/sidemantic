@@ -2006,7 +2006,10 @@ class QueryRewriter:
             if isinstance(node, exp.Column) and not node.table and node.name in self.graph.metrics:
                 graph_metric = self.graph.metrics[node.name]
                 if graph_metric.sql:
-                    metric_expr = sqlglot.parse_one(graph_metric.sql, dialect=self.dialect)
+                    try:
+                        metric_expr = sqlglot.parse_one(graph_metric.sql, dialect=self.dialect)
+                    except Exception:
+                        return original_sql
                     rewritten_projections.append(exp.alias_(metric_expr, alias_name or node.name, copy=False))
                     changed = True
                     continue

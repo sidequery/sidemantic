@@ -54,3 +54,36 @@ def test_query_rewriter_no_fallback_raises_when_rust_fails(monkeypatch):
 
     with pytest.raises(ValueError, match="Rust rewriter failed: boom"):
         QueryRewriter(_graph()).rewrite("SELECT orders.revenue FROM orders")
+
+
+def test_rust_rewriter_falls_back_when_graph_metric_sql_cannot_be_prepared(monkeypatch):
+    class FailingRustModule:
+        def __init__(self):
+            self.calls = []
+
+        def rewrite_with_yaml(self, yaml_text: str, sql_text: str) -> str:
+            self.calls.append((yaml_text, sql_text))
+            raise RuntimeError("boom")
+
+    graph = _graph()
+    graph.add_metric(
+        Metric(
+            name="placeholder_metric",
+            type="derived",
+            sql="${TABLE}.amount",
+        )
+    )
+
+    fake = FailingRustModule()
+    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
+    monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.get_rust_module", lambda: fake)
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.graph_to_rust_yaml", lambda _graph: "models: []")
+
+    rewriter = QueryRewriter(graph)
+    monkeypatch.setattr(rewriter, "_rewrite_simple_query", lambda _parsed: "SELECT 42 AS fallback")
+
+    rewritten = rewriter.rewrite("SELECT placeholder_metric FROM metrics")
+
+    assert rewritten == "SELECT 42 AS fallback"
+    assert fake.calls == [("models: []", "SELECT placeholder_metric FROM metrics")]

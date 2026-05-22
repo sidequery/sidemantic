@@ -80,12 +80,12 @@ This tracks the Rust standalone parity work for HTTP, MCP, LSP, workbench, and A
 
 | Driver/service | Existing Python coverage | Rust target | Local status | CI/status action |
 | --- | --- | --- | --- | --- |
-| DuckDB | Python adapter supports DuckDB URL/dialect | Direct Rust ADBC, CLI `run`, HTTP structured/SQL/raw JSON and Arrow, MCP structured/SQL/chart, workbench smoke | `pass` when `SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER` points at `libduckdb`; no local driver path found in the current worktree run | CI downloads DuckDB `libduckdb` and requires DuckDB in the Rust matrix |
+| DuckDB | Python adapter supports DuckDB URL/dialect | Direct Rust ADBC, CLI `run`, HTTP structured/SQL/raw JSON and Arrow, MCP structured/SQL/chart, workbench smoke | `pass` when `SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER` points at `libduckdb`; local direct `--uri` execution passed with downloaded `libduckdb` | CI downloads DuckDB `libduckdb` and requires DuckDB in the Rust matrix |
 | SQLite | Python adapter tests target SQLite ADBC package/DBC path | Rust ADBC driver-manager execution | `pass`: local transient `adbc-driver-sqlite` probe passed with `SIDEMANTIC_TEST_ADBC_SQLITE_URI=:memory:` | CI installs `adbc-driver-sqlite` and requires SQLite in the Rust matrix |
 | PostgreSQL | `tests/db/test_adbc_ci_smoke.py` gated by `ADBC_TEST=1`, URL/env/service required | Rust ADBC URL execution against live Postgres service | `skip` locally: no service/credentials in this worktree | Integration CI installs `adbc-driver-postgresql`, uses the Postgres service, and requires Postgres in the Rust matrix |
-| BigQuery | Python ADBC CI smoke gated by env/credentials | Rust ADBC URL/option parsing plus live execution when credentials or emulator compatibility exist | `skip`: driver package exists, but emulator compatibility is not proven | Keep env-gated until emulator compatibility or secret-backed credentials are proven |
-| Snowflake | Python ADBC CI smoke gated by env/credentials | Rust ADBC URL/option parsing plus live execution when credentials exist | `skip`: driver package exists, but fakesnow does not prove C-driver compatibility | Keep env/secret-gated |
-| ClickHouse | Python ADBC CI smoke gated by env/service | Rust ADBC URL/option parsing plus live execution when driver/service env exists | `skip`: no PyPI `adbc-driver-clickhouse` package found | Keep env-gated until a C ADBC driver source is chosen |
+| BigQuery | Python ADBC CI smoke gated by env/credentials | Rust ADBC option parsing plus live execution when credentials exist | `skip` locally: no Google Cloud credentials | CI installs the ADBC Foundry driver and runs a Rust probe when `BIGQUERY_ADBC_CREDENTIALS_JSON` plus project/dataset vars are configured |
+| Snowflake | Python ADBC CI smoke gated by env/credentials | Rust ADBC URL execution when credentials exist | `skip` locally: no Snowflake account credentials | CI installs the ADBC Foundry driver and runs a Rust probe when `SNOWFLAKE_ADBC_URI` is configured |
+| ClickHouse | Python ADBC CI smoke gated by env/service | Rust ADBC URL execution against live ClickHouse service | `skip` locally: no service in this worktree | Integration CI installs the prerelease ADBC Foundry driver with `dbc install --pre clickhouse`, uses the ClickHouse service, and requires ClickHouse in the Rust matrix |
 
 ## Future Work
 
@@ -96,5 +96,5 @@ Highest-priority follow-ups:
 1. Decide whether to add `api-serve` or keep Rust HTTP command naming separate from the Python HTTP command.
 2. Add materialized pre-aggregation execution fixtures, not just compile-path flag assertions.
 3. Add richer MCP Apps chart UI parity only if clients require embedded UI resources instead of plain Vega-Lite plus PNG.
-4. Keep ADBC matrix expanding as drivers/services become available through env-configured CI.
+4. Keep BigQuery and Snowflake ADBC probes expanding through secret-configured CI.
 5. Add true chunked HTTP streaming only if product requirements exceed Python's buffered Arrow IPC response contract.

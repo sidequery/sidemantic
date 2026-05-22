@@ -21,7 +21,7 @@ This document is the follow-up inventory for the Rust standalone runtime PR. It 
 | DuckDB autoload visibility | Invalid persisted definitions are best-effort and emit a visible warning from the DuckDB extension | `sidemantic-duckdb/src/sidemantic_extension.cpp`, `sidemantic-rs/src/ffi.rs` tests |
 | Conversion/retention/cohort modeling | Rust model/schema/parser/runtime/bridge/generator paths now model conversion, retention, and cohort metrics, including graph-level owner inference by entity dimension | `sidemantic-rs/src/core/model.rs`, `sidemantic-rs/src/sql/generator.rs`, `sidemantic/rust_bridge.py` |
 | HTTP Arrow IPC | `/query`, `/query/run`, `/sql`, and `/raw` negotiate buffered Arrow IPC stream-format responses | `sidemantic-rs/src/db/adbc.rs`, `sidemantic-rs/tests/adbc_duckdb_e2e.rs` |
-| ADBC breadth | DuckDB and SQLite are fail-closed in Rust CI; Postgres is fail-closed in integration CI; BigQuery/Snowflake/ClickHouse remain gated with documented reasons | `.github/workflows/ci.yml`, `.github/workflows/integration.yml`, `sidemantic-rs/tests/adbc_driver_matrix.rs` |
+| ADBC breadth | DuckDB and SQLite are fail-closed in Rust CI; Postgres and ClickHouse are fail-closed in integration CI; BigQuery/Snowflake are secret-gated with documented reasons | `.github/workflows/ci.yml`, `.github/workflows/integration.yml`, `sidemantic-rs/tests/adbc_driver_matrix.rs` |
 
 ## P1: SQL Generation And Rewrite Parity
 
@@ -63,16 +63,16 @@ The Python integration is opt-in. It is useful as a migration bridge, not a tran
 
 ## P1: ADBC Breadth
 
-DuckDB remains the protocol-level proof. SQLite and Postgres are now fail-closed driver-manager probes in CI. BigQuery, Snowflake, and ClickHouse remain gated for concrete driver/credential reasons.
+DuckDB remains the protocol-level proof. SQLite, Postgres, and ClickHouse are now fail-closed driver-manager probes in CI. BigQuery and Snowflake remain secret-gated because they require real external credentials.
 
 | Driver | Current Rust state | Follow-up |
 | --- | --- | --- |
 | DuckDB | Proven across CLI, HTTP, MCP, workbench, and Python wheel smoke when driver is available; CI downloads `libduckdb` and requires it for Rust driver matrix. | Keep as the always-on execution proof. |
 | SQLite | Rust driver matrix is fail-closed in CI through `adbc-driver-sqlite`; local transient driver probe passed. | Add protocol-level SQLite execution only if service surfaces must prove more than driver-manager execution. |
 | PostgreSQL | Rust driver matrix is fail-closed in integration CI through the live Postgres service and `adbc-driver-postgresql`. | Add a seeded Rust CLI/HTTP semantic query Postgres E2E if reviewers require more than `select 1` driver proof. |
-| BigQuery | Driver package exists, but emulator compatibility with the C ADBC driver is not proven. | Keep env-gated until emulator compatibility or secret-backed credentials are proven. |
-| Snowflake | Driver package exists, but fakesnow does not prove C ADBC driver compatibility. | Keep env/secret-gated. |
-| ClickHouse | No `adbc-driver-clickhouse` PyPI package was found. | Keep env-gated until a C ADBC driver source is chosen. |
+| BigQuery | ADBC Foundry/Apache drivers exist. The emulator-backed Python adapter tests do not prove Rust ADBC because the BigQuery driver expects Google Cloud authentication and project/dataset options. | CI runs a Rust probe when `BIGQUERY_ADBC_CREDENTIALS_JSON` plus `BIGQUERY_ADBC_PROJECT`/`BIGQUERY_ADBC_DATASET` are configured. |
+| Snowflake | ADBC Foundry/Apache drivers exist. Fakesnow does not prove C-driver compatibility. | CI runs a Rust probe when `SNOWFLAKE_ADBC_URI` is configured. |
+| ClickHouse | Rust driver matrix is fail-closed in integration CI through `dbc install --pre clickhouse` and the live ClickHouse service. | Promote beyond probe coverage only after the prerelease driver stabilizes and protocol-level semantic queries are needed. |
 
 Also add Arrow complex-type handling if result sets need lists, structs, maps, or richer timestamp semantics. The current executor is scalar-focused.
 
@@ -100,7 +100,7 @@ Also add Arrow complex-type handling if result sets need lists, structs, maps, o
 Use:
 
 - "Executable and tested Rust standalone baseline."
-- "DuckDB is the protocol-level ADBC proof; SQLite and Postgres are CI driver probes; BigQuery, Snowflake, and ClickHouse are gated."
+- "DuckDB is the protocol-level ADBC proof; SQLite, Postgres, and ClickHouse are CI driver probes; BigQuery and Snowflake are secret-gated."
 - "Python bridge is optional and strict-mode capable."
 - "HTTP/MCP/LSP/workbench are experimental service surfaces with protocol/UI smoke coverage."
 

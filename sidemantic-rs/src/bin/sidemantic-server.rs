@@ -929,10 +929,9 @@ fn execute_sql_arrow_chunked(
         tokio::task::spawn_blocking(move || {
             let writer = ArrowChunkWriter::new(sender.clone());
             if let Err(err) = write_adbc_arrow_ipc(request, writer) {
-                let _ = sender.blocking_send(Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("failed to execute query via ADBC: {err}"),
-                )));
+                let _ = sender.blocking_send(Err(io::Error::other(format!(
+                    "failed to execute query via ADBC: {err}"
+                ))));
             }
         });
 

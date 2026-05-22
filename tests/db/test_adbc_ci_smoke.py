@@ -60,8 +60,7 @@ def _target_uri(db: str) -> str:
     if db == "clickhouse":
         host = os.getenv("CLICKHOUSE_HOST", "localhost")
         port = os.getenv("CLICKHOUSE_PORT", "8123")
-        password = os.getenv("CLICKHOUSE_PASSWORD", "clickhouse")
-        return f"http://default:{password}@{host}:{port}/"
+        return f"http://{host}:{port}/"
 
     pytest.skip(f"Unsupported ADBC_DB={db!r}")
 

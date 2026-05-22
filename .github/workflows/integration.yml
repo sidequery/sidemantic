@@ -126,7 +126,6 @@ jobs:
         env:
           CLICKHOUSE_DB: default
           CLICKHOUSE_USER: default
-          CLICKHOUSE_PASSWORD: clickhouse
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
         ports:
           - 8123:8123
@@ -241,7 +240,6 @@ jobs:
           BIGQUERY_DATASET: "test_dataset"
           CLICKHOUSE_HOST: "localhost"
           CLICKHOUSE_PORT: "8123"
-          CLICKHOUSE_PASSWORD: "clickhouse"
           SNOWFLAKE_TEST: "1"
         run: uv run pytest -m integration tests/db/test_adbc_ci_smoke.py -v
 
@@ -298,7 +296,7 @@ jobs:
         if: matrix.db == 'clickhouse'
         run: |
           echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_DRIVER=clickhouse" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_URI=http://default:clickhouse@localhost:8123/" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_URI=http://localhost:8123/" >> "$GITHUB_ENV"
           echo "SIDEMANTIC_TEST_ADBC_REQUIRE=clickhouse" >> "$GITHUB_ENV"
 
       - name: Run Rust ADBC probe

@@ -1,0 +1,3 @@
+metrics:
+  - events.signup_retention
+limit: 5

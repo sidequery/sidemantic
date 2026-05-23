@@ -1,0 +1,34 @@
+version: 1
+
+models:
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    dimensions:
+      - name: customer_id
+        type: numeric
+      - name: country
+        type: categorical
+    metrics:
+      - name: total_credit_limit
+        agg: sum
+        sql: credit_limit
+    relationships:
+      - name: orders
+        type: one_to_many
+        foreign_key: customer_id
+        primary_key: customer_id
+
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: customer_id
+        type: numeric
+      - name: status
+        type: categorical
+    metrics:
+      - name: order_count
+        agg: count

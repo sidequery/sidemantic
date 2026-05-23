@@ -68,9 +68,34 @@ def validate_model(model: "Model") -> list[str]:
     if not model.primary_key:
         errors.append(f"Model '{model.name}' must have a primary_key defined")
 
-    # Check for table or SQL
-    if not model.table and not model.sql:
-        errors.append(f"Model '{model.name}' must have either 'table' or 'sql' defined")
+    # Check for a physical, SQL, or externally sourced model definition
+    if not model.table and not model.sql and not getattr(model, "source_uri", None):
+        errors.append(f"Model '{model.name}' must have one of 'table', 'sql', or 'source_uri' defined")
+
+    for label, items in [
+        ("dimension", model.dimensions),
+        ("metric", model.metrics),
+        ("segment", model.segments),
+        ("pre-aggregation", model.pre_aggregations),
+    ]:
+        seen_names = set()
+        for item in items:
+            if item.name in seen_names:
+                errors.append(f"Model '{model.name}' has duplicate {label} '{item.name}'")
+            seen_names.add(item.name)
+
+    if model.default_time_dimension:
+        default_time_dimension = model.get_dimension(model.default_time_dimension)
+        if default_time_dimension is None:
+            errors.append(
+                f"Model '{model.name}' default_time_dimension "
+                f"'{model.default_time_dimension}' does not reference a dimension"
+            )
+        elif default_time_dimension.type != "time":
+            errors.append(
+                f"Model '{model.name}' default_time_dimension "
+                f"'{model.default_time_dimension}' must reference a time dimension"
+            )
 
     # Check that dimensions have valid types
     for dim in model.dimensions:
@@ -103,6 +128,30 @@ def validate_model(model: "Model") -> list[str]:
                 f"Model '{model.name}': measure '{measure.name}' has invalid aggregation '{measure.agg}'. "
                 f"Must be one of: {valid_aggs_str}"
             )
+
+    for preagg in model.pre_aggregations:
+        for measure_name in preagg.measures or []:
+            if model.get_metric(measure_name) is None:
+                errors.append(
+                    f"Pre-aggregation '{model.name}.{preagg.name}' references unknown measure '{measure_name}'"
+                )
+        for dimension_name in preagg.dimensions or []:
+            if model.get_dimension(dimension_name) is None:
+                errors.append(
+                    f"Pre-aggregation '{model.name}.{preagg.name}' references unknown dimension '{dimension_name}'"
+                )
+        if preagg.time_dimension:
+            time_dimension = model.get_dimension(preagg.time_dimension)
+            if time_dimension is None:
+                errors.append(
+                    f"Pre-aggregation '{model.name}.{preagg.name}' references unknown time_dimension "
+                    f"'{preagg.time_dimension}'"
+                )
+            elif time_dimension.type != "time":
+                errors.append(
+                    f"Pre-aggregation '{model.name}.{preagg.name}' time_dimension "
+                    f"'{preagg.time_dimension}' must reference a time dimension"
+                )
 
     return errors
 

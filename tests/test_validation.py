@@ -26,7 +26,7 @@ def test_model_has_default_primary_key(layer):
 
 
 def test_model_validation_no_table(layer):
-    """Test that models without table or sql are rejected."""
+    """Test that models without a physical, SQL, or source URI definition are rejected."""
     invalid_model = Model(
         name="orders",
         primary_key="id",
@@ -37,7 +37,27 @@ def test_model_validation_no_table(layer):
     with pytest.raises(ModelValidationError) as exc_info:
         layer.add_model(invalid_model)
 
-    assert "must have either 'table' or 'sql' defined" in str(exc_info.value)
+    assert "must have one of 'table', 'sql', or 'source_uri' defined" in str(exc_info.value)
+
+
+def test_source_uri_model_validates_but_python_compile_is_not_supported(layer):
+    """source_uri-only models can load, but Python SQL generation cannot query them yet."""
+    layer.add_model(
+        Model(
+            name="events",
+            source_uri="s3://warehouse/events.parquet",
+            primary_key="event_id",
+            dimensions=[],
+            metrics=[Metric(name="event_count", agg="count")],
+        )
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        layer.compile(metrics=["events.event_count"])
+
+    message = str(exc_info.value)
+    assert "source_uri" in message
+    assert "Python SQL generation does not load source_uri data" in message
 
 
 def test_metric_validation_simple_no_measure():

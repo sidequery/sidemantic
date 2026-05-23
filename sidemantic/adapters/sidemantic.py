@@ -21,6 +21,8 @@ from sidemantic.core.sql_definitions import (
     parse_sql_model,
 )
 
+NATIVE_FORMAT_VERSION = 1
+
 
 def substitute_env_vars(content: str) -> str:
     """Substitute environment variables in YAML content.
@@ -74,6 +76,22 @@ def substitute_env_vars(content: str) -> str:
     content = re.sub(r"\$([A-Z_][A-Z0-9_]*)", replace_simple_var, content)
 
     return content
+
+
+def validate_native_format_version(data: dict) -> None:
+    version = data.get("version")
+    if version in (None, NATIVE_FORMAT_VERSION):
+        return
+    raise ValueError(
+        f"Unsupported native Sidemantic format version {version}; supported version is {NATIVE_FORMAT_VERSION}"
+    )
+
+
+def normalize_sql_frontmatter(frontmatter: dict) -> dict:
+    validate_native_format_version(frontmatter)
+    normalized = dict(frontmatter)
+    normalized.pop("version", None)
+    return normalized
 
 
 class SidemanticAdapter(BaseAdapter):
@@ -139,9 +157,11 @@ class SidemanticAdapter(BaseAdapter):
                     parse_sql_file_with_frontmatter_extended(source_path)
                 )
 
-                # Parse frontmatter as model definition if present
-                if frontmatter:
-                    model = self._parse_model(frontmatter)
+                # Parse frontmatter as a model only when it still contains model fields
+                # after native contract metadata such as `version` is removed.
+                normalized_frontmatter = normalize_sql_frontmatter(frontmatter) if frontmatter else {}
+                if normalized_frontmatter:
+                    model = self._parse_model(normalized_frontmatter)
                     if model:
                         # Add SQL-defined metrics/segments to the model
                         model.metrics.extend(sql_metrics)
@@ -170,6 +190,8 @@ class SidemanticAdapter(BaseAdapter):
 
         if not data:
             return graph
+
+        validate_native_format_version(data)
 
         # Parse models
         for model_def in data.get("models") or []:
@@ -211,6 +233,7 @@ class SidemanticAdapter(BaseAdapter):
         output_path = Path(output_path)
 
         data = {
+            "version": NATIVE_FORMAT_VERSION,
             "models": [self._export_model(model) for model in graph.models.values()],
         }
 

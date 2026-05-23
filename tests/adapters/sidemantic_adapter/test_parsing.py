@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SemanticLayer
@@ -78,6 +79,144 @@ metrics:
     assert signup_conversion.conversion_window == "7 days"
 
 
+def test_parse_native_yaml_accepts_version_one(tmp_path):
+    """Test native YAML version 1 is accepted."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: public.orders
+    primary_key: order_id
+    metrics:
+      - name: order_count
+        agg: count
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+
+    assert "orders" in graph.models
+
+
+def test_parse_native_yaml_rejects_unsupported_version(tmp_path):
+    """Test unsupported native YAML versions fail early."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 2
+models:
+  - name: orders
+    table: public.orders
+"""
+    )
+
+    with pytest.raises(ValueError, match="Unsupported native Sidemantic format version 2"):
+        adapter.parse(yaml_path)
+
+
+def test_parse_native_sql_frontmatter_accepts_version_one(tmp_path):
+    """Test native SQL frontmatter version 1 is accepted and not treated as model data."""
+    adapter = SidemanticAdapter()
+    sql_path = tmp_path / "orders.sql"
+    sql_path.write_text(
+        """
+---
+version: 1
+name: orders
+table: public.orders
+primary_key: order_id
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+"""
+    )
+
+    graph = adapter.parse(sql_path)
+
+    assert "orders" in graph.models
+    assert [metric.name for metric in graph.models["orders"].metrics] == ["order_count"]
+    assert "version" not in (graph.models["orders"].metadata or {})
+
+
+def test_parse_native_sql_version_only_frontmatter_preserves_graph_metric(tmp_path):
+    """Test version-only frontmatter does not swallow graph-level SQL metrics."""
+    adapter = SidemanticAdapter()
+    sql_path = tmp_path / "metrics.sql"
+    sql_path.write_text(
+        """
+---
+version: 1
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+"""
+    )
+
+    graph = adapter.parse(sql_path)
+
+    assert len(graph.models) == 0
+    assert "order_count" in graph.metrics
+    assert graph.metrics["order_count"].agg == "count"
+
+
+def test_parse_native_sql_version_only_frontmatter_preserves_graph_parameter(tmp_path):
+    """Test version-only frontmatter does not swallow graph-level SQL parameters."""
+    adapter = SidemanticAdapter()
+    sql_path = tmp_path / "parameters.sql"
+    sql_path.write_text(
+        """
+---
+version: 1
+---
+
+PARAMETER (
+  name status_filter,
+  type string,
+  default_value 'paid'
+);
+"""
+    )
+
+    graph = adapter.parse(sql_path)
+
+    assert len(graph.models) == 0
+    assert "status_filter" in graph.parameters
+    assert graph.parameters["status_filter"].type == "string"
+
+
+def test_parse_native_sql_frontmatter_rejects_unsupported_version(tmp_path):
+    """Test unsupported native SQL frontmatter versions fail early."""
+    adapter = SidemanticAdapter()
+    sql_path = tmp_path / "orders.sql"
+    sql_path.write_text(
+        """
+---
+version: 2
+name: orders
+table: public.orders
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+"""
+    )
+
+    with pytest.raises(ValueError, match="Unsupported native Sidemantic format version 2"):
+        adapter.parse(sql_path)
+
+
 def test_export_native_yaml():
     """Test exporting to native Sidemantic YAML."""
     # Load example
@@ -93,6 +232,8 @@ def test_export_native_yaml():
 
         # Verify file exists and is readable
         assert temp_path.exists()
+        exported = yaml.safe_load(temp_path.read_text())
+        assert exported["version"] == 1
 
         # Re-parse exported file
         graph2 = adapter.parse(temp_path)

@@ -1,0 +1,22 @@
+version: 1
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: status
+        type: categorical
+      - name: created_at
+        type: time
+        sql: created_at
+        granularity: day
+        supported_granularities: [day, week, month, quarter, year]
+    metrics:
+      - name: order_count
+        agg: count
+      - name: total_revenue
+        agg: sum
+        sql: amount

@@ -1,0 +1,15 @@
+version: 1
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: status
+        type: categorical
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount

@@ -1,0 +1,10 @@
+[
+  {
+    "status": "paid",
+    "total_revenue": 250
+  },
+  {
+    "status": "refunded",
+    "total_revenue": 50
+  }
+]

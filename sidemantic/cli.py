@@ -1,5 +1,6 @@
 """CLI for sidemantic semantic layer operations."""
 
+import os
 from pathlib import Path
 
 import typer
@@ -22,6 +23,50 @@ app = typer.Typer(
 
 # Global state for config (set in callback, used in commands)
 _loaded_config: SidemanticConfig | None = None
+
+
+def _normalize_engine(engine: str | None) -> str | None:
+    if engine is None:
+        return None
+    normalized = engine.lower()
+    if normalized not in {"python", "rust", "auto"}:
+        raise typer.BadParameter("engine must be one of: python, rust, auto")
+    return normalized
+
+
+def _configure_engine_environment(engine: str | None, fallback: bool) -> None:
+    if engine is None:
+        return
+
+    if engine == "python":
+        os.environ["SIDEMANTIC_RS_SQL_GENERATOR"] = "0"
+        os.environ["SIDEMANTIC_RS_QUERY_VALIDATION"] = "0"
+        os.environ["SIDEMANTIC_RS_REWRITER"] = "0"
+        os.environ["SIDEMANTIC_RS_NO_FALLBACK"] = "0"
+        return
+
+    os.environ["SIDEMANTIC_RS_SQL_GENERATOR"] = "1"
+    os.environ["SIDEMANTIC_RS_QUERY_VALIDATION"] = "1"
+    os.environ["SIDEMANTIC_RS_REWRITER"] = "1"
+    os.environ["SIDEMANTIC_RS_SQL_GENERATOR_VERIFY"] = "0"
+    os.environ["SIDEMANTIC_RS_NO_FALLBACK"] = "0" if fallback else "1"
+
+
+def _resolve_engine_options(engine: str | None, fallback: bool | None) -> tuple[str | None, bool]:
+    resolved_engine = _normalize_engine(engine)
+    resolved_fallback = fallback
+
+    if resolved_engine is None and _loaded_config and _loaded_config.runtime:
+        resolved_engine = _loaded_config.runtime.engine
+        if resolved_fallback is None:
+            resolved_fallback = _loaded_config.runtime.fallback
+
+    if resolved_fallback is None:
+        resolved_fallback = resolved_engine == "auto"
+    elif resolved_engine == "auto" and not resolved_fallback:
+        resolved_fallback = True
+
+    return resolved_engine, resolved_fallback
 
 
 @app.callback()
@@ -361,6 +406,90 @@ def mcp_serve(
 
 
 @app.command()
+def rewrite(
+    sql: str = typer.Argument(..., help="Semantic SQL query to rewrite"),
+    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
+    fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
+):
+    """
+    Rewrite semantic SQL to ordinary SQL without executing it.
+
+    Examples:
+      sidemantic rewrite "SELECT orders.revenue FROM orders" --models ./models
+      sidemantic rewrite "SELECT orders.revenue FROM orders" --models ./models --engine rust
+    """
+    if not models.exists():
+        typer.echo(f"Error: Directory {models} does not exist", err=True)
+        raise typer.Exit(1)
+
+    try:
+        engine, fallback = _resolve_engine_options(engine, fallback)
+        _configure_engine_environment(engine, fallback)
+
+        layer = SemanticLayer(engine=engine, fallback=fallback)
+        load_from_directory(layer, str(models))
+        if not layer.graph.models:
+            typer.echo("Error: No models found", err=True)
+            raise typer.Exit(1)
+
+        from sidemantic.sql.query_rewriter import QueryRewriter
+
+        typer.echo(QueryRewriter(layer.graph, dialect=layer.adapter.dialect).rewrite(sql))
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("export-native")
+def export_native(
+    source: Path = typer.Argument(..., help="File or directory containing semantic layer definitions"),
+    output: Path = typer.Option(..., "--output", "-o", help="Native Sidemantic YAML file to write"),
+    validate_rust: bool = typer.Option(
+        False,
+        "--validate-rust",
+        help="Validate the exported native YAML with sidemantic-rs when installed",
+    ),
+):
+    """
+    Convert supported Python adapter inputs to canonical native Sidemantic YAML.
+
+    Examples:
+      sidemantic export-native ./lookml --output native.yml
+      sidemantic export-native ./models --output native.yml --validate-rust
+    """
+    if not source.exists():
+        typer.echo(f"Error: Source {source} does not exist", err=True)
+        raise typer.Exit(1)
+
+    try:
+        layer = SemanticLayer()
+        if source.is_dir():
+            load_from_directory(layer, str(source))
+        else:
+            # Native projects are directory-contextual: sibling files may provide
+            # inherited models, SQL definitions, or source metadata used by this file.
+            load_from_directory(layer, str(source.parent))
+
+        if not layer.graph.models:
+            typer.echo("Error: No models found", err=True)
+            raise typer.Exit(1)
+
+        layer.to_yaml(output)
+
+        if validate_rust:
+            from sidemantic.rust_bridge import load_graph_from_yaml_with_rust
+
+            load_graph_from_yaml_with_rust(output.read_text())
+            typer.echo(f"Exported native YAML to {output} and validated it with Rust", err=True)
+        else:
+            typer.echo(f"Exported native YAML to {output}", err=True)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def query(
     sql: str = typer.Argument(..., help="SQL query to execute"),
     models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
@@ -370,6 +499,8 @@ def query(
     ),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show generated SQL without executing"),
+    engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
+    fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
 ):
     """
     Execute a SQL query and output results as CSV.
@@ -387,6 +518,9 @@ def query(
         raise typer.Exit(1)
 
     try:
+        engine, fallback = _resolve_engine_options(engine, fallback)
+        _configure_engine_environment(engine, fallback)
+
         # Build connection string from args or config
         connection_str = None
         init_sql = None
@@ -413,10 +547,15 @@ def query(
         preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
         if connection_str:
             layer = SemanticLayer(
-                connection=connection_str, preagg_database=preagg_db, preagg_schema=preagg_sch, init_sql=init_sql
+                connection=connection_str,
+                preagg_database=preagg_db,
+                preagg_schema=preagg_sch,
+                init_sql=init_sql,
+                engine=engine,
+                fallback=fallback,
             )
         else:
-            layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch)
+            layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch, engine=engine, fallback=fallback)
         load_from_directory(layer, str(models))
 
         if not layer.graph.models:
@@ -756,6 +895,8 @@ def tree(
 def validate(
     directory: Path = typer.Argument(".", help="Directory containing semantic layer files (defaults to current dir)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed validation results"),
+    engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
+    fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
 ):
     """
     Validate semantic layer definitions.
@@ -766,11 +907,29 @@ def validate(
       sidemantic validate
       sidemantic validate ./models --verbose
     """
-    from sidemantic.workbench import WorkbenchDependencyError, run_validation
-
     if not directory.exists():
         typer.echo(f"Error: Directory {directory} does not exist", err=True)
         raise typer.Exit(1)
+
+    engine, fallback = _resolve_engine_options(engine, fallback)
+    _configure_engine_environment(engine, fallback)
+
+    if engine in {"rust", "auto"}:
+        try:
+            from sidemantic.rust_bridge import load_graph_from_directory_with_rust
+
+            graph = load_graph_from_directory_with_rust(directory)
+            typer.echo(f"Validated {len(graph.models)} models with Rust")
+            if verbose:
+                for model_name in sorted(graph.models):
+                    typer.echo(f"  - {model_name}")
+            return
+        except Exception as e:
+            if engine == "rust" or not fallback:
+                typer.echo(f"Error: Rust validation failed: {e}", err=True)
+                raise typer.Exit(1)
+
+    from sidemantic.workbench import WorkbenchDependencyError, run_validation
 
     try:
         run_validation(directory, verbose=verbose)

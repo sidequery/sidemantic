@@ -37,6 +37,19 @@ class SQLGenerator:
         self._generate_cache_limit = 256
 
     @staticmethod
+    def _model_from_clause(model) -> str:
+        if model.sql:
+            return f"({model.sql}) AS t"
+        if model.table:
+            return model.table
+        if model.source_uri:
+            raise ValueError(
+                f"Model '{model.name}' uses source_uri '{model.source_uri}', but Python SQL generation does not "
+                "load source_uri data. Define table or sql for query compilation."
+            )
+        raise ValueError(f"Model '{model.name}' must define table or sql for query compilation")
+
+    @staticmethod
     def _freeze_cache_value(value):
         if isinstance(value, dict):
             items = (
@@ -1457,10 +1470,7 @@ class SQLGenerator:
                 select_cols.append(f"{measure_sql} AS {self._quote_alias(f'{measure_name}_raw')}")
 
         # Build FROM clause
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Build WHERE clause for pushed-down filters
         where_clause = ""
@@ -1863,6 +1873,20 @@ class SQLGenerator:
         aliases = aliases or {}
         # Detect if symmetric aggregates are needed
         symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
+
+        dimension_models = {dim_ref.split(".")[0] for dim_ref, _ in parsed_dims if "." in dim_ref}
+        metric_models = {metric_ref.split(".")[0] for metric_ref in metrics if "." in metric_ref}
+        for metric_model in metric_models:
+            for dimension_model in dimension_models:
+                if metric_model == dimension_model:
+                    continue
+                try:
+                    join_path = self.graph.find_relationship_path(metric_model, dimension_model)
+                except ValueError:
+                    continue
+                if any(jp.relationship == "one_to_many" for jp in join_path):
+                    symmetric_agg_needed[metric_model] = True
+                    break
 
         # Check for dimension/metric name collisions across models
         # If there are collisions, prefix with model name
@@ -2583,10 +2607,7 @@ class SQLGenerator:
             raise ValueError(f"Invalid entity identifier: {metric.entity}")
 
         # Build FROM clause
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Resolve entity SQL expression -- it might be a dimension name
         entity_sql = metric.entity
@@ -2908,10 +2929,7 @@ FROM (
         ts_sql = _replace_model_placeholder(timestamp_dim.sql_expr)
 
         # Build FROM clause
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Build granularity-specific date truncation and date diff (dialect-aware)
         if granularity == "day":
@@ -3110,10 +3128,7 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
             raise ValueError("Conversion metrics require event_type and timestamp dimensions")
 
         # Build FROM clause - handle both SQL and table-backed models
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Normalize filters: strip model name prefixes and resolve dimension names
         normalized_filters = self._strip_model_prefixes(filters or [], model.name)
@@ -3289,10 +3304,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         ts_sql_raw = timestamp_dim.sql_expr
 
         # Build FROM clause
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Normalize SQL expressions for use inside subqueries.
         # Expressions may contain {model} placeholders (e.g. "{model}.created_at")

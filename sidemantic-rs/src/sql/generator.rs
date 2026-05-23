@@ -140,6 +140,8 @@ impl<'a> SqlGenerator<'a> {
         // Parse all references
         let dimension_refs = self.parse_dimension_refs(&effective_dimensions)?;
         let metric_refs = self.parse_metric_refs(&query.metrics)?;
+        let direct_required_models = self.find_required_models(&dimension_refs, &metric_refs)?;
+        self.ensure_queryable_sources(&direct_required_models)?;
         if self.has_cumulative_metrics(&metric_refs)? {
             return self.generate_with_cumulative(
                 query,
@@ -168,6 +170,7 @@ impl<'a> SqlGenerator<'a> {
                 &mut HashSet::new(),
             )?;
         }
+        self.ensure_queryable_sources(&required_models)?;
 
         if self.needs_preaggregation_for_fanout(&metric_refs)? {
             return self.generate_with_preaggregation(
@@ -198,11 +201,12 @@ impl<'a> SqlGenerator<'a> {
             }
         }
 
-        // Determine base model (first model with metrics, or first model)
-        let base_model = metric_refs
+        // Dimension-first base selection preserves the queried dimension domain,
+        // including zero-count rows for related metric models.
+        let base_model = dimension_refs
             .first()
-            .map(|m| m.model.clone())
-            .or_else(|| dimension_refs.first().map(|d| d.model.clone()))
+            .map(|d| d.model.clone())
+            .or_else(|| metric_refs.first().map(|m| m.model.clone()))
             .ok_or_else(|| {
                 SidemanticError::Validation(
                     "Query must have at least one metric or dimension".into(),
@@ -2756,6 +2760,30 @@ impl<'a> SqlGenerator<'a> {
         }
     }
 
+    fn ensure_queryable_sources(&self, model_names: &HashSet<String>) -> Result<()> {
+        for model_name in model_names {
+            let model = self.graph.get_model(model_name).ok_or_else(|| {
+                let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
+                SidemanticError::model_not_found(model_name, &available)
+            })?;
+            if model.table.is_none() && model.sql.is_none() {
+                if let Some(source_uri) = model.source_uri.as_deref() {
+                    return Err(SidemanticError::validation_issue(
+                        "unsupported_source_uri_query",
+                        Some(&model.name),
+                        &format!("models.{}.source_uri", model.name),
+                        Some(source_uri),
+                        format!(
+                            "Model '{}' uses source_uri '{source_uri}', but Rust SQL generation does not load source_uri data. Define table or sql for query compilation.",
+                            model.name
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn conversion_dimension_entries(
         &self,
         model: &Model,
@@ -4619,8 +4647,8 @@ mod tests {
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("LEFT JOIN customers_cte AS customers_cte"));
-        assert!(sql.contains("orders_cte.customers_id = customers_cte.id"));
+        assert!(sql.contains("LEFT JOIN orders_cte AS orders_cte"));
+        assert!(sql.contains("customers_cte.id = orders_cte.customers_id"));
     }
 
     #[test]
@@ -4649,8 +4677,8 @@ mod tests {
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("shipments_cte.order_id = order_items_cte.order_id"));
-        assert!(sql.contains("shipments_cte.item_id = order_items_cte.item_id"));
+        assert!(sql.contains("order_items_cte.order_id = shipments_cte.order_id"));
+        assert!(sql.contains("order_items_cte.item_id = shipments_cte.item_id"));
         assert!(sql.contains(" AND "));
     }
 
@@ -4819,6 +4847,27 @@ mod tests {
             sql.contains("revenue * 100.0 / NULLIF(SUM(revenue) OVER"),
             "Expected percent of total: {sql}"
         );
+    }
+
+    #[test]
+    fn test_source_uri_only_model_rejects_query_generation() {
+        let mut graph = SemanticGraph::new();
+        let mut events = Model::new("events", "event_id")
+            .with_dimension(Dimension::categorical("event_type"))
+            .with_metric(Metric::count("event_count"));
+        events.source_uri = Some("s3://warehouse/events.parquet".to_string());
+        graph.add_model(events).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new().with_metrics(vec!["events.event_count".into()]);
+
+        let err = generator.generate(&query).unwrap_err();
+        assert!(matches!(
+            err,
+            SidemanticError::ValidationIssue { ref code, .. }
+                if code == "unsupported_source_uri_query"
+        ));
+        assert!(err.to_string().contains("source_uri"));
     }
 
     #[test]

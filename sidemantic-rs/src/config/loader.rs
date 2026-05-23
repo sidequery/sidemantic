@@ -13,7 +13,7 @@ use crate::core::{
 };
 use crate::error::{Result, SidemanticError};
 
-use super::schema::{CubeConfig, SidemanticConfig};
+use super::schema::{CubeConfig, SidemanticConfig, NATIVE_FORMAT_VERSION};
 use super::sql_parser::{
     parse_sql_definitions, parse_sql_graph_definitions_extended, parse_sql_model,
 };
@@ -113,9 +113,7 @@ pub fn load_from_string_with_metadata(content: &str) -> Result<LoadedGraphMetada
     }
 
     let mut graph = SemanticGraph::new();
-    for model in resolved_models.into_values() {
-        graph.add_model(model)?;
-    }
+    add_resolved_models_in_order(&mut graph, resolved_models, &model_order)?;
     for parameter in top_level_parameters {
         graph.add_parameter(parameter)?;
     }
@@ -168,7 +166,8 @@ fn parse_sql_frontmatter_and_body(content: &str) -> Result<(Option<serde_yaml::M
 
     match frontmatter_value {
         serde_yaml::Value::Null => Ok((None, sql_body)),
-        serde_yaml::Value::Mapping(mapping) => {
+        serde_yaml::Value::Mapping(mut mapping) => {
+            validate_sql_frontmatter_version(&mut mapping)?;
             if mapping.is_empty() {
                 Ok((None, sql_body))
             } else {
@@ -179,6 +178,32 @@ fn parse_sql_frontmatter_and_body(content: &str) -> Result<(Option<serde_yaml::M
             "failed to parse SQL frontmatter: frontmatter must be a YAML mapping".to_string(),
         )),
     }
+}
+
+fn validate_sql_frontmatter_version(mapping: &mut serde_yaml::Mapping) -> Result<()> {
+    let version_key = serde_yaml::Value::String("version".to_string());
+    let Some(version_value) = mapping.remove(&version_key) else {
+        return Ok(());
+    };
+
+    if let Some(version) = version_value.as_u64() {
+        if version == u64::from(NATIVE_FORMAT_VERSION) {
+            return Ok(());
+        }
+        return Err(SidemanticError::Validation(format!(
+            "Unsupported native Sidemantic format version {version}; supported version is {NATIVE_FORMAT_VERSION}"
+        )));
+    }
+
+    if let Some(version) = version_value.as_i64() {
+        return Err(SidemanticError::Validation(format!(
+            "Unsupported native Sidemantic format version {version}; supported version is {NATIVE_FORMAT_VERSION}"
+        )));
+    }
+
+    Err(SidemanticError::Validation(
+        "failed to parse SQL frontmatter: version must be an integer".to_string(),
+    ))
 }
 
 fn model_from_sql_frontmatter(frontmatter: serde_yaml::Mapping) -> Result<Model> {
@@ -192,7 +217,7 @@ fn model_from_sql_frontmatter(frontmatter: serde_yaml::Mapping) -> Result<Model>
         .map_err(|e| {
             SidemanticError::Validation(format!("failed to parse SQL frontmatter model: {e}"))
         })?;
-    let (models, _, _) = config.into_parts();
+    let (models, _, _) = config.into_parts()?;
     models.into_iter().next().ok_or_else(|| {
         SidemanticError::Validation(
             "failed to parse SQL frontmatter: missing model definition".to_string(),
@@ -289,9 +314,7 @@ pub fn load_from_sql_string_with_metadata(content: &str) -> Result<LoadedGraphMe
     }
 
     let mut graph = SemanticGraph::new();
-    for model in resolved_models.into_values() {
-        graph.add_model(model)?;
-    }
+    add_resolved_models_in_order(&mut graph, resolved_models, &model_order)?;
     for parameter in top_level_parameters {
         graph.add_parameter(parameter)?;
     }
@@ -342,6 +365,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
     }
 
     let mut all_models: HashMap<String, Model> = HashMap::new();
+    let mut all_extends_map: HashMap<String, String> = HashMap::new();
     let mut all_top_level_metrics: Vec<Metric> = Vec::new();
     let mut all_top_level_parameters: Vec<Parameter> = Vec::new();
     let mut model_order: Vec<String> = Vec::new();
@@ -371,8 +395,14 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                     .strip_prefix(dir)
                     .ok()
                     .map(|value| value.to_string_lossy().to_string());
+                let ParsedConfig {
+                    models,
+                    extends_map,
+                    top_level_metrics,
+                    top_level_parameters,
+                } = parsed;
 
-                for model in parsed.models {
+                for model in models {
                     if all_models.contains_key(&model.name) {
                         return Err(SidemanticError::Validation(format!(
                             "Duplicate model '{}' found while loading directory",
@@ -389,8 +419,9 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                     );
                     all_models.insert(model.name.clone(), model);
                 }
-                all_top_level_metrics.extend(parsed.top_level_metrics);
-                all_top_level_parameters.extend(parsed.top_level_parameters);
+                all_extends_map.extend(extends_map);
+                all_top_level_metrics.extend(top_level_metrics);
+                all_top_level_parameters.extend(top_level_parameters);
             }
             Some("sql") => {
                 let content = fs::read_to_string(&path).map_err(|e| {
@@ -401,8 +432,14 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                     .strip_prefix(dir)
                     .ok()
                     .map(|value| value.to_string_lossy().to_string());
+                let ParsedConfig {
+                    models,
+                    extends_map,
+                    top_level_metrics,
+                    top_level_parameters,
+                } = parsed;
 
-                for model in parsed.models {
+                for model in models {
                     if all_models.contains_key(&model.name) {
                         return Err(SidemanticError::Validation(format!(
                             "Duplicate model '{}' found while loading directory",
@@ -419,8 +456,9 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                     );
                     all_models.insert(model.name.clone(), model);
                 }
-                all_top_level_metrics.extend(parsed.top_level_metrics);
-                all_top_level_parameters.extend(parsed.top_level_parameters);
+                all_extends_map.extend(extends_map);
+                all_top_level_metrics.extend(top_level_metrics);
+                all_top_level_parameters.extend(top_level_parameters);
             }
             _ => {}
         }
@@ -442,15 +480,14 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
 
     // Infer relationships from FK naming conventions
     infer_relationships(&mut all_models);
-    if !all_models.is_empty() && !all_top_level_metrics.is_empty() {
-        assign_top_level_metrics(&mut all_models, all_top_level_metrics.clone())?;
+    let mut resolved_models = resolve_model_inheritance(all_models, &all_extends_map)?;
+    if !resolved_models.is_empty() && !all_top_level_metrics.is_empty() {
+        assign_top_level_metrics(&mut resolved_models, all_top_level_metrics.clone())?;
     }
 
     // Build the graph
     let mut graph = SemanticGraph::new();
-    for (_, model) in all_models {
-        graph.add_model(model)?;
-    }
+    add_resolved_models_in_order(&mut graph, resolved_models, &model_order)?;
     for parameter in all_top_level_parameters {
         graph.add_parameter(parameter)?;
     }
@@ -588,12 +625,13 @@ fn parse_content_with_extends(content: &str, format: ConfigFormat) -> Result<Par
         ConfigFormat::Sidemantic => {
             let config: SidemanticConfig = serde_yaml::from_str(&content)
                 .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {e}")))?;
+            config.validate_contract()?;
             let extends_map: HashMap<String, String> = config
                 .models
                 .iter()
                 .filter_map(|m| m.extends.as_ref().map(|e| (m.name.clone(), e.clone())))
                 .collect();
-            let (mut models, mut top_level_metrics, top_level_parameters) = config.into_parts();
+            let (mut models, mut top_level_metrics, top_level_parameters) = config.into_parts()?;
             apply_embedded_sql_definitions(&content, &mut models, &mut top_level_metrics)?;
 
             Ok(ParsedConfig {
@@ -629,6 +667,26 @@ fn collect_unique_models(models: Vec<Model>) -> Result<HashMap<String, Model>> {
         map.insert(model.name.clone(), model);
     }
     Ok(map)
+}
+
+fn add_resolved_models_in_order(
+    graph: &mut SemanticGraph,
+    mut resolved_models: HashMap<String, Model>,
+    model_order: &[String],
+) -> Result<()> {
+    for model_name in model_order {
+        if let Some(model) = resolved_models.remove(model_name) {
+            graph.add_model(model)?;
+        }
+    }
+
+    let mut remaining_models: Vec<(String, Model)> = resolved_models.into_iter().collect();
+    remaining_models.sort_by(|left, right| left.0.cmp(&right.0));
+    for (_, model) in remaining_models {
+        graph.add_model(model)?;
+    }
+
+    Ok(())
 }
 
 fn owners_from_dotted_reference(
@@ -873,12 +931,16 @@ fn assign_top_level_metrics(
 /// For example: `customer_id` -> `customer` or `customers` model
 fn infer_relationships(models: &mut HashMap<String, Model>) {
     // Collect model names for lookup
-    let model_names: Vec<String> = models.keys().cloned().collect();
+    let mut model_names: Vec<String> = models.keys().cloned().collect();
+    model_names.sort();
 
     // Collect relationships to add (to avoid borrow issues)
     let mut relationships_to_add: Vec<(String, Relationship)> = Vec::new();
 
-    for (model_name, model) in models.iter() {
+    for model_name in &model_names {
+        let Some(model) = models.get(model_name) else {
+            continue;
+        };
         for dim in &model.dimensions {
             let dim_name = dim.name.to_lowercase();
 
@@ -890,21 +952,23 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
             // Extract referenced table name (e.g., customer_id -> customer)
             let referenced = &dim_name[..dim_name.len() - 3];
 
-            // Check if relationship already exists
-            if model
-                .relationships
-                .iter()
-                .any(|r| r.name.to_lowercase() == referenced)
-            {
-                continue;
-            }
-
             // Try to find matching model (singular or plural)
             let potential_targets = vec![
                 referenced.to_string(),
                 format!("{}s", referenced),  // customer -> customers
                 format!("{}es", referenced), // box -> boxes
             ];
+
+            // Check if relationship already exists, including singular/plural names.
+            if model.relationships.iter().any(|relationship| {
+                let relationship_name = relationship.name.to_lowercase();
+                relationship_name == referenced
+                    || potential_targets
+                        .iter()
+                        .any(|target| target == &relationship_name)
+            }) {
+                continue;
+            }
 
             for target in potential_targets {
                 if model_names.iter().any(|n| n.to_lowercase() == target)
@@ -916,6 +980,14 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
                         .find(|n| n.to_lowercase() == target)
                         .unwrap()
                         .clone();
+                    let target_primary_keys = models
+                        .get(&actual_target)
+                        .map(Model::primary_keys)
+                        .unwrap_or_else(|| vec!["id".to_string()]);
+                    let target_primary_key = target_primary_keys
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "id".to_string());
 
                     // Add many_to_one relationship from current model
                     relationships_to_add.push((
@@ -925,12 +997,13 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
                             r#type: RelationshipType::ManyToOne,
                             foreign_key: Some(dim.name.clone()),
                             foreign_key_columns: Some(vec![dim.name.clone()]),
-                            primary_key: Some("id".to_string()),
-                            primary_key_columns: Some(vec!["id".to_string()]),
+                            primary_key: Some(target_primary_key.clone()),
+                            primary_key_columns: Some(target_primary_keys.clone()),
                             through: None,
                             through_foreign_key: None,
                             related_foreign_key: None,
                             sql: None,
+                            metadata: None,
                         },
                     ));
 
@@ -942,12 +1015,13 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
                             r#type: RelationshipType::OneToMany,
                             foreign_key: Some(dim.name.clone()),
                             foreign_key_columns: Some(vec![dim.name.clone()]),
-                            primary_key: Some("id".to_string()),
-                            primary_key_columns: Some(vec!["id".to_string()]),
+                            primary_key: Some(target_primary_key),
+                            primary_key_columns: Some(target_primary_keys),
                             through: None,
                             through_foreign_key: None,
                             related_foreign_key: None,
                             sql: None,
+                            metadata: None,
                         },
                     ));
 
@@ -956,6 +1030,13 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
             }
         }
     }
+
+    relationships_to_add.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.name.cmp(&right.1.name))
+            .then_with(|| format!("{:?}", left.1.r#type).cmp(&format!("{:?}", right.1.r#type)))
+    });
 
     // Apply collected relationships
     for (model_name, rel) in relationships_to_add {
@@ -987,6 +1068,7 @@ fn walkdir(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
         }
     }
 
+    files.sort();
     Ok(files)
 }
 
@@ -1026,6 +1108,7 @@ mod tests {
     #[test]
     fn test_load_from_string_sidemantic() {
         let yaml = r#"
+version: 1
 models:
   - name: orders
     table: orders
@@ -1041,6 +1124,117 @@ models:
 
         let graph = load_from_string(yaml).unwrap();
         assert!(graph.get_model("orders").is_some());
+    }
+
+    #[test]
+    fn test_load_from_string_accepts_missing_native_version_as_version_one() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+"#;
+
+        let graph = load_from_string(yaml).unwrap();
+        assert!(graph.get_model("orders").is_some());
+    }
+
+    #[test]
+    fn test_load_from_string_rejects_unsupported_native_version() {
+        let yaml = r#"
+version: 2
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+"#;
+
+        let err = load_from_string(yaml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Unsupported native Sidemantic format version 2; supported version is 1"));
+    }
+
+    #[test]
+    fn test_load_from_sql_string_accepts_missing_frontmatter_version() {
+        let sql = r#"
+---
+name: orders
+table: orders
+primary_key: order_id
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+"#;
+
+        let loaded = load_from_sql_string_with_metadata(sql).unwrap();
+        let orders = loaded.graph.get_model("orders").unwrap();
+        assert!(orders.get_metric("order_count").is_some());
+    }
+
+    #[test]
+    fn test_load_from_sql_string_accepts_frontmatter_version_one() {
+        let sql = r#"
+---
+version: 1
+name: orders
+table: orders
+primary_key: order_id
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+"#;
+
+        let loaded = load_from_sql_string_with_metadata(sql).unwrap();
+        let orders = loaded.graph.get_model("orders").unwrap();
+        assert!(orders.get_metric("order_count").is_some());
+    }
+
+    #[test]
+    fn test_load_from_sql_string_rejects_unsupported_frontmatter_version() {
+        let sql = r#"
+---
+version: 2
+name: orders
+table: orders
+primary_key: order_id
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+"#;
+
+        let err = load_from_sql_string_with_metadata(sql).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Unsupported native Sidemantic format version 2; supported version is 1"));
+    }
+
+    #[test]
+    fn test_sql_frontmatter_version_is_not_model_metadata() {
+        let sql = r#"
+---
+version: 1
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+"#;
+
+        let loaded = load_from_sql_string_with_metadata(sql).unwrap();
+        assert_eq!(loaded.graph.models().count(), 0);
+        assert_eq!(loaded.top_level_metrics.len(), 1);
+        assert_eq!(loaded.top_level_metrics[0].name, "order_count");
     }
 
     #[test]
@@ -1231,6 +1425,93 @@ metrics:
     }
 
     #[test]
+    fn test_load_from_directory_resolves_cross_file_inheritance() {
+        let dir = std::env::temp_dir().join(format!(
+            "sidemantic-rs-loader-inheritance-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("base.yml"),
+            r#"
+models:
+  - name: base_orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("orders.yml"),
+            r#"
+models:
+  - name: orders
+    extends: base_orders
+    metrics:
+      - name: net_revenue
+        agg: sum
+        sql: amount - discount
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_from_directory_with_metadata(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        let orders = loaded.graph.get_model("orders").unwrap();
+        assert_eq!(orders.table, Some("orders".to_string()));
+        assert!(orders.get_dimension("status").is_some());
+        assert!(orders.get_metric("revenue").is_some());
+        assert!(orders.get_metric("net_revenue").is_some());
+    }
+
+    #[test]
+    fn test_walkdir_returns_deterministic_lexical_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "sidemantic-rs-loader-walkdir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("b")).unwrap();
+        fs::create_dir_all(dir.join("a")).unwrap();
+        fs::write(dir.join("z.yml"), "models: []").unwrap();
+        fs::write(
+            dir.join("b").join("a.sql"),
+            "METRIC (name b_metric, agg count);",
+        )
+        .unwrap();
+        fs::write(dir.join("a").join("m.yml"), "models: []").unwrap();
+
+        let files = walkdir(&dir).unwrap();
+        let relative_files = files
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(relative_files, vec!["a/m.yml", "b/a.sql", "z.yml"]);
+    }
+
+    #[test]
     fn test_load_from_string_parses_model_embedded_sql_definitions() {
         let yaml = r#"
 models:
@@ -1310,6 +1591,58 @@ sql_metrics: |
         // Check customers has reverse relationship
         let customers = models.get("customers").unwrap();
         assert!(customers.get_relationship("orders").is_some());
+    }
+
+    #[test]
+    fn test_infer_relationships_preserves_explicit_plural_relationship() {
+        let mut models = HashMap::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(crate::core::Dimension::categorical("customer_id"))
+            .with_relationship(
+                Relationship::many_to_one("customers").with_keys("customer_id", "customer_id"),
+            );
+        let customers = Model::new("customers", "customer_id").with_table("customers");
+
+        models.insert("orders".to_string(), orders);
+        models.insert("customers".to_string(), customers);
+
+        infer_relationships(&mut models);
+
+        let orders = models.get("orders").unwrap();
+        assert_eq!(orders.relationships.len(), 1);
+        let relationship = orders.get_relationship("customers").unwrap();
+        assert_eq!(relationship.foreign_key_columns(), vec!["customer_id"]);
+        assert_eq!(relationship.primary_key_columns(), vec!["customer_id"]);
+
+        let customers = models.get("customers").unwrap();
+        assert!(customers.get_relationship("orders").is_none());
+    }
+
+    #[test]
+    fn test_infer_relationships_uses_target_model_primary_key() {
+        let mut models = HashMap::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(crate::core::Dimension::categorical("customer_id"));
+        let customers = Model::new("customers", "customer_id").with_table("customers");
+
+        models.insert("orders".to_string(), orders);
+        models.insert("customers".to_string(), customers);
+
+        infer_relationships(&mut models);
+
+        let orders = models.get("orders").unwrap();
+        let relationship = orders.get_relationship("customers").unwrap();
+        assert_eq!(relationship.foreign_key_columns(), vec!["customer_id"]);
+        assert_eq!(relationship.primary_key_columns(), vec!["customer_id"]);
+
+        let customers = models.get("customers").unwrap();
+        let reverse = customers.get_relationship("orders").unwrap();
+        assert_eq!(reverse.foreign_key_columns(), vec!["customer_id"]);
+        assert_eq!(reverse.primary_key_columns(), vec!["customer_id"]);
     }
 
     #[test]

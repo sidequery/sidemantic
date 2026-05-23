@@ -55,6 +55,8 @@ pub fn merge_model(child: &Model, parent: &Model) -> Model {
         .clone()
         .or_else(|| parent.description.clone());
     let label = child.label.clone().or_else(|| parent.label.clone());
+    let metadata = child.metadata.clone().or_else(|| parent.metadata.clone());
+    let meta = child.meta.clone().or_else(|| parent.meta.clone());
     let default_time_dimension = child
         .default_time_dimension
         .clone()
@@ -137,6 +139,8 @@ pub fn merge_model(child: &Model, parent: &Model) -> Model {
         default_grain,
         label,
         description,
+        metadata,
+        meta,
     }
 }
 

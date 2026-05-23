@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::core::model::{Model, RelationshipType};
+use crate::core::model::{DimensionType, Model, RelationshipType};
 use crate::core::Parameter;
 use crate::error::{Result, SidemanticError};
 
@@ -90,11 +90,121 @@ impl SemanticGraph {
     }
 
     fn validate_model(model: &Model) -> Result<()> {
-        if model.table.is_none() && model.sql.is_none() {
+        if model.table.is_none() && model.sql.is_none() && model.source_uri.is_none() {
             return Err(SidemanticError::Validation(format!(
-                "Model '{}' must have either 'table' or 'sql' defined",
+                "Model '{}' must have one of 'table', 'sql', or 'source_uri' defined",
                 model.name
             )));
+        }
+
+        Self::validate_unique_model_names(model)?;
+        Self::validate_default_time_dimension(model)?;
+        Self::validate_pre_aggregation_references(model)?;
+
+        Ok(())
+    }
+
+    fn validate_unique_model_names(model: &Model) -> Result<()> {
+        let mut seen = HashSet::new();
+        for dimension in &model.dimensions {
+            if !seen.insert(dimension.name.as_str()) {
+                return Err(SidemanticError::Validation(format!(
+                    "Model '{}' has duplicate dimension '{}'",
+                    model.name, dimension.name
+                )));
+            }
+        }
+
+        let mut seen = HashSet::new();
+        for metric in &model.metrics {
+            if !seen.insert(metric.name.as_str()) {
+                return Err(SidemanticError::Validation(format!(
+                    "Model '{}' has duplicate metric '{}'",
+                    model.name, metric.name
+                )));
+            }
+        }
+
+        let mut seen = HashSet::new();
+        for segment in &model.segments {
+            if !seen.insert(segment.name.as_str()) {
+                return Err(SidemanticError::Validation(format!(
+                    "Model '{}' has duplicate segment '{}'",
+                    model.name, segment.name
+                )));
+            }
+        }
+
+        let mut seen = HashSet::new();
+        for preagg in &model.pre_aggregations {
+            if !seen.insert(preagg.name.as_str()) {
+                return Err(SidemanticError::Validation(format!(
+                    "Model '{}' has duplicate pre-aggregation '{}'",
+                    model.name, preagg.name
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_default_time_dimension(model: &Model) -> Result<()> {
+        let Some(default_time_dimension) = model.default_time_dimension.as_deref() else {
+            return Ok(());
+        };
+        let Some(dimension) = model.get_dimension(default_time_dimension) else {
+            return Err(SidemanticError::Validation(format!(
+                "Model '{}' default_time_dimension '{}' does not reference a dimension",
+                model.name, default_time_dimension
+            )));
+        };
+        if dimension.r#type != DimensionType::Time {
+            return Err(SidemanticError::Validation(format!(
+                "Model '{}' default_time_dimension '{}' must reference a time dimension",
+                model.name, default_time_dimension
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_pre_aggregation_references(model: &Model) -> Result<()> {
+        for preagg in &model.pre_aggregations {
+            if let Some(measures) = preagg.measures.as_ref() {
+                for measure in measures {
+                    if model.get_metric(measure).is_none() {
+                        return Err(SidemanticError::Validation(format!(
+                            "Pre-aggregation '{}.{}' references unknown measure '{}'",
+                            model.name, preagg.name, measure
+                        )));
+                    }
+                }
+            }
+
+            if let Some(dimensions) = preagg.dimensions.as_ref() {
+                for dimension in dimensions {
+                    if model.get_dimension(dimension).is_none() {
+                        return Err(SidemanticError::Validation(format!(
+                            "Pre-aggregation '{}.{}' references unknown dimension '{}'",
+                            model.name, preagg.name, dimension
+                        )));
+                    }
+                }
+            }
+
+            if let Some(time_dimension) = preagg.time_dimension.as_deref() {
+                let Some(dimension) = model.get_dimension(time_dimension) else {
+                    return Err(SidemanticError::Validation(format!(
+                        "Pre-aggregation '{}.{}' references unknown time_dimension '{}'",
+                        model.name, preagg.name, time_dimension
+                    )));
+                };
+                if dimension.r#type != DimensionType::Time {
+                    return Err(SidemanticError::Validation(format!(
+                        "Pre-aggregation '{}.{}' time_dimension '{}' must reference a time dimension",
+                        model.name, preagg.name, time_dimension
+                    )));
+                }
+            }
         }
 
         Ok(())
@@ -422,7 +532,7 @@ impl SemanticGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::{Dimension, Metric, Relationship};
+    use crate::core::model::{Dimension, Metric, PreAggregation, PreAggregationType, Relationship};
     use crate::core::parameter::{Parameter, ParameterType};
 
     fn create_test_graph() -> SemanticGraph {
@@ -478,6 +588,75 @@ mod tests {
         assert_eq!(model.table.as_deref(), Some("orders_v2"));
         assert!(model.get_dimension("status").is_none());
         assert!(model.get_metric("order_count").is_some());
+    }
+
+    #[test]
+    fn test_source_uri_model_is_valid_for_loading() {
+        let mut graph = SemanticGraph::new();
+        let mut model = Model::new("events", "event_id");
+        model.source_uri = Some("s3://warehouse/events.parquet".to_string());
+
+        graph.add_model(model).unwrap();
+
+        assert_eq!(
+            graph.get_model("events").unwrap().source_uri.as_deref(),
+            Some("s3://warehouse/events.parquet")
+        );
+    }
+
+    #[test]
+    fn test_rejects_duplicate_dimension_names() {
+        let mut graph = SemanticGraph::new();
+        let model = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_dimension(Dimension::categorical("status"));
+
+        let err = graph.add_model(model).unwrap_err();
+        assert!(err.to_string().contains("duplicate dimension 'status'"));
+    }
+
+    #[test]
+    fn test_rejects_invalid_default_time_dimension() {
+        let mut graph = SemanticGraph::new();
+        let mut model = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(Dimension::categorical("status"));
+        model.default_time_dimension = Some("status".to_string());
+
+        let err = graph.add_model(model).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("default_time_dimension 'status' must reference a time dimension"));
+    }
+
+    #[test]
+    fn test_rejects_invalid_pre_aggregation_references() {
+        let mut graph = SemanticGraph::new();
+        let model = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(Dimension::time("created_at"))
+            .with_pre_aggregation(PreAggregation {
+                name: "monthly".to_string(),
+                preagg_type: PreAggregationType::Rollup,
+                measures: Some(vec!["missing_revenue".to_string()]),
+                dimensions: Some(vec!["created_at".to_string()]),
+                time_dimension: Some("created_at".to_string()),
+                granularity: Some("month".to_string()),
+                partition_granularity: None,
+                build_range_start: None,
+                build_range_end: None,
+                scheduled_refresh: true,
+                refresh_key: None,
+                indexes: None,
+                sql: None,
+                meta: None,
+            });
+
+        let err = graph.add_model(model).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("references unknown measure 'missing_revenue'"));
     }
 
     #[test]
@@ -580,6 +759,7 @@ mod tests {
                 through_foreign_key: None,
                 related_foreign_key: None,
                 sql: None,
+                metadata: None,
             });
 
         let customers = Model::new("customers", "customer_id").with_table("customers");
@@ -612,6 +792,7 @@ mod tests {
                 through_foreign_key: Some("order_id".to_string()),
                 related_foreign_key: Some("product_id".to_string()),
                 sql: None,
+                metadata: None,
             });
         let order_items = Model::new("order_items", "id").with_table("order_items");
         let products = Model::new("products", "product_id").with_table("products");

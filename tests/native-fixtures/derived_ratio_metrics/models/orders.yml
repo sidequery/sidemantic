@@ -1,0 +1,27 @@
+version: 1
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: status
+        type: categorical
+    metrics:
+      - name: order_count
+        agg: count
+      - name: gross_revenue
+        agg: sum
+        sql: amount
+      - name: discounts
+        agg: sum
+        sql: discount_amount
+      - name: net_revenue
+        type: derived
+        sql: gross_revenue - discounts
+      - name: average_order_value
+        type: ratio
+        numerator: net_revenue
+        denominator: order_count

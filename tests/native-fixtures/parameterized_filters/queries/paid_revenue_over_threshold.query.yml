@@ -1,0 +1,12 @@
+metrics:
+  - orders.total_revenue
+dimensions:
+  - orders.status
+filters:
+  - orders.status = {{ status }}
+  - orders.amount >= {{ min_amount }}
+order_by:
+  - orders.status
+parameter_values:
+  status: paid
+  min_amount: 100

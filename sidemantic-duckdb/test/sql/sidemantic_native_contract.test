@@ -1,0 +1,90 @@
+# name: test/sql/sidemantic_native_contract.test
+# description: Test native Sidemantic YAML and SQL contract paths in the DuckDB extension
+# group: [sidemantic]
+
+require sidemantic
+
+statement ok
+CREATE TABLE native_customers (customer_id INT, country VARCHAR);
+
+statement ok
+CREATE TABLE native_orders (order_id INT, customer_id INT, status VARCHAR, amount INT);
+
+statement ok
+INSERT INTO native_customers VALUES (1, 'CA'), (2, 'US');
+
+statement ok
+INSERT INTO native_orders VALUES (101, 1, 'paid', 120), (102, 2, 'paid', 200), (103, 2, 'pending', 50);
+
+statement ok
+SELECT * FROM sidemantic_load('
+version: 1
+models:
+  - name: native_orders
+    table: native_orders
+    primary_key: order_id
+    dimensions:
+      - name: customer_id
+        type: numeric
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+    relationships:
+      - name: native_customers
+        type: many_to_one
+        foreign_key: customer_id
+        primary_key: customer_id
+  - name: native_customers
+    table: native_customers
+    primary_key: customer_id
+    dimensions:
+      - name: country
+        type: categorical
+');
+
+query IR rowsort
+SEMANTIC SELECT native_customers.country, native_orders.revenue FROM native_orders ORDER BY native_customers.country;
+----
+CA	120
+US	250
+
+query I
+SELECT sidemantic_rewrite_sql('SELECT native_orders.revenue, native_customers.country FROM native_orders') LIKE '%JOIN%';
+----
+true
+
+statement ok
+COPY (SELECT 'MODEL (name native_events, table native_events, primary_key event_id); METRIC (name event_count, agg count);' AS line) TO '__TEST_DIR__/native_definitions.sidemantic.sql' (HEADER false, QUOTE '');
+
+statement ok
+CREATE TABLE native_events (event_id INT);
+
+statement ok
+INSERT INTO native_events VALUES (1), (2), (3), (4);
+
+statement ok
+SELECT * FROM sidemantic_load_file('__TEST_DIR__/native_definitions.sidemantic.sql');
+
+query I rowsort
+SELECT * FROM sidemantic_models();
+----
+native_customers
+native_events
+native_orders
+
+query I
+SEMANTIC SELECT native_events.event_count FROM native_events;
+----
+4
+
+statement error
+SELECT * FROM sidemantic_load('
+version: 999
+models:
+  - name: unsupported_native
+    table: unsupported_native
+    primary_key: id
+');

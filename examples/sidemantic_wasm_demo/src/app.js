@@ -244,9 +244,8 @@ async function runCompile() {
     await compileAndExecute();
     setStatus("Ready. Sidemantic Rust WASM compiled the queries, DuckDB-WASM executed them in the browser.", "");
   } catch (error) {
-    setStatus(error.message, "error");
+    setStatus(error?.message || String(error), "error");
     reportError(error);
-    throw error;
   } finally {
     setBusy(false);
   }

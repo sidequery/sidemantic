@@ -50,6 +50,13 @@ pub enum SidemanticError {
     #[error("SQL generation error: {0}")]
     SqlGeneration(String),
 
+    // Database execution errors
+    #[error("Database error: {0}")]
+    Database(String),
+
+    #[error("Connection URL error: {0}")]
+    ConnectionUrl(String),
+
     // Reference errors
     #[error("Invalid reference: '{reference}'. Expected format: model.field or model.field__granularity")]
     InvalidReference { reference: String },
@@ -158,6 +165,27 @@ impl From<std::io::Error> for SidemanticError {
 impl From<serde_yaml::Error> for SidemanticError {
     fn from(err: serde_yaml::Error) -> Self {
         SidemanticError::YamlParse(err.to_string())
+    }
+}
+
+#[cfg(feature = "adbc-exec")]
+impl From<adbc_core::error::Error> for SidemanticError {
+    fn from(err: adbc_core::error::Error) -> Self {
+        SidemanticError::Database(err.to_string())
+    }
+}
+
+#[cfg(feature = "adbc-exec")]
+impl From<arrow_schema::ArrowError> for SidemanticError {
+    fn from(err: arrow_schema::ArrowError) -> Self {
+        SidemanticError::Database(err.to_string())
+    }
+}
+
+#[cfg(feature = "adbc-exec")]
+impl From<url::ParseError> for SidemanticError {
+    fn from(err: url::ParseError) -> Self {
+        SidemanticError::ConnectionUrl(err.to_string())
     }
 }
 

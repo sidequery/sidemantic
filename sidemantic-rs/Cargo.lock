@@ -1670,6 +1670,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower-lsp",
+ "url",
  "wasm-bindgen",
  "wasm-bindgen-test",
 ]

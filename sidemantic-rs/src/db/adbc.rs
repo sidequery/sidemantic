@@ -2,7 +2,7 @@ use adbc_core::{
     options::{AdbcVersion, OptionConnection, OptionDatabase, OptionValue},
     Connection, Database, Driver, Statement, LOAD_FLAG_DEFAULT,
 };
-use adbc_driver_manager::ManagedDriver;
+use adbc_driver_manager::{ManagedConnection, ManagedDatabase, ManagedDriver};
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Float16Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeBinaryArray,
@@ -12,10 +12,15 @@ use arrow_array::{
     UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, TimeUnit};
+use arrow_schema::{DataType, Schema, TimeUnit};
 use std::io::Write;
 
+use crate::core::SemanticGraph;
 use crate::error::{Result, SidemanticError};
+use crate::sql::{QueryRewriter, SemanticQuery, SqlGenerator};
+
+use super::result::ExecutionResult;
+use super::url::ConnectionSpec;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdbcValue {
@@ -48,6 +53,124 @@ pub struct AdbcExecutionRequest {
     pub entrypoint: Option<String>,
     pub database_options: Vec<(OptionDatabase, OptionValue)>,
     pub connection_options: Vec<(OptionConnection, OptionValue)>,
+}
+
+/// Pure Rust ADBC executor for semantic queries.
+///
+/// Drivers are loaded by the ADBC driver manager. Drivers installed with
+/// `dbc install <driver>` are found through the manager's normal manifest
+/// search paths.
+pub struct AdbcExecutor {
+    pub spec: ConnectionSpec,
+    database: ManagedDatabase,
+    connection: ManagedConnection,
+}
+
+impl AdbcExecutor {
+    pub fn connect(spec: ConnectionSpec) -> Result<Self> {
+        let entrypoint = spec.entrypoint.clone();
+        let mut driver = ManagedDriver::load_from_name(
+            &spec.driver,
+            entrypoint.as_deref().map(str::as_bytes),
+            spec.adbc_version,
+            spec.load_flags,
+            spec.additional_search_paths.clone(),
+        )
+        .map_err(|err| {
+            SidemanticError::Database(format!(
+                "failed to load ADBC driver '{}' through the dbc/ADBC registry. \
+                 Install the driver with `dbc install {}` and make sure the ADBC driver \
+                 manager search path can see it. Underlying error: {err}",
+                spec.driver, spec.driver
+            ))
+        })?;
+
+        let options = connection_spec_database_options(&spec);
+        let database = if options.is_empty() {
+            driver.new_database()
+        } else {
+            driver.new_database_with_opts(options)
+        }?;
+        let connection = database.new_connection()?;
+
+        Ok(Self {
+            spec,
+            database,
+            connection,
+        })
+    }
+
+    pub fn connect_url(url: &str) -> Result<Self> {
+        Self::connect(ConnectionSpec::from_url(url)?)
+    }
+
+    /// Execute SQL and return an Arrow record batch reader.
+    pub fn execute_sql(&mut self, sql: &str) -> Result<ExecutionResult> {
+        let mut statement = self.connection.new_statement()?;
+        statement.set_sql_query(sql)?;
+        let mut reader = statement.execute()?;
+        let schema = reader.schema();
+        let mut batches = Vec::new();
+        for batch in &mut reader {
+            batches.push(batch?);
+        }
+        Ok(ExecutionResult::new(sql.to_string(), schema, batches))
+    }
+
+    /// Execute a SQL statement that does not return a result set.
+    pub fn execute_update(&mut self, sql: &str) -> Result<Option<i64>> {
+        let mut statement = self.connection.new_statement()?;
+        statement.set_sql_query(sql)?;
+        Ok(statement.execute_update()?)
+    }
+
+    /// Generate SQL from a semantic query and execute it through ADBC.
+    pub fn execute_semantic_query(
+        &mut self,
+        graph: &SemanticGraph,
+        query: &SemanticQuery,
+    ) -> Result<ExecutionResult> {
+        let sql = SqlGenerator::new(graph).generate(query)?;
+        self.execute_sql(&sql)
+    }
+
+    /// Rewrite SQL through the semantic graph, then execute the rewritten SQL.
+    pub fn rewrite_and_execute(
+        &mut self,
+        graph: &SemanticGraph,
+        sql: &str,
+    ) -> Result<ExecutionResult> {
+        let rewritten = QueryRewriter::new(graph).rewrite(sql)?;
+        self.execute_sql(&rewritten)
+    }
+
+    /// Return an ADBC metadata stream for catalogs, schemas, tables, and columns.
+    pub fn get_objects(
+        &self,
+        depth: adbc_core::options::ObjectDepth,
+    ) -> Result<Box<dyn RecordBatchReader + Send + '_>> {
+        Ok(Box::new(
+            self.connection
+                .get_objects(depth, None, None, None, None, None)?,
+        ))
+    }
+
+    /// Get the Arrow schema for a table.
+    pub fn get_table_schema(
+        &self,
+        catalog: Option<&str>,
+        db_schema: Option<&str>,
+        table_name: &str,
+    ) -> Result<Schema> {
+        Ok(self
+            .connection
+            .get_table_schema(catalog, db_schema, table_name)?)
+    }
+
+    /// Keep a reference to the ADBC database handle for advanced callers.
+    pub fn database(&self) -> &ManagedDatabase {
+        &self.database
+    }
 }
 
 fn adbc_error(context: &str, err: impl std::fmt::Display) -> SidemanticError {
@@ -87,6 +210,29 @@ fn database_options_with_uri(
     }
 
     database_options
+}
+
+fn connection_spec_database_options(spec: &ConnectionSpec) -> Vec<(OptionDatabase, OptionValue)> {
+    let options = spec
+        .database_options
+        .iter()
+        .map(|(key, value)| (database_option_key(key), OptionValue::String(value.clone())))
+        .collect();
+    database_options_with_uri(
+        &spec.driver,
+        spec.entrypoint.as_deref(),
+        spec.uri.clone(),
+        options,
+    )
+}
+
+fn database_option_key(key: &str) -> OptionDatabase {
+    match key {
+        "uri" | "adbc.uri" => OptionDatabase::Uri,
+        "username" | "user" | "adbc.username" => OptionDatabase::Username,
+        "password" | "adbc.password" => OptionDatabase::Password,
+        other => OptionDatabase::Other(other.to_string()),
+    }
 }
 
 pub fn execute_with_adbc(request: AdbcExecutionRequest) -> Result<AdbcExecutionResult> {

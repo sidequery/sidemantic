@@ -14,6 +14,7 @@ use arrow_array::{
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Schema, TimeUnit};
 use std::io::Write;
+use std::path::PathBuf;
 
 use crate::core::SemanticGraph;
 use crate::error::{Result, SidemanticError};
@@ -69,9 +70,9 @@ pub struct AdbcExecutor {
 impl AdbcExecutor {
     pub fn connect(spec: ConnectionSpec) -> Result<Self> {
         let entrypoint = spec.entrypoint.clone();
-        let mut driver = ManagedDriver::load_from_name(
+        let mut driver = load_managed_driver(
             &spec.driver,
-            entrypoint.as_deref().map(str::as_bytes),
+            entrypoint.as_deref(),
             spec.adbc_version,
             spec.load_flags,
             spec.additional_search_paths.clone(),
@@ -171,6 +172,35 @@ impl AdbcExecutor {
     pub fn database(&self) -> &ManagedDatabase {
         &self.database
     }
+}
+
+fn load_managed_driver(
+    driver: &str,
+    entrypoint: Option<&str>,
+    adbc_version: AdbcVersion,
+    load_flags: adbc_core::LoadFlags,
+    additional_search_paths: Option<Vec<PathBuf>>,
+) -> std::result::Result<ManagedDriver, adbc_core::error::Error> {
+    let entrypoint_bytes = entrypoint.map(str::as_bytes);
+    ManagedDriver::load_from_name(
+        driver,
+        entrypoint_bytes,
+        adbc_version,
+        load_flags,
+        additional_search_paths.clone(),
+    )
+    .or_else(|err| {
+        if matches!(adbc_version, AdbcVersion::V100) {
+            return Err(err);
+        }
+        ManagedDriver::load_from_name(
+            driver,
+            entrypoint_bytes,
+            AdbcVersion::V100,
+            load_flags,
+            additional_search_paths,
+        )
+    })
 }
 
 fn adbc_error(context: &str, err: impl std::fmt::Display) -> SidemanticError {

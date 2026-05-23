@@ -219,16 +219,21 @@ jobs:
 
       - name: Install ADBC driver through dbc
         run: |
+          DRIVER_DIR="$HOME/.config/adbc/drivers"
+          echo "ADBC_DRIVER_PATH=$DRIVER_DIR" >> "$GITHUB_ENV"
+
           DB="${{ matrix.db }}"
           DRIVER="$DB"
           if [ "$DB" = "postgres" ]; then
             DRIVER="postgresql"
           fi
           if [ "$DB" = "clickhouse" ]; then
-            uv run --with dbc dbc install --pre clickhouse
+            uv run --with dbc dbc install --level user --pre clickhouse
+            uv run --with dbc dbc list --level user
             exit 0
           fi
-          uv run --with dbc dbc install "$DRIVER"
+          uv run --with dbc dbc install --level user "$DRIVER"
+          uv run --with dbc dbc list --level user
 
       - name: Run Python ADBC smoke tests
         if: matrix.db != 'sqlite' && matrix.db != 'duckdb'
@@ -278,7 +283,6 @@ jobs:
             echo "Skipping Rust BigQuery ADBC probe; BIGQUERY_ADBC_CREDENTIALS_JSON secret plus BIGQUERY_ADBC_PROJECT/BIGQUERY_ADBC_DATASET vars are required."
             exit 0
           fi
-          uvx dbc install bigquery
           CREDENTIALS_FILE="$(mktemp)"
           printf '%s' "$BIGQUERY_ADBC_CREDENTIALS_JSON" > "$CREDENTIALS_FILE"
           echo "::add-mask::$BIGQUERY_ADBC_CREDENTIALS_JSON"
@@ -295,7 +299,6 @@ jobs:
             echo "Skipping Rust Snowflake ADBC probe; SNOWFLAKE_ADBC_URI secret is required."
             exit 0
           fi
-          uvx dbc install snowflake
           echo "::add-mask::$SNOWFLAKE_ADBC_URI"
           echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_DRIVER=snowflake" >> "$GITHUB_ENV"
           echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_URI=$SNOWFLAKE_ADBC_URI" >> "$GITHUB_ENV"

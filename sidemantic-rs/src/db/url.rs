@@ -177,11 +177,8 @@ fn parse_adbc_url(parsed: &Url) -> Result<ConnectionSpec> {
 
     if let Some(uri) = params.remove("uri") {
         spec.uri = Some(uri);
-    } else {
-        let path_uri = parsed.path().trim_start_matches('/');
-        if !path_uri.is_empty() && path_uri != driver {
-            spec.uri = Some(path_uri.to_string());
-        }
+    } else if let Some(path_uri) = adbc_path_uri(parsed, driver) {
+        spec.uri = Some(path_uri);
     }
 
     if spec.uri.is_none() && matches!(spec.driver.as_str(), "sqlite" | "duckdb") {
@@ -190,6 +187,32 @@ fn parse_adbc_url(parsed: &Url) -> Result<ConnectionSpec> {
 
     spec.database_options = params;
     Ok(spec)
+}
+
+fn adbc_path_uri(parsed: &Url, driver: &str) -> Option<String> {
+    let path = parsed.path();
+    if parsed.host_str().is_none() {
+        let driver_prefix = format!("/{driver}");
+        if let Some(rest) = path.strip_prefix(&driver_prefix) {
+            return normalize_adbc_path_uri(rest);
+        }
+    }
+    normalize_adbc_path_uri(path)
+}
+
+fn normalize_adbc_path_uri(path: &str) -> Option<String> {
+    if path.is_empty() || path == "/" {
+        return None;
+    }
+    if let Some(absolute) = path.strip_prefix("//") {
+        return Some(format!("/{absolute}"));
+    }
+    path.strip_prefix('/')
+        .map_or_else(
+            || Some(path.to_string()),
+            |relative| Some(relative.to_string()),
+        )
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_adbc_plus_url(raw: &str, scheme: &str, driver: &str) -> Result<ConnectionSpec> {
@@ -511,6 +534,26 @@ mod tests {
         let sqlite = spec("adbc://sqlite");
         assert_eq!(sqlite.driver, "sqlite");
         assert_eq!(sqlite.uri.as_deref(), Some(":memory:"));
+    }
+
+    #[test]
+    fn preserves_absolute_paths_in_explicit_adbc_urls() {
+        assert_eq!(
+            spec("adbc://sqlite//tmp/test.db").uri.as_deref(),
+            Some("/tmp/test.db")
+        );
+        assert_eq!(
+            spec("adbc://duckdb//tmp/test.duckdb").uri.as_deref(),
+            Some("/tmp/test.duckdb")
+        );
+        assert_eq!(
+            spec("adbc:///sqlite//tmp/test.db").uri.as_deref(),
+            Some("/tmp/test.db")
+        );
+        assert_eq!(
+            spec("adbc://sqlite/relative.db").uri.as_deref(),
+            Some("relative.db")
+        );
     }
 
     #[test]

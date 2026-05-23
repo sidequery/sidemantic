@@ -24,7 +24,7 @@ impl RelativeDate {
     /// ```
     /// use sidemantic::RelativeDate;
     /// assert_eq!(RelativeDate::parse("today"), Some("CURRENT_DATE".to_string()));
-    /// assert_eq!(RelativeDate::parse("last 7 days"), Some("CURRENT_DATE - INTERVAL '7 days'".to_string()));
+    /// assert_eq!(RelativeDate::parse("last 7 days"), Some("CURRENT_DATE - 7".to_string()));
     /// ```
     pub fn parse(expr: &str) -> Option<String> {
         let expr = expr.to_lowercase();
@@ -33,8 +33,8 @@ impl RelativeDate {
         // Simple keywords
         match expr {
             "today" => return Some("CURRENT_DATE".to_string()),
-            "yesterday" => return Some("CURRENT_DATE - INTERVAL '1 day'".to_string()),
-            "tomorrow" => return Some("CURRENT_DATE + INTERVAL '1 day'".to_string()),
+            "yesterday" => return Some("CURRENT_DATE - 1".to_string()),
+            "tomorrow" => return Some("CURRENT_DATE + 1".to_string()),
             "this week" => return Some("DATE_TRUNC('week', CURRENT_DATE)".to_string()),
             "last week" => {
                 return Some("DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '1 week'".to_string())
@@ -73,12 +73,12 @@ impl RelativeDate {
         // Last N days/weeks/months/years
         if let Some(caps) = LAST_N_DAYS.captures(expr) {
             let n: i32 = caps[1].parse().ok()?;
-            return Some(format!("CURRENT_DATE - INTERVAL '{n} days'"));
+            return Some(format!("CURRENT_DATE - {n}"));
         }
 
         if let Some(caps) = LAST_N_WEEKS.captures(expr) {
             let n: i32 = caps[1].parse().ok()?;
-            return Some(format!("CURRENT_DATE - INTERVAL '{} days'", n * 7));
+            return Some(format!("CURRENT_DATE - {}", n * 7));
         }
 
         if let Some(caps) = LAST_N_MONTHS.captures(expr) {
@@ -105,7 +105,7 @@ impl RelativeDate {
     /// use sidemantic::RelativeDate;
     /// assert_eq!(
     ///     RelativeDate::to_range("last 7 days", "created_at"),
-    ///     Some("created_at >= CURRENT_DATE - INTERVAL '7 days'".to_string())
+    ///     Some("created_at >= CURRENT_DATE - 7".to_string())
     /// );
     /// ```
     pub fn to_range(expr: &str, column: &str) -> Option<String> {
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(RelativeDate::parse("today"), Some("CURRENT_DATE".into()));
         assert_eq!(
             RelativeDate::parse("yesterday"),
-            Some("CURRENT_DATE - INTERVAL '1 day'".into())
+            Some("CURRENT_DATE - 1".into())
         );
         assert_eq!(
             RelativeDate::parse("this month"),
@@ -192,15 +192,15 @@ mod tests {
     fn test_parse_last_n() {
         assert_eq!(
             RelativeDate::parse("last 7 days"),
-            Some("CURRENT_DATE - INTERVAL '7 days'".into())
+            Some("CURRENT_DATE - 7".into())
         );
         assert_eq!(
             RelativeDate::parse("last 30 days"),
-            Some("CURRENT_DATE - INTERVAL '30 days'".into())
+            Some("CURRENT_DATE - 30".into())
         );
         assert_eq!(
             RelativeDate::parse("last 2 weeks"),
-            Some("CURRENT_DATE - INTERVAL '14 days'".into())
+            Some("CURRENT_DATE - 14".into())
         );
     }
 
@@ -208,7 +208,7 @@ mod tests {
     fn test_to_range() {
         assert_eq!(
             RelativeDate::to_range("last 7 days", "created_at"),
-            Some("created_at >= CURRENT_DATE - INTERVAL '7 days'".into())
+            Some("created_at >= CURRENT_DATE - 7".into())
         );
         assert!(RelativeDate::to_range("this month", "order_date")
             .unwrap()

@@ -105,7 +105,7 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
     // Dialect-specific hash function and multiplier
     let (hash_expr, multiplier) = match dialect {
         SqlDialect::BigQuery => (
-            format!("FARM_FINGERPRINT(CAST({pk_col} AS STRING))"),
+            format!("CAST(FARM_FINGERPRINT(CAST({pk_col} AS STRING)) AS BIGNUMERIC)"),
             "1000000000000".to_string(),
         ),
         SqlDialect::Postgres => (
@@ -125,21 +125,13 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
             "1000000000000".to_string(),
         ),
         SqlDialect::DuckDB => (
-            format!("CAST(HASH({pk_col}) AS HUGEINT)"),
-            "1048576".to_string(),
+            format!("HASH({pk_col})::HUGEINT"),
+            "(1::HUGEINT << 40)".to_string(),
         ),
     };
 
-    let symmetric_base_expr = match dialect {
-        SqlDialect::DuckDB => {
-            format!("CAST(({hash_expr} * {multiplier}) AS DECIMAL(38, 6))")
-        }
-        _ => format!("({hash_expr} * {multiplier})"),
-    };
-    let symmetric_measure_expr = match dialect {
-        SqlDialect::DuckDB => format!("CAST({measure_col} AS DECIMAL(38, 6))"),
-        _ => measure_col.clone(),
-    };
+    let symmetric_base_expr = format!("({hash_expr} * {multiplier})");
+    let symmetric_measure_expr = measure_col.clone();
 
     match agg_type {
         SymmetricAggType::Sum => {
@@ -194,9 +186,9 @@ mod tests {
             SqlDialect::DuckDB,
         );
         assert!(sql.contains("SUM(DISTINCT"));
-        assert!(sql.contains("CAST(HASH(order_id) AS HUGEINT)"));
-        assert!(sql.contains("+ CAST(amount AS DECIMAL(38, 6))"));
-        assert!(sql.contains("CAST((CAST(HASH(order_id) AS HUGEINT) * 1048576)"));
+        assert!(sql.contains("HASH(order_id)::HUGEINT"));
+        assert!(sql.contains("+ amount"));
+        assert!(sql.contains("(1::HUGEINT << 40)"));
     }
 
     #[test]
@@ -282,7 +274,7 @@ mod tests {
             Some("o"),
             SqlDialect::DuckDB,
         );
-        assert!(sql.contains("CAST(HASH(CONCAT("));
-        assert!(sql.contains("CAST(o.amount AS DECIMAL(38, 6))"));
+        assert!(sql.contains("HASH(CONCAT("));
+        assert!(sql.contains("+ o.amount"));
     }
 }

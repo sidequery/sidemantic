@@ -415,22 +415,32 @@ impl<'a> SqlGenerator<'a> {
                 let available: Vec<&str> = self.graph.models().map(|m| m.name.as_str()).collect();
                 SidemanticError::model_not_found(&dim_ref.model, &available)
             })?;
-            let dimension = model.get_dimension(&dim_ref.name).ok_or_else(|| {
+            let alias = self.model_alias(&dim_ref.model);
+            let sql_expr = if let Some(dimension) = model.get_dimension(&dim_ref.name) {
+                if let Some(granularity) = dim_ref
+                    .granularity
+                    .as_deref()
+                    .or(dimension.granularity.as_deref())
+                {
+                    self.normalize_select_expression(
+                        &self.date_trunc_sql(granularity, dimension.sql_expr()),
+                        &alias,
+                    )
+                } else if dimension.window.is_some() {
+                    format!("{}.{}", alias, self.quote_identifier(&dimension.name))
+                } else {
+                    self.dimension_select_expression(dimension, &alias)
+                }
+            } else if Self::is_relationship_foreign_key_dimension(model, &dim_ref.name) {
+                format!("{}.{}", alias, self.quote_identifier(&dim_ref.name))
+            } else {
                 let available: Vec<&str> =
                     model.dimensions.iter().map(|d| d.name.as_str()).collect();
-                SidemanticError::dimension_not_found(&dim_ref.model, &dim_ref.name, &available)
-            })?;
-
-            let alias = self.model_alias(&dim_ref.model);
-            let sql_expr = if dim_ref.granularity.is_some() || dimension.granularity.is_some() {
-                self.normalize_select_expression(
-                    &dimension.sql_with_granularity(dim_ref.granularity.as_deref()),
-                    &alias,
-                )
-            } else if dimension.window.is_some() {
-                format!("{}.{}", alias, self.quote_identifier(&dimension.name))
-            } else {
-                self.dimension_select_expression(dimension, &alias)
+                return Err(SidemanticError::dimension_not_found(
+                    &dim_ref.model,
+                    &dim_ref.name,
+                    &available,
+                ));
             };
             let output_alias = self.output_alias(&dim_ref.model, &dim_ref.alias, &alias_collisions);
 
@@ -667,6 +677,9 @@ impl<'a> SqlGenerator<'a> {
 
         for dim in dimensions {
             let (model, name, granularity) = self.graph.parse_reference(dim)?;
+            if let Some(granularity) = granularity.as_deref() {
+                self.validate_time_granularity(&model, &name, granularity)?;
+            }
 
             // Create alias: model_field or model_field__granularity
             let alias = if let Some(ref g) = granularity {
@@ -704,9 +717,9 @@ impl<'a> SqlGenerator<'a> {
                 if owners.len() == 1 {
                     (owners[0].clone(), metric.clone())
                 } else {
-                    return Err(SidemanticError::InvalidReference {
-                        reference: metric.clone(),
-                    });
+                    return Err(SidemanticError::Validation(format!(
+                        "Metric '{metric}' not found"
+                    )));
                 }
             };
 
@@ -718,6 +731,42 @@ impl<'a> SqlGenerator<'a> {
         }
 
         Ok(refs)
+    }
+
+    fn validate_time_granularity(
+        &self,
+        model_name: &str,
+        dimension_name: &str,
+        granularity: &str,
+    ) -> Result<()> {
+        const VALID_GRANULARITIES: &[&str] = &[
+            "second", "minute", "hour", "day", "week", "month", "quarter", "year",
+        ];
+        if !VALID_GRANULARITIES.contains(&granularity) {
+            return Err(SidemanticError::Validation(format!(
+                "Invalid time granularity '{granularity}'"
+            )));
+        }
+
+        let Some(model) = self.graph.get_model(model_name) else {
+            return Ok(());
+        };
+        let Some(dimension) = model.get_dimension(dimension_name) else {
+            return Ok(());
+        };
+        if dimension.r#type != crate::core::DimensionType::Time {
+            return Err(SidemanticError::Validation(format!(
+                "Cannot apply granularity to non-time dimension '{dimension_name}'"
+            )));
+        }
+        if let Some(supported) = &dimension.supported_granularities {
+            if !supported.iter().any(|item| item == granularity) {
+                return Err(SidemanticError::Validation(format!(
+                    "Invalid time granularity '{granularity}' for dimension '{dimension_name}'"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Find all models required by the query
@@ -1240,23 +1289,21 @@ impl<'a> SqlGenerator<'a> {
                 .unwrap_or_else(|| model.primary_key.clone());
         }
 
-        primary_keys
+        let parts = primary_keys
             .iter()
-            .enumerate()
-            .map(|(index, column)| {
+            .flat_map(|column| {
                 let qualified = match alias {
                     Some(alias) => format!("{alias}.{column}"),
                     None => column.clone(),
                 };
-                let casted = format!("COALESCE(CAST({qualified} AS VARCHAR), '')");
-                if index == 0 {
-                    casted
-                } else {
-                    format!("'|' || {casted}")
-                }
+                [
+                    format!("COALESCE(CAST({qualified} AS VARCHAR), '')"),
+                    "'|'".to_string(),
+                ]
             })
-            .collect::<Vec<_>>()
-            .join(" || ")
+            .collect::<Vec<_>>();
+        let parts = &parts[..parts.len().saturating_sub(1)];
+        format!("CONCAT({})", parts.join(", "))
     }
 
     /// Generate alias for a model (first letter lowercase)
@@ -2978,7 +3025,24 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn date_trunc_sql(&self, granularity: &str, column_expr: &str) -> String {
-        format!("DATE_TRUNC('{granularity}', {column_expr})")
+        if self.dialect == DialectType::BigQuery {
+            format!(
+                "DATE_TRUNC({}, {})",
+                column_expr,
+                granularity.to_ascii_uppercase()
+            )
+        } else {
+            format!("DATE_TRUNC('{granularity}', {column_expr})")
+        }
+    }
+
+    fn is_relationship_foreign_key_dimension(model: &Model, dimension_name: &str) -> bool {
+        model.relationships.iter().any(|relationship| {
+            relationship
+                .foreign_key_columns()
+                .iter()
+                .any(|column| column == dimension_name)
+        })
     }
 
     fn interval_sql(&self, num: &str, unit: &str) -> String {
@@ -4985,7 +5049,7 @@ mod tests {
             .with_dimensions(vec!["shipments.status".into()]);
 
         let sql = generator.generate(&query).unwrap();
-        assert!(sql.contains("HASH(COALESCE(CAST(order_items_cte.order_id AS VARCHAR), '')"));
+        assert!(sql.contains("HASH(CONCAT(COALESCE(CAST(order_items_cte.order_id AS VARCHAR), '')"));
         assert!(sql.contains("CAST(order_items_cte.item_id AS VARCHAR)"));
     }
 
@@ -5061,7 +5125,7 @@ mod tests {
 
         // Relative date should be expanded to SQL
         assert!(
-            sql.contains("CURRENT_DATE - INTERVAL '7 days'"),
+            sql.contains("CURRENT_DATE - 7"),
             "Expected relative date expansion: {sql}"
         );
         // Should NOT contain the quoted string anymore

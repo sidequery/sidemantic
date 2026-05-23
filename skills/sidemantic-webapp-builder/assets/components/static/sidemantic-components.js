@@ -55,7 +55,7 @@ export function labelize(value) {
 }
 
 export function aliasForSemanticRef(ref) {
-  return String(ref || "").split(".").at(-1).replace("__", "_");
+  return String(ref || "").split(".").at(-1);
 }
 
 export function formatValue(value, options = {}) {

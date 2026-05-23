@@ -1,5 +1,5 @@
 export function aliasFor(ref) {
-  return String(ref || "").split(".").at(-1).replace("__", "_");
+  return String(ref || "").split(".").at(-1);
 }
 
 export function dimensionQueryKey(dimensionRef) {

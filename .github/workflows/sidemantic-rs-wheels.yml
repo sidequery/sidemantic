@@ -40,7 +40,7 @@ jobs:
           - os: macos-14
             target: aarch64
           - os: windows-latest
-            target: x64
+            target: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v4

@@ -153,6 +153,38 @@ class QueryRewriter:
         # Otherwise, treat as simple semantic layer query
         return self._rewrite_simple_query(parsed)
 
+    def _source_aliases(self, select: exp.Select) -> dict[str, str]:
+        """Map source aliases in this SELECT scope to semantic model names."""
+        aliases: dict[str, str] = {}
+
+        def add_table(table_expr: exp.Expression | None) -> None:
+            if not isinstance(table_expr, exp.Table):
+                return
+            model_name = table_expr.name
+            if model_name in self.graph.models or model_name == "metrics":
+                aliases[table_expr.alias_or_name] = model_name
+                aliases[model_name] = model_name
+
+        from_clause = select.args.get("from")
+        if from_clause:
+            add_table(from_clause.this)
+        for join in select.args.get("joins") or []:
+            add_table(join.this)
+
+        return aliases
+
+    def _normalize_source_aliases(self, expression: exp.Expression) -> exp.Expression:
+        """Rewrite table aliases in column refs to semantic model names."""
+        aliases = getattr(self, "table_aliases", {})
+        if not aliases:
+            return expression
+
+        rewritten = expression.copy()
+        for column in rewritten.find_all(exp.Column):
+            if column.table in aliases:
+                column.set("table", exp.to_identifier(aliases[column.table]))
+        return rewritten
+
     def _looks_like_yardstick_query(self, sql: str) -> bool:
         """Return True if query appears to use Yardstick query syntax."""
         try:
@@ -1957,8 +1989,11 @@ class QueryRewriter:
     def _generated_cte_names_for_semantic_select(self, select: exp.Select) -> set[str]:
         had_inferred_table = hasattr(self, "inferred_table")
         previous_inferred_table = getattr(self, "inferred_table", None)
+        had_table_aliases = hasattr(self, "table_aliases")
+        previous_table_aliases = getattr(self, "table_aliases", None)
         try:
             self.inferred_table = self._extract_from_table(select)
+            self.table_aliases = self._source_aliases(select)
             metrics, dimensions, _aliases = self._extract_metrics_and_dimensions(select)
             filters = self._extract_filters(select)
             model_names = self.generator._find_required_models(metrics, dimensions, filters)
@@ -1972,6 +2007,10 @@ class QueryRewriter:
                 self.inferred_table = previous_inferred_table
             elif hasattr(self, "inferred_table"):
                 del self.inferred_table
+            if had_table_aliases:
+                self.table_aliases = previous_table_aliases
+            elif hasattr(self, "table_aliases"):
+                del self.table_aliases
 
     def _rewrite_with_rust(self, sql: str, strict: bool = True) -> str | None:
         """Rewrite using sidemantic-rs bindings, returning None to allow Python fallback."""
@@ -2087,23 +2126,20 @@ class QueryRewriter:
         Returns:
             Rewritten SQL using semantic layer
         """
-        # Check for explicit JOINs - these are not supported
+        explicit_join_filters = []
         if parsed.args.get("joins"):
-            raise ValueError(
-                "Explicit JOIN syntax is not supported. "
-                "Joins are automatic based on model relationships.\n\n"
-                "Instead of:\n"
-                "  SELECT orders.revenue, customers.name FROM orders JOIN customers ON ...\n\n"
-                "Use:\n"
-                "  SELECT orders.revenue, customers.name FROM orders"
-            )
+            explicit_join_filters = self._validate_explicit_semantic_joins(parsed)
 
         # Extract FROM table for inference
         self.inferred_table = self._extract_from_table(parsed)
+        self.table_aliases = self._source_aliases(parsed)
+
+        if self._needs_expression_postprocess(parsed):
+            return self._rewrite_expression_query(parsed, extra_filters=explicit_join_filters)
 
         # Extract components
         metrics, dimensions, aliases = self._extract_metrics_and_dimensions(parsed)
-        filters = self._extract_filters(parsed)
+        filters = [*self._extract_filters(parsed), *explicit_join_filters]
         order_by = self._extract_order_by(parsed)
         limit = self._extract_limit(parsed)
         offset = self._extract_offset(parsed)
@@ -2122,6 +2158,323 @@ class QueryRewriter:
             offset=offset,
             aliases=aliases,
         )
+
+    def _validate_explicit_semantic_joins(self, select: exp.Select) -> list[str]:
+        """Allow explicit joins only when they point at modeled semantic relationships."""
+        from_clause = select.args.get("from")
+        if not from_clause or not isinstance(from_clause.this, exp.Table):
+            raise ValueError("Explicit JOIN syntax is only supported from a semantic model table")
+
+        base_model = from_clause.this.name
+        if base_model not in self.graph.models:
+            return []
+
+        source_aliases = self._source_aliases(select)
+        known_aliases = {from_clause.this.alias_or_name: base_model, base_model: base_model}
+        join_filters = []
+
+        for join in select.args.get("joins") or []:
+            if not isinstance(join.this, exp.Table):
+                raise ValueError(
+                    "Explicit JOINs from semantic models only support direct model tables. "
+                    "Use a semantic subquery first when joining arbitrary SQL."
+                )
+
+            joined_model = join.this.name
+            if joined_model not in self.graph.models:
+                raise ValueError(
+                    "Explicit JOINs from semantic models only support modeled semantic tables. "
+                    "Use a semantic subquery first when joining arbitrary SQL."
+                )
+
+            joined_alias = join.this.alias_or_name
+            on_expr = join.args.get("on")
+            if on_expr and not self._join_on_matches_relationship(on_expr, joined_model, source_aliases, known_aliases):
+                raise ValueError(
+                    f"Explicit JOIN from semantic model '{base_model}' to '{joined_model}' does not match a declared relationship"
+                )
+
+            if not on_expr:
+                # No ON clause: still require that a modeled path exists.
+                try:
+                    self.graph.find_relationship_path(base_model, joined_model)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Explicit JOIN from semantic model '{base_model}' to '{joined_model}' has no declared relationship path"
+                    ) from exc
+
+            known_aliases[joined_alias] = joined_model
+            known_aliases[joined_model] = joined_model
+            join_filters.extend(self._explicit_join_filters(join, joined_model))
+
+        return join_filters
+
+    def _explicit_join_filters(self, join: exp.Join, joined_model: str) -> list[str]:
+        side = (join.args.get("side") or "").upper()
+        kind = (join.args.get("kind") or "").upper()
+
+        if side and side != "LEFT":
+            raise ValueError("Explicit semantic JOINs support INNER and LEFT joins only")
+        if kind and kind not in ("INNER", "OUTER"):
+            raise ValueError("Explicit semantic JOINs support INNER and LEFT joins only")
+        if side == "LEFT":
+            return []
+
+        model = self.graph.get_model(joined_model)
+        return [f"{joined_model}.{column} IS NOT NULL" for column in model.primary_key_columns]
+
+    def _join_on_matches_relationship(
+        self,
+        on_expr: exp.Expression,
+        joined_model: str,
+        source_aliases: dict[str, str],
+        known_aliases: dict[str, str],
+    ) -> bool:
+        pairs = self._extract_join_equality_pairs(on_expr)
+        if not pairs:
+            return False
+
+        other_model: str | None = None
+        actual_pairs: set[tuple[str, str]] = set()
+        for left_col, right_col in pairs:
+            if not left_col.table or not right_col.table:
+                return False
+            left_model = source_aliases.get(left_col.table)
+            right_model = source_aliases.get(right_col.table)
+            if not left_model or not right_model:
+                return False
+            if joined_model not in {left_model, right_model}:
+                return False
+
+            current_other_model = right_model if left_model == joined_model else left_model
+            if current_other_model not in known_aliases.values():
+                return False
+            if other_model and current_other_model != other_model:
+                return False
+            other_model = current_other_model
+
+            if left_model == joined_model:
+                actual_pairs.add((right_col.name, left_col.name))
+            else:
+                actual_pairs.add((left_col.name, right_col.name))
+
+        if not other_model:
+            return False
+
+        expected_pairs = self._direct_relationship_key_pairs(other_model, joined_model)
+        return actual_pairs == expected_pairs
+
+    def _extract_join_equality_pairs(self, expression: exp.Expression) -> list[tuple[exp.Column, exp.Column]]:
+        pairs: list[tuple[exp.Column, exp.Column]] = []
+        expression = self._unwrap_join_predicate(expression)
+
+        for part in expression.flatten() if isinstance(expression, exp.And) else [expression]:
+            part = self._unwrap_join_predicate(part)
+            if not isinstance(part, exp.EQ):
+                return []
+            left = part.left
+            right = part.right
+            if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
+                return []
+            pairs.append((left, right))
+
+        return pairs
+
+    def _unwrap_join_predicate(self, expression: exp.Expression) -> exp.Expression:
+        while isinstance(expression, exp.Paren) and isinstance(expression.this, exp.Expression):
+            expression = expression.this
+        return expression
+
+    def _direct_relationship_key_pairs(
+        self,
+        from_model: str,
+        to_model: str,
+    ) -> set[tuple[str, str]]:
+        try:
+            path = self.graph.find_relationship_path(from_model, to_model)
+        except ValueError:
+            return set()
+        if len(path) != 1:
+            return set()
+        hop = path[0]
+        return set(zip(hop.from_columns, hop.to_columns, strict=False))
+
+    def _needs_expression_postprocess(self, select: exp.Select) -> bool:
+        for projection in select.expressions:
+            node = projection.this if isinstance(projection, exp.Alias) else projection
+            if isinstance(node, (exp.Column, exp.Star)):
+                continue
+            return True
+        return False
+
+    def _rewrite_expression_query(self, parsed: exp.Select, extra_filters: list[str] | None = None) -> str:
+        """Compile semantic dependencies, then evaluate SQL expressions over the result."""
+        from sidemantic.core.metric import Metric
+
+        metrics: list[str] = []
+        dimensions: list[str] = []
+        aliases: dict[str, str] = {}
+        ref_aliases: dict[str, str] = {}
+        projection_aliases: set[str] = set()
+        adhoc_metrics: list[tuple[str, Metric]] = []
+        alias_index = 0
+        adhoc_index = 0
+
+        def next_alias(prefix: str = "__sd_expr") -> str:
+            nonlocal alias_index
+            value = f"{prefix}_{alias_index}"
+            alias_index += 1
+            return value
+
+        def add_ref(ref: str) -> str:
+            if ref not in ref_aliases:
+                ref_aliases[ref] = next_alias("__sd_field")
+                aliases[ref] = ref_aliases[ref]
+                if "." not in ref:
+                    metrics.append(ref)
+                    return ref_aliases[ref]
+
+                model_name, field_name = ref.split(".", 1)
+                base_field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
+                model = self.graph.get_model(model_name)
+                if model.get_metric(base_field_name) or f"{model_name}.{base_field_name}" in self.graph.metrics:
+                    metrics.append(ref)
+                elif model.get_dimension(base_field_name):
+                    dimensions.append(ref)
+                else:
+                    raise ValueError(
+                        f"Field '{model_name}.{base_field_name}' not found. "
+                        f"Must be a metric, measure, or dimension in model '{model_name}'"
+                    )
+            return ref_aliases[ref]
+
+        def normalize_adhoc_metric_sql(node: exp.AggFunc, model_name: str) -> str:
+            metric_expr = node.copy()
+            for column in metric_expr.find_all(exp.Column):
+                if column.table:
+                    resolved_model = getattr(self, "table_aliases", {}).get(column.table, column.table)
+                    if resolved_model == model_name:
+                        column.set("table", None)
+            return metric_expr.sql(dialect=self.dialect)
+
+        def ad_hoc_metric_model(node: exp.AggFunc) -> str:
+            if not self.inferred_table or self.inferred_table == "metrics":
+                raise ValueError("Ad hoc aggregate expressions require a single semantic model in FROM")
+
+            referenced_models = set()
+            for column in node.find_all(exp.Column):
+                if column.table:
+                    referenced_models.add(getattr(self, "table_aliases", {}).get(column.table, column.table))
+                else:
+                    referenced_models.add(self.inferred_table)
+
+            if not referenced_models:
+                return self.inferred_table
+
+            if len(referenced_models) != 1:
+                raise ValueError("Ad hoc aggregate expressions can only reference one semantic model")
+
+            model_name = next(iter(referenced_models))
+            if model_name != self.inferred_table:
+                raise ValueError(
+                    "Ad hoc aggregate expressions can only reference columns from the base semantic model. "
+                    f"Define a metric on '{model_name}' to aggregate joined-model columns."
+                )
+
+            return model_name
+
+        def add_adhoc_metric(node: exp.AggFunc) -> str:
+            nonlocal adhoc_index
+            model_name = ad_hoc_metric_model(node)
+
+            metric_name = f"__adhoc_metric_{adhoc_index}"
+            adhoc_index += 1
+            metric = Metric(name=metric_name, sql=normalize_adhoc_metric_sql(node, model_name))
+            model = self.graph.get_model(model_name)
+            model.metrics.append(metric)
+            adhoc_metrics.append((model_name, metric))
+            ref = f"{model_name}.{metric_name}"
+            metrics.append(ref)
+            alias = next_alias("__sd_metric")
+            aliases[ref] = alias
+            return alias
+
+        def transform_for_outer(expression: exp.Expression) -> exp.Expression:
+            rewritten = expression.copy()
+
+            def replace_node(node: exp.Expression) -> exp.Expression:
+                if isinstance(node, exp.AggFunc):
+                    return exp.column(add_adhoc_metric(node))
+                if isinstance(node, exp.Column):
+                    ref = self._resolve_column(node)
+                    if not ref:
+                        raise ValueError(f"Cannot resolve column: {node.sql(dialect=self.dialect)}")
+                    return exp.column(add_ref(ref))
+                return node
+
+            return rewritten.transform(replace_node)
+
+        outer_projections: list[exp.Expression] = []
+        try:
+            for projection in parsed.expressions:
+                custom_alias = projection.alias if isinstance(projection, exp.Alias) else None
+                node = projection.this if isinstance(projection, exp.Alias) else projection
+
+                if isinstance(node, exp.Star):
+                    raise ValueError("SELECT * is not supported in semantic expression queries")
+
+                outer_expr = transform_for_outer(node)
+                if custom_alias:
+                    projection_aliases.add(custom_alias)
+                    outer_projections.append(exp.alias_(outer_expr, custom_alias, quoted=False))
+                elif isinstance(node, exp.Column):
+                    projection_aliases.add(node.name)
+                    outer_projections.append(exp.alias_(outer_expr, node.name, quoted=False))
+                elif isinstance(node, exp.AggFunc):
+                    projection_aliases.add(node.key.lower())
+                    outer_projections.append(exp.alias_(outer_expr, node.key.lower(), quoted=False))
+                else:
+                    outer_projections.append(outer_expr)
+
+            filters = [*self._extract_filters(parsed), *(extra_filters or [])]
+            inner_sql = self.generator.generate(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                aliases=aliases,
+            )
+
+            projection_sql = ",\n  ".join(projection.sql(dialect=self.dialect) for projection in outer_projections)
+            outer_sql = f"SELECT\n  {projection_sql}\nFROM (\n{inner_sql}\n) AS __sdq"
+
+            order_clause = parsed.args.get("order")
+            if order_clause:
+                outer_order = []
+                for order_expr in order_clause.expressions:
+                    transformed = order_expr.copy()
+                    if (
+                        isinstance(order_expr.this, exp.Column)
+                        and not order_expr.this.table
+                        and order_expr.this.name in projection_aliases
+                    ):
+                        transformed.set("this", order_expr.this.copy())
+                    else:
+                        transformed.set("this", transform_for_outer(order_expr.this))
+                    outer_order.append(transformed)
+                outer_sql += "\nORDER BY " + ", ".join(expr.sql(dialect=self.dialect) for expr in outer_order)
+
+            limit = self._extract_limit(parsed)
+            offset = self._extract_offset(parsed)
+            if limit:
+                outer_sql += f"\nLIMIT {limit}"
+            if offset:
+                outer_sql += f"\nOFFSET {offset}"
+
+            return outer_sql
+        finally:
+            for model_name, metric in adhoc_metrics:
+                model = self.graph.get_model(model_name)
+                model.metrics = [existing for existing in model.metrics if existing is not metric]
 
     def _extract_metrics_and_dimensions(self, select: exp.Select) -> tuple[list[str], list[str], dict[str, str]]:
         """Extract metrics and dimensions from SELECT clause.
@@ -2246,7 +2599,7 @@ class QueryRewriter:
         if not select.args.get("where"):
             return []
 
-        where = select.args["where"].this
+        where = self._normalize_source_aliases(select.args["where"].this)
 
         # Handle compound conditions (AND/OR)
         if isinstance(where, (exp.And, exp.Or)):
@@ -2297,12 +2650,12 @@ class QueryRewriter:
         for order_expr in select.args["order"].expressions:
             # Get column (might have ASC/DESC)
             if isinstance(order_expr, exp.Ordered):
-                column = order_expr.this
+                column = self._normalize_source_aliases(order_expr.this)
                 desc = order_expr.args.get("desc", False)
                 col_name = self._get_column_name(column)
                 order_expressions.append(f"{col_name} {'DESC' if desc else 'ASC'}")
             else:
-                col_name = self._get_column_name(order_expr)
+                col_name = self._get_column_name(self._normalize_source_aliases(order_expr))
                 order_expressions.append(col_name)
 
         return order_expressions if order_expressions else None
@@ -2386,6 +2739,7 @@ class QueryRewriter:
             name = column.name
 
             if table:
+                table = getattr(self, "table_aliases", {}).get(table, table)
                 # Explicit table.column (may include __granularity suffix)
                 return f"{table}.{name}"
             else:

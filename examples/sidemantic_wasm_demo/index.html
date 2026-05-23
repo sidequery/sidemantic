@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sidemantic WASM MetricsExplorer</title>
-    <link rel="stylesheet" href="./src/components/sidemantic/sidemantic-components.css?v=components11" />
-    <link rel="stylesheet" href="./src/styles.css?v=components11" />
+    <link rel="stylesheet" href="./src/components/sidemantic/sidemantic-components.css?v=components12" />
+    <link rel="stylesheet" href="./src/styles.css?v=components12" />
   </head>
   <body>
     <div class="sidemantic-widget">
@@ -32,14 +32,6 @@
           <button type="button" class="control-button" data-action="reset">Reset</button>
         </div>
       </header>
-
-      <section class="runtime-strip" aria-label="Browser runtime status">
-        <span class="sdm-filter-pill" data-testid="sidemantic-status">Sidemantic WASM loading</span>
-        <span class="sdm-filter-pill" data-testid="duckdb-status">DuckDB-WASM loading</span>
-        <span class="sdm-filter-pill">No query server</span>
-        <span class="sdm-filter-pill" data-testid="compile-time">compile pending</span>
-        <span class="sdm-filter-pill" data-testid="execution-time">execution pending</span>
-      </section>
 
       <main class="widget-layout">
         <section class="metrics-col" data-testid="metric-cards"></section>
@@ -86,9 +78,18 @@
         </article>
       </section>
 
-      <div class="widget-status loading" data-testid="app-status">Starting browser runtimes...</div>
+      <footer class="widget-status loading" data-testid="app-status">
+        <span class="status-message" data-testid="status-message">Starting browser runtimes...</span>
+        <span class="runtime-footer" aria-label="Browser runtime status">
+          <span data-testid="sidemantic-status">Sidemantic WASM loading</span>
+          <span data-testid="duckdb-status">DuckDB-WASM loading</span>
+          <span data-testid="query-server-status">No query server</span>
+          <span data-testid="compile-time">compile pending</span>
+          <span data-testid="execution-time">execute pending</span>
+        </span>
+      </footer>
     </div>
 
-    <script type="module" src="./src/app.js?v=components11"></script>
+    <script type="module" src="./src/app.js?v=components12"></script>
   </body>
 </html>

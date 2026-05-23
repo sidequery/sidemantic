@@ -51,6 +51,7 @@ const els = {
   preview: document.querySelector('[data-testid="result-preview"]'),
   sidemanticStatus: document.querySelector('[data-testid="sidemantic-status"]'),
   sqlSelect: document.querySelector('[data-testid="sql-select"]'),
+  statusMessage: document.querySelector('[data-testid="status-message"]'),
   validationList: document.querySelector('[data-testid="validation-list"]'),
   validationState: document.querySelector('[data-testid="validation-state"]'),
   yaml: document.querySelector('[data-testid="model-yaml"]'),
@@ -173,7 +174,7 @@ function setBusy(isBusy) {
 }
 
 function setStatus(message, status = "loading") {
-  els.appStatus.textContent = message;
+  els.statusMessage.textContent = message;
   els.appStatus.className = `widget-status ${status}`;
 }
 
@@ -242,7 +243,7 @@ async function runCompile() {
   try {
     validateModel();
     await compileAndExecute();
-    setStatus("Ready. Sidemantic Rust WASM compiled the queries, DuckDB-WASM executed them in the browser.", "");
+    setStatus("Ready", "");
   } catch (error) {
     setStatus(error?.message || String(error), "error");
     reportError(error);

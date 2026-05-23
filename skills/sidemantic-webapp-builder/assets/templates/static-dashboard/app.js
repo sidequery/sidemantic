@@ -1,5 +1,6 @@
 import {
   filterZeroMetricRows,
+  normalizeFilterValue,
   renderDataPreview,
   renderFilterPills,
   renderHighlightedQueryDebug,
@@ -71,8 +72,8 @@ function filterPreviewResult(query) {
   for (const [dimension, values] of Object.entries(state.filters)) {
     const key = aliasFor(query, dimension);
     if (!result.columns?.includes(key)) continue;
-    const accepted = new Set((values || []).map((value) => String(value)));
-    rows = rows.filter((row) => accepted.has(String(row[key] ?? "")));
+    const accepted = new Set((values || []).map(normalizeFilterValue));
+    rows = rows.filter((row) => accepted.has(normalizeFilterValue(row[key])));
   }
   return {
     ...result,
@@ -88,8 +89,8 @@ function metricTotalsForFilters(totalsQuery, leaderboardQuery) {
   if (filterValues.length === 0 || leaderboardRows.length === 0) return totalsQuery;
 
   const dimensionKey = aliasFor(leaderboardQuery, dimensionRef);
-  const accepted = new Set(filterValues.map((value) => String(value)));
-  const filteredRows = leaderboardRows.filter((row) => accepted.has(String(row[dimensionKey] ?? "")));
+  const accepted = new Set(filterValues.map(normalizeFilterValue));
+  const filteredRows = leaderboardRows.filter((row) => accepted.has(normalizeFilterValue(row[dimensionKey])));
   if (filteredRows.length === 0) return totalsQuery;
 
   const metricRow = {};

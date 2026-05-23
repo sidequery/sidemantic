@@ -49,7 +49,7 @@ Available static JS helpers in `sidemantic-components.js`:
 - Formatting: `labelize`, `formatValue`, `metricConfigFor`, `metricValueFormat`, `formatDateLike`, `seriesRangeLabel`.
 - Renderers: `renderMetricCards`, `renderMetricSummaryCards`, `renderLeaderboard`, `renderDimensionLeaderboardCards`, `renderFilterPills`, `renderSparkline`, `renderColumnChart`, `renderHighlightedQueryDebug`, `renderDataPreview`, `renderValidationState`, `renderState`.
 - UI helpers: `renderSelectOptions`, `setControlsDisabled`, `syncScrollPosition`.
-- Filter state helpers: `toggleFilterValue`, `removeFilterValue`, `removeFilterDimension`.
+- Filter state helpers: `normalizeFilterValue`, `toggleFilterValue`, `removeFilterValue`, `removeFilterDimension`.
 
 Use those static helpers before writing one-off DOM wiring. They are intentionally generic: they work for metric explorers, focused dashboards, debug tools, and browser-only demos as long as the app passes semantic query metadata plus row results into them. Runtime adapters for Python APIs, Pyodide, Rust WASM, DuckDB-WASM, or product backends should stay outside the copied component files.
 

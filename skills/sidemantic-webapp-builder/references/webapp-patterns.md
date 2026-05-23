@@ -37,7 +37,7 @@ The static component file exports both low-level renderers and generic app helpe
 - `renderMetricSummaryCards` handles metric cards plus optional sparklines for any UI with metric totals and a series result.
 - `renderDimensionLeaderboardCards` renders repeated dimension cards and filters zero-valued metric rows instead of showing fake rows.
 - `renderSelectOptions`, `renderFilterPills`, `renderValidationState`, `renderHighlightedQueryDebug`, and `renderDataPreview` cover common dashboard controls and debug panes.
-- `toggleFilterValue`, `removeFilterValue`, `removeFilterDimension`, `setControlsDisabled`, and `syncScrollPosition` cover interaction plumbing without binding the app to a specific runtime.
+- `normalizeFilterValue`, `toggleFilterValue`, `removeFilterValue`, `removeFilterDimension`, `setControlsDisabled`, and `syncScrollPosition` cover interaction plumbing without binding the app to a specific runtime.
 
 These helpers are not limited to metric explorers. Use the low-level renderers for custom workflows, and use the higher-level helpers only when the app shape matches.
 

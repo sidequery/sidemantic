@@ -71,6 +71,10 @@ export function formatValue(value, options = {}) {
   return String(value);
 }
 
+export function normalizeFilterValue(value) {
+  return String(value ?? "");
+}
+
 export function metricConfigFor(metrics, metricKey) {
   return (metrics || []).find((metric) => metric.key === metricKey) || metrics?.[0] || {};
 }
@@ -372,7 +376,7 @@ export function renderLeaderboard(container, query, options = {}) {
   const selectedValues = new Set([
     ...(Array.isArray(options.selectedValues) ? options.selectedValues : []),
     ...(options.selectedValue === undefined ? [] : [options.selectedValue]),
-  ].map((value) => String(value)));
+  ].map(normalizeFilterValue));
   const values = rows.map((row) => {
     const value = Number(row[metricKey]);
     return Number.isFinite(value) ? value : 0;
@@ -395,13 +399,14 @@ export function renderLeaderboard(container, query, options = {}) {
 
   for (const [index, row] of rows.entries()) {
     const value = values[index] ?? 0;
+    const dimensionValue = normalizeFilterValue(row[dimensionKey]);
     const item = document.createElement(options.interactive ? "button" : "div");
     item.className = "sdm-leaderboard-row";
     item.dataset.dimension = dimensionRef;
     item.dataset.tone = value < 0 ? "negative" : "positive";
-    item.dataset.value = row[dimensionKey] ?? "";
+    item.dataset.value = dimensionValue;
     item.style.setProperty("--bar-width", `${Math.round((Math.abs(value) / maxMagnitude) * 100)}%`);
-    if (selectedValues.has(String(row[dimensionKey]))) {
+    if (selectedValues.has(dimensionValue)) {
       item.dataset.selected = "true";
     }
 
@@ -482,17 +487,18 @@ export function renderFilterPills(container, filters, onRemove, options = {}) {
   container.replaceChildren();
   for (const [dimension, values] of Object.entries(filters || {})) {
     for (const value of values || []) {
+      const filterValue = normalizeFilterValue(value);
       const pill = document.createElement("span");
       pill.className = "sdm-filter-pill";
       pill.dataset.dimension = dimension;
-      pill.dataset.value = value;
-      pill.textContent = `${labelize(dimension)}: ${value}`;
+      pill.dataset.value = filterValue;
+      pill.textContent = `${labelize(dimension)}: ${formatValue(filterValue)}`;
       if (onRemove) {
         const button = document.createElement("button");
         button.type = "button";
-        button.ariaLabel = `Remove ${value}`;
+        button.ariaLabel = `Remove ${formatValue(filterValue)}`;
         button.textContent = "×";
-        button.addEventListener("click", () => onRemove({ dimension, value }));
+        button.addEventListener("click", () => onRemove({ dimension, value: filterValue }));
         pill.appendChild(button);
       }
       container.appendChild(pill);
@@ -676,8 +682,8 @@ export function syncScrollPosition(source, target) {
 
 export function toggleFilterValue(filters, dimension, value) {
   const next = { ...filters };
-  const stringValue = String(value);
-  const selectedValues = new Set((next[dimension] || []).map((item) => String(item)));
+  const stringValue = normalizeFilterValue(value);
+  const selectedValues = new Set((next[dimension] || []).map(normalizeFilterValue));
 
   if (selectedValues.has(stringValue)) {
     selectedValues.delete(stringValue);
@@ -706,8 +712,8 @@ export function removeFilterDimension(filters, dimension) {
 
 export function removeFilterValue(filters, dimension, value) {
   const next = { ...filters };
-  const stringValue = String(value);
-  const values = (next[dimension] || []).filter((item) => String(item) !== stringValue);
+  const stringValue = normalizeFilterValue(value);
+  const values = (next[dimension] || []).map(normalizeFilterValue).filter((item) => item !== stringValue);
   if (values.length === 0) {
     delete next[dimension];
   } else {

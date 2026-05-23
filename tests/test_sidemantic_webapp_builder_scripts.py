@@ -358,6 +358,34 @@ def test_static_component_aliases_preserve_time_grain_suffixes() -> None:
         assert 'String(ref || "").split(".").at(-1);' in source
 
 
+def test_static_filter_helpers_normalize_nullish_values() -> None:
+    root = Path(__file__).resolve().parents[1]
+    component_paths = [
+        root / "skills" / "sidemantic-webapp-builder" / "assets" / "components" / "static" / "sidemantic-components.js",
+        root / "examples" / "sidemantic_wasm_demo" / "src" / "components" / "sidemantic" / "sidemantic-components.js",
+    ]
+
+    for path in component_paths:
+        source = path.read_text(encoding="utf-8")
+
+        assert "export function normalizeFilterValue(value)" in source
+        assert 'return String(value ?? "");' in source
+        assert "const stringValue = normalizeFilterValue(value);" in source
+        assert ".map(normalizeFilterValue)" in source
+        assert "const dimensionValue = normalizeFilterValue(row[dimensionKey]);" in source
+        assert "selectedValues.has(dimensionValue)" in source
+        assert "const stringValue = String(value);" not in source
+
+    static_app = (
+        root / "skills" / "sidemantic-webapp-builder" / "assets" / "templates" / "static-dashboard" / "app.js"
+    ).read_text(encoding="utf-8")
+    assert "normalizeFilterValue," in static_app
+    assert "new Set((values || []).map(normalizeFilterValue))" in static_app
+    assert "accepted.has(normalizeFilterValue(row[key]))" in static_app
+    assert "new Set(filterValues.map(normalizeFilterValue))" in static_app
+    assert "accepted.has(normalizeFilterValue(row[dimensionKey]))" in static_app
+
+
 def test_leaderboard_components_support_negative_values() -> None:
     root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
     static_source = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")

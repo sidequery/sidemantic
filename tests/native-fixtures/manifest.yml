@@ -134,7 +134,7 @@ fixtures:
         rust_only_reason: Python native query API does not accept table_calculations yet.
         result_columns: [status, total_revenue, running_revenue, revenue_pct_of_total]
         sql_contains: [total_revenue, status]
-        rust_sql_contains: [running_revenue, revenue_pct_of_total, "ROWS UNBOUNDED PRECEDING", NULLIF]
+        rust_sql_contains: [running_revenue, revenue_pct_of_total, "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW", NULLIF]
 
   - name: preaggregation_routing
     valid: true

@@ -125,8 +125,8 @@ pub fn build_symmetric_aggregate_sql_with_key_expr(
             "1000000000000".to_string(),
         ),
         SqlDialect::DuckDB => (
-            format!("HASH({pk_col})::HUGEINT"),
-            "(1::HUGEINT << 40)".to_string(),
+            format!("CAST(HASH({pk_col}) AS HUGEINT)"),
+            "1048576".to_string(),
         ),
     };
 
@@ -194,9 +194,9 @@ mod tests {
             SqlDialect::DuckDB,
         );
         assert!(sql.contains("SUM(DISTINCT"));
-        assert!(sql.contains("HASH(order_id)::HUGEINT"));
+        assert!(sql.contains("CAST(HASH(order_id) AS HUGEINT)"));
         assert!(sql.contains("+ CAST(amount AS DECIMAL(38, 6))"));
-        assert!(sql.contains("CAST((HASH(order_id)::HUGEINT * (1::HUGEINT << 40))"));
+        assert!(sql.contains("CAST((CAST(HASH(order_id) AS HUGEINT) * 1048576)"));
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
             Some("o"),
             SqlDialect::DuckDB,
         );
-        assert!(sql.contains("HASH(CONCAT("));
+        assert!(sql.contains("CAST(HASH(CONCAT("));
         assert!(sql.contains("CAST(o.amount AS DECIMAL(38, 6))"));
     }
 }

@@ -651,7 +651,7 @@ def _pick_execution_query(graph):
                 else:
                     dimension_type = "VARCHAR"
                 for column in dimension_columns or {"id"}:
-                    column_types.setdefault(column, dimension_type)
+                    column_types[column] = dimension_type
                 return {
                     "model_name": model.name,
                     "execution_model_name": execution_model_name,

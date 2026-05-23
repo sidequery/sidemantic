@@ -69,6 +69,54 @@ def _resolve_engine_options(engine: str | None, fallback: bool | None) -> tuple[
     return resolved_engine, resolved_fallback
 
 
+def _load_query_layer(
+    models: Path,
+    connection: str | None = None,
+    db: Path | None = None,
+    use_preaggregations: bool = False,
+    engine: str | None = None,
+    fallback: bool | None = None,
+) -> SemanticLayer:
+    """Load a semantic layer for CLI query/explain commands."""
+    engine, resolved_fallback = _resolve_engine_options(engine, fallback)
+    _configure_engine_environment(engine, resolved_fallback)
+
+    connection_str = None
+    init_sql = None
+    if connection:
+        connection_str = connection
+    elif db:
+        connection_str = f"duckdb:///{db.absolute()}"
+    elif _loaded_config and _loaded_config.connection:
+        connection_str = build_connection_string(_loaded_config)
+        init_sql = get_init_sql(_loaded_config)
+    else:
+        data_dir = models / "data"
+        if data_dir.exists():
+            db_files = list(data_dir.glob("*.db"))
+            if db_files:
+                connection_str = f"duckdb:///{db_files[0].absolute()}"
+
+    preagg_db = _loaded_config.preagg_database if _loaded_config else None
+    preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
+    layer_kwargs = {
+        "preagg_database": preagg_db,
+        "preagg_schema": preagg_sch,
+        "use_preaggregations": use_preaggregations,
+        "engine": engine,
+        "fallback": resolved_fallback,
+    }
+    if connection_str:
+        layer = SemanticLayer(connection=connection_str, init_sql=init_sql, **layer_kwargs)
+    else:
+        layer = SemanticLayer(**layer_kwargs)
+
+    load_from_directory(layer, str(models))
+    if not layer.graph.models:
+        raise ValueError("No models found")
+    return layer
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(
@@ -501,6 +549,9 @@ def query(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show generated SQL without executing"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
+    use_preaggregations: bool = typer.Option(
+        False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
+    ),
 ):
     """
     Execute a SQL query and output results as CSV.
@@ -512,61 +563,31 @@ def query(
       sidemantic query "SELECT revenue FROM orders" --connection "postgres://localhost:5432/db"
       sidemantic query "SELECT revenue FROM orders" --db data.duckdb
       sidemantic query "SELECT revenue FROM orders" --dry-run
+      sidemantic query "SELECT revenue FROM orders" --use-preaggregations --dry-run
     """
     if not models.exists():
         typer.echo(f"Error: Directory {models} does not exist", err=True)
         raise typer.Exit(1)
 
     try:
-        engine, fallback = _resolve_engine_options(engine, fallback)
-        _configure_engine_environment(engine, fallback)
-
-        # Build connection string from args or config
-        connection_str = None
-        init_sql = None
-        if connection:
-            # Explicit --connection arg provided
-            connection_str = connection
-        elif db:
-            # Explicit --db arg provided
-            connection_str = f"duckdb:///{db.absolute()}"
-        elif _loaded_config and _loaded_config.connection:
-            # Use connection from config
-            connection_str = build_connection_string(_loaded_config)
-            init_sql = get_init_sql(_loaded_config)
-        else:
-            # Try to find database file in data/
-            data_dir = models / "data"
-            if data_dir.exists():
-                db_files = list(data_dir.glob("*.db"))
-                if db_files:
-                    connection_str = f"duckdb:///{db_files[0].absolute()}"
-
-        # Load semantic layer (only pass connection if not None)
-        preagg_db = _loaded_config.preagg_database if _loaded_config else None
-        preagg_sch = _loaded_config.preagg_schema if _loaded_config else None
-        if connection_str:
-            layer = SemanticLayer(
-                connection=connection_str,
-                preagg_database=preagg_db,
-                preagg_schema=preagg_sch,
-                init_sql=init_sql,
-                engine=engine,
-                fallback=fallback,
-            )
-        else:
-            layer = SemanticLayer(preagg_database=preagg_db, preagg_schema=preagg_sch, engine=engine, fallback=fallback)
-        load_from_directory(layer, str(models))
-
-        if not layer.graph.models:
-            typer.echo("Error: No models found", err=True)
-            raise typer.Exit(1)
+        layer = _load_query_layer(
+            models,
+            connection=connection,
+            db=db,
+            use_preaggregations=use_preaggregations,
+            engine=engine,
+            fallback=fallback,
+        )
 
         # Dry run: show generated SQL without executing
         if dry_run:
             from sidemantic.sql.query_rewriter import QueryRewriter
 
-            rewriter = QueryRewriter(layer.graph, dialect=layer.adapter.dialect)
+            rewriter = QueryRewriter(
+                layer.graph,
+                dialect=layer.adapter.dialect,
+                use_preaggregations=layer.use_preaggregations,
+            )
             rewritten_sql = rewriter.rewrite(sql)
             typer.echo(rewritten_sql)
             return
@@ -592,6 +613,48 @@ def query(
             writer = csv.writer(sys.stdout)
             writer.writerow(columns)
             writer.writerows(rows)
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("explain-sql")
+def explain_sql_command(
+    sql: str = typer.Argument(..., help="SQL query to explain"),
+    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    use_preaggregations: bool = typer.Option(
+        False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
+    ),
+    strict: bool = typer.Option(True, "--strict/--no-strict", help="Fail on unsupported semantic SQL"),
+):
+    """
+    Explain semantic SQL rewrite planning as JSON without executing the query.
+
+    Examples:
+      sidemantic explain-sql "SELECT revenue FROM orders"
+      sidemantic explain-sql "SELECT * FROM (SELECT revenue, status FROM orders) sq WHERE status = 'completed'"
+      sidemantic explain-sql "SELECT revenue, status FROM orders" --use-preaggregations
+    """
+    if not models.exists():
+        typer.echo(f"Error: Directory {models} does not exist", err=True)
+        raise typer.Exit(1)
+
+    try:
+        import json
+
+        layer = _load_query_layer(
+            models,
+            connection=connection,
+            db=db,
+            use_preaggregations=use_preaggregations,
+        )
+        explanation = layer.explain_sql(sql, strict=strict)
+        typer.echo(json.dumps(explanation.to_dict(), indent=2, default=str))
 
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)

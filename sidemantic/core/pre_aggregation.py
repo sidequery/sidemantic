@@ -179,6 +179,11 @@ class PreAggregation(BaseModel):
                     if agg_type == "COUNT" and not measure.sql:
                         # COUNT(*) case
                         select_exprs.append(f"COUNT(*) as {measure_name}_raw")
+                    elif agg_type == "AVG":
+                        # Store AVG as additive sum state. A compatible count
+                        # measure must also be present before query planning can
+                        # roll this up safely.
+                        select_exprs.append(f"SUM({measure.sql_expr}) as {measure_name}_raw")
                     elif agg_type == "COUNT_DISTINCT":
                         select_exprs.append(f"COUNT(DISTINCT {measure.sql_expr}) as {measure_name}_raw")
                     else:

@@ -1246,19 +1246,36 @@ class SemanticLayer:
         cache_key = (
             getattr(self.graph, "_version", 0),
             self.dialect,
+            self.use_preaggregations,
             os.getenv("SIDEMANTIC_RS_REWRITER", "0"),
             os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0"),
             query,
         )
         rewritten_sql = self._sql_rewrite_cache.get(cache_key)
         if rewritten_sql is None:
-            rewriter = QueryRewriter(self.graph, dialect=self.dialect)
+            rewriter = QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=self.use_preaggregations)
             rewritten_sql = rewriter.rewrite(query)
             if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
                 self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
             self._sql_rewrite_cache[cache_key] = rewritten_sql
 
         return self.adapter.execute(rewritten_sql)
+
+    def explain_sql(self, query: str, strict: bool = True):
+        """Explain semantic SQL rewrite planning without executing the query.
+
+        Args:
+            query: SQL query like "SELECT orders.revenue, orders.status FROM orders"
+            strict: If True, raise errors for invalid SQL or unsupported rewrites.
+                    If False, return a passthrough explanation when possible.
+
+        Returns:
+            RewriteExplanation with the chosen plan, candidate plans, and rewritten SQL.
+        """
+        from sidemantic.sql.query_rewriter import QueryRewriter
+
+        rewriter = QueryRewriter(self.graph, dialect=self.dialect, use_preaggregations=self.use_preaggregations)
+        return rewriter.explain(query, strict=strict)
 
     def to_yaml(self, path: str | Path) -> None:
         """Export semantic layer to native YAML file.

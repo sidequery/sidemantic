@@ -80,7 +80,7 @@ SEMANTIC SELECT native_events.event_count FROM native_events;
 ----
 4
 
-statement error
+statement error Unsupported native Sidemantic format version
 SELECT * FROM sidemantic_load('
 version: 999
 models:

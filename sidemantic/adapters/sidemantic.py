@@ -18,7 +18,7 @@ from sidemantic.core.sql_definitions import (
     parse_sql_definitions,
     parse_sql_file_with_frontmatter_extended,
     parse_sql_graph_definitions,
-    parse_sql_model,
+    parse_sql_models,
 )
 
 
@@ -118,16 +118,13 @@ class SidemanticAdapter(BaseAdapter):
             with open(source_path) as f:
                 content = f.read()
 
-            # Check if file contains MODEL() statement (pure SQL)
-            if "MODEL" in content.upper() and "MODEL (" in content.upper():
-                model = parse_sql_model(content)
-                if model:
+            # Pure SQL model files can use either MODEL(...) or model name from table (...).
+            models = parse_sql_models(content)
+            if models:
+                for model in models:
                     graph.add_model(model)
                 sql_metrics, sql_segments, sql_parameters = parse_sql_graph_definitions(content)
-                if model:
-                    model_metric_names = {metric.name for metric in model.metrics}
-                else:
-                    model_metric_names = set()
+                model_metric_names = {metric.name for model in models for metric in model.metrics}
                 for metric in sql_metrics:
                     if metric.name not in model_metric_names:
                         graph.add_metric(metric)

@@ -1229,10 +1229,10 @@ class SQLGenerator:
                     ):
                         # Other model expects this model to have a foreign key
                         # For has_many/has_one, foreign_key is the FK column in THIS model
-                        fk = other_join.foreign_key or other_join.sql_expr
-                        if fk not in columns_added:
-                            select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
-                            columns_added.add(fk)
+                        for fk in other_join.foreign_key_columns:
+                            if fk not in columns_added:
+                                select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
+                                columns_added.add(fk)
 
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:

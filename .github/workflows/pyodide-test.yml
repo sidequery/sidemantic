@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  test-pyodide:
+  pyodide:
+    name: Pyodide
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

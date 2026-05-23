@@ -6,8 +6,8 @@ on:
   pull_request:
 
 jobs:
-  python:
-    name: Python ${{ matrix.python-version }}
+  python-core:
+    name: Python core (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -48,7 +48,7 @@ jobs:
 
   update-schema:
     name: Update JSON Schema
-    needs: python
+    needs: python-core
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -81,7 +81,7 @@ jobs:
           fi
 
   native-compat:
-    name: Native Compatibility
+    name: Native compat
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,7 +121,7 @@ jobs:
           cargo test --features adbc-exec --test native_fixtures native_fixtures_execute_expected_results_with_duckdb_adbc
 
   check-rust-changes:
-    name: Check Rust/DuckDB changes
+    name: Route Rust/DuckDB changes
     runs-on: ubuntu-latest
     outputs:
       rust_changed: ${{ steps.changes.outputs.rust }}
@@ -138,8 +138,8 @@ jobs:
               - 'sidemantic-duckdb/**'
               - 'sidemantic-rs/**'
 
-  rust:
-    name: Rust (sidemantic-rs)
+  rust-core:
+    name: Rust core (sidemantic-rs)
     needs: check-rust-changes
     if: needs.check-rust-changes.outputs.rust_changed == 'true'
     runs-on: ubuntu-latest

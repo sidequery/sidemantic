@@ -7,204 +7,223 @@ on:
   workflow_dispatch:
 
 jobs:
-  postgres-integration:
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: sidemantic_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --extra postgres --extra dev
-
-      - name: Run PostgreSQL integration tests
-        env:
-          POSTGRES_TEST: "1"
-          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
-          POSTGRES_HOST: "localhost"
-          POSTGRES_PORT: "5432"
-          POSTGRES_DB: "sidemantic_test"
-          POSTGRES_USER: "test"
-          POSTGRES_PASSWORD: "test"
-        run: uv run pytest -m integration tests/db/test_postgres_integration.py -v
-
-      - name: Run PostgreSQL CLI e2e test
-        env:
-          POSTGRES_TEST: "1"
-          POSTGRES_HOST: "localhost"
-          POSTGRES_PORT: "5432"
-          POSTGRES_DB: "sidemantic_test"
-          POSTGRES_USER: "test"
-          POSTGRES_PASSWORD: "test"
-        run: uv run pytest -m integration tests/db/test_postgres_cli_e2e.py -v
-
-  bigquery-integration:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Start BigQuery emulator
-        run: |
-          docker run -d --name bigquery-emulator \
-            -p 9050:9050 \
-            ghcr.io/goccy/bigquery-emulator:latest \
-            --project=test-project --dataset=test_dataset
-
-          # Wait for emulator to be ready
-          sleep 5
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --extra bigquery --extra dev
-
-      - name: Run BigQuery integration tests
-        env:
-          BIGQUERY_TEST: "1"
-          BIGQUERY_EMULATOR_HOST: "localhost:9050"
-          BIGQUERY_PROJECT: "test-project"
-          BIGQUERY_DATASET: "test_dataset"
-        run: uv run pytest -m integration tests/db/test_bigquery_integration.py -v
-
-  snowflake-integration:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --extra snowflake --extra dev
-
-      - name: Run Snowflake integration tests
-        env:
-          SNOWFLAKE_TEST: "1"
-        run: uv run pytest -m integration tests/db/test_snowflake_integration.py -v
-
-  clickhouse-integration:
-    runs-on: ubuntu-latest
-
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:latest
-        env:
-          CLICKHOUSE_DB: default
-          CLICKHOUSE_USER: default
-          CLICKHOUSE_PASSWORD: clickhouse
-          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-        ports:
-          - 8123:8123
-        options: >-
-          --health-cmd "wget --spider -q localhost:8123/ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --extra clickhouse --extra dev
-
-      - name: Run ClickHouse integration tests
-        env:
-          CLICKHOUSE_TEST: "1"
-          CLICKHOUSE_HOST: "localhost"
-          CLICKHOUSE_PORT: "8123"
-          CLICKHOUSE_PASSWORD: "clickhouse"
-        run: uv run pytest -m integration tests/db/test_clickhouse_integration.py -v
-
-  adbc-integration:
-    name: ADBC integration (${{ matrix.db }})
+  engine-local:
+    name: Engine local (${{ matrix.engine }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        db: [sqlite, duckdb, postgres, bigquery, snowflake, clickhouse]
-
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: sidemantic_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      clickhouse:
-        image: clickhouse/clickhouse-server:latest
-        env:
-          CLICKHOUSE_DB: default
-          CLICKHOUSE_USER: default
-          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-        ports:
-          - 8123:8123
-        options: >-
-          --health-cmd "wget --spider -q localhost:8123/ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        include:
+          - engine: postgres
+            extra: postgres
+            integration_test: tests/db/test_postgres_integration.py
+            cli_test: tests/db/test_postgres_cli_e2e.py
+          - engine: bigquery
+            extra: bigquery
+            integration_test: tests/db/test_bigquery_integration.py
+            cli_test: tests/db/test_bigquery_cli_e2e.py
+          - engine: snowflake
+            extra: snowflake
+            integration_test: tests/db/test_snowflake_integration.py
+            cli_test: tests/db/test_snowflake_cli_e2e.py
+          - engine: clickhouse
+            extra: clickhouse
+            integration_test: tests/db/test_clickhouse_integration.py
+            cli_test: tests/db/test_clickhouse_cli_e2e.py
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start BigQuery emulator
-        if: matrix.db == 'bigquery'
+      - name: Start Postgres
+        if: matrix.engine == 'postgres'
         run: |
-          docker run -d --name bigquery-emulator \
+          docker run -d --name sidemantic-postgres \
+            -e POSTGRES_USER=test \
+            -e POSTGRES_PASSWORD=test \
+            -e POSTGRES_DB=sidemantic_test \
+            -p 5432:5432 \
+            postgres:16-alpine
+          for i in $(seq 1 30); do
+            if docker exec sidemantic-postgres pg_isready -U test -d sidemantic_test; then
+              exit 0
+            fi
+            echo "Waiting for Postgres... ($i/30)"
+            sleep 2
+          done
+          docker logs sidemantic-postgres
+          exit 1
+
+      - name: Start BigQuery emulator
+        if: matrix.engine == 'bigquery'
+        run: |
+          docker run -d --name sidemantic-bigquery \
             -p 9050:9050 \
             ghcr.io/goccy/bigquery-emulator:latest \
             --project=test-project --dataset=test_dataset
           sleep 5
+
+      - name: Start ClickHouse
+        if: matrix.engine == 'clickhouse'
+        run: |
+          docker run -d --name sidemantic-clickhouse \
+            -e CLICKHOUSE_DB=default \
+            -e CLICKHOUSE_USER=default \
+            -e CLICKHOUSE_PASSWORD=clickhouse \
+            -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+            -p 8123:8123 \
+            clickhouse/clickhouse-server:latest
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8123/ping; then
+              exit 0
+            fi
+            echo "Waiting for ClickHouse... ($i/30)"
+            sleep 2
+          done
+          docker logs sidemantic-clickhouse
+          exit 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra "${{ matrix.extra }}"
+
+      - name: Configure engine environment
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          case "$ENGINE" in
+            postgres)
+              echo "POSTGRES_TEST=1" >> "$GITHUB_ENV"
+              echo "POSTGRES_URL=postgres://test:test@localhost:5432/sidemantic_test" >> "$GITHUB_ENV"
+              echo "POSTGRES_HOST=localhost" >> "$GITHUB_ENV"
+              echo "POSTGRES_PORT=5432" >> "$GITHUB_ENV"
+              echo "POSTGRES_DB=sidemantic_test" >> "$GITHUB_ENV"
+              echo "POSTGRES_USER=test" >> "$GITHUB_ENV"
+              echo "POSTGRES_PASSWORD=test" >> "$GITHUB_ENV"
+              ;;
+            bigquery)
+              echo "BIGQUERY_TEST=1" >> "$GITHUB_ENV"
+              echo "BIGQUERY_EMULATOR_HOST=localhost:9050" >> "$GITHUB_ENV"
+              echo "BIGQUERY_PROJECT=test-project" >> "$GITHUB_ENV"
+              echo "BIGQUERY_DATASET=test_dataset" >> "$GITHUB_ENV"
+              ;;
+            snowflake)
+              echo "SNOWFLAKE_TEST=1" >> "$GITHUB_ENV"
+              ;;
+            clickhouse)
+              echo "CLICKHOUSE_TEST=1" >> "$GITHUB_ENV"
+              echo "CLICKHOUSE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "CLICKHOUSE_PORT=8123" >> "$GITHUB_ENV"
+              echo "CLICKHOUSE_PASSWORD=clickhouse" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unknown engine: $ENGINE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Run Python engine integration tests
+        env:
+          INTEGRATION_TEST: ${{ matrix.integration_test }}
+        run: uv run pytest -m integration "$INTEGRATION_TEST" -v
+
+      - name: Run Python engine CLI e2e tests
+        env:
+          CLI_TEST: ${{ matrix.cli_test }}
+        run: uv run pytest -m integration "$CLI_TEST" -v
+
+      - name: Stop engine containers
+        if: always()
+        run: |
+          docker rm -f sidemantic-postgres sidemantic-bigquery sidemantic-clickhouse || true
+
+  adbc-drivers:
+    name: ADBC drivers (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - db: sqlite
+            driver: sqlite
+            required: true
+            python_smoke: false
+          - db: duckdb
+            driver: duckdb
+            required: true
+            python_smoke: false
+          - db: postgres
+            driver: postgresql
+            required: true
+            python_smoke: true
+          - db: clickhouse
+            driver: clickhouse
+            required: true
+            python_smoke: true
+          - db: bigquery
+            driver: bigquery
+            required: false
+            python_smoke: true
+          - db: snowflake
+            driver: snowflake
+            required: false
+            python_smoke: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Postgres
+        if: matrix.db == 'postgres'
+        run: |
+          docker run -d --name sidemantic-postgres \
+            -e POSTGRES_USER=test \
+            -e POSTGRES_PASSWORD=test \
+            -e POSTGRES_DB=sidemantic_test \
+            -p 5432:5432 \
+            postgres:16-alpine
+          for i in $(seq 1 30); do
+            if docker exec sidemantic-postgres pg_isready -U test -d sidemantic_test; then
+              exit 0
+            fi
+            echo "Waiting for Postgres... ($i/30)"
+            sleep 2
+          done
+          docker logs sidemantic-postgres
+          exit 1
+
+      - name: Start BigQuery emulator
+        if: matrix.db == 'bigquery'
+        run: |
+          docker run -d --name sidemantic-bigquery \
+            -p 9050:9050 \
+            ghcr.io/goccy/bigquery-emulator:latest \
+            --project=test-project --dataset=test_dataset
+          sleep 5
+
+      - name: Start ClickHouse
+        if: matrix.db == 'clickhouse'
+        run: |
+          docker run -d --name sidemantic-clickhouse \
+            -e CLICKHOUSE_DB=default \
+            -e CLICKHOUSE_USER=default \
+            -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+            -p 8123:8123 \
+            clickhouse/clickhouse-server:latest
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8123/ping; then
+              exit 0
+            fi
+            echo "Waiting for ClickHouse... ($i/30)"
+            sleep 2
+          done
+          docker logs sidemantic-clickhouse
+          exit 1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -218,101 +237,98 @@ jobs:
         run: uv sync --extra dev --extra adbc
 
       - name: Install ADBC driver through dbc
+        env:
+          DB: ${{ matrix.db }}
+          DRIVER: ${{ matrix.driver }}
         run: |
-          DB="${{ matrix.db }}"
-          DRIVER="$DB"
-          if [ "$DB" = "postgres" ]; then
-            DRIVER="postgresql"
-          fi
           if [ "$DB" = "clickhouse" ]; then
-            uv run --with dbc dbc install --pre clickhouse
+            uv run --with dbc dbc install --pre "$DRIVER"
             exit 0
           fi
           uv run --with dbc dbc install "$DRIVER"
 
-      - name: Run Python ADBC smoke tests
-        if: matrix.db != 'sqlite' && matrix.db != 'duckdb'
+      - name: Configure Python ADBC environment
         env:
-          ADBC_TEST: "1"
-          ADBC_DB: ${{ matrix.db }}
-          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
-          BIGQUERY_EMULATOR_HOST: "localhost:9050"
-          BIGQUERY_PROJECT: "test-project"
-          BIGQUERY_DATASET: "test_dataset"
-          CLICKHOUSE_HOST: "localhost"
-          CLICKHOUSE_PORT: "8123"
-          SNOWFLAKE_TEST: "1"
+          DB: ${{ matrix.db }}
+        run: |
+          echo "ADBC_TEST=1" >> "$GITHUB_ENV"
+          echo "ADBC_DB=$DB" >> "$GITHUB_ENV"
+          echo "POSTGRES_URL=postgres://test:test@localhost:5432/sidemantic_test" >> "$GITHUB_ENV"
+          echo "BIGQUERY_EMULATOR_HOST=localhost:9050" >> "$GITHUB_ENV"
+          echo "BIGQUERY_PROJECT=test-project" >> "$GITHUB_ENV"
+          echo "BIGQUERY_DATASET=test_dataset" >> "$GITHUB_ENV"
+          echo "CLICKHOUSE_HOST=localhost" >> "$GITHUB_ENV"
+          echo "CLICKHOUSE_PORT=8123" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_TEST=1" >> "$GITHUB_ENV"
+
+      - name: Run Python ADBC smoke tests
+        if: matrix.python_smoke == true
         run: uv run pytest -m integration tests/db/test_adbc_ci_smoke.py -v
 
-      - name: Install Rust for Rust ADBC probe
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Export SQLite ADBC driver for Rust
-        if: matrix.db == 'sqlite'
-        run: |
-          echo "SIDEMANTIC_TEST_ADBC_SQLITE_DRIVER=sqlite" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_SQLITE_URI=:memory:" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=sqlite" >> "$GITHUB_ENV"
-
-      - name: Export DuckDB ADBC driver for Rust
-        if: matrix.db == 'duckdb'
-        run: |
-          echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=duckdb" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=duckdb" >> "$GITHUB_ENV"
-
-      - name: Export Postgres ADBC driver for Rust
-        if: matrix.db == 'postgres'
-        run: |
-          echo "SIDEMANTIC_TEST_ADBC_POSTGRES_DRIVER=postgresql" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_POSTGRES_URI=postgresql://test:test@localhost:5432/sidemantic_test" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=postgres" >> "$GITHUB_ENV"
-
-      - name: Export BigQuery ADBC driver for Rust
-        if: matrix.db == 'bigquery'
+      - name: Configure Rust ADBC environment
         env:
+          DB: ${{ matrix.db }}
           BIGQUERY_ADBC_CREDENTIALS_JSON: ${{ secrets.BIGQUERY_ADBC_CREDENTIALS_JSON }}
           BIGQUERY_ADBC_PROJECT: ${{ vars.BIGQUERY_ADBC_PROJECT }}
           BIGQUERY_ADBC_DATASET: ${{ vars.BIGQUERY_ADBC_DATASET }}
-        run: |
-          if [ -z "$BIGQUERY_ADBC_CREDENTIALS_JSON" ] || [ -z "$BIGQUERY_ADBC_PROJECT" ] || [ -z "$BIGQUERY_ADBC_DATASET" ]; then
-            echo "Skipping Rust BigQuery ADBC probe; BIGQUERY_ADBC_CREDENTIALS_JSON secret plus BIGQUERY_ADBC_PROJECT/BIGQUERY_ADBC_DATASET vars are required."
-            exit 0
-          fi
-          uvx dbc install bigquery
-          CREDENTIALS_FILE="$(mktemp)"
-          printf '%s' "$BIGQUERY_ADBC_CREDENTIALS_JSON" > "$CREDENTIALS_FILE"
-          echo "::add-mask::$BIGQUERY_ADBC_CREDENTIALS_JSON"
-          echo "SIDEMANTIC_TEST_ADBC_BIGQUERY_DRIVER=bigquery" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_BIGQUERY_DBOPTS=adbc.bigquery.sql.project_id=$BIGQUERY_ADBC_PROJECT,adbc.bigquery.sql.dataset_id=$BIGQUERY_ADBC_DATASET,adbc.bigquery.sql.auth_type=adbc.bigquery.sql.auth_type.json_credential_file,adbc.bigquery.sql.auth_credentials=$CREDENTIALS_FILE" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=bigquery" >> "$GITHUB_ENV"
-
-      - name: Export Snowflake ADBC driver for Rust
-        if: matrix.db == 'snowflake'
-        env:
           SNOWFLAKE_ADBC_URI: ${{ secrets.SNOWFLAKE_ADBC_URI }}
         run: |
-          if [ -z "$SNOWFLAKE_ADBC_URI" ]; then
-            echo "Skipping Rust Snowflake ADBC probe; SNOWFLAKE_ADBC_URI secret is required."
-            exit 0
-          fi
-          uvx dbc install snowflake
-          echo "::add-mask::$SNOWFLAKE_ADBC_URI"
-          echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_DRIVER=snowflake" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_URI=$SNOWFLAKE_ADBC_URI" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=snowflake" >> "$GITHUB_ENV"
-
-      - name: Export ClickHouse ADBC driver for Rust
-        if: matrix.db == 'clickhouse'
-        run: |
-          echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_DRIVER=clickhouse" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_URI=http://localhost:8123/" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=clickhouse" >> "$GITHUB_ENV"
+          case "$DB" in
+            sqlite)
+              echo "SIDEMANTIC_TEST_ADBC_SQLITE_DRIVER=sqlite" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_SQLITE_URI=:memory:" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_REQUIRE=sqlite" >> "$GITHUB_ENV"
+              ;;
+            duckdb)
+              echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=duckdb" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_REQUIRE=duckdb" >> "$GITHUB_ENV"
+              ;;
+            postgres)
+              echo "SIDEMANTIC_TEST_ADBC_POSTGRES_DRIVER=postgresql" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_POSTGRES_URI=postgresql://test:test@localhost:5432/sidemantic_test" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_REQUIRE=postgres" >> "$GITHUB_ENV"
+              ;;
+            clickhouse)
+              echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_DRIVER=clickhouse" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_URI=http://localhost:8123/" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_REQUIRE=clickhouse" >> "$GITHUB_ENV"
+              ;;
+            bigquery)
+              if [ -z "$BIGQUERY_ADBC_CREDENTIALS_JSON" ] || [ -z "$BIGQUERY_ADBC_PROJECT" ] || [ -z "$BIGQUERY_ADBC_DATASET" ]; then
+                echo "Skipping Rust BigQuery ADBC probe; BIGQUERY_ADBC_CREDENTIALS_JSON secret plus BIGQUERY_ADBC_PROJECT/BIGQUERY_ADBC_DATASET vars are required."
+                exit 0
+              fi
+              credentials_file="$(mktemp)"
+              printf '%s' "$BIGQUERY_ADBC_CREDENTIALS_JSON" > "$credentials_file"
+              echo "::add-mask::$BIGQUERY_ADBC_CREDENTIALS_JSON"
+              echo "SIDEMANTIC_TEST_ADBC_BIGQUERY_DRIVER=bigquery" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_BIGQUERY_DBOPTS=adbc.bigquery.sql.project_id=$BIGQUERY_ADBC_PROJECT,adbc.bigquery.sql.dataset_id=$BIGQUERY_ADBC_DATASET,adbc.bigquery.sql.auth_type=adbc.bigquery.sql.auth_type.json_credential_file,adbc.bigquery.sql.auth_credentials=$credentials_file" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_REQUIRE=bigquery" >> "$GITHUB_ENV"
+              ;;
+            snowflake)
+              if [ -z "$SNOWFLAKE_ADBC_URI" ]; then
+                echo "Skipping Rust Snowflake ADBC probe; SNOWFLAKE_ADBC_URI secret is required."
+                exit 0
+              fi
+              echo "::add-mask::$SNOWFLAKE_ADBC_URI"
+              echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_DRIVER=snowflake" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_URI=$SNOWFLAKE_ADBC_URI" >> "$GITHUB_ENV"
+              echo "SIDEMANTIC_TEST_ADBC_REQUIRE=snowflake" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unknown ADBC database: $DB" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Run Rust ADBC semantic smoke
         env:
           SIDEMANTIC_ADBC_TESTS: "1"
           SIDEMANTIC_ADBC_DB: ${{ matrix.db }}
-          SIDEMANTIC_ADBC_REQUIRED: ${{ contains(fromJSON('["sqlite","duckdb","postgres","clickhouse"]'), matrix.db) }}
+          SIDEMANTIC_ADBC_REQUIRED: ${{ matrix.required }}
           POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
           BIGQUERY_EMULATOR_HOST: "localhost:9050"
           BIGQUERY_PROJECT: "test-project"
@@ -324,3 +340,8 @@ jobs:
 
       - name: Run Rust ADBC probe
         run: cargo test --manifest-path sidemantic-rs/Cargo.toml --features adbc-exec --test adbc_driver_matrix
+
+      - name: Stop engine containers
+        if: always()
+        run: |
+          docker rm -f sidemantic-postgres sidemantic-bigquery sidemantic-clickhouse || true

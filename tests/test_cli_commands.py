@@ -1,5 +1,6 @@
 """Tests for CLI command wiring."""
 
+import json
 import os
 from pathlib import Path
 
@@ -85,6 +86,27 @@ def test_query_dry_run_emits_sql(tmp_path):
     assert result.exit_code == 0
     assert "select" in result.stdout.lower()
     assert "count" in result.stdout.lower()
+
+
+def test_explain_sql_outputs_planner_json(tmp_path):
+    _write_min_model(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "explain-sql",
+            "SELECT * FROM (SELECT order_count, status FROM orders) sq WHERE status = 'completed'",
+            "--models",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["chosen_plan"] == "direct_semantic"
+    assert payload["pushed_filters"] == ["orders.status = 'completed'"]
+    assert "safe_filter_pushdown" in payload["applied_rules"]
+    assert "rewritten_sql" in payload
 
 
 def test_query_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):

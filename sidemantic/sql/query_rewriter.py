@@ -14,6 +14,7 @@ from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.generator import SQLGenerator
+from sidemantic.sql.planner import CandidatePlan, RewriteExplanation, SemanticQueryPlan
 
 
 @dataclass
@@ -24,18 +25,45 @@ class _YardstickAggregateCall:
     include_visible_default: bool
 
 
+@dataclass
+class _WrappedSemanticSource:
+    inner_select: exp.Select
+    source_name: str
+    source_kind: str
+
+
+@dataclass
+class _ProjectionAnalysis:
+    metrics: list[str]
+    dimensions: list[str]
+    aliases: dict[str, str]
+    visible_name_to_ref: dict[str, str]
+    projected_refs: set[str]
+    applied_rules: list[str]
+
+
+@dataclass
+class _WrappedOptimization:
+    plan: SemanticQueryPlan
+    pushed_filters: list[str]
+    applied_rules: list[str]
+    rejected_rules: dict[str, str]
+
+
 class QueryRewriter:
     """Rewrites user SQL queries to use the semantic layer."""
 
-    def __init__(self, graph: SemanticGraph, dialect: str = "duckdb"):
+    def __init__(self, graph: SemanticGraph, dialect: str = "duckdb", use_preaggregations: bool = False):
         """Initialize query rewriter.
 
         Args:
             graph: Semantic graph with models and metrics
             dialect: SQL dialect for parsing/generation
+            use_preaggregations: Enable single-model pre-aggregation routing
         """
         self.graph = graph
         self.dialect = dialect
+        self.use_preaggregations = use_preaggregations
         self.generator = SQLGenerator(graph, dialect=dialect)
         self._use_rust_rewriter = os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1"
         self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
@@ -184,6 +212,903 @@ class QueryRewriter:
             if column.table in aliases:
                 column.set("table", exp.to_identifier(aliases[column.table]))
         return rewritten
+
+    def explain(self, sql: str, strict: bool = True) -> RewriteExplanation:
+        """Explain how a SQL query would be rewritten by the semantic layer.
+
+        The explanation follows the same routing as rewrite() but returns
+        structured planner state and candidate decisions instead of only SQL.
+        """
+        sql = sql.strip()
+
+        if self._looks_like_yardstick_query(sql):
+            try:
+                rewritten_sql = self._rewrite_yardstick_query(sql, strict=strict)
+            except Exception as e:
+                if strict:
+                    raise
+                return self._passthrough_explanation(
+                    sql,
+                    reason="yardstick_rewrite_failed",
+                    warning=f"Yardstick rewrite failed: {e}",
+                )
+
+            return RewriteExplanation(
+                input_sql=sql,
+                rewritten_sql=rewritten_sql,
+                chosen_plan="yardstick_semantic_sql",
+                source_kind="yardstick",
+                candidate_plans=[
+                    CandidatePlan(
+                        name="yardstick_semantic_sql",
+                        valid=True,
+                        reason="query uses Yardstick semantic SQL syntax",
+                    ),
+                    CandidatePlan(
+                        name="direct_semantic",
+                        valid=False,
+                        reason="primary semantic SQL planner does not handle Yardstick syntax",
+                    ),
+                ],
+                warnings=["Yardstick semantic SQL uses a separate rewrite path."],
+            )
+
+        if ";" in sql:
+            try:
+                statements = sqlglot.parse(sql, dialect=self.dialect)
+            except Exception as e:
+                if strict:
+                    raise
+                return self._passthrough_explanation(
+                    sql,
+                    reason="parse_failed",
+                    warning=f"SQL parse failed: {e}",
+                )
+            if len(statements) > 1:
+                if strict:
+                    raise ValueError("Multiple statements are not supported")
+                return self._passthrough_explanation(sql, reason="multiple_statements")
+
+        try:
+            parsed = sqlglot.parse_one(sql, dialect=self.dialect)
+        except Exception as e:
+            if strict:
+                raise ValueError(f"Failed to parse SQL: {e}")
+            return self._passthrough_explanation(
+                sql,
+                reason="parse_failed",
+                warning=f"SQL parse failed: {e}",
+            )
+
+        if not isinstance(parsed, exp.Select):
+            if strict:
+                raise ValueError("Only SELECT queries are supported")
+            return self._passthrough_explanation(sql, reason="not_select")
+
+        if self._contains_implicit_yardstick_measure_query(parsed):
+            try:
+                rewritten_sql = self._rewrite_yardstick_query(sql, strict=strict, allow_plain_measures=True)
+            except Exception as e:
+                if strict:
+                    raise
+                return self._passthrough_explanation(
+                    sql,
+                    reason="yardstick_rewrite_failed",
+                    warning=f"Yardstick rewrite failed: {e}",
+                )
+            return RewriteExplanation(
+                input_sql=sql,
+                rewritten_sql=rewritten_sql,
+                chosen_plan="yardstick_semantic_sql",
+                source_kind="yardstick",
+                candidate_plans=[
+                    CandidatePlan(
+                        name="yardstick_semantic_sql",
+                        valid=True,
+                        reason="query uses implicit Yardstick measure syntax",
+                    )
+                ],
+                warnings=["Yardstick semantic SQL uses a separate rewrite path."],
+            )
+
+        if parsed.args.get("from") is None and parsed.args.get("with") is None:
+            if any(isinstance(expr, exp.Star) for expr in parsed.expressions):
+                if strict:
+                    raise ValueError("SELECT * requires a FROM clause with a single table")
+                return self._passthrough_explanation(sql, reason="select_star_without_from")
+            return self._passthrough_explanation(sql, reason="projection_only")
+
+        references_semantic_model = self._select_tree_references_semantic_model(parsed)
+        if not references_semantic_model:
+            return self._passthrough_explanation(sql, reason="no_semantic_model_reference")
+
+        self._raise_on_user_cte_name_collision(parsed)
+
+        if self._use_rust_rewriter:
+            rust_sql = self._prepare_sql_for_rust(parsed, sql)
+            rust_rewritten = self._rewrite_with_rust(rust_sql, strict=strict)
+            if rust_rewritten is not None:
+                return RewriteExplanation(
+                    input_sql=sql,
+                    rewritten_sql=rust_rewritten,
+                    chosen_plan="rust_semantic_rewriter",
+                    source_kind="rust",
+                    candidate_plans=[
+                        CandidatePlan(
+                            name="rust_semantic_rewriter",
+                            valid=True,
+                            reason="SIDEMANTIC_RS_REWRITER is enabled",
+                        )
+                    ],
+                    warnings=["Rust rewriter handled this query before the Python planner."],
+                )
+
+        has_ctes = parsed.args.get("with") is not None
+        has_subquery_in_from = self._has_subquery_in_from(parsed)
+        has_subquery_in_joins = any(isinstance(join.this, exp.Subquery) for join in (parsed.args.get("joins") or []))
+
+        if has_ctes or has_subquery_in_from or has_subquery_in_joins:
+            return self._explain_ctes_or_subqueries(sql, parsed)
+
+        plan = self._plan_simple_query(parsed)
+        rewritten_sql = self._generate_from_plan(plan)
+        return self._explanation_from_plan(sql, plan, rewritten_sql)
+
+    def _passthrough_explanation(self, sql: str, reason: str, warning: str | None = None) -> RewriteExplanation:
+        warnings = [warning] if warning else []
+        return RewriteExplanation(
+            input_sql=sql,
+            rewritten_sql=sql,
+            chosen_plan="passthrough_plain_sql",
+            source_kind="plain_sql",
+            candidate_plans=[
+                CandidatePlan(
+                    name="passthrough_plain_sql",
+                    valid=True,
+                    reason=reason,
+                ),
+                CandidatePlan(
+                    name="direct_semantic",
+                    valid=False,
+                    reason="query does not reference a semantic model",
+                ),
+            ],
+            warnings=warnings,
+        )
+
+    def _explain_ctes_or_subqueries(self, sql: str, parsed: exp.Select) -> RewriteExplanation:
+        optimization, rejected_rules = self._optimize_wrapped_semantic_query(parsed)
+        if optimization is not None:
+            explanation = self._explanation_from_plan(
+                sql, optimization.plan, self._generate_from_plan(optimization.plan)
+            )
+            explanation.pushed_filters = optimization.pushed_filters
+            explanation.applied_rules = optimization.applied_rules
+            explanation.rejected_rules = optimization.rejected_rules
+            return explanation
+
+        semantic_scopes, warnings = self._collect_semantic_scopes(parsed)
+        root_references_semantic_model = self._references_semantic_model(parsed)
+
+        rewritten_sql = self._rewrite_with_ctes_or_subqueries(parsed.copy())
+
+        if root_references_semantic_model and len(semantic_scopes) == 1:
+            chosen_plan = semantic_scopes[0].candidate_kind
+            source_kind = semantic_scopes[0].source_kind
+        else:
+            chosen_plan = "semantic_plus_postprocess"
+            source_kind = "subquery"
+
+        candidate_plans = self._candidate_plans_for_scopes(semantic_scopes, chosen_plan)
+        return RewriteExplanation(
+            input_sql=sql,
+            rewritten_sql=rewritten_sql,
+            chosen_plan=chosen_plan,
+            source_kind=source_kind,
+            metrics=self._dedupe([metric for scope in semantic_scopes for metric in scope.metrics]),
+            dimensions=self._dedupe([dimension for scope in semantic_scopes for dimension in scope.dimensions]),
+            filters=self._dedupe([filter_expr for scope in semantic_scopes for filter_expr in scope.filters]),
+            candidate_plans=candidate_plans,
+            semantic_scopes=semantic_scopes,
+            post_process=parsed.sql(dialect=self.dialect) if not root_references_semantic_model else None,
+            rejected_rules=rejected_rules,
+            warnings=warnings,
+        )
+
+    def _optimize_wrapped_semantic_query(
+        self, parsed: exp.Select
+    ) -> tuple[_WrappedOptimization | None, dict[str, str]]:
+        rejected_rules: dict[str, str] = {}
+        source = self._wrapped_semantic_source(parsed, rejected_rules)
+        if source is None:
+            return None, rejected_rules
+
+        if self._wrapper_has_blocking_features(parsed, rejected_rules):
+            return None, rejected_rules
+
+        try:
+            plan = self._plan_simple_query(source.inner_select.copy())
+        except Exception as e:
+            rejected_rules["wrapped_semantic_optimizer"] = f"inner semantic query cannot be planned: {e}"
+            return None, rejected_rules
+
+        output_name_to_ref = self._plan_output_name_to_ref(plan)
+        projection = self._analyze_wrapper_projection(parsed, source, plan, output_name_to_ref, rejected_rules)
+        if projection is None:
+            return None, rejected_rules
+
+        plan.metrics = projection.metrics
+        plan.dimensions = projection.dimensions
+        plan.aliases = projection.aliases
+
+        applied_rules = ["wrapper_flattening", *projection.applied_rules]
+        pushed_filters: list[str] = []
+
+        filters = self._translated_outer_filters(parsed, source, plan, output_name_to_ref, rejected_rules)
+        if filters is None:
+            return None, rejected_rules
+        if filters:
+            plan.filters = [*plan.filters, *filters]
+            pushed_filters = filters
+            applied_rules.append("safe_filter_pushdown")
+
+        order_by = self._translated_outer_order_by(
+            parsed,
+            source,
+            projection.visible_name_to_ref,
+            output_name_to_ref,
+            projection.projected_refs,
+            rejected_rules,
+        )
+        if order_by is None:
+            return None, rejected_rules
+        if order_by:
+            plan.order_by = order_by
+            applied_rules.append("safe_order_pushdown")
+
+        if not self._apply_outer_limit_offset(parsed, plan, rejected_rules):
+            return None, rejected_rules
+        if parsed.args.get("limit") is not None or parsed.args.get("offset") is not None:
+            applied_rules.append("safe_limit_pushdown")
+
+        plan.eligibility = self._plan_eligibility(plan)
+        plan.candidate_kind = self._chosen_candidate_kind(plan)
+        plan.candidate_plans = self._candidate_plans_for_plan(plan)
+        if plan.candidate_kind == "single_model_preaggregation":
+            applied_rules.append("preaggregation_route_selection")
+        if plan.candidate_kind == "fanout_preaggregation":
+            applied_rules.append("fanout_strategy_selection")
+        plan.applied_rules = self._dedupe(applied_rules)
+        plan.rejected_rules = rejected_rules
+
+        return (
+            _WrappedOptimization(
+                plan=plan,
+                pushed_filters=pushed_filters,
+                applied_rules=plan.applied_rules,
+                rejected_rules=rejected_rules,
+            ),
+            rejected_rules,
+        )
+
+    def _wrapped_semantic_source(
+        self, select: exp.Select, rejected_rules: dict[str, str]
+    ) -> _WrappedSemanticSource | None:
+        from_clause = select.args.get("from")
+        if not from_clause:
+            rejected_rules["wrapped_semantic_optimizer"] = "outer query has no FROM clause"
+            return None
+
+        with_clause = select.args.get("with")
+        table_expr = from_clause.this
+
+        if isinstance(table_expr, exp.Subquery):
+            if with_clause:
+                rejected_rules["cte_wrapper"] = "outer WITH plus subquery wrapper is not flattened"
+                return None
+            inner_select = table_expr.this
+            if not isinstance(inner_select, exp.Select):
+                rejected_rules["wrapped_semantic_optimizer"] = "subquery is not a SELECT"
+                return None
+            if not self._references_semantic_model(inner_select):
+                rejected_rules["wrapped_semantic_optimizer"] = "subquery does not directly reference a semantic model"
+                return None
+            return _WrappedSemanticSource(
+                inner_select=inner_select,
+                source_name=table_expr.alias_or_name or "",
+                source_kind="subquery",
+            )
+
+        if isinstance(table_expr, exp.Table) and with_clause:
+            ctes = list(with_clause.expressions)
+            if len(ctes) != 1:
+                rejected_rules["cte_wrapper"] = "only single-CTE semantic wrappers can be flattened"
+                return None
+            cte = ctes[0]
+            if table_expr.name != cte.alias:
+                rejected_rules["cte_wrapper"] = "outer query does not read directly from the semantic CTE"
+                return None
+            inner_select = cte.this
+            if not isinstance(inner_select, exp.Select):
+                rejected_rules["cte_wrapper"] = "semantic CTE is not a SELECT"
+                return None
+            if not self._references_semantic_model(inner_select):
+                rejected_rules["cte_wrapper"] = "CTE does not directly reference a semantic model"
+                return None
+            return _WrappedSemanticSource(
+                inner_select=inner_select,
+                source_name=table_expr.name,
+                source_kind="cte",
+            )
+
+        rejected_rules["wrapped_semantic_optimizer"] = "outer query is not a single semantic subquery or CTE wrapper"
+        return None
+
+    def _wrapper_has_blocking_features(self, select: exp.Select, rejected_rules: dict[str, str]) -> bool:
+        if select.args.get("joins"):
+            rejected_rules["wrapper_flattening"] = "outer query joins to another relation"
+            return True
+
+        if select.args.get("distinct"):
+            rejected_rules["wrapper_flattening"] = "outer query uses DISTINCT"
+            return True
+
+        if select.args.get("group") or select.args.get("having"):
+            rejected_rules["wrapper_flattening"] = "outer query changes aggregation"
+            return True
+
+        if select.args.get("qualify"):
+            rejected_rules["wrapper_flattening"] = "outer query uses QUALIFY"
+            return True
+
+        outer_sql = select.sql(dialect=self.dialect)
+        if sql_has_aggregate(outer_sql):
+            rejected_rules["wrapper_flattening"] = "outer query contains aggregate expressions"
+            return True
+
+        if any(select.find_all(exp.Window)):
+            rejected_rules["wrapper_flattening"] = "outer query contains window functions"
+            return True
+
+        return False
+
+    def _plan_output_name_to_ref(self, plan: SemanticQueryPlan) -> dict[str, str]:
+        refs = [*plan.dimensions, *plan.metrics]
+        field_names: dict[str, list[str]] = {}
+        for ref in refs:
+            if "." in ref:
+                model_name, field_name = ref.split(".", 1)
+                field_names.setdefault(field_name, []).append(model_name)
+            else:
+                field_names.setdefault(ref, []).append("")
+
+        output_name_to_ref: dict[str, str] = {}
+        for ref in refs:
+            if ref in plan.aliases:
+                output_name = plan.aliases[ref]
+            elif "." in ref:
+                model_name, field_name = ref.split(".", 1)
+                output_name = f"{model_name}_{field_name}" if len(field_names.get(field_name, [])) > 1 else field_name
+            else:
+                output_name = ref
+            output_name_to_ref[output_name] = ref
+        return output_name_to_ref
+
+    def _analyze_wrapper_projection(
+        self,
+        select: exp.Select,
+        source: _WrappedSemanticSource,
+        plan: SemanticQueryPlan,
+        output_name_to_ref: dict[str, str],
+        rejected_rules: dict[str, str],
+    ) -> _ProjectionAnalysis | None:
+        if not select.expressions:
+            rejected_rules["wrapper_flattening"] = "outer query has no projections"
+            return None
+
+        if len(select.expressions) == 1 and isinstance(select.expressions[0], exp.Star):
+            visible_name_to_ref = dict(output_name_to_ref)
+            return _ProjectionAnalysis(
+                metrics=list(plan.metrics),
+                dimensions=list(plan.dimensions),
+                aliases=dict(plan.aliases),
+                visible_name_to_ref=visible_name_to_ref,
+                projected_refs=set(visible_name_to_ref.values()),
+                applied_rules=["trivial_wrapper_flattening"],
+            )
+
+        selected_refs: list[str] = []
+        aliases = dict(plan.aliases)
+        visible_name_to_ref: dict[str, str] = {}
+        applied_rules = ["wrapper_projection_flattening"]
+
+        for projection in select.expressions:
+            alias = projection.alias if isinstance(projection, exp.Alias) else None
+            expression = projection.this if isinstance(projection, exp.Alias) else projection
+            if not isinstance(expression, exp.Column):
+                rejected_rules["wrapper_flattening"] = "outer projection computes a new expression"
+                return None
+            if expression.table and expression.table != source.source_name:
+                rejected_rules["wrapper_flattening"] = "outer projection references another relation"
+                return None
+            column_name = expression.name
+            ref = output_name_to_ref.get(column_name)
+            if ref is None:
+                rejected_rules["wrapper_flattening"] = (
+                    f"outer projection '{column_name}' is not an inner semantic field"
+                )
+                return None
+            if ref in selected_refs:
+                rejected_rules["wrapper_flattening"] = "outer projection selects the same semantic field more than once"
+                return None
+
+            selected_refs.append(ref)
+            output_name = alias or column_name
+            if alias:
+                aliases[ref] = alias
+            visible_name_to_ref[output_name] = ref
+
+        selected = set(selected_refs)
+        selected_dimensions = [dimension for dimension in plan.dimensions if dimension in selected]
+        if set(selected_dimensions) != set(plan.dimensions):
+            rejected_rules["wrapper_flattening"] = (
+                "outer projection drops dimensions and would change semantic grouping"
+            )
+            return None
+
+        return _ProjectionAnalysis(
+            metrics=[metric for metric in plan.metrics if metric in selected],
+            dimensions=selected_dimensions,
+            aliases={ref: alias for ref, alias in aliases.items() if ref in selected},
+            visible_name_to_ref=visible_name_to_ref,
+            projected_refs=selected,
+            applied_rules=applied_rules,
+        )
+
+    def _translated_outer_filters(
+        self,
+        select: exp.Select,
+        source: _WrappedSemanticSource,
+        plan: SemanticQueryPlan,
+        output_name_to_ref: dict[str, str],
+        rejected_rules: dict[str, str],
+    ) -> list[str] | None:
+        where_clause = select.args.get("where")
+        if not where_clause:
+            return []
+
+        if plan.limit is not None or plan.offset is not None or source.inner_select.args.get("distinct"):
+            rejected_rules["safe_filter_pushdown"] = "inner semantic query limits row membership"
+            return None
+
+        dimension_refs = set(plan.dimensions)
+        try:
+            translated = self._translate_wrapper_expression(
+                where_clause.this,
+                output_name_to_ref,
+                source.source_name,
+                allowed_refs=dimension_refs,
+                rule_name="safe_filter_pushdown",
+            )
+        except ValueError as e:
+            rejected_rules["safe_filter_pushdown"] = str(e)
+            return None
+
+        return self._filters_from_expression(translated)
+
+    def _translated_outer_order_by(
+        self,
+        select: exp.Select,
+        source: _WrappedSemanticSource,
+        visible_name_to_ref: dict[str, str],
+        output_name_to_ref: dict[str, str],
+        projected_refs: set[str],
+        rejected_rules: dict[str, str],
+    ) -> list[str] | None:
+        order_clause = select.args.get("order")
+        if not order_clause:
+            return []
+
+        if select.args.get("limit") is not None and self._extract_limit(source.inner_select) is not None:
+            rejected_rules["safe_order_pushdown"] = "inner semantic query already has LIMIT"
+            return None
+
+        order_by: list[str] = []
+        for order_expr in order_clause.expressions:
+            expression = order_expr.this if isinstance(order_expr, exp.Ordered) else order_expr
+            if not isinstance(expression, exp.Column):
+                rejected_rules["safe_order_pushdown"] = "outer ORDER BY computes a new expression"
+                return None
+            if expression.table and expression.table != source.source_name:
+                rejected_rules["safe_order_pushdown"] = "outer ORDER BY references another relation"
+                return None
+
+            column_name = expression.name
+            ref = visible_name_to_ref.get(column_name) or output_name_to_ref.get(column_name)
+            if ref is None:
+                rejected_rules["safe_order_pushdown"] = f"outer ORDER BY '{column_name}' is not a semantic field"
+                return None
+            if ref not in projected_refs:
+                rejected_rules["safe_order_pushdown"] = "outer ORDER BY references a non-projected field"
+                return None
+
+            order_name = next(
+                (name for name, visible_ref in visible_name_to_ref.items() if visible_ref == ref), column_name
+            )
+            if isinstance(order_expr, exp.Ordered) and order_expr.args.get("desc", False):
+                order_name = f"{order_name} DESC"
+            elif isinstance(order_expr, exp.Ordered):
+                order_name = f"{order_name} ASC"
+            order_by.append(order_name)
+
+        return order_by
+
+    def _apply_outer_limit_offset(
+        self,
+        select: exp.Select,
+        plan: SemanticQueryPlan,
+        rejected_rules: dict[str, str],
+    ) -> bool:
+        outer_limit = self._extract_limit(select)
+        outer_offset = self._extract_offset(select)
+
+        if outer_limit is not None and plan.limit is not None:
+            rejected_rules["safe_limit_pushdown"] = "inner semantic query already has LIMIT"
+            return False
+        if outer_offset is not None and plan.offset is not None:
+            rejected_rules["safe_limit_pushdown"] = "inner semantic query already has OFFSET"
+            return False
+
+        if outer_limit is not None:
+            plan.limit = outer_limit
+        if outer_offset is not None:
+            plan.offset = outer_offset
+        return True
+
+    def _translate_wrapper_expression(
+        self,
+        expression: exp.Expression,
+        name_to_ref: dict[str, str],
+        source_name: str,
+        allowed_refs: set[str],
+        rule_name: str,
+    ) -> exp.Expression:
+        if any(expression.find_all(exp.Select)):
+            raise ValueError("outer expression contains a subquery")
+        if any(expression.find_all(exp.Window)):
+            raise ValueError("outer expression contains a window function")
+        if sql_has_aggregate(expression.sql(dialect=self.dialect)):
+            raise ValueError("outer expression contains an aggregate")
+
+        def replace_column(node):
+            if not isinstance(node, exp.Column):
+                return node
+            if node.table and node.table != source_name:
+                raise ValueError(f"{rule_name} references another relation")
+            ref = name_to_ref.get(node.name)
+            if ref is None:
+                raise ValueError(f"{rule_name} references unknown field '{node.name}'")
+            if ref not in allowed_refs:
+                raise ValueError(f"{rule_name} cannot move metric or computed field '{node.name}'")
+            return self._column_expression_for_ref(ref)
+
+        return expression.copy().transform(replace_column)
+
+    def _column_expression_for_ref(self, ref: str) -> exp.Expression:
+        if "." not in ref:
+            return exp.column(ref)
+        table, name = ref.split(".", 1)
+        return exp.column(name, table=table)
+
+    def _filters_from_expression(self, expression: exp.Expression) -> list[str]:
+        if isinstance(expression, (exp.And, exp.Or)):
+            return self._extract_compound_filters(expression)
+        return [expression.sql(dialect=self.dialect)]
+
+    def _collect_semantic_scopes(self, select: exp.Select) -> tuple[list[SemanticQueryPlan], list[str]]:
+        scopes: list[SemanticQueryPlan] = []
+        warnings: list[str] = []
+        had_inferred_table = hasattr(self, "inferred_table")
+        previous_inferred_table = getattr(self, "inferred_table", None)
+
+        try:
+            for nested_select in select.find_all(exp.Select):
+                if not self._references_semantic_model(nested_select):
+                    continue
+                try:
+                    scopes.append(self._plan_simple_query(nested_select.copy()))
+                except Exception as e:
+                    warnings.append(f"Could not plan semantic scope {nested_select.sql(dialect=self.dialect)}: {e}")
+        finally:
+            if had_inferred_table:
+                self.inferred_table = previous_inferred_table
+            elif hasattr(self, "inferred_table"):
+                del self.inferred_table
+
+        return scopes, warnings
+
+    def _candidate_plans_for_scopes(self, scopes: list[SemanticQueryPlan], chosen_plan: str) -> list[CandidatePlan]:
+        if not scopes:
+            return [
+                CandidatePlan(
+                    name="semantic_plus_postprocess",
+                    valid=False,
+                    reason="no semantic scopes found",
+                )
+            ]
+
+        candidates_by_name: dict[str, CandidatePlan] = {}
+        for scope in scopes:
+            for candidate in scope.candidate_plans:
+                existing = candidates_by_name.get(candidate.name)
+                if existing is None or (candidate.valid and not existing.valid):
+                    candidates_by_name[candidate.name] = candidate
+
+        candidates_by_name["semantic_plus_postprocess"] = CandidatePlan(
+            name="semantic_plus_postprocess",
+            valid=chosen_plan == "semantic_plus_postprocess",
+            reason=(
+                "outer SQL performs post-processing around semantic scopes"
+                if chosen_plan == "semantic_plus_postprocess"
+                else "root semantic query can be planned directly"
+            ),
+        )
+        candidates_by_name.setdefault(
+            "passthrough_plain_sql",
+            CandidatePlan(
+                name="passthrough_plain_sql",
+                valid=False,
+                reason="query contains semantic scopes",
+            ),
+        )
+
+        return list(candidates_by_name.values())
+
+    def _explanation_from_plan(
+        self,
+        sql: str,
+        plan: SemanticQueryPlan,
+        rewritten_sql: str | None,
+    ) -> RewriteExplanation:
+        return RewriteExplanation(
+            input_sql=sql,
+            rewritten_sql=rewritten_sql,
+            chosen_plan=plan.candidate_kind,
+            source_kind=plan.source_kind,
+            metrics=plan.metrics,
+            dimensions=plan.dimensions,
+            filters=plan.filters,
+            order_by=plan.order_by,
+            limit=plan.limit,
+            offset=plan.offset,
+            aliases=plan.aliases,
+            candidate_plans=plan.candidate_plans,
+            semantic_scopes=[plan],
+            preaggregation=plan.eligibility.get("single_model_preaggregation", {}),
+            fanout=plan.eligibility.get("fanout_preaggregation", {}),
+            applied_rules=plan.applied_rules,
+            rejected_rules=plan.rejected_rules,
+        )
+
+    def _plan_simple_query(self, parsed: exp.Select) -> SemanticQueryPlan:
+        """Build a behavior-preserving semantic query plan for a simple SELECT."""
+        explicit_join_filters = []
+        if parsed.args.get("joins"):
+            explicit_join_filters = self._validate_explicit_semantic_joins(parsed)
+
+        self.inferred_table = self._extract_from_table(parsed)
+        self.table_aliases = self._source_aliases(parsed)
+
+        if self._needs_expression_postprocess(parsed):
+            raise ValueError("Semantic expression queries cannot be represented as a simple rewrite plan")
+
+        metrics, dimensions, aliases = self._extract_metrics_and_dimensions(parsed)
+        filters = [*self._extract_filters(parsed), *explicit_join_filters]
+        order_by = self._extract_order_by(parsed)
+        limit = self._extract_limit(parsed)
+        offset = self._extract_offset(parsed)
+
+        if not metrics and not dimensions:
+            raise ValueError("Query must select at least one metric or dimension")
+
+        plan = SemanticQueryPlan(
+            source_sql=parsed.sql(dialect=self.dialect),
+            source_kind=self._source_kind_for_table(self.inferred_table),
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            aliases=aliases,
+        )
+        plan.eligibility = self._plan_eligibility(plan)
+        plan.candidate_kind = self._chosen_candidate_kind(plan)
+        plan.candidate_plans = self._candidate_plans_for_plan(plan)
+        return plan
+
+    def _source_kind_for_table(self, table_name: str | None) -> str:
+        if table_name == "metrics":
+            return "metrics"
+        if table_name in self.graph.models:
+            return "model"
+        if table_name:
+            return "table"
+        return "unknown"
+
+    def _plan_eligibility(self, plan: SemanticQueryPlan) -> dict[str, dict[str, object]]:
+        window_metrics = [metric for metric in plan.metrics if self._metric_needs_window_function(metric)]
+        fanout_needed = self.generator._needs_preaggregation_for_fanout(plan.metrics, plan.dimensions)
+        return {
+            "window_metric": {
+                "eligible": bool(window_metrics),
+                "metrics": window_metrics,
+                "reason": "window_metric_required" if window_metrics else "no_window_metrics",
+            },
+            "fanout_preaggregation": {
+                "eligible": fanout_needed,
+                "reason": "fanout_protection_required" if fanout_needed else "fanout_protection_not_needed",
+            },
+            "single_model_preaggregation": self._single_model_preaggregation_eligibility(plan),
+        }
+
+    def _candidate_plans_for_plan(self, plan: SemanticQueryPlan) -> list[CandidatePlan]:
+        window_details = plan.eligibility["window_metric"]
+        fanout_details = plan.eligibility["fanout_preaggregation"]
+        preagg_details = plan.eligibility["single_model_preaggregation"]
+
+        return [
+            CandidatePlan(
+                name="direct_semantic",
+                valid=True,
+                reason="simple SELECT references semantic model fields",
+            ),
+            CandidatePlan(
+                name="semantic_plus_postprocess",
+                valid=False,
+                reason="no outer SQL post-processing required",
+            ),
+            CandidatePlan(
+                name="single_model_preaggregation",
+                valid=bool(preagg_details["eligible"]),
+                reason=str(preagg_details["reason"]),
+                details=preagg_details,
+            ),
+            CandidatePlan(
+                name="fanout_preaggregation",
+                valid=bool(fanout_details["eligible"]),
+                reason=str(fanout_details["reason"]),
+                details=fanout_details,
+            ),
+            CandidatePlan(
+                name="window_metric",
+                valid=bool(window_details["eligible"]),
+                reason=str(window_details["reason"]),
+                details=window_details,
+            ),
+            CandidatePlan(
+                name="passthrough_plain_sql",
+                valid=False,
+                reason="query references semantic model fields",
+            ),
+        ]
+
+    def _chosen_candidate_kind(self, plan: SemanticQueryPlan) -> str:
+        if plan.eligibility["window_metric"]["eligible"]:
+            return "window_metric"
+        if plan.eligibility["fanout_preaggregation"]["eligible"]:
+            return "fanout_preaggregation"
+        if self.use_preaggregations and plan.eligibility["single_model_preaggregation"]["eligible"]:
+            return "single_model_preaggregation"
+        return "direct_semantic"
+
+    def _single_model_preaggregation_eligibility(self, plan: SemanticQueryPlan) -> dict[str, object]:
+        try:
+            model_names = self.generator._find_required_models(plan.metrics, plan.dimensions, plan.filters)
+        except Exception as e:
+            return {
+                "eligible": False,
+                "reason": "model_resolution_failed",
+                "error": str(e),
+            }
+
+        if len(model_names) != 1:
+            return {
+                "eligible": False,
+                "reason": "not_single_model_query",
+                "models": model_names,
+            }
+
+        model_name = model_names[0]
+        model = self.graph.get_model(model_name)
+        if not model.pre_aggregations:
+            return {
+                "eligible": False,
+                "reason": "model_has_no_preaggregations",
+                "model": model_name,
+            }
+
+        try:
+            parsed_dims = self.generator._parse_dimension_refs(plan.dimensions)
+            preagg_sql = self.generator._try_use_preaggregation(
+                model_name=model_name,
+                metrics=plan.metrics,
+                parsed_dims=parsed_dims,
+                filters=plan.filters,
+                order_by=plan.order_by,
+                limit=plan.limit,
+                offset=plan.offset,
+            )
+        except Exception as e:
+            return {
+                "eligible": False,
+                "reason": "preaggregation_check_failed",
+                "model": model_name,
+                "error": str(e),
+            }
+
+        return {
+            "eligible": preagg_sql is not None,
+            "reason": "matching_preaggregation" if preagg_sql else "no_matching_preaggregation",
+            "model": model_name,
+            "enabled": self.use_preaggregations,
+            "requires_enablement": True,
+        }
+
+    def _metric_needs_window_function(self, metric_ref: str) -> bool:
+        metric = None
+        if "." in metric_ref:
+            model_name, metric_name = metric_ref.split(".", 1)
+            try:
+                model = self.graph.get_model(model_name)
+                metric = model.get_metric(metric_name) if model else None
+            except KeyError:
+                pass
+            if not metric:
+                try:
+                    metric = self.graph.get_metric(metric_ref)
+                except KeyError:
+                    pass
+        else:
+            try:
+                metric = self.graph.get_metric(metric_ref)
+            except KeyError:
+                pass
+            if not metric:
+                for model in self.graph.models.values():
+                    found = model.get_metric(metric_ref)
+                    if found:
+                        metric = found
+                        break
+
+        if not metric:
+            return False
+
+        if metric.type in ("cumulative", "time_comparison", "conversion", "retention", "cohort"):
+            return True
+        return metric.type == "ratio" and bool(metric.offset_window)
+
+    def _generate_from_plan(self, plan: SemanticQueryPlan) -> str:
+        return self.generator.generate(
+            metrics=plan.metrics,
+            dimensions=plan.dimensions,
+            filters=plan.filters,
+            order_by=plan.order_by,
+            limit=plan.limit,
+            offset=plan.offset,
+            use_preaggregations=self.use_preaggregations,
+            aliases=plan.aliases,
+        )
+
+    def _dedupe(self, values: list[str]) -> list[str]:
+        deduped = []
+        seen = set()
+        for value in values:
+            if value in seen:
+                continue
+            deduped.append(value)
+            seen.add(value)
+        return deduped
 
     def _looks_like_yardstick_query(self, sql: str) -> bool:
         """Return True if query appears to use Yardstick query syntax."""
@@ -1912,6 +2837,10 @@ class QueryRewriter:
         Outer queries are left as plain SQL, so post-processing
         (CASE, window functions, arithmetic, etc.) works naturally.
         """
+        optimization, _rejected_rules = self._optimize_wrapped_semantic_query(parsed)
+        if optimization is not None:
+            return self._generate_from_plan(optimization.plan)
+
         self._rewrite_select_tree(parsed)
 
         # If the root SELECT itself references a semantic model, it must
@@ -2130,34 +3059,14 @@ class QueryRewriter:
         if parsed.args.get("joins"):
             explicit_join_filters = self._validate_explicit_semantic_joins(parsed)
 
-        # Extract FROM table for inference
         self.inferred_table = self._extract_from_table(parsed)
         self.table_aliases = self._source_aliases(parsed)
 
         if self._needs_expression_postprocess(parsed):
             return self._rewrite_expression_query(parsed, extra_filters=explicit_join_filters)
 
-        # Extract components
-        metrics, dimensions, aliases = self._extract_metrics_and_dimensions(parsed)
-        filters = [*self._extract_filters(parsed), *explicit_join_filters]
-        order_by = self._extract_order_by(parsed)
-        limit = self._extract_limit(parsed)
-        offset = self._extract_offset(parsed)
-
-        # Validate we have something to select
-        if not metrics and not dimensions:
-            raise ValueError("Query must select at least one metric or dimension")
-
-        # Generate semantic layer SQL
-        return self.generator.generate(
-            metrics=metrics,
-            dimensions=dimensions,
-            filters=filters,
-            order_by=order_by,
-            limit=limit,
-            offset=offset,
-            aliases=aliases,
-        )
+        plan = self._plan_simple_query(parsed)
+        return self._generate_from_plan(plan)
 
     def _validate_explicit_semantic_joins(self, select: exp.Select) -> list[str]:
         """Allow explicit joins only when they point at modeled semantic relationships."""

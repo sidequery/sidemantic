@@ -233,12 +233,12 @@ impl SidemanticMcpServer {
         #[cfg(not(feature = "mcp-adbc"))]
         {
             let _ = (sql, original_sql);
-            return Err(McpError::invalid_params(
+            Err(McpError::invalid_params(
                 format!(
                     "ADBC execution support is not enabled. Rebuild with feature 'mcp-adbc' to use {tool_name}."
                 ),
                 None,
-            ));
+            ))
         }
 
         #[cfg(feature = "mcp-adbc")]
@@ -280,7 +280,7 @@ impl SidemanticMcpServer {
     }
 }
 
-#[tool_router]
+#[tool_router(router = tool_router)]
 impl SidemanticMcpServer {
     #[tool(
         name = "list_models",
@@ -376,11 +376,11 @@ impl SidemanticMcpServer {
         #[cfg(not(feature = "mcp-adbc"))]
         {
             let _ = sql;
-            return Err(McpError::invalid_params(
+            Err(McpError::invalid_params(
                 "ADBC execution support is not enabled. Rebuild with feature 'mcp-adbc' to use run_query."
                     .to_string(),
                 None,
-            ));
+            ))
         }
 
         #[cfg(feature = "mcp-adbc")]
@@ -446,11 +446,11 @@ impl SidemanticMcpServer {
                 request.height,
             );
             let _ = sql;
-            return Err(McpError::invalid_params(
+            Err(McpError::invalid_params(
                 "ADBC execution support is not enabled. Rebuild with feature 'mcp-adbc' to use create_chart."
                     .to_string(),
                 None,
-            ));
+            ))
         }
 
         #[cfg(feature = "mcp-adbc")]
@@ -496,20 +496,18 @@ impl SidemanticMcpServer {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for SidemanticMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
-                "Rust-native Sidemantic MCP server. Tools: list_models, get_models, get_semantic_graph, validate_query, compile_query, run_query, run_sql, create_chart. Resource: semantic://catalog."
-                    .to_string(),
-            ),
-            capabilities: ServerCapabilities::builder()
+        ServerInfo::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .build(),
-            ..Default::default()
-        }
+        )
+        .with_instructions(
+            "Rust-native Sidemantic MCP server. Tools: list_models, get_models, get_semantic_graph, validate_query, compile_query, run_query, run_sql, create_chart. Resource: semantic://catalog.",
+        )
     }
 
     fn list_resources(
@@ -550,13 +548,12 @@ impl ServerHandler for SidemanticMcpServer {
                         None,
                     )
                 })
-                .map(|catalog| ReadResourceResult {
-                    contents: vec![ResourceContents::TextResourceContents {
-                        uri: CATALOG_RESOURCE_URI.to_string(),
-                        mime_type: Some("application/json".to_string()),
-                        text: catalog,
-                        meta: None,
-                    }],
+                .map(|catalog| {
+                    ReadResourceResult::new(vec![ResourceContents::text(
+                        catalog,
+                        CATALOG_RESOURCE_URI,
+                    )
+                    .with_mime_type("application/json")])
                 })
         } else {
             Err(McpError::resource_not_found(

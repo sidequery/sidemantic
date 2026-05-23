@@ -4520,6 +4520,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         parsed_dims = self._parse_dimension_refs(dimensions)
         local_preagg_dimensions: list[str] = []
+        local_time_granularity: str | None = None
         remote_model_name: str | None = None
         join_path = None
         remote_dimensions: list[tuple[str, str | None]] = []
@@ -4531,6 +4532,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             dim_model_name, dim_name = dim_ref.split(".", 1)
             if dim_model_name == metric_model_name:
                 local_preagg_dimensions.append(dim_name)
+                dimension = metric_model.get_dimension(dim_name)
+                if granularity and dimension and dimension.type == "time":
+                    if local_time_granularity and local_time_granularity != granularity:
+                        return None, "multiple_local_time_granularities_not_supported"
+                    local_time_granularity = granularity
                 continue
 
             try:
@@ -4560,6 +4566,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         preagg = matcher.find_matching_preagg(
             metrics=metric_names,
             dimensions=preaggregation_dimensions,
+            time_granularity=local_time_granularity,
             filters=[],
         )
         if not preagg:
@@ -4629,7 +4636,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             register_output_name(output_name, full_ref, dim_ref, dim_name, default_name, output_name)
 
             if dim_model_name == metric_model_name:
-                column_expr = f"{rollup_alias}.{self._quote_identifier(dim_name)}"
+                column_name = dim_name
+                if granularity and preagg.time_dimension == dim_name and preagg.granularity:
+                    column_name = f"{dim_name}_{preagg.granularity}"
+                column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
             else:
                 dimension = remote_model.get_dimension(dim_name)
                 dimension_sql = dimension.sql if dimension and dimension.sql else dim_name

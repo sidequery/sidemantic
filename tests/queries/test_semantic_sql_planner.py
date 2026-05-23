@@ -2373,6 +2373,42 @@ def test_fanout_join_key_preaggregation_rolls_orders_to_customer_region(semantic
     assert "FROM orders\n" not in explanation.rewritten_sql
 
 
+def test_join_key_preaggregation_reads_local_time_dimension_from_grain_column(semantic_layer):
+    orders = semantic_layer.get_model("orders")
+    orders.pre_aggregations = [
+        PreAggregation(
+            name="by_customer_day",
+            measures=["revenue"],
+            dimensions=["customer_id"],
+            time_dimension="order_date",
+            granularity="day",
+        )
+    ]
+    semantic_layer.use_preaggregations = True
+    semantic_layer.conn.execute("""
+        CREATE TABLE orders_preagg_by_customer_day AS
+        SELECT
+            DATE_TRUNC('day', order_date) AS order_date_day,
+            customer_id,
+            SUM(amount) AS revenue_raw
+        FROM orders
+        GROUP BY 1, 2
+    """)
+    sql = """
+        SELECT orders.revenue, orders.order_date__month, customers.region
+        FROM orders
+        ORDER BY orders.order_date__month, customers.region
+    """
+    baseline_sql = _compiled_semantic_sql(semantic_layer, sql, use_preaggregations=False)
+
+    explanation = _assert_query_matches_baseline(semantic_layer, sql, baseline_sql, ordered=True)
+
+    assert explanation.chosen_plan == "join_key_preaggregation"
+    assert "orders_preagg_by_customer_day" in explanation.rewritten_sql
+    assert "DATE_TRUNC('MONTH', orders_rollup.order_date_day)" in explanation.rewritten_sql
+    assert "orders_rollup.order_date)" not in explanation.rewritten_sql
+
+
 def test_fanout_join_key_preaggregation_rejects_missing_join_key_rollup(semantic_layer):
     orders = semantic_layer.get_model("orders")
     orders.pre_aggregations = [

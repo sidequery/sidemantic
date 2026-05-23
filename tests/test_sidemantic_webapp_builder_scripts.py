@@ -331,6 +331,17 @@ def test_column_chart_components_support_negative_values() -> None:
     assert '.sdm-column-chart rect[data-tone="negative"]' in static_css
 
 
+def test_metric_sparklines_visually_distinguish_selected_state() -> None:
+    root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
+    static_css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
+
+    assert '.sdm-metric-card[data-selected="true"] .sdm-sparkline-wrap' in static_css
+    assert '.sdm-metric-card[data-selected="true"] .sdm-sparkline__area' in static_css
+    assert '.sdm-metric-card[data-selected="true"] .sdm-sparkline__line' in static_css
+    assert "stroke: #64748b;" in static_css
+    assert "stroke: var(--sdm-accent);" in static_css
+
+
 def test_leaderboard_components_support_negative_values() -> None:
     root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
     static_source = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")

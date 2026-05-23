@@ -199,9 +199,9 @@ textarea {
   margin-top: 0;
   overflow: hidden;
   border: 0;
-  border-top: 1px solid rgba(79, 70, 229, 0.16);
+  border-top: 1px solid var(--sdm-border-soft);
   border-radius: 0;
-  background: #f4f6ff;
+  background: #f8fafc;
 }
 
 .dimensions-grid {

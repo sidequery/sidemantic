@@ -273,8 +273,8 @@ button.sdm-leaderboard-row {
 .sdm-sparkline-wrap {
   margin-top: 0;
   overflow: hidden;
-  border-top: 1px solid rgba(79, 70, 229, 0.16);
-  background: #f4f6ff;
+  border-top: 1px solid var(--sdm-border-soft);
+  background: #f8fafc;
 }
 
 .sdm-sparkline {
@@ -286,16 +286,30 @@ button.sdm-leaderboard-row {
 }
 
 .sdm-sparkline__area {
-  fill: rgba(107, 124, 255, 0.18);
+  fill: rgba(100, 116, 139, 0.12);
 }
 
 .sdm-sparkline__line {
   fill: none;
-  stroke: var(--sdm-accent);
+  stroke: #64748b;
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
+}
+
+.sdm-metric-card[data-selected="true"] .sdm-sparkline-wrap {
+  border-top-color: rgba(79, 70, 229, 0.22);
+  background: #eef2ff;
+}
+
+.sdm-metric-card[data-selected="true"] .sdm-sparkline__area {
+  fill: rgba(107, 124, 255, 0.24);
+}
+
+.sdm-metric-card[data-selected="true"] .sdm-sparkline__line {
+  stroke: var(--sdm-accent);
+  stroke-width: 2.2;
 }
 
 .sdm-column-chart {

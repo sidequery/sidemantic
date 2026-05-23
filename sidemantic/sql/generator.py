@@ -49,6 +49,19 @@ class SQLGenerator:
             )
         raise ValueError(f"Model '{model.name}' must define table or sql for query compilation")
 
+    def _model_source_as(self, model, alias: str) -> str:
+        quoted_alias = self._quote_identifier(alias)
+        if model.sql:
+            return f"({model.sql}) AS {quoted_alias}"
+        if model.table:
+            return f"{model.table} AS {quoted_alias}"
+        if model.source_uri:
+            raise ValueError(
+                f"Model '{model.name}' uses source_uri '{model.source_uri}', but Python SQL generation does not "
+                "load source_uri data. Define table or sql for query compilation."
+            )
+        raise ValueError(f"Model '{model.name}' must define table or sql for query compilation")
+
     @staticmethod
     def _freeze_cache_value(value):
         if isinstance(value, dict):
@@ -4533,10 +4546,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if dim_model_name == metric_model_name:
                 local_preagg_dimensions.append(dim_name)
                 dimension = metric_model.get_dimension(dim_name)
-                if granularity and dimension and dimension.type == "time":
-                    if local_time_granularity and local_time_granularity != granularity:
+                if dimension and dimension.type == "time":
+                    effective_granularity = granularity or dimension.granularity
+                    if local_time_granularity and local_time_granularity != effective_granularity:
                         return None, "multiple_local_time_granularities_not_supported"
-                    local_time_granularity = granularity
+                    local_time_granularity = effective_granularity
                 continue
 
             try:
@@ -4637,7 +4651,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             if dim_model_name == metric_model_name:
                 column_name = dim_name
-                if granularity and preagg.time_dimension == dim_name and preagg.granularity:
+                if preagg.time_dimension == dim_name and preagg.granularity:
                     column_name = f"{dim_name}_{preagg.granularity}"
                 column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
             else:
@@ -4689,10 +4703,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             limit_clause += f"\nOFFSET {offset}"
 
         select_exprs_str = ",\n  ".join(select_exprs)
+        remote_source = self._model_source_as(remote_model, remote_alias)
         return f"""SELECT
   {select_exprs_str}
-FROM {preagg_table} AS {rollup_alias}
-LEFT JOIN {remote_model.table} AS {remote_alias}
+FROM {remote_source}
+LEFT JOIN {preagg_table} AS {rollup_alias}
   ON {" AND ".join(join_conditions)}{group_by_clause}{order_by_clause}{limit_clause}"""
 
     def _qualify_model_expression(self, expression_sql: str, model_name: str, alias: str) -> str:

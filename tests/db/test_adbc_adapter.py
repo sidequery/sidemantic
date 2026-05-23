@@ -467,6 +467,26 @@ def test_adbc_result_fetch_helpers_close_cursor():
     assert cursor3.closed is True
 
 
+def test_adbc_adapter_execute_appends_newline_after_trailing_comment():
+    from sidemantic.db.adbc import ADBCAdapter
+
+    captured = {}
+
+    class FakeCursor:
+        description = [("x",)]
+
+        def execute(self, sql):
+            captured["sql"] = sql
+
+    adapter = ADBCAdapter.__new__(ADBCAdapter)
+    adapter.conn = SimpleNamespace(cursor=FakeCursor)
+
+    adapter.execute("SELECT 1\n-- sidemantic: models=orders")
+
+    assert captured["sql"].endswith("\n")
+    assert captured["sql"].splitlines()[-1] == "-- sidemantic: models=orders"
+
+
 def test_adbc_adapter_get_tables_uses_native_metadata():
     from sidemantic.db.adbc import ADBCAdapter
 

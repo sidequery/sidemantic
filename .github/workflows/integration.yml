@@ -164,7 +164,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        db: [postgres, bigquery, snowflake, clickhouse]
+        db: [sqlite, duckdb, postgres, bigquery, snowflake, clickhouse]
 
     services:
       postgres:
@@ -217,20 +217,26 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra adbc
 
-      - name: Install ADBC driver (best effort)
+      - name: Install ADBC driver through dbc
         run: |
+          DRIVER_DIR="$HOME/.config/adbc/drivers"
+          echo "ADBC_DRIVER_PATH=$DRIVER_DIR" >> "$GITHUB_ENV"
+
           DB="${{ matrix.db }}"
+          DRIVER="$DB"
+          if [ "$DB" = "postgres" ]; then
+            DRIVER="postgresql"
+          fi
           if [ "$DB" = "clickhouse" ]; then
-            uvx dbc install --pre clickhouse
+            uv run --with dbc dbc install --level user --pre clickhouse
+            uv run --with dbc dbc list --level user
             exit 0
           fi
-          PKG_DB="$DB"
-          if [ "$DB" = "postgres" ]; then
-            PKG_DB="postgresql"
-          fi
-          uv pip install "adbc_driver_${PKG_DB}" || uv pip install "adbc-driver-${PKG_DB}" || true
+          uv run --with dbc dbc install --level user "$DRIVER"
+          uv run --with dbc dbc list --level user
 
-      - name: Run ADBC smoke tests
+      - name: Run Python ADBC smoke tests
+        if: matrix.db != 'sqlite' && matrix.db != 'duckdb'
         env:
           ADBC_TEST: "1"
           ADBC_DB: ${{ matrix.db }}
@@ -246,15 +252,23 @@ jobs:
       - name: Install Rust for Rust ADBC probe
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Export SQLite ADBC driver for Rust
+        if: matrix.db == 'sqlite'
+        run: |
+          echo "SIDEMANTIC_TEST_ADBC_SQLITE_DRIVER=sqlite" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_SQLITE_URI=:memory:" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=sqlite" >> "$GITHUB_ENV"
+
+      - name: Export DuckDB ADBC driver for Rust
+        if: matrix.db == 'duckdb'
+        run: |
+          echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=duckdb" >> "$GITHUB_ENV"
+          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=duckdb" >> "$GITHUB_ENV"
+
       - name: Export Postgres ADBC driver for Rust
         if: matrix.db == 'postgres'
         run: |
-          uv pip install adbc-driver-postgresql
-          uv run python - <<'PY' >> "$GITHUB_ENV"
-          import adbc_driver_postgresql
-
-          print(f"SIDEMANTIC_TEST_ADBC_POSTGRES_DRIVER={adbc_driver_postgresql._driver_path()}")
-          PY
+          echo "SIDEMANTIC_TEST_ADBC_POSTGRES_DRIVER=postgresql" >> "$GITHUB_ENV"
           echo "SIDEMANTIC_TEST_ADBC_POSTGRES_URI=postgresql://test:test@localhost:5432/sidemantic_test" >> "$GITHUB_ENV"
           echo "SIDEMANTIC_TEST_ADBC_REQUIRE=postgres" >> "$GITHUB_ENV"
 
@@ -269,7 +283,6 @@ jobs:
             echo "Skipping Rust BigQuery ADBC probe; BIGQUERY_ADBC_CREDENTIALS_JSON secret plus BIGQUERY_ADBC_PROJECT/BIGQUERY_ADBC_DATASET vars are required."
             exit 0
           fi
-          uvx dbc install bigquery
           CREDENTIALS_FILE="$(mktemp)"
           printf '%s' "$BIGQUERY_ADBC_CREDENTIALS_JSON" > "$CREDENTIALS_FILE"
           echo "::add-mask::$BIGQUERY_ADBC_CREDENTIALS_JSON"
@@ -286,7 +299,6 @@ jobs:
             echo "Skipping Rust Snowflake ADBC probe; SNOWFLAKE_ADBC_URI secret is required."
             exit 0
           fi
-          uvx dbc install snowflake
           echo "::add-mask::$SNOWFLAKE_ADBC_URI"
           echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_DRIVER=snowflake" >> "$GITHUB_ENV"
           echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_URI=$SNOWFLAKE_ADBC_URI" >> "$GITHUB_ENV"
@@ -298,6 +310,20 @@ jobs:
           echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_DRIVER=clickhouse" >> "$GITHUB_ENV"
           echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_URI=http://localhost:8123/" >> "$GITHUB_ENV"
           echo "SIDEMANTIC_TEST_ADBC_REQUIRE=clickhouse" >> "$GITHUB_ENV"
+
+      - name: Run Rust ADBC semantic smoke
+        env:
+          SIDEMANTIC_ADBC_TESTS: "1"
+          SIDEMANTIC_ADBC_DB: ${{ matrix.db }}
+          SIDEMANTIC_ADBC_REQUIRED: ${{ contains(fromJSON('["sqlite","duckdb","postgres","clickhouse"]'), matrix.db) }}
+          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
+          BIGQUERY_EMULATOR_HOST: "localhost:9050"
+          BIGQUERY_PROJECT: "test-project"
+          BIGQUERY_DATASET: "test_dataset"
+          CLICKHOUSE_URL: "adbc://clickhouse?uri=http://localhost:8123/"
+          SNOWFLAKE_TEST: "1"
+          RUST_MIN_STACK: 16777216
+        run: cargo test --manifest-path sidemantic-rs/Cargo.toml --features adbc-exec --test adbc_engines -- --nocapture
 
       - name: Run Rust ADBC probe
         run: cargo test --manifest-path sidemantic-rs/Cargo.toml --features adbc-exec --test adbc_driver_matrix

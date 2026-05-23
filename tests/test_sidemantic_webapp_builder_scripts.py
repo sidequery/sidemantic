@@ -189,7 +189,12 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
     assert "onSelect: setFilter" in app_js
     assert "metricTotalsForFilters" in app_js
     assert "renderMetricCards(totalsEl, filteredTotals" in app_js
-    assert "renderFilterPills(filterPillsEl, state.filters, removeFilter)" in app_js
+    assert "toggleFilterValue" in app_js
+    assert "selectedValues: selectedLeaderboardValues" in app_js
+    assert "removeFilterValue" in app_js
+    assert "filterZeroMetricRows" in app_js
+    assert 'renderFilterPills(filterPillsEl, state.filters, removeFilter, { emptyLabel: "No filters" })' in app_js
+    assert "renderHighlightedQueryDebug" in app_js
     assert "connection" not in public_spec
     assert "connection" not in public_spec["app_candidates"][1]
 
@@ -326,6 +331,61 @@ def test_column_chart_components_support_negative_values() -> None:
     assert '.sdm-column-chart rect[data-tone="negative"]' in static_css
 
 
+def test_metric_sparklines_visually_distinguish_selected_state() -> None:
+    root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
+    static_css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
+
+    assert '.sdm-metric-card[data-selected="true"] .sdm-sparkline-wrap' in static_css
+    assert '.sdm-metric-card[data-selected="true"] .sdm-sparkline__area' in static_css
+    assert '.sdm-metric-card[data-selected="true"] .sdm-sparkline__line' in static_css
+    assert "stroke: #64748b;" in static_css
+    assert "stroke: var(--sdm-accent);" in static_css
+
+
+def test_static_component_aliases_preserve_time_grain_suffixes() -> None:
+    root = Path(__file__).resolve().parents[1]
+    component_paths = [
+        root / "skills" / "sidemantic-webapp-builder" / "assets" / "components" / "static" / "sidemantic-components.js",
+        root / "examples" / "sidemantic_wasm_demo" / "src" / "components" / "sidemantic" / "sidemantic-components.js",
+        root / "examples" / "sidemantic_wasm_demo" / "src" / "queries.js",
+    ]
+
+    for path in component_paths:
+        source = path.read_text(encoding="utf-8")
+
+        assert '.replace("__", "_")' not in source
+        assert '.replaceAll("__", "_")' not in source
+        assert 'String(ref || "").split(".").at(-1);' in source
+
+
+def test_static_filter_helpers_normalize_nullish_values() -> None:
+    root = Path(__file__).resolve().parents[1]
+    component_paths = [
+        root / "skills" / "sidemantic-webapp-builder" / "assets" / "components" / "static" / "sidemantic-components.js",
+        root / "examples" / "sidemantic_wasm_demo" / "src" / "components" / "sidemantic" / "sidemantic-components.js",
+    ]
+
+    for path in component_paths:
+        source = path.read_text(encoding="utf-8")
+
+        assert "export function normalizeFilterValue(value)" in source
+        assert 'return String(value ?? "");' in source
+        assert "const stringValue = normalizeFilterValue(value);" in source
+        assert ".map(normalizeFilterValue)" in source
+        assert "const dimensionValue = normalizeFilterValue(row[dimensionKey]);" in source
+        assert "selectedValues.has(dimensionValue)" in source
+        assert "const stringValue = String(value);" not in source
+
+    static_app = (
+        root / "skills" / "sidemantic-webapp-builder" / "assets" / "templates" / "static-dashboard" / "app.js"
+    ).read_text(encoding="utf-8")
+    assert "normalizeFilterValue," in static_app
+    assert "new Set((values || []).map(normalizeFilterValue))" in static_app
+    assert "accepted.has(normalizeFilterValue(row[key]))" in static_app
+    assert "new Set(filterValues.map(normalizeFilterValue))" in static_app
+    assert "accepted.has(normalizeFilterValue(row[dimensionKey]))" in static_app
+
+
 def test_leaderboard_components_support_negative_values() -> None:
     root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
     static_source = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
@@ -340,3 +400,4 @@ def test_leaderboard_components_support_negative_values() -> None:
     assert '.sdm-leaderboard-row[data-tone="negative"]::before' in static_css
     assert 'const tone = metricValue < 0 ? "negative" : "positive";' in react_source
     assert "data-tone={tone}" in react_source
+    assert "selectedValues?: string[]" in react_source

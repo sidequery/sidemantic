@@ -1,9 +1,13 @@
 import {
+  filterZeroMetricRows,
+  normalizeFilterValue,
   renderDataPreview,
   renderFilterPills,
+  renderHighlightedQueryDebug,
   renderLeaderboard,
   renderMetricCards,
-  renderQueryDebug,
+  removeFilterValue,
+  toggleFilterValue,
 } from "./sidemantic-components.js";
 
 const statusEl = document.querySelector('[data-testid="app-status"]');
@@ -43,21 +47,22 @@ function selectedLeaderboardMetric(query) {
 function leaderboardQueryForMetric(query, metricRef) {
   if (!query?.result?.sample_rows) return query;
   const metricKey = aliasFor(query, metricRef);
+  const result = filterZeroMetricRows(query.result, metricKey);
   return {
     ...query,
     result: {
       ...query.result,
-      sample_rows: [...query.result.sample_rows].sort(
+      sample_rows: [...result.rows].sort(
         (left, right) => numericValue(right[metricKey]) - numericValue(left[metricKey]),
       ),
+      sample_row_count: result.rows.length,
     },
   };
 }
 
-function selectedLeaderboardValue(query) {
+function selectedLeaderboardValues(query) {
   const dimensionRef = query?.dimensions?.[0];
-  const values = state.filters[dimensionRef] || [];
-  return values[0];
+  return state.filters[dimensionRef] || [];
 }
 
 function filterPreviewResult(query) {
@@ -67,8 +72,8 @@ function filterPreviewResult(query) {
   for (const [dimension, values] of Object.entries(state.filters)) {
     const key = aliasFor(query, dimension);
     if (!result.columns?.includes(key)) continue;
-    const accepted = new Set((values || []).map((value) => String(value)));
-    rows = rows.filter((row) => accepted.has(String(row[key] ?? "")));
+    const accepted = new Set((values || []).map(normalizeFilterValue));
+    rows = rows.filter((row) => accepted.has(normalizeFilterValue(row[key])));
   }
   return {
     ...result,
@@ -84,8 +89,8 @@ function metricTotalsForFilters(totalsQuery, leaderboardQuery) {
   if (filterValues.length === 0 || leaderboardRows.length === 0) return totalsQuery;
 
   const dimensionKey = aliasFor(leaderboardQuery, dimensionRef);
-  const accepted = new Set(filterValues.map((value) => String(value)));
-  const filteredRows = leaderboardRows.filter((row) => accepted.has(String(row[dimensionKey] ?? "")));
+  const accepted = new Set(filterValues.map(normalizeFilterValue));
+  const filteredRows = leaderboardRows.filter((row) => accepted.has(normalizeFilterValue(row[dimensionKey])));
   if (filteredRows.length === 0) return totalsQuery;
 
   const metricRow = {};
@@ -107,19 +112,12 @@ function metricTotalsForFilters(totalsQuery, leaderboardQuery) {
 
 function setFilter({ dimension, value }) {
   if (!dimension) return;
-  state.filters = { ...state.filters, [dimension]: [String(value ?? "")] };
+  state.filters = toggleFilterValue(state.filters, dimension, value);
   render();
 }
 
 function removeFilter({ dimension, value }) {
-  const current = state.filters[dimension] || [];
-  const next = current.filter((item) => String(item) !== String(value));
-  state.filters = { ...state.filters };
-  if (next.length > 0) {
-    state.filters[dimension] = next;
-  } else {
-    delete state.filters[dimension];
-  }
+  state.filters = removeFilterValue(state.filters, dimension, value);
   render();
 }
 
@@ -144,17 +142,17 @@ function render() {
       render();
     },
   });
-  renderFilterPills(filterPillsEl, state.filters, removeFilter);
+  renderFilterPills(filterPillsEl, state.filters, removeFilter, { emptyLabel: "No filters" });
   renderLeaderboard(leaderboardEl, leaderboardQuery, {
     titleEl: leaderboardTitleEl,
     subtitleEl: leaderboardSubtitleEl,
     interactive: true,
     metricRef: leaderboardMetric,
-    selectedValue: selectedLeaderboardValue(queries.dimension_leaderboard),
+    selectedValues: selectedLeaderboardValues(queries.dimension_leaderboard),
     onSelect: setFilter,
   });
   renderDataPreview(previewEl, filterPreviewResult(previewQuery));
-  renderQueryDebug(debugEl, {
+  renderHighlightedQueryDebug(debugEl, {
     metric_totals: queries.metric_totals,
     dimension_leaderboard: queries.dimension_leaderboard,
     preview_rows: queries.preview_rows,

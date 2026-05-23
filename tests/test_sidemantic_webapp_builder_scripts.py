@@ -189,7 +189,11 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
     assert "onSelect: setFilter" in app_js
     assert "metricTotalsForFilters" in app_js
     assert "renderMetricCards(totalsEl, filteredTotals" in app_js
-    assert "renderFilterPills(filterPillsEl, state.filters, removeFilter)" in app_js
+    assert "toggleSingleValueFilter" in app_js
+    assert "removeFilterDimension" in app_js
+    assert "filterZeroMetricRows" in app_js
+    assert 'renderFilterPills(filterPillsEl, state.filters, removeFilter, { emptyLabel: "No filters" })' in app_js
+    assert "renderHighlightedQueryDebug" in app_js
     assert "connection" not in public_spec
     assert "connection" not in public_spec["app_candidates"][1]
 

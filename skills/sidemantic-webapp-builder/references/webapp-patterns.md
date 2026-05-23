@@ -20,7 +20,7 @@ uv run skills/sidemantic-webapp-builder/scripts/copy_components.py \
   --target dist/sidemantic-dashboard
 ```
 
-The React kit is intentionally style-light and contract-heavy. Keep these contracts unless the target project already has stronger equivalents:
+The React components are intentionally style-light and contract-heavy. Keep these contracts unless the target project already has stronger equivalents:
 
 - `data-metric` on metric cards.
 - `data-dimension` and `data-value` on leaderboard rows and filter pills.
@@ -31,12 +31,22 @@ The React kit is intentionally style-light and contract-heavy. Keep these contra
 
 Prefer copying all primitives first for a new dashboard, then deleting unused files after the app shape is clear. Copy a subset only when fitting into an established component system.
 
+The static component file exports both low-level renderers and generic app helpers. Use them before creating local DOM utilities:
+
+- `toComponentResult` and `toComponentQuery` normalize executed query results into the component contract.
+- `renderMetricSummaryCards` handles metric cards plus optional sparklines for any UI with metric totals and a series result.
+- `renderDimensionLeaderboardCards` renders repeated dimension cards and filters zero-valued metric rows instead of showing fake rows.
+- `renderSelectOptions`, `renderFilterPills`, `renderValidationState`, `renderHighlightedQueryDebug`, and `renderDataPreview` cover common dashboard controls and debug panes.
+- `toggleSingleValueFilter`, `removeFilterDimension`, `setControlsDisabled`, and `syncScrollPosition` cover interaction plumbing without binding the app to a specific runtime.
+
+These helpers are not limited to metric explorers. Use the low-level renderers for custom workflows, and use the higher-level helpers only when the app shape matches.
+
 ## Proven App Shapes
 
 Prior Sidemantic webapps converged on three useful forms:
 
 1. Product webapp with backend API: frontend sends structured query payloads; Python/Sidemantic compiles and executes SQL; frontend renders JSON or Arrow results.
-2. Static browser demo: Pyodide generates SQL from Sidemantic models; DuckDB-WASM executes local Parquet queries; vanilla JS or a small frontend renders the explorer.
+2. Static browser demo: Pyodide or Sidemantic Rust WASM generates SQL from Sidemantic models; DuckDB-WASM executes local Parquet/JSON queries; vanilla JS or a small frontend renders the explorer with the copied static component files.
 3. Python widget/notebook surface: Python executes Sidemantic queries; JS receives Arrow IPC and syncs state with traitlets.
 
 Default to app shape 1 for real apps. Use shape 2 only when backendless distribution is the point. Use shape 3 inside notebooks.
@@ -220,12 +230,13 @@ uv run skills/sidemantic-webapp-builder/scripts/scaffold_static_app.py docs/side
 uv run skills/sidemantic-webapp-builder/scripts/verify_static_app.py dist/sidemantic-dashboard
 ```
 
-The scaffold intentionally stays plain HTML/CSS/JS and consumes copied files from `assets/templates/static-dashboard/` plus the static component kit. Use it as a proof point, demo baseline, or fixture before adapting the same query contract into an existing product app.
+The scaffold intentionally stays plain HTML/CSS/JS and consumes copied files from `assets/templates/static-dashboard/` plus the static component files. Use it as a proof point, demo baseline, or fixture before adapting the same query contract into an existing product app.
 
 Browser-only path:
 
-- Pyodide owns Sidemantic model loading and SQL generation.
+- Pyodide or Sidemantic Rust WASM owns Sidemantic model loading and SQL generation.
 - DuckDB-WASM owns data registration and execution.
+- Runtime adapters should live outside the copied component files. Components receive rows/query metadata and remain unaware of Pyodide, Rust WASM, DuckDB-WASM, or backend APIs.
 - Keep the model YAML and query builder visible in code so generated SQL can be debugged.
 
 ## Visual Defaults

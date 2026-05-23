@@ -1,6 +1,6 @@
 ---
 name: sidemantic-webapp-builder
-description: Build interactive analytics webapps, demos, dashboards, or embedded app surfaces from Sidemantic semantic models using copyable component primitives and deterministic query inspection. Use when asked to create a web UI around Sidemantic models, generate a metric explorer, copy reusable analytics components into a project, connect a frontend to Sidemantic query APIs, build a Pyodide/DuckDB-WASM demo, expose Sidemantic through an app server, or adapt the Sidemantic widget/UI patterns into a product webapp.
+description: Build interactive analytics webapps, demos, dashboards, or embedded app surfaces from Sidemantic semantic models using copyable component primitives and deterministic query inspection. Use when asked to create a web UI around Sidemantic models, generate a metric explorer, copy reusable analytics components into a project, connect a frontend to Sidemantic query APIs, build a Pyodide/DuckDB-WASM or Sidemantic Rust WASM/DuckDB-WASM demo, expose Sidemantic through an app server, or adapt the Sidemantic widget/UI patterns into a product webapp.
 ---
 
 # Sidemantic Webapp Builder
@@ -19,7 +19,7 @@ uv run skills/sidemantic-webapp-builder/scripts/copy_components.py \
   --target src/components/sidemantic
 ```
 
-Copy the static kit for plain HTML demos or generated scaffolds:
+Copy the static component files for plain HTML demos or generated scaffolds:
 
 ```bash
 uv run skills/sidemantic-webapp-builder/scripts/copy_components.py \
@@ -29,7 +29,7 @@ uv run skills/sidemantic-webapp-builder/scripts/copy_components.py \
 
 Use `--component metric-card --component leaderboard` to copy a narrower React subset. Use `--list` before copying when you need the available names. Existing target files are never overwritten unless `--force` is passed.
 
-Available primitives:
+Available React primitives:
 
 - `DashboardShell`: dense analytics page frame with status and toolbar slots.
 - `MetricCard`: metric label, value, delta, loading, selected state.
@@ -42,6 +42,16 @@ Available primitives:
 - `LoadingState`, `EmptyState`, `ErrorState`: fixed-height status surfaces.
 
 State primitives are conditional UI branches. Do not render loading, empty, and error examples as permanent app content unless the user explicitly asks for a component gallery.
+
+Available static JS helpers in `sidemantic-components.js`:
+
+- Data adapters: `aliasForSemanticRef`, `toComponentResult`, `toComponentQuery`, `filterZeroMetricRows`.
+- Formatting: `labelize`, `formatValue`, `metricConfigFor`, `metricValueFormat`, `formatDateLike`, `seriesRangeLabel`.
+- Renderers: `renderMetricCards`, `renderMetricSummaryCards`, `renderLeaderboard`, `renderDimensionLeaderboardCards`, `renderFilterPills`, `renderSparkline`, `renderColumnChart`, `renderHighlightedQueryDebug`, `renderDataPreview`, `renderValidationState`, `renderState`.
+- UI helpers: `renderSelectOptions`, `setControlsDisabled`, `syncScrollPosition`.
+- Filter state helpers: `toggleSingleValueFilter`, `removeFilterDimension`.
+
+Use those static helpers before writing one-off DOM wiring. They are intentionally generic: they work for metric explorers, focused dashboards, debug tools, and browser-only demos as long as the app passes semantic query metadata plus row results into them. Runtime adapters for Python APIs, Pyodide, Rust WASM, DuckDB-WASM, or product backends should stay outside the copied component files.
 
 ## Core Workflow
 
@@ -84,14 +94,14 @@ uv run skills/sidemantic-webapp-builder/scripts/scaffold_static_app.py \
   --title "Metrics Dashboard"
 ```
 
-The scaffold copies readable source from `assets/templates/static-dashboard/` and the static component kit. If you need a richer generated app, edit those copied source files in the target project; do not bury application JavaScript in Python strings or generated HTML fragments.
+The scaffold copies readable source from `assets/templates/static-dashboard/` and the static component files. If you need a richer generated app, edit those copied source files in the target project; do not bury application JavaScript in Python strings or generated HTML fragments.
 
 4. Choose the app shape:
 
 - Existing app: follow its framework, routing, styling, and data-fetch patterns.
 - New product webapp: use Bun, React Router v7 as framework, Tailwind v3, and Hono only when a TypeScript API/proxy is needed.
 - Python-backed analytics app: use `sidemantic.api_server.create_app()` or `start_api_server()` when a FastAPI API is acceptable.
-- Browser-only demo: use Pyodide + DuckDB-WASM only for static demos or docs pages that must run without a backend.
+- Browser-only demo: use Pyodide + DuckDB-WASM or Sidemantic Rust WASM + DuckDB-WASM only for static demos or docs pages that must run without a backend.
 - Notebook or Python embedded view: use `sidemantic.widget.MetricsExplorer` instead of rebuilding the widget.
 - MCP app surface: use `sidemantic mcp-serve --apps --http --port 4100` and existing chart resources when the target is an MCP Apps-compatible host.
 
@@ -196,19 +206,20 @@ The CLI `sidemantic query` auto-adds default time dimensions for metrics when a 
 ## Bundled Assets
 
 - `assets/components/react-tailwind/`: copyable React source for analytics apps using Tailwind v3.
-- `assets/components/static/`: copyable plain JS/CSS kit for generated demos and no-build static pages.
+- `assets/components/static/`: copyable plain JS/CSS components and helper utilities for generated demos and no-build static pages.
 - `assets/templates/static-dashboard/`: readable static app templates used by `scaffold_static_app.py`.
 
 After copying assets into a project, treat them as that project's code. Modify them to match local component APIs, naming, tests, and design system constraints.
 
 ## Browser-Only Demos
 
-Use browser-only Pyodide + DuckDB-WASM for static demos, docs, and shareable examples. Preserve these constraints:
+Use browser-only Sidemantic execution for static demos, docs, and shareable examples. The UI should still consume the copied static component files; keep runtime adapters separate from components.
 
-- Install Sidemantic into Pyodide with dependency constraints that match the repo's Pyodide rules.
+- Pyodide variant: install Sidemantic into Pyodide with dependency constraints that match the repo's Pyodide rules.
+- Rust WASM variant: initialize the wasm-bindgen Sidemantic bundle, compile/validate/rewrite with its exported functions, and keep the generated SQL visible in the debug panel.
 - Keep large data files out of git. Download or cache Parquet at build/runtime.
-- Generate SQL in Pyodide; execute data queries in DuckDB-WASM.
-- Show loading progress and skeletons because Pyodide and DuckDB-WASM initialization is visible to users.
+- Generate SQL in the browser Sidemantic runtime; execute data queries in DuckDB-WASM.
+- Show loading progress and skeletons because Sidemantic WASM/Pyodide and DuckDB-WASM initialization is visible to users.
 - Test in a real browser. Static HTML that imports WASM/CDN modules often cannot be trusted from file-only inspection.
 
 ## Design Rules

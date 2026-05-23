@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sidemantic WASM MetricsExplorer</title>
+    <link rel="stylesheet" href="./src/components/sidemantic/sidemantic-components.css?v=components10" />
+    <link rel="stylesheet" href="./src/styles.css?v=components10" />
+  </head>
+  <body>
+    <div class="sidemantic-widget">
+      <header class="widget-header">
+        <div class="demo-title">
+          <strong>Sidemantic MetricsExplorer</strong>
+          <span>Rust WASM + DuckDB-WASM</span>
+        </div>
+        <div class="filter-scroll">
+          <div class="filter-pills" data-testid="filter-pills"></div>
+        </div>
+        <div class="controls">
+          <div class="select-wrap">
+            <select class="metric-select" data-testid="metric-select"></select>
+          </div>
+          <div class="select-wrap">
+            <select class="grain-select" data-testid="grain-select">
+              <option value="month">Month</option>
+              <option value="day">Day</option>
+            </select>
+          </div>
+          <button type="button" class="control-button primary" data-action="compile">Compile</button>
+          <button type="button" class="control-button" data-action="validate">Validate</button>
+          <button type="button" class="control-button" data-action="reset">Reset</button>
+        </div>
+      </header>
+
+      <section class="runtime-strip" aria-label="Browser runtime status">
+        <span class="sdm-filter-pill" data-testid="sidemantic-status">Sidemantic WASM loading</span>
+        <span class="sdm-filter-pill" data-testid="duckdb-status">DuckDB-WASM loading</span>
+        <span class="sdm-filter-pill">No query server</span>
+        <span class="sdm-filter-pill" data-testid="compile-time">compile pending</span>
+        <span class="sdm-filter-pill" data-testid="execution-time">execution pending</span>
+      </section>
+
+      <main class="widget-layout">
+        <section class="metrics-col" data-testid="metric-cards"></section>
+        <section class="dimensions-col">
+          <div class="dimensions-grid" data-testid="dimension-cards"></div>
+        </section>
+      </main>
+
+      <section class="debug-section">
+        <article class="debug-card sql-card">
+          <div class="debug-header">
+            <h2>Generated SQL</h2>
+            <select data-testid="sql-select"></select>
+          </div>
+          <pre class="code-pane code-pane--sql" data-testid="generated-sql"></pre>
+        </article>
+
+        <article class="debug-card">
+          <div class="debug-header">
+            <h2>Semantic model</h2>
+            <span data-testid="graph-models">pending</span>
+          </div>
+          <div class="code-editor">
+            <pre class="code-pane code-pane--yaml" aria-hidden="true"><code data-testid="model-yaml-highlight"></code></pre>
+            <textarea spellcheck="false" wrap="off" data-testid="model-yaml"></textarea>
+          </div>
+        </article>
+
+        <article class="debug-card">
+          <div class="debug-header">
+            <h2>Result preview</h2>
+            <span data-testid="validation-state">Not checked</span>
+          </div>
+          <div class="sdm-data-table-wrap">
+            <table class="sdm-data-table" data-testid="result-preview"></table>
+          </div>
+          <ul class="validation-list" data-testid="validation-list"></ul>
+          <dl class="runtime-details">
+            <dt>Sidemantic module</dt>
+            <dd data-testid="sidemantic-module">local wasm-bindgen bundle</dd>
+            <dt>DuckDB bundle</dt>
+            <dd data-testid="duckdb-bundle">pending</dd>
+          </dl>
+        </article>
+      </section>
+
+      <div class="widget-status loading" data-testid="app-status">Starting browser runtimes...</div>
+    </div>
+
+    <script type="module" src="./src/app.js?v=components10"></script>
+  </body>
+</html>

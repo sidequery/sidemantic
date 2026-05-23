@@ -1,9 +1,12 @@
 import {
+  filterZeroMetricRows,
   renderDataPreview,
   renderFilterPills,
+  renderHighlightedQueryDebug,
   renderLeaderboard,
   renderMetricCards,
-  renderQueryDebug,
+  removeFilterDimension,
+  toggleSingleValueFilter,
 } from "./sidemantic-components.js";
 
 const statusEl = document.querySelector('[data-testid="app-status"]');
@@ -43,13 +46,15 @@ function selectedLeaderboardMetric(query) {
 function leaderboardQueryForMetric(query, metricRef) {
   if (!query?.result?.sample_rows) return query;
   const metricKey = aliasFor(query, metricRef);
+  const result = filterZeroMetricRows(query.result, metricKey);
   return {
     ...query,
     result: {
       ...query.result,
-      sample_rows: [...query.result.sample_rows].sort(
+      sample_rows: [...result.rows].sort(
         (left, right) => numericValue(right[metricKey]) - numericValue(left[metricKey]),
       ),
+      sample_row_count: result.rows.length,
     },
   };
 }
@@ -107,19 +112,12 @@ function metricTotalsForFilters(totalsQuery, leaderboardQuery) {
 
 function setFilter({ dimension, value }) {
   if (!dimension) return;
-  state.filters = { ...state.filters, [dimension]: [String(value ?? "")] };
+  state.filters = toggleSingleValueFilter(state.filters, dimension, value);
   render();
 }
 
-function removeFilter({ dimension, value }) {
-  const current = state.filters[dimension] || [];
-  const next = current.filter((item) => String(item) !== String(value));
-  state.filters = { ...state.filters };
-  if (next.length > 0) {
-    state.filters[dimension] = next;
-  } else {
-    delete state.filters[dimension];
-  }
+function removeFilter({ dimension }) {
+  state.filters = removeFilterDimension(state.filters, dimension);
   render();
 }
 
@@ -144,7 +142,7 @@ function render() {
       render();
     },
   });
-  renderFilterPills(filterPillsEl, state.filters, removeFilter);
+  renderFilterPills(filterPillsEl, state.filters, removeFilter, { emptyLabel: "No filters" });
   renderLeaderboard(leaderboardEl, leaderboardQuery, {
     titleEl: leaderboardTitleEl,
     subtitleEl: leaderboardSubtitleEl,
@@ -154,7 +152,7 @@ function render() {
     onSelect: setFilter,
   });
   renderDataPreview(previewEl, filterPreviewResult(previewQuery));
-  renderQueryDebug(debugEl, {
+  renderHighlightedQueryDebug(debugEl, {
     metric_totals: queries.metric_totals,
     dimension_leaderboard: queries.dimension_leaderboard,
     preview_rows: queries.preview_rows,

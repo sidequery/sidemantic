@@ -25,7 +25,7 @@ REACT_COMPONENTS: dict[str, list[str]] = {
 }
 
 STATIC_COMPONENTS: dict[str, list[str]] = {
-    "kit": ["sidemantic-components.js", "sidemantic-components.css"],
+    "static-components": ["sidemantic-components.js", "sidemantic-components.css"],
 }
 
 KINDS = {
@@ -93,7 +93,7 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true", help="Overwrite existing target files")
     parser.add_argument("--dry-run", action="store_true", help="Print target paths without writing files")
-    parser.add_argument("--list", action="store_true", help="List available component kits and exit")
+    parser.add_argument("--list", action="store_true", help="List available component groups and exit")
     args = parser.parse_args()
 
     if args.list:

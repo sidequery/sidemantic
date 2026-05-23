@@ -561,6 +561,14 @@ fn parse_metric_expression(name: &str, expr: &str) -> HashMap<String, String> {
     let mut props = HashMap::new();
     props.insert("name".to_string(), name.to_string());
 
+    if let Some((agg, inner_expr)) = parse_top_level_function_metric(expr) {
+        props.insert("agg".to_string(), agg);
+        if !inner_expr.is_empty() {
+            props.insert("sql".to_string(), inner_expr);
+        }
+        return props;
+    }
+
     if let Some((agg, inner_expr)) = extract_aggregation_with_polyglot(expr) {
         props.insert("agg".to_string(), agg);
         if !inner_expr.is_empty() {
@@ -583,6 +591,99 @@ fn extract_aggregation_with_polyglot(expr: &str) -> Option<(String, String)> {
     let select = statement.as_select()?;
     let parsed_expr = select.expressions.first()?;
     extract_aggregation_polyglot_expr(parsed_expr)
+}
+
+fn parse_top_level_function_metric(expr: &str) -> Option<(String, String)> {
+    let trimmed = expr.trim();
+    let (rest, function_name) = identifier(trimmed).ok()?;
+    let rest = rest.trim_start().strip_prefix('(')?;
+    let (inner_expr, rest) = parse_balanced_parens(rest)?;
+
+    if !rest.trim().is_empty() {
+        return None;
+    }
+
+    let function_name = function_name.to_lowercase();
+    let mut inner_expr = inner_expr.trim().to_string();
+
+    let agg = match function_name.as_str() {
+        "sum" => "sum",
+        "avg" | "average" => "avg",
+        "min" => "min",
+        "max" => "max",
+        "median" => "median",
+        "count_distinct" | "countdistinct" => "count_distinct",
+        "count" => {
+            if inner_expr == "*" {
+                inner_expr.clear();
+                "count"
+            } else if let Some(distinct_inner) = strip_distinct_prefix(&inner_expr) {
+                inner_expr = distinct_inner.to_string();
+                "count_distinct"
+            } else {
+                "count"
+            }
+        }
+        _ => return Some(("expression".to_string(), trimmed.to_string())),
+    };
+
+    Some((agg.to_string(), inner_expr))
+}
+
+fn parse_balanced_parens(input: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut chars = input.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if in_single_quote {
+            if ch == '\'' {
+                if matches!(chars.peek(), Some((_, '\''))) {
+                    chars.next();
+                } else {
+                    in_single_quote = false;
+                }
+            }
+            continue;
+        }
+
+        if in_double_quote {
+            if ch == '"' {
+                in_double_quote = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' => in_single_quote = true,
+            '"' => in_double_quote = true,
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some((&input[..idx], &input[idx + ch.len_utf8()..])),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn strip_distinct_prefix(expr: &str) -> Option<&str> {
+    let trimmed = expr.trim_start();
+    let prefix = trimmed.get(..8)?;
+
+    if prefix.eq_ignore_ascii_case("distinct") {
+        let rest = trimmed.get(8..)?;
+        if !rest.chars().next()?.is_whitespace() {
+            return None;
+        }
+        let rest = rest.trim_start();
+        if !rest.is_empty() {
+            return Some(rest);
+        }
+    }
+
+    None
 }
 
 fn parse_polyglot_with_large_stack(sql: String) -> Option<Vec<Expression>> {
@@ -659,6 +760,7 @@ fn extract_aggregation_from_function_name_polyglot(
         "avg" | "average" => "avg",
         "min" => "min",
         "max" => "max",
+        "median" => "median",
         "count_distinct" => "count_distinct",
         _ => return None,
     };
@@ -682,7 +784,19 @@ fn extract_inner_expression_polyglot(expr: &Expression) -> String {
         }
         Expression::Identifier(ident) => ident.name.clone(),
         Expression::Star(_) => String::new(),
-        _ => String::new(),
+        _ => generate_expr_str(expr),
+    }
+}
+
+fn generate_expr_str(expr: &Expression) -> String {
+    match expr {
+        Expression::Column(_)
+        | Expression::Identifier(_)
+        | Expression::Star(_)
+        | Expression::Literal(_) => expr.to_string(),
+        _ => {
+            polyglot_sql::generate(expr, DialectType::Generic).unwrap_or_else(|_| expr.to_string())
+        }
     }
 }
 
@@ -1584,6 +1698,38 @@ mod tests {
 
         let count = model.get_metric("order_count").unwrap();
         assert_eq!(count.agg, Some(Aggregation::Count));
+    }
+
+    #[test]
+    fn test_simple_metric_function_coverage() {
+        let sql = r#"
+            MODEL (name orders, table orders);
+            METRIC revenue AS SUM(COALESCE(amount, 0));
+            METRIC unique_customers AS COUNT(DISTINCT customer_id);
+            METRIC median_amount AS MEDIAN(amount);
+            METRIC approximate_customers AS APPROX_COUNT_DISTINCT(customer_id);
+        "#;
+
+        let model = parse_sql_model(sql).unwrap();
+
+        let revenue = model.get_metric("revenue").unwrap();
+        assert_eq!(revenue.agg, Some(Aggregation::Sum));
+        assert_eq!(revenue.sql, Some("COALESCE(amount, 0)".to_string()));
+
+        let unique_customers = model.get_metric("unique_customers").unwrap();
+        assert_eq!(unique_customers.agg, Some(Aggregation::CountDistinct));
+        assert_eq!(unique_customers.sql, Some("customer_id".to_string()));
+
+        let median_amount = model.get_metric("median_amount").unwrap();
+        assert_eq!(median_amount.agg, Some(Aggregation::Median));
+        assert_eq!(median_amount.sql, Some("amount".to_string()));
+
+        let approximate_customers = model.get_metric("approximate_customers").unwrap();
+        assert_eq!(approximate_customers.agg, Some(Aggregation::Expression));
+        assert_eq!(
+            approximate_customers.sql,
+            Some("APPROX_COUNT_DISTINCT(customer_id)".to_string())
+        );
     }
 
     #[test]

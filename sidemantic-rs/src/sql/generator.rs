@@ -2,6 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use polyglot_sql::expressions::{Expression, Literal, Raw};
+use polyglot_sql::DialectType;
+
 use crate::core::{
     build_symmetric_aggregate_sql_with_key_expr, Aggregation, CohortInnerMetric, JoinPath, Metric,
     MetricType, Model, RelationshipType, RelativeDate, SemanticGraph, SqlDialect, SymmetricAggType,
@@ -10,6 +13,7 @@ use crate::core::{
 use crate::error::{Result, SidemanticError};
 
 type CtePushdownClassification = (HashMap<String, Vec<String>>, Vec<String>);
+const SOURCE_DIALECT: DialectType = DialectType::DuckDB;
 
 /// A semantic query definition
 #[derive(Debug, Clone, Default)]
@@ -122,11 +126,24 @@ struct MetricRef {
 /// SQL generator for semantic queries
 pub struct SqlGenerator<'a> {
     graph: &'a SemanticGraph,
+    dialect: DialectType,
 }
 
 impl<'a> SqlGenerator<'a> {
     pub fn new(graph: &'a SemanticGraph) -> Self {
-        Self { graph }
+        Self {
+            graph,
+            dialect: SOURCE_DIALECT,
+        }
+    }
+
+    pub fn with_dialect(mut self, dialect: DialectType) -> Self {
+        self.dialect = dialect;
+        self
+    }
+
+    pub fn dialect(&self) -> DialectType {
+        self.dialect
     }
 
     /// Generate SQL from a semantic query
@@ -449,21 +466,21 @@ impl<'a> SqlGenerator<'a> {
                             &primary_key_expr,
                             SymmetricAggType::Sum,
                             Some(&alias),
-                            SqlDialect::DuckDB,
+                            self.symmetric_agg_dialect(),
                         ),
                         Some(Aggregation::Avg) => build_symmetric_aggregate_sql_with_key_expr(
                             &raw_alias,
                             &primary_key_expr,
                             SymmetricAggType::Avg,
                             Some(&alias),
-                            SqlDialect::DuckDB,
+                            self.symmetric_agg_dialect(),
                         ),
                         Some(Aggregation::Count) => build_symmetric_aggregate_sql_with_key_expr(
                             &raw_alias,
                             &primary_key_expr,
                             SymmetricAggType::Count,
                             Some(&alias),
-                            SqlDialect::DuckDB,
+                            self.symmetric_agg_dialect(),
                         ),
                         Some(Aggregation::CountDistinct) => {
                             build_symmetric_aggregate_sql_with_key_expr(
@@ -471,7 +488,7 @@ impl<'a> SqlGenerator<'a> {
                                 &primary_key_expr,
                                 SymmetricAggType::CountDistinct,
                                 Some(&alias),
-                                SqlDialect::DuckDB,
+                                self.symmetric_agg_dialect(),
                             )
                         }
                         // Min/Max/None don't need symmetric aggregates
@@ -4083,13 +4100,100 @@ impl<'a> SqlGenerator<'a> {
         Ok(result)
     }
 
+    fn symmetric_agg_dialect(&self) -> SqlDialect {
+        match self.dialect {
+            DialectType::BigQuery => SqlDialect::BigQuery,
+            DialectType::PostgreSQL
+            | DialectType::Redshift
+            | DialectType::CockroachDB
+            | DialectType::Materialize
+            | DialectType::RisingWave => SqlDialect::Postgres,
+            DialectType::Snowflake => SqlDialect::Snowflake,
+            DialectType::ClickHouse => SqlDialect::ClickHouse,
+            DialectType::Databricks => SqlDialect::Databricks,
+            DialectType::Spark => SqlDialect::Spark,
+            _ => SqlDialect::DuckDB,
+        }
+    }
+
+    fn emit_expression(&self, expression: &Expression) -> Result<String> {
+        polyglot_sql::generate(expression, self.dialect)
+            .map(|sql| sql.trim_end().to_string())
+            .map_err(|e| {
+                SidemanticError::SqlGeneration(format!(
+                    "polyglot-sql failed to generate {} SQL: {e}",
+                    self.dialect
+                ))
+            })
+    }
+
+    fn parse_where_expr(&self, expr_sql: &str) -> Result<Expression> {
+        let sql = format!("SELECT 1 WHERE {expr_sql}");
+        let expression = polyglot_sql::parse_one(&sql, SOURCE_DIALECT)
+            .map_err(|e| SidemanticError::SqlParse(e.to_string()))?;
+
+        match expression {
+            Expression::Select(select) => select
+                .where_clause
+                .map(|where_clause| where_clause.this)
+                .ok_or_else(|| {
+                    SidemanticError::SqlParse(format!(
+                        "Expected WHERE expression in SQL fragment: {expr_sql}"
+                    ))
+                }),
+            _ => Err(SidemanticError::SqlParse(format!(
+                "Expected SELECT when parsing WHERE fragment: {expr_sql}"
+            ))),
+        }
+    }
+
+    fn expand_filter_with_polyglot(&self, filter: &str) -> Result<String> {
+        let parsed = self.parse_where_expr(filter)?;
+        let graph = self.graph;
+
+        let rewritten = polyglot_sql::transform_map(parsed, &|node| {
+            if let Expression::Literal(Literal::String(value)) = &node {
+                if let Some(sql_date) = RelativeDate::parse(value) {
+                    return Ok(Expression::Raw(Raw { sql: sql_date }));
+                }
+            }
+
+            if let Expression::Column(col) = &node {
+                if let Some(table) = &col.table {
+                    if let Some(model) = graph.get_model(&table.name) {
+                        if let Some(dimension) = model.get_dimension(&col.name.name) {
+                            return Ok(Expression::Raw(Raw {
+                                sql: format!(
+                                    "{}.{}",
+                                    self.model_alias(&model.name),
+                                    dimension.sql_expr()
+                                ),
+                            }));
+                        }
+                    }
+                }
+            }
+
+            Ok(node)
+        })
+        .map_err(|e| SidemanticError::SqlGeneration(e.to_string()))?;
+
+        self.emit_expression(&rewritten)
+    }
+
     /// Expand filter expressions, replacing model.field references and relative dates
     fn expand_filters(&self, filters: &[String]) -> Result<Vec<String>> {
         let mut expanded = Vec::new();
 
         for filter in filters {
+            let relative_expanded = self.expand_relative_dates(filter);
+            if let Ok(expanded_filter) = self.expand_filter_with_polyglot(&relative_expanded) {
+                expanded.push(expanded_filter);
+                continue;
+            }
+
             // Simple expansion: replace model.field with alias.field
-            let mut expanded_filter = filter.clone();
+            let mut expanded_filter = relative_expanded;
 
             for model in self.graph.models() {
                 let alias = self.model_alias(&model.name);
@@ -4738,6 +4842,52 @@ mod tests {
     }
 
     #[test]
+    fn test_symmetric_aggregate_uses_target_dialect() {
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_relationship(Relationship::many_to_one("customers"));
+
+        let customers = Model::new("customers", "id")
+            .with_table("customers")
+            .with_dimension(Dimension::categorical("country"))
+            .with_metric(Metric::sum("total_credit", "credit_limit"));
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+
+        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::PostgreSQL);
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["customers.total_credit".into()])
+            .with_dimensions(vec!["orders.status".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(
+            sql.contains("hashtext(customers_cte.id::text)::numeric"),
+            "Expected PostgreSQL symmetric aggregate hash: {sql}"
+        );
+        assert!(
+            !sql.contains("CAST(HASH(customers_cte.id) AS HUGEINT)"),
+            "Should not hardcode DuckDB symmetric aggregate SQL: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_filter_rewrite_uses_polyglot_sql() {
+        let graph = create_test_graph();
+        let generator = SqlGenerator::new(&graph);
+
+        let rewritten = generator
+            .expand_filter_with_polyglot("orders.order_date >= 'today'")
+            .unwrap();
+
+        assert_eq!(rewritten, "orders_cte.created_at >= CURRENT_DATE");
+    }
+
+    #[test]
     fn test_simple_metric_sql_column_does_not_pull_same_named_metric_model() {
         let mut graph = SemanticGraph::new();
 
@@ -4778,6 +4928,33 @@ mod tests {
         assert!(
             !sql.contains("expenses_cte"),
             "simple column SQL was misread as expenses.total_amount metric dependency: {sql}"
+        );
+    }
+
+    #[test]
+    fn test_derived_metric_expansion_is_token_aware() {
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_metric(Metric::sum("revenue_net", "net_amount"))
+            .with_metric(Metric::derived("net_ratio", "revenue / revenue_net"));
+
+        graph.add_model(orders).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new().with_metrics(vec!["orders.net_ratio".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(
+            sql.contains("revenue_net"),
+            "Expected longer metric reference to survive derived expansion: {sql}"
+        );
+        assert!(
+            !sql.contains("revenue_raw)_net"),
+            "Derived expansion must not replace metric-name substrings: {sql}"
         );
     }
 
@@ -4838,7 +5015,7 @@ mod tests {
             "Expected running total: {sql}"
         );
         assert!(
-            sql.contains("ROWS UNBOUNDED PRECEDING"),
+            sql.contains("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"),
             "Expected unbounded preceding: {sql}"
         );
 
@@ -4884,7 +5061,7 @@ mod tests {
 
         // Relative date should be expanded to SQL
         assert!(
-            sql.contains("CURRENT_DATE - 7"),
+            sql.contains("CURRENT_DATE - INTERVAL '7 days'"),
             "Expected relative date expansion: {sql}"
         );
         // Should NOT contain the quoted string anymore

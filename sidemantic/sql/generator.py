@@ -536,7 +536,16 @@ class SQLGenerator:
         if needs_window_functions:
             return self._cache_generate_result(
                 cache_key,
-                self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset, aliases),
+                self._generate_with_window_functions(
+                    metrics,
+                    dimensions,
+                    filters,
+                    order_by,
+                    limit,
+                    offset,
+                    aliases,
+                    use_preaggregations=use_preaggregations,
+                ),
             )
 
         # Parse dimension references and extract granularities
@@ -544,6 +553,22 @@ class SQLGenerator:
 
         # Find all models needed for the query
         model_names = self._find_required_models(metrics, dimensions, filters)
+
+        if use_preaggregations and not ungrouped:
+            join_key_preagg_sql = self._try_use_join_key_preaggregation(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                aliases=aliases,
+            )
+            if join_key_preagg_sql:
+                instrumentation = self._generate_instrumentation_comment(
+                    models=model_names, metrics=metrics, dimensions=dimensions, used_preagg=True
+                )
+                return self._cache_generate_result(cache_key, join_key_preagg_sql + "\n" + instrumentation)
 
         # Check if we need symmetric aggregation (pre-aggregation approach)
         # This is needed when metrics come from different models at different join levels
@@ -559,6 +584,7 @@ class SQLGenerator:
                     limit=limit,
                     offset=offset,
                     aliases=aliases,
+                    use_preaggregations=use_preaggregations,
                 ),
             )
 
@@ -572,6 +598,7 @@ class SQLGenerator:
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
+                aliases=aliases,
             )
             if preagg_sql:
                 # Add instrumentation comment
@@ -661,6 +688,7 @@ class SQLGenerator:
                 order_by=order_by,
                 all_models=all_models,
                 metric_filter_columns=metric_filter_cols,
+                ungrouped=ungrouped,
             )
             cte_sqls.append(cte_sql)
 
@@ -1181,6 +1209,7 @@ class SQLGenerator:
         order_by: list[str] | None = None,
         all_models: set[str] | None = None,
         metric_filter_columns: set[str] | None = None,
+        ungrouped: bool = False,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -1192,6 +1221,7 @@ class SQLGenerator:
             order_by: Order by fields (for determining needed dimensions)
             all_models: All models in query (for determining if joins needed)
             metric_filter_columns: Columns needed for metric-level filters
+            ungrouped: Whether the query is returning raw ungrouped rows
 
         Returns:
             CTE SQL string
@@ -1211,11 +1241,12 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
-        # Include this model's primary key columns (always needed for joins/grouping)
-        for pk_col in model.primary_key_columns:
-            if pk_col not in columns_added:
-                select_cols.append(f"{self._quote_identifier(pk_col)} AS {self._quote_alias(pk_col)}")
-                columns_added.add(pk_col)
+        include_primary_keys = needs_joins or ungrouped or bool(model.sql)
+        if include_primary_keys:
+            for pk_col in model.primary_key_columns:
+                if pk_col not in columns_added:
+                    select_cols.append(f"{self._quote_identifier(pk_col)} AS {self._quote_alias(pk_col)}")
+                    columns_added.add(pk_col)
 
         # Include foreign keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
@@ -1625,6 +1656,7 @@ class SQLGenerator:
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
+        use_preaggregations: bool = False,
     ) -> str:
         """Generate SQL using pre-aggregation to avoid fan-out.
 
@@ -1640,6 +1672,7 @@ class SQLGenerator:
             limit: Maximum number of rows
             offset: Number of rows to skip
             aliases: Custom aliases for fields
+            use_preaggregations: Try materialized pre-aggregation routing for each child query
 
         Returns:
             SQL query string
@@ -1668,6 +1701,7 @@ class SQLGenerator:
                 limit=limit,
                 offset=offset,
                 aliases=aliases,
+                use_preaggregations=use_preaggregations,
             )
 
         # Resolve segments to SQL filters
@@ -1708,6 +1742,7 @@ class SQLGenerator:
                 limit=None,
                 offset=None,
                 aliases=aliases,
+                use_preaggregations=use_preaggregations,
             )
 
             # Remove the instrumentation comment from sub-query
@@ -1720,15 +1755,40 @@ class SQLGenerator:
 
         # Build the final SELECT that joins all pre-aggregated CTEs
         select_exprs = []
+        output_names: dict[str, str] = {}
+
+        def register_output_name(output_name: str, *refs: str) -> None:
+            for ref in refs:
+                if ref:
+                    output_names[ref] = output_name
+
+        def dimension_output_name(dim_ref: str, dim_name: str, gran: str | None) -> str:
+            if gran:
+                full_ref = f"{dim_ref}__{gran}"
+                default = f"{dim_name}__{gran}"
+            else:
+                full_ref = dim_ref
+                default = dim_name
+
+            canonical_ref = full_ref
+            return aliases.get(full_ref) or aliases.get(canonical_ref) or default
+
+        def metric_source_name(metric_ref: str, metric_name: str) -> str:
+            return aliases.get(metric_ref) or aliases.get(f"{metric_ref.split('.')[0]}.{metric_name}") or metric_name
 
         # Add dimensions - use COALESCE across all CTEs
         for dim_ref, gran in parsed_dims:
             dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
             col_name = f"{dim_name}__{gran}" if gran else dim_name
+            output_name = dimension_output_name(dim_ref, dim_name, gran)
+            full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+            canonical_ref = full_ref
+            register_output_name(output_name, full_ref, canonical_ref, dim_name, col_name, output_name)
 
             # Build COALESCE expression
-            coalesce_parts = [f"{cte}.{col_name}" for cte in cte_names]
-            select_exprs.append(f"COALESCE({', '.join(coalesce_parts)}) AS {col_name}")
+            quoted_source = self._quote_identifier(output_name)
+            coalesce_parts = [f"{cte}.{quoted_source}" for cte in cte_names]
+            select_exprs.append(f"COALESCE({', '.join(coalesce_parts)}) AS {self._quote_alias(output_name)}")
 
         # Check for metric name collisions across models
         metric_name_counts: dict[str, int] = {}
@@ -1742,6 +1802,7 @@ class SQLGenerator:
             cte_name = f"{model_name}_preagg"
             for metric_ref in model_metrics:
                 metric_name = metric_ref.split(".")[1] if "." in metric_ref else metric_ref
+                source_name = metric_source_name(metric_ref, metric_name)
                 # Check for custom alias first
                 if metric_ref in aliases:
                     alias = aliases[metric_ref]
@@ -1750,7 +1811,8 @@ class SQLGenerator:
                     alias = f"{model_name}_{metric_name}"
                 else:
                     alias = metric_name
-                select_exprs.append(f"{cte_name}.{metric_name} AS {alias}")
+                register_output_name(alias, metric_ref, f"{model_name}.{metric_name}", metric_name, alias)
+                select_exprs.append(f"{cte_name}.{self._quote_identifier(source_name)} AS {self._quote_alias(alias)}")
 
         # Build FROM clause with FULL OUTER JOINs (or CROSS JOIN if no dimensions)
         # Start with first CTE
@@ -1767,10 +1829,10 @@ class SQLGenerator:
                 join_conditions = []
                 for dim_ref, gran in parsed_dims:
                     dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
-                    col_name = f"{dim_name}__{gran}" if gran else dim_name
+                    col_name = dimension_output_name(dim_ref, dim_name, gran)
                     # NULL-safe equality that works for all column types
-                    lhs = exp.Column(this=col_name, table=cte_names[0])
-                    rhs = exp.Column(this=col_name, table=cte_name)
+                    lhs = exp.column(col_name, table=cte_names[0])
+                    rhs = exp.column(col_name, table=cte_name)
                     join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self.dialect))
 
                 join_clause = " AND ".join(join_conditions)
@@ -1812,11 +1874,16 @@ class SQLGenerator:
         if order_by:
             order_clauses = []
             for field in order_by:
-                if "." in field:
-                    field_name = field.split(".", 1)[1]
-                else:
-                    field_name = field
-                order_clauses.append(field_name)
+                parts = field.rsplit(" ", 1)
+                direction = ""
+                field_ref = field
+                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
+                    field_ref = parts[0]
+                    direction = f" {parts[1].upper()}"
+
+                field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
+                output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
             final_query += f"\nORDER BY {', '.join(order_clauses)}"
 
         # Add LIMIT and OFFSET
@@ -3518,6 +3585,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
+        use_preaggregations: bool = False,
     ) -> str:
         """Generate SQL with window functions for cumulative metrics.
 
@@ -3532,6 +3600,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             order_by: List of fields to order by
             limit: Maximum number of rows to return
             aliases: Custom aliases for fields (dict mapping field reference to alias)
+            use_preaggregations: Try materialized pre-aggregation routing for the inner base query
 
         Returns:
             SQL query string
@@ -3796,6 +3865,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             filters=filters,
             order_by=None,  # Apply ordering in outer query
             limit=None,  # Apply limit in outer query
+            use_preaggregations=use_preaggregations,
         )
 
         # Parse dimensions for outer SELECT
@@ -4265,6 +4335,372 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         return outer_query
 
+    def _split_preaggregation_filters(self, model, filters: list[str]) -> tuple[list[str], list[str]]:
+        row_filters: list[str] = []
+        aggregate_filters: list[str] = []
+        for filter_expr in filters:
+            if self._filter_references_model_metric(model, filter_expr):
+                aggregate_filters.append(filter_expr)
+            else:
+                row_filters.append(filter_expr)
+        return row_filters, aggregate_filters
+
+    def _filter_references_model_metric(self, model, filter_expr: str) -> bool:
+        try:
+            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+        except Exception:
+            return False
+
+        for column in parsed.find_all(exp.Column):
+            table_name = column.table.replace("_cte", "") if column.table else None
+            field_name = column.name.rsplit("__", 1)[0] if "__" in column.name else column.name
+            if table_name and table_name != model.name:
+                continue
+            if model.get_metric(field_name):
+                return True
+        return False
+
+    def _preaggregation_metric_expression(self, model, preagg, metric_name: str) -> str:
+        metric = model.get_metric(metric_name)
+        raw_col = f"{metric_name}_raw"
+        if not metric:
+            return raw_col
+        if metric.type == "ratio":
+            numerator = self._preaggregation_metric_expression(model, preagg, (metric.numerator or "").split(".")[-1])
+            denominator = self._preaggregation_metric_expression(
+                model,
+                preagg,
+                (metric.denominator or "").split(".")[-1],
+            )
+            return f"{numerator} / NULLIF({denominator}, 0)"
+        if metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+            return self._preaggregation_derived_metric_expression(model, preagg, metric)
+        if metric.agg in {"sum", "count"}:
+            return f"SUM({raw_col})"
+        if metric.agg == "avg":
+            matcher = PreAggregationMatcher(model)
+            count_measure = matcher._find_count_measure_for_avg(metric, preagg.measures or []) or "count"
+            return f"SUM({raw_col}) / NULLIF(SUM({count_measure}_raw), 0)"
+        if metric.agg in {"min", "max"}:
+            return f"{metric.agg.upper()}({raw_col})"
+        return f"SUM({raw_col})"
+
+    def _preaggregation_derived_metric_expression(self, model, preagg, metric) -> str:
+        if not metric.sql:
+            return f"SUM({metric.name}_raw)"
+        try:
+            expression = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+        except Exception:
+            return metric.sql
+
+        def replace_column(node):
+            if not isinstance(node, exp.Column):
+                return node
+            field_name = node.name
+            if model.get_metric(field_name):
+                return sqlglot.parse_one(
+                    self._preaggregation_metric_expression(model, preagg, field_name),
+                    dialect=self.dialect,
+                )
+            return node
+
+        return expression.transform(replace_column).sql(dialect=self.dialect)
+
+    def _rewrite_preaggregation_aggregate_filter(self, model, preagg, filter_expr: str) -> str:
+        try:
+            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+        except Exception:
+            return filter_expr.replace(f"{model.name}_cte.", "").replace(f"{model.name}.", "")
+
+        def replace_column(node):
+            if not isinstance(node, exp.Column):
+                return node
+
+            table_name = node.table.replace("_cte", "") if node.table else None
+            if table_name and table_name != model.name:
+                return node
+
+            field_name = node.name.rsplit("__", 1)[0] if "__" in node.name else node.name
+            if model.get_metric(field_name):
+                return sqlglot.parse_one(
+                    self._preaggregation_metric_expression(model, preagg, field_name),
+                    dialect=self.dialect,
+                )
+
+            if preagg.time_dimension and preagg.granularity and field_name == preagg.time_dimension:
+                return exp.column(f"{preagg.time_dimension}_{preagg.granularity}")
+            return exp.column(node.name)
+
+        return parsed.transform(replace_column).sql(dialect=self.dialect)
+
+    def explain_join_key_preaggregation(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        route, reason = self._join_key_preaggregation_route(metrics, dimensions, filters or [], aliases or {})
+        if route is None:
+            return {"eligible": False, "reason": reason}
+
+        preagg = route["preagg"]
+        join_path = route["join_path"]
+        return {
+            "eligible": True,
+            "reason": "matching_join_key_preaggregation",
+            "model": route["metric_model_name"],
+            "remote_model": route["remote_model_name"],
+            "preaggregation": preagg.name,
+            "preaggregation_dimensions": route["preaggregation_dimensions"],
+            "join_keys": [
+                {
+                    "from_model": hop.from_model,
+                    "to_model": hop.to_model,
+                    "from_columns": hop.from_columns,
+                    "to_columns": hop.to_columns,
+                    "relationship": hop.relationship,
+                }
+                for hop in join_path
+            ],
+        }
+
+    def _try_use_join_key_preaggregation(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> str | None:
+        route, _reason = self._join_key_preaggregation_route(metrics, dimensions, filters or [], aliases or {})
+        if route is None:
+            return None
+        return self._generate_join_key_preaggregation(
+            route=route,
+            metrics=metrics,
+            dimensions=dimensions,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            aliases=aliases or {},
+        )
+
+    def _join_key_preaggregation_route(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        filters: list[str],
+        aliases: dict[str, str],
+    ) -> tuple[dict[str, object] | None, str]:
+        if filters:
+            return None, "filters_not_supported"
+
+        metric_models = []
+        metric_names = []
+        for metric_ref in metrics:
+            if "." not in metric_ref:
+                return None, "graph_metrics_not_supported"
+            model_name, metric_name = metric_ref.split(".", 1)
+            if model_name not in metric_models:
+                metric_models.append(model_name)
+            metric_names.append(metric_name)
+
+        if len(metric_models) != 1:
+            return None, "not_single_metric_model_query"
+        if not dimensions:
+            return None, "no_remote_dimensions"
+
+        metric_model_name = metric_models[0]
+        metric_model = self.graph.get_model(metric_model_name)
+        if not metric_model.pre_aggregations:
+            return None, "model_has_no_preaggregations"
+
+        parsed_dims = self._parse_dimension_refs(dimensions)
+        local_preagg_dimensions: list[str] = []
+        remote_model_name: str | None = None
+        join_path = None
+        remote_dimensions: list[tuple[str, str | None]] = []
+        join_keys: list[str] = []
+
+        for dim_ref, granularity in parsed_dims:
+            if "." not in dim_ref:
+                return None, "unqualified_dimensions_not_supported"
+            dim_model_name, dim_name = dim_ref.split(".", 1)
+            if dim_model_name == metric_model_name:
+                local_preagg_dimensions.append(dim_name)
+                continue
+
+            try:
+                path = self.graph.find_relationship_path(metric_model_name, dim_model_name)
+            except (KeyError, ValueError):
+                return None, "remote_dimension_not_reachable"
+
+            if len(path) != 1:
+                return None, "multi_hop_remote_dimension_not_supported"
+            if path[0].relationship != "many_to_one":
+                return None, "remote_dimension_not_many_to_one"
+            if remote_model_name and remote_model_name != dim_model_name:
+                return None, "multiple_remote_models_not_supported"
+
+            remote_model_name = dim_model_name
+            join_path = path
+            remote_dimensions.append((dim_ref, granularity))
+            for join_key in path[0].from_columns:
+                if join_key not in join_keys:
+                    join_keys.append(join_key)
+
+        if not remote_model_name or not join_path:
+            return None, "no_remote_dimensions"
+
+        preaggregation_dimensions = [*local_preagg_dimensions, *join_keys]
+        matcher = PreAggregationMatcher(metric_model)
+        preagg = matcher.find_matching_preagg(
+            metrics=metric_names,
+            dimensions=preaggregation_dimensions,
+            filters=[],
+        )
+        if not preagg:
+            return None, "missing_join_key_preaggregation"
+
+        return (
+            {
+                "metric_model_name": metric_model_name,
+                "metric_model": metric_model,
+                "remote_model_name": remote_model_name,
+                "remote_model": self.graph.get_model(remote_model_name),
+                "join_path": join_path,
+                "preagg": preagg,
+                "parsed_dims": parsed_dims,
+                "remote_dimensions": remote_dimensions,
+                "preaggregation_dimensions": preaggregation_dimensions,
+                "aliases": aliases,
+            },
+            "matching_join_key_preaggregation",
+        )
+
+    def _generate_join_key_preaggregation(
+        self,
+        route: dict[str, object],
+        metrics: list[str],
+        dimensions: list[str],
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> str:
+        aliases = aliases or {}
+        metric_model = route["metric_model"]
+        metric_model_name = route["metric_model_name"]
+        remote_model = route["remote_model"]
+        remote_model_name = route["remote_model_name"]
+        preagg = route["preagg"]
+        join_path = route["join_path"]
+        parsed_dims = route["parsed_dims"]
+
+        rollup_alias = f"{metric_model_name}_rollup"
+        remote_alias = remote_model_name
+        preagg_table = preagg.get_table_name(
+            metric_model.name,
+            database=self.preagg_database,
+            schema=self.preagg_schema,
+        )
+
+        select_exprs: list[str] = []
+        output_names: dict[str, str] = {}
+
+        def register_output_name(output_name: str, *refs: str) -> None:
+            for ref in refs:
+                if ref:
+                    output_names[ref] = output_name
+
+        def dimension_output_name(dim_ref: str, dim_name: str, granularity: str | None) -> str:
+            full_ref = f"{dim_ref}__{granularity}" if granularity else dim_ref
+            default = f"{dim_name}__{granularity}" if granularity else dim_name
+            return aliases.get(full_ref) or aliases.get(dim_ref) or default
+
+        for dim_ref, granularity in parsed_dims:
+            dim_model_name, dim_name = dim_ref.split(".", 1)
+            output_name = dimension_output_name(dim_ref, dim_name, granularity)
+            full_ref = f"{dim_ref}__{granularity}" if granularity else dim_ref
+            default_name = f"{dim_name}__{granularity}" if granularity else dim_name
+            register_output_name(output_name, full_ref, dim_ref, dim_name, default_name, output_name)
+
+            if dim_model_name == metric_model_name:
+                column_expr = f"{rollup_alias}.{self._quote_identifier(dim_name)}"
+            else:
+                dimension = remote_model.get_dimension(dim_name)
+                dimension_sql = dimension.sql if dimension and dimension.sql else dim_name
+                column_expr = self._qualify_model_expression(dimension_sql, remote_model_name, remote_alias)
+
+            if granularity:
+                column_expr = self._date_trunc(granularity, column_expr)
+            select_exprs.append(f"{column_expr} AS {self._quote_alias(output_name)}")
+
+        for metric_ref in metrics:
+            _model_name, metric_name = metric_ref.split(".", 1)
+            output_name = aliases.get(metric_ref) or metric_name
+            register_output_name(output_name, metric_ref, metric_name, output_name)
+            metric_expr = self._preaggregation_metric_expression(metric_model, preagg, metric_name)
+            metric_expr = self._qualify_model_expression(metric_expr, metric_model_name, rollup_alias)
+            select_exprs.append(f"{metric_expr} AS {self._quote_alias(output_name)}")
+
+        hop = join_path[0]
+        join_conditions = [
+            f"{rollup_alias}.{self._quote_identifier(from_column)} = {remote_alias}.{self._quote_identifier(to_column)}"
+            for from_column, to_column in zip(hop.from_columns, hop.to_columns)
+        ]
+
+        group_by_clause = ""
+        if parsed_dims:
+            group_by_clause = "\nGROUP BY " + ", ".join(str(i) for i in range(1, len(parsed_dims) + 1))
+
+        order_by_clause = ""
+        if order_by:
+            order_clauses = []
+            for field in order_by:
+                parts = field.rsplit(" ", 1)
+                direction = ""
+                field_ref = field
+                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
+                    field_ref = parts[0]
+                    direction = f" {parts[1].upper()}"
+                field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
+                output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
+            order_by_clause = "\nORDER BY " + ", ".join(order_clauses)
+
+        limit_clause = ""
+        if limit:
+            limit_clause = f"\nLIMIT {limit}"
+        if offset:
+            limit_clause += f"\nOFFSET {offset}"
+
+        select_exprs_str = ",\n  ".join(select_exprs)
+        return f"""SELECT
+  {select_exprs_str}
+FROM {preagg_table} AS {rollup_alias}
+LEFT JOIN {remote_model.table} AS {remote_alias}
+  ON {" AND ".join(join_conditions)}{group_by_clause}{order_by_clause}{limit_clause}"""
+
+    def _qualify_model_expression(self, expression_sql: str, model_name: str, alias: str) -> str:
+        expression_sql = expression_sql.replace("{model}", alias)
+        try:
+            expression = sqlglot.parse_one(expression_sql, dialect=self.dialect)
+        except Exception:
+            if self._is_simple_identifier(expression_sql):
+                return f"{alias}.{self._quote_identifier(expression_sql)}"
+            return expression_sql
+
+        for column in expression.find_all(exp.Column):
+            if not column.table:
+                column.set("table", exp.to_identifier(alias))
+            elif column.table == model_name:
+                column.set("table", exp.to_identifier(alias))
+        return expression.sql(dialect=self.dialect)
+
     def _try_use_preaggregation(
         self,
         model_name: str,
@@ -4274,6 +4710,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         order_by: list[str] | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        aliases: dict[str, str] | None = None,
     ) -> str | None:
         """Try to generate query using a pre-aggregation.
 
@@ -4319,11 +4756,14 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 metric_name = m
             metric_names.append(metric_name)
 
-        # Try to find matching pre-aggregation
-        # Need to extract filter column names (without model prefix) for compatibility checking
+        row_filters, aggregate_filters = self._split_preaggregation_filters(model, filters or [])
+
+        # Try to find matching pre-aggregation. Only row-stage filters constrain
+        # matching dimensions; aggregate-stage metric filters are rendered as
+        # HAVING over derivable rollup measures.
         filter_exprs = []
-        if filters:
-            for f in filters:
+        if row_filters:
+            for f in row_filters:
                 # Strip model prefix for filter compatibility check
                 # e.g., "orders.status = 'completed'" -> "status = 'completed'"
                 filter_expr = f.replace(f"{model_name}.", "").replace(f"{model_name}_cte.", "")
@@ -4346,10 +4786,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             preagg=preagg,
             metrics=metrics,
             parsed_dims=parsed_dims,
-            filters=filters,
+            filters=row_filters,
+            aggregate_filters=aggregate_filters,
             order_by=order_by,
             limit=limit,
             offset=offset,
+            aliases=aliases,
         )
 
     def _generate_from_preaggregation(
@@ -4359,9 +4801,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         metrics: list[str],
         parsed_dims: list[tuple[str, str | None]],
         filters: list[str] | None = None,
+        aggregate_filters: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        aliases: dict[str, str] | None = None,
     ) -> str:
         """Generate SQL query from a pre-aggregation.
 
@@ -4370,7 +4814,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             preagg: The pre-aggregation to use
             metrics: List of metric references
             parsed_dims: Parsed dimension references with granularities
-            filters: List of filter expressions
+            filters: List of row-stage filter expressions
+            aggregate_filters: List of metric-stage filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows
             offset: Number of rows to skip
@@ -4378,10 +4823,32 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         Returns:
             SQL query string
         """
+        aliases = aliases or {}
         preagg_table = preagg.get_table_name(model.name, database=self.preagg_database, schema=self.preagg_schema)
 
         # Build SELECT clause
         select_exprs = []
+        output_names: dict[str, str] = {}
+
+        def register_output_name(output_name: str, *refs: str) -> None:
+            for ref in refs:
+                if ref:
+                    output_names[ref] = output_name
+
+        def dimension_output_name(dim_ref: str, dim_name: str, gran: str | None) -> str:
+            if gran:
+                full_ref = f"{dim_ref}__{gran}"
+                default = f"{dim_name}__{gran}"
+            else:
+                full_ref = dim_ref
+                default = dim_name
+
+            canonical_ref = full_ref if "." in full_ref else f"{model.name}.{full_ref}"
+            return aliases.get(full_ref) or aliases.get(canonical_ref) or default
+
+        def metric_output_name(metric_ref: str, metric_name: str) -> str:
+            canonical_ref = metric_ref if "." in metric_ref else f"{model.name}.{metric_ref}"
+            return aliases.get(metric_ref) or aliases.get(canonical_ref) or metric_name
 
         # Add dimensions
         for dim_ref, gran in parsed_dims:
@@ -4391,6 +4858,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             else:
                 dim_name = dim_ref
 
+            output_name = dimension_output_name(dim_ref, dim_name, gran)
+            full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+            canonical_ref = full_ref if "." in full_ref else f"{model.name}.{full_ref}"
+            default_name = f"{dim_name}__{gran}" if gran else dim_name
+            register_output_name(output_name, full_ref, canonical_ref, dim_name, default_name, output_name)
+
             # Check if this is the time dimension and needs granularity conversion
             if gran and preagg.time_dimension == dim_name:
                 # Need to convert from pre-agg granularity to query granularity
@@ -4398,14 +4871,17 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
                 if gran == preagg.granularity:
                     # Exact match - use as is with proper alias
-                    select_exprs.append(f"{preagg_col} as {dim_name}__{gran}")
+                    select_exprs.append(f"{preagg_col} AS {self._quote_alias(output_name)}")
                 else:
                     # Roll up to coarser granularity
                     date_trunc_expr = self._date_trunc(gran, preagg_col)
-                    select_exprs.append(f"{date_trunc_expr} as {dim_name}__{gran}")
+                    select_exprs.append(f"{date_trunc_expr} AS {self._quote_alias(output_name)}")
             else:
                 # Regular dimension - use as is
-                select_exprs.append(f"{dim_name}")
+                if output_name == dim_name:
+                    select_exprs.append(f"{dim_name}")
+                else:
+                    select_exprs.append(f"{dim_name} AS {self._quote_alias(output_name)}")
 
         # Add metrics
         for metric_ref in metrics:
@@ -4419,34 +4895,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if not metric:
                 continue
 
-            # Get the raw column name from pre-agg
-            raw_col = f"{metric_name}_raw"
+            output_name = metric_output_name(metric_ref, metric_name)
+            canonical_ref = metric_ref if "." in metric_ref else f"{model.name}.{metric_ref}"
+            register_output_name(output_name, metric_ref, canonical_ref, metric_name, output_name)
 
-            # Determine aggregation based on metric type
-            if metric.agg == "sum":
-                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
-            elif metric.agg == "count":
-                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
-            elif metric.agg == "avg":
-                # AVG = SUM(sum_raw) / SUM(count_raw)
-                # Need to find the correct count measure from pre-agg
-                from sidemantic.core.preagg_matcher import PreAggregationMatcher
-
-                matcher = PreAggregationMatcher(model)
-                count_measure = matcher._find_count_measure_for_avg(metric, preagg.measures or [])
-
-                if not count_measure:
-                    # Fallback to hard-coded count_raw (old behavior)
-                    count_measure = "count"
-
-                sum_col = f"{metric_name}_raw"
-                count_col = f"{count_measure}_raw"
-                select_exprs.append(f"SUM({sum_col}) / NULLIF(SUM({count_col}), 0) as {metric_name}")
-            elif metric.agg in ["min", "max"]:
-                select_exprs.append(f"{metric.agg.upper()}({raw_col}) as {metric_name}")
-            else:
-                # Default to SUM
-                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
+            metric_expr = self._preaggregation_metric_expression(model, preagg, metric_name)
+            select_exprs.append(f"{metric_expr} AS {self._quote_alias(output_name)}")
 
         # Build FROM clause
         from_clause = preagg_table
@@ -4484,16 +4938,29 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         if group_by_exprs:
             group_by_clause = f"\nGROUP BY {', '.join(group_by_exprs)}"
 
+        # Build HAVING clause for aggregate-stage metric filters
+        having_clause = ""
+        if aggregate_filters:
+            rewritten_having_filters = [
+                self._rewrite_preaggregation_aggregate_filter(model, preagg, f) for f in aggregate_filters
+            ]
+            having_clause = f"\nHAVING {' AND '.join(rewritten_having_filters)}"
+
         # Build ORDER BY clause
         order_by_clause = ""
         if order_by:
             order_clauses = []
             for field in order_by:
-                if "." in field:
-                    field_name = field.split(".", 1)[1]
-                else:
-                    field_name = field
-                order_clauses.append(field_name)
+                parts = field.rsplit(" ", 1)
+                direction = ""
+                field_ref = field
+                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
+                    field_ref = parts[0]
+                    direction = f" {parts[1].upper()}"
+
+                field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
+                output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
             order_by_clause = f"\nORDER BY {', '.join(order_clauses)}"
 
         # Build LIMIT/OFFSET clause
@@ -4507,7 +4974,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         select_exprs_str = ",\n  ".join(select_exprs)
         query = f"""SELECT
   {select_exprs_str}
-FROM {from_clause}{where_clause}{group_by_clause}{order_by_clause}{limit_clause}"""
+FROM {from_clause}{where_clause}{group_by_clause}{having_clause}{order_by_clause}{limit_clause}"""
 
         return query
 

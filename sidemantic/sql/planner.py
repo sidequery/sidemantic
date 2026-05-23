@@ -28,6 +28,8 @@ class SemanticQueryPlan:
     metrics: list[str] = field(default_factory=list)
     dimensions: list[str] = field(default_factory=list)
     filters: list[str] = field(default_factory=list)
+    row_filters: list[str] = field(default_factory=list)
+    aggregate_filters: list[str] = field(default_factory=list)
     order_by: list[str] | None = None
     limit: int | None = None
     offset: int | None = None
@@ -53,12 +55,15 @@ class RewriteExplanation:
     metrics: list[str] = field(default_factory=list)
     dimensions: list[str] = field(default_factory=list)
     filters: list[str] = field(default_factory=list)
+    row_filters: list[str] = field(default_factory=list)
+    aggregate_filters: list[str] = field(default_factory=list)
     order_by: list[str] | None = None
     limit: int | None = None
     offset: int | None = None
     aliases: dict[str, str] = field(default_factory=dict)
     candidate_plans: list[CandidatePlan] = field(default_factory=list)
     semantic_scopes: list[SemanticQueryPlan] = field(default_factory=list)
+    semantic_islands: list[dict[str, Any]] = field(default_factory=list)
     pushed_filters: list[str] = field(default_factory=list)
     post_process: str | None = None
     preaggregation: dict[str, Any] = field(default_factory=dict)

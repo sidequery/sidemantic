@@ -5,6 +5,7 @@ Parses user SQL and rewrites it to use the semantic layer.
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 import sqlglot
 from sqlglot import exp
@@ -43,11 +44,66 @@ class _ProjectionAnalysis:
 
 
 @dataclass
+class _AggregateBoundaryAnalysis:
+    metrics: list[str]
+    dimensions: list[str]
+    aliases: dict[str, str]
+    visible_name_to_ref: dict[str, str]
+    projected_refs: set[str]
+    row_filters: list[str]
+    aggregate_filters: list[str]
+    applied_rules: list[str]
+
+    @property
+    def pushed_filters(self) -> list[str]:
+        return [*self.row_filters, *self.aggregate_filters]
+
+
+@dataclass
+class _FilterTranslation:
+    row_filters: list[str]
+    aggregate_filters: list[str]
+
+    @property
+    def filters(self) -> list[str]:
+        return [*self.row_filters, *self.aggregate_filters]
+
+
+@dataclass
 class _WrappedOptimization:
     plan: SemanticQueryPlan
     pushed_filters: list[str]
     applied_rules: list[str]
     rejected_rules: dict[str, str]
+
+
+@dataclass
+class _SemanticIslandRewrite:
+    name: str
+    source_kind: str
+    source_sql: str
+    rewritten_sql: str
+    plan: SemanticQueryPlan
+    applied_rules: list[str]
+    rejected_rules: dict[str, str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "source_kind": self.source_kind,
+            "source_sql": self.source_sql,
+            "rewritten_sql": self.rewritten_sql,
+            "chosen_plan": self.plan.candidate_kind,
+            "metrics": list(self.plan.metrics),
+            "dimensions": list(self.plan.dimensions),
+            "filters": list(self.plan.filters),
+            "row_filters": list(self.plan.row_filters),
+            "aggregate_filters": list(self.plan.aggregate_filters),
+            "applied_rules": list(self.applied_rules),
+            "rejected_rules": dict(self.rejected_rules),
+            "preaggregation": dict(self.plan.eligibility.get("single_model_preaggregation", {})),
+            "fanout": dict(self.plan.eligibility.get("fanout_preaggregation", {})),
+        }
 
 
 class QueryRewriter:
@@ -135,11 +191,17 @@ class QueryRewriter:
             # In non-strict mode, pass through unparseable SQL (e.g., SHOW, SET commands)
             return sql
 
-        if not isinstance(parsed, exp.Select):
+        if not isinstance(parsed, (exp.Select, exp.SetOperation)):
             if strict:
                 raise ValueError("Only SELECT queries are supported")
             # In non-strict mode, pass through non-SELECT queries
             return sql
+
+        if isinstance(parsed, exp.SetOperation):
+            if not self._expression_tree_references_semantic_model(parsed):
+                return sql
+            self._raise_on_user_cte_name_collision(parsed)
+            return self._rewrite_set_operation(parsed)
 
         if self._contains_implicit_yardstick_measure_query(parsed):
             try:
@@ -280,10 +342,16 @@ class QueryRewriter:
                 warning=f"SQL parse failed: {e}",
             )
 
-        if not isinstance(parsed, exp.Select):
+        if not isinstance(parsed, (exp.Select, exp.SetOperation)):
             if strict:
                 raise ValueError("Only SELECT queries are supported")
             return self._passthrough_explanation(sql, reason="not_select")
+
+        if isinstance(parsed, exp.SetOperation):
+            if not self._expression_tree_references_semantic_model(parsed):
+                return self._passthrough_explanation(sql, reason="no_semantic_model_reference")
+            self._raise_on_user_cte_name_collision(parsed)
+            return self._explain_set_operation(sql, parsed)
 
         if self._contains_implicit_yardstick_measure_query(parsed):
             try:
@@ -387,10 +455,16 @@ class QueryRewriter:
             explanation.rejected_rules = optimization.rejected_rules
             return explanation
 
-        semantic_scopes, warnings = self._collect_semantic_scopes(parsed)
         root_references_semantic_model = self._references_semantic_model(parsed)
 
-        rewritten_sql = self._rewrite_with_ctes_or_subqueries(parsed.copy())
+        rewritten_sql, semantic_islands, island_rejected_rules, warnings = (
+            self._rewrite_with_ctes_or_subqueries_and_islands(parsed.copy())
+        )
+        semantic_scopes = [island.plan for island in semantic_islands]
+        if not semantic_scopes:
+            semantic_scopes, scope_warnings = self._collect_semantic_scopes(parsed)
+            warnings.extend(scope_warnings)
+        rejected_rules = {**rejected_rules, **island_rejected_rules}
 
         if root_references_semantic_model and len(semantic_scopes) == 1:
             chosen_plan = semantic_scopes[0].candidate_kind
@@ -408,9 +482,67 @@ class QueryRewriter:
             metrics=self._dedupe([metric for scope in semantic_scopes for metric in scope.metrics]),
             dimensions=self._dedupe([dimension for scope in semantic_scopes for dimension in scope.dimensions]),
             filters=self._dedupe([filter_expr for scope in semantic_scopes for filter_expr in scope.filters]),
+            row_filters=self._dedupe([filter_expr for scope in semantic_scopes for filter_expr in scope.row_filters]),
+            aggregate_filters=self._dedupe(
+                [filter_expr for scope in semantic_scopes for filter_expr in scope.aggregate_filters]
+            ),
             candidate_plans=candidate_plans,
             semantic_scopes=semantic_scopes,
+            semantic_islands=[island.to_dict() for island in semantic_islands],
             post_process=parsed.sql(dialect=self.dialect) if not root_references_semantic_model else None,
+            applied_rules=self._dedupe(
+                [
+                    *(
+                        ["set_operation_branch_optimization"]
+                        if any(island.source_kind == "set_operation_branch" for island in semantic_islands)
+                        else []
+                    ),
+                    *[rule for island in semantic_islands for rule in island.applied_rules],
+                ]
+            ),
+            rejected_rules=rejected_rules,
+            warnings=warnings,
+        )
+
+    def _explain_set_operation(self, sql: str, parsed: exp.SetOperation) -> RewriteExplanation:
+        rewritten_sql, semantic_islands, rejected_rules, warnings = self._rewrite_set_operation_with_islands(
+            parsed.copy()
+        )
+        semantic_scopes = [island.plan for island in semantic_islands]
+        chosen_plan = "semantic_plus_postprocess" if semantic_scopes else "passthrough_plain_sql"
+        candidate_plans = self._candidate_plans_for_scopes(semantic_scopes, chosen_plan)
+        if semantic_scopes:
+            candidate_plans.append(
+                CandidatePlan(
+                    name="set_operation_branch_optimization",
+                    valid=True,
+                    reason="semantic branches inside a set operation were optimized independently",
+                    details={"island_count": len(semantic_islands)},
+                )
+            )
+
+        return RewriteExplanation(
+            input_sql=sql,
+            rewritten_sql=rewritten_sql,
+            chosen_plan=chosen_plan,
+            source_kind="set_operation",
+            metrics=self._dedupe([metric for scope in semantic_scopes for metric in scope.metrics]),
+            dimensions=self._dedupe([dimension for scope in semantic_scopes for dimension in scope.dimensions]),
+            filters=self._dedupe([filter_expr for scope in semantic_scopes for filter_expr in scope.filters]),
+            row_filters=self._dedupe([filter_expr for scope in semantic_scopes for filter_expr in scope.row_filters]),
+            aggregate_filters=self._dedupe(
+                [filter_expr for scope in semantic_scopes for filter_expr in scope.aggregate_filters]
+            ),
+            candidate_plans=candidate_plans,
+            semantic_scopes=semantic_scopes,
+            semantic_islands=[island.to_dict() for island in semantic_islands],
+            post_process=parsed.sql(dialect=self.dialect),
+            applied_rules=self._dedupe(
+                [
+                    *(["set_operation_branch_optimization"] if semantic_scopes else []),
+                    *[rule for island in semantic_islands for rule in island.applied_rules],
+                ]
+            ),
             rejected_rules=rejected_rules,
             warnings=warnings,
         )
@@ -419,11 +551,21 @@ class QueryRewriter:
         self, parsed: exp.Select
     ) -> tuple[_WrappedOptimization | None, dict[str, str]]:
         rejected_rules: dict[str, str] = {}
+
+        qualify_topn_optimization = self._optimize_qualify_row_number_topn(parsed, rejected_rules)
+        if qualify_topn_optimization is not None:
+            return qualify_topn_optimization, rejected_rules
+
+        topn_optimization = self._optimize_global_row_number_topn(parsed, rejected_rules)
+        if topn_optimization is not None:
+            return topn_optimization, rejected_rules
+
+        cte_chain_optimization = self._optimize_linear_cte_chain(parsed, rejected_rules)
+        if cte_chain_optimization is not None:
+            return cte_chain_optimization, rejected_rules
+
         source = self._wrapped_semantic_source(parsed, rejected_rules)
         if source is None:
-            return None, rejected_rules
-
-        if self._wrapper_has_blocking_features(parsed, rejected_rules):
             return None, rejected_rules
 
         try:
@@ -433,6 +575,164 @@ class QueryRewriter:
             return None, rejected_rules
 
         output_name_to_ref = self._plan_output_name_to_ref(plan)
+
+        if self._outer_has_aggregate_boundary(parsed):
+            same_grain = self._analyze_same_grain_aggregate_wrapper(
+                parsed,
+                source,
+                plan,
+                output_name_to_ref,
+                rejected_rules,
+            )
+            if same_grain is not None:
+                plan.metrics = same_grain.metrics
+                plan.dimensions = same_grain.dimensions
+                plan.aliases = same_grain.aliases
+
+                applied_rules = ["wrapper_flattening", *same_grain.applied_rules]
+                pushed_filters: list[str] = []
+
+                filters = self._translated_outer_filters(parsed, source, plan, output_name_to_ref, rejected_rules)
+                if filters is None:
+                    return None, rejected_rules
+                if filters.filters:
+                    plan.filters = [*plan.filters, *filters.filters]
+                    plan.row_filters = [*plan.row_filters, *filters.row_filters]
+                    plan.aggregate_filters = [*plan.aggregate_filters, *filters.aggregate_filters]
+                    pushed_filters = filters.filters
+                    if filters.row_filters:
+                        applied_rules.append("safe_filter_pushdown")
+                    if filters.aggregate_filters:
+                        applied_rules.append("safe_metric_filter_having_pushdown")
+
+                order_by = self._translated_outer_order_by(
+                    parsed,
+                    source,
+                    same_grain.visible_name_to_ref,
+                    output_name_to_ref,
+                    same_grain.projected_refs,
+                    rejected_rules,
+                )
+                if order_by is None:
+                    return None, rejected_rules
+                if order_by:
+                    plan.order_by = order_by
+                    applied_rules.append("safe_order_pushdown")
+
+                if not self._apply_outer_limit_offset(parsed, plan, rejected_rules):
+                    return None, rejected_rules
+                if parsed.args.get("limit") is not None or parsed.args.get("offset") is not None:
+                    applied_rules.append("safe_limit_pushdown")
+
+                plan.eligibility = self._plan_eligibility(plan)
+                plan.candidate_kind = self._chosen_candidate_kind(plan)
+                plan.candidate_plans = self._candidate_plans_for_plan(plan)
+                plan.candidate_plans.append(
+                    CandidatePlan(
+                        name="same_grain_metric_wrapper",
+                        valid=True,
+                        reason="outer GROUP BY repeats the inner semantic output grain",
+                    )
+                )
+                if plan.candidate_kind == "single_model_preaggregation":
+                    applied_rules.append("preaggregation_route_selection")
+                if plan.candidate_kind == "join_key_preaggregation":
+                    applied_rules.append("join_key_preaggregation_route_selection")
+                if plan.candidate_kind == "fanout_preaggregation":
+                    applied_rules.append("fanout_strategy_selection")
+                plan.applied_rules = self._dedupe(applied_rules)
+                plan.rejected_rules = rejected_rules
+
+                return (
+                    _WrappedOptimization(
+                        plan=plan,
+                        pushed_filters=pushed_filters,
+                        applied_rules=plan.applied_rules,
+                        rejected_rules=rejected_rules,
+                    ),
+                    rejected_rules,
+                )
+
+            aggregate_boundary = self._analyze_wrapper_aggregate_boundary(
+                parsed,
+                source,
+                plan,
+                output_name_to_ref,
+                rejected_rules,
+            )
+            if aggregate_boundary is None:
+                return None, rejected_rules
+
+            plan.metrics = aggregate_boundary.metrics
+            plan.dimensions = aggregate_boundary.dimensions
+            plan.aliases = aggregate_boundary.aliases
+            if aggregate_boundary.pushed_filters:
+                plan.filters = [*plan.filters, *aggregate_boundary.pushed_filters]
+                plan.row_filters = [*plan.row_filters, *aggregate_boundary.row_filters]
+                plan.aggregate_filters = [*plan.aggregate_filters, *aggregate_boundary.aggregate_filters]
+
+            applied_rules = ["wrapper_flattening", *aggregate_boundary.applied_rules]
+
+            order_by = self._translated_outer_order_by(
+                parsed,
+                source,
+                aggregate_boundary.visible_name_to_ref,
+                output_name_to_ref,
+                aggregate_boundary.projected_refs,
+                rejected_rules,
+            )
+            if order_by is None:
+                return None, rejected_rules
+            if order_by:
+                plan.order_by = order_by
+                applied_rules.append("safe_order_pushdown")
+
+            if not self._apply_outer_limit_offset(parsed, plan, rejected_rules):
+                return None, rejected_rules
+            if parsed.args.get("limit") is not None or parsed.args.get("offset") is not None:
+                applied_rules.append("safe_limit_pushdown")
+
+            plan.eligibility = self._plan_eligibility(plan)
+            plan.candidate_kind = self._chosen_candidate_kind(plan)
+            plan.candidate_plans = self._candidate_plans_for_plan(plan)
+            plan.candidate_plans.append(
+                CandidatePlan(
+                    name="aggregate_boundary_rollup",
+                    valid=True,
+                    reason="outer aggregate rolls up semantic metric outputs",
+                )
+            )
+            if plan.candidate_kind == "single_model_preaggregation":
+                applied_rules.append("preaggregation_route_selection")
+            if plan.candidate_kind == "join_key_preaggregation":
+                applied_rules.append("join_key_preaggregation_route_selection")
+            if plan.candidate_kind == "fanout_preaggregation":
+                applied_rules.append("fanout_strategy_selection")
+            plan.applied_rules = self._dedupe(applied_rules)
+            plan.rejected_rules = rejected_rules
+
+            return (
+                _WrappedOptimization(
+                    plan=plan,
+                    pushed_filters=aggregate_boundary.pushed_filters,
+                    applied_rules=plan.applied_rules,
+                    rejected_rules=rejected_rules,
+                ),
+                rejected_rules,
+            )
+
+        if self._wrapper_has_blocking_features(parsed, rejected_rules):
+            distinct_optimization = self._optimize_dimension_distinct_wrapper(
+                parsed,
+                source,
+                plan,
+                output_name_to_ref,
+                rejected_rules,
+            )
+            if distinct_optimization is not None:
+                return distinct_optimization, rejected_rules
+            return None, rejected_rules
+
         projection = self._analyze_wrapper_projection(parsed, source, plan, output_name_to_ref, rejected_rules)
         if projection is None:
             return None, rejected_rules
@@ -447,10 +747,15 @@ class QueryRewriter:
         filters = self._translated_outer_filters(parsed, source, plan, output_name_to_ref, rejected_rules)
         if filters is None:
             return None, rejected_rules
-        if filters:
-            plan.filters = [*plan.filters, *filters]
-            pushed_filters = filters
-            applied_rules.append("safe_filter_pushdown")
+        if filters.filters:
+            plan.filters = [*plan.filters, *filters.filters]
+            plan.row_filters = [*plan.row_filters, *filters.row_filters]
+            plan.aggregate_filters = [*plan.aggregate_filters, *filters.aggregate_filters]
+            pushed_filters = filters.filters
+            if filters.row_filters:
+                applied_rules.append("safe_filter_pushdown")
+            if filters.aggregate_filters:
+                applied_rules.append("safe_metric_filter_having_pushdown")
 
         order_by = self._translated_outer_order_by(
             parsed,
@@ -476,6 +781,8 @@ class QueryRewriter:
         plan.candidate_plans = self._candidate_plans_for_plan(plan)
         if plan.candidate_kind == "single_model_preaggregation":
             applied_rules.append("preaggregation_route_selection")
+        if plan.candidate_kind == "join_key_preaggregation":
+            applied_rules.append("join_key_preaggregation_route_selection")
         if plan.candidate_kind == "fanout_preaggregation":
             applied_rules.append("fanout_strategy_selection")
         plan.applied_rules = self._dedupe(applied_rules)
@@ -490,6 +797,726 @@ class QueryRewriter:
             ),
             rejected_rules,
         )
+
+    def _finalize_wrapped_optimization(
+        self,
+        plan: SemanticQueryPlan,
+        applied_rules: list[str],
+        pushed_filters: list[str],
+        rejected_rules: dict[str, str],
+        extra_candidate: CandidatePlan | None = None,
+    ) -> _WrappedOptimization:
+        plan.eligibility = self._plan_eligibility(plan)
+        plan.candidate_kind = self._chosen_candidate_kind(plan)
+        plan.candidate_plans = self._candidate_plans_for_plan(plan)
+        if extra_candidate is not None:
+            plan.candidate_plans.append(extra_candidate)
+        if plan.candidate_kind == "single_model_preaggregation":
+            applied_rules.append("preaggregation_route_selection")
+        if plan.candidate_kind == "join_key_preaggregation":
+            applied_rules.append("join_key_preaggregation_route_selection")
+        if plan.candidate_kind == "fanout_preaggregation":
+            applied_rules.append("fanout_strategy_selection")
+        plan.applied_rules = self._dedupe(applied_rules)
+        plan.rejected_rules = rejected_rules
+        return _WrappedOptimization(
+            plan=plan,
+            pushed_filters=pushed_filters,
+            applied_rules=plan.applied_rules,
+            rejected_rules=rejected_rules,
+        )
+
+    def _optimize_linear_cte_chain(
+        self,
+        parsed: exp.Select,
+        rejected_rules: dict[str, str],
+    ) -> _WrappedOptimization | None:
+        with_clause = parsed.args.get("with")
+        if not with_clause or len(with_clause.expressions) < 2:
+            return None
+
+        from_clause = parsed.args.get("from")
+        if not from_clause or not isinstance(from_clause.this, exp.Table):
+            rejected_rules["linear_cte_chain_flattening"] = "root query does not read from a CTE"
+            return None
+
+        ctes_by_name = {cte.alias: cte for cte in with_clause.expressions}
+        if len(ctes_by_name) != len(with_clause.expressions):
+            rejected_rules["linear_cte_chain_flattening"] = "duplicate CTE aliases are not supported"
+            return None
+
+        root_name = from_clause.this.name
+        if root_name not in ctes_by_name:
+            return None
+
+        cte_names = set(ctes_by_name)
+        reference_counts = {name: 0 for name in cte_names}
+        for table in parsed.find_all(exp.Table):
+            if table.name in reference_counts:
+                reference_counts[table.name] += 1
+        multi_refs = [name for name, count in reference_counts.items() if count > 1]
+        if multi_refs:
+            rejected_rules["linear_cte_chain_flattening"] = "CTE referenced more than once"
+            return None
+
+        chain_names_reversed: list[str] = []
+        current_name = root_name
+        base_cte = None
+        while current_name in ctes_by_name:
+            cte = ctes_by_name[current_name]
+            cte_select = cte.this
+            if not isinstance(cte_select, exp.Select):
+                rejected_rules["linear_cte_chain_flattening"] = "chain CTE is not a SELECT"
+                return None
+            chain_names_reversed.append(current_name)
+            if self._references_semantic_model(cte_select):
+                base_cte = cte
+                break
+            cte_from = cte_select.args.get("from")
+            if (
+                not cte_from
+                or not isinstance(cte_from.this, exp.Table)
+                or cte_from.this.name not in ctes_by_name
+                or cte_select.args.get("joins")
+            ):
+                rejected_rules["linear_cte_chain_flattening"] = "CTE chain is not linear"
+                return None
+            current_name = cte_from.this.name
+
+        if base_cte is None:
+            rejected_rules["linear_cte_chain_flattening"] = "chain does not start from a semantic CTE"
+            return None
+
+        chain_names = list(reversed(chain_names_reversed))
+        if set(chain_names) != cte_names:
+            rejected_rules["linear_cte_chain_flattening"] = "WITH contains CTEs outside the linear chain"
+            return None
+
+        try:
+            plan = self._plan_simple_query(base_cte.this.copy())
+        except Exception as e:
+            rejected_rules["linear_cte_chain_flattening"] = f"base semantic CTE cannot be planned: {e}"
+            return None
+
+        applied_rules = ["wrapper_flattening", "linear_cte_chain_flattening"]
+        pushed_filters: list[str] = []
+        previous_name = chain_names[0]
+        for step_name in chain_names[1:]:
+            step = ctes_by_name[step_name].this.copy()
+            step_filters = self._apply_linear_wrapper_step(
+                plan,
+                step,
+                previous_name,
+                rejected_rules,
+                applied_rules,
+            )
+            if step_filters is None:
+                return None
+            pushed_filters.extend(step_filters)
+            previous_name = step_name
+
+        root_step = parsed.copy()
+        root_step.set("with", None)
+        root_filters = self._apply_linear_wrapper_step(
+            plan,
+            root_step,
+            previous_name,
+            rejected_rules,
+            applied_rules,
+        )
+        if root_filters is None:
+            return None
+        pushed_filters.extend(root_filters)
+
+        return self._finalize_wrapped_optimization(
+            plan=plan,
+            applied_rules=applied_rules,
+            pushed_filters=pushed_filters,
+            rejected_rules=rejected_rules,
+            extra_candidate=CandidatePlan(
+                name="linear_cte_chain_flattening",
+                valid=True,
+                reason="linear CTE wrapper chain composed into one semantic plan",
+            ),
+        )
+
+    def _apply_linear_wrapper_step(
+        self,
+        plan: SemanticQueryPlan,
+        select: exp.Select,
+        source_name: str,
+        rejected_rules: dict[str, str],
+        applied_rules: list[str],
+    ) -> list[str] | None:
+        rule_name = "linear_cte_chain_flattening"
+        if select.args.get("with"):
+            rejected_rules[rule_name] = "nested WITH is not supported in a linear CTE step"
+            return None
+        if self._outer_has_aggregate_boundary(select):
+            rejected_rules[rule_name] = "aggregate wrapper step is not supported"
+            return None
+        if self._wrapper_has_blocking_features(select, rejected_rules):
+            rejected_rules[rule_name] = rejected_rules.get("wrapper_flattening", "wrapper step has blocking features")
+            return None
+        if (plan.limit is not None or plan.offset is not None) and (
+            select.args.get("where") is not None or select.args.get("order") is not None
+        ):
+            rejected_rules[rule_name] = "filter or order after LIMIT is not safely composable"
+            return None
+
+        output_name_to_ref = self._plan_output_name_to_ref(plan)
+        source = _WrappedSemanticSource(
+            inner_select=exp.select("*"),
+            source_name=source_name,
+            source_kind="cte_chain",
+        )
+        projection = self._analyze_wrapper_projection(select, source, plan, output_name_to_ref, rejected_rules)
+        if projection is None:
+            rejected_rules[rule_name] = rejected_rules.get("wrapper_flattening", "projection step is not supported")
+            return None
+
+        plan.metrics = projection.metrics
+        plan.dimensions = projection.dimensions
+        plan.aliases = projection.aliases
+        applied_rules.extend(projection.applied_rules)
+
+        output_name_to_ref = self._plan_output_name_to_ref(plan)
+        filters = self._translated_outer_filters(select, source, plan, output_name_to_ref, rejected_rules)
+        if filters is None:
+            rejected_rules[rule_name] = rejected_rules.get("safe_filter_pushdown", "filter step is not supported")
+            return None
+        if filters.filters:
+            plan.filters = [*plan.filters, *filters.filters]
+            plan.row_filters = [*plan.row_filters, *filters.row_filters]
+            plan.aggregate_filters = [*plan.aggregate_filters, *filters.aggregate_filters]
+            if filters.row_filters:
+                applied_rules.append("safe_filter_pushdown")
+            if filters.aggregate_filters:
+                applied_rules.append("safe_metric_filter_having_pushdown")
+
+        order_by = self._translated_outer_order_by(
+            select,
+            source,
+            projection.visible_name_to_ref,
+            output_name_to_ref,
+            projection.projected_refs,
+            rejected_rules,
+        )
+        if order_by is None:
+            rejected_rules[rule_name] = rejected_rules.get("safe_order_pushdown", "order step is not supported")
+            return None
+        if order_by:
+            plan.order_by = order_by
+            applied_rules.append("safe_order_pushdown")
+
+        if not self._apply_outer_limit_offset(select, plan, rejected_rules):
+            rejected_rules[rule_name] = rejected_rules.get("safe_limit_pushdown", "limit step is not supported")
+            return None
+        if select.args.get("limit") is not None or select.args.get("offset") is not None:
+            applied_rules.append("safe_limit_pushdown")
+
+        return filters.filters
+
+    def _optimize_dimension_distinct_wrapper(
+        self,
+        parsed: exp.Select,
+        source: _WrappedSemanticSource,
+        plan: SemanticQueryPlan,
+        output_name_to_ref: dict[str, str],
+        rejected_rules: dict[str, str],
+    ) -> _WrappedOptimization | None:
+        rule_name = "dimension_distinct_wrapper"
+        if not parsed.args.get("distinct"):
+            return None
+        if plan.metrics:
+            rejected_rules[rule_name] = "inner semantic query projects metrics"
+            return None
+        if parsed.args.get("joins"):
+            rejected_rules[rule_name] = "outer query joins to another relation"
+            return None
+        if parsed.args.get("group") or parsed.args.get("having"):
+            rejected_rules[rule_name] = "outer query changes aggregation"
+            return None
+        if parsed.args.get("qualify"):
+            rejected_rules[rule_name] = "outer query uses QUALIFY"
+            return None
+        if any(parsed.find_all(exp.Window)):
+            rejected_rules[rule_name] = "outer query contains window functions"
+            return None
+        if source.inner_select.args.get("limit") or source.inner_select.args.get("offset"):
+            rejected_rules[rule_name] = "inner semantic query limits row membership"
+            return None
+
+        projection = self._analyze_wrapper_projection(parsed, source, plan, output_name_to_ref, rejected_rules)
+        if projection is None:
+            rejected_rules[rule_name] = rejected_rules.get("wrapper_flattening", "distinct projection is not supported")
+            return None
+        if projection.metrics:
+            rejected_rules[rule_name] = "distinct metric projection is not rollup-safe"
+            return None
+
+        plan.metrics = []
+        plan.dimensions = projection.dimensions
+        plan.aliases = projection.aliases
+
+        applied_rules = ["wrapper_flattening", rule_name, *projection.applied_rules]
+        pushed_filters: list[str] = []
+
+        filters = self._translated_outer_filters(parsed, source, plan, output_name_to_ref, rejected_rules)
+        if filters is None:
+            rejected_rules[rule_name] = rejected_rules.get("safe_filter_pushdown", "distinct filter is not supported")
+            return None
+        if filters.filters:
+            plan.filters = [*plan.filters, *filters.filters]
+            plan.row_filters = [*plan.row_filters, *filters.row_filters]
+            plan.aggregate_filters = [*plan.aggregate_filters, *filters.aggregate_filters]
+            pushed_filters = filters.filters
+            if filters.row_filters:
+                applied_rules.append("safe_filter_pushdown")
+            if filters.aggregate_filters:
+                rejected_rules[rule_name] = "distinct metric filters are not supported"
+                return None
+
+        order_by = self._translated_outer_order_by(
+            parsed,
+            source,
+            projection.visible_name_to_ref,
+            output_name_to_ref,
+            projection.projected_refs,
+            rejected_rules,
+        )
+        if order_by is None:
+            rejected_rules[rule_name] = rejected_rules.get("safe_order_pushdown", "distinct order is not supported")
+            return None
+        if order_by:
+            plan.order_by = order_by
+            applied_rules.append("safe_order_pushdown")
+
+        if not self._apply_outer_limit_offset(parsed, plan, rejected_rules):
+            rejected_rules[rule_name] = rejected_rules.get("safe_limit_pushdown", "distinct limit is not supported")
+            return None
+        if parsed.args.get("limit") is not None or parsed.args.get("offset") is not None:
+            applied_rules.append("safe_limit_pushdown")
+
+        return self._finalize_wrapped_optimization(
+            plan=plan,
+            applied_rules=applied_rules,
+            pushed_filters=pushed_filters,
+            rejected_rules=rejected_rules,
+            extra_candidate=CandidatePlan(
+                name=rule_name,
+                valid=True,
+                reason="dimension-only DISTINCT wrapper has the same grain as a semantic dimension query",
+            ),
+        )
+
+    def _optimize_global_row_number_topn(
+        self,
+        parsed: exp.Select,
+        rejected_rules: dict[str, str],
+    ) -> _WrappedOptimization | None:
+        from_clause = parsed.args.get("from")
+        if not from_clause or not isinstance(from_clause.this, exp.Subquery):
+            return None
+
+        ranked_subquery = from_clause.this
+        ranked_select = ranked_subquery.this
+        if not isinstance(ranked_select, exp.Select):
+            return None
+        if not any(isinstance(self._projection_expression(expr), exp.Window) for expr in ranked_select.expressions):
+            return None
+
+        rule_name = "global_row_number_topn"
+        if (
+            parsed.args.get("joins")
+            or parsed.args.get("group")
+            or parsed.args.get("having")
+            or parsed.args.get("qualify")
+        ):
+            rejected_rules[rule_name] = "outer query has blocking features"
+            return None
+        if parsed.args.get("distinct") or parsed.args.get("limit") or parsed.args.get("offset"):
+            rejected_rules[rule_name] = "outer DISTINCT/LIMIT/OFFSET is not supported"
+            return None
+
+        topn_limit, topn_offset, row_number_alias = self._extract_row_number_topn_filter(
+            parsed, ranked_subquery.alias_or_name
+        )
+        if topn_limit is None or row_number_alias is None:
+            rejected_rules[rule_name] = "outer WHERE is not a simple row_number upper bound"
+            return None
+
+        source = self._wrapped_semantic_source(ranked_select, rejected_rules)
+        if source is None:
+            rejected_rules[rule_name] = "ranked source is not a direct semantic wrapper"
+            return None
+
+        try:
+            plan = self._plan_simple_query(source.inner_select.copy())
+        except Exception as e:
+            rejected_rules[rule_name] = f"ranked semantic source cannot be planned: {e}"
+            return None
+
+        ranked_projection = self._analyze_ranked_topn_projection(
+            ranked_select,
+            source,
+            plan,
+            row_number_alias,
+            rejected_rules,
+        )
+        if ranked_projection is None:
+            return None
+
+        plan.metrics = ranked_projection.metrics
+        plan.dimensions = ranked_projection.dimensions
+        plan.aliases = ranked_projection.aliases
+
+        order_by = self._translated_row_number_order_by(
+            ranked_select,
+            row_number_alias,
+            ranked_projection.visible_name_to_ref,
+            ranked_projection.projected_refs,
+            rejected_rules,
+        )
+        if order_by is None:
+            return None
+        plan.order_by = order_by
+        plan.limit = topn_limit
+        plan.offset = topn_offset
+
+        outer_source = _WrappedSemanticSource(
+            inner_select=ranked_select,
+            source_name=ranked_subquery.alias_or_name or "",
+            source_kind="row_number_topn",
+        )
+        output_name_to_ref = dict(ranked_projection.visible_name_to_ref)
+        outer_projection = self._analyze_wrapper_projection(
+            parsed,
+            outer_source,
+            plan,
+            output_name_to_ref,
+            rejected_rules,
+        )
+        if outer_projection is None:
+            rejected_rules[rule_name] = rejected_rules.get(
+                "wrapper_flattening", "outer top-N projection is not supported"
+            )
+            return None
+
+        plan.metrics = outer_projection.metrics
+        plan.dimensions = outer_projection.dimensions
+        plan.aliases = outer_projection.aliases
+
+        outer_order_by = self._translated_outer_order_by(
+            parsed,
+            outer_source,
+            outer_projection.visible_name_to_ref,
+            output_name_to_ref,
+            outer_projection.projected_refs,
+            rejected_rules,
+        )
+        if outer_order_by is None:
+            rejected_rules[rule_name] = rejected_rules.get("safe_order_pushdown", "outer top-N order is not supported")
+            return None
+        if outer_order_by and outer_order_by != order_by:
+            rejected_rules[rule_name] = "outer ORDER BY differs from row_number order"
+            return None
+
+        return self._finalize_wrapped_optimization(
+            plan=plan,
+            applied_rules=[
+                "wrapper_flattening",
+                rule_name,
+                "safe_order_pushdown",
+                "safe_limit_pushdown",
+                *ranked_projection.applied_rules,
+                *outer_projection.applied_rules,
+            ],
+            pushed_filters=[],
+            rejected_rules=rejected_rules,
+            extra_candidate=CandidatePlan(
+                name=rule_name,
+                valid=True,
+                reason="global ROW_NUMBER filter is equivalent to ORDER BY plus LIMIT",
+            ),
+        )
+
+    def _extract_row_number_topn_filter(
+        self,
+        select: exp.Select,
+        source_name: str,
+    ) -> tuple[int | None, int | None, str | None]:
+        where_clause = select.args.get("where")
+        if not where_clause:
+            return None, None, None
+        predicate = where_clause.this
+
+        if isinstance(predicate, exp.Between):
+            row_number = predicate.this
+            low = predicate.args.get("low")
+            high = predicate.args.get("high")
+            if (
+                not isinstance(row_number, exp.Column)
+                or not isinstance(low, exp.Literal)
+                or not isinstance(high, exp.Literal)
+                or not low.is_int
+                or not high.is_int
+            ):
+                return None, None, None
+            if row_number.table and row_number.table != source_name:
+                return None, None, None
+            start = int(low.this)
+            end = int(high.this)
+            if start <= 0 or end < start:
+                return None, None, None
+            return end - start + 1, start - 1, row_number.name
+
+        if not isinstance(predicate, (exp.LTE, exp.LT)):
+            return None, None, None
+
+        left = predicate.this
+        right = predicate.expression
+        if not isinstance(left, exp.Column) or not isinstance(right, exp.Literal) or not right.is_int:
+            return None, None, None
+        if left.table and left.table != source_name:
+            return None, None, None
+
+        value = int(right.this)
+        if isinstance(predicate, exp.LT):
+            value -= 1
+        if value <= 0:
+            return None, None, None
+        return value, None, left.name
+
+    def _optimize_qualify_row_number_topn(
+        self,
+        parsed: exp.Select,
+        rejected_rules: dict[str, str],
+    ) -> _WrappedOptimization | None:
+        qualify_clause = parsed.args.get("qualify")
+        if not qualify_clause:
+            return None
+
+        rule_name = "qualify_row_number_topn"
+        if parsed.args.get("joins") or parsed.args.get("group") or parsed.args.get("having"):
+            rejected_rules[rule_name] = "outer query has blocking features"
+            return None
+        if parsed.args.get("distinct") or parsed.args.get("limit") or parsed.args.get("offset"):
+            rejected_rules[rule_name] = "outer DISTINCT/LIMIT/OFFSET is not supported"
+            return None
+        if parsed.args.get("where"):
+            rejected_rules[rule_name] = "outer WHERE with QUALIFY top-N is not supported"
+            return None
+
+        topn_limit, row_number_window = self._extract_qualify_row_number_bound(qualify_clause.this)
+        if topn_limit is None or row_number_window is None:
+            rejected_rules[rule_name] = "QUALIFY is not a simple row_number upper bound"
+            return None
+
+        source = self._wrapped_semantic_source(parsed, rejected_rules)
+        if source is None:
+            rejected_rules[rule_name] = "QUALIFY source is not a direct semantic wrapper"
+            return None
+
+        try:
+            plan = self._plan_simple_query(source.inner_select.copy())
+        except Exception as e:
+            rejected_rules[rule_name] = f"QUALIFY semantic source cannot be planned: {e}"
+            return None
+
+        output_name_to_ref = self._plan_output_name_to_ref(plan)
+        projection = self._analyze_wrapper_projection(parsed, source, plan, output_name_to_ref, rejected_rules)
+        if projection is None:
+            rejected_rules[rule_name] = rejected_rules.get(
+                "wrapper_flattening", "QUALIFY top-N projection is not supported"
+            )
+            return None
+
+        plan.metrics = projection.metrics
+        plan.dimensions = projection.dimensions
+        plan.aliases = projection.aliases
+
+        order_by = self._translated_window_order_by(
+            row_number_window,
+            projection.visible_name_to_ref,
+            projection.projected_refs,
+            rejected_rules,
+            rule_name=rule_name,
+        )
+        if order_by is None:
+            return None
+        plan.order_by = order_by
+        plan.limit = topn_limit
+
+        return self._finalize_wrapped_optimization(
+            plan=plan,
+            applied_rules=[
+                "wrapper_flattening",
+                rule_name,
+                "safe_order_pushdown",
+                "safe_limit_pushdown",
+                *projection.applied_rules,
+            ],
+            pushed_filters=[],
+            rejected_rules=rejected_rules,
+            extra_candidate=CandidatePlan(
+                name=rule_name,
+                valid=True,
+                reason="global QUALIFY ROW_NUMBER filter is equivalent to ORDER BY plus LIMIT",
+            ),
+        )
+
+    def _extract_qualify_row_number_bound(self, predicate: exp.Expression) -> tuple[int | None, exp.Window | None]:
+        if not isinstance(predicate, (exp.LTE, exp.LT)):
+            return None, None
+
+        left = predicate.this
+        right = predicate.expression
+        if not isinstance(left, exp.Window) or not isinstance(right, exp.Literal) or not right.is_int:
+            return None, None
+        if not isinstance(left.this, exp.RowNumber):
+            return None, None
+        if left.args.get("partition_by"):
+            return None, None
+        if not left.args.get("order"):
+            return None, None
+
+        value = int(right.this)
+        if isinstance(predicate, exp.LT):
+            value -= 1
+        if value <= 0:
+            return None, None
+        return value, left
+
+    def _analyze_ranked_topn_projection(
+        self,
+        select: exp.Select,
+        source: _WrappedSemanticSource,
+        plan: SemanticQueryPlan,
+        row_number_alias: str,
+        rejected_rules: dict[str, str],
+    ) -> _ProjectionAnalysis | None:
+        rule_name = "global_row_number_topn"
+        if (
+            select.args.get("where")
+            or select.args.get("group")
+            or select.args.get("having")
+            or select.args.get("qualify")
+        ):
+            rejected_rules[rule_name] = "ranked query has blocking clauses"
+            return None
+        if select.args.get("distinct") or select.args.get("limit") or select.args.get("offset"):
+            rejected_rules[rule_name] = "ranked query DISTINCT/LIMIT/OFFSET is not supported"
+            return None
+        if select.args.get("joins"):
+            rejected_rules[rule_name] = "ranked query joins another relation"
+            return None
+
+        row_number_count = 0
+        non_window_projections: list[exp.Expression] = []
+        for projection in select.expressions:
+            alias = projection.alias if isinstance(projection, exp.Alias) else None
+            expression = self._projection_expression(projection)
+            if isinstance(expression, exp.Window):
+                if alias != row_number_alias:
+                    rejected_rules[rule_name] = "row_number alias does not match outer filter"
+                    return None
+                if not isinstance(expression.this, exp.RowNumber):
+                    rejected_rules[rule_name] = "only ROW_NUMBER is supported"
+                    return None
+                if expression.args.get("partition_by"):
+                    rejected_rules[rule_name] = "partitioned ROW_NUMBER is not global"
+                    return None
+                if not expression.args.get("order"):
+                    rejected_rules[rule_name] = "ROW_NUMBER has no ORDER BY"
+                    return None
+                row_number_count += 1
+                continue
+            if any(expression.find_all(exp.Window)):
+                rejected_rules[rule_name] = "ranked query contains another window expression"
+                return None
+            non_window_projections.append(projection.copy())
+
+        if row_number_count != 1:
+            rejected_rules[rule_name] = "ranked query must project exactly one ROW_NUMBER"
+            return None
+
+        projection_select = exp.select(*non_window_projections)
+        output_name_to_ref = self._plan_output_name_to_ref(plan)
+        return self._analyze_wrapper_projection(
+            projection_select,
+            source,
+            plan,
+            output_name_to_ref,
+            rejected_rules,
+        )
+
+    def _translated_row_number_order_by(
+        self,
+        ranked_select: exp.Select,
+        row_number_alias: str,
+        visible_name_to_ref: dict[str, str],
+        projected_refs: set[str],
+        rejected_rules: dict[str, str],
+    ) -> list[str] | None:
+        rule_name = "global_row_number_topn"
+        row_number_window = None
+        for projection in ranked_select.expressions:
+            if projection.alias != row_number_alias:
+                continue
+            expression = self._projection_expression(projection)
+            if isinstance(expression, exp.Window):
+                row_number_window = expression
+                break
+        if row_number_window is None:
+            rejected_rules[rule_name] = "ROW_NUMBER projection not found"
+            return None
+
+        return self._translated_window_order_by(
+            row_number_window,
+            visible_name_to_ref,
+            projected_refs,
+            rejected_rules,
+            rule_name=rule_name,
+        )
+
+    def _translated_window_order_by(
+        self,
+        row_number_window: exp.Window,
+        visible_name_to_ref: dict[str, str],
+        projected_refs: set[str],
+        rejected_rules: dict[str, str],
+        rule_name: str,
+    ) -> list[str] | None:
+        order_clause = row_number_window.args.get("order")
+        if not order_clause:
+            rejected_rules[rule_name] = "ROW_NUMBER has no ORDER BY"
+            return None
+
+        order_by: list[str] = []
+        for order_expr in order_clause.expressions:
+            if isinstance(order_expr, exp.Ordered) and order_expr.args.get("nulls_first"):
+                rejected_rules[rule_name] = "ROW_NUMBER ORDER BY uses explicit NULLS ordering"
+                return None
+            expression = order_expr.this if isinstance(order_expr, exp.Ordered) else order_expr
+            if not isinstance(expression, exp.Column):
+                rejected_rules[rule_name] = "ROW_NUMBER ORDER BY computes a new expression"
+                return None
+            ref = visible_name_to_ref.get(expression.name)
+            if ref is None or ref not in projected_refs:
+                rejected_rules[rule_name] = "ROW_NUMBER ORDER BY references a non-projected field"
+                return None
+            order_name = next(
+                (name for name, visible_ref in visible_name_to_ref.items() if visible_ref == ref),
+                expression.name,
+            )
+            if isinstance(order_expr, exp.Ordered) and order_expr.args.get("desc", False):
+                order_name = f"{order_name} DESC"
+            elif isinstance(order_expr, exp.Ordered):
+                order_name = f"{order_name} ASC"
+            order_by.append(order_name)
+
+        return order_by
 
     def _wrapped_semantic_source(
         self, select: exp.Select, rejected_rules: dict[str, str]
@@ -543,6 +1570,463 @@ class QueryRewriter:
 
         rejected_rules["wrapped_semantic_optimizer"] = "outer query is not a single semantic subquery or CTE wrapper"
         return None
+
+    def _outer_has_aggregate_boundary(self, select: exp.Select) -> bool:
+        if select.args.get("group") or select.args.get("having"):
+            return True
+        return any(
+            self._is_supported_outer_rollup_aggregate(self._projection_expression(expr)) for expr in select.expressions
+        )
+
+    def _analyze_same_grain_aggregate_wrapper(
+        self,
+        select: exp.Select,
+        source: _WrappedSemanticSource,
+        plan: SemanticQueryPlan,
+        output_name_to_ref: dict[str, str],
+        rejected_rules: dict[str, str],
+    ) -> _ProjectionAnalysis | None:
+        rule_name = "same_grain_metric_wrapper"
+        group_clause = select.args.get("group")
+        if not group_clause:
+            rejected_rules[rule_name] = "outer_query_has_no_group_by"
+            return None
+        if select.args.get("joins"):
+            rejected_rules[rule_name] = "outer_query_joins_relation"
+            return None
+        if select.args.get("distinct"):
+            rejected_rules[rule_name] = "outer_query_uses_distinct"
+            return None
+        if select.args.get("having"):
+            rejected_rules[rule_name] = "outer_query_uses_having"
+            return None
+        if select.args.get("qualify"):
+            rejected_rules[rule_name] = "outer_query_uses_qualify"
+            return None
+        if any(select.find_all(exp.Window)):
+            rejected_rules[rule_name] = "outer_query_uses_window"
+            return None
+        if sql_has_aggregate(select.sql(dialect=self.dialect)):
+            rejected_rules[rule_name] = "outer_query_contains_aggregate"
+            return None
+
+        selected_refs: list[str] = []
+        aliases = dict(plan.aliases)
+        visible_name_to_ref: dict[str, str] = {}
+        projected_refs: set[str] = set()
+
+        for projection in select.expressions:
+            alias = projection.alias if isinstance(projection, exp.Alias) else None
+            expression = self._projection_expression(projection)
+            if not isinstance(expression, exp.Column):
+                rejected_rules[rule_name] = "outer_projection_computes_expression"
+                return None
+            if expression.table and expression.table != source.source_name:
+                rejected_rules[rule_name] = "outer_projection_references_another_relation"
+                return None
+            ref = output_name_to_ref.get(expression.name)
+            if ref is None:
+                rejected_rules[rule_name] = f"outer_projection_unknown_field_{expression.name}"
+                return None
+            if ref in projected_refs:
+                rejected_rules[rule_name] = "outer_projection_selects_duplicate_field"
+                return None
+
+            selected_refs.append(ref)
+            projected_refs.add(ref)
+            output_name = alias or expression.name
+            visible_name_to_ref[output_name] = ref
+            if alias:
+                aliases[ref] = alias
+
+        group_refs: set[str] = set()
+        for group_expr in group_clause.expressions:
+            if not isinstance(group_expr, exp.Column):
+                rejected_rules[rule_name] = "outer_group_expression_not_supported"
+                return None
+            if group_expr.table and group_expr.table != source.source_name:
+                rejected_rules[rule_name] = "outer_group_references_another_relation"
+                return None
+            ref = output_name_to_ref.get(group_expr.name)
+            if ref is None:
+                rejected_rules[rule_name] = f"outer_group_unknown_field_{group_expr.name}"
+                return None
+            group_refs.add(ref)
+
+        inner_refs = set(plan.dimensions) | set(plan.metrics)
+        if group_refs != inner_refs or projected_refs != inner_refs:
+            rejected_rules[rule_name] = "outer_group_does_not_match_inner_grain"
+            return None
+
+        return _ProjectionAnalysis(
+            metrics=[metric for metric in plan.metrics if metric in projected_refs],
+            dimensions=[dimension for dimension in plan.dimensions if dimension in projected_refs],
+            aliases={ref: alias for ref, alias in aliases.items() if ref in projected_refs},
+            visible_name_to_ref=visible_name_to_ref,
+            projected_refs=projected_refs,
+            applied_rules=[rule_name],
+        )
+
+    def _analyze_wrapper_aggregate_boundary(
+        self,
+        select: exp.Select,
+        source: _WrappedSemanticSource,
+        plan: SemanticQueryPlan,
+        output_name_to_ref: dict[str, str],
+        rejected_rules: dict[str, str],
+    ) -> _AggregateBoundaryAnalysis | None:
+        rule_name = "aggregate_boundary_rollup"
+
+        if select.args.get("joins"):
+            rejected_rules[rule_name] = "outer_query_joins_relation"
+            return None
+        if select.args.get("distinct"):
+            rejected_rules[rule_name] = "outer_query_uses_distinct"
+            return None
+        if select.args.get("qualify"):
+            rejected_rules[rule_name] = "outer_query_uses_qualify"
+            return None
+        if select.args.get("having"):
+            rejected_rules[rule_name] = "aggregate_boundary_having_not_supported"
+            return None
+        if any(select.find_all(exp.Window)):
+            rejected_rules[rule_name] = "outer_query_uses_window"
+            return None
+        if source.inner_select.args.get("limit") or source.inner_select.args.get("offset"):
+            rejected_rules[rule_name] = "inner_query_limits_row_membership"
+            return None
+        if source.inner_select.args.get("distinct"):
+            rejected_rules[rule_name] = "inner_query_uses_distinct"
+            return None
+        if source.inner_select.args.get("having"):
+            rejected_rules[rule_name] = "inner_query_has_metric_having"
+            return None
+
+        group_refs = self._resolve_outer_group_refs(select, source, output_name_to_ref, plan, rejected_rules)
+        if group_refs is None:
+            return None
+
+        selected_dimensions: list[str] = []
+        selected_metrics: list[str] = []
+        aliases: dict[str, str] = {}
+        visible_name_to_ref: dict[str, str] = {}
+        projected_refs: set[str] = set()
+        applied_rules = [rule_name]
+
+        for projection in select.expressions:
+            alias = projection.alias if isinstance(projection, exp.Alias) else None
+            expression = self._projection_expression(projection)
+
+            time_rollup_ref = self._resolve_outer_time_rollup_dimension(
+                expression,
+                source,
+                output_name_to_ref,
+                plan,
+                rejected_rules,
+                rule_name,
+            )
+            if time_rollup_ref is None and isinstance(expression, exp.TimestampTrunc) and rule_name in rejected_rules:
+                return None
+            if time_rollup_ref is not None:
+                if time_rollup_ref not in group_refs:
+                    rejected_rules[rule_name] = "outer_projection_dimension_not_grouped"
+                    return None
+                if time_rollup_ref in selected_dimensions:
+                    rejected_rules[rule_name] = "outer_projection_selects_duplicate_dimension"
+                    return None
+                output_name = alias or time_rollup_ref.split(".", 1)[1]
+                selected_dimensions.append(time_rollup_ref)
+                projected_refs.add(time_rollup_ref)
+                visible_name_to_ref[output_name] = time_rollup_ref
+                if alias:
+                    aliases[time_rollup_ref] = alias
+                applied_rules.append("time_grain_rollup")
+                continue
+
+            if isinstance(expression, exp.Column):
+                if expression.table and expression.table != source.source_name:
+                    rejected_rules[rule_name] = "outer_projection_references_another_relation"
+                    return None
+                ref = output_name_to_ref.get(expression.name)
+                if ref not in group_refs:
+                    rejected_rules[rule_name] = "outer_projection_dimension_not_grouped"
+                    return None
+                if ref in selected_dimensions:
+                    rejected_rules[rule_name] = "outer_projection_selects_duplicate_dimension"
+                    return None
+                output_name = alias or expression.name
+                selected_dimensions.append(ref)
+                projected_refs.add(ref)
+                visible_name_to_ref[output_name] = ref
+                if alias:
+                    aliases[ref] = alias
+                continue
+
+            metric_analysis = self._analyze_outer_rollup_aggregate(
+                expression,
+                alias,
+                source,
+                plan,
+                output_name_to_ref,
+                group_refs,
+                rejected_rules,
+            )
+            if metric_analysis is None:
+                return None
+
+            metric_ref, output_name, metric_rule = metric_analysis
+            if metric_ref in selected_metrics:
+                rejected_rules[rule_name] = "outer_projection_selects_duplicate_metric"
+                return None
+            selected_metrics.append(metric_ref)
+            projected_refs.add(metric_ref)
+            aliases[metric_ref] = output_name
+            visible_name_to_ref[output_name] = metric_ref
+            applied_rules.append(metric_rule)
+
+        if not selected_metrics:
+            rejected_rules[rule_name] = "outer_projection_has_no_rollup_metrics"
+            return None
+
+        if set(selected_dimensions) != group_refs:
+            rejected_rules[rule_name] = "outer_group_dimension_not_projected"
+            return None
+
+        filters = self._translated_outer_filters(select, source, plan, output_name_to_ref, rejected_rules)
+        if filters is None:
+            rejected_rules[rule_name] = rejected_rules.pop(
+                "safe_filter_pushdown",
+                "aggregate_boundary_filter_not_supported",
+            )
+            return None
+        if filters.row_filters:
+            applied_rules.append("aggregate_boundary_dimension_filter_pushdown")
+        if filters.aggregate_filters:
+            applied_rules.append("safe_metric_filter_having_pushdown")
+
+        return _AggregateBoundaryAnalysis(
+            metrics=selected_metrics,
+            dimensions=selected_dimensions,
+            aliases=aliases,
+            visible_name_to_ref=visible_name_to_ref,
+            projected_refs=projected_refs,
+            row_filters=filters.row_filters,
+            aggregate_filters=filters.aggregate_filters,
+            applied_rules=self._dedupe(applied_rules),
+        )
+
+    def _projection_expression(self, projection: exp.Expression) -> exp.Expression:
+        return projection.this if isinstance(projection, exp.Alias) else projection
+
+    def _resolve_outer_group_refs(
+        self,
+        select: exp.Select,
+        source: _WrappedSemanticSource,
+        output_name_to_ref: dict[str, str],
+        plan: SemanticQueryPlan,
+        rejected_rules: dict[str, str],
+    ) -> set[str] | None:
+        rule_name = "aggregate_boundary_rollup"
+        group_clause = select.args.get("group")
+        if not group_clause:
+            return set()
+
+        dimension_refs = set(plan.dimensions)
+        group_refs: set[str] = set()
+        for group_expr in group_clause.expressions:
+            resolved_group_expr = self._resolve_group_expression_position(select, group_expr)
+            if resolved_group_expr is None:
+                rejected_rules[rule_name] = "outer_group_position_not_supported"
+                return None
+            time_rollup_ref = self._resolve_outer_time_rollup_dimension(
+                resolved_group_expr,
+                source,
+                output_name_to_ref,
+                plan,
+                rejected_rules,
+                rule_name,
+            )
+            if (
+                time_rollup_ref is None
+                and isinstance(resolved_group_expr, exp.TimestampTrunc)
+                and rule_name in rejected_rules
+            ):
+                return None
+            if time_rollup_ref is not None:
+                group_refs.add(time_rollup_ref)
+                continue
+            if not isinstance(resolved_group_expr, exp.Column):
+                rejected_rules[rule_name] = "outer_group_expression_not_supported"
+                return None
+            if resolved_group_expr.table and resolved_group_expr.table != source.source_name:
+                rejected_rules[rule_name] = "outer_group_references_another_relation"
+                return None
+            ref = output_name_to_ref.get(resolved_group_expr.name)
+            if ref not in dimension_refs:
+                rejected_rules[rule_name] = "outer_group_field_not_inner_dimension"
+                return None
+            group_refs.add(ref)
+
+        return group_refs
+
+    def _resolve_outer_time_rollup_dimension(
+        self,
+        expression: exp.Expression,
+        source: _WrappedSemanticSource,
+        output_name_to_ref: dict[str, str],
+        plan: SemanticQueryPlan,
+        rejected_rules: dict[str, str],
+        rule_name: str,
+    ) -> str | None:
+        if not isinstance(expression, exp.TimestampTrunc):
+            return None
+
+        column = expression.this
+        if not isinstance(column, exp.Column):
+            rejected_rules[rule_name] = "time_rollup_input_not_dimension"
+            return None
+        if column.table and column.table != source.source_name:
+            rejected_rules[rule_name] = "time_rollup_references_another_relation"
+            return None
+
+        inner_ref = output_name_to_ref.get(column.name)
+        if inner_ref not in set(plan.dimensions):
+            rejected_rules[rule_name] = "time_rollup_input_not_inner_dimension"
+            return None
+        if "__" not in inner_ref:
+            rejected_rules[rule_name] = "time_rollup_input_has_no_grain"
+            return None
+
+        base_ref, inner_grain = inner_ref.rsplit("__", 1)
+        target_grain = self._timestamp_trunc_unit(expression)
+        if target_grain is None:
+            rejected_rules[rule_name] = "time_rollup_grain_not_supported"
+            return None
+        if not self._is_time_grain_rollup_safe(inner_grain, target_grain):
+            rejected_rules[rule_name] = "time_grain_rollup_not_safe"
+            return None
+        return f"{base_ref}__{target_grain}"
+
+    def _timestamp_trunc_unit(self, expression: exp.TimestampTrunc) -> str | None:
+        unit = expression.args.get("unit")
+        if unit is None:
+            return None
+        value = getattr(unit, "this", None)
+        if value is None:
+            value = unit.sql(dialect=self.dialect)
+        return str(value).strip("'\"").lower()
+
+    def _is_time_grain_rollup_safe(self, inner_grain: str, target_grain: str) -> bool:
+        order = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"]
+        if inner_grain not in order or target_grain not in order:
+            return False
+        if inner_grain == target_grain:
+            return True
+        if inner_grain == "week":
+            return False
+        return order.index(inner_grain) < order.index(target_grain)
+
+    def _resolve_group_expression_position(
+        self,
+        select: exp.Select,
+        group_expr: exp.Expression,
+    ) -> exp.Expression | None:
+        if not isinstance(group_expr, exp.Literal) or not group_expr.is_int:
+            return group_expr
+        index = int(group_expr.this) - 1
+        if index < 0 or index >= len(select.expressions):
+            return None
+        return self._projection_expression(select.expressions[index])
+
+    def _analyze_outer_rollup_aggregate(
+        self,
+        expression: exp.Expression,
+        alias: str | None,
+        source: _WrappedSemanticSource,
+        plan: SemanticQueryPlan,
+        output_name_to_ref: dict[str, str],
+        group_refs: set[str],
+        rejected_rules: dict[str, str],
+    ) -> tuple[str, str, str] | None:
+        rule_name = "aggregate_boundary_rollup"
+        outer_agg = self._outer_rollup_aggregate_name(expression)
+        if outer_agg is None:
+            rejected_rules[rule_name] = "outer_projection_computes_expression"
+            return None
+
+        if any(expression.find_all(exp.Distinct)):
+            rejected_rules[rule_name] = "outer_aggregate_distinct_not_supported"
+            return None
+        if any(expression.find_all(exp.Order)):
+            rejected_rules[rule_name] = "outer_aggregate_order_not_supported"
+            return None
+
+        argument = expression.this
+        if not isinstance(argument, exp.Column):
+            rejected_rules[rule_name] = "outer_aggregate_input_not_metric"
+            return None
+        if argument.table and argument.table != source.source_name:
+            rejected_rules[rule_name] = "outer_aggregate_references_another_relation"
+            return None
+
+        metric_ref = output_name_to_ref.get(argument.name)
+        if metric_ref not in set(plan.metrics):
+            rejected_rules[rule_name] = "outer_aggregate_input_not_metric"
+            return None
+
+        metric, _model_context = self._resolve_metric(metric_ref)
+        if not metric:
+            rejected_rules[rule_name] = "outer_metric_not_found"
+            return None
+
+        dropped_dimensions = set(plan.dimensions) - group_refs
+        if metric.non_additive_dimension and self._dimension_is_dropped(
+            metric.non_additive_dimension,
+            dropped_dimensions,
+        ):
+            rejected_rules[rule_name] = "non_additive_dimension_dropped"
+            return None
+
+        metric_agg = metric.agg
+        if outer_agg == "sum" and metric_agg == "sum":
+            metric_rule = "additive_metric_rollup"
+        elif outer_agg == "sum" and metric_agg == "count":
+            metric_rule = "count_metric_rollup"
+        elif outer_agg == "min" and metric_agg == "min":
+            if metric.fill_nulls_with is not None:
+                rejected_rules[rule_name] = "min_max_rollup_with_fill_nulls_not_supported"
+                return None
+            metric_rule = "min_metric_rollup"
+        elif outer_agg == "max" and metric_agg == "max":
+            if metric.fill_nulls_with is not None:
+                rejected_rules[rule_name] = "min_max_rollup_with_fill_nulls_not_supported"
+                return None
+            metric_rule = "max_metric_rollup"
+        else:
+            rejected_rules[rule_name] = "outer_aggregate_not_rollup_safe"
+            return None
+
+        return metric_ref, alias or argument.name, metric_rule
+
+    def _is_supported_outer_rollup_aggregate(self, expression: exp.Expression) -> bool:
+        return self._outer_rollup_aggregate_name(expression) is not None
+
+    def _outer_rollup_aggregate_name(self, expression: exp.Expression) -> str | None:
+        if isinstance(expression, exp.Sum):
+            return "sum"
+        if isinstance(expression, exp.Min):
+            return "min"
+        if isinstance(expression, exp.Max):
+            return "max"
+        return None
+
+    def _dimension_is_dropped(self, dimension_name: str, dropped_dimensions: set[str]) -> bool:
+        for dropped in dropped_dimensions:
+            if dropped == dimension_name:
+                return True
+            if "." in dropped and dropped.split(".", 1)[1] == dimension_name:
+                return True
+        return False
 
     def _wrapper_has_blocking_features(self, select: exp.Select, rejected_rules: dict[str, str]) -> bool:
         if select.args.get("joins"):
@@ -649,7 +2133,7 @@ class QueryRewriter:
             visible_name_to_ref[output_name] = ref
 
         selected = set(selected_refs)
-        selected_dimensions = [dimension for dimension in plan.dimensions if dimension in selected]
+        selected_dimensions = [ref for ref in selected_refs if ref in plan.dimensions]
         if set(selected_dimensions) != set(plan.dimensions):
             rejected_rules["wrapper_flattening"] = (
                 "outer projection drops dimensions and would change semantic grouping"
@@ -657,7 +2141,7 @@ class QueryRewriter:
             return None
 
         return _ProjectionAnalysis(
-            metrics=[metric for metric in plan.metrics if metric in selected],
+            metrics=[ref for ref in selected_refs if ref in plan.metrics],
             dimensions=selected_dimensions,
             aliases={ref: alias for ref, alias in aliases.items() if ref in selected},
             visible_name_to_ref=visible_name_to_ref,
@@ -672,29 +2156,75 @@ class QueryRewriter:
         plan: SemanticQueryPlan,
         output_name_to_ref: dict[str, str],
         rejected_rules: dict[str, str],
-    ) -> list[str] | None:
+    ) -> _FilterTranslation | None:
         where_clause = select.args.get("where")
         if not where_clause:
-            return []
+            return _FilterTranslation(row_filters=[], aggregate_filters=[])
 
         if plan.limit is not None or plan.offset is not None or source.inner_select.args.get("distinct"):
             rejected_rules["safe_filter_pushdown"] = "inner semantic query limits row membership"
             return None
 
-        dimension_refs = set(plan.dimensions)
+        selected_refs = set(plan.dimensions) | set(plan.metrics)
+        row_filters: list[str] = []
+        aggregate_filters: list[str] = []
         try:
-            translated = self._translate_wrapper_expression(
-                where_clause.this,
-                output_name_to_ref,
-                source.source_name,
-                allowed_refs=dimension_refs,
-                rule_name="safe_filter_pushdown",
-            )
+            for filter_part in self._top_level_and_parts(where_clause.this):
+                stage = self._wrapper_filter_stage(
+                    filter_part,
+                    output_name_to_ref,
+                    source.source_name,
+                    selected_refs,
+                    rule_name="safe_filter_pushdown",
+                )
+                translated = self._translate_wrapper_expression(
+                    filter_part,
+                    output_name_to_ref,
+                    source.source_name,
+                    allowed_refs=selected_refs,
+                    rule_name="safe_filter_pushdown",
+                )
+                if stage == "aggregate":
+                    aggregate_filters.extend(self._filters_from_expression(translated))
+                else:
+                    row_filters.extend(self._filters_from_expression(translated))
         except ValueError as e:
             rejected_rules["safe_filter_pushdown"] = str(e)
             return None
 
-        return self._filters_from_expression(translated)
+        return _FilterTranslation(row_filters=row_filters, aggregate_filters=aggregate_filters)
+
+    def _top_level_and_parts(self, expression: exp.Expression) -> list[exp.Expression]:
+        if isinstance(expression, exp.And):
+            return [*self._top_level_and_parts(expression.left), *self._top_level_and_parts(expression.right)]
+        return [expression]
+
+    def _wrapper_filter_stage(
+        self,
+        expression: exp.Expression,
+        name_to_ref: dict[str, str],
+        source_name: str,
+        allowed_refs: set[str],
+        rule_name: str,
+    ) -> str:
+        refs = set()
+        for column in expression.find_all(exp.Column):
+            if column.table and column.table != source_name:
+                raise ValueError(f"{rule_name} references another relation")
+            ref = name_to_ref.get(column.name)
+            if ref is None:
+                raise ValueError(f"{rule_name} references unknown field '{column.name}'")
+            if ref not in allowed_refs:
+                raise ValueError(f"{rule_name} cannot move unprojected or computed field '{column.name}'")
+            if self._metric_needs_window_function(ref):
+                raise ValueError(f"{rule_name} cannot move window metric filter '{column.name}'")
+            refs.add(ref)
+
+        metric_refs = {ref for ref in refs if self._is_metric_ref(ref)}
+        dimension_refs = refs - metric_refs
+        if metric_refs and dimension_refs and any(expression.find_all(exp.Or)):
+            raise ValueError(f"{rule_name} cannot split mixed metric/dimension OR predicate")
+        return "aggregate" if metric_refs else "row"
 
     def _translated_outer_order_by(
         self,
@@ -715,6 +2245,10 @@ class QueryRewriter:
 
         order_by: list[str] = []
         for order_expr in order_clause.expressions:
+            if isinstance(order_expr, exp.Ordered) and order_expr.args.get("nulls_first"):
+                rejected_rules["safe_order_pushdown"] = "outer ORDER BY uses explicit NULLS ordering"
+                return None
+
             expression = order_expr.this if isinstance(order_expr, exp.Ordered) else order_expr
             if not isinstance(expression, exp.Column):
                 rejected_rules["safe_order_pushdown"] = "outer ORDER BY computes a new expression"
@@ -878,6 +2412,8 @@ class QueryRewriter:
             metrics=plan.metrics,
             dimensions=plan.dimensions,
             filters=plan.filters,
+            row_filters=plan.row_filters,
+            aggregate_filters=plan.aggregate_filters,
             order_by=plan.order_by,
             limit=plan.limit,
             offset=plan.offset,
@@ -903,7 +2439,13 @@ class QueryRewriter:
             raise ValueError("Semantic expression queries cannot be represented as a simple rewrite plan")
 
         metrics, dimensions, aliases = self._extract_metrics_and_dimensions(parsed)
+        self._validate_root_group_by(parsed, dimensions, aliases)
         filters = [*self._extract_filters(parsed), *explicit_join_filters]
+        having_clause = parsed.args.get("having")
+        if having_clause:
+            qualified_having = self._qualify_root_filter_expression(having_clause.this.copy())
+            filters.extend(self._filters_from_expression(qualified_having))
+        row_filters, aggregate_filters = self._stage_semantic_filters(filters)
         order_by = self._extract_order_by(parsed)
         limit = self._extract_limit(parsed)
         offset = self._extract_offset(parsed)
@@ -917,6 +2459,8 @@ class QueryRewriter:
             metrics=metrics,
             dimensions=dimensions,
             filters=filters,
+            row_filters=row_filters,
+            aggregate_filters=aggregate_filters,
             order_by=order_by,
             limit=limit,
             offset=offset,
@@ -925,7 +2469,57 @@ class QueryRewriter:
         plan.eligibility = self._plan_eligibility(plan)
         plan.candidate_kind = self._chosen_candidate_kind(plan)
         plan.candidate_plans = self._candidate_plans_for_plan(plan)
+        if plan.candidate_kind == "single_model_preaggregation":
+            plan.applied_rules.append("preaggregation_route_selection")
+        if plan.candidate_kind == "join_key_preaggregation":
+            plan.applied_rules.append("join_key_preaggregation_route_selection")
+        if plan.candidate_kind == "fanout_preaggregation":
+            plan.applied_rules.append("fanout_strategy_selection")
         return plan
+
+    def _validate_root_group_by(
+        self,
+        parsed: exp.Select,
+        dimensions: list[str],
+        aliases: dict[str, str],
+    ) -> None:
+        group_clause = parsed.args.get("group")
+        if not group_clause:
+            return
+
+        dimension_refs = set(dimensions)
+        name_to_ref: dict[str, str] = {}
+        ambiguous_names: set[str] = set()
+        for ref in dimensions:
+            if "." in ref:
+                _model_name, field_name = ref.split(".", 1)
+                if field_name in name_to_ref and name_to_ref[field_name] != ref:
+                    ambiguous_names.add(field_name)
+                else:
+                    name_to_ref[field_name] = ref
+            name_to_ref[ref] = ref
+            alias = aliases.get(ref)
+            if alias:
+                name_to_ref[alias] = ref
+
+        grouped_refs = set()
+        for expression in group_clause.expressions:
+            if not isinstance(expression, exp.Column):
+                raise ValueError("GROUP BY is only supported when it repeats selected semantic dimensions exactly.")
+
+            if expression.table:
+                ref = f"{expression.table}.{expression.name}"
+            elif expression.name in ambiguous_names:
+                raise ValueError(f"GROUP BY field '{expression.name}' is ambiguous; use a qualified semantic field.")
+            else:
+                ref = name_to_ref.get(expression.name)
+
+            if ref not in dimension_refs:
+                raise ValueError("GROUP BY is only supported when it repeats selected semantic dimensions exactly.")
+            grouped_refs.add(ref)
+
+        if grouped_refs != dimension_refs:
+            raise ValueError("GROUP BY must include exactly the selected semantic dimensions.")
 
     def _source_kind_for_table(self, table_name: str | None) -> str:
         if table_name == "metrics":
@@ -939,23 +2533,133 @@ class QueryRewriter:
     def _plan_eligibility(self, plan: SemanticQueryPlan) -> dict[str, dict[str, object]]:
         window_metrics = [metric for metric in plan.metrics if self._metric_needs_window_function(metric)]
         fanout_needed = self.generator._needs_preaggregation_for_fanout(plan.metrics, plan.dimensions)
+        window_details: dict[str, object] = {
+            "eligible": bool(window_metrics),
+            "metrics": window_metrics,
+            "reason": "window_metric_required" if window_metrics else "no_window_metrics",
+        }
+        if window_metrics:
+            window_details["inner_preaggregation"] = self._window_inner_preaggregation_eligibility(
+                plan,
+                window_metrics,
+            )
         return {
-            "window_metric": {
-                "eligible": bool(window_metrics),
-                "metrics": window_metrics,
-                "reason": "window_metric_required" if window_metrics else "no_window_metrics",
-            },
+            "window_metric": window_details,
             "fanout_preaggregation": {
                 "eligible": fanout_needed,
                 "reason": "fanout_protection_required" if fanout_needed else "fanout_protection_not_needed",
             },
+            "join_key_preaggregation": self._join_key_preaggregation_eligibility(plan),
             "single_model_preaggregation": self._single_model_preaggregation_eligibility(plan),
         }
+
+    def _join_key_preaggregation_eligibility(self, plan: SemanticQueryPlan) -> dict[str, object]:
+        details = self.generator.explain_join_key_preaggregation(
+            metrics=plan.metrics,
+            dimensions=plan.dimensions,
+            filters=plan.filters,
+            aliases=plan.aliases,
+        )
+        details["enabled"] = self.use_preaggregations
+        details["requires_enablement"] = True
+        return details
+
+    def _window_inner_preaggregation_eligibility(
+        self,
+        plan: SemanticQueryPlan,
+        window_metrics: list[str],
+    ) -> dict[str, object]:
+        if not self.use_preaggregations:
+            return {
+                "eligible": False,
+                "reason": "preaggregations_not_enabled",
+            }
+
+        base_metrics = self._window_inner_base_metrics(window_metrics)
+        if not base_metrics:
+            return {
+                "eligible": False,
+                "reason": "no_preaggregatable_window_base_metrics",
+            }
+
+        inner_plan = SemanticQueryPlan(
+            source_sql=plan.source_sql,
+            source_kind=plan.source_kind,
+            metrics=base_metrics,
+            dimensions=plan.dimensions,
+            filters=plan.filters,
+            order_by=None,
+            aliases={},
+        )
+        details = self._single_model_preaggregation_eligibility(inner_plan)
+        details["metrics"] = base_metrics
+        return details
+
+    def _window_inner_base_metrics(self, window_metrics: list[str]) -> list[str]:
+        base_metrics: list[str] = []
+
+        def add(metric_ref: str | None, model_context: str | None = None) -> None:
+            if not metric_ref:
+                return
+            if "." not in metric_ref and model_context:
+                metric_ref = f"{model_context}.{metric_ref}"
+            if metric_ref not in base_metrics:
+                base_metrics.append(metric_ref)
+
+        for metric_ref in window_metrics:
+            metric, model_context = self._resolve_metric(metric_ref)
+            if not metric:
+                continue
+
+            if metric.type == "cumulative":
+                add(metric.sql or metric.base_metric, model_context)
+            elif metric.type == "time_comparison":
+                add(metric.base_metric, model_context)
+            elif metric.type == "ratio" and metric.offset_window:
+                add(metric.numerator, model_context)
+                add(metric.denominator, model_context)
+
+        return base_metrics
+
+    def _resolve_metric(self, metric_ref: str):
+        if "." in metric_ref:
+            model_name, metric_name = metric_ref.split(".", 1)
+            try:
+                model = self.graph.get_model(model_name)
+                model_metric = model.get_metric(metric_name) if model else None
+                if model_metric:
+                    return model_metric, model_name
+            except KeyError:
+                pass
+            try:
+                return self.graph.get_metric(metric_ref), None
+            except KeyError:
+                return None, model_name
+
+        try:
+            return self.graph.get_metric(metric_ref), None
+        except KeyError:
+            pass
+
+        matches = []
+        for model_name, model in self.graph.models.items():
+            metric = model.get_metric(metric_ref)
+            if metric:
+                matches.append((metric, model_name))
+        if len(matches) == 1:
+            return matches[0]
+
+        return None, None
+
+    def _is_metric_ref(self, ref: str) -> bool:
+        metric, _model_context = self._resolve_metric(ref)
+        return metric is not None
 
     def _candidate_plans_for_plan(self, plan: SemanticQueryPlan) -> list[CandidatePlan]:
         window_details = plan.eligibility["window_metric"]
         fanout_details = plan.eligibility["fanout_preaggregation"]
         preagg_details = plan.eligibility["single_model_preaggregation"]
+        join_key_details = plan.eligibility["join_key_preaggregation"]
 
         return [
             CandidatePlan(
@@ -973,6 +2677,12 @@ class QueryRewriter:
                 valid=bool(preagg_details["eligible"]),
                 reason=str(preagg_details["reason"]),
                 details=preagg_details,
+            ),
+            CandidatePlan(
+                name="join_key_preaggregation",
+                valid=bool(join_key_details["eligible"]),
+                reason=str(join_key_details["reason"]),
+                details=join_key_details,
             ),
             CandidatePlan(
                 name="fanout_preaggregation",
@@ -998,6 +2708,8 @@ class QueryRewriter:
             return "window_metric"
         if plan.eligibility["fanout_preaggregation"]["eligible"]:
             return "fanout_preaggregation"
+        if self.use_preaggregations and plan.eligibility["join_key_preaggregation"]["eligible"]:
+            return "join_key_preaggregation"
         if self.use_preaggregations and plan.eligibility["single_model_preaggregation"]["eligible"]:
             return "single_model_preaggregation"
         return "direct_semantic"
@@ -1030,6 +2742,28 @@ class QueryRewriter:
 
         try:
             parsed_dims = self.generator._parse_dimension_refs(plan.dimensions)
+            metric_names = [metric.split(".", 1)[1] if "." in metric else metric for metric in plan.metrics]
+            dim_names = []
+            time_granularity = None
+            for dim_ref, gran in parsed_dims:
+                dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
+                dim_names.append(dim_name)
+                if gran:
+                    time_granularity = gran
+            row_filters = plan.row_filters or [
+                f for f in plan.filters if not self._semantic_filter_references_metric(f)
+            ]
+            filter_exprs = [f.replace(f"{model_name}.", "").replace(f"{model_name}_cte.", "") for f in row_filters]
+
+            from sidemantic.core.preagg_matcher import PreAggregationMatcher
+
+            matcher = PreAggregationMatcher(model)
+            preagg_candidates = matcher.explain_matching(
+                metrics=metric_names,
+                dimensions=dim_names,
+                time_granularity=time_granularity,
+                filters=filter_exprs,
+            )
             preagg_sql = self.generator._try_use_preaggregation(
                 model_name=model_name,
                 metrics=plan.metrics,
@@ -1038,6 +2772,7 @@ class QueryRewriter:
                 order_by=plan.order_by,
                 limit=plan.limit,
                 offset=plan.offset,
+                aliases=plan.aliases,
             )
         except Exception as e:
             return {
@@ -1047,13 +2782,54 @@ class QueryRewriter:
                 "error": str(e),
             }
 
+        candidate_details = [
+            {
+                "name": candidate.name,
+                "matched": candidate.matched,
+                "selected": candidate.selected,
+                "score": candidate.score,
+                "checks": [
+                    {
+                        "name": check.name,
+                        "passed": check.passed,
+                        "detail": check.detail,
+                    }
+                    for check in candidate.checks
+                ],
+            }
+            for candidate in preagg_candidates
+        ]
+        reason = "matching_preaggregation" if preagg_sql else self._preaggregation_rejection_reason(candidate_details)
+
         return {
             "eligible": preagg_sql is not None,
-            "reason": "matching_preaggregation" if preagg_sql else "no_matching_preaggregation",
+            "reason": reason,
             "model": model_name,
             "enabled": self.use_preaggregations,
             "requires_enablement": True,
+            "row_filters": list(plan.row_filters or []),
+            "aggregate_filters": list(plan.aggregate_filters or []),
+            "candidates": candidate_details,
         }
+
+    def _preaggregation_rejection_reason(self, candidates: list[dict[str, object]]) -> str:
+        failed_checks = []
+        for candidate in candidates:
+            for check in candidate.get("checks", []):
+                if not check["passed"]:
+                    if "count_distinct_not_rollup_safe" in str(check.get("detail", "")):
+                        return "count_distinct_not_rollup_safe"
+                    failed_checks.append(check["name"])
+
+        if "filters" in failed_checks:
+            return "filter_not_compatible"
+        if "granularity" in failed_checks:
+            return "time_grain_mismatch"
+        if "dimensions" in failed_checks:
+            return "dimension_not_in_rollup"
+        if "measures" in failed_checks:
+            return "metric_not_in_rollup"
+        return "no_matching_preaggregation"
 
     def _metric_needs_window_function(self, metric_ref: str) -> bool:
         metric = None
@@ -2830,6 +4606,14 @@ class QueryRewriter:
         return isinstance(from_clause.this, exp.Subquery)
 
     def _rewrite_with_ctes_or_subqueries(self, parsed: exp.Select) -> str:
+        rewritten_sql, _semantic_islands, _rejected_rules, _warnings = (
+            self._rewrite_with_ctes_or_subqueries_and_islands(parsed)
+        )
+        return rewritten_sql
+
+    def _rewrite_with_ctes_or_subqueries_and_islands(
+        self, parsed: exp.Select
+    ) -> tuple[str, list[_SemanticIslandRewrite], dict[str, str], list[str]]:
         """Rewrite query that contains CTEs or subqueries.
 
         Recursively walks the query tree bottom-up, rewriting any
@@ -2839,9 +4623,9 @@ class QueryRewriter:
         """
         optimization, _rejected_rules = self._optimize_wrapped_semantic_query(parsed)
         if optimization is not None:
-            return self._generate_from_plan(optimization.plan)
+            return self._generate_from_plan(optimization.plan), [], _rejected_rules, []
 
-        self._rewrite_select_tree(parsed)
+        semantic_islands, rejected_rules, warnings = self._rewrite_select_tree(parsed)
 
         # If the root SELECT itself references a semantic model, it must
         # still go through _rewrite_simple_query (which enforces the
@@ -2876,11 +4660,21 @@ class QueryRewriter:
                         gen_with.set("recursive", True)
                 else:
                     rewritten.set("with", original_with.copy())
-                return rewritten.sql(dialect=self.dialect)
+                return rewritten.sql(dialect=self.dialect), semantic_islands, rejected_rules, warnings
 
-            return rewritten_sql
+            return rewritten_sql, semantic_islands, rejected_rules, warnings
 
-        return parsed.sql(dialect=self.dialect)
+        return parsed.sql(dialect=self.dialect), semantic_islands, rejected_rules, warnings
+
+    def _rewrite_set_operation(self, parsed: exp.SetOperation) -> str:
+        rewritten_sql, _semantic_islands, _rejected_rules, _warnings = self._rewrite_set_operation_with_islands(parsed)
+        return rewritten_sql
+
+    def _rewrite_set_operation_with_islands(
+        self, parsed: exp.SetOperation
+    ) -> tuple[str, list[_SemanticIslandRewrite], dict[str, str], list[str]]:
+        semantic_islands, rejected_rules, warnings = self._rewrite_set_operation_tree(parsed)
+        return parsed.sql(dialect=self.dialect), semantic_islands, rejected_rules, warnings
 
     def _select_tree_references_semantic_model(self, select: exp.Select) -> bool:
         if self._references_semantic_model(select):
@@ -2894,12 +4688,18 @@ class QueryRewriter:
 
         return False
 
-    def _raise_on_user_cte_name_collision(self, select: exp.Select) -> None:
-        with_clause = select.args.get("with")
+    def _expression_tree_references_semantic_model(self, expression: exp.Expression) -> bool:
+        for nested_select in expression.find_all(exp.Select):
+            if self._references_semantic_model(nested_select):
+                return True
+        return False
+
+    def _raise_on_user_cte_name_collision(self, expression: exp.Expression) -> None:
+        with_clause = expression.args.get("with")
         if not with_clause:
             return
 
-        reserved_names = self._generated_cte_names_for_select_tree(select)
+        reserved_names = self._generated_cte_names_for_select_tree(expression)
         for cte in with_clause.expressions:
             if cte.alias in reserved_names:
                 raise ValueError(
@@ -2907,9 +4707,9 @@ class QueryRewriter:
                     f"generated name. Please choose a different CTE name."
                 )
 
-    def _generated_cte_names_for_select_tree(self, select: exp.Select) -> set[str]:
+    def _generated_cte_names_for_select_tree(self, expression: exp.Expression) -> set[str]:
         reserved_names: set[str] = set()
-        for nested_select in select.find_all(exp.Select):
+        for nested_select in expression.find_all(exp.Select):
             if not self._references_semantic_model(nested_select):
                 continue
             reserved_names.update(self._generated_cte_names_for_semantic_select(nested_select))
@@ -2991,43 +4791,433 @@ class QueryRewriter:
         rewritten.set("expressions", rewritten_projections)
         return rewritten.sql(dialect=self.dialect)
 
-    def _rewrite_select_tree(self, select: exp.Select):
+    def _rewrite_select_tree(
+        self, select: exp.Select
+    ) -> tuple[list[_SemanticIslandRewrite], dict[str, str], list[str]]:
         """Recursively rewrite semantic subqueries and CTEs (bottom-up).
 
         At each level: recurse into children first, then rewrite this
         node if it directly references a semantic model.
         """
+        semantic_islands: list[_SemanticIslandRewrite] = []
+        rejected_rules: dict[str, str] = {}
+        warnings: list[str] = []
+
         # Recurse into CTEs
         if select.args.get("with"):
             for cte in select.args["with"].expressions:
                 cte_query = cte.this
-                if isinstance(cte_query, exp.Select):
-                    self._rewrite_select_tree(cte_query)
-                    if self._references_semantic_model(cte_query):
-                        rewritten_sql = self._rewrite_simple_query(cte_query)
-                        cte.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
+                if isinstance(cte_query, (exp.Select, exp.SetOperation)):
+                    replacement, child_islands, child_rejected, child_warnings = self._rewrite_query_island(
+                        cte_query,
+                        name=cte.alias or "cte",
+                        source_kind="cte",
+                    )
+                    cte.set("this", replacement)
+                    semantic_islands.extend(child_islands)
+                    rejected_rules.update(child_rejected)
+                    warnings.extend(child_warnings)
 
         # Recurse into FROM subquery
         from_clause = select.args.get("from")
         if from_clause and isinstance(from_clause.this, exp.Subquery):
             subquery = from_clause.this
             subquery_select = subquery.this
-            if isinstance(subquery_select, exp.Select):
-                self._rewrite_select_tree(subquery_select)
-                if self._references_semantic_model(subquery_select):
-                    rewritten_sql = self._rewrite_simple_query(subquery_select)
-                    subquery.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
+            if isinstance(subquery_select, (exp.Select, exp.SetOperation)):
+                replacement, child_islands, child_rejected, child_warnings = self._rewrite_query_island(
+                    subquery_select,
+                    name=subquery.alias_or_name or "subquery",
+                    source_kind="subquery",
+                )
+                subquery.set("this", replacement)
+                self._annotate_conditional_aggregate_islands(select, child_islands, child_rejected)
+                semantic_islands.extend(child_islands)
+                rejected_rules.update(child_rejected)
+                warnings.extend(child_warnings)
 
         # Recurse into JOIN subqueries
         for join in select.args.get("joins") or []:
             join_expr = join.this
             if isinstance(join_expr, exp.Subquery):
                 join_select = join_expr.this
-                if isinstance(join_select, exp.Select):
-                    self._rewrite_select_tree(join_select)
-                    if self._references_semantic_model(join_select):
-                        rewritten_sql = self._rewrite_simple_query(join_select)
-                        join_expr.set("this", sqlglot.parse_one(rewritten_sql, dialect=self.dialect))
+                if isinstance(join_select, (exp.Select, exp.SetOperation)):
+                    replacement, child_islands, child_rejected, child_warnings = self._rewrite_query_island(
+                        join_select,
+                        name=join_expr.alias_or_name or "join_subquery",
+                        source_kind="join_subquery",
+                    )
+                    join_expr.set("this", replacement)
+                    self._annotate_conditional_aggregate_islands(select, child_islands, child_rejected)
+                    semantic_islands.extend(child_islands)
+                    rejected_rules.update(child_rejected)
+                    warnings.extend(child_warnings)
+
+        for clause_subquery in self._current_select_clause_subqueries(select):
+            subquery_select = clause_subquery.this
+            if isinstance(subquery_select, (exp.Select, exp.SetOperation)):
+                replacement, child_islands, child_rejected, child_warnings = self._rewrite_query_island(
+                    subquery_select,
+                    name=clause_subquery.alias_or_name or "clause_subquery",
+                    source_kind="clause_subquery",
+                )
+                clause_subquery.set("this", replacement)
+                semantic_islands.extend(child_islands)
+                rejected_rules.update(child_rejected)
+                warnings.extend(child_warnings)
+
+        for exists in self._current_select_clause_exists(select):
+            exists_select = exists.this
+            if isinstance(exists_select, (exp.Select, exp.SetOperation)):
+                replacement, child_islands, child_rejected, child_warnings = self._rewrite_query_island(
+                    exists_select,
+                    name="exists_subquery",
+                    source_kind="clause_subquery",
+                )
+                exists.set("this", replacement)
+                semantic_islands.extend(child_islands)
+                rejected_rules.update(child_rejected)
+                warnings.extend(child_warnings)
+
+        return semantic_islands, rejected_rules, warnings
+
+    def _current_select_clause_expressions(self, select: exp.Select) -> list[exp.Expression]:
+        clauses: list[exp.Expression] = list(select.expressions)
+        for key in ("where", "having", "qualify"):
+            clause = select.args.get(key)
+            if clause is not None:
+                clauses.append(clause.this)
+        for key in ("group", "order"):
+            clause = select.args.get(key)
+            if clause is not None:
+                clauses.extend(list(clause.expressions))
+        return clauses
+
+    def _current_select_clause_subqueries(self, select: exp.Select) -> list[exp.Subquery]:
+        clauses = self._current_select_clause_expressions(select)
+        subqueries: list[exp.Subquery] = []
+        seen: set[int] = set()
+        for clause in clauses:
+            for subquery in clause.find_all(exp.Subquery):
+                identity = id(subquery)
+                if identity not in seen:
+                    subqueries.append(subquery)
+                    seen.add(identity)
+        return subqueries
+
+    def _current_select_clause_exists(self, select: exp.Select) -> list[exp.Exists]:
+        clauses = self._current_select_clause_expressions(select)
+        exists_nodes: list[exp.Exists] = []
+        seen: set[int] = set()
+        for clause in clauses:
+            for exists in clause.find_all(exp.Exists):
+                identity = id(exists)
+                if identity not in seen:
+                    exists_nodes.append(exists)
+                    seen.add(identity)
+        return exists_nodes
+
+    def _annotate_conditional_aggregate_islands(
+        self,
+        select: exp.Select,
+        semantic_islands: list[_SemanticIslandRewrite],
+        rejected_rules: dict[str, str],
+    ) -> None:
+        if not semantic_islands:
+            return
+        valid = False
+        rejection: str | None = None
+        for island in semantic_islands:
+            valid, rejection = self._conditional_aggregate_wrapper_is_safe(select, island.plan)
+            if valid:
+                island.applied_rules = self._dedupe([*island.applied_rules, "conditional_aggregate_wrapper"])
+        if not valid and rejection:
+            rejected_rules["conditional_aggregate_wrapper"] = rejection
+
+    def _conditional_aggregate_wrapper_is_safe(
+        self,
+        select: exp.Select,
+        plan: SemanticQueryPlan,
+    ) -> tuple[bool, str | None]:
+        conditional_sums: list[exp.Sum] = []
+        for projection in select.expressions:
+            expression = self._projection_expression(projection)
+            if isinstance(expression, exp.Sum) and isinstance(expression.this, exp.Case):
+                conditional_sums.append(expression)
+            conditional_sums.extend(
+                sum_expr
+                for sum_expr in expression.find_all(exp.Sum)
+                if isinstance(sum_expr.this, exp.Case) and sum_expr is not expression
+            )
+        if not conditional_sums:
+            return False, None
+
+        output_name_to_ref = self._plan_output_name_to_ref(plan)
+        dimension_refs = set(plan.dimensions)
+        metric_refs = set(plan.metrics)
+
+        for sum_expr in conditional_sums:
+            case_expr = sum_expr.this
+            if not isinstance(case_expr, exp.Case):
+                return False, "conditional aggregate input is not CASE"
+            default = case_expr.args.get("default")
+            if default is not None and not (
+                isinstance(default, exp.Literal) and not default.is_string and str(default.this) in {"0", "0.0"}
+            ):
+                return False, "conditional aggregate CASE default is not zero"
+            if case_expr.args.get("this") is not None:
+                return False, "simple CASE conditional aggregates are not supported"
+
+            ifs = case_expr.args.get("ifs") or []
+            if not ifs:
+                return False, "conditional aggregate CASE has no predicates"
+            for if_expr in ifs:
+                metric_input = if_expr.args.get("true")
+                if not isinstance(metric_input, exp.Column):
+                    return False, "conditional aggregate result is not a metric column"
+                metric_ref = output_name_to_ref.get(metric_input.name)
+                if metric_ref not in metric_refs:
+                    return False, "conditional aggregate result is not an inner metric"
+                metric, _model_context = self._resolve_metric(metric_ref)
+                if metric is None or metric.agg not in {"sum", "count"}:
+                    return False, "conditional aggregate metric is not additive"
+
+                predicate = if_expr.this
+                for column in predicate.find_all(exp.Column):
+                    ref = output_name_to_ref.get(column.name)
+                    if ref not in dimension_refs:
+                        return False, "conditional aggregate predicate references a non-dimension"
+
+        return True, None
+
+    def _rewrite_query_island(
+        self,
+        query: exp.Expression,
+        name: str,
+        source_kind: str,
+        *,
+        as_set_branch: bool = False,
+    ) -> tuple[exp.Expression, list[_SemanticIslandRewrite], dict[str, str], list[str]]:
+        if isinstance(query, exp.SetOperation):
+            semantic_islands, rejected_rules, warnings = self._rewrite_set_operation_tree(query)
+            return query, semantic_islands, rejected_rules, warnings
+
+        if not isinstance(query, exp.Select):
+            return query, [], {}, []
+
+        if not self._select_tree_references_semantic_model(query):
+            return query, [], {}, []
+
+        replacement, island, rejected_rules = self._try_optimize_select_as_island(
+            query,
+            name=name,
+            source_kind=source_kind,
+            as_set_branch=as_set_branch,
+        )
+        if island is not None and replacement is not None:
+            return replacement, [island], rejected_rules, []
+
+        child_islands, child_rejected, child_warnings = self._rewrite_select_tree(query)
+        rejected_rules.update(child_rejected)
+        return query, child_islands, rejected_rules, child_warnings
+
+    def _rewrite_set_operation_tree(
+        self, expression: exp.SetOperation
+    ) -> tuple[list[_SemanticIslandRewrite], dict[str, str], list[str]]:
+        semantic_islands: list[_SemanticIslandRewrite] = []
+        rejected_rules: dict[str, str] = {}
+        warnings: list[str] = []
+
+        set_rejection = self._set_operation_branch_rejection(expression)
+        if set_rejection is not None:
+            rejected_rules["set_operation_branch_optimization"] = set_rejection
+            return semantic_islands, rejected_rules, warnings
+
+        with_clause = expression.args.get("with")
+        if with_clause:
+            for cte in with_clause.expressions:
+                cte_query = cte.this
+                if isinstance(cte_query, (exp.Select, exp.SetOperation)):
+                    replacement, child_islands, child_rejected, child_warnings = self._rewrite_query_island(
+                        cte_query,
+                        name=cte.alias or "cte",
+                        source_kind="cte",
+                    )
+                    cte.set("this", replacement)
+                    semantic_islands.extend(child_islands)
+                    rejected_rules.update(child_rejected)
+                    warnings.extend(child_warnings)
+
+        for arg_name, branch_name in (("this", "left_branch"), ("expression", "right_branch")):
+            branch = expression.args.get(arg_name)
+            if not isinstance(branch, (exp.Select, exp.SetOperation)):
+                continue
+            replacement, child_islands, child_rejected, child_warnings = self._rewrite_query_island(
+                branch,
+                name=branch_name,
+                source_kind="set_operation_branch",
+                as_set_branch=True,
+            )
+            expression.set(arg_name, replacement)
+            semantic_islands.extend(child_islands)
+            rejected_rules.update(child_rejected)
+            warnings.extend(child_warnings)
+
+        return semantic_islands, rejected_rules, warnings
+
+    def _set_operation_branch_rejection(self, expression: exp.SetOperation) -> str | None:
+        branch_selects = [
+            branch
+            for branch in (expression.args.get("this"), expression.args.get("expression"))
+            if isinstance(branch, exp.Select)
+        ]
+        for branch in branch_selects:
+            if branch.args.get("order"):
+                return "branch-level ORDER BY is not safe to optimize inside a set operation"
+
+        known_arities = [
+            len(branch.expressions)
+            for branch in branch_selects
+            if not (len(branch.expressions) == 1 and isinstance(branch.expressions[0], exp.Star))
+        ]
+        if known_arities and any(arity != known_arities[0] for arity in known_arities):
+            return "set operation branch projections do not align"
+        return None
+
+    def _try_optimize_select_as_island(
+        self,
+        select: exp.Select,
+        name: str,
+        source_kind: str,
+        *,
+        as_set_branch: bool,
+    ) -> tuple[exp.Expression | None, _SemanticIslandRewrite | None, dict[str, str]]:
+        rejected_rules: dict[str, str] = {}
+        source_sql = select.sql(dialect=self.dialect)
+
+        if self._current_select_references_outer_scope(select):
+            rejected_rules["semantic_island_optimization"] = "semantic island references outer query scope"
+            return None, None, rejected_rules
+
+        optimization, wrapped_rejected = self._optimize_wrapped_semantic_query(select.copy())
+        rejected_rules.update(wrapped_rejected)
+        if optimization is not None:
+            plan = optimization.plan
+            if as_set_branch and not self._set_branch_output_is_compatible(select, plan):
+                rejected_rules["set_operation_branch_optimization"] = (
+                    "branch output columns would not align after rewrite"
+                )
+                return None, None, rejected_rules
+            rewritten_sql = self._generate_from_plan(plan)
+            replacement = self._parse_island_replacement(rewritten_sql, name=name, as_set_branch=as_set_branch)
+            return (
+                replacement,
+                _SemanticIslandRewrite(
+                    name=name,
+                    source_kind=source_kind,
+                    source_sql=source_sql,
+                    rewritten_sql=rewritten_sql,
+                    plan=plan,
+                    applied_rules=self._dedupe(["semantic_island_optimization", *optimization.applied_rules]),
+                    rejected_rules=rejected_rules,
+                ),
+                rejected_rules,
+            )
+
+        if not self._references_semantic_model(select):
+            return None, None, rejected_rules
+
+        try:
+            plan = self._plan_simple_query(select.copy())
+        except Exception as e:
+            rejected_rules["semantic_island_optimization"] = f"semantic island cannot be planned: {e}"
+            return None, None, rejected_rules
+
+        if as_set_branch and not self._set_branch_output_is_compatible(select, plan):
+            rejected_rules["set_operation_branch_optimization"] = "branch output columns would not align after rewrite"
+            return None, None, rejected_rules
+
+        rewritten_sql = self._generate_from_plan(plan)
+        replacement = self._parse_island_replacement(rewritten_sql, name=name, as_set_branch=as_set_branch)
+        return (
+            replacement,
+            _SemanticIslandRewrite(
+                name=name,
+                source_kind=source_kind,
+                source_sql=source_sql,
+                rewritten_sql=rewritten_sql,
+                plan=plan,
+                applied_rules=self._dedupe(["semantic_island_optimization", *plan.applied_rules]),
+                rejected_rules=rejected_rules,
+            ),
+            rejected_rules,
+        )
+
+    def _parse_island_replacement(self, rewritten_sql: str, name: str, *, as_set_branch: bool) -> exp.Expression:
+        if not as_set_branch:
+            return sqlglot.parse_one(rewritten_sql, dialect=self.dialect)
+
+        alias = self._safe_internal_alias(f"{name}_semantic")
+        return sqlglot.parse_one(
+            f"SELECT * FROM (\n{rewritten_sql}\n) AS {alias}",
+            dialect=self.dialect,
+        )
+
+    def _safe_internal_alias(self, name: str) -> str:
+        return "".join(char if char.isalnum() or char == "_" else "_" for char in name) or "semantic_branch"
+
+    def _set_branch_output_is_compatible(self, select: exp.Select, plan: SemanticQueryPlan) -> bool:
+        if len(select.expressions) == 1 and isinstance(select.expressions[0], exp.Star):
+            return True
+        original_names = list(select.named_selects)
+        planned_names = list(self._plan_output_name_to_ref(plan))
+        return len(original_names) == len(planned_names) and original_names == planned_names
+
+    def _current_select_references_outer_scope(self, select: exp.Select) -> bool:
+        local_names = self._current_select_relation_names(select)
+        clauses: list[exp.Expression] = list(select.expressions)
+        for key in ("where", "having", "qualify"):
+            clause = select.args.get(key)
+            if clause is not None:
+                clauses.append(clause.this)
+        for key in ("group", "order"):
+            clause = select.args.get(key)
+            if clause is not None:
+                clauses.extend(list(clause.expressions))
+
+        for clause in clauses:
+            for column in clause.find_all(exp.Column):
+                if (
+                    column.table
+                    and column.table not in local_names
+                    and column.table not in self.graph.models
+                    and column.table != "metrics"
+                ):
+                    return True
+        return False
+
+    def _current_select_relation_names(self, select: exp.Select) -> set[str]:
+        names: set[str] = set()
+        from_clause = select.args.get("from")
+        if from_clause is not None:
+            self._add_relation_names(from_clause.this, names)
+        for join in select.args.get("joins") or []:
+            self._add_relation_names(join.this, names)
+        with_clause = select.args.get("with")
+        if with_clause:
+            for cte in with_clause.expressions:
+                if cte.alias:
+                    names.add(cte.alias)
+        return names
+
+    def _add_relation_names(self, relation: exp.Expression, names: set[str]) -> None:
+        if isinstance(relation, exp.Table):
+            names.add(relation.name)
+            if relation.alias:
+                names.add(relation.alias)
+            return
+        if isinstance(relation, exp.Subquery):
+            if relation.alias_or_name:
+                names.add(relation.alias_or_name)
 
     def _references_semantic_model(self, select: exp.Select) -> bool:
         """Check if a SELECT statement references any semantic models."""
@@ -3508,7 +5698,8 @@ class QueryRewriter:
         if not select.args.get("where"):
             return []
 
-        where = self._normalize_source_aliases(select.args["where"].this)
+        where = self._normalize_source_aliases(select.args["where"].this.copy())
+        where = self._qualify_root_filter_expression(where)
 
         # Handle compound conditions (AND/OR)
         if isinstance(where, (exp.And, exp.Or)):
@@ -3516,6 +5707,70 @@ class QueryRewriter:
 
         # Single condition
         return [where.sql(dialect=self.dialect)]
+
+    def _qualify_root_filter_expression(self, expression: exp.Expression) -> exp.Expression:
+        default_model = getattr(self, "inferred_table", None)
+        if default_model not in self.graph.models:
+            return expression
+
+        model = self.graph.get_model(default_model)
+
+        def qualify(node: exp.Expression) -> exp.Expression:
+            if isinstance(node, exp.Select):
+                return node
+            if isinstance(node, exp.Subquery):
+                return node
+            if isinstance(node, exp.Column) and not node.table:
+                field_name = node.name
+                base_field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
+                if model.get_dimension(base_field_name) or model.get_metric(base_field_name):
+                    node.set("table", exp.to_identifier(default_model))
+                return node
+
+            for key, value in list(node.args.items()):
+                if isinstance(value, exp.Expression):
+                    node.set(key, qualify(value))
+                elif isinstance(value, list):
+                    node.set(
+                        key,
+                        [qualify(item) if isinstance(item, exp.Expression) else item for item in value],
+                    )
+            return node
+
+        return qualify(expression)
+
+    def _stage_semantic_filters(self, filters: list[str]) -> tuple[list[str], list[str]]:
+        row_filters: list[str] = []
+        aggregate_filters: list[str] = []
+        for filter_expr in filters:
+            if self._semantic_filter_references_metric(filter_expr):
+                aggregate_filters.append(filter_expr)
+            else:
+                row_filters.append(filter_expr)
+        return row_filters, aggregate_filters
+
+    def _semantic_filter_references_metric(self, filter_expr: str) -> bool:
+        try:
+            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+        except Exception:
+            return False
+
+        for column in parsed.find_all(exp.Column):
+            table_name = column.table.replace("_cte", "") if column.table else None
+            field_name = column.name.rsplit("__", 1)[0] if "__" in column.name else column.name
+            if table_name and table_name in self.graph.models:
+                model = self.graph.get_model(table_name)
+                if model.get_metric(field_name):
+                    return True
+            elif not table_name:
+                if field_name in self.graph.metrics:
+                    return True
+                inferred_table = getattr(self, "inferred_table", None)
+                if inferred_table in self.graph.models:
+                    model = self.graph.get_model(inferred_table)
+                    if model.get_metric(field_name):
+                        return True
+        return False
 
     def _extract_compound_filters(self, condition: exp.Expression) -> list[str]:
         """Extract filters from compound AND/OR conditions.
@@ -3586,6 +5841,10 @@ class QueryRewriter:
             limit_expr = limit.expression
             if isinstance(limit_expr, exp.Literal):
                 return int(limit_expr.this)
+        if isinstance(limit, exp.Fetch):
+            count_expr = limit.args.get("count")
+            if isinstance(count_expr, exp.Literal):
+                return int(count_expr.this)
 
         return None
 

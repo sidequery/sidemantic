@@ -27,9 +27,9 @@ use nom::{
     IResult,
 };
 
-use polyglot_sql::Expression;
 #[cfg(not(target_arch = "wasm32"))]
-use polyglot_sql::{parse as polyglot_parse, DialectType};
+use polyglot_sql::parse as polyglot_parse;
+use polyglot_sql::{DialectType, Expression};
 
 use crate::core::{
     Aggregation, CohortInnerMetric, ComparisonCalculation, ComparisonType, Dimension,

@@ -74,6 +74,15 @@ pub enum SidemanticError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    #[error("Validation error [{code}] at {field}: {message}")]
+    ValidationIssue {
+        code: String,
+        model: Option<String>,
+        field: String,
+        reference: Option<String>,
+        message: String,
+    },
+
     #[error("Circular dependency detected: {0}")]
     CircularDependency(String),
 
@@ -120,6 +129,22 @@ impl SidemanticError {
             model: model.to_string(),
             segment: segment.to_string(),
             available: available.join(", "),
+        }
+    }
+
+    pub fn validation_issue(
+        code: &str,
+        model: Option<&str>,
+        field: &str,
+        reference: Option<&str>,
+        message: impl Into<String>,
+    ) -> Self {
+        SidemanticError::ValidationIssue {
+            code: code.to_string(),
+            model: model.map(ToString::to_string),
+            field: field.to_string(),
+            reference: reference.map(ToString::to_string),
+            message: message.into(),
         }
     }
 }

@@ -33,6 +33,8 @@ class SemanticLayer:
         preagg_database: str | None = None,
         preagg_schema: str | None = None,
         init_sql: list[str] | None = None,
+        engine: str | None = None,
+        fallback: bool | None = None,
     ):
         """Initialize semantic layer.
 
@@ -56,8 +58,18 @@ class SemanticLayer:
             preagg_schema: Optional schema name for pre-aggregation tables
             init_sql: SQL statements to run after connecting (DuckDB only, e.g.,
                 loading extensions, attaching catalogs, creating secrets)
+            engine: Runtime engine for native query validation/compilation.
+                Supported values are "python", "rust", and "auto". If omitted,
+                legacy SIDEMANTIC_RS_* environment flags are honored.
+            fallback: Whether explicit Rust/auto engine mode may fall back to Python.
+                Defaults to False for engine="rust" and True for engine="auto".
         """
         from sidemantic.db.base import BaseDatabaseAdapter
+
+        if engine is not None:
+            engine = engine.lower()
+            if engine not in {"python", "rust", "auto"}:
+                raise ValueError("engine must be one of: python, rust, auto")
 
         self.graph = SemanticGraph()
         self._sql_rewrite_cache: dict[tuple[object, ...], str] = {}
@@ -65,19 +77,36 @@ class SemanticLayer:
         self.use_preaggregations = use_preaggregations
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self.engine = engine or "python"
         self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
         self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
-        self._use_rust_sql_generator = (
-            os.getenv("SIDEMANTIC_RS_SQL_GENERATOR", "0") == "1" or self._strict_rust_sql_generator_entrypoint
-        )
-        self._use_rust_query_validation = (
-            os.getenv("SIDEMANTIC_RS_QUERY_VALIDATION", "0") == "1" or self._strict_rust_query_validation
-        )
-        self._rust_sql_verify = (
-            os.getenv("SIDEMANTIC_RS_SQL_GENERATOR_VERIFY", "1") == "1"
-            and not self._strict_rust_sql_generator_entrypoint
-        )
-        self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
+        if engine == "python":
+            self._use_rust_sql_generator = False
+            self._use_rust_query_validation = False
+            self._rust_sql_verify = False
+            self._rust_no_fallback = fallback is False
+        elif engine == "rust":
+            self._use_rust_sql_generator = True
+            self._use_rust_query_validation = True
+            self._rust_sql_verify = False
+            self._rust_no_fallback = not (fallback if fallback is not None else False)
+        elif engine == "auto":
+            self._use_rust_sql_generator = True
+            self._use_rust_query_validation = True
+            self._rust_sql_verify = False
+            self._rust_no_fallback = not (fallback if fallback is not None else True)
+        else:
+            self._use_rust_sql_generator = (
+                os.getenv("SIDEMANTIC_RS_SQL_GENERATOR", "0") == "1" or self._strict_rust_sql_generator_entrypoint
+            )
+            self._use_rust_query_validation = (
+                os.getenv("SIDEMANTIC_RS_QUERY_VALIDATION", "0") == "1" or self._strict_rust_query_validation
+            )
+            self._rust_sql_verify = (
+                os.getenv("SIDEMANTIC_RS_SQL_GENERATOR_VERIFY", "1") == "1"
+                and not self._strict_rust_sql_generator_entrypoint
+            )
+            self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
         self._rust_module = None
         if self._use_rust_sql_generator:
             try:

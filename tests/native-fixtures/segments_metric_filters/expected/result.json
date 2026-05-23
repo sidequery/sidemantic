@@ -1,0 +1,17 @@
+[
+  {
+    "status": "cancelled",
+    "total_revenue": 300,
+    "completed_revenue": null
+  },
+  {
+    "status": "completed",
+    "total_revenue": 300,
+    "completed_revenue": 300
+  },
+  {
+    "status": "pending",
+    "total_revenue": 200,
+    "completed_revenue": null
+  }
+]

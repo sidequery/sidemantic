@@ -1,0 +1,7 @@
+metrics:
+  - orders.net_revenue
+  - orders.average_order_value
+dimensions:
+  - orders.status
+order_by:
+  - orders.status

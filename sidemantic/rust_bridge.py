@@ -356,14 +356,16 @@ def models_to_rust_yaml(
         model_data = {
             "name": model.name,
             "extends": model.extends if include_extends else None,
-            "table": model.table or (model.name if not model.sql else None),
+            "table": model.table,
             "sql": model.sql,
             "source_uri": model.source_uri,
             "primary_key": primary_key_columns[0] if primary_key_columns else "id",
             "primary_key_columns": primary_key_columns,
             "unique_keys": model.unique_keys,
             "description": model.description,
-            "label": None,
+            "label": getattr(model, "label", None),
+            "metadata": model.metadata,
+            "meta": model.meta,
             "default_time_dimension": model.default_time_dimension,
             "default_grain": model.default_grain,
             "dimensions": [],
@@ -383,10 +385,13 @@ def models_to_rust_yaml(
                     "supported_granularities": dimension.supported_granularities,
                     "description": dimension.description,
                     "label": dimension.label,
+                    "metadata": dimension.metadata,
+                    "meta": dimension.meta,
                     "format": dimension.format,
                     "value_format_name": dimension.value_format_name,
                     "parent": dimension.parent,
                     "window": dimension.window,
+                    "public": dimension.public,
                 }
             )
 
@@ -846,6 +851,9 @@ def _serialize_metric(metric, *, primary_key_columns: list[str] | None) -> dict:
         "filters": metric.filters or [],
         "description": metric.description,
         "label": metric.label,
+        "metadata": metric.metadata,
+        "meta": metric.meta,
+        "public": metric.public,
     }
 
 
@@ -1223,6 +1231,8 @@ def _serialize_pre_aggregation(pre_aggregation) -> dict:
         "scheduled_refresh": pre_aggregation.scheduled_refresh,
         "refresh_key": refresh_key_payload,
         "indexes": index_payload,
+        "sql": getattr(pre_aggregation, "sql", None),
+        "meta": getattr(pre_aggregation, "meta", None),
     }
 
 
@@ -1537,4 +1547,5 @@ def _serialize_relationship(relationship, source_model, target_model) -> dict | 
         "through_foreign_key": through_foreign_key,
         "related_foreign_key": related_foreign_key,
         "sql": sql,
+        "metadata": getattr(relationship, "metadata", None),
     }

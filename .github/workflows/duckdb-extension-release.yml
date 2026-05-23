@@ -1,0 +1,125 @@
+name: DuckDB Extension Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      duckdb_version:
+        description: "DuckDB tag used for extension build and tests"
+        required: true
+        default: "v1.4.2"
+        type: string
+      create_github_release:
+        description: "Create or update a GitHub release with extension artifacts"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "sidemantic-duckdb-v*"
+
+permissions:
+  contents: read
+
+env:
+  GEN: ninja
+
+jobs:
+  build:
+    name: Build source extension package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve DuckDB version
+        id: duckdb
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.duckdb_version }}"
+          else
+            VERSION="v1.4.2"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Clone DuckDB dependencies
+        working-directory: sidemantic-duckdb
+        run: |
+          rm -rf duckdb extension-ci-tools
+          git clone --depth 1 --branch "${{ steps.duckdb.outputs.version }}" https://github.com/duckdb/duckdb.git duckdb
+          git clone --depth 1 --branch "${{ steps.duckdb.outputs.version }}" https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sidemantic-rs
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build extension
+        working-directory: sidemantic-duckdb
+        run: make
+
+      - name: Run extension tests
+        working-directory: sidemantic-duckdb
+        run: make test
+
+      - name: Package extension artifact
+        working-directory: sidemantic-duckdb
+        run: |
+          mkdir -p dist
+          DUCKDB_VERSION="${{ steps.duckdb.outputs.version }}"
+          DUCKDB_VERSION="${DUCKDB_VERSION#v}"
+          cp build/release/extension/sidemantic/sidemantic.duckdb_extension "dist/sidemantic-duckdb-${DUCKDB_VERSION}-linux-amd64.duckdb_extension"
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidemantic-duckdb-extension-linux-amd64
+          path: sidemantic-duckdb/dist/*.duckdb_extension
+          if-no-files-found: error
+
+  github-release:
+    name: Attach extension artifact to GitHub release
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_github_release == true) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download extension artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve release tag
+        id: release
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            VERSION=$(grep '^version = ' sidemantic-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+            TAG="sidemantic-duckdb-v${VERSION}"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          fi

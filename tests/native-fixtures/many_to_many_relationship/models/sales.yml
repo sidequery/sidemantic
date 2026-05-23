@@ -1,0 +1,32 @@
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: products
+        type: many_to_many
+        through: order_items
+        through_foreign_key: order_id
+        related_foreign_key: product_id
+        primary_key: product_id
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount
+
+  - name: order_items
+    table: order_items
+    primary_key: line_item_id
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: product_id
+        type: numeric
+
+  - name: products
+    table: products
+    primary_key: product_id
+    dimensions:
+      - name: category
+        type: categorical

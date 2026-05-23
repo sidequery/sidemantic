@@ -993,6 +993,18 @@ fn build_model(props: &HashMap<String, String>) -> Result<Model> {
     if let Some(label) = props.get("label") {
         model.label = Some(label.clone());
     }
+    if let Some(metadata) = props.get("metadata") {
+        let parsed = parse_literal(metadata);
+        if !parsed.is_null() {
+            model.metadata = Some(parsed);
+        }
+    }
+    if let Some(meta) = props.get("meta") {
+        let parsed = parse_literal(meta);
+        if !parsed.is_null() {
+            model.meta = Some(parsed);
+        }
+    }
     if let Some(default_time_dimension) = props.get("default_time_dimension") {
         model.default_time_dimension = Some(default_time_dimension.clone());
     }
@@ -1059,6 +1071,18 @@ fn build_dimension(props: &HashMap<String, String>) -> Option<Dimension> {
     if let Some(label) = props.get("label") {
         dim.label = Some(label.clone());
     }
+    if let Some(metadata) = props.get("metadata") {
+        let parsed = parse_literal(metadata);
+        if !parsed.is_null() {
+            dim.metadata = Some(parsed);
+        }
+    }
+    if let Some(meta) = props.get("meta") {
+        let parsed = parse_literal(meta);
+        if !parsed.is_null() {
+            dim.meta = Some(parsed);
+        }
+    }
     if let Some(format) = props.get("format") {
         dim.format = Some(format.clone());
     }
@@ -1068,6 +1092,9 @@ fn build_dimension(props: &HashMap<String, String>) -> Option<Dimension> {
     if let Some(parent) = props.get("parent") {
         dim.parent = Some(parent.clone());
     }
+    if let Some(public) = props.get("public") {
+        dim.public = public.to_lowercase() != "false";
+    }
 
     Some(dim)
 }
@@ -1076,6 +1103,7 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
     let name = props.get("name")?;
 
     let mut metric = Metric::new(name);
+    metric.extends = props.get("extends").cloned();
     metric.agg = None;
     metric.r#type = parse_metric_type(props.get("type"));
     metric.sql = props.get("sql").cloned();
@@ -1140,6 +1168,21 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
     metric.having = props.get("having").cloned();
     metric.description = props.get("description").cloned();
     metric.label = props.get("label").cloned();
+    if let Some(metadata) = props.get("metadata") {
+        let parsed = parse_literal(metadata);
+        if !parsed.is_null() {
+            metric.metadata = Some(parsed);
+        }
+    }
+    if let Some(meta) = props.get("meta") {
+        let parsed = parse_literal(meta);
+        if !parsed.is_null() {
+            metric.meta = Some(parsed);
+        }
+    }
+    if let Some(public) = props.get("public") {
+        metric.public = public.to_lowercase() != "false";
+    }
     metric.format = props.get("format").cloned();
     metric.value_format_name = props.get("value_format_name").cloned();
     metric.non_additive_dimension = props.get("non_additive_dimension").cloned();
@@ -1247,6 +1290,7 @@ fn build_relationship(props: &HashMap<String, String>) -> Option<Relationship> {
         through_foreign_key: props.get("through_foreign_key").cloned(),
         related_foreign_key: props.get("related_foreign_key").cloned(),
         sql: props.get("sql").cloned(),
+        metadata: props.get("metadata").map(|value| parse_literal(value)),
     })
 }
 
@@ -1330,6 +1374,7 @@ fn build_pre_aggregation(props: &HashMap<String, String>) -> Option<PreAggregati
     Some(PreAggregation {
         name: name.clone(),
         preagg_type,
+        sql: props.get("sql").cloned(),
         measures,
         dimensions,
         time_dimension: props.get("time_dimension").cloned(),
@@ -1340,6 +1385,7 @@ fn build_pre_aggregation(props: &HashMap<String, String>) -> Option<PreAggregati
         scheduled_refresh,
         refresh_key,
         indexes,
+        meta: props.get("meta").map(|value| parse_literal(value)),
     })
 }
 

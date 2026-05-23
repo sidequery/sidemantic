@@ -1,0 +1,182 @@
+name: sidemantic-rs Python Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Publish wheels and sdist when MATURIN_PYPI_TOKEN is available"
+        required: false
+        default: false
+        type: boolean
+      create_github_release:
+        description: "Create or update a GitHub release with wheel artifacts"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "sidemantic-rs-v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-wheels:
+    name: Build wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
+          - os: macos-13
+            target: x86_64
+          - os: macos-14
+            target: aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --manifest-path sidemantic-rs/Cargo.toml --out sidemantic-rs/dist
+          manylinux: auto
+          target: ${{ matrix.target }}
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidemantic-rs-wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: sidemantic-rs/dist/*.whl
+          if-no-files-found: error
+
+  build-sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidemantic-rs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Build source distribution
+        run: uvx maturin sdist --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidemantic-rs-sdist
+          path: sidemantic-rs/dist/*.tar.gz
+          if-no-files-found: error
+
+  smoke-host-wheel:
+    name: Smoke host wheel
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidemantic-rs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Build host wheel
+        run: uvx maturin build --release --out dist
+
+      - name: Smoke host wheel
+        run: uv run --no-project --with dist/*.whl tests/python_wheel_smoke.py
+
+  release:
+    name: Publish or attach wheel artifacts
+    needs:
+      - build-wheels
+      - build-sdist
+      - smoke-host-wheel
+    if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && (inputs.publish_pypi == true || inputs.create_github_release == true)) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true }}
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.MATURIN_PYPI_TOKEN }}
+        run: |
+          if [ -z "$MATURIN_PYPI_TOKEN" ]; then
+            echo "Skipping PyPI publish because MATURIN_PYPI_TOKEN is not configured."
+            exit 0
+          fi
+
+          uvx maturin upload dist/*
+
+      - name: Resolve release tag
+        if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_github_release == true) }}
+        id: release
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            VERSION=$(grep '^version = ' sidemantic-rs/pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+            TAG="sidemantic-rs-v${VERSION}"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub release
+        if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_github_release == true) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          fi

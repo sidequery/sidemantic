@@ -79,6 +79,21 @@ def test_models_to_rust_yaml_preserves_extended_core_metadata():
     assert preagg_payload["indexes"] == [{"name": "idx_status", "columns": ["status"], "type": "regular"}]
 
 
+def test_models_to_rust_yaml_does_not_invent_table_for_source_uri_model():
+    model = Model(
+        name="events",
+        source_uri="s3://warehouse/events.parquet",
+        primary_key="event_id",
+        metrics=[Metric(name="event_count", agg="count")],
+    )
+
+    payload = yaml.safe_load(models_to_rust_yaml([model]))
+    model_payload = payload["models"][0]
+
+    assert model_payload["source_uri"] == "s3://warehouse/events.parquet"
+    assert model_payload["table"] is None
+
+
 def test_graph_to_rust_yaml_assigns_complex_metrics_by_entity_dimension():
     graph = SemanticGraph()
     graph.add_model(

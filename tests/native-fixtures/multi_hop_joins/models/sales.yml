@@ -1,0 +1,45 @@
+version: 1
+
+models:
+  - name: order_items
+    table: order_items
+    primary_key: line_item_id
+    relationships:
+      - name: orders
+        type: many_to_one
+        foreign_key: order_id
+        primary_key: order_id
+    dimensions:
+      - name: line_item_id
+        type: numeric
+      - name: order_id
+        type: numeric
+      - name: product_id
+        type: numeric
+    metrics:
+      - name: total_item_revenue
+        agg: sum
+        sql: line_amount
+
+  - name: orders
+    table: orders
+    primary_key: order_id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+        primary_key: customer_id
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: customer_id
+        type: numeric
+
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    dimensions:
+      - name: customer_id
+        type: numeric
+      - name: country
+        type: categorical

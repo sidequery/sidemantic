@@ -103,6 +103,7 @@ impl<'a> QueryRewriter<'a> {
                 let base_table = self.graph.get_model(&base_model).ok_or_else(|| {
                     SidemanticError::Validation(format!("Model '{base_model}' not found"))
                 })?;
+                self.ensure_queryable_source(&base_model, base_table)?;
                 select.from = Some(From {
                     expressions: vec![Expression::Table(table_ref_for(
                         base_table.table_name(),
@@ -139,6 +140,9 @@ impl<'a> QueryRewriter<'a> {
             self.collect_model_refs_from_expr(&having.this, &mut referenced_models);
         }
         self.collect_order_by_model_refs(select.order_by.as_ref(), &mut referenced_models);
+        let mut query_models = referenced_models.clone();
+        query_models.extend(model_refs.iter().map(|(model_name, _)| model_name.clone()));
+        self.ensure_queryable_sources(&query_models)?;
 
         // Find models that need to be joined (referenced but not in FROM)
         let base_model = model_refs.first().map(|(m, _)| m.clone());
@@ -648,7 +652,7 @@ impl<'a> QueryRewriter<'a> {
         // Rewrite base FROM semantic model table names
         if let Some(from_clause) = &mut select.from {
             for source in &mut from_clause.expressions {
-                self.rewrite_from_source(source);
+                self.rewrite_from_source(source)?;
             }
         }
 
@@ -658,6 +662,7 @@ impl<'a> QueryRewriter<'a> {
                 if let Ok(join_path) = self.graph.find_join_path(base, target_model_name) {
                     for step in &join_path.steps {
                         let target_model = self.graph.get_model(&step.to_model).unwrap();
+                        self.ensure_queryable_source(&step.to_model, target_model)?;
 
                         // Find aliases for this join step
                         let to_alias = model_refs
@@ -717,11 +722,12 @@ impl<'a> QueryRewriter<'a> {
         Ok(())
     }
 
-    fn rewrite_from_source(&self, source: &mut Expression) {
+    fn rewrite_from_source(&self, source: &mut Expression) -> Result<()> {
         match source {
             Expression::Table(table) => {
                 let model_name = table.name.name.clone();
                 if let Some(model) = self.graph.get_model(&model_name) {
+                    self.ensure_queryable_source(&model_name, model)?;
                     rewrite_table_ref_name(table, model.table_name());
                     if table.alias.is_none() && model.table_name() != model_name {
                         table.alias = Some(Identifier::new(model_name));
@@ -729,13 +735,40 @@ impl<'a> QueryRewriter<'a> {
                 }
             }
             Expression::Alias(alias) => {
-                self.rewrite_from_source(&mut alias.this);
+                self.rewrite_from_source(&mut alias.this)?;
             }
             Expression::Paren(paren) => {
-                self.rewrite_from_source(&mut paren.this);
+                self.rewrite_from_source(&mut paren.this)?;
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn ensure_queryable_sources(&self, model_names: &HashSet<String>) -> Result<()> {
+        for model_name in model_names {
+            if let Some(model) = self.graph.get_model(model_name) {
+                self.ensure_queryable_source(model_name, model)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_queryable_source(&self, model_name: &str, model: &crate::core::Model) -> Result<()> {
+        if model.table.is_none() && model.sql.is_none() {
+            if let Some(source_uri) = model.source_uri.as_deref() {
+                return Err(SidemanticError::validation_issue(
+                    "unsupported_source_uri_query",
+                    Some(model_name),
+                    &format!("models.{model_name}.source_uri"),
+                    Some(source_uri),
+                    format!(
+                        "Model '{model_name}' uses source_uri '{source_uri}', but Rust SQL rewriting does not load source_uri data. Define table or sql for rewrite compilation."
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Build default JOIN condition (from.fk = to.pk)
@@ -1444,6 +1477,28 @@ mod tests {
             !rewritten.contains("COUNT(order_count)"),
             "Should not count order_count column directly: {rewritten}"
         );
+    }
+
+    #[test]
+    fn test_source_uri_only_model_rejects_rewrite() {
+        let mut graph = SemanticGraph::new();
+        let mut events = Model::new("events", "event_id")
+            .with_dimension(Dimension::categorical("event_type"))
+            .with_metric(Metric::count("event_count"));
+        events.source_uri = Some("s3://warehouse/events.parquet".to_string());
+        graph.add_model(events).unwrap();
+
+        let rewriter = QueryRewriter::new(&graph);
+        let err = rewriter
+            .rewrite("SELECT events.event_count FROM events")
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            SidemanticError::ValidationIssue { ref code, .. }
+                if code == "unsupported_source_uri_query"
+        ));
+        assert!(err.to_string().contains("source_uri"));
     }
 
     #[test]

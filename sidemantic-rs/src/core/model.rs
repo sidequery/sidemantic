@@ -32,6 +32,12 @@ pub struct Dimension {
     pub label: Option<String>,
     /// Description
     pub description: Option<String>,
+    /// Adapter-specific metadata payload
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Arbitrary extension metadata
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
     /// Display format string
     #[serde(default)]
     pub format: Option<String>,
@@ -44,6 +50,9 @@ pub struct Dimension {
     /// Window expression projected in model CTEs.
     #[serde(default)]
     pub window: Option<String>,
+    /// Whether dimension is visible in API/UI.
+    #[serde(default = "default_true")]
+    pub public: bool,
 }
 
 impl Dimension {
@@ -56,10 +65,13 @@ impl Dimension {
             supported_granularities: None,
             label: None,
             description: None,
+            metadata: None,
+            meta: None,
             format: None,
             value_format_name: None,
             parent: None,
             window: None,
+            public: true,
         }
     }
 
@@ -198,6 +210,9 @@ pub struct CohortInnerMetric {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metric {
     pub name: String,
+    /// Parent metric to inherit from.
+    #[serde(default)]
+    pub extends: Option<String>,
     #[serde(default)]
     pub r#type: MetricType,
     /// Aggregation function (for simple metrics)
@@ -218,6 +233,12 @@ pub struct Metric {
     pub label: Option<String>,
     /// Description
     pub description: Option<String>,
+    /// Adapter-specific metadata payload.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Arbitrary extension metadata.
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
 
     // Cumulative metric fields
     /// Time window for cumulative (e.g., "7 days")
@@ -308,12 +329,16 @@ pub struct Metric {
     /// Dimension across which this metric is non-additive
     #[serde(default)]
     pub non_additive_dimension: Option<String>,
+    /// Whether metric is visible in API/UI.
+    #[serde(default = "default_true")]
+    pub public: bool,
 }
 
 impl Metric {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extends: None,
             r#type: MetricType::Simple,
             agg: Some(Aggregation::Sum),
             sql: None,
@@ -323,6 +348,8 @@ impl Metric {
             filters: Vec::new(),
             label: None,
             description: None,
+            metadata: None,
+            meta: None,
             window: None,
             grain_to_date: None,
             window_expression: None,
@@ -349,6 +376,7 @@ impl Metric {
             value_format_name: None,
             drill_fields: None,
             non_additive_dimension: None,
+            public: true,
         }
     }
 
@@ -600,6 +628,9 @@ pub struct Relationship {
     /// Use {from} and {to} placeholders for table aliases
     #[serde(default)]
     pub sql: Option<String>,
+    /// Adapter-specific metadata payload.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl Relationship {
@@ -615,6 +646,7 @@ impl Relationship {
             through_foreign_key: None,
             related_foreign_key: None,
             sql: None,
+            metadata: None,
         }
     }
 
@@ -767,6 +799,8 @@ pub struct PreAggregation {
     #[serde(default, rename = "type")]
     pub preagg_type: PreAggregationType,
     #[serde(default)]
+    pub sql: Option<String>,
+    #[serde(default)]
     pub measures: Option<Vec<String>>,
     #[serde(default)]
     pub dimensions: Option<Vec<String>>,
@@ -786,6 +820,8 @@ pub struct PreAggregation {
     pub refresh_key: Option<RefreshKey>,
     #[serde(default)]
     pub indexes: Option<Vec<Index>>,
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
 }
 
 impl PreAggregation {
@@ -854,6 +890,12 @@ pub struct Model {
     pub label: Option<String>,
     /// Description
     pub description: Option<String>,
+    /// Adapter-specific metadata payload.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Arbitrary extension metadata.
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
 }
 
 impl Model {
@@ -877,6 +919,8 @@ impl Model {
             default_grain: None,
             label: None,
             description: None,
+            metadata: None,
+            meta: None,
         }
     }
 
@@ -996,6 +1040,7 @@ mod tests {
         // COUNT without explicit sql (simulates parsed definition)
         let metric = Metric {
             name: "order_count".to_string(),
+            extends: None,
             agg: Some(Aggregation::Count),
             sql: None,
             ..Metric::new("order_count")

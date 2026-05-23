@@ -1,0 +1,9 @@
+metrics:
+  - orders.total_revenue
+  - orders.completed_revenue
+dimensions:
+  - orders.status
+segments:
+  - orders.high_value
+order_by:
+  - orders.status

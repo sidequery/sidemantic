@@ -179,6 +179,10 @@ def _parse_literal(value: str) -> object:
     return _parse_scalar_literal(raw)
 
 
+def _normalize_definition_placeholders(value: str) -> str:
+    return re.sub(r"\{\s*model\s*\}\s*\.", "{model}.", value)
+
+
 def _normalize_list(value: object | None) -> list[object] | None:
     if value is None:
         return None
@@ -1046,7 +1050,10 @@ def _extract_properties(definition: exp.Expression) -> dict[str, object]:
                 value = value_expr.sql(dialect="duckdb")
 
             if isinstance(value, str):
-                props[key] = _parse_literal(value)
+                parsed_value = _parse_literal(value)
+                if isinstance(parsed_value, str):
+                    parsed_value = _normalize_definition_placeholders(parsed_value)
+                props[key] = parsed_value
             else:
                 props[key] = value
 

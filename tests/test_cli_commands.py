@@ -1,5 +1,6 @@
 """Tests for CLI command wiring."""
 
+import os
 from pathlib import Path
 
 import duckdb
@@ -12,6 +13,21 @@ from sidemantic.config import SidemanticConfig
 from tests.optional_dep_stubs import ensure_fake_mcp, ensure_fake_riffq
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _clear_engine_env(monkeypatch):
+    cli_module._loaded_config = None
+    for name in (
+        "SIDEMANTIC_RS_SQL_GENERATOR",
+        "SIDEMANTIC_RS_QUERY_VALIDATION",
+        "SIDEMANTIC_RS_REWRITER",
+        "SIDEMANTIC_RS_SQL_GENERATOR_VERIFY",
+        "SIDEMANTIC_RS_NO_FALLBACK",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    yield
+    cli_module._loaded_config = None
 
 
 def _write_min_model(directory: Path) -> None:
@@ -69,6 +85,165 @@ def test_query_dry_run_emits_sql(tmp_path):
     assert result.exit_code == 0
     assert "select" in result.stdout.lower()
     assert "count" in result.stdout.lower()
+
+
+def test_query_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
+    _write_min_model(tmp_path)
+    captured = {}
+    monkeypatch.setenv("SIDEMANTIC_RS_SQL_GENERATOR", "0")
+    monkeypatch.setenv("SIDEMANTIC_RS_QUERY_VALIDATION", "0")
+    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "0")
+    monkeypatch.setenv("SIDEMANTIC_RS_NO_FALLBACK", "0")
+
+    class FakeRewriter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def rewrite(self, _sql):
+            captured["rewriter"] = os.environ.get("SIDEMANTIC_RS_REWRITER")
+            captured["no_fallback"] = os.environ.get("SIDEMANTIC_RS_NO_FALLBACK")
+            return "select 1"
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
+
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "SELECT order_count FROM orders",
+            "--models",
+            str(tmp_path),
+            "--dry-run",
+            "--engine",
+            "rust",
+            "--fallback",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured == {"rewriter": "1", "no_fallback": "0"}
+
+
+def test_query_uses_config_runtime_engine(monkeypatch, tmp_path):
+    _write_min_model(tmp_path)
+    captured = {}
+    cli_module._loaded_config = SidemanticConfig.model_validate(
+        {
+            "models_dir": str(tmp_path),
+            "runtime": {"engine": "rust", "fallback": True},
+        }
+    )
+
+    class FakeRewriter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def rewrite(self, _sql):
+            captured["rewriter"] = os.environ.get("SIDEMANTIC_RS_REWRITER")
+            captured["no_fallback"] = os.environ.get("SIDEMANTIC_RS_NO_FALLBACK")
+            return "select 1"
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
+
+    result = runner.invoke(
+        app,
+        ["query", "SELECT order_count FROM orders", "--models", str(tmp_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    assert captured == {"rewriter": "1", "no_fallback": "0"}
+
+
+def test_rewrite_engine_rust_sets_rewriter_env(monkeypatch, tmp_path):
+    _write_min_model(tmp_path)
+    captured = {}
+
+    class FakeRewriter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def rewrite(self, _sql):
+            captured["rewriter"] = os.environ.get("SIDEMANTIC_RS_REWRITER")
+            captured["no_fallback"] = os.environ.get("SIDEMANTIC_RS_NO_FALLBACK")
+            return "select 1"
+
+    monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
+
+    result = runner.invoke(
+        app,
+        [
+            "rewrite",
+            "SELECT order_count FROM orders",
+            "--models",
+            str(tmp_path),
+            "--engine",
+            "rust",
+            "--fallback",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "select 1" in result.stdout
+    assert captured == {"rewriter": "1", "no_fallback": "0"}
+
+
+def test_export_native_writes_versioned_yaml(tmp_path):
+    _write_min_model(tmp_path)
+    output_path = tmp_path / "native.yml"
+
+    result = runner.invoke(app, ["export-native", str(tmp_path), "--output", str(output_path)])
+
+    assert result.exit_code == 0
+    output = output_path.read_text()
+    assert "version: 1" in output
+    assert "name: orders" in output
+
+
+def test_export_native_validate_rust_calls_bridge(monkeypatch, tmp_path):
+    _write_min_model(tmp_path)
+    output_path = tmp_path / "native.yml"
+    captured = {}
+
+    def fake_load_graph_from_yaml_with_rust(yaml_content):
+        captured["yaml"] = yaml_content
+        return object()
+
+    monkeypatch.setattr("sidemantic.rust_bridge.load_graph_from_yaml_with_rust", fake_load_graph_from_yaml_with_rust)
+
+    result = runner.invoke(
+        app,
+        ["export-native", str(tmp_path), "--output", str(output_path), "--validate-rust"],
+    )
+
+    assert result.exit_code == 0
+    assert "version: 1" in captured["yaml"]
+
+
+def test_export_native_file_input_loads_parent_directory_context(tmp_path):
+    source_dir = tmp_path / "models"
+    source_dir.mkdir()
+    (source_dir / "orders.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+"""
+    )
+    (source_dir / "customers.yml").write_text(
+        """
+models:
+  - name: customers
+    table: customers
+"""
+    )
+    output_path = tmp_path / "native.yml"
+
+    result = runner.invoke(app, ["export-native", str(source_dir / "orders.yml"), "--output", str(output_path)])
+
+    assert result.exit_code == 0
+    output = output_path.read_text()
+    assert "name: orders" in output
+    assert "name: customers" in output
 
 
 def test_query_writes_csv_using_autodetected_data_db(tmp_path):
@@ -155,6 +330,30 @@ def test_validate_calls_runner(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert called["directory"] == tmp_path
     assert called["verbose"] is True
+
+
+def test_validate_engine_rust_uses_rust_loader(monkeypatch, tmp_path):
+    _write_min_model(tmp_path)
+    called = {}
+
+    class FakeGraph:
+        models = {"orders": object()}
+
+    def fake_load_graph_from_directory_with_rust(directory):
+        called["directory"] = directory
+        return FakeGraph()
+
+    monkeypatch.setattr(
+        "sidemantic.rust_bridge.load_graph_from_directory_with_rust",
+        fake_load_graph_from_directory_with_rust,
+    )
+
+    result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "rust", "--verbose"])
+
+    assert result.exit_code == 0
+    assert called["directory"] == tmp_path
+    assert "Validated 1 models with Rust" in result.stdout
+    assert "orders" in result.stdout
 
 
 def test_lsp_command_calls_main(monkeypatch):

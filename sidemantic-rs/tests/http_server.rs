@@ -67,15 +67,46 @@ fn http_request_with_headers(
 
 fn wait_for_server(addr: &str) {
     for _ in 0..100 {
-        if TcpStream::connect(addr).is_ok() {
-            let (status, body, _) = http_request(addr, "GET", "/readyz", None);
-            if status == 200 && body == json!({ "status": "ok" }) {
-                return;
-            }
+        if readyz_is_ok(addr) {
+            return;
         }
         thread::sleep(Duration::from_millis(50));
     }
     panic!("server did not become ready at {addr}");
+}
+
+fn readyz_is_ok(addr: &str) -> bool {
+    let request = format!(
+        "GET /readyz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
+    );
+    let Ok(mut stream) = TcpStream::connect(addr) else {
+        return false;
+    };
+    if stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .is_err()
+    {
+        return false;
+    }
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+    let Some((head, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok());
+
+    status == Some(200)
+        && serde_json::from_str::<Value>(body.trim()).ok() == Some(json!({ "status": "ok" }))
 }
 
 #[test]

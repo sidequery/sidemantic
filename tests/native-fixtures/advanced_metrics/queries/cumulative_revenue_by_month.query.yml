@@ -1,0 +1,6 @@
+metrics:
+  - events.cumulative_revenue
+dimensions:
+  - events.event_date__month
+order_by:
+  - events.event_date__month

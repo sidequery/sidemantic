@@ -1,0 +1,9 @@
+metrics:
+  - orders.total_revenue
+dimensions:
+  - orders.created_at__month
+  - orders.status
+order_by:
+  - orders.created_at__month
+  - orders.status
+use_preaggregations: true

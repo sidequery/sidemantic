@@ -1973,7 +1973,7 @@ pub fn resolve_model_inheritance_with_yaml(yaml: &str) -> Result<String> {
                 .map(|extends| (model.name.clone(), extends.clone()))
         })
         .collect();
-    let (models, _, _) = config.into_parts();
+    let (models, _, _) = config.into_parts()?;
 
     let mut models_map: HashMap<String, crate::core::Model> = HashMap::new();
     for model in models {
@@ -5522,6 +5522,7 @@ fn semantic_graph_from_graph_path_payload(
                 ),
                 related_foreign_key: relationship_payload.related_foreign_key.clone(),
                 sql: None,
+                metadata: None,
             });
         }
 

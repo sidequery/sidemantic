@@ -18,12 +18,19 @@ function quoteYamlString(value) {
   return `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
+function quoteSqlString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
 export function activeFilterStrings(filters, excludedDimension = null) {
   return Object.entries(filters || {})
     .filter(([dimension]) => dimension !== excludedDimension)
-    .flatMap(([dimension, values]) =>
-      values.map((value) => `${dimension} = '${String(value).replaceAll("'", "''")}'`),
-    );
+    .flatMap(([dimension, values]) => {
+      const uniqueValues = [...new Set((values || []).map((value) => String(value)))];
+      if (uniqueValues.length === 0) return [];
+      if (uniqueValues.length === 1) return [`${dimension} = ${quoteSqlString(uniqueValues[0])}`];
+      return [`${dimension} IN (${uniqueValues.map(quoteSqlString).join(", ")})`];
+    });
 }
 
 export function hasActiveFilters(filters) {

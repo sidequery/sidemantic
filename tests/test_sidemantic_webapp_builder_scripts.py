@@ -189,8 +189,9 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
     assert "onSelect: setFilter" in app_js
     assert "metricTotalsForFilters" in app_js
     assert "renderMetricCards(totalsEl, filteredTotals" in app_js
-    assert "toggleSingleValueFilter" in app_js
-    assert "removeFilterDimension" in app_js
+    assert "toggleFilterValue" in app_js
+    assert "selectedValues: selectedLeaderboardValues" in app_js
+    assert "removeFilterValue" in app_js
     assert "filterZeroMetricRows" in app_js
     assert 'renderFilterPills(filterPillsEl, state.filters, removeFilter, { emptyLabel: "No filters" })' in app_js
     assert "renderHighlightedQueryDebug" in app_js
@@ -344,3 +345,4 @@ def test_leaderboard_components_support_negative_values() -> None:
     assert '.sdm-leaderboard-row[data-tone="negative"]::before' in static_css
     assert 'const tone = metricValue < 0 ? "negative" : "positive";' in react_source
     assert "data-tone={tone}" in react_source
+    assert "selectedValues?: string[]" in react_source

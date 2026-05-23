@@ -198,8 +198,9 @@ textarea {
 .sdm-sparkline-wrap {
   margin-top: 0;
   overflow: hidden;
-  border: 1px solid rgba(79, 70, 229, 0.16);
-  border-radius: 4px;
+  border: 0;
+  border-top: 1px solid rgba(79, 70, 229, 0.16);
+  border-radius: 0;
   background: #f4f6ff;
 }
 
@@ -211,7 +212,7 @@ textarea {
 
 .sdm-leaderboard {
   min-height: 240px;
-  padding: 10px 12px;
+  padding: 10px 0 0;
 }
 
 .sdm-leaderboard-row strong {

@@ -5,8 +5,8 @@ import {
   renderHighlightedQueryDebug,
   renderLeaderboard,
   renderMetricCards,
-  removeFilterDimension,
-  toggleSingleValueFilter,
+  removeFilterValue,
+  toggleFilterValue,
 } from "./sidemantic-components.js";
 
 const statusEl = document.querySelector('[data-testid="app-status"]');
@@ -59,10 +59,9 @@ function leaderboardQueryForMetric(query, metricRef) {
   };
 }
 
-function selectedLeaderboardValue(query) {
+function selectedLeaderboardValues(query) {
   const dimensionRef = query?.dimensions?.[0];
-  const values = state.filters[dimensionRef] || [];
-  return values[0];
+  return state.filters[dimensionRef] || [];
 }
 
 function filterPreviewResult(query) {
@@ -112,12 +111,12 @@ function metricTotalsForFilters(totalsQuery, leaderboardQuery) {
 
 function setFilter({ dimension, value }) {
   if (!dimension) return;
-  state.filters = toggleSingleValueFilter(state.filters, dimension, value);
+  state.filters = toggleFilterValue(state.filters, dimension, value);
   render();
 }
 
-function removeFilter({ dimension }) {
-  state.filters = removeFilterDimension(state.filters, dimension);
+function removeFilter({ dimension, value }) {
+  state.filters = removeFilterValue(state.filters, dimension, value);
   render();
 }
 
@@ -148,7 +147,7 @@ function render() {
     subtitleEl: leaderboardSubtitleEl,
     interactive: true,
     metricRef: leaderboardMetric,
-    selectedValue: selectedLeaderboardValue(queries.dimension_leaderboard),
+    selectedValues: selectedLeaderboardValues(queries.dimension_leaderboard),
     onSelect: setFilter,
   });
   renderDataPreview(previewEl, filterPreviewResult(previewQuery));

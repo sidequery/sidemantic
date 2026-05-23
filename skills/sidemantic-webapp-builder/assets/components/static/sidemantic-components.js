@@ -354,7 +354,11 @@ export function renderMetricSummaryCards(container, config = {}) {
     svg.setAttribute("height", String(config.sparklineHeight || 56));
     wrap.appendChild(svg);
     card.appendChild(wrap);
-    renderSparkline(svg, (config.seriesRows || []).map((row) => Number(row[aliasForSemanticRef(metric.key)]) || 0));
+    renderSparkline(
+      svg,
+      (config.seriesRows || []).map((row) => Number(row[aliasForSemanticRef(metric.key)]) || 0),
+      { padding: config.sparklinePadding ?? 0 },
+    );
   }
 }
 
@@ -365,6 +369,10 @@ export function renderLeaderboard(container, query, options = {}) {
   const dimensionKey = query.output_aliases?.[dimensionRef] || dimensionRef?.split(".").at(-1);
   const metricKey = query.output_aliases?.[metricRef] || metricRef?.split(".").at(-1);
   const rows = result.sample_rows || [];
+  const selectedValues = new Set([
+    ...(Array.isArray(options.selectedValues) ? options.selectedValues : []),
+    ...(options.selectedValue === undefined ? [] : [options.selectedValue]),
+  ].map((value) => String(value)));
   const values = rows.map((row) => {
     const value = Number(row[metricKey]);
     return Number.isFinite(value) ? value : 0;
@@ -393,7 +401,7 @@ export function renderLeaderboard(container, query, options = {}) {
     item.dataset.tone = value < 0 ? "negative" : "positive";
     item.dataset.value = row[dimensionKey] ?? "";
     item.style.setProperty("--bar-width", `${Math.round((Math.abs(value) / maxMagnitude) * 100)}%`);
-    if (options.selectedValue !== undefined && String(options.selectedValue) === String(row[dimensionKey])) {
+    if (selectedValues.has(String(row[dimensionKey]))) {
       item.dataset.selected = "true";
     }
 
@@ -458,6 +466,9 @@ export function renderDimensionLeaderboardCards(container, dimensions, config = 
         metricLabel: config.metricLabel?.(dimension) || `Ranked by ${config.metricName || labelize(metricRef)}`,
         metricRef,
         onSelect: config.onSelect,
+        selectedValues:
+          config.selectedValuesForDimension?.(dimension) ||
+          (config.selectedValueForDimension ? [config.selectedValueForDimension(dimension)] : undefined),
         selectedValue: config.selectedValueForDimension?.(dimension),
         subtitleEl: subtitle,
         titleEl: title,
@@ -663,19 +674,44 @@ export function syncScrollPosition(source, target) {
   target.scrollLeft = source.scrollLeft;
 }
 
-export function toggleSingleValueFilter(filters, dimension, value) {
+export function toggleFilterValue(filters, dimension, value) {
   const next = { ...filters };
-  const selectedValues = new Set(next[dimension] || []);
-  if (selectedValues.has(String(value))) {
+  const stringValue = String(value);
+  const selectedValues = new Set((next[dimension] || []).map((item) => String(item)));
+
+  if (selectedValues.has(stringValue)) {
+    selectedValues.delete(stringValue);
+  } else {
+    selectedValues.add(stringValue);
+  }
+
+  if (selectedValues.size === 0) {
     delete next[dimension];
   } else {
-    next[dimension] = [String(value)];
+    next[dimension] = [...selectedValues];
   }
+
   return next;
+}
+
+export function toggleSingleValueFilter(filters, dimension, value) {
+  return toggleFilterValue(filters, dimension, value);
 }
 
 export function removeFilterDimension(filters, dimension) {
   const next = { ...filters };
   delete next[dimension];
+  return next;
+}
+
+export function removeFilterValue(filters, dimension, value) {
+  const next = { ...filters };
+  const stringValue = String(value);
+  const values = (next[dimension] || []).filter((item) => String(item) !== stringValue);
+  if (values.length === 0) {
+    delete next[dimension];
+  } else {
+    next[dimension] = values;
+  }
   return next;
 }

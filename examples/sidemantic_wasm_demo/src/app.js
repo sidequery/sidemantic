@@ -2,7 +2,7 @@ import {
   highlightCode,
   metricConfigFor,
   metricValueFormat,
-  removeFilterDimension,
+  removeFilterValue,
   renderDataPreview,
   renderDimensionLeaderboardCards,
   renderFilterPills,
@@ -13,7 +13,7 @@ import {
   setControlsDisabled,
   syncScrollPosition,
   toComponentResult,
-  toggleSingleValueFilter,
+  toggleFilterValue,
 } from "./components/sidemantic/sidemantic-components.js";
 import { createDemoData, DIMENSIONS, METRICS, MODEL_YAML, TIME_GRAINS } from "./demo/ecommerce.js";
 import { buildQueries, dimensionQueryKey, queryYaml, timeDimensionAlias } from "./queries.js";
@@ -91,9 +91,9 @@ function renderFilters() {
   renderFilterPills(
     els.filterPills,
     state.filters,
-    async ({ dimension }) => {
+    async ({ dimension, value }) => {
       if (state.isBusy) return;
-      state.filters = removeFilterDimension(state.filters, dimension);
+      state.filters = removeFilterValue(state.filters, dimension, value);
       await runCompile();
     },
     { emptyLabel: "No filters" },
@@ -124,11 +124,11 @@ function renderDimensions() {
     metricRef: state.selectedMetric,
     onSelect: async ({ dimension, value }) => {
       if (state.isBusy) return;
-      state.filters = toggleSingleValueFilter(state.filters, dimension, value);
+      state.filters = toggleFilterValue(state.filters, dimension, value);
       await runCompile();
     },
     resultForDimension: dimensionResult,
-    selectedValueForDimension: (dimension) => state.filters[dimension.key]?.[0],
+    selectedValuesForDimension: (dimension) => state.filters[dimension.key] || [],
     valueFormat: valueFormatForMetric(state.selectedMetric),
   });
 }
@@ -187,6 +187,11 @@ function reportError(error) {
 }
 
 function validateModel() {
+  if (!state.sidemantic) {
+    setStatus("Sidemantic Rust WASM is still loading. Validation will be available when it is ready.");
+    return false;
+  }
+
   const queries = DIMENSIONS.map((dimension) => ({
     dimension: dimension.key,
     yaml: queryYaml({ metrics: [state.selectedMetric], dimensions: [dimension.key] }),
@@ -195,6 +200,7 @@ function validateModel() {
     state.sidemantic.validate(els.yaml.value, yaml).map((error) => `${dimension}: ${error}`),
   );
   renderValidation();
+  return true;
 }
 
 async function compileAndExecute() {

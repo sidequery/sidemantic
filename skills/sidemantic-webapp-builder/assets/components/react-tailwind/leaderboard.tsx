@@ -4,15 +4,23 @@ type LeaderboardProps = {
   query: SidemanticQuerySpec;
   metricRef?: string;
   selectedValue?: string;
+  selectedValues?: string[];
   onSelect?: (selection: { dimension: string; value: string; row: Record<string, unknown> }) => void;
 };
 
-export function Leaderboard({ query, metricRef: selectedMetricRef, selectedValue, onSelect }: LeaderboardProps) {
+export function Leaderboard({
+  query,
+  metricRef: selectedMetricRef,
+  selectedValue,
+  selectedValues = [],
+  onSelect,
+}: LeaderboardProps) {
   const dimensionRef = query.dimensions?.[0] || "";
   const metricRef = selectedMetricRef || query.metrics?.[0] || "";
   const dimensionKey = aliasFor(query, dimensionRef);
   const metricKey = aliasFor(query, metricRef);
   const rows = query.result?.sample_rows || [];
+  const selectedSet = new Set([...(selectedValues || []), ...(selectedValue === undefined ? [] : [selectedValue])]);
   const metricValues = rows.map((row) => {
     const metricValue = Number(row[metricKey]);
     return Number.isFinite(metricValue) ? metricValue : 0;
@@ -20,8 +28,8 @@ export function Leaderboard({ query, metricRef: selectedMetricRef, selectedValue
   const maxMagnitude = Math.max(0, ...metricValues.map((metricValue) => Math.abs(metricValue))) || 1;
 
   return (
-    <section data-testid="dimension-leaderboard" className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-baseline justify-between gap-3">
+    <section data-testid="dimension-leaderboard" className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="mb-3 flex items-baseline justify-between gap-3 px-3 pt-3">
         <h2 className="text-sm font-semibold text-slate-950">{labelize(dimensionKey)}</h2>
         <p className="text-xs text-slate-500">Ranked by {labelize(metricKey)}</p>
       </div>
@@ -31,12 +39,12 @@ export function Leaderboard({ query, metricRef: selectedMetricRef, selectedValue
           const value = String(rawValue ?? "");
           const metricValue = metricValues[index] ?? 0;
           const tone = metricValue < 0 ? "negative" : "positive";
-          const selected = selectedValue !== undefined && selectedValue === value;
+          const selected = selectedSet.has(value);
           const content = (
             <>
               <span
                 aria-hidden="true"
-                className={`absolute inset-y-1 left-0 ${tone === "negative" ? "bg-red-100" : "bg-indigo-100"}`}
+                className={`absolute inset-y-0 left-0 ${tone === "negative" ? "bg-red-100" : "bg-indigo-100"}`}
                 style={{ width: `${Math.round((Math.abs(metricValue) / maxMagnitude) * 100)}%` }}
               />
               <span className="relative min-w-0 truncate text-slate-700">{value || "—"}</span>
@@ -54,7 +62,7 @@ export function Leaderboard({ query, metricRef: selectedMetricRef, selectedValue
                 data-selected={selected || undefined}
                 data-tone={tone}
                 onClick={() => onSelect({ dimension: dimensionRef, value, row })}
-                className="relative grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 overflow-hidden border-t border-slate-100 px-2 py-2 text-left text-sm first:border-t-0 data-[selected=true]:bg-indigo-50"
+                className="relative grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 overflow-hidden border-t border-slate-100 px-3 py-2 text-left text-sm first:border-t-0 data-[selected=true]:bg-slate-100"
               >
                 {content}
               </button>
@@ -68,7 +76,7 @@ export function Leaderboard({ query, metricRef: selectedMetricRef, selectedValue
               data-value={value}
               data-selected={selected || undefined}
               data-tone={tone}
-              className="relative grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 overflow-hidden border-t border-slate-100 px-2 py-2 text-left text-sm first:border-t-0 data-[selected=true]:bg-indigo-50"
+              className="relative grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 overflow-hidden border-t border-slate-100 px-3 py-2 text-left text-sm first:border-t-0 data-[selected=true]:bg-slate-100"
             >
               {content}
             </div>

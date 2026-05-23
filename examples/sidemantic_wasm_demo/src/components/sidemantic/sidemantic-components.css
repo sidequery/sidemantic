@@ -123,7 +123,7 @@ body {
   gap: 8px;
   width: 100%;
   min-height: 0;
-  padding: 12px 16px 14px;
+  padding: 0;
   border: 0;
   border-bottom: 1px solid var(--sdm-border);
   text-align: left;
@@ -141,6 +141,7 @@ button.sdm-metric-card {
 }
 
 .sdm-metric-card h3 {
+  padding: 12px 16px 0;
   color: var(--sdm-text);
   font-size: 12px;
   font-weight: 600;
@@ -148,6 +149,7 @@ button.sdm-metric-card {
 
 .sdm-metric-card__value {
   margin-top: 0;
+  padding: 0 16px;
   font-size: 16px;
   font-weight: 600;
   letter-spacing: 0;
@@ -155,6 +157,7 @@ button.sdm-metric-card {
 
 .sdm-metric-card__delta {
   margin-top: 0;
+  padding: 0 16px;
   color: var(--sdm-muted);
   font-size: 10px;
 }
@@ -169,7 +172,7 @@ button.sdm-metric-card {
 
 .sdm-leaderboard {
   min-height: 240px;
-  padding: 10px 12px;
+  padding: 10px 0 0;
   border-right: 1px solid var(--sdm-border);
   border-bottom: 1px solid var(--sdm-border);
 }
@@ -180,6 +183,7 @@ button.sdm-metric-card {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
+  padding: 0 12px;
 }
 
 .sdm-leaderboard-row {
@@ -187,7 +191,7 @@ button.sdm-metric-card {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   position: relative;
-  padding: 4px 6px;
+  padding: 4px 12px;
   border-top: 0;
   border-radius: 0;
   font-size: 11px;
@@ -264,6 +268,13 @@ button.sdm-leaderboard-row {
   background: #f3f4f6;
   color: var(--sdm-muted);
   cursor: pointer;
+}
+
+.sdm-sparkline-wrap {
+  margin-top: 0;
+  overflow: hidden;
+  border-top: 1px solid rgba(79, 70, 229, 0.16);
+  background: #f4f6ff;
 }
 
 .sdm-sparkline {

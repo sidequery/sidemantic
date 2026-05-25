@@ -9,7 +9,7 @@ pub enum SidemanticError {
     ModelNotFound(String, String),
 
     #[error(
-        "Dimension not found: '{dimension}' in model '{model}'. Available dimensions: {available}"
+        "Dimension '{dimension}' not found in model '{model}'. Available dimensions: {available}"
     )]
     DimensionNotFound {
         model: String,
@@ -17,14 +17,14 @@ pub enum SidemanticError {
         available: String,
     },
 
-    #[error("Metric not found: '{metric}' in model '{model}'. Available metrics: {available}")]
+    #[error("Metric '{metric}' not found in model '{model}'. Available metrics: {available}")]
     MetricNotFound {
         model: String,
         metric: String,
         available: String,
     },
 
-    #[error("Segment not found: '{segment}' in model '{model}'. Available segments: {available}")]
+    #[error("Segment '{segment}' not found in model '{model}'. Available segments: {available}")]
     SegmentNotFound {
         model: String,
         segment: String,
@@ -33,7 +33,7 @@ pub enum SidemanticError {
 
     // Join/relationship errors
     #[error(
-        "No join path found between '{from}' and '{to}'. Check that a relationship is defined."
+        "No join path found between models '{from}' and '{to}'. Check that a relationship is defined."
     )]
     NoJoinPath { from: String, to: String },
 

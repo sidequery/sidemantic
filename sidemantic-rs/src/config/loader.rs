@@ -114,6 +114,11 @@ pub fn load_from_string_with_metadata(content: &str) -> Result<LoadedGraphMetada
 
     let mut graph = SemanticGraph::new();
     add_resolved_models_in_order(&mut graph, resolved_models, &model_order)?;
+    for metric in top_level_metrics.iter().cloned() {
+        if graph.get_metric(&metric.name).is_none() {
+            graph.add_metric(metric)?;
+        }
+    }
     for parameter in top_level_parameters {
         graph.add_parameter(parameter)?;
     }
@@ -315,6 +320,11 @@ pub fn load_from_sql_string_with_metadata(content: &str) -> Result<LoadedGraphMe
 
     let mut graph = SemanticGraph::new();
     add_resolved_models_in_order(&mut graph, resolved_models, &model_order)?;
+    for metric in top_level_metrics.iter().cloned() {
+        if graph.get_metric(&metric.name).is_none() {
+            graph.add_metric(metric)?;
+        }
+    }
     for parameter in top_level_parameters {
         graph.add_parameter(parameter)?;
     }
@@ -488,6 +498,11 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
     // Build the graph
     let mut graph = SemanticGraph::new();
     add_resolved_models_in_order(&mut graph, resolved_models, &model_order)?;
+    for metric in all_top_level_metrics.iter().cloned() {
+        if graph.get_metric(&metric.name).is_none() {
+            graph.add_metric(metric)?;
+        }
+    }
     for parameter in all_top_level_parameters {
         graph.add_parameter(parameter)?;
     }

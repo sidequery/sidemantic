@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass
+from typing import Any
 
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -43,6 +44,7 @@ class SemanticGraph:
         self.metrics: dict[str, Metric] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
+        self.metadata: dict[str, Any] = {}
         self._version = 0
         self._adjacency_dirty = True
         self._adjacency: dict[

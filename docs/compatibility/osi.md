@@ -1,6 +1,6 @@
 # OSI Compatibility
 
-Sidemantic's OSI adapter parses [Open Semantic Interface](https://github.com/open-semantic-interchange/OSI) YAML files and maps OSI concepts to Sidemantic's semantic model (Model, Dimension, Metric, Relationship). It also supports exporting back to OSI YAML, including multi-dialect SQL transpilation via sqlglot.
+Sidemantic's OSI adapter parses [Open Semantic Interchange](https://github.com/open-semantic-interchange/OSI) YAML files and maps OSI concepts to Sidemantic's semantic model (Model, Dimension, Metric, Relationship). It also supports exporting back to OSI YAML, including multi-dialect SQL transpilation via sqlglot.
 
 Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation. Properties that parse without error but have no Sidemantic equivalent are grouped together per section rather than listed individually.
 
@@ -12,10 +12,11 @@ Features are marked **supported**, **partial support**, or **unsupported**. Part
 |---------|--------|
 | `semantic_model` (list of models) | Supported |
 | Multiple semantic models in one file | Supported (each iterated independently) |
-| `name` (semantic model name) | Partial support: parsed but not stored. The graph has no concept of a top-level model name. Individual datasets become named Models. |
-| `description` (semantic model description) | Partial support: parsed but not stored on the graph. |
-
-Not mapped: `version`.
+| `version` | Supported. Current exports emit `0.2.0.dev0`; imports preserve the source version in `SemanticGraph.metadata["osi"]["version"]`. |
+| `name` (semantic model name) | Supported as metadata. Stored in `SemanticGraph.metadata["osi"]["semantic_models"]` and reused on export. Individual datasets still become named Models. |
+| `description` (semantic model description) | Supported as graph metadata and reused on export. |
+| `ai_context` (semantic model level) | Supported as graph metadata and reused on export. |
+| `custom_extensions` (semantic model level) | Supported as graph metadata and reused on export. |
 
 ---
 
@@ -32,7 +33,6 @@ Not mapped: `version`.
 | `fields` | Supported (mapped to Dimensions) |
 | `ai_context` | Supported (stored in `Model.meta["ai_context"]`) |
 | `custom_extensions` (dataset level) | Supported (stored in `Model.meta["custom_extensions"]`) |
-| `custom_extensions` (semantic_model level) | Unsupported |
 | Dataset without `name` | Supported (gracefully skipped) |
 | Multi-file directory parsing (recursive `.yml`/`.yaml` discovery) | Supported |
 | Default primary key when omitted | Supported (defaults to `"id"`) |
@@ -91,6 +91,9 @@ Not mapped: `type` (the OSI `type` hint on metrics, e.g. `type: count`, is ignor
 | `from_columns` / `to_columns` (single column) | Supported |
 | `from_columns` / `to_columns` (multi-column composite keys) | Supported |
 | Relationship type | Partial support: all relationships are imported as `many_to_one`. The OSI spec does not define cardinality on the `from`/`to` relationship format, and the adapter always assumes many-to-one. |
+| Relationship `name` | Supported (stored in `Relationship.metadata["osi_name"]` and reused on export) |
+| Relationship `ai_context` | Supported (stored in `Relationship.metadata["ai_context"]`) |
+| Relationship `custom_extensions` | Supported (stored in `Relationship.metadata["custom_extensions"]`) |
 | Missing `from_columns` | Supported (defaults foreign key to `{to_model}_id`) |
 | Missing `to_columns` | Supported (defaults primary key to `id`) |
 | Relationship with missing `from` or `to` | Supported (gracefully skipped) |
@@ -98,8 +101,6 @@ Not mapped: `type` (the OSI `type` hint on metrics, e.g. `type: count`, is ignor
 | `left_dataset` / `right_dataset` / `cardinality` format | Unsupported |
 
 The `left_dataset`/`right_dataset`/`cardinality` relationship format (used by some community OSI files, e.g. mdb-engine models) is not parsed. Only the `from`/`to`/`from_columns`/`to_columns` format is recognized. Files using the alternative format will parse without error, but relationships will be silently skipped.
-
-Not mapped: relationship `name`, `ai_context` on relationships.
 
 ---
 
@@ -112,8 +113,8 @@ Not mapped: relationship `name`, `ai_context` on relationships.
 | `ANSI_SQL` dialect | Supported (preferred) |
 | `SNOWFLAKE` dialect | Supported (second preference) |
 | `DATABRICKS` dialect | Supported (third preference) |
-| `BIGQUERY` dialect | Supported (used as fallback if preferred dialects absent) |
-| Other/custom dialects | Supported (used as fallback if preferred dialects absent) |
+| `MAQL`, `TABLEAU`, `MDX` dialects | Supported as fallback expressions if no preferred SQL dialect is present. The expression is preserved as text; it is not translated. |
+| Other/custom dialects | Supported on import as fallback if preferred dialects absent |
 | Multiple dialects per expression | Supported (single dialect selected by preference order) |
 | Missing `expression` block | Supported (field SQL becomes `None`) |
 
@@ -124,9 +125,10 @@ Not mapped: relationship `name`, `ai_context` on relationships.
 | Export to `ANSI_SQL` | Supported (default, expression passed through as-is) |
 | Export to `SNOWFLAKE` | Supported (transpiled from DuckDB/ANSI via sqlglot) |
 | Export to `DATABRICKS` | Supported (transpiled via sqlglot) |
-| Export to `BIGQUERY` | Supported (transpiled via sqlglot) |
+| Export to `BIGQUERY` | Unsupported (not in the current OSI dialect enum) |
+| Export to `MAQL`, `TABLEAU`, `MDX` | Unsupported (not safely generated from Sidemantic SQL) |
 | Multiple dialects in single export | Supported (pass `dialects=["ANSI_SQL", "SNOWFLAKE", ...]`) |
-| Unknown dialect on export | Supported (falls back to original expression) |
+| Unknown dialect on export | Unsupported (raises `ValueError`) |
 | Transpilation failure | Supported (falls back to original expression) |
 
 ---
@@ -140,8 +142,8 @@ Not mapped: relationship `name`, `ai_context` on relationships.
 | Dataset `ai_context` | Supported (stored in `Model.meta["ai_context"]`) |
 | Field `ai_context` | Supported (stored in `Dimension.meta["ai_context"]`) |
 | Metric `ai_context` | Supported (stored in `Metric.meta["ai_context"]`) |
-| Semantic model level `ai_context` | Partial support: parsed by YAML but not stored on the graph. |
-| Relationship `ai_context` | Unsupported |
+| Semantic model level `ai_context` | Supported (stored in `SemanticGraph.metadata["osi"]["semantic_models"]`) |
+| Relationship `ai_context` | Supported (stored in `Relationship.metadata["ai_context"]`) |
 
 Common sub-keys (`synonyms`, `instructions`, `examples`, `description_for_ai`) are all preserved as-is in the meta dictionary. No sub-key receives special handling.
 
@@ -154,9 +156,10 @@ Common sub-keys (`synonyms`, `instructions`, `examples`, `description_for_ai`) a
 | Dataset `custom_extensions` | Supported (stored in `Model.meta["custom_extensions"]`) |
 | Field `custom_extensions` | Supported (stored in `Dimension.meta["custom_extensions"]`) |
 | Metric `custom_extensions` | Supported (stored in `Metric.meta["custom_extensions"]`) |
-| Semantic model level `custom_extensions` | Unsupported |
+| Relationship `custom_extensions` | Supported (stored in `Relationship.metadata["custom_extensions"]`) |
+| Semantic model level `custom_extensions` | Supported (stored in `SemanticGraph.metadata["osi"]["semantic_models"]`) |
 
-Nested structures within `custom_extensions` (vendor configs, tag lists, etc.) are preserved verbatim as Python dicts/lists.
+Current OSI schema represents `custom_extensions` as a list of `{vendor_name, data}` objects where `data` is a JSON string. Sidemantic still imports legacy dict/list extension shapes. On export, non-standard extension payloads are wrapped as a `SIDEMANTIC` extension with stringified JSON so emitted OSI stays schema-shaped.
 
 ---
 
@@ -166,6 +169,8 @@ Sidemantic can export its semantic model back to OSI YAML format.
 
 | Feature | Status |
 |---------|--------|
+| Current OSI version | Supported (`version: "0.2.0.dev0"` emitted at file root) |
+| Semantic-model-level metadata | Supported (`name`, `description`, `ai_context`, `custom_extensions`) |
 | Datasets with `source` (table name) | Supported |
 | Datasets with `sql` (derived/subquery source) | Supported (wrapped in parentheses) |
 | Fields (dimensions) | Supported |
@@ -182,6 +187,7 @@ Sidemantic can export its semantic model back to OSI YAML format.
 | Model-level metrics | Supported (promoted to semantic_model-level metrics, field refs qualified with model name) |
 | Graph-level metrics | Supported |
 | Relationships (`many_to_one` only) | Supported |
+| Relationship `name`, `ai_context`, `custom_extensions` | Supported |
 | Non-`many_to_one` relationships | Unsupported (silently omitted from export) |
 | Multi-column relationship keys | Supported |
 | Related model PK lookup on export | Supported (when `rel.primary_key` is None, the related model's actual PK columns are used for `to_columns`) |
@@ -195,7 +201,19 @@ Sidemantic can export its semantic model back to OSI YAML format.
 
 ## Version Field
 
-Unsupported. The `version: "1.0"` key at the file root is ignored on import and not emitted on export.
+Supported. Imports preserve the source value in graph metadata. Exports always emit the current supported OSI draft version, `0.2.0.dev0`.
+
+---
+
+## Ontology Files
+
+OSI's ontology spec defines conceptual `ontology` entries plus `ontology_mappings` that embed logical semantic models. Sidemantic does not implement ontology reasoning, but it does:
+
+| Feature | Status |
+|---------|--------|
+| Top-level `ontology` | Partial support: preserved in `SemanticGraph.metadata["osi"]["ontology"]`; not converted to Models. |
+| `ontology_mappings[].semantic_model` | Supported: parsed into Sidemantic Models, Relationships, and Metrics. |
+| `ontology_mappings[].concept_mappings` | Partial support: preserved in graph metadata; not used for query planning. |
 
 ---
 

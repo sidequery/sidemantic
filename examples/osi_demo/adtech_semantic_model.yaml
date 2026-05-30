@@ -1,3 +1,5 @@
+version: "0.2.0.dev0"
+
 semantic_model:
   - name: adtech_performance
     description: Complex adtech semantic layer with multi-hop joins and cross-model metrics

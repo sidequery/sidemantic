@@ -10,8 +10,10 @@ import pytest
 import yaml
 
 from sidemantic.core.semantic_layer import SemanticLayer
+from sidemantic.core.table_calculation import TableCalculation
 from sidemantic.loaders import load_from_directory
 from sidemantic.sql.query_rewriter import QueryRewriter
+from sidemantic.sql.table_calc_processor import TableCalculationProcessor
 
 FIXTURE_SUITE_ROOT = Path(__file__).parents[1] / "native-fixtures"
 
@@ -111,12 +113,11 @@ def test_native_fixture_loads_compiles_and_executes(fixture, query_manifest):
     parameter_values = query_kwargs.pop("parameter_values", None)
     if parameter_values is not None:
         query_kwargs["parameters"] = parameter_values
-    table_calculations = query_kwargs.pop("table_calculations", None)
-    if table_calculations:
-        assert query_manifest.get("rust_only_reason"), (
-            "fixture table_calculations must declare rust_only_reason while Python strips "
-            "table_calculations from native query execution"
-        )
+    table_calculation_defs = query_kwargs.pop("table_calculations", None)
+    table_calculations = [
+        value if isinstance(value, TableCalculation) else TableCalculation(**value)
+        for value in (table_calculation_defs or [])
+    ]
 
     compiled = layer.compile(**query_kwargs)
 
@@ -130,8 +131,16 @@ def test_native_fixture_loads_compiles_and_executes(fixture, query_manifest):
         return
 
     layer.adapter.execute((fixture_root / fixture["seed"]).read_text())
-    rows = layer.query(**query_kwargs).fetchall()
-    result_columns = query_manifest["result_columns"]
+    relation = layer.query(**query_kwargs)
+    rows = relation.fetchall()
+    if table_calculations:
+        base_columns = list(getattr(relation, "columns", []) or [])
+        if not base_columns:
+            base_columns = [column[0] for column in getattr(relation, "description", []) or []]
+        rows, result_columns = TableCalculationProcessor(table_calculations).process(rows, base_columns)
+        assert result_columns == query_manifest["result_columns"]
+    else:
+        result_columns = query_manifest["result_columns"]
     actual = [
         {column: normalize_value(value) for column, value in zip(result_columns, row, strict=True)} for row in rows
     ]

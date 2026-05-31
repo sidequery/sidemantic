@@ -1,0 +1,6 @@
+metrics:
+  - orders.total_revenue
+dimensions:
+  - products.category
+order_by:
+  - products.category

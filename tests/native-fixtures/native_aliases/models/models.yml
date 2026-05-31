@@ -1,0 +1,20 @@
+version: 1
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    auto_dimensions: false
+    dimensions:
+      - name: status
+        type: categorical
+        expr: order_status
+    measures:
+      - name: total_revenue
+        agg: sum
+        expr: amount
+      - name: order_count
+        agg: count
+      - name: revenue_per_order
+        type: derived
+        measure: total_revenue / NULLIF(order_count, 0)

@@ -1,0 +1,5 @@
+metrics:
+  - orders.amount_stddev
+  - orders.amount_stddev_pop
+  - orders.amount_variance
+  - orders.amount_variance_pop

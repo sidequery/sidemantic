@@ -1529,12 +1529,16 @@ def _serialize_relationship(relationship, source_model, target_model) -> dict | 
 
     through_foreign_key = getattr(relationship, "through_foreign_key", None)
     related_foreign_key = getattr(relationship, "related_foreign_key", None)
+    through_foreign_key_columns = getattr(relationship, "through_foreign_key_columns", None)
+    related_foreign_key_columns = getattr(relationship, "related_foreign_key_columns", None)
     if relationship.type == "many_to_many":
-        junction_keys_fn = getattr(relationship, "junction_keys", None)
-        if callable(junction_keys_fn):
-            junction_self_fk, junction_related_fk = junction_keys_fn()
-            through_foreign_key = through_foreign_key or junction_self_fk
-            related_foreign_key = related_foreign_key or junction_related_fk
+        junction_key_columns_fn = getattr(relationship, "junction_key_columns", None)
+        if callable(junction_key_columns_fn):
+            junction_self_fks, junction_related_fks = junction_key_columns_fn()
+            through_foreign_key_columns = through_foreign_key_columns or junction_self_fks
+            related_foreign_key_columns = related_foreign_key_columns or junction_related_fks
+            through_foreign_key = through_foreign_key or (junction_self_fks[0] if junction_self_fks else None)
+            related_foreign_key = related_foreign_key or (junction_related_fks[0] if junction_related_fks else None)
 
     return {
         "name": relationship.name,
@@ -1545,7 +1549,9 @@ def _serialize_relationship(relationship, source_model, target_model) -> dict | 
         "primary_key_columns": primary_keys,
         "through": getattr(relationship, "through", None),
         "through_foreign_key": through_foreign_key,
+        "through_foreign_key_columns": through_foreign_key_columns,
         "related_foreign_key": related_foreign_key,
+        "related_foreign_key_columns": related_foreign_key_columns,
         "sql": sql,
         "metadata": getattr(relationship, "metadata", None),
     }

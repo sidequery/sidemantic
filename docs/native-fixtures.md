@@ -79,7 +79,8 @@ The suite currently covers:
 - Parameter interpolation in query filters.
 - Pre-aggregation routing shape and DuckDB execution against seeded rollup tables.
 - Semantic SQL rewrite cases for single-model and relationship queries.
-- Query-local table calculations on the Rust SQL compiler path, including Rust-only DuckDB result coverage.
+- Query-local table calculations for the shared Python/Rust subset. Python applies these after fetching rows;
+  Rust compiles them into SQL window expressions.
 - Native `.sql` definition files.
 - Native SQL frontmatter model definitions.
 - YAML `sql_metrics` and `sql_segments` blocks.
@@ -111,6 +112,15 @@ cargo test --features adbc-exec --test native_fixtures native_fixtures_execute_e
 The default Rust runner loads every manifest fixture, asserts `expected/validation.json` agrees with manifest validity, expects invalid fixtures to fail, converts query YAML into `SemanticQuery`, compiles every valid query, checks SQL shape tokens, and runs manifest semantic SQL rewrite cases.
 
 The `adbc-exec` Rust runner executes every query with `expected_result` or `rust_expected_result` through DuckDB ADBC, using the fixture seed SQL and result columns from the manifest. Any Rust-only expected output must include `rust_only_reason`. It is enabled in CI after installing the DuckDB ADBC driver.
+
+Table-calculation fixture contract:
+
+- Shared table calculations may use `percent_of_total`, `percent_of_previous`, `running_total`, `rank`, `row_number`, or `moving_average`.
+- Shared calculations should include deterministic query `order_by` when row order affects the result.
+- Python evaluates shared calculations with `TableCalculationProcessor` after query execution.
+- Rust evaluates shared calculations by compiling them into SQL expressions.
+- Rust-only table calculation types (`dense_rank`, `difference`, `lead`, `lag`) must use `rust_expected_result` and `rust_only_reason`.
+- Python-only post-query table calculation types (`percent_of_column_total`, `percentile`) stay out of shared native fixtures until Rust supports them.
 
 ## Adding Fixtures
 

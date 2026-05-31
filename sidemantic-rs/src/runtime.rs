@@ -153,7 +153,11 @@ struct GraphPathRelationshipPayload {
     has_primary_key: bool,
     through: Option<String>,
     through_foreign_key: Option<String>,
+    #[serde(default)]
+    through_foreign_key_columns: Vec<String>,
     related_foreign_key: Option<String>,
+    #[serde(default)]
+    related_foreign_key_columns: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -622,6 +626,10 @@ fn parse_metric_agg_for_dependencies(agg: Option<&str>) -> Option<Aggregation> {
         Some("min") => Some(Aggregation::Min),
         Some("max") => Some(Aggregation::Max),
         Some("median") => Some(Aggregation::Median),
+        Some("stddev") => Some(Aggregation::Stddev),
+        Some("stddev_pop") => Some(Aggregation::StddevPop),
+        Some("variance") => Some(Aggregation::Variance),
+        Some("variance_pop") | Some("var_pop") => Some(Aggregation::VariancePop),
         Some("expression") => Some(Aggregation::Expression),
         _ => None,
     }
@@ -1599,6 +1607,10 @@ fn resolve_wasm_aggregate_projection(
         "min" => Aggregation::Min,
         "max" => Aggregation::Max,
         "median" => Aggregation::Median,
+        "stddev" => Aggregation::Stddev,
+        "stddev_pop" => Aggregation::StddevPop,
+        "variance" => Aggregation::Variance,
+        "variance_pop" => Aggregation::VariancePop,
         "count" => Aggregation::Count,
         "count_distinct" => Aggregation::CountDistinct,
         _ => {
@@ -4168,7 +4180,17 @@ pub fn parse_simple_metric_aggregation(sql_expr: &str) -> Option<(String, Option
     let func = trimmed[..open_paren].trim().to_lowercase();
     if !matches!(
         func.as_str(),
-        "sum" | "avg" | "min" | "max" | "median" | "count"
+        "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "median"
+            | "stddev"
+            | "stddev_pop"
+            | "variance"
+            | "variance_pop"
+            | "var_pop"
+            | "count"
     ) {
         return None;
     }
@@ -4204,11 +4226,17 @@ pub fn parse_simple_metric_aggregation(sql_expr: &str) -> Option<(String, Option
     let inner = trimmed[open_paren + 1..close_paren].trim();
 
     match func.as_str() {
-        "sum" | "avg" | "min" | "max" | "median" => {
+        "sum" | "avg" | "min" | "max" | "median" | "stddev" | "stddev_pop" | "variance"
+        | "variance_pop" | "var_pop" => {
             if inner.is_empty() {
                 None
             } else {
-                Some((func, Some(inner.to_string())))
+                let agg = if func == "var_pop" {
+                    "variance_pop".to_string()
+                } else {
+                    func
+                };
+                Some((agg, Some(inner.to_string())))
             }
         }
         "count" => {
@@ -4790,6 +4818,10 @@ fn catalog_aggregation_name(aggregation: Option<&Aggregation>) -> Option<&'stati
         Some(Aggregation::Min) => Some("min"),
         Some(Aggregation::Max) => Some("max"),
         Some(Aggregation::Median) => Some("median"),
+        Some(Aggregation::Stddev) => Some("stddev"),
+        Some(Aggregation::StddevPop) => Some("stddev_pop"),
+        Some(Aggregation::Variance) => Some("variance"),
+        Some(Aggregation::VariancePop) => Some("variance_pop"),
         Some(Aggregation::Expression) => Some("expression"),
         None => None,
     }
@@ -4798,7 +4830,10 @@ fn catalog_aggregation_name(aggregation: Option<&Aggregation>) -> Option<&'stati
 fn catalog_metric_data_type(aggregation: Option<&str>) -> &'static str {
     match aggregation {
         Some("count" | "count_distinct") => "BIGINT",
-        Some("sum" | "avg" | "min" | "max" | "median" | "percentile") => "NUMERIC",
+        Some(
+            "sum" | "avg" | "min" | "max" | "median" | "stddev" | "stddev_pop" | "variance"
+            | "variance_pop" | "percentile",
+        ) => "NUMERIC",
         _ => "NUMERIC",
     }
 }
@@ -5014,6 +5049,20 @@ impl SidemanticRuntime {
                         }
                         Some(Aggregation::Median) => {
                             select_exprs.push(format!("MEDIAN({sql_expr}) as {measure_name}_raw"));
+                        }
+                        Some(Aggregation::Stddev) => {
+                            select_exprs.push(format!("STDDEV({sql_expr}) as {measure_name}_raw"));
+                        }
+                        Some(Aggregation::StddevPop) => {
+                            select_exprs
+                                .push(format!("STDDEV_POP({sql_expr}) as {measure_name}_raw"));
+                        }
+                        Some(Aggregation::Variance) => {
+                            select_exprs
+                                .push(format!("VARIANCE({sql_expr}) as {measure_name}_raw"));
+                        }
+                        Some(Aggregation::VariancePop) => {
+                            select_exprs.push(format!("VAR_POP({sql_expr}) as {measure_name}_raw"));
                         }
                         Some(Aggregation::Expression) | None => {
                             select_exprs.push(format!("SUM({sql_expr}) as {measure_name}_raw"));
@@ -5520,7 +5569,23 @@ fn semantic_graph_from_graph_path_payload(
                         }
                     },
                 ),
+                through_foreign_key_columns: if relationship_payload
+                    .through_foreign_key_columns
+                    .is_empty()
+                {
+                    None
+                } else {
+                    Some(relationship_payload.through_foreign_key_columns.clone())
+                },
                 related_foreign_key: relationship_payload.related_foreign_key.clone(),
+                related_foreign_key_columns: if relationship_payload
+                    .related_foreign_key_columns
+                    .is_empty()
+                {
+                    None
+                } else {
+                    Some(relationship_payload.related_foreign_key_columns.clone())
+                },
                 sql: None,
                 metadata: None,
             });
@@ -6043,6 +6108,10 @@ type: one_to_many
                 Some("customer_id".to_string())
             ))
         );
+        assert_eq!(
+            parse_simple_metric_aggregation("VARIANCE_POP(amount)"),
+            Some(("variance_pop".to_string(), Some("amount".to_string())))
+        );
         assert_eq!(parse_simple_metric_aggregation("revenue + cost"), None);
 
         let simple_metric_yaml = r#"
@@ -6053,6 +6122,16 @@ sql: amount
         assert_eq!(metric_to_sql(simple_metric_yaml).unwrap(), "SUM(amount)");
         assert_eq!(metric_sql_expr(simple_metric_yaml).unwrap(), "amount");
         assert!(metric_is_simple_aggregation(simple_metric_yaml).unwrap());
+
+        let stats_metric_yaml = r#"
+name: amount_stddev_pop
+agg: stddev_pop
+sql: amount
+"#;
+        assert_eq!(
+            metric_to_sql(stats_metric_yaml).unwrap(),
+            "STDDEV_POP(amount)"
+        );
 
         let count_metric_yaml = r#"
 name: orders

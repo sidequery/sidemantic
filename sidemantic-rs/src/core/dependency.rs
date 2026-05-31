@@ -49,6 +49,14 @@ pub fn extract_dependencies_with_context(
                     // Resolve references using graph if available
                     if let Some(g) = graph {
                         for ref_name in refs {
+                            if has_inline_aggregation(sql) {
+                                if let Some(resolved) =
+                                    resolve_metric_reference(&ref_name, g, model_context)
+                                {
+                                    deps.insert(resolved);
+                                }
+                                continue;
+                            }
                             let resolved = resolve_reference(&ref_name, g, model_context);
                             deps.insert(resolved);
                         }
@@ -96,12 +104,56 @@ fn has_operators(s: &str) -> bool {
         .any(|&op| s.contains(op))
 }
 
+fn has_inline_aggregation(sql: &str) -> bool {
+    let lower = sql.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let aggregate_names = [
+        "sum",
+        "avg",
+        "count",
+        "min",
+        "max",
+        "median",
+        "stddev",
+        "stddev_pop",
+        "variance",
+        "variance_pop",
+    ];
+
+    for name in aggregate_names {
+        let mut start = 0;
+        while let Some(offset) = lower[start..].find(name) {
+            let name_start = start + offset;
+            let name_end = name_start + name.len();
+            let before_is_ident = name_start > 0
+                && (bytes[name_start - 1].is_ascii_alphanumeric() || bytes[name_start - 1] == b'_');
+            let after_is_ident = name_end < bytes.len()
+                && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_');
+            if before_is_ident || after_is_ident {
+                start = name_end;
+                continue;
+            }
+
+            if lower[name_end..].trim_start().starts_with('(') {
+                return true;
+            }
+            start = name_end;
+        }
+    }
+
+    false
+}
+
 /// Extract column references from a SQL expression
 ///
 /// Uses polyglot-sql to parse the expression and find all column identifiers.
 fn extract_column_references(sql: &str) -> HashSet<String> {
     let mut refs = HashSet::new();
     let normalized_sql = sql.replace("${CUBE}.", "").replace("${CUBE}", "");
+
+    if has_inline_aggregation(&normalized_sql) {
+        return extract_simple_references(&normalized_sql);
+    }
 
     // polyglot-sql traversal can recurse indefinitely on some PostgreSQL cast
     // forms (expr::type). Fall back to the tokenizer path for these expressions.
@@ -272,6 +324,45 @@ fn resolve_reference(ref_name: &str, graph: &SemanticGraph, model_context: Optio
     ref_name.to_string()
 }
 
+fn resolve_metric_reference(
+    ref_name: &str,
+    graph: &SemanticGraph,
+    model_context: Option<&str>,
+) -> Option<String> {
+    if graph.get_metric(ref_name).is_some() {
+        return Some(ref_name.to_string());
+    }
+
+    if let Some((model_name, metric_name)) = ref_name.rsplit_once('.') {
+        if graph
+            .get_model(model_name)
+            .and_then(|model| model.get_metric(metric_name))
+            .is_some()
+        {
+            return Some(ref_name.to_string());
+        }
+        return None;
+    }
+
+    if let Some(context_model_name) = model_context {
+        if graph
+            .get_model(context_model_name)
+            .and_then(|model| model.get_metric(ref_name))
+            .is_some()
+        {
+            return Some(format!("{context_model_name}.{ref_name}"));
+        }
+    }
+
+    for model in graph.models() {
+        if model.get_metric(ref_name).is_some() {
+            return Some(format!("{}.{}", model.name, ref_name));
+        }
+    }
+
+    None
+}
+
 /// Build a dependency graph for all metrics and check for cycles
 pub fn check_circular_dependencies(
     metrics: &[(&str, &Metric)],
@@ -331,7 +422,7 @@ pub fn check_circular_dependencies(
 mod tests {
     use super::*;
     #[allow(unused_imports)]
-    use crate::core::model::Aggregation;
+    use crate::core::model::{Aggregation, Dimension, Model};
 
     #[test]
     fn test_ratio_dependencies() {
@@ -365,6 +456,41 @@ mod tests {
 
         let deps = extract_dependencies(&metric, None);
         assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_inline_aggregation_skips_raw_field_references_with_graph() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_dimension(Dimension::categorical("status"))
+                    .with_metric(Metric::sum("revenue", "amount")),
+            )
+            .unwrap();
+        let metric = Metric::derived("computed_revenue", "SUM(orders.amount) * 2");
+
+        let deps = extract_dependencies(&metric, Some(&graph));
+
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_inline_aggregation_keeps_metric_references_with_graph() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_metric(Metric::sum("revenue", "amount")),
+            )
+            .unwrap();
+        let metric = Metric::derived("computed_revenue", "SUM(orders.revenue) * 2");
+
+        let deps = extract_dependencies(&metric, Some(&graph));
+
+        assert_eq!(deps, HashSet::from(["orders.revenue".to_string()]));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier, validate_query_history_params
 
 
 class BigQueryResult:
@@ -176,6 +176,7 @@ class BigQueryAdapter(BaseDatabaseAdapter):
         Returns:
             List of SQL query strings containing '-- sidemantic:' comments
         """
+        days_back, limit = validate_query_history_params(days_back, limit)
         sql = f"""
         SELECT query
         FROM `{self.project_id}.region-{self.client.location}.INFORMATION_SCHEMA.JOBS_BY_PROJECT`

@@ -250,6 +250,23 @@ def test_sql_compilation(layer):
     assert "GROUP BY" in sql
 
 
+def test_sql_compilation_preserves_zero_limit_and_offset(layer):
+    orders = Model(
+        name="orders",
+        table="public.orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="status", type="categorical")],
+        metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], limit=0, offset=0)
+
+    assert "\nLIMIT 0" in sql
+    assert "\nOFFSET 0" in sql
+
+
 def test_multi_model_query(layer):
     """Test query across multiple models."""
     orders = Model(

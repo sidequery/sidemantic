@@ -1,0 +1,26 @@
+[
+  {
+    "event_date__month": "2024-01-01",
+    "region": "eu",
+    "total_revenue": 75,
+    "events.revenue_mom": null
+  },
+  {
+    "event_date__month": "2024-01-01",
+    "region": "us",
+    "total_revenue": 100,
+    "events.revenue_mom": null
+  },
+  {
+    "event_date__month": "2024-02-01",
+    "region": "eu",
+    "total_revenue": 150,
+    "events.revenue_mom": 100.0
+  },
+  {
+    "event_date__month": "2024-02-01",
+    "region": "us",
+    "total_revenue": 250,
+    "events.revenue_mom": 150.0
+  }
+]

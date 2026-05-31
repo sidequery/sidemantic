@@ -78,7 +78,7 @@ type AdjacencyEdge = (
 );
 
 /// The semantic graph holds all models and their relationships
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SemanticGraph {
     models: HashMap<String, Model>,
     metrics: HashMap<String, Metric>,
@@ -411,13 +411,19 @@ impl SemanticGraph {
                             continue;
                         }
 
-                        let (source_fk_opt, target_fk_opt) = rel.junction_keys();
-                        let (Some(source_fk), Some(target_fk)) = (source_fk_opt, target_fk_opt)
-                        else {
+                        let (source_fks, target_fks) = rel.junction_key_columns();
+                        if source_fks.is_empty() || target_fks.is_empty() {
                             continue;
-                        };
+                        }
 
-                        let source_pk = model.primary_keys();
+                        let source_pk = {
+                            let keys = model.primary_keys();
+                            if keys.is_empty() {
+                                vec!["id".to_string()]
+                            } else {
+                                keys
+                            }
+                        };
                         let target_pk =
                             if rel.primary_key.is_some() || rel.primary_key_columns.is_some() {
                                 rel.primary_key_columns()
@@ -427,20 +433,17 @@ impl SemanticGraph {
                                     .map(|target_model| target_model.primary_keys())
                                     .unwrap_or_else(|| vec!["id".to_string()])
                             };
-                        let source_pk_first = source_pk
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "id".to_string());
-                        let target_pk_first = target_pk
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "id".to_string());
+                        let target_pk = if target_pk.is_empty() {
+                            vec!["id".to_string()]
+                        } else {
+                            target_pk
+                        };
 
                         // source -> through (one_to_many)
                         self.adjacency.entry(model.name.clone()).or_default().push((
                             through_name.clone(),
-                            vec![source_pk_first.clone()],
-                            vec![source_fk.clone()],
+                            source_pk.clone(),
+                            source_fks.clone(),
                             RelationshipType::OneToMany,
                             None,
                         ));
@@ -450,8 +453,8 @@ impl SemanticGraph {
                             .or_default()
                             .push((
                                 model.name.clone(),
-                                vec![source_fk],
-                                vec![source_pk_first],
+                                source_fks,
+                                source_pk,
                                 RelationshipType::ManyToOne,
                                 None,
                             ));
@@ -462,16 +465,16 @@ impl SemanticGraph {
                             .or_default()
                             .push((
                                 rel.name.clone(),
-                                vec![target_fk.clone()],
-                                vec![target_pk_first.clone()],
+                                target_fks.clone(),
+                                target_pk.clone(),
                                 RelationshipType::ManyToOne,
                                 None,
                             ));
                         // target -> through (one_to_many)
                         self.adjacency.entry(rel.name.clone()).or_default().push((
                             through_name.clone(),
-                            vec![target_pk_first],
-                            vec![target_fk],
+                            target_pk,
+                            target_fks,
                             RelationshipType::OneToMany,
                             None,
                         ));
@@ -855,6 +858,63 @@ mod tests {
     }
 
     #[test]
+    fn test_one_to_many_omitted_key_defaults_to_id() {
+        let mut graph = SemanticGraph::new();
+
+        let customers = Model::new("customers", "id")
+            .with_table("customers")
+            .with_relationship(Relationship::one_to_many("orders"));
+        let orders = Model::new("orders", "id").with_table("orders");
+
+        graph.add_model(customers).unwrap();
+        graph.add_model(orders).unwrap();
+
+        let path = graph.find_join_path("customers", "orders").unwrap();
+        assert_eq!(path.steps.len(), 1);
+        assert_eq!(path.steps[0].from_keys, vec!["id".to_string()]);
+        assert_eq!(path.steps[0].to_keys, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn test_many_to_one_omitted_keys_use_name_id_and_target_primary_key() {
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_relationship(Relationship::many_to_one("customers"));
+        let customers = Model::new("customers", "customer_uid").with_table("customers");
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+
+        let path = graph.find_join_path("orders", "customers").unwrap();
+        assert_eq!(path.steps.len(), 1);
+        assert_eq!(path.steps[0].from_keys, vec!["customers_id".to_string()]);
+        assert_eq!(path.steps[0].to_keys, vec!["customer_uid".to_string()]);
+    }
+
+    #[test]
+    fn test_one_to_one_omitted_key_defaults_to_id() {
+        let mut graph = SemanticGraph::new();
+
+        let mut relationship = Relationship::new("profiles");
+        relationship.r#type = RelationshipType::OneToOne;
+
+        let users = Model::new("users", "id")
+            .with_table("users")
+            .with_relationship(relationship);
+        let profiles = Model::new("profiles", "id").with_table("profiles");
+
+        graph.add_model(users).unwrap();
+        graph.add_model(profiles).unwrap();
+
+        let path = graph.find_join_path("users", "profiles").unwrap();
+        assert_eq!(path.steps.len(), 1);
+        assert_eq!(path.steps[0].from_keys, vec!["id".to_string()]);
+        assert_eq!(path.steps[0].to_keys, vec!["id".to_string()]);
+    }
+
+    #[test]
     fn test_parse_reference() {
         let graph = create_test_graph();
 
@@ -929,7 +989,9 @@ mod tests {
                 primary_key_columns: None,
                 through: None,
                 through_foreign_key: None,
+                through_foreign_key_columns: None,
                 related_foreign_key: None,
+                related_foreign_key_columns: None,
                 sql: None,
                 metadata: None,
             });
@@ -962,7 +1024,9 @@ mod tests {
                 primary_key_columns: None,
                 through: Some("order_items".to_string()),
                 through_foreign_key: Some("order_id".to_string()),
+                through_foreign_key_columns: None,
                 related_foreign_key: Some("product_id".to_string()),
+                related_foreign_key_columns: None,
                 sql: None,
                 metadata: None,
             });
@@ -993,6 +1057,63 @@ mod tests {
         assert_eq!(path.steps[1].from_keys, vec!["product_id".to_string()]);
         assert_eq!(path.steps[1].to_keys, vec!["product_id".to_string()]);
         assert_eq!(path.steps[1].relationship_type, RelationshipType::ManyToOne);
+    }
+
+    #[test]
+    fn test_many_to_many_through_preserves_composite_primary_keys() {
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "tenant_id")
+            .with_primary_key_columns(vec!["tenant_id".to_string(), "order_id".to_string()])
+            .with_table("orders")
+            .with_relationship(Relationship {
+                name: "products".to_string(),
+                r#type: RelationshipType::ManyToMany,
+                foreign_key: None,
+                foreign_key_columns: None,
+                primary_key: None,
+                primary_key_columns: None,
+                through: Some("order_items".to_string()),
+                through_foreign_key: Some("order_id".to_string()),
+                through_foreign_key_columns: Some(vec![
+                    "tenant_id".to_string(),
+                    "order_id".to_string(),
+                ]),
+                related_foreign_key: Some("product_id".to_string()),
+                related_foreign_key_columns: Some(vec![
+                    "tenant_id".to_string(),
+                    "product_id".to_string(),
+                ]),
+                sql: None,
+                metadata: None,
+            });
+        let order_items = Model::new("order_items", "id").with_table("order_items");
+        let products = Model::new("products", "tenant_id")
+            .with_primary_key_columns(vec!["tenant_id".to_string(), "product_id".to_string()])
+            .with_table("products");
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(order_items).unwrap();
+        graph.add_model(products).unwrap();
+
+        let path = graph.find_join_path("orders", "products").unwrap();
+        assert_eq!(path.steps.len(), 2);
+        assert_eq!(
+            path.steps[0].from_keys,
+            vec!["tenant_id".to_string(), "order_id".to_string()]
+        );
+        assert_eq!(
+            path.steps[0].to_keys,
+            vec!["tenant_id".to_string(), "order_id".to_string()]
+        );
+        assert_eq!(
+            path.steps[1].from_keys,
+            vec!["tenant_id".to_string(), "product_id".to_string()]
+        );
+        assert_eq!(
+            path.steps[1].to_keys,
+            vec!["tenant_id".to_string(), "product_id".to_string()]
+        );
     }
 
     #[test]

@@ -1,0 +1,10 @@
+[
+  {
+    "region": "east",
+    "payment_count": 1
+  },
+  {
+    "region": "west",
+    "payment_count": 1
+  }
+]

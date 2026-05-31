@@ -162,6 +162,19 @@ def test_limit(semantic_layer):
     assert len(rows) == 1
 
 
+def test_zero_limit_and_offset_are_preserved(semantic_layer):
+    """Test rewriting query with explicit zero pagination values."""
+    sql = "SELECT orders.revenue, orders.status FROM orders ORDER BY orders.status LIMIT 0 OFFSET 0"
+
+    rewritten = QueryRewriter(semantic_layer.graph).rewrite(sql)
+    assert "\nLIMIT 0" in rewritten
+    assert "\nOFFSET 0" in rewritten
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    assert rows == []
+
+
 def test_join_query(semantic_layer):
     """Test query that requires join."""
     sql = "SELECT orders.revenue, customers.region FROM orders"
@@ -1433,6 +1446,26 @@ def test_postprocess_limit_in_outer(semantic_layer):
 
     assert len(rows) == 1
     assert rows[0]["revenue"] == 250.00
+
+
+def test_postprocess_zero_limit_and_offset_in_outer(semantic_layer):
+    """Test zero pagination in outer query over semantic results."""
+    sql = """
+        SELECT status, revenue
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+        ORDER BY revenue DESC
+        LIMIT 0 OFFSET 0
+    """
+
+    rewritten = QueryRewriter(semantic_layer.graph).rewrite(sql)
+    assert "\nLIMIT 0" in rewritten
+    assert "\nOFFSET 0" in rewritten
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    assert rows == []
 
 
 def test_postprocess_cross_model_subquery(semantic_layer):

@@ -1,0 +1,69 @@
+version: 1
+
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: country
+        type: categorical
+    metrics:
+      - name: customer_count
+        agg: count
+    relationships:
+      - name: orders
+        type: one_to_many
+      - name: profiles
+        type: one_to_one
+
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+
+  - name: profiles
+    table: profiles
+    primary_key: id
+    dimensions:
+      - name: tier
+        type: categorical
+
+  - name: payments
+    table: payments
+    primary_key: payment_id
+    dimensions:
+      - name: amount
+        type: numeric
+    metrics:
+      - name: payment_count
+        agg: count
+    relationships:
+      - name: accounts
+        type: many_to_one
+
+  - name: accounts
+    table: accounts
+    primary_key: account_uid
+    dimensions:
+      - name: region
+        type: categorical
+
+  - name: invoices
+    table: invoices
+    primary_key: invoice_id
+    metrics:
+      - name: invoice_count
+        agg: count
+    relationships:
+      - name: vendors
+        type: many_to_one
+        foreign_key: vendor_ref
+
+  - name: vendors
+    table: vendors
+    primary_key: vendor_uid
+    dimensions:
+      - name: segment
+        type: categorical

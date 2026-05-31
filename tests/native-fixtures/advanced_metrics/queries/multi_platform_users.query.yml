@@ -1,2 +1,4 @@
 metrics:
   - events.multi_platform_users
+order_by:
+  - region

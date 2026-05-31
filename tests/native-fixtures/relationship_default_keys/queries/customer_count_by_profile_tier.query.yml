@@ -1,0 +1,6 @@
+metrics:
+  - customers.customer_count
+dimensions:
+  - profiles.tier
+order_by:
+  - profiles.tier

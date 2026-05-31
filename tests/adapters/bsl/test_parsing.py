@@ -418,6 +418,57 @@ events:
         assert by_segment["a"] == pytest.approx(0.5)
         assert by_segment["b"] == pytest.approx(1.0)
 
+    def test_bsl_all_count_distinct_preserves_joined_filters(self, tmp_path):
+        """_.all() over count_distinct should use the joined filtered row set."""
+        from sidemantic import SemanticLayer
+
+        bsl_file = tmp_path / "orders.yml"
+        bsl_file.write_text(
+            """
+orders:
+  table: orders
+  dimensions:
+    order_id:
+      expr: _.order_id
+      is_entity: true
+    customer_id: _.customer_id
+  measures:
+    users: _.user_id.nunique()
+  calculated_measures:
+    user_share: _.users / _.all(_.users)
+  joins:
+    customers:
+      model: customers
+      type: one
+      left_on: customer_id
+      right_on: customer_id
+
+customers:
+  table: customers
+  dimensions:
+    customer_id:
+      expr: _.customer_id
+      is_entity: true
+    region: _.region
+"""
+        )
+
+        layer = SemanticLayer(connection="duckdb:///:memory:")
+        layer.graph = BSLAdapter().parse(bsl_file)
+        layer.adapter.execute("CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, user_id INTEGER)")
+        layer.adapter.execute("INSERT INTO orders VALUES (1, 1, 1), (2, 2, 2), (3, 2, 3), (4, 1, 4)")
+        layer.adapter.execute("CREATE TABLE customers (customer_id INTEGER, region VARCHAR)")
+        layer.adapter.execute("INSERT INTO customers VALUES (1, 'US'), (2, 'EU')")
+
+        result = layer.query(
+            metrics=["orders.user_share"],
+            dimensions=["customers.region"],
+            filters=["customers.region = 'EU'"],
+        )
+        rows = result.fetchall()
+
+        assert [(region, float(user_share)) for region, user_share in rows] == [("EU", pytest.approx(1.0))]
+
 
 class TestBSLAdapterExport:
     """Tests for BSL adapter export functionality."""

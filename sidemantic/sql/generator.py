@@ -1962,6 +1962,139 @@ class SQLGenerator:
 
         return full_sql
 
+    def _add_join_paths_to_query(
+        self,
+        query,
+        base_model_name: str,
+        other_models: list[str],
+        models_with_filters: set[str],
+    ):
+        """Add the same multi-hop joins used by the main grouped query."""
+        if not other_models:
+            return query
+
+        joined_models = {base_model_name}
+        for other_model in other_models:
+            join_path = self.graph.find_relationship_path(base_model_name, other_model)
+            if not join_path:
+                continue
+
+            for jp in join_path:
+                if jp.to_model in joined_models:
+                    continue
+
+                right_table = self._quote_identifier(self._cte_name(jp.to_model))
+                if jp.relationship == "cross":
+                    query = query.join(right_table, join_type="cross")
+                    joined_models.add(jp.to_model)
+                    continue
+
+                if len(jp.from_columns) != len(jp.to_columns):
+                    raise ValueError(
+                        f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
+                        f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
+                    )
+
+                join_conditions = [
+                    self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
+                    for fk, pk in zip(jp.from_columns, jp.to_columns)
+                ]
+                join_type = self._explicit_join_type_for_path(jp)
+                if join_type is None:
+                    join_type = "inner" if jp.to_model in models_with_filters else "left"
+                query = query.join(right_table, on=" AND ".join(join_conditions), join_type=join_type)
+                joined_models.add(jp.to_model)
+
+        return query
+
+    def _split_where_having_filters(self, filters: list[str], model_names: list[str]) -> tuple[list[str], list[str]]:
+        """Split query-level filters into row filters and aggregate filters."""
+        import re
+
+        where_filters = []
+        having_filters = []
+
+        for filter_expr in filters:
+            references_metric = False
+
+            for model_name in model_names:
+                model_obj = self.graph.get_model(model_name)
+                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
+                matches = re.findall(pattern, filter_expr)
+                for field_name in matches:
+                    if model_obj.get_metric(field_name):
+                        references_metric = True
+                        break
+                if references_metric:
+                    break
+
+            references_window_dim = False
+            if references_metric:
+                for model_name in model_names:
+                    model_obj = self.graph.get_model(model_name)
+                    if not model_obj:
+                        continue
+                    for field_name in re.findall(f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)", filter_expr):
+                        dim = model_obj.get_dimension(field_name)
+                        if dim and getattr(dim, "window", None) is not None:
+                            references_window_dim = True
+                            break
+                    if references_window_dim:
+                        break
+
+            if references_metric and not references_window_dim:
+                having_filters.append(filter_expr)
+            else:
+                where_filters.append(filter_expr)
+
+        return where_filters, having_filters
+
+    def _add_where_filters_to_query(self, query, where_filters: list[str], model_names: list[str]):
+        """Add row-level filters with CTE-qualified field references."""
+        import re
+
+        for filter_expr in where_filters:
+            parsed_filter = filter_expr
+            for model_name in model_names:
+                model_obj = self.graph.get_model(model_name)
+
+                parts = []
+                in_quotes = False
+                current = ""
+
+                for char in parsed_filter:
+                    if char == "'":
+                        if current:
+                            parts.append((current, in_quotes))
+                            current = ""
+                        in_quotes = not in_quotes
+                        parts.append(("'", False))
+                    else:
+                        current += char
+                if current:
+                    parts.append((current, in_quotes))
+
+                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
+
+                def replace_field(match):
+                    field_name = match.group(1)
+                    if model_obj.get_metric(field_name):
+                        return self._cte_ref(model_name, f"{field_name}_raw")
+                    return self._cte_ref(model_name, field_name)
+
+                result_parts = []
+                for part, is_quoted in parts:
+                    if is_quoted or part == "'":
+                        result_parts.append(part)
+                    else:
+                        result_parts.append(re.sub(pattern, replace_field, part))
+
+                parsed_filter = "".join(result_parts)
+
+            query = query.where(parsed_filter)
+
+        return query
+
     def _build_main_select(
         self,
         base_model_name: str,
@@ -2054,6 +2187,14 @@ class SQLGenerator:
 
             select_exprs.append(f"{self._cte_ref(model_name, cte_col_name)} AS {self._quote_alias(alias)}")
 
+        previous_bsl_all_context = getattr(self, "_bsl_all_query_context", None)
+        self._bsl_all_query_context = {
+            "base_model_name": base_model_name,
+            "other_models": other_models,
+            "filters": filters or [],
+            "models_with_filters": models_with_filters,
+        }
+
         # Add metrics
         for metric_ref in metrics:
             if "." in metric_ref:
@@ -2142,147 +2283,28 @@ class SQLGenerator:
                 else:
                     raise ValueError(f"Metric {metric_ref} not found")
 
+        if previous_bsl_all_context is None:
+            delattr(self, "_bsl_all_query_context")
+        else:
+            self._bsl_all_query_context = previous_bsl_all_context
+
         # Build query using builder API
         query = select(*select_exprs).from_(self._quote_identifier(self._cte_name(base_model_name)))
 
         # Add joins (supports multi-hop)
-        if other_models:
-            # Track which models we've already joined
-            joined_models = {base_model_name}
-
-            for other_model in other_models:
-                join_path = self.graph.find_relationship_path(base_model_name, other_model)
-                if join_path:
-                    # Apply each join in the path
-                    for jp in join_path:
-                        # Skip if we've already joined this model
-                        if jp.to_model in joined_models:
-                            continue
-
-                        right_table = self._quote_identifier(self._cte_name(jp.to_model))
-                        if jp.relationship == "cross":
-                            query = query.join(right_table, join_type="cross")
-                            joined_models.add(jp.to_model)
-                            continue
-
-                        # Validate column counts match for composite keys
-                        if len(jp.from_columns) != len(jp.to_columns):
-                            raise ValueError(
-                                f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
-                                f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
-                            )
-                        # Build join condition for single or multi-column keys
-                        join_conditions = [
-                            self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
-                            for fk, pk in zip(jp.from_columns, jp.to_columns)
-                        ]
-                        join_cond = " AND ".join(join_conditions)
-
-                        # Use adapter-provided join type when present; otherwise
-                        # INNER JOIN if this model has filters applied, else LEFT JOIN.
-                        join_type = self._explicit_join_type_for_path(jp)
-                        if join_type is None:
-                            join_type = "inner" if jp.to_model in models_with_filters else "left"
-                        query = query.join(right_table, on=join_cond, join_type=join_type)
-                        joined_models.add(jp.to_model)
+        query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
 
         # Separate filters into WHERE (dimension/row-level) and HAVING (metric/aggregation-level)
         # Note: metric-level filters (Metric.filters) are applied via CASE WHEN inside each
         # metric's aggregation, NOT in the WHERE clause. This ensures each metric's filter
         # only affects that specific metric, not all metrics in the query.
-        where_filters = []
-        having_filters = []
-
+        where_filters, having_filters = self._split_where_having_filters(
+            filters or [], [base_model_name] + other_models
+        )
         import re
 
-        # Process query-level filters
-        for filter_expr in filters or []:
-            # Determine if this filter references a metric or dimension
-            references_metric = False
-
-            for model_name in [base_model_name] + other_models:
-                model_obj = self.graph.get_model(model_name)
-                # Check if filter contains model.metric_name
-                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
-                matches = re.findall(pattern, filter_expr)
-                for field_name in matches:
-                    if model_obj.get_metric(field_name):
-                        references_metric = True
-                        break
-                if references_metric:
-                    break
-
-            # Check if filter also references a window dimension.
-            # Window dims are projected as regular columns in the CTE, so
-            # they belong in WHERE, not HAVING (they aren't aggregated).
-            references_window_dim = False
-            if references_metric:
-                for model_name in [base_model_name] + other_models:
-                    model_obj = self.graph.get_model(model_name)
-                    if not model_obj:
-                        continue
-                    for field_name in re.findall(f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)", filter_expr):
-                        dim = model_obj.get_dimension(field_name)
-                        if dim and getattr(dim, "window", None) is not None:
-                            references_window_dim = True
-                            break
-                    if references_window_dim:
-                        break
-
-            if references_metric and not references_window_dim:
-                having_filters.append(filter_expr)
-            else:
-                where_filters.append(filter_expr)
-
         # Add WHERE clause (dimension filters only - metric-level filters are in CASE WHEN)
-        if where_filters:
-            # Parse filters to add table aliases and handle measure vs dimension columns
-            for filter_expr in where_filters:
-                parsed_filter = filter_expr
-                for model_name in [base_model_name] + other_models:
-                    # Replace model.field references
-                    # Check if field is a measure (needs _raw suffix) or dimension
-                    model_obj = self.graph.get_model(model_name)
-
-                    # Split by quotes to avoid replacing inside string literals
-                    parts = []
-                    in_quotes = False
-                    current = ""
-
-                    for char in parsed_filter:
-                        if char == "'":
-                            if current:
-                                parts.append((current, in_quotes))
-                                current = ""
-                            in_quotes = not in_quotes
-                            parts.append(("'", False))
-                        else:
-                            current += char
-                    if current:
-                        parts.append((current, in_quotes))
-
-                    # Only replace in non-quoted parts
-                    pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
-
-                    def replace_field(match):
-                        field_name = match.group(1)
-                        # Check if it's a measure
-                        if model_obj.get_metric(field_name):
-                            return self._cte_ref(model_name, f"{field_name}_raw")
-                        else:
-                            # It's a dimension or other column
-                            return self._cte_ref(model_name, field_name)
-
-                    result_parts = []
-                    for part, is_quoted in parts:
-                        if is_quoted or part == "'":
-                            result_parts.append(part)
-                        else:
-                            result_parts.append(re.sub(pattern, replace_field, part))
-
-                    parsed_filter = "".join(result_parts)
-
-                query = query.where(parsed_filter)
+        query = self._add_where_filters_to_query(query, where_filters, [base_model_name] + other_models)
 
         # Add GROUP BY (all dimensions by position)
         # Skip GROUP BY for ungrouped queries
@@ -2463,7 +2485,7 @@ class SQLGenerator:
         raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
 
         if agg_func == "COUNT_DISTINCT":
-            return self._build_measure_total_subquery_sql(model_name, measure)
+            return self._build_bsl_count_distinct_total_sql(model_name, measure)
         if agg_func == "COUNT":
             return f"SUM(COUNT({raw_col})) OVER ()"
         if agg_func == "SUM":
@@ -2490,6 +2512,30 @@ class SQLGenerator:
             expr = expr.replace(self._cte_ref(model_name, f"{measure.name}_raw"), raw_col)
 
         return f"(SELECT {expr} FROM {cte_name} AS {cte_alias})"
+
+    def _build_bsl_count_distinct_total_sql(self, model_name: str, measure) -> str:
+        """Build BSL _.all() SQL for a count-distinct measure."""
+        context = getattr(self, "_bsl_all_query_context", None)
+        if not context:
+            return self._build_measure_total_subquery_sql(model_name, measure)
+
+        base_model_name = context["base_model_name"]
+        other_models = context["other_models"]
+        models_with_filters = context["models_with_filters"]
+        filters = context["filters"]
+        query_model_names = [base_model_name] + other_models
+
+        if model_name not in query_model_names:
+            return self._build_measure_total_subquery_sql(model_name, measure)
+
+        query = select(f"COUNT(DISTINCT {self._cte_ref(model_name, f'{measure.name}_raw')})").from_(
+            self._quote_identifier(self._cte_name(base_model_name))
+        )
+        query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
+        where_filters, _ = self._split_where_having_filters(filters, query_model_names)
+        query = self._add_where_filters_to_query(query, where_filters, query_model_names)
+
+        return f"({query.sql(dialect=self.dialect, pretty=True)})"
 
     def _extract_bsl_all_placeholders(self, formula: str) -> tuple[str, dict[str, str]]:
         """Replace BSL all-measure calls with placeholders before dependency replacement."""

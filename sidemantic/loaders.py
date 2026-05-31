@@ -57,7 +57,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     if _try_load_sml(layer, directory, all_models):
         return
 
-    _load_graphene_project(directory, all_models, all_metrics, all_parameters)
+    _load_graphene_project(directory, all_models, all_metrics, all_parameters, strict=strict)
 
     # Find and parse all files
     for file_path in directory.rglob("*"):
@@ -216,6 +216,8 @@ def _load_graphene_project(
     all_models: dict,
     all_metrics: dict,
     all_parameters: dict,
+    *,
+    strict: bool,
 ) -> None:
     """Parse Graphene `.gsql` files together so project-level links resolve."""
     from sidemantic.adapters.graphene import GrapheneAdapter
@@ -227,7 +229,7 @@ def _load_graphene_project(
     try:
         graph = adapter.parse(str(directory))
     except Exception as e:
-        logging.warning("Could not parse Graphene project %s: %s", directory, e)
+        _handle_parse_error(directory, e, strict=strict)
         return
 
     adapter_name = adapter.__class__.__name__.replace("Adapter", "")

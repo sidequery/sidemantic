@@ -425,6 +425,27 @@ table orders (
     assert layer.graph.models["orders"].get_metric("revenue") is not None
 
 
+def test_load_from_directory_accepts_graphene_percentile_aggregate(tmp_path):
+    (tmp_path / "events.gsql").write_text(
+        """
+table events (
+  id BIGINT
+  latency FLOAT
+
+  p90_latency: p90(latency)
+)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    metric = layer.graph.models["events"].get_metric("p90_latency")
+    assert metric is not None
+    assert metric.type == "derived"
+    assert metric.sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY latency)"
+
+
 def test_load_from_directory_parses_graphene_files_as_one_project(tmp_path):
     (tmp_path / "orders.gsql").write_text(
         """

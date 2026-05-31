@@ -300,6 +300,7 @@ class GrapheneAdapter(BaseAdapter):
 
     def _field_from_computed(self, item: _GsqlComputed, local_metric_names: set[str]) -> Dimension | Metric:
         expression = _normalize_sql_fragment(item.expression)
+        expression, has_graphene_percentile = _rewrite_graphene_percentile_shorthand(expression)
         formatting = _formatting_from_metadata(item.comments.metadata)
 
         if _is_metric_expression(expression, local_metric_names):
@@ -311,7 +312,7 @@ class GrapheneAdapter(BaseAdapter):
                 "format": formatting.get("format"),
                 "value_format_name": formatting.get("value_format_name"),
             }
-            if not _has_inline_aggregate(expression):
+            if has_graphene_percentile or not _has_inline_aggregate(expression):
                 metric_kwargs["type"] = "derived"
             return Metric(**metric_kwargs)
 
@@ -1060,6 +1061,57 @@ def _is_metric_expression(expression: str, local_metric_names: set[str]) -> bool
     return bool(local_metric_names & _referenced_field_names(expression))
 
 
+def _rewrite_graphene_percentile_shorthand(expression: str) -> tuple[str, bool]:
+    tokens_ = _tokenize_gsql(expression)
+    replacements: list[tuple[int, int, str]] = []
+    idx = 0
+    while idx < len(tokens_) - 1:
+        token = tokens_[idx]
+        fraction = _graphene_percentile_fraction(token.text)
+        if fraction is None or tokens_[idx + 1].token_type != TokenType.L_PAREN:
+            idx += 1
+            continue
+
+        close_idx = _matching_right_paren_index(tokens_, idx + 1)
+        if close_idx is None:
+            idx += 1
+            continue
+
+        argument_tokens = tokens_[idx + 2 : close_idx]
+        if len(_split_top_level_commas(argument_tokens)) == 1:
+            argument_sql = expression[tokens_[idx + 1].end + 1 : tokens_[close_idx].start].strip()
+            if argument_sql:
+                replacements.append(
+                    (
+                        token.start,
+                        tokens_[close_idx].end + 1,
+                        f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY {argument_sql})",
+                    )
+                )
+        idx = close_idx + 1
+
+    if not replacements:
+        return expression, False
+
+    rewritten = expression
+    for start, end, replacement in reversed(replacements):
+        rewritten = f"{rewritten[:start]}{replacement}{rewritten[end:]}"
+    return rewritten, True
+
+
+def _matching_right_paren_index(tokens_: list[Token], open_idx: int) -> int | None:
+    depth = 0
+    for idx in range(open_idx, len(tokens_)):
+        token = tokens_[idx]
+        if token.token_type == TokenType.L_PAREN:
+            depth += 1
+        elif token.token_type == TokenType.R_PAREN:
+            depth -= 1
+            if depth == 0:
+                return idx
+    return None
+
+
 def _has_inline_aggregate(expression: str) -> bool:
     parsed = _parse_expression(expression)
     if parsed:
@@ -1068,7 +1120,7 @@ def _has_inline_aggregate(expression: str) -> bool:
                 return True
             if isinstance(node, exp.Anonymous):
                 function_name = node.name.lower()
-                if function_name in _AGGREGATE_FUNCTIONS or re.fullmatch(r"p\d{1,4}", function_name):
+                if function_name in _AGGREGATE_FUNCTIONS or _graphene_percentile_fraction(function_name) is not None:
                     return True
         return False
 
@@ -1076,10 +1128,21 @@ def _has_inline_aggregate(expression: str) -> bool:
     for idx, token in enumerate(tokens_[:-1]):
         function_name = token.text.lower()
         if tokens_[idx + 1].token_type == TokenType.L_PAREN and (
-            function_name in _AGGREGATE_FUNCTIONS or re.fullmatch(r"p\d{1,4}", function_name)
+            function_name in _AGGREGATE_FUNCTIONS or _graphene_percentile_fraction(function_name) is not None
         ):
             return True
     return False
+
+
+def _graphene_percentile_fraction(function_name: str) -> str | None:
+    match = re.fullmatch(r"p(\d{1,3})", function_name.lower())
+    if not match:
+        return None
+
+    percentile = int(match.group(1))
+    if not 0 <= percentile <= 100:
+        return None
+    return f"{percentile / 100:g}"
 
 
 def _referenced_field_names(expression: str) -> set[str]:

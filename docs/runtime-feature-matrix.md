@@ -27,7 +27,7 @@ This matrix documents current product support for native Sidemantic projects. It
 | Conversion metrics | Yes | Yes, fixture-covered compile | No dedicated fixture yet | No dedicated fixture yet |
 | Retention metrics | Yes | Yes, fixture-covered compile | No dedicated fixture yet | No dedicated fixture yet |
 | Cohort metrics | Yes | Yes, fixture-covered compile | No dedicated fixture yet | No dedicated fixture yet |
-| Table calculations | Post-query processing | Yes, Rust fixture-covered compile and Rust-only result coverage | No dedicated fixture yet | No dedicated fixture yet |
+| Table calculations | Yes, shared fixture post-query result parity | Yes, shared fixture SQL/window result parity | No dedicated fixture yet | No dedicated fixture yet |
 | Pre-aggregation routing | Yes | Yes, fixture-covered compile | No dedicated fixture yet | No dedicated fixture yet |
 | Semantic SQL rewrite | Yes | Native subset, fixture-covered | Native subset target | Narrow subset |
 | DuckDB execution | Yes | Via ADBC, fixture result parity in CI | Native DuckDB process | No |

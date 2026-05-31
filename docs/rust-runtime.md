@@ -105,4 +105,4 @@ cd sidemantic-rs && cargo test --test native_fixtures
 
 CI runs these in the `Native Compatibility` job.
 
-The shared fixture suite currently includes executable coverage for basic models, joins, fanout-safe symmetric aggregation, many-to-many joins, parameters in filters, embedded SQL definitions, SQL frontmatter definitions, default time dimensions, segments, derived/ratio metrics, and pre-aggregation routing. Table calculations have Rust-only DuckDB result coverage because Python does not accept `table_calculations` in the native query API yet. `source_uri` is covered as a validation-only load fixture and query compilation rejects it until a concrete table or SQL source is provided.
+The shared fixture suite currently includes executable coverage for basic models, joins, fanout-safe symmetric aggregation, many-to-many joins, parameters in filters, embedded SQL definitions, SQL frontmatter definitions, default time dimensions, segments, derived/ratio metrics, table calculations, and pre-aggregation routing. `source_uri` is covered as a validation-only load fixture and query compilation rejects it until a concrete table or SQL source is provided.

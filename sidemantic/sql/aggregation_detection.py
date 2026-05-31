@@ -14,7 +14,7 @@ _ANONYMOUS_AGGREGATE_FUNCTIONS = {
 }
 
 _AGGREGATE_REGEX = re.compile(
-    r"\b(sum|count|avg|min|max|median|stddev|stddev_pop|variance|variance_pop|mode|quantile|percentile)\s*\(",
+    r"\b(sum|count|avg|min|max|median|stddev|stddev_pop|variance|variance_pop|var_pop|mode|quantile|percentile)\s*\(",
     re.IGNORECASE,
 )
 

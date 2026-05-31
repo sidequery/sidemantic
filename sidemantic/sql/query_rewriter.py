@@ -4093,7 +4093,7 @@ class QueryRewriter:
                 "stddev": "STDDEV",
                 "stddev_pop": "STDDEV_POP",
                 "variance": "VARIANCE",
-                "variance_pop": "VARIANCE_POP",
+                "variance_pop": "VAR_POP",
             }
             if agg not in agg_map:
                 raise ValueError(f"Unsupported Yardstick aggregation '{measure.agg}'")
@@ -5576,9 +5576,9 @@ class QueryRewriter:
 
             limit = self._extract_limit(parsed)
             offset = self._extract_offset(parsed)
-            if limit:
+            if limit is not None:
                 outer_sql += f"\nLIMIT {limit}"
-            if offset:
+            if offset is not None:
                 outer_sql += f"\nOFFSET {offset}"
 
             return outer_sql

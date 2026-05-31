@@ -10,6 +10,21 @@ from sidemantic.core.parameter import Parameter
 from sidemantic.core.table_calculation import TableCalculation
 
 
+def _reverse_custom_join_condition(sql: str | None) -> str | None:
+    if sql is None:
+        return None
+    return sql.replace("{from}", "__SIDEMANTIC_FROM__").replace("{to}", "{from}").replace("__SIDEMANTIC_FROM__", "{to}")
+
+
+def _custom_join_condition(sql: str | None) -> str | None:
+    """Return custom join SQL only for the placeholder-based native contract."""
+    if not sql:
+        return None
+    if "{from}" in sql or "{to}" in sql:
+        return sql
+    return None
+
+
 @dataclass
 class JoinPath:
     """Represents a join between two models."""
@@ -19,6 +34,7 @@ class JoinPath:
     from_columns: list[str]  # Foreign key column(s) in from_model
     to_columns: list[str]  # Primary/unique key column(s) in to_model
     relationship: str  # many_to_one, one_to_many, one_to_one
+    custom_condition: str | None = None
 
     # Backwards compatibility properties (return first column)
     @property
@@ -47,9 +63,7 @@ class SemanticGraph:
         self.metadata: dict[str, Any] = {}
         self._version = 0
         self._adjacency_dirty = True
-        self._adjacency: dict[
-            str, list[tuple[str, list[str], list[str], str]]
-        ] = {}  # model -> [(to_model, from_keys, to_keys, rel_type)]
+        self._adjacency: dict[str, list[tuple[str, list[str], list[str], str, str | None]]] = {}
 
     def _mark_dirty(self) -> None:
         self._version += 1
@@ -194,6 +208,28 @@ class SemanticGraph:
             raise KeyError(f"Measure {name} not found")
         return self.metrics[name]
 
+    def resolve_metric_reference(self, reference: str) -> tuple[str | None, Metric]:
+        """Resolve a query metric reference using exact graph metric names first.
+
+        Returns:
+            Tuple of (model_name, metric). model_name is None for graph-level metrics.
+
+        Raises:
+            KeyError: If the reference does not resolve to a graph or model metric.
+        """
+        if reference in self.metrics:
+            return None, self.metrics[reference]
+
+        if "." in reference:
+            model_name, metric_name = reference.split(".", 1)
+            model = self.models.get(model_name)
+            if model:
+                metric = model.get_metric(metric_name)
+                if metric:
+                    return model_name, metric
+
+        raise KeyError(f"Metric reference {reference} not found")
+
     def build_adjacency(self) -> None:
         """Build adjacency list for join path discovery.
 
@@ -207,11 +243,16 @@ class SemanticGraph:
         self._adjacency.clear()
 
         def add_edge(
-            from_model: str, to_model: str, from_keys: list[str], to_keys: list[str], relationship_type: str
+            from_model: str,
+            to_model: str,
+            from_keys: list[str],
+            to_keys: list[str],
+            relationship_type: str,
+            custom_condition: str | None = None,
         ) -> None:
             if from_model not in self._adjacency:
                 self._adjacency[from_model] = []
-            self._adjacency[from_model].append((to_model, from_keys, to_keys, relationship_type))
+            self._adjacency[from_model].append((to_model, from_keys, to_keys, relationship_type, custom_condition))
 
         def invert_relationship(relationship_type: str) -> str:
             if relationship_type == "many_to_one":
@@ -239,12 +280,20 @@ class SemanticGraph:
                             continue
                         local_keys = model.primary_key_columns
                         remote_keys = relationship.foreign_key_columns
-                        add_edge(model_name, related_model, local_keys, remote_keys, "one_to_many")
-                        add_edge(related_model, model_name, remote_keys, local_keys, "many_to_one")
+                        custom_condition = _custom_join_condition(relationship.sql)
+                        add_edge(model_name, related_model, local_keys, remote_keys, "one_to_many", custom_condition)
+                        add_edge(
+                            related_model,
+                            model_name,
+                            remote_keys,
+                            local_keys,
+                            "many_to_one",
+                            _reverse_custom_join_condition(custom_condition),
+                        )
                         continue
 
-                    junction_self_fk, junction_related_fk = relationship.junction_keys()
-                    if not junction_self_fk or not junction_related_fk:
+                    junction_self_fks, junction_related_fks = relationship.junction_key_columns()
+                    if not junction_self_fks or not junction_related_fks:
                         continue
 
                     base_pk = model.primary_key_columns
@@ -254,11 +303,11 @@ class SemanticGraph:
                         else self.models[related_model].primary_key_columns
                     )
 
-                    add_edge(model_name, junction_model, base_pk, [junction_self_fk], "one_to_many")
-                    add_edge(junction_model, model_name, [junction_self_fk], base_pk, "many_to_one")
+                    add_edge(model_name, junction_model, base_pk, junction_self_fks, "one_to_many")
+                    add_edge(junction_model, model_name, junction_self_fks, base_pk, "many_to_one")
 
-                    add_edge(junction_model, related_model, [junction_related_fk], related_pk, "many_to_one")
-                    add_edge(related_model, junction_model, related_pk, [junction_related_fk], "one_to_many")
+                    add_edge(junction_model, related_model, junction_related_fks, related_pk, "many_to_one")
+                    add_edge(related_model, junction_model, related_pk, junction_related_fks, "one_to_many")
                     continue
 
                 # Get the join key names
@@ -279,8 +328,16 @@ class SemanticGraph:
                     )
                     remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
 
-                add_edge(model_name, related_model, local_keys, remote_keys, relationship.type)
-                add_edge(related_model, model_name, remote_keys, local_keys, invert_relationship(relationship.type))
+                custom_condition = _custom_join_condition(relationship.sql)
+                add_edge(model_name, related_model, local_keys, remote_keys, relationship.type, custom_condition)
+                add_edge(
+                    related_model,
+                    model_name,
+                    remote_keys,
+                    local_keys,
+                    invert_relationship(relationship.type),
+                    _reverse_custom_join_condition(custom_condition),
+                )
 
     def find_relationship_path(self, from_model: str, to_model: str) -> list[JoinPath]:
         """Find join path between two models using BFS.
@@ -317,7 +374,7 @@ class SemanticGraph:
             if current not in self._adjacency:
                 continue
 
-            for next_model, from_keys, to_keys, relationship_type in self._adjacency[current]:
+            for next_model, from_keys, to_keys, relationship_type, custom_condition in self._adjacency[current]:
                 if next_model in visited:
                     continue
 
@@ -330,6 +387,7 @@ class SemanticGraph:
                         from_columns=from_keys,
                         to_columns=to_keys,
                         relationship=relationship_type,
+                        custom_condition=custom_condition,
                     )
                 ]
 

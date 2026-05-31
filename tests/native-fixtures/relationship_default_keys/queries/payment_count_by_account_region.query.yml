@@ -1,0 +1,6 @@
+metrics:
+  - payments.payment_count
+dimensions:
+  - accounts.region
+order_by:
+  - accounts.region

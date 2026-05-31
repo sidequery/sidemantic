@@ -51,6 +51,7 @@ class PreAggregation(BaseModel):
     type: Literal["rollup", "original_sql", "rollup_join", "lambda"] = Field(
         "rollup", description="Pre-aggregation type"
     )
+    sql: str | None = Field(None, description="SQL for original_sql or custom pre-aggregation definitions")
 
     # Rollup configuration
     measures: list[str] | None = Field(None, description="Measures to pre-aggregate (e.g., ['count', 'revenue'])")
@@ -75,6 +76,7 @@ class PreAggregation(BaseModel):
     # Build range (for historical data)
     build_range_start: str | None = Field(None, description="SQL expression for start of data range to aggregate")
     build_range_end: str | None = Field(None, description="SQL expression for end of data range to aggregate")
+    meta: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     def get_table_name(self, model_name: str, database: str | None = None, schema: str | None = None) -> str:
         """Generate the physical table name for this pre-aggregation.

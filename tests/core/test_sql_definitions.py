@@ -773,6 +773,18 @@ METRIC (
     assert parameters == []
 
 
+def test_parse_graph_definitions_rejects_plain_sql():
+    """Graph definition blocks should not silently ignore unsupported SQL."""
+    with pytest.raises(ValueError, match="Unsupported SQL definition statement: Select"):
+        parse_sql_graph_definitions("SELECT 1;")
+
+
+def test_parse_sql_definitions_propagates_parse_errors():
+    """Malformed embedded definition syntax should surface as a parse failure."""
+    with pytest.raises(Exception):
+        parse_sql_definitions("NOT_A_DEF (name x);")
+
+
 def test_parse_table_block_multiline_field_expression():
     """Test compact field expressions can span lines before their alias."""
     sql_content = """

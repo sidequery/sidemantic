@@ -174,6 +174,9 @@ fn print_help() {
            sidemantic preagg refresh --models ./models --model orders --name daily_revenue --mode full\n\
           sidemantic serve --models ./models --bind 127.0.0.1:5544\n\
          \n\
+         Model loading: Rust --models accepts native Sidemantic YAML/SQL and Cube YAML only.\n\
+         Convert LookML, MetricFlow, Hex, Rill, Malloy, and other external formats with the Python CLI/API first.\n\
+         \n\
          Use '<command> --help' for command-specific usage."
     );
 }

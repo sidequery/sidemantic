@@ -32,7 +32,7 @@ def merge_model(child: Model, parent: Model) -> Model:
     # Using include=model_fields_set instead of exclude_none so that
     # a child can explicitly set a field to None to clear a parent value.
     child_fields = child.model_fields_set - {"extends"}
-    child_data = child.model_dump(include=child_fields)
+    child_data = child.model_dump(include=child_fields, exclude_unset=True)
 
     # Merge lists (dimensions, metrics, relationships, segments)
     # Child's items are added to parent's items
@@ -49,7 +49,19 @@ def merge_model(child: Model, parent: Model) -> Model:
         merged_data[field] = list(parent_by_name.values())
 
     # Override scalar fields with child values
-    for field in ["table", "sql", "description", "primary_key", "meta"]:
+    for field in [
+        "table",
+        "sql",
+        "source_uri",
+        "description",
+        "primary_key",
+        "unique_keys",
+        "default_time_dimension",
+        "default_grain",
+        "metadata",
+        "auto_dimensions",
+        "meta",
+    ]:
         if field in child_data:
             merged_data[field] = child_data[field]
 
@@ -100,7 +112,7 @@ def merge_metric(child: Metric, parent: Metric) -> Metric:
 
     # Override with child's explicitly set data (excluding extends).
     child_fields = child.model_fields_set - {"extends"}
-    child_data = child.model_dump(include=child_fields)
+    child_data = child.model_dump(include=child_fields, exclude_unset=True)
 
     # Handle list fields - merge arrays
     for field in ["filters", "drill_fields"]:

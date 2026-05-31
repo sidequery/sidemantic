@@ -33,9 +33,16 @@ class Relationship(BaseModel):
     through_foreign_key: str | None = Field(
         default=None, description="Foreign key in junction model pointing to this model"
     )
+    through_foreign_key_columns: list[str] | None = Field(
+        default=None, description="Foreign key columns in junction model pointing to this model"
+    )
     related_foreign_key: str | None = Field(
         default=None, description="Foreign key in junction model pointing to related model"
     )
+    related_foreign_key_columns: list[str] | None = Field(
+        default=None, description="Foreign key columns in junction model pointing to related model"
+    )
+    sql: str | None = Field(default=None, description="Custom join SQL using {from} and {to} runtime placeholders")
     metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
     @property
@@ -90,4 +97,29 @@ class Relationship(BaseModel):
         """Get junction keys for many_to_many relationships."""
         if self.type != "many_to_many":
             return None, None
-        return self.through_foreign_key or self.foreign_key, self.related_foreign_key
+        source_keys, target_keys = self.junction_key_columns()
+        return (
+            source_keys[0] if source_keys else None,
+            target_keys[0] if target_keys else None,
+        )
+
+    def junction_key_columns(self) -> tuple[list[str], list[str]]:
+        """Get junction key columns for many_to_many relationships."""
+        if self.type != "many_to_many":
+            return [], []
+
+        if self.through_foreign_key_columns:
+            source_keys = self.through_foreign_key_columns
+        elif self.through_foreign_key:
+            source_keys = [self.through_foreign_key]
+        else:
+            source_keys = self.foreign_key_columns if self.foreign_key else []
+
+        if self.related_foreign_key_columns:
+            target_keys = self.related_foreign_key_columns
+        elif self.related_foreign_key:
+            target_keys = [self.related_foreign_key]
+        else:
+            target_keys = []
+
+        return source_keys, target_keys

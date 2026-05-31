@@ -15,7 +15,7 @@ use crate::error::{Result, SidemanticError};
 
 use super::schema::{CubeConfig, SidemanticConfig, NATIVE_FORMAT_VERSION};
 use super::sql_parser::{
-    parse_sql_definitions, parse_sql_graph_definitions_extended, parse_sql_model,
+    parse_sql_definitions, parse_sql_graph_definitions_extended, parse_sql_models,
 };
 
 #[derive(Debug)]
@@ -231,52 +231,72 @@ fn model_from_sql_frontmatter(frontmatter: serde_yaml::Mapping) -> Result<Model>
 }
 
 fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
-    let has_model_statement = {
-        let upper = content.to_ascii_uppercase();
-        upper.contains("MODEL") && upper.contains("MODEL (")
-    };
-
     let mut models: Vec<Model> = Vec::new();
     let mut top_level_metrics: Vec<Metric> = Vec::new();
     let mut top_level_parameters: Vec<Parameter> = Vec::new();
 
-    if has_model_statement {
-        let model = parse_sql_model(content).map_err(|e| {
-            SidemanticError::Validation(format!("failed to parse SQL model statement: {e}"))
-        })?;
-        let model_metric_names: HashSet<String> = model
-            .metrics
-            .iter()
-            .map(|metric| metric.name.clone())
-            .collect();
-        models.push(model);
+    match parse_sql_models(content) {
+        Ok(parsed_models) => {
+            let model_metric_names: HashSet<String> = parsed_models
+                .iter()
+                .flat_map(|model| model.metrics.iter().map(|metric| metric.name.clone()))
+                .collect();
+            models.extend(parsed_models);
 
-        let (sql_metrics, _, sql_parameters, _) = parse_sql_graph_definitions_extended(content)
-            .map_err(|e| {
-                SidemanticError::Validation(format!("failed to parse SQL graph definitions: {e}"))
-            })?;
-        for metric in sql_metrics {
-            if !model_metric_names.contains(&metric.name) {
-                top_level_metrics.push(metric);
+            let graph_definitions = parse_sql_graph_definitions_extended(content);
+            let (sql_metrics, _, sql_parameters, _) = match graph_definitions {
+                Ok(definitions) => definitions,
+                Err(_)
+                    if content
+                        .trim_start()
+                        .to_ascii_lowercase()
+                        .starts_with("model ")
+                        && content.to_ascii_lowercase().contains(" from ") =>
+                {
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+                }
+                Err(err) => {
+                    return Err(SidemanticError::Validation(format!(
+                        "failed to parse SQL graph definitions: {err}"
+                    )));
+                }
+            };
+            for metric in sql_metrics {
+                if !model_metric_names.contains(&metric.name) {
+                    top_level_metrics.push(metric);
+                }
             }
+            top_level_parameters.extend(sql_parameters);
         }
-        top_level_parameters.extend(sql_parameters);
-    } else {
-        let (frontmatter, sql_body) = parse_sql_frontmatter_and_body(content)?;
-        let (sql_metrics, sql_segments, sql_parameters, sql_preaggs) =
-            parse_sql_graph_definitions_extended(&sql_body).map_err(|e| {
-                SidemanticError::Validation(format!("failed to parse SQL graph definitions: {e}"))
-            })?;
-        top_level_parameters.extend(sql_parameters);
+        Err(model_err)
+            if content
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("model ") =>
+        {
+            return Err(SidemanticError::Validation(format!(
+                "failed to parse SQL model statement: {model_err}"
+            )));
+        }
+        Err(_) => {
+            let (frontmatter, sql_body) = parse_sql_frontmatter_and_body(content)?;
+            let (sql_metrics, sql_segments, sql_parameters, sql_preaggs) =
+                parse_sql_graph_definitions_extended(&sql_body).map_err(|e| {
+                    SidemanticError::Validation(format!(
+                        "failed to parse SQL graph definitions: {e}"
+                    ))
+                })?;
+            top_level_parameters.extend(sql_parameters);
 
-        if let Some(frontmatter) = frontmatter {
-            let mut model = model_from_sql_frontmatter(frontmatter)?;
-            model.metrics.extend(sql_metrics);
-            model.segments.extend(sql_segments);
-            model.pre_aggregations.extend(sql_preaggs);
-            models.push(model);
-        } else {
-            top_level_metrics.extend(sql_metrics);
+            if let Some(frontmatter) = frontmatter {
+                let mut model = model_from_sql_frontmatter(frontmatter)?;
+                model.metrics.extend(sql_metrics);
+                model.segments.extend(sql_segments);
+                model.pre_aggregations.extend(sql_preaggs);
+                models.push(model);
+            } else {
+                top_level_metrics.extend(sql_metrics);
+            }
         }
     }
 
@@ -355,10 +375,14 @@ pub fn load_from_sql_string_with_metadata(content: &str) -> Result<LoadedGraphMe
 ///
 /// This function:
 /// 1. Recursively finds all `.yml`/`.yaml`/`.sql` files
-/// 2. Auto-detects format (Sidemantic vs Cube.js)
+/// 2. Auto-detects only native Sidemantic YAML vs Cube YAML for YAML files
 /// 3. Parses and collects all models
 /// 4. Infers relationships from FK naming conventions
 /// 5. Returns a unified SemanticGraph
+///
+/// External formats supported by the Python package (LookML, MetricFlow, Hex,
+/// Rill, Malloy, and similar) must be converted to native YAML/SQL before using
+/// the Rust runtime loader.
 pub fn load_from_directory(dir: impl AsRef<Path>) -> Result<SemanticGraph> {
     Ok(load_from_directory_with_metadata(dir)?.graph)
 }
@@ -1016,7 +1040,9 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
                             primary_key_columns: Some(target_primary_keys.clone()),
                             through: None,
                             through_foreign_key: None,
+                            through_foreign_key_columns: None,
                             related_foreign_key: None,
+                            related_foreign_key_columns: None,
                             sql: None,
                             metadata: None,
                         },
@@ -1034,7 +1060,9 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
                             primary_key_columns: Some(target_primary_keys),
                             through: None,
                             through_foreign_key: None,
+                            through_foreign_key_columns: None,
                             related_foreign_key: None,
+                            related_foreign_key_columns: None,
                             sql: None,
                             metadata: None,
                         },
@@ -1231,6 +1259,47 @@ METRIC (
         assert!(err
             .to_string()
             .contains("Unsupported native Sidemantic format version 2; supported version is 1"));
+    }
+
+    #[test]
+    fn test_load_from_sql_string_supports_compact_model_syntax() {
+        let sql = r#"
+model orders from orders (
+  primary key (order_id)
+  status
+  sum(amount) as revenue
+)
+"#;
+
+        let loaded = load_from_sql_string_with_metadata(sql).unwrap();
+        let orders = loaded.graph.get_model("orders").unwrap();
+        assert!(orders.get_dimension("status").is_some());
+        assert!(orders.get_metric("revenue").is_some());
+    }
+
+    #[test]
+    fn test_load_from_sql_string_keeps_multiple_legacy_models_separate() {
+        let sql = r#"
+MODEL (name orders, table orders, primary_key order_id);
+METRIC order_count AS COUNT(*);
+
+MODEL (name customers, table customers, primary_key customer_id);
+METRIC customer_count AS COUNT(*);
+"#;
+
+        let loaded = load_from_sql_string_with_metadata(sql).unwrap();
+
+        let orders = loaded.graph.get_model("orders").unwrap();
+        assert!(orders.get_metric("order_count").is_some());
+        assert!(orders.get_metric("customer_count").is_none());
+
+        let customers = loaded.graph.get_model("customers").unwrap();
+        assert!(customers.get_metric("customer_count").is_some());
+        assert!(customers.get_metric("order_count").is_none());
+        assert_eq!(
+            loaded.model_order,
+            vec!["orders".to_string(), "customers".to_string()]
+        );
     }
 
     #[test]

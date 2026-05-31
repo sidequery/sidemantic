@@ -625,7 +625,11 @@ def _parse_statement_defs(
     pre_aggregations: list[PreAggregation] = []
 
     for stmt in statements:
-        if isinstance(stmt, ModelDef):
+        if stmt is None:
+            continue
+        if isinstance(stmt, TableBlockModelDef):
+            model_def = _parse_table_block_model_def(stmt)
+        elif isinstance(stmt, ModelDef):
             model_def = _parse_model_def(stmt)
         elif isinstance(stmt, DimensionDef):
             dimension = _parse_dimension_def(stmt)
@@ -651,6 +655,8 @@ def _parse_statement_defs(
             preagg = _parse_pre_aggregation_def(stmt)
             if preagg:
                 pre_aggregations.append(preagg)
+        else:
+            raise ValueError(f"Unsupported SQL definition statement: {stmt.__class__.__name__}")
 
     return model_def, dimensions, relationships, metrics, segments, parameters, pre_aggregations
 
@@ -664,11 +670,7 @@ def parse_sql_definitions(sql: str) -> tuple[list[Metric], list[Segment]]:
     Returns:
         Tuple of (metrics, segments)
     """
-    try:
-        metrics, segments, _ = parse_sql_graph_definitions(sql)
-    except Exception:
-        return [], []
-
+    metrics, segments, _ = parse_sql_graph_definitions(sql)
     return metrics, segments
 
 
@@ -681,11 +683,7 @@ def parse_sql_graph_definitions(sql: str) -> tuple[list[Metric], list[Segment], 
     Returns:
         Tuple of (metrics, segments, parameters)
     """
-    try:
-        _, _, _, metrics, segments, parameters, _ = _parse_sql_statements(sql)
-    except Exception:
-        return [], [], []
-
+    _, _, _, metrics, segments, parameters, _ = _parse_sql_statements(sql)
     return metrics, segments, parameters
 
 
@@ -733,13 +731,7 @@ def parse_sql_file_with_frontmatter_extended(
             if frontmatter_text:
                 frontmatter = yaml.safe_load(frontmatter_text) or {}
 
-    metrics, segments, parameters = parse_sql_graph_definitions(sql_body)
-
-    pre_aggregations: list[PreAggregation] = []
-    try:
-        _, _, _, _, _, _, pre_aggregations = _parse_sql_statements(sql_body)
-    except Exception:
-        pre_aggregations = []
+    _, _, _, metrics, segments, parameters, pre_aggregations = _parse_sql_statements(sql_body)
 
     return frontmatter, metrics, segments, parameters, pre_aggregations
 

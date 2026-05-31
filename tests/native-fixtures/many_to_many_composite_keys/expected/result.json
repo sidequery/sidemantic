@@ -1,0 +1,14 @@
+[
+  {
+    "category": "hardware",
+    "total_revenue": 100
+  },
+  {
+    "category": "services",
+    "total_revenue": 50
+  },
+  {
+    "category": "software",
+    "total_revenue": 200
+  }
+]

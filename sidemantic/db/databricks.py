@@ -3,7 +3,7 @@
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier, validate_query_history_params
 
 
 class DatabricksResult:
@@ -185,6 +185,7 @@ class DatabricksAdapter(BaseDatabaseAdapter):
         Note:
             Requires Unity Catalog and appropriate permissions to query system.query.history
         """
+        days_back, limit = validate_query_history_params(days_back, limit)
         sql = f"""
         SELECT statement_text
         FROM system.query.history

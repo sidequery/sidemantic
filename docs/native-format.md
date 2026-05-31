@@ -9,6 +9,20 @@ The native format has two source forms:
 
 The native format is the runtime contract. External formats such as LookML, MetricFlow, Hex, Rill, Malloy, Omni, Superset, GoodData, Snowflake Cortex, ThoughtSpot, Holistics, Tableau, AtScale SML, BSL, Yardstick, and Graphene GSQL should be converted into this format by Python importers before they are expected to run through the Rust native runtime.
 
+## Rust Loader Scope
+
+The Rust runtime and Rust CLI directory loader intentionally have a smaller direct
+input surface than Python:
+
+- `.yml` / `.yaml`: native Sidemantic YAML or Cube YAML.
+- `.sql`: native Sidemantic SQL definition files.
+
+They do not auto-detect LookML, MetricFlow/dbt manifests, Hex, Rill, Malloy,
+Omni, Superset, GoodData, Snowflake Cortex, ThoughtSpot, Holistics, Tableau,
+AtScale SML, BSL, Yardstick, or other external source formats. Convert those
+formats through the Python CLI/API first, then load the exported native YAML/SQL
+with the Rust runtime.
+
 ## Versioning
 
 Current native format version: `1`.
@@ -61,6 +75,18 @@ Top-level sections:
 | `metrics` | No | Graph-level metrics. Rust assigns these to exactly one owning model when possible. |
 | `parameters` | No | Graph-level parameters for templates and query-time substitution. |
 
+Top-level metrics are graph-scoped in the Python runtime. The Rust runtime does not
+store a separate graph-metric namespace at execution time; it assigns each top-level
+metric to one owning model by resolving explicit model references, metric dependencies,
+entity dimensions, or a single-model project fallback. If Rust cannot infer exactly
+one owner, loading fails. Portable native files should therefore make top-level metric
+dependencies explicit, for example `orders.total_revenue` rather than `total_revenue`
+when multiple models define the same local metric name. Dotted top-level metric names
+are allowed and are resolved by exact metric name before `model.metric` parsing.
+
+Top-level parameters remain graph-scoped in both runtimes. Query APIs interpolate
+parameter values before SQL compilation.
+
 ## Models
 
 Models describe physical or logical query sources.
@@ -94,6 +120,12 @@ At least one of `table`, `sql`, or `source_uri` should be present unless the mod
 | `pre_aggregations` | No | List of pre-aggregation definitions. |
 | `default_time_dimension` | No | Time dimension to add by default when the query needs time grouping. |
 | `default_grain` | No | Default time grain for the default time dimension. |
+| `auto_dimensions` | No | Python auto-discovery flag. Rust accepts `false` for compatibility and rejects `true` because it does not perform schema discovery. |
+
+Canonical CLI-authored files should use `metrics` and `sql`. The native loaders
+also accept compatibility input aliases: model-level `measures` for `metrics`,
+dimension/metric `expr` for `sql`, and metric `measure` for `sql`. Exports use
+canonical field names.
 
 Single-column primary key:
 
@@ -332,8 +364,21 @@ relationships:
 | `primary_key_columns` | Conditional | Explicit target-column list. |
 | `through` | For many-to-many | Junction model. |
 | `through_foreign_key` | For many-to-many | Source-to-through key. |
+| `through_foreign_key_columns` | For many-to-many | Explicit source-to-through key columns. |
 | `related_foreign_key` | For many-to-many | Through-to-target key. |
-| `sql` | No | Custom join SQL using runtime placeholders where supported. |
+| `related_foreign_key_columns` | For many-to-many | Explicit through-to-target key columns. |
+| `sql` | No | Custom join SQL using `{from}` and `{to}` runtime placeholders. |
+
+For CLI-authored native files, prefer explicit `foreign_key` and `primary_key`
+fields. Omitted keys are still supported for compatibility: `many_to_one`
+defaults the source key to `{name}_id`, while `one_to_many` and `one_to_one`
+default the related-side key to `id`; omitted `primary_key` resolves to the
+target model's declared primary key when building graph joins.
+
+When `sql` is present, Python and Rust use it instead of the FK/PK-generated
+predicate. `{from}` is replaced with the source model's runtime alias and `{to}`
+with the target model's runtime alias. Reverse graph traversal swaps the
+placeholders automatically.
 
 Relationship types:
 

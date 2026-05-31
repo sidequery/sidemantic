@@ -444,7 +444,11 @@ impl<'a> SqlGenerator<'a> {
             };
             let output_alias = self.output_alias(&dim_ref.model, &dim_ref.alias, &alias_collisions);
 
-            select_parts.push(format!("  {} AS {}", sql_expr, output_alias));
+            select_parts.push(format!(
+                "  {} AS {}",
+                sql_expr,
+                self.quote_identifier(&output_alias)
+            ));
         }
 
         // Add metrics to SELECT
@@ -463,7 +467,7 @@ impl<'a> SqlGenerator<'a> {
             let output_alias =
                 self.output_alias(&metric_ref.model, &metric_ref.alias, &alias_collisions);
             let raw_alias = format!("{}_raw", metric_ref.name);
-            let raw_col = format!("{alias}.{raw_alias}");
+            let raw_col = format!("{alias}.{}", self.quote_identifier(&raw_alias));
 
             let sql_expr = match metric.r#type {
                 MetricType::Simple if query.ungrouped => raw_col.clone(),
@@ -541,7 +545,11 @@ impl<'a> SqlGenerator<'a> {
                 MetricType::Conversion => metric.to_sql(Some(&alias)),
             };
 
-            select_parts.push(format!("  {} AS {}", sql_expr, output_alias));
+            select_parts.push(format!(
+                "  {} AS {}",
+                sql_expr,
+                self.quote_identifier(&output_alias)
+            ));
         }
 
         // Add table calculations to SELECT
@@ -704,7 +712,9 @@ impl<'a> SqlGenerator<'a> {
         let mut refs = Vec::new();
 
         for metric in metrics {
-            let (model, name) = if metric.contains('.') {
+            let (model, name) = if let Some((model, name)) = self.exact_metric_reference(metric)? {
+                (model, name)
+            } else if metric.contains('.') {
                 let (model, name, _) = self.graph.parse_reference(metric)?;
                 (model, name)
             } else {
@@ -772,6 +782,23 @@ impl<'a> SqlGenerator<'a> {
             }
         }
         Ok(())
+    }
+
+    fn exact_metric_reference(&self, reference: &str) -> Result<Option<(String, String)>> {
+        let mut owners = Vec::new();
+        for model in self.graph.models() {
+            if model.get_metric(reference).is_some() {
+                owners.push(model.name.clone());
+            }
+        }
+
+        match owners.len() {
+            0 => Ok(None),
+            1 => Ok(Some((owners[0].clone(), reference.to_string()))),
+            _ => Err(SidemanticError::InvalidReference {
+                reference: reference.to_string(),
+            }),
+        }
     }
 
     /// Find all models required by the query
@@ -1190,6 +1217,9 @@ impl<'a> SqlGenerator<'a> {
         default_model: &str,
     ) -> Result<Option<(String, String)>> {
         if reference.contains('.') {
+            if let Some((model_name, metric_name)) = self.exact_metric_reference(reference)? {
+                return Ok(Some((model_name, metric_name)));
+            }
             let (model_name, metric_name, _) = self.graph.parse_reference(reference)?;
             let Some(model) = self.graph.get_model(&model_name) else {
                 return Ok(None);
@@ -1256,6 +1286,14 @@ impl<'a> SqlGenerator<'a> {
         let head_len = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
         let (head, suffix) = trimmed.split_at(head_len);
 
+        for metric_ref in metric_refs {
+            if metric_ref.name == head || metric_ref.alias == head {
+                let alias =
+                    self.output_alias(&metric_ref.model, &metric_ref.alias, alias_collisions);
+                return format!("{}{}", self.quote_identifier(&alias), suffix);
+            }
+        }
+
         let Ok((model, field, granularity)) = self.graph.parse_reference(head) else {
             return trimmed.to_string();
         };
@@ -1266,7 +1304,7 @@ impl<'a> SqlGenerator<'a> {
                 && dim_ref.granularity.as_deref() == granularity.as_deref()
             {
                 let alias = self.output_alias(&model, &dim_ref.alias, alias_collisions);
-                return format!("{alias}{suffix}");
+                return format!("{}{}", self.quote_identifier(&alias), suffix);
             }
         }
 
@@ -1274,7 +1312,7 @@ impl<'a> SqlGenerator<'a> {
             for metric_ref in metric_refs {
                 if metric_ref.model == model && metric_ref.name == field {
                     let alias = self.output_alias(&model, &metric_ref.alias, alias_collisions);
-                    return format!("{alias}{suffix}");
+                    return format!("{}{}", self.quote_identifier(&alias), suffix);
                 }
             }
         }
@@ -3129,10 +3167,15 @@ impl<'a> SqlGenerator<'a> {
 
         let mut seen_models = HashSet::new();
         for metric_ref in metrics {
-            if !metric_ref.contains('.') {
-                continue;
-            };
-            let model_name = self.graph.parse_reference(metric_ref)?.0;
+            let model_name =
+                if let Some((model_name, _)) = self.exact_metric_reference(metric_ref)? {
+                    model_name
+                } else {
+                    if !metric_ref.contains('.') {
+                        continue;
+                    }
+                    self.graph.parse_reference(metric_ref)?.0
+                };
 
             if !seen_models.insert(model_name.clone()) {
                 continue;
@@ -3316,7 +3359,13 @@ impl<'a> SqlGenerator<'a> {
             Some(Aggregation::Avg) => self
                 .find_count_measure_for_avg(&metric.name, preagg_measures)
                 .is_some(),
-            Some(Aggregation::CountDistinct) => false,
+            Some(
+                Aggregation::CountDistinct
+                | Aggregation::Stddev
+                | Aggregation::StddevPop
+                | Aggregation::Variance
+                | Aggregation::VariancePop,
+            ) => false,
             Some(Aggregation::Median | Aggregation::Expression) => true,
         }
     }
@@ -3963,6 +4012,7 @@ impl<'a> SqlGenerator<'a> {
                 | "SUM"
                 | "THEN"
                 | "TRUE"
+                | "VAR_POP"
                 | "VARIANCE"
                 | "VARIANCE_POP"
                 | "VARCHAR"
@@ -3997,8 +4047,12 @@ impl<'a> SqlGenerator<'a> {
         visited: &mut HashSet<(String, String)>,
     ) -> Result<Option<String>> {
         let (model_name, metric_name) = if reference.contains('.') {
-            let (m, n, _) = self.graph.parse_reference(reference)?;
-            (m, n)
+            if let Some((model_name, metric_name)) = self.exact_metric_reference(reference)? {
+                (model_name, metric_name)
+            } else {
+                let (m, n, _) = self.graph.parse_reference(reference)?;
+                (m, n)
+            }
         } else {
             let mut owners = Vec::new();
             for model in self.graph.models() {
@@ -4129,7 +4183,7 @@ impl<'a> SqlGenerator<'a> {
 
     fn is_inline_aggregate_expression(expr: &str) -> bool {
         let aggregate_re = regex::Regex::new(
-            r"(?i)\b(SUM|AVG|COUNT|MIN|MAX|MEDIAN|MODE|PERCENTILE_CONT|PERCENTILE_DISC|QUANTILE_CONT|QUANTILE_DISC|STDDEV|STDDEV_POP|VARIANCE|VARIANCE_POP)\s*\(",
+            r"(?i)\b(SUM|AVG|COUNT|MIN|MAX|MEDIAN|MODE|PERCENTILE_CONT|PERCENTILE_DISC|QUANTILE_CONT|QUANTILE_DISC|STDDEV|STDDEV_POP|VARIANCE|VARIANCE_POP|VAR_POP)\s*\(",
         )
         .expect("valid aggregate regex");
         aggregate_re.is_match(expr)
@@ -4450,6 +4504,57 @@ mod tests {
         assert!(sql.contains("orders_cte.status AS status"));
         assert!(sql.contains("FROM orders_cte AS orders_cte"));
         assert!(sql.contains("GROUP BY 1"));
+    }
+
+    #[test]
+    fn test_statistical_aggregation_metrics_render_supported_sql() {
+        let mut graph = SemanticGraph::new();
+        let orders = Model::new("orders", "order_id")
+            .with_table("orders")
+            .with_metric(Metric {
+                name: "amount_stddev".to_string(),
+                extends: None,
+                agg: Some(Aggregation::Stddev),
+                sql: Some("amount".to_string()),
+                ..Metric::new("amount_stddev")
+            })
+            .with_metric(Metric {
+                name: "amount_stddev_pop".to_string(),
+                extends: None,
+                agg: Some(Aggregation::StddevPop),
+                sql: Some("amount".to_string()),
+                ..Metric::new("amount_stddev_pop")
+            })
+            .with_metric(Metric {
+                name: "amount_variance".to_string(),
+                extends: None,
+                agg: Some(Aggregation::Variance),
+                sql: Some("amount".to_string()),
+                ..Metric::new("amount_variance")
+            })
+            .with_metric(Metric {
+                name: "amount_variance_pop".to_string(),
+                extends: None,
+                agg: Some(Aggregation::VariancePop),
+                sql: Some("amount".to_string()),
+                ..Metric::new("amount_variance_pop")
+            });
+        graph.add_model(orders).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new().with_metrics(vec![
+            "orders.amount_stddev".into(),
+            "orders.amount_stddev_pop".into(),
+            "orders.amount_variance".into(),
+            "orders.amount_variance_pop".into(),
+        ]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("STDDEV(orders_cte.amount_stddev_raw) AS amount_stddev"));
+        assert!(sql.contains("STDDEV_POP(orders_cte.amount_stddev_pop_raw) AS amount_stddev_pop"));
+        assert!(sql.contains("VARIANCE(orders_cte.amount_variance_raw) AS amount_variance"));
+        assert!(sql.contains("VAR_POP(orders_cte.amount_variance_pop_raw) AS amount_variance_pop"));
     }
 
     #[test]
@@ -4881,6 +4986,64 @@ mod tests {
         assert!(sql.contains("order_items_cte.order_id = shipments_cte.order_id"));
         assert!(sql.contains("order_items_cte.item_id = shipments_cte.item_id"));
         assert!(sql.contains(" AND "));
+    }
+
+    #[test]
+    fn test_query_with_composite_many_to_many_through_join() {
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "tenant_id")
+            .with_primary_key_columns(vec!["tenant_id".to_string(), "order_id".to_string()])
+            .with_table("orders")
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_relationship(Relationship {
+                name: "products".to_string(),
+                r#type: RelationshipType::ManyToMany,
+                foreign_key: None,
+                foreign_key_columns: None,
+                primary_key: None,
+                primary_key_columns: None,
+                through: Some("order_items".to_string()),
+                through_foreign_key: Some("order_id".to_string()),
+                through_foreign_key_columns: Some(vec![
+                    "tenant_id".to_string(),
+                    "order_id".to_string(),
+                ]),
+                related_foreign_key: Some("product_id".to_string()),
+                related_foreign_key_columns: Some(vec![
+                    "tenant_id".to_string(),
+                    "product_id".to_string(),
+                ]),
+                sql: None,
+                metadata: None,
+            });
+        let order_items = Model::new("order_items", "tenant_id")
+            .with_primary_key_columns(vec![
+                "tenant_id".to_string(),
+                "order_id".to_string(),
+                "product_id".to_string(),
+            ])
+            .with_table("order_items");
+        let products = Model::new("products", "tenant_id")
+            .with_primary_key_columns(vec!["tenant_id".to_string(), "product_id".to_string()])
+            .with_table("products")
+            .with_dimension(Dimension::categorical("name"));
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(order_items).unwrap();
+        graph.add_model(products).unwrap();
+
+        let generator = SqlGenerator::new(&graph);
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.revenue".into()])
+            .with_dimensions(vec!["products.name".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("products_cte.tenant_id = order_items_cte.tenant_id"));
+        assert!(sql.contains("products_cte.product_id = order_items_cte.product_id"));
+        assert!(sql.contains("order_items_cte.tenant_id = orders_cte.tenant_id"));
+        assert!(sql.contains("order_items_cte.order_id = orders_cte.order_id"));
     }
 
     #[test]

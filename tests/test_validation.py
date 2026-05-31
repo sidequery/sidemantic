@@ -136,6 +136,44 @@ def test_query_validation_metric_not_found(layer):
     assert "Metric 'nonexistent_metric' not found" in str(exc_info.value)
 
 
+def test_query_validation_accepts_multidot_graph_metric_name(layer):
+    """Exact graph metric names with multiple dots should not be split as model.metric."""
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="status", type="categorical", sql="status")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_metric(Metric(name="company.sales.revenue", sql="orders.revenue"))
+
+    sql = layer.compile(metrics=["company.sales.revenue"], dimensions=["orders.status"])
+
+    assert '"company.sales.revenue"' in sql
+    assert "amount AS revenue_raw" in sql
+
+
+def test_graph_metric_exact_name_wins_over_model_metric_reference(layer):
+    """Exact graph metric names should resolve before model.metric interpretation."""
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="status", type="categorical", sql="status")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_metric(Metric(name="orders.revenue", sql="SUM(orders.amount) * 2"))
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"])
+
+    assert 'AS "orders.revenue"' in sql
+    assert "* 2" in sql
+
+
 def test_query_validation_dimension_not_found(layer):
     """Test that queries with non-existent dimensions fail validation."""
     layer.add_model(

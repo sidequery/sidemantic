@@ -1,5 +1,8 @@
 # Table Calculations
 
-Valid native fixture that proves Rust can compile query-local table calculations into SQL window expressions.
+Valid native fixture that proves query-local table calculations produce the same
+result in Python and Rust for the shared subset.
 
-Python currently applies table calculations after query execution, so the Python fixture runner compiles the base query while the Rust runner asserts the table-calculation SQL shape.
+Python applies table calculations after query execution with
+`TableCalculationProcessor`. Rust compiles the same calculations into SQL window
+expressions, and the Rust runner also asserts the generated SQL shape.

@@ -13,10 +13,11 @@ class Relationship(BaseModel):
     - one_to_one: This model is referenced by another with unique constraint
     - one_to_many: This model is referenced by another
     - many_to_many: This model relates to another through a junction table
+    - cross: This model should be cross joined to another
     """
 
     name: str = Field(description="Name of the related model")
-    type: Literal["many_to_one", "one_to_one", "one_to_many", "many_to_many"] = Field(
+    type: Literal["many_to_one", "one_to_one", "one_to_many", "many_to_many", "cross"] = Field(
         description="Type of relationship"
     )
     foreign_key: str | list[str] | None = Field(
@@ -63,6 +64,8 @@ class Relationship(BaseModel):
     @property
     def foreign_key_columns(self) -> list[str]:
         """Get foreign key as list of columns (normalizes single string to list)."""
+        if self.type == "cross":
+            return []
         if self.foreign_key is None:
             # Default: {name}_id for many_to_one
             if self.type == "many_to_one":
@@ -75,6 +78,8 @@ class Relationship(BaseModel):
     @property
     def primary_key_columns(self) -> list[str]:
         """Get primary key as list of columns (normalizes single string to list)."""
+        if self.type == "cross":
+            return []
         if self.primary_key is None:
             return ["id"]
         if isinstance(self.primary_key, str):

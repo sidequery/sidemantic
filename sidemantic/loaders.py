@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 if TYPE_CHECKING:
     from sidemantic.core.semantic_layer import SemanticLayer
 
@@ -105,39 +107,56 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         elif suffix in (".yml", ".yaml"):
             # Try to detect which format by reading the file
             content = file_path.read_text()
+            yaml_data = _load_yaml_mapping(content)
             # Check for MetricFlow before Sidemantic native since
             # "semantic_models:" contains "models:" as a substring
-            if "semantic_models:" in content:
+            if _yaml_has_top_level_key(yaml_data, "semantic_models"):
                 adapter = MetricFlowAdapter()
-            elif "semantic_model:" in content and "datasets:" in content:
+            elif _yaml_has_top_level_key(yaml_data, "semantic_model") and _yaml_has_top_level_key(
+                yaml_data, "datasets"
+            ):
                 adapter = OSIAdapter()
-            elif "cubes:" in content or "views:" in content and "measures:" in content:
+            elif _yaml_has_top_level_key(yaml_data, "cubes") or (
+                _yaml_has_top_level_key(yaml_data, "views") and _contains_yaml_key(yaml_data, "measures")
+            ):
                 adapter = CubeAdapter()
             # Check for Sidemantic native format (explicit models: key)
-            elif "models:" in content:
+            elif _yaml_has_top_level_key(yaml_data, "models"):
                 adapter = SidemanticAdapter()
-            elif "metrics:" in content and "type: " in content:
+            elif _yaml_has_top_level_key(yaml_data, "metrics") and "type: " in content:
                 adapter = MetricFlowAdapter()
-            elif "base_sql_table:" in content and "measures:" in content:
+            elif _contains_yaml_key(yaml_data, "base_sql_table") and _contains_yaml_key(yaml_data, "measures"):
                 adapter = HexAdapter()
-            elif "table:" in content and "db_table:" in content and "columns:" in content:
+            elif (
+                _contains_yaml_key(yaml_data, "table")
+                and _contains_yaml_key(yaml_data, "db_table")
+                and _contains_yaml_key(yaml_data, "columns")
+            ):
                 adapter = ThoughtSpotAdapter()
-            elif "worksheet:" in content and "worksheet_columns:" in content:
+            elif _contains_yaml_key(yaml_data, "worksheet") and _contains_yaml_key(yaml_data, "worksheet_columns"):
                 adapter = ThoughtSpotAdapter()
-            elif "tables:" in content and "base_table:" in content:
+            elif _yaml_has_top_level_key(yaml_data, "tables") and _contains_yaml_key(yaml_data, "base_table"):
                 # Snowflake Cortex Semantic Model format
                 adapter = SnowflakeAdapter()
-            elif "_." in content and ("dimensions:" in content or "measures:" in content):
+            elif _looks_like_bsl_yaml(yaml_data):
                 # BSL format uses _.column syntax for expressions
                 adapter = BSLAdapter()
             elif "type: metrics_view" in content:
                 adapter = RillAdapter()
-            elif "table_name:" in content and "columns:" in content and "metrics:" in content:
+            elif (
+                _contains_yaml_key(yaml_data, "table_name")
+                and _contains_yaml_key(yaml_data, "columns")
+                and _contains_yaml_key(yaml_data, "metrics")
+            ):
                 adapter = SupersetAdapter()
             elif (
-                "measures:" in content
-                and "dimensions:" in content
-                and ("table_name:" in content or "table:" in content or "schema:" in content)
+                _contains_yaml_key(yaml_data, "measures")
+                and _contains_yaml_key(yaml_data, "dimensions")
+                and (
+                    _contains_yaml_key(yaml_data, "table_name")
+                    or _contains_yaml_key(yaml_data, "table")
+                    or _contains_yaml_key(yaml_data, "schema")
+                )
             ):
                 adapter = OmniAdapter()
 
@@ -157,6 +176,11 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
             except Exception as e:
                 # Skip files that fail to parse
                 logging.warning("Could not parse %s: %s", file_path, e)
+
+    # BSL files are parsed one at a time during auto-discovery. Finalize join
+    # aliases after all files have been loaded so aliases can target models
+    # declared in separate files.
+    _finalize_bsl_join_aliases(all_models)
 
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
@@ -229,6 +253,28 @@ def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dic
     layer.graph.build_adjacency()
 
 
+def _finalize_bsl_join_aliases(all_models: dict) -> None:
+    """Add BSL join alias models once directory-level loading has all models."""
+    if not all_models:
+        return
+
+    from sidemantic.adapters.bsl import BSLAdapter
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    for model in all_models.values():
+        graph.add_model(model)
+
+    existing_alias_models = {
+        name for name, model in all_models.items() if model.metadata and model.metadata.get("bsl_alias_of")
+    }
+    BSLAdapter()._add_join_alias_models(graph)
+    for name in existing_alias_models:
+        if name not in graph.models:
+            all_models.pop(name, None)
+    all_models.update(graph.models)
+
+
 def _looks_like_python_semantic_definition(file_path: Path) -> bool:
     """Return True if a Python file appears to contain semantic definitions."""
     name = file_path.name.lower()
@@ -256,6 +302,69 @@ def _looks_like_python_semantic_definition(file_path: Path) -> bool:
             "Metric(",
         )
     )
+
+
+def _load_yaml_mapping(content: str) -> dict:
+    """Parse YAML content and return a mapping, or an empty mapping on failure."""
+    try:
+        data = yaml.safe_load(content)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _yaml_has_top_level_key(data: dict, key: str) -> bool:
+    """Return True when a YAML mapping has an exact top-level key."""
+    return isinstance(data, dict) and key in data
+
+
+def _contains_yaml_key(value: object, key: str) -> bool:
+    """Return True when a parsed YAML object contains an exact key anywhere."""
+    if isinstance(value, dict):
+        if key in value:
+            return True
+        return any(_contains_yaml_key(nested, key) for nested in value.values())
+    if isinstance(value, list):
+        return any(_contains_yaml_key(item, key) for item in value)
+    return False
+
+
+def _contains_bsl_expr(value: object) -> bool:
+    """Return True when a YAML object contains a BSL deferred expression string."""
+    if isinstance(value, str):
+        return "_." in value
+    if isinstance(value, dict):
+        return any(_contains_bsl_expr(nested) for nested in value.values())
+    if isinstance(value, list):
+        return any(_contains_bsl_expr(item) for item in value)
+    return False
+
+
+def _looks_like_bsl_yaml(data: dict) -> bool:
+    """Detect Boring Semantic Layer YAML without substring false positives."""
+    if not isinstance(data, dict):
+        return False
+
+    model_section_keys = {
+        "calculated_measures",
+        "database",
+        "dimensions",
+        "filter",
+        "joins",
+        "measures",
+        "primary_key",
+        "time_dimension",
+    }
+
+    for model_name, model_def in data.items():
+        if model_name == "profile":
+            continue
+        if not isinstance(model_def, dict) or "table" not in model_def:
+            continue
+        if model_section_keys.intersection(model_def) or _contains_bsl_expr(model_def):
+            return True
+
+    return False
 
 
 def _extract_models_from_python_namespace(namespace: dict, fallback_models: dict) -> dict:

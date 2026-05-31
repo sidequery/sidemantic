@@ -1116,7 +1116,7 @@
       "type": "object"
     },
     "Relationship": {
-      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
+      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table\n- cross: This model should be cross joined to another",
       "properties": {
         "foreign_key": {
           "anyOf": [
@@ -1220,7 +1220,8 @@
             "many_to_one",
             "one_to_one",
             "one_to_many",
-            "many_to_many"
+            "many_to_many",
+            "cross"
           ],
           "title": "Type",
           "type": "string"
@@ -2908,7 +2909,7 @@
             "type": "object"
           },
           "Relationship": {
-            "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
+            "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table\n- cross: This model should be cross joined to another",
             "properties": {
               "foreign_key": {
                 "anyOf": [
@@ -3012,7 +3013,8 @@
                   "many_to_one",
                   "one_to_one",
                   "one_to_many",
-                  "many_to_many"
+                  "many_to_many",
+                  "cross"
                 ],
                 "title": "Type",
                 "type": "string"

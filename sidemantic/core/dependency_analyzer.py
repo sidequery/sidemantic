@@ -11,15 +11,19 @@ def extract_column_references(sql_expr: str) -> set[str]:
 
     Returns set of column names (without table prefixes).
     """
+    return {name for _, name in _extract_column_reference_parts(sql_expr)}
+
+
+def _extract_column_reference_parts(sql_expr: str) -> list[tuple[str | None, str]]:
+    """Extract column references as optional table/model qualifier plus column name."""
     try:
         parsed = sqlglot.parse_one(sql_expr, read="duckdb")
     except Exception:
-        return set()
+        return []
 
-    columns = set()
+    columns = []
     for col in parsed.find_all(exp.Column):
-        # Get column name without table prefix
-        columns.add(col.name)
+        columns.append((col.table or None, col.name))
 
     return columns
 
@@ -66,53 +70,68 @@ def extract_metric_dependencies(metric_obj, graph=None, model_context=None) -> s
             # Expression metric with inline aggregations - no measure dependencies
             return deps
 
-        # Extract column references from expression
-        refs = extract_column_references(metric_obj.sql)
-
         # Use graph to resolve references if available
         if graph:
-            for ref in refs:
-                # Check if it's already qualified (model.measure)
-                if "." in ref:
-                    deps.add(ref)
-                else:
-                    # Try to resolve as metric first
-                    resolved = False
+            for qualifier, ref in _extract_column_reference_parts(metric_obj.sql):
+                resolved = False
+
+                if qualifier:
+                    qualified_ref = f"{qualifier}.{ref}"
                     try:
-                        if graph.get_metric(ref):
-                            deps.add(ref)
+                        model = graph.get_model(qualifier)
+                        if model and model.get_metric(ref):
+                            deps.add(qualified_ref)
                             resolved = True
-                            continue
-                    except KeyError:
+                    except (KeyError, AttributeError):
                         pass
 
-                    # If we have model context, check that model first
-                    if not resolved and model_context:
+                    if not resolved:
                         try:
-                            model = graph.get_model(model_context)
-                            if model and model.get_metric(ref):
-                                deps.add(f"{model_context}.{ref}")
+                            if graph.get_metric(qualified_ref):
+                                deps.add(qualified_ref)
                                 resolved = True
+                        except KeyError:
+                            pass
+
+                    if resolved:
+                        continue
+
+                # Try to resolve as metric first
+                try:
+                    if graph.get_metric(ref):
+                        deps.add(ref)
+                        resolved = True
+                        continue
+                except KeyError:
+                    pass
+
+                # If we have model context, check that model first
+                if not resolved and model_context:
+                    try:
+                        model = graph.get_model(model_context)
+                        if model and model.get_metric(ref):
+                            deps.add(f"{model_context}.{ref}")
+                            resolved = True
+                    except (KeyError, AttributeError):
+                        pass
+
+                # Search all models for this measure name (fallback)
+                if not resolved:
+                    for model_name, model in graph.models.items():
+                        try:
+                            if model.get_metric(ref):
+                                deps.add(f"{model_name}.{ref}")
+                                resolved = True
+                                break
                         except (KeyError, AttributeError):
                             pass
 
-                    # Search all models for this measure name (fallback)
-                    if not resolved:
-                        for model_name, model in graph.models.items():
-                            try:
-                                if model.get_metric(ref):
-                                    deps.add(f"{model_name}.{ref}")
-                                    resolved = True
-                                    break
-                            except (KeyError, AttributeError):
-                                pass
-
-                    # If not resolved, keep as-is (might be a metric not yet added)
-                    if not resolved:
-                        deps.add(ref)
+                # If not resolved, keep as-is (might be a metric not yet added)
+                if not resolved:
+                    deps.add(ref)
         else:
             # Without graph, just return raw column names
-            deps.update(refs)
+            deps.update(extract_column_references(metric_obj.sql))
 
     # Cumulative metric - depends on its base measure (stored in expr)
     elif metric_obj.type == "cumulative":

@@ -1,6 +1,6 @@
 # Yardstick Compatibility
 
-Sidemantic's Yardstick adapter parses SQL files containing `CREATE VIEW` statements that use the `AS MEASURE` syntax from Julian Hyde's ["Measures in SQL" proposal](https://arxiv.org/abs/2307.14009). It maps Yardstick concepts to Sidemantic's semantic model (Model, Dimension, Metric) and supports the `SEMANTIC SELECT`, `AGGREGATE()`, and `AT` query modifiers for measure-aware SQL queries.
+Sidemantic's Yardstick adapter parses SQL files containing `CREATE VIEW` statements that use the `AS MEASURE` syntax from Julian Hyde's ["Measures in SQL" proposal](https://arxiv.org/abs/2307.14009). It maps Yardstick concepts to Sidemantic's semantic model (Model, Dimension, Metric) and supports `SEMANTIC SELECT`, optional-prefix `AGGREGATE()`, and `AT` query modifiers for measure-aware SQL queries.
 
 Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation.
 
@@ -110,15 +110,16 @@ Derived measure detection works by scanning the expression's column references a
 | `MODE(expr) AS MEASURE name` | Supported (stored as raw SQL expression metric with `agg=None`) |
 | `PERCENTILE_CONT(n) WITHIN GROUP (ORDER BY expr) AS MEASURE name` | Supported (stored as raw SQL expression metric) |
 | `CASE WHEN AGG(...) THEN ... END AS MEASURE name` | Supported (detected as having aggregate semantics; stored as raw SQL expression metric) |
-| Other aggregate functions not in the standard list | Supported (full expression preserved as `Metric.sql`) |
+| `PRODUCT(expr)`, `ENTROPY(expr)`, `KURTOSIS(expr)`, `SKEWNESS(expr)`, `LIST(expr)`, and related DuckDB aggregate functions | Supported (stored as raw SQL expression metrics with aggregate semantics) |
+| Other aggregate functions not in the standard list | Supported when sqlglot identifies them as aggregates; otherwise preserved as raw SQL only when aggregate semantics can be detected |
 
-When a measure expression contains aggregate functions (detected by walking the AST for `AggFunc` nodes or known anonymous aggregations like `mode`) but doesn't match a simple aggregation pattern, the full expression is preserved as-is for query-time evaluation.
+When a measure expression contains aggregate functions (detected by walking the AST for `AggFunc` nodes or known anonymous aggregations like `mode`, `product`, and `entropy`) but doesn't match a simple aggregation pattern, the full expression is preserved as-is for query-time evaluation.
 
 ---
 
 ## Query Semantics
 
-The Yardstick adapter works in tandem with Sidemantic's query rewriter to support the `SEMANTIC SELECT`, `AGGREGATE()`, and `AT` modifiers described in the Measures in SQL proposal.
+The Yardstick adapter works in tandem with Sidemantic's query rewriter to support `SEMANTIC SELECT`, optional-prefix `AGGREGATE()`, and `AT` modifiers described in the Measures in SQL proposal.
 
 ### SEMANTIC Prefix
 
@@ -126,7 +127,10 @@ The Yardstick adapter works in tandem with Sidemantic's query rewriter to suppor
 |---------|--------|
 | `SEMANTIC SELECT ...` | Supported (enables measure-aware query rewriting) |
 | `SEMANTIC WITH ... SELECT ...` | Supported (CTEs within semantic queries) |
-| Implicit measure detection without `SEMANTIC` prefix | Supported (queries containing `AT` modifiers or curly-brace measure references are auto-detected) |
+| `SELECT ... AGGREGATE(measure)` without `SEMANTIC` prefix | Supported |
+| `CREATE TABLE ... AS SELECT ... AGGREGATE(...)` | Supported |
+| `INSERT INTO ... SELECT ... AGGREGATE(...)` | Supported |
+| Implicit measure detection without `SEMANTIC` prefix | Supported (queries containing `AGGREGATE()`, `AT` modifiers, or curly-brace measure references are auto-detected) |
 
 ### AGGREGATE() Function
 
@@ -139,7 +143,36 @@ The Yardstick adapter works in tandem with Sidemantic's query rewriter to suppor
 | `AGGREGATE()` in arithmetic expressions (`2 * AGGREGATE(revenue)`) | Supported |
 | `AGGREGATE(measure) / AGGREGATE(measure) AT (...)` | Supported (each AGGREGATE evaluated independently) |
 | Scalar `AGGREGATE()` without GROUP BY | Supported (produces a single grand-total row) |
-| `AGGREGATE()` without `SEMANTIC` prefix and without `AT` | Error: raises `ValueError` requiring the `SEMANTIC` prefix |
+| `AGGREGATE()` without `SEMANTIC` prefix and without `AT` | Supported |
+| Native DuckDB `aggregate(list, 'function')` | Supported (falls through to DuckDB; not treated as Yardstick syntax) |
+
+### Upstream Parity Tests
+
+The default test suite replays a vendored Yardstick `measures.test` fixture for stable CI coverage. To check against the live upstream Yardstick repository without copying fixtures into Sidemantic, run:
+
+```bash
+SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS=1 uv run pytest -q tests/queries/test_yardstick_measures_replay.py -m yardstick_upstream
+```
+
+The same command runs in the `Yardstick Upstream Parity` GitHub Actions workflow. That workflow runs nightly, can be triggered manually with a Yardstick ref override, and runs on pull requests that touch Yardstick-specific code or tests.
+
+The live replay fetches `https://github.com/sidequery/yardstick.git` at `main` by default, checks all upstream `test/sql/*.test` files, and validates both facets:
+
+| Facet | Coverage |
+|-------|----------|
+| Model/metric definitions | Parses every upstream `CREATE VIEW ... AS MEASURE` statement and asserts model name, source table/base SQL, primary key, Yardstick metadata, dimension SQL/type/granularity, and metric `agg`/`sql`/`filters`/`type` |
+| Query execution | Replays every upstream query block against Sidemantic's Yardstick rewriter and compares result rows |
+
+The live definition check covers the `CREATE VIEW ... AS MEASURE` definitions used by Yardstick's SQL tests. Sidemantic's native SQL definition parser owns `MODEL(...)`, `METRIC(...)`, and `DIMENSION(...)` files separately from the Yardstick adapter; the live upstream replay does not treat Yardstick's top-level `yardstick_definitions.sql` helper file as part of the SQL-test corpus.
+
+Optional environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `YARDSTICK_UPSTREAM_PATH` | Use an existing local Yardstick checkout instead of fetching |
+| `YARDSTICK_UPSTREAM_REPO` | Override the upstream Git URL |
+| `YARDSTICK_UPSTREAM_REF` | Override the ref fetched from upstream |
+| `YARDSTICK_UPSTREAM_CACHE_DIR` | Override the temporary checkout path |
 
 ### AT Modifiers
 

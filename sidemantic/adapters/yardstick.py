@@ -102,7 +102,15 @@ class YardstickAdapter(BaseAdapter):
         exp.Variance: "variance",
         exp.VariancePop: "variance_pop",
     }
-    _ANONYMOUS_AGGREGATIONS: set[str] = {"mode"}
+    _ANONYMOUS_AGGREGATIONS: set[str] = {
+        "entropy",
+        "geometric_mean",
+        "kurtosis",
+        "mode",
+        "product",
+        "skewness",
+        "weighted_avg",
+    }
 
     def parse(self, source: str | Path) -> SemanticGraph:
         """Parse Yardstick SQL files into a semantic graph."""
@@ -344,6 +352,8 @@ class YardstickAdapter(BaseAdapter):
             return True
 
         for node in expression.walk():
+            if isinstance(node, exp.List):
+                return True
             if isinstance(node, exp.Anonymous) and (node.name or "").lower() in self._ANONYMOUS_AGGREGATIONS:
                 return True
         return False

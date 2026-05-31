@@ -4,6 +4,7 @@ Parses user SQL and rewrites it to use the semantic layer.
 """
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,8 @@ from sidemantic.rust_bridge import get_rust_module, graph_to_rust_yaml
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.generator import SQLGenerator
 from sidemantic.sql.planner import CandidatePlan, RewriteExplanation, SemanticQueryPlan
+
+_YARDSTICK_SYNTAX_HINT_RE = re.compile(r"\b(?:SEMANTIC|AGGREGATE|AT)\b|\{", re.IGNORECASE)
 
 
 @dataclass
@@ -215,7 +218,7 @@ class QueryRewriter:
             self._raise_on_user_cte_name_collision(parsed)
             return cache_result(self._rewrite_set_operation(parsed))
 
-        if self._contains_implicit_yardstick_measure_query(parsed):
+        if self._graph_has_yardstick_models() and self._contains_implicit_yardstick_measure_query(parsed):
             try:
                 return cache_result(self._rewrite_yardstick_query(sql, strict=strict, allow_plain_measures=True))
             except Exception:
@@ -365,7 +368,7 @@ class QueryRewriter:
             self._raise_on_user_cte_name_collision(parsed)
             return self._explain_set_operation(sql, parsed)
 
-        if self._contains_implicit_yardstick_measure_query(parsed):
+        if self._graph_has_yardstick_models() and self._contains_implicit_yardstick_measure_query(parsed):
             try:
                 rewritten_sql = self._rewrite_yardstick_query(sql, strict=strict, allow_plain_measures=True)
             except Exception as e:
@@ -2438,7 +2441,7 @@ class QueryRewriter:
             rejected_rules=plan.rejected_rules,
         )
 
-    def _plan_simple_query(self, parsed: exp.Select) -> SemanticQueryPlan:
+    def _plan_simple_query(self, parsed: exp.Select, include_candidate_details: bool = True) -> SemanticQueryPlan:
         """Build a behavior-preserving semantic query plan for a simple SELECT."""
         explicit_join_filters = []
         if parsed.args.get("joins"):
@@ -2478,9 +2481,13 @@ class QueryRewriter:
             offset=offset,
             aliases=aliases,
         )
-        plan.eligibility = self._plan_eligibility(plan)
+        plan.eligibility = (
+            self._plan_eligibility(plan)
+            if include_candidate_details or self.use_preaggregations
+            else self._lightweight_plan_eligibility(plan)
+        )
         plan.candidate_kind = self._chosen_candidate_kind(plan)
-        plan.candidate_plans = self._candidate_plans_for_plan(plan)
+        plan.candidate_plans = self._candidate_plans_for_plan(plan) if include_candidate_details else []
         if plan.candidate_kind == "single_model_preaggregation":
             plan.applied_rules.append("preaggregation_route_selection")
         if plan.candidate_kind == "join_key_preaggregation":
@@ -2563,6 +2570,31 @@ class QueryRewriter:
             },
             "join_key_preaggregation": self._join_key_preaggregation_eligibility(plan),
             "single_model_preaggregation": self._single_model_preaggregation_eligibility(plan),
+        }
+
+    def _lightweight_plan_eligibility(self, plan: SemanticQueryPlan) -> dict[str, dict[str, object]]:
+        return {
+            "window_metric": {
+                "eligible": False,
+                "metrics": [],
+                "reason": "not_evaluated_for_rewrite",
+            },
+            "fanout_preaggregation": {
+                "eligible": False,
+                "reason": "not_evaluated_for_rewrite",
+            },
+            "join_key_preaggregation": {
+                "eligible": False,
+                "reason": "preaggregations_disabled",
+                "enabled": False,
+                "requires_enablement": True,
+            },
+            "single_model_preaggregation": {
+                "eligible": False,
+                "reason": "preaggregations_disabled",
+                "enabled": False,
+                "requires_enablement": True,
+            },
         }
 
     def _join_key_preaggregation_eligibility(self, plan: SemanticQueryPlan) -> dict[str, object]:
@@ -2900,6 +2932,9 @@ class QueryRewriter:
 
     def _looks_like_yardstick_query(self, sql: str) -> bool:
         """Return True if query appears to use Yardstick query syntax."""
+        if not _YARDSTICK_SYNTAX_HINT_RE.search(sql):
+            return False
+
         try:
             tokens = sqlglot.tokenize(sql, read=self.dialect)
         except Exception:
@@ -2932,6 +2967,11 @@ class QueryRewriter:
                     return True
 
         return False
+
+    def _graph_has_yardstick_models(self) -> bool:
+        return any(
+            isinstance(model.metadata, dict) and "yardstick" in model.metadata for model in self.graph.models.values()
+        )
 
     def _is_yardstick_identifier_token(self, token) -> bool:
         return token.token_type in {TokenType.VAR, TokenType.IDENTIFIER, TokenType.SCHEMA}
@@ -3059,11 +3099,16 @@ class QueryRewriter:
 
     def _rewrite_yardstick_query(self, sql: str, strict: bool = True, allow_plain_measures: bool = False) -> str:
         """Rewrite Yardstick-style SQL (`SEMANTIC`, `AGGREGATE`, `AT`) to plain SQL."""
+        original_sql = sql
+        tokens = sqlglot.tokenize(sql, read=self.dialect)
+        has_semantic_prefix = bool(tokens and tokens[0].text.upper() == "SEMANTIC")
         sql = self._expand_yardstick_curly_measure_references(sql)
         transformed_sql, calls = self._replace_yardstick_aggregate_calls(sql)
 
         # SEMANTIC prefix without AGGREGATE: fall back to normal SQL rewrite path.
         if not calls and not allow_plain_measures:
+            if not has_semantic_prefix and transformed_sql == original_sql:
+                return transformed_sql
             return self.rewrite(transformed_sql, strict=strict)
 
         try:
@@ -3071,15 +3116,16 @@ class QueryRewriter:
         except Exception as e:
             raise ValueError(f"Failed to parse Yardstick SQL: {e}") from e
 
-        if not isinstance(parsed, exp.Select):
-            raise ValueError("Yardstick rewrite currently supports SELECT queries only")
+        select_scopes = list(parsed.find_all(exp.Select))
+        if not select_scopes:
+            raise ValueError("Yardstick rewrite requires a SELECT query or statement containing SELECT")
 
         call_map = {call.placeholder: call for call in calls}
         placeholder_names = set(call_map)
         rewritten_root: exp.Expression = parsed
         # Rewrite innermost SELECT scopes first so nested Yardstick placeholders are
         # resolved in their own FROM/JOIN context before outer scopes are processed.
-        for select_scope in reversed(list(parsed.find_all(exp.Select))):
+        for select_scope in reversed(select_scopes):
             rewritten_scope = self._rewrite_yardstick_select_scope(
                 select_scope,
                 call_map=call_map,
@@ -3251,7 +3297,168 @@ class QueryRewriter:
             return node
 
         rewritten = select_scope.transform(replace_placeholder)
+        rewritten = self._inline_yardstick_order_by_subquery_aliases(rewritten)
         return self._rewrite_source_model_relations(rewritten)
+
+    def _inline_yardstick_order_by_subquery_aliases(self, select_scope: exp.Select) -> exp.Select:
+        """Inline subquery-backed SELECT aliases inside compound ORDER BY expressions.
+
+        DuckDB accepts ``ORDER BY alias`` for a select item whose expression is a
+        scalar subquery, but it rejects compound expressions such as
+        ``ORDER BY metric_alias / total_alias`` when either alias expands to a
+        scalar subquery. Yardstick upstream fixes this by inlining only the
+        subquery-backed aliases in non-simple ORDER BY expressions.
+        """
+        order_clause = select_scope.args.get("order")
+        if not order_clause:
+            return select_scope
+
+        aliases: dict[str, tuple[exp.Expression, bool]] = {}
+        has_subquery_alias = False
+        for projection in select_scope.expressions:
+            if not isinstance(projection, exp.Alias) or not projection.alias:
+                continue
+            has_subquery = self._expression_has_subquery(projection.this)
+            aliases[projection.alias.lower()] = (projection.this, has_subquery)
+            has_subquery_alias = has_subquery_alias or has_subquery
+
+        if not aliases or not has_subquery_alias:
+            return select_scope
+
+        table_qualifiers = self._yardstick_order_table_qualifiers(select_scope)
+        for order_expr in order_clause.expressions:
+            expr_obj = order_expr.this
+            if self._is_simple_yardstick_order_alias_ref(expr_obj, aliases, table_qualifiers):
+                continue
+            if not self._yardstick_order_expr_references_subquery_alias(expr_obj, aliases, table_qualifiers):
+                continue
+
+            rewritten_expr, changed = self._inline_yardstick_order_alias_expr(
+                expr_obj,
+                aliases,
+                table_qualifiers,
+            )
+            if changed:
+                order_expr.set("this", rewritten_expr)
+
+        return select_scope
+
+    def _expression_has_subquery(self, expression: exp.Expression) -> bool:
+        return any(isinstance(node, exp.Subquery) for node in expression.walk())
+
+    def _yardstick_order_table_qualifiers(self, select_scope: exp.Select) -> set[str]:
+        qualifiers: set[str] = set()
+
+        def add_relation(relation: exp.Expression | None) -> None:
+            if relation is None:
+                return
+            alias = relation.alias
+            if alias:
+                qualifiers.add(alias.lower())
+                return
+            if isinstance(relation, exp.Table):
+                qualifiers.add(relation.name.lower())
+
+        from_clause = select_scope.args.get("from")
+        if from_clause:
+            add_relation(from_clause.this)
+
+        for join in select_scope.args.get("joins") or []:
+            add_relation(join.this)
+
+        return qualifiers
+
+    def _yardstick_order_alias_key(
+        self,
+        expression: exp.Expression,
+        aliases: dict[str, tuple[exp.Expression, bool]],
+        table_qualifiers: set[str],
+    ) -> str | None:
+        if not isinstance(expression, exp.Column):
+            return None
+
+        table = expression.table
+        if table and not (table.lower() == "alias" and "alias" not in table_qualifiers):
+            return None
+
+        alias_key = expression.name.lower()
+        if alias_key not in aliases:
+            return None
+        return alias_key
+
+    def _is_simple_yardstick_order_alias_ref(
+        self,
+        expression: exp.Expression,
+        aliases: dict[str, tuple[exp.Expression, bool]],
+        table_qualifiers: set[str],
+    ) -> bool:
+        return self._yardstick_order_alias_key(expression, aliases, table_qualifiers) is not None
+
+    def _yardstick_order_expr_references_subquery_alias(
+        self,
+        expression: exp.Expression,
+        aliases: dict[str, tuple[exp.Expression, bool]],
+        table_qualifiers: set[str],
+    ) -> bool:
+        if isinstance(expression, (exp.Select, exp.Subquery)):
+            return False
+
+        alias_key = self._yardstick_order_alias_key(expression, aliases, table_qualifiers)
+        if alias_key is not None and aliases[alias_key][1]:
+            return True
+
+        for value in expression.args.values():
+            if isinstance(value, exp.Expression):
+                if self._yardstick_order_expr_references_subquery_alias(value, aliases, table_qualifiers):
+                    return True
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, exp.Expression) and self._yardstick_order_expr_references_subquery_alias(
+                        item,
+                        aliases,
+                        table_qualifiers,
+                    ):
+                        return True
+        return False
+
+    def _inline_yardstick_order_alias_expr(
+        self,
+        expression: exp.Expression,
+        aliases: dict[str, tuple[exp.Expression, bool]],
+        table_qualifiers: set[str],
+    ) -> tuple[exp.Expression, bool]:
+        if isinstance(expression, (exp.Select, exp.Subquery)):
+            return expression, False
+
+        alias_key = self._yardstick_order_alias_key(expression, aliases, table_qualifiers)
+        if alias_key is not None and aliases[alias_key][1]:
+            return aliases[alias_key][0].copy(), True
+
+        rewritten = expression.copy()
+        changed = False
+        for arg_key, value in list(rewritten.args.items()):
+            if isinstance(value, exp.Expression):
+                child, child_changed = self._inline_yardstick_order_alias_expr(value, aliases, table_qualifiers)
+                if child_changed:
+                    rewritten.set(arg_key, child)
+                    changed = True
+            elif isinstance(value, list):
+                new_values = []
+                list_changed = False
+                for item in value:
+                    if isinstance(item, exp.Expression):
+                        child, child_changed = self._inline_yardstick_order_alias_expr(item, aliases, table_qualifiers)
+                        new_values.append(child)
+                        list_changed = list_changed or child_changed
+                    else:
+                        new_values.append(item)
+                if list_changed:
+                    rewritten.set(arg_key, new_values)
+                    changed = True
+
+        if not changed:
+            return expression, False
+        return rewritten, True
 
     def _collect_yardstick_group_expressions(self, group_clause: exp.Group) -> list[exp.Expression]:
         expressions: list[exp.Expression] = []
@@ -3330,16 +3537,12 @@ class QueryRewriter:
         segments: list[str] = []
         cursor = 0
         i = 0
-        has_semantic_prefix = False
-        has_any_at_syntax = False
-        plain_aggregate_calls_without_at = 0
 
         if tokens and tokens[0].text.upper() == "SEMANTIC":
             cursor = tokens[0].end + 1
             while cursor < len(sql) and sql[cursor].isspace():
                 cursor += 1
             i = 1
-            has_semantic_prefix = True
 
         def parse_at_chain(start_idx: int, default_end_idx: int) -> tuple[list[str], int]:
             modifiers: list[str] = []
@@ -3405,13 +3608,11 @@ class QueryRewriter:
                 arg_start = tokens[i + 1].end + 1
                 arg_end = tokens[j].start
                 argument_sql = sql[arg_start:arg_end].strip()
+                if not self._is_yardstick_aggregate_argument(argument_sql):
+                    i = j + 1
+                    continue
 
                 modifiers, end_idx = parse_at_chain(j + 1, j)
-
-                if modifiers:
-                    has_any_at_syntax = True
-                else:
-                    plain_aggregate_calls_without_at += 1
 
                 placeholder = f"__ysagg_{len(calls)}"
                 calls.append(
@@ -3458,7 +3659,6 @@ class QueryRewriter:
                     argument_sql = sql[tokens[measure_start].start : tokens[measure_end].end + 1].strip()
                     modifiers, end_idx = parse_at_chain(at_index, measure_end)
                     if modifiers:
-                        has_any_at_syntax = True
                         placeholder = f"__ysagg_{len(calls)}"
                         calls.append(
                             _YardstickAggregateCall(
@@ -3477,11 +3677,15 @@ class QueryRewriter:
 
             i += 1
 
-        if plain_aggregate_calls_without_at and not has_semantic_prefix and not has_any_at_syntax:
-            raise ValueError("AGGREGATE(...) without AT (...) requires the SEMANTIC prefix")
-
         segments.append(sql[cursor:])
         return "".join(segments), calls
+
+    def _is_yardstick_aggregate_argument(self, argument_sql: str) -> bool:
+        try:
+            argument = sqlglot.parse_one(argument_sql, dialect=self.dialect)
+        except Exception:
+            return False
+        return isinstance(argument, exp.Column)
 
     def _extract_source_models_from_select(self, select: exp.Select) -> dict[str, str]:
         """Map SQL source aliases to semantic model names."""
@@ -5267,7 +5471,7 @@ class QueryRewriter:
         if self._needs_expression_postprocess(parsed):
             return self._rewrite_expression_query(parsed, extra_filters=explicit_join_filters)
 
-        plan = self._plan_simple_query(parsed)
+        plan = self._plan_simple_query(parsed, include_candidate_details=False)
         return self._generate_from_plan(plan)
 
     def _validate_explicit_semantic_joins(self, select: exp.Select) -> list[str]:
@@ -5762,6 +5966,9 @@ class QueryRewriter:
         return row_filters, aggregate_filters
 
     def _semantic_filter_references_metric(self, filter_expr: str) -> bool:
+        if not self._filter_may_reference_metric(filter_expr):
+            return False
+
         try:
             parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
         except Exception:
@@ -5782,6 +5989,17 @@ class QueryRewriter:
                     model = self.graph.get_model(inferred_table)
                     if model.get_metric(field_name):
                         return True
+        return False
+
+    def _filter_may_reference_metric(self, filter_expr: str) -> bool:
+        lower_filter = filter_expr.lower()
+        for metric_name in self.graph.metrics:
+            if metric_name.lower() in lower_filter:
+                return True
+        for model in self.graph.models.values():
+            for metric in model.metrics:
+                if metric.name.lower() in lower_filter:
+                    return True
         return False
 
     def _extract_compound_filters(self, condition: exp.Expression) -> list[str]:

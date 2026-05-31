@@ -124,7 +124,7 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
     if rel.type in ("one_to_many", "one_to_one"):
         if not rel.foreign_key:
             return None
-        pk = models[model_name].primary_key
+        pk = rel.primary_key or models[model_name].primary_key
         return f"{related_name}.{rel.foreign_key} = {model_name}.{pk}"
 
     if rel.type == "many_to_many":

@@ -408,8 +408,14 @@ table invoices (
     )
 
     graph = GrapheneAdapter().parse(tmp_path)
+    relationship = next(rel for rel in graph.models["accounts"].relationships if rel.name == "invoices")
+    path = graph.find_relationship_path("accounts", "invoices")
 
     assert graph.models["accounts"].primary_key == "id"
+    assert relationship.primary_key == "account_id"
+    assert relationship.foreign_key == "account_id"
+    assert path[0].from_columns == ["account_id"]
+    assert path[0].to_columns == ["account_id"]
 
 
 def test_graphene_comment_markers_inside_strings_are_preserved(tmp_path):

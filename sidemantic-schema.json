@@ -1172,7 +1172,7 @@
             }
           ],
           "default": null,
-          "description": "Primary key column(s) in related model (defaults to id)",
+          "description": "Primary/unique key column(s): related model key for many_to_one, local model key for one_to_many",
           "title": "Primary Key"
         },
         "related_foreign_key": {
@@ -2964,7 +2964,7 @@
                   }
                 ],
                 "default": null,
-                "description": "Primary key column(s) in related model (defaults to id)",
+                "description": "Primary/unique key column(s): related model key for many_to_one, local model key for one_to_many",
                 "title": "Primary Key"
               },
               "related_foreign_key": {

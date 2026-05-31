@@ -267,7 +267,9 @@ class SemanticGraph:
                 else:
                     # one_to_one or one_to_many: related model has foreign key pointing here
                     # Example: customers one_to_many orders (customers.id <- orders.customer_id)
-                    local_keys = model.primary_key_columns  # Use model's primary key
+                    local_keys = (
+                        relationship.primary_key_columns if relationship.primary_key else model.primary_key_columns
+                    )
                     remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
 
                 add_edge(model_name, related_model, local_keys, remote_keys, relationship.type)

@@ -673,6 +673,19 @@ def test_format_join_condition_handles_all_relationship_shapes():
         _format_join_condition(
             "orders",
             Relationship(
+                name="line_items",
+                type="one_to_many",
+                foreign_key="account_id",
+                primary_key="account_id",
+            ),
+            models,
+        )
+        == "line_items.account_id = orders.account_id"
+    )
+    assert (
+        _format_join_condition(
+            "orders",
+            Relationship(
                 name="products",
                 type="many_to_many",
                 through="order_products",

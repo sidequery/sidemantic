@@ -248,6 +248,41 @@ table weekly_orders as (
     assert model.get_dimension("revenue") is not None
 
 
+def test_graphene_view_dimensions_query_output_aliases(tmp_path):
+    (tmp_path / "regional_orders.gsql").write_text(
+        """
+table regional_orders as (
+  select region, sum(amount) as total_revenue
+  from orders
+  group by 1
+)
+
+extend regional_orders (
+  row_count: count()
+)
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE orders (region VARCHAR, amount DOUBLE)")
+    layer.adapter.execute("INSERT INTO orders VALUES ('west', 10.0), ('west', 5.0), ('east', 7.0)")
+    load_from_directory(layer, tmp_path)
+
+    model = layer.graph.models["regional_orders"]
+    total_revenue = model.get_dimension("total_revenue")
+    assert total_revenue is not None
+    assert total_revenue.sql == "total_revenue"
+
+    rows = df_rows(
+        layer.query(
+            metrics=["regional_orders.row_count"],
+            dimensions=["regional_orders.region", "regional_orders.total_revenue"],
+        )
+    )
+
+    assert sorted(rows) == [("east", 7.0, 1), ("west", 15.0, 1)]
+
+
 def test_graphene_view_preserves_page_input_placeholders(tmp_path):
     (tmp_path / "filtered_orders.gsql").write_text(
         """

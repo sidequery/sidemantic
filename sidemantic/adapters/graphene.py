@@ -966,7 +966,7 @@ def _dimensions_from_view_query(query: str) -> list[Dimension]:
             Dimension(
                 name=name,
                 type=_dimension_type_from_expression(expression, name, {}),
-                sql=expression,
+                sql=name,
                 granularity=_granularity_from_metadata({}, expression),
             )
         )

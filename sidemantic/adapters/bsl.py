@@ -10,6 +10,7 @@ Transforms BSL definitions into Sidemantic format:
 - BSL joins -> Relationships
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -397,7 +398,7 @@ class BSLAdapter(BaseAdapter):
 
     def _add_join_alias_models(self, graph: SemanticGraph) -> None:
         """Add cloned target models for BSL join aliases and self-joins."""
-        aliases: dict[str, str] = {}
+        alias_refs: dict[str, list[tuple[Model, Relationship, str]]] = {}
 
         for model in list(graph.models.values()):
             for rel in model.relationships:
@@ -407,24 +408,108 @@ class BSLAdapter(BaseAdapter):
                 alias = rel.metadata.get("bsl_alias")
                 if not target_model or not alias or alias == target_model:
                     continue
-                aliases[alias] = target_model
+                alias_refs.setdefault(alias, []).append((model, rel, target_model))
 
-        for alias, target_model in aliases.items():
-            if alias in graph.models or target_model not in graph.models:
-                continue
-            target = graph.models[target_model]
-            metadata = dict(target.metadata or {})
-            metadata["bsl_alias_of"] = target_model
-            graph.add_model(
-                target.model_copy(
-                    deep=True,
-                    update={
-                        "name": alias,
-                        "relationships": [],
-                        "metadata": metadata,
-                    },
-                )
+        for alias, refs in alias_refs.items():
+            targets = {target_model for _, _, target_model in refs}
+            existing = graph.models.get(alias)
+            existing_alias_target = (existing.metadata or {}).get("bsl_alias_of") if existing else None
+            can_use_global_alias = (
+                len(targets) == 1
+                and (existing is None or existing_alias_target == next(iter(targets)))
+                and alias not in targets
             )
+
+            if can_use_global_alias:
+                target_model = next(iter(targets))
+                self._clone_join_alias_model(graph, alias, target_model)
+                continue
+
+            for model, rel, target_model in refs:
+                if target_model not in graph.models:
+                    continue
+                scoped_alias = self._scoped_join_alias_name(graph, model.name, alias)
+                self._retarget_join_alias(model, rel, alias, scoped_alias)
+                self._clone_join_alias_model(graph, scoped_alias, target_model, source_model=model.name, alias=alias)
+
+        self._remove_unreferenced_bsl_alias_models(graph)
+
+    def _clone_join_alias_model(
+        self,
+        graph: SemanticGraph,
+        alias_name: str,
+        target_model: str,
+        source_model: str | None = None,
+        alias: str | None = None,
+    ) -> None:
+        """Clone a target model under a BSL join alias name."""
+        if alias_name in graph.models or target_model not in graph.models:
+            return
+
+        target = graph.models[target_model]
+        metadata = dict(target.metadata or {})
+        metadata["bsl_alias_of"] = target_model
+        if source_model:
+            metadata["bsl_alias_source_model"] = source_model
+        if alias:
+            metadata["bsl_alias"] = alias
+        graph.add_model(
+            target.model_copy(
+                deep=True,
+                update={
+                    "name": alias_name,
+                    "relationships": [],
+                    "metadata": metadata,
+                },
+            )
+        )
+
+    def _scoped_join_alias_name(self, graph: SemanticGraph, source_model: str, alias: str) -> str:
+        """Return a stable graph model name for a source-scoped BSL join alias."""
+        base = f"{source_model}_{alias}"
+        candidate = base
+        suffix = 2
+        while candidate in graph.models:
+            metadata = graph.models[candidate].metadata or {}
+            if metadata.get("bsl_alias_source_model") == source_model and metadata.get("bsl_alias") == alias:
+                return candidate
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        return candidate
+
+    def _retarget_join_alias(self, model: Model, rel: Relationship, alias: str, scoped_alias: str) -> None:
+        """Point a BSL relationship and local alias references at a scoped alias model."""
+        if rel.name == scoped_alias:
+            return
+
+        metadata = dict(rel.metadata or {})
+        metadata["bsl_scoped_alias"] = scoped_alias
+        rel.metadata = metadata
+        rel.name = scoped_alias
+
+        pattern = re.compile(rf"(?<![\w.]){re.escape(alias)}\.")
+        replacement = f"{scoped_alias}."
+
+        for metric in model.metrics:
+            if metric.sql:
+                metric.sql = pattern.sub(replacement, metric.sql)
+        for dimension in model.dimensions:
+            if dimension.sql:
+                dimension.sql = pattern.sub(replacement, dimension.sql)
+
+    def _remove_unreferenced_bsl_alias_models(self, graph: SemanticGraph) -> None:
+        """Drop stale synthetic BSL alias models after aliases are retargeted."""
+        referenced_models = {
+            rel.name
+            for model in graph.models.values()
+            for rel in model.relationships
+            if rel.metadata and rel.metadata.get("bsl_alias")
+        }
+        for model_name, model in list(graph.models.items()):
+            metadata = model.metadata or {}
+            if metadata.get("bsl_alias_of") and model_name not in referenced_models:
+                del graph.models[model_name]
+                graph._mark_dirty()
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to BSL YAML format.
@@ -549,7 +634,8 @@ class BSLAdapter(BaseAdapter):
             joins = {}
             for rel in model.relationships:
                 join_def = self._export_join(rel)
-                joins[rel.name] = join_def
+                join_name = (rel.metadata or {}).get("bsl_alias", rel.name)
+                joins[join_name] = join_def
             model_def["joins"] = joins
 
         return {model.name: model_def}

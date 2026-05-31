@@ -1289,6 +1289,128 @@ flights:
             temp_path.unlink(missing_ok=True)
             export_path.unlink(missing_ok=True)
 
+    def test_reused_join_aliases_scope_to_source_model(self):
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from sidemantic.sql.generator import SQLGenerator
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write("""
+orders:
+  table: orders
+  dimensions:
+    order_id:
+      expr: _.order_id
+      is_entity: true
+    user_id: _.user_id
+  measures:
+    count: _.count()
+  calculated_measures:
+    user_count_ratio: _.user.count / _.count
+  joins:
+    user:
+      model: customers
+      type: one
+      left_on: user_id
+      right_on: customer_id
+
+events:
+  table: events
+  dimensions:
+    event_id:
+      expr: _.event_id
+      is_entity: true
+    account_id: _.account_id
+  measures:
+    count: _.count()
+  calculated_measures:
+    user_count_ratio: _.user.count / _.count
+  joins:
+    user:
+      model: accounts
+      type: one
+      left_on: account_id
+      right_on: account_id
+
+customers:
+  table: customers
+  dimensions:
+    customer_id:
+      expr: _.customer_id
+      is_entity: true
+    name: _.name
+  measures:
+    count: _.count()
+
+accounts:
+  table: accounts
+  dimensions:
+    account_id:
+      expr: _.account_id
+      is_entity: true
+    name: _.name
+  measures:
+    count: _.count()
+""")
+            temp_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as export_file:
+            export_path = Path(export_file.name)
+
+        try:
+            adapter = BSLAdapter()
+            graph = adapter.parse(temp_path)
+
+            assert "user" not in graph.models
+            assert "orders_user" in graph.models
+            assert "events_user" in graph.models
+            assert graph.models["orders_user"].table == "customers"
+            assert graph.models["events_user"].table == "accounts"
+
+            orders_rel = graph.models["orders"].relationships[0]
+            events_rel = graph.models["events"].relationships[0]
+            assert orders_rel.name == "orders_user"
+            assert orders_rel.metadata["bsl_alias"] == "user"
+            assert events_rel.name == "events_user"
+            assert events_rel.metadata["bsl_alias"] == "user"
+
+            orders_metric = graph.models["orders"].get_metric("user_count_ratio")
+            events_metric = graph.models["events"].get_metric("user_count_ratio")
+            assert orders_metric.sql == "orders_user.count / count"
+            assert events_metric.sql == "events_user.count / count"
+
+            orders_sql = SQLGenerator(graph).generate(
+                metrics=["orders.user_count_ratio"],
+                dimensions=["orders.order_id"],
+                skip_default_time_dimensions=True,
+            )
+            assert "JOIN orders_user_cte" in orders_sql
+            assert "events_user_cte" not in orders_sql
+            assert "FROM customers" in orders_sql
+
+            events_sql = SQLGenerator(graph).generate(
+                metrics=["events.user_count_ratio"],
+                dimensions=["events.event_id"],
+                skip_default_time_dimensions=True,
+            )
+            assert "JOIN events_user_cte" in events_sql
+            assert "orders_user_cte" not in events_sql
+            assert "FROM accounts" in events_sql
+
+            adapter.export(graph, export_path)
+            with open(export_path) as f:
+                exported = yaml.safe_load(f)
+            assert exported["orders"]["joins"]["user"]["model"] == "customers"
+            assert exported["events"]["joins"]["user"]["model"] == "accounts"
+            assert "orders_user" not in exported
+            assert "events_user" not in exported
+        finally:
+            temp_path.unlink(missing_ok=True)
+            export_path.unlink(missing_ok=True)
+
     def test_cross_join_compiles(self):
         import tempfile
         from pathlib import Path

@@ -231,7 +231,13 @@ def _finalize_bsl_join_aliases(all_models: dict) -> None:
     for model in all_models.values():
         graph.add_model(model)
 
+    existing_alias_models = {
+        name for name, model in all_models.items() if model.metadata and model.metadata.get("bsl_alias_of")
+    }
     BSLAdapter()._add_join_alias_models(graph)
+    for name in existing_alias_models:
+        if name not in graph.models:
+            all_models.pop(name, None)
     all_models.update(graph.models)
 
 

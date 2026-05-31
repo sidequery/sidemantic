@@ -459,6 +459,47 @@ def test_custom_join_sql_projects_extra_predicate_columns():
     assert rows == [("Expired", None), ("US", 50)]
 
 
+def test_dotted_graph_metric_projects_sql_column_and_orders_by_alias(layer):
+    layer.conn.execute("CREATE TABLE events (event_id INTEGER, status VARCHAR, latency INTEGER)")
+    layer.conn.execute(
+        """
+        INSERT INTO events VALUES
+          (1, 'ok', 100),
+          (2, 'ok', 250),
+          (3, 'slow', 400)
+        """
+    )
+
+    layer.add_model(
+        Model(
+            name="events",
+            table="events",
+            primary_key="event_id",
+            dimensions=[Dimension(name="status", type="categorical")],
+        )
+    )
+    layer.add_metric(Metric(name="events.p95.latency", agg="max", sql="latency"))
+
+    sql = layer.compile(
+        metrics=["events.p95.latency"],
+        dimensions=["events.status"],
+        order_by=["events.p95.latency DESC"],
+    )
+
+    assert "latency AS latency" in sql
+    assert "ORDER BY" in sql
+    assert '"events.p95.latency" DESC' in sql
+
+    rows = df_rows(
+        layer.query(
+            metrics=["events.p95.latency"],
+            dimensions=["events.status"],
+            order_by=["events.p95.latency DESC"],
+        )
+    )
+    assert rows == [("slow", 400), ("ok", 250)]
+
+
 def test_count_distinct_without_sql_uses_primary_key(layer):
     """Test that count_distinct without sql field uses primary key.
 

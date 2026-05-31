@@ -308,6 +308,12 @@ impl SemanticGraph {
                 )));
             }
 
+            if Self::metric_uses_inline_aggregation(metric)
+                && self.inline_aggregate_column_dependency_exists(&dependency)
+            {
+                continue;
+            }
+
             if self.metric_dependency_exists(&dependency)? {
                 continue;
             }
@@ -337,6 +343,63 @@ impl SemanticGraph {
             .models
             .values()
             .any(|model| model.get_metric(dependency).is_some()))
+    }
+
+    fn metric_uses_inline_aggregation(metric: &Metric) -> bool {
+        metric.r#type == MetricType::Derived
+            && metric
+                .sql
+                .as_deref()
+                .is_some_and(Self::sql_has_inline_aggregation)
+    }
+
+    fn sql_has_inline_aggregation(sql: &str) -> bool {
+        let lower = sql.to_ascii_lowercase();
+        let bytes = lower.as_bytes();
+        let aggregate_names = [
+            "sum",
+            "avg",
+            "count",
+            "min",
+            "max",
+            "median",
+            "stddev",
+            "stddev_pop",
+            "variance",
+            "variance_pop",
+        ];
+
+        for name in aggregate_names {
+            let mut start = 0;
+            while let Some(offset) = lower[start..].find(name) {
+                let name_start = start + offset;
+                let name_end = name_start + name.len();
+                let before_is_ident = name_start > 0
+                    && (bytes[name_start - 1].is_ascii_alphanumeric()
+                        || bytes[name_start - 1] == b'_');
+                let after_is_ident = name_end < bytes.len()
+                    && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_');
+                if before_is_ident || after_is_ident {
+                    start = name_end;
+                    continue;
+                }
+
+                if lower[name_end..].trim_start().starts_with('(') {
+                    return true;
+                }
+                start = name_end;
+            }
+        }
+
+        false
+    }
+
+    fn inline_aggregate_column_dependency_exists(&self, dependency: &str) -> bool {
+        if let Some((model_name, _)) = dependency.rsplit_once('.') {
+            return self.models.contains_key(model_name);
+        }
+
+        self.models.len() == 1
     }
 
     /// Get a graph-level metric by name.

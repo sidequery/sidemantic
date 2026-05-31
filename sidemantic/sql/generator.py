@@ -1464,7 +1464,9 @@ class SQLGenerator:
             if resolved_metric and ref_model_name is None:
                 for dep in resolved_metric.get_dependencies(self.graph, model_name):
                     collect_measures_from_metric(dep, visited)
-                if resolved_metric.sql and sql_has_aggregate(resolved_metric.sql, self.dialect):
+                if resolved_metric.sql and (
+                    resolved_metric.agg or sql_has_aggregate(resolved_metric.sql, self.dialect)
+                ):
                     collect_sql_columns_for_model(resolved_metric.sql)
                 return
 
@@ -2297,6 +2299,7 @@ class SQLGenerator:
 
         # Build SELECT columns
         select_exprs = []
+        output_aliases: dict[str, str] = {}
 
         # Add dimensions
         for dim_ref, gran in parsed_dims:
@@ -2305,17 +2308,20 @@ class SQLGenerator:
 
             # Check for custom alias first
             full_ref = f"{model_name}.{dim_name}__{gran}" if gran else dim_ref
+            base_alias = f"{dim_name}__{gran}" if gran else dim_name
             if full_ref in aliases:
                 alias = aliases[full_ref]
             else:
                 # Generate alias (with model prefix if collision)
-                base_alias = f"{dim_name}__{gran}" if gran else dim_name
                 if has_collision.get(base_alias, False):
                     alias = f"{model_name}_{base_alias}"
                 else:
                     alias = base_alias
 
             select_exprs.append(f"{self._cte_ref(model_name, cte_col_name)} AS {self._quote_alias(alias)}")
+            output_aliases[full_ref] = alias
+            output_aliases[dim_ref] = alias
+            output_aliases[base_alias] = alias
 
         previous_bsl_all_context = getattr(self, "_bsl_all_query_context", None)
         self._bsl_all_query_context = {
@@ -2338,6 +2344,8 @@ class SQLGenerator:
                 metric_expr = self._wrap_with_fill_nulls(metric_expr, resolved_metric)
                 alias = aliases.get(metric_ref, resolved_metric.name)
                 select_exprs.append(f"{metric_expr} AS {self._quote_alias(alias)}")
+                output_aliases[metric_ref] = alias
+                output_aliases[resolved_metric.name] = alias
             elif resolved_metric and resolved_model_name:
                 # It's a measure reference (model.measure)
                 model_name = resolved_model_name
@@ -2354,6 +2362,9 @@ class SQLGenerator:
                             alias = f"{model_name}_{measure_name}"
                         else:
                             alias = measure_name
+
+                    output_aliases[metric_ref] = alias
+                    output_aliases[measure_name] = alias
 
                     # Complex metric types (derived, ratio) can be built inline
                     # Note: cumulative, time_comparison, conversion are handled via special query generators
@@ -2415,6 +2426,8 @@ class SQLGenerator:
                         metric_expr = self._build_metric_sql(metric)
                         metric_expr = self._wrap_with_fill_nulls(metric_expr, metric)
                         select_exprs.append(f"{metric_expr} AS {self._quote_alias(metric.name)}")
+                        output_aliases[metric_ref] = metric.name
+                        output_aliases[metric.name] = metric.name
             else:
                 # It's a metric reference (just metric name)
                 metric = self.graph.get_metric(metric_ref)
@@ -2422,6 +2435,8 @@ class SQLGenerator:
                     metric_expr = self._build_metric_sql(metric)
                     metric_expr = self._wrap_with_fill_nulls(metric_expr, metric)
                     select_exprs.append(f"{metric_expr} AS {self._quote_alias(metric.name)}")
+                    output_aliases[metric_ref] = metric.name
+                    output_aliases[metric.name] = metric.name
                 else:
                     raise ValueError(f"Metric {metric_ref} not found")
 
@@ -2475,15 +2490,22 @@ class SQLGenerator:
 
         # Add ORDER BY
         if order_by:
-            # Strip model prefixes from order_by fields to use column aliases
             order_by_aliases = []
             for field in order_by:
-                if "." in field:
-                    # Extract just the field name (with optional granularity)
-                    field_alias = field.split(".", 1)[1]
+                parts = field.rsplit(" ", 1)
+                direction = ""
+                field_ref = field
+                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
+                    field_ref = parts[0]
+                    direction = f" {parts[1].upper()}"
+
+                if field_ref in output_aliases:
+                    field_alias = self._quote_alias(output_aliases[field_ref])
+                elif "." in field_ref:
+                    field_alias = field_ref.split(".", 1)[1]
                 else:
-                    field_alias = field
-                order_by_aliases.append(field_alias)
+                    field_alias = field_ref
+                order_by_aliases.append(f"{field_alias}{direction}")
             query = query.order_by(*order_by_aliases)
 
         # Add LIMIT and OFFSET

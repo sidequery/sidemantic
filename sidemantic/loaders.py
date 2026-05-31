@@ -55,6 +55,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     if _try_load_sml(layer, directory, all_models):
         return
 
+    _load_graphene_project(directory, all_models, all_metrics, all_parameters)
+
     # Find and parse all files
     for file_path in directory.rglob("*"):
         if not file_path.is_file():
@@ -73,6 +75,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
             from sidemantic.adapters.malloy import MalloyAdapter
 
             adapter = MalloyAdapter()
+        elif suffix == ".gsql":
+            continue
         elif suffix == ".sql":
             content = file_path.read_text()
             if _looks_like_yardstick_sql(content):
@@ -197,6 +201,36 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
     # Rebuild adjacency graph to recognize all inferred relationships
     layer.graph.build_adjacency()
+
+
+def _load_graphene_project(
+    directory: Path,
+    all_models: dict,
+    all_metrics: dict,
+    all_parameters: dict,
+) -> None:
+    """Parse Graphene `.gsql` files together so project-level links resolve."""
+    from sidemantic.adapters.graphene import GrapheneAdapter
+
+    if not any(directory.rglob("*.gsql")):
+        return
+
+    adapter = GrapheneAdapter()
+    try:
+        graph = adapter.parse(str(directory))
+    except Exception as e:
+        logging.warning("Could not parse Graphene project %s: %s", directory, e)
+        return
+
+    adapter_name = adapter.__class__.__name__.replace("Adapter", "")
+    for model in graph.models.values():
+        if not hasattr(model, "_source_format"):
+            model._source_format = adapter_name
+        if not hasattr(model, "_source_file"):
+            model._source_file = str(directory)
+    all_models.update(graph.models)
+    all_metrics.update(graph.metrics)
+    all_parameters.update(graph.parameters)
 
 
 def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dict) -> None:

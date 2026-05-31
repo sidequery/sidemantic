@@ -119,13 +119,13 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
     if rel.type == "many_to_one":
         fk = rel.foreign_key or f"{related_name}_id"
         pk = rel.primary_key or related_model.primary_key
-        return f"{model_name}.{fk} = {related_name}.{pk}"
+        return _format_join_key_pairs(model_name, _key_columns(fk), related_name, _key_columns(pk))
 
     if rel.type in ("one_to_many", "one_to_one"):
         if not rel.foreign_key:
             return None
-        pk = models[model_name].primary_key
-        return f"{related_name}.{rel.foreign_key} = {model_name}.{pk}"
+        pk = rel.primary_key or models[model_name].primary_key
+        return _format_join_key_pairs(related_name, _key_columns(rel.foreign_key), model_name, _key_columns(pk))
 
     if rel.type == "many_to_many":
         if rel.through:
@@ -137,15 +137,48 @@ def _format_join_condition(model_name: str, rel, models: dict[str, Any]) -> str 
                 return None
             base_pk = models[model_name].primary_key
             related_pk = rel.primary_key or related_model.primary_key
-            return (
-                f"{model_name}.{base_pk} = {rel.through}.{junction_self_fk} "
-                f"AND {rel.through}.{junction_related_fk} = {related_name}.{related_pk}"
+            base_condition = _format_join_key_pairs(
+                model_name,
+                _key_columns(base_pk),
+                rel.through,
+                _key_columns(junction_self_fk),
             )
+            related_condition = _format_join_key_pairs(
+                rel.through,
+                _key_columns(junction_related_fk),
+                related_name,
+                _key_columns(related_pk),
+            )
+            if not base_condition or not related_condition:
+                return None
+            return f"{base_condition} AND {related_condition}"
         if rel.foreign_key:
             base_pk = models[model_name].primary_key
-            return f"{model_name}.{base_pk} = {related_name}.{rel.foreign_key}"
+            return _format_join_key_pairs(
+                model_name, _key_columns(base_pk), related_name, _key_columns(rel.foreign_key)
+            )
 
     return None
+
+
+def _key_columns(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(column) for column in value]
+    return [str(value)]
+
+
+def _format_join_key_pairs(
+    left_model: str,
+    left_columns: list[str],
+    right_model: str,
+    right_columns: list[str],
+) -> str | None:
+    if not left_columns or len(left_columns) != len(right_columns):
+        return None
+    return " AND ".join(
+        f"{left_model}.{left_column} = {right_model}.{right_column}"
+        for left_column, right_column in zip(left_columns, right_columns, strict=True)
+    )
 
 
 # Create MCP server

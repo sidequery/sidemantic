@@ -2,8 +2,10 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::core::model::{DimensionType, Model, RelationshipType};
+use crate::core::extract_dependencies;
+use crate::core::model::{DimensionType, Metric, MetricType, Model, RelationshipType};
 use crate::core::Parameter;
+use crate::core::TableCalculation;
 use crate::error::{Result, SidemanticError};
 
 /// A step in a join path
@@ -79,6 +81,9 @@ type AdjacencyEdge = (
 #[derive(Debug, Default)]
 pub struct SemanticGraph {
     models: HashMap<String, Model>,
+    metrics: HashMap<String, Metric>,
+    model_metrics: HashMap<String, Metric>,
+    table_calculations: HashMap<String, TableCalculation>,
     parameters: HashMap<String, Parameter>,
     /// Adjacency list: model -> edges
     adjacency: HashMap<String, Vec<AdjacencyEdge>>,
@@ -221,6 +226,8 @@ impl SemanticGraph {
             )));
         }
 
+        self.index_model_metrics(&model);
+
         self.models.insert(name, model);
         self.rebuild_adjacency();
         Ok(())
@@ -232,8 +239,37 @@ impl SemanticGraph {
 
         Self::validate_model(&model)?;
         self.models.insert(name, model);
+        self.rebuild_model_metric_index();
         self.rebuild_adjacency();
         Ok(())
+    }
+
+    fn is_indexed_model_metric(metric: &Metric) -> bool {
+        matches!(
+            metric.r#type,
+            MetricType::TimeComparison | MetricType::Conversion
+        )
+    }
+
+    fn index_model_metrics(&mut self, model: &Model) {
+        for metric in &model.metrics {
+            if Self::is_indexed_model_metric(metric) && self.get_metric(&metric.name).is_none() {
+                self.model_metrics
+                    .insert(metric.name.clone(), metric.clone());
+            }
+        }
+    }
+
+    fn rebuild_model_metric_index(&mut self) {
+        self.model_metrics.clear();
+
+        let mut model_names: Vec<String> = self.models.keys().cloned().collect();
+        model_names.sort();
+        for model_name in model_names {
+            if let Some(model) = self.models.get(&model_name).cloned() {
+                self.index_model_metrics(&model);
+            }
+        }
     }
 
     /// Get a model by name
@@ -244,6 +280,97 @@ impl SemanticGraph {
     /// Get all models
     pub fn models(&self) -> impl Iterator<Item = &Model> {
         self.models.values()
+    }
+
+    /// Add a graph-level metric.
+    pub fn add_metric(&mut self, metric: Metric) -> Result<()> {
+        if self.get_metric(&metric.name).is_some() {
+            return Err(SidemanticError::Validation(format!(
+                "Measure '{}' already exists",
+                metric.name
+            )));
+        }
+        self.validate_metric_dependencies(&metric)?;
+        self.metrics.insert(metric.name.clone(), metric);
+        Ok(())
+    }
+
+    fn validate_metric_dependencies(&self, metric: &Metric) -> Result<()> {
+        for dependency in extract_dependencies(metric, Some(self)) {
+            let dependency_name = dependency
+                .rsplit_once('.')
+                .map(|(_, name)| name)
+                .unwrap_or(dependency.as_str());
+            if dependency == metric.name || dependency_name == metric.name {
+                return Err(SidemanticError::Validation(format!(
+                    "Metric '{}' cannot reference itself",
+                    metric.name
+                )));
+            }
+
+            if self.metric_dependency_exists(&dependency)? {
+                continue;
+            }
+
+            return Err(SidemanticError::Validation(format!(
+                "measure '{}' not found",
+                dependency_name
+            )));
+        }
+        Ok(())
+    }
+
+    fn metric_dependency_exists(&self, dependency: &str) -> Result<bool> {
+        if let Some((model_name, metric_name)) = dependency.rsplit_once('.') {
+            let Some(model) = self.models.get(model_name) else {
+                let available: Vec<&str> = self.models.keys().map(|s| s.as_str()).collect();
+                return Err(SidemanticError::model_not_found(model_name, &available));
+            };
+            return Ok(model.get_metric(metric_name).is_some());
+        }
+
+        if self.get_metric(dependency).is_some() {
+            return Ok(true);
+        }
+
+        Ok(self
+            .models
+            .values()
+            .any(|model| model.get_metric(dependency).is_some()))
+    }
+
+    /// Get a graph-level metric by name.
+    pub fn get_metric(&self, name: &str) -> Option<&Metric> {
+        self.metrics
+            .get(name)
+            .or_else(|| self.model_metrics.get(name))
+    }
+
+    /// Get all graph-level metrics.
+    pub fn metrics(&self) -> impl Iterator<Item = &Metric> {
+        self.metrics.values().chain(self.model_metrics.values())
+    }
+
+    /// Add a graph-level table calculation.
+    pub fn add_table_calculation(&mut self, calc: TableCalculation) -> Result<()> {
+        if self.table_calculations.contains_key(&calc.name) {
+            return Err(SidemanticError::Validation(format!(
+                "Table calculation '{}' already exists",
+                calc.name
+            )));
+        }
+        self.table_calculations.insert(calc.name.clone(), calc);
+        Ok(())
+    }
+
+    /// Get a graph-level table calculation by name.
+    pub fn get_table_calculation(&self, name: &str) -> Option<&TableCalculation> {
+        self.table_calculations.get(name)
+    }
+
+    /// Get all graph-level table calculations.
+    pub fn table_calculations(&self) -> impl Iterator<Item = &TableCalculation> {
+        self.table_calculations.values()
     }
 
     /// Add a parameter to the graph
@@ -512,12 +639,17 @@ impl SemanticGraph {
         let field_with_granularity = parts[1];
 
         // Check for granularity suffix (e.g., order_date__month)
-        let (field_name, granularity) = if let Some(pos) = field_with_granularity.find("__") {
-            let (field, gran) = field_with_granularity.split_at(pos);
-            (field.to_string(), Some(gran[2..].to_string()))
-        } else {
-            (field_with_granularity.to_string(), None)
-        };
+        let (field_name, granularity) =
+            if let Some((field, gran)) = field_with_granularity.rsplit_once("__") {
+                if field.is_empty() || gran.is_empty() {
+                    return Err(SidemanticError::InvalidReference {
+                        reference: reference.to_string(),
+                    });
+                }
+                (field.to_string(), Some(gran.to_string()))
+            } else {
+                (field_with_granularity.to_string(), None)
+            };
 
         // Verify model exists
         if !self.models.contains_key(model_name) {
@@ -532,7 +664,9 @@ impl SemanticGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::{Dimension, Metric, PreAggregation, PreAggregationType, Relationship};
+    use crate::core::model::{
+        ComparisonType, Dimension, Metric, PreAggregation, PreAggregationType, Relationship,
+    };
     use crate::core::parameter::{Parameter, ParameterType};
 
     fn create_test_graph() -> SemanticGraph {
@@ -588,6 +722,44 @@ mod tests {
         assert_eq!(model.table.as_deref(), Some("orders_v2"));
         assert!(model.get_dimension("status").is_none());
         assert!(model.get_metric("order_count").is_some());
+    }
+
+    #[test]
+    fn test_replace_model_updates_indexed_model_metrics() {
+        let mut graph = SemanticGraph::new();
+
+        graph
+            .add_model(
+                Model::new("orders", "order_id")
+                    .with_table("orders")
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_metric(Metric::time_comparison(
+                        "revenue_yoy",
+                        "revenue",
+                        ComparisonType::Yoy,
+                    )),
+            )
+            .unwrap();
+        assert!(graph.get_metric("revenue_yoy").is_some());
+
+        graph
+            .replace_model(
+                Model::new("orders", "order_id")
+                    .with_table("orders")
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_metric(Metric::time_comparison(
+                        "revenue_mom",
+                        "revenue",
+                        ComparisonType::Mom,
+                    )),
+            )
+            .unwrap();
+
+        assert!(graph.get_metric("revenue_yoy").is_none());
+        assert!(graph.get_metric("revenue_mom").is_some());
+        graph
+            .add_metric(Metric::sum("revenue_yoy", "amount"))
+            .unwrap();
     }
 
     #[test]

@@ -13,6 +13,8 @@
 # Loaded by mdb-engine via osi_config.models_path in manifest.json.
 # ---------------------------------------------------------------------------
 
+version: "0.2.0.dev0"
+
 semantic_model:
   - name: movie_knowledge
     description: >

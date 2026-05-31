@@ -48,6 +48,123 @@ def test_import_simple_osi_example():
     assert events.default_time_dimension == "event_time"
 
 
+def test_import_current_version_and_semantic_model_metadata():
+    """Test current OSI top-level metadata is preserved on the graph."""
+    osi_yaml = {
+        "version": OSIAdapter.OSI_VERSION,
+        "semantic_model": [
+            {
+                "name": "current_model",
+                "description": "Current OSI model",
+                "ai_context": {"instructions": "Use for tests"},
+                "custom_extensions": [{"vendor_name": "DBT", "data": '{"project_name": "analytics"}'}],
+                "datasets": [
+                    {
+                        "name": "events",
+                        "source": "analytics.events",
+                        "fields": [
+                            {
+                                "name": "event_id",
+                                "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "event_id"}]},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(osi_yaml, f)
+        temp_path = Path(f.name)
+
+    try:
+        graph = OSIAdapter().parse(temp_path)
+
+        osi_meta = graph.metadata["osi"]
+        assert osi_meta["version"] == OSIAdapter.OSI_VERSION
+        sm_meta = osi_meta["semantic_models"][0]
+        assert sm_meta["name"] == "current_model"
+        assert sm_meta["description"] == "Current OSI model"
+        assert sm_meta["ai_context"]["instructions"] == "Use for tests"
+        assert sm_meta["custom_extensions"][0]["vendor_name"] == "DBT"
+
+        OSIAdapter().export(graph, temp_path)
+        with open(temp_path) as f:
+            exported = yaml.safe_load(f)
+
+        assert exported["version"] == OSIAdapter.OSI_VERSION
+        exported_sm = exported["semantic_model"][0]
+        assert exported_sm["name"] == "current_model"
+        assert exported_sm["description"] == "Current OSI model"
+        assert exported_sm["ai_context"]["instructions"] == "Use for tests"
+        assert exported_sm["custom_extensions"][0]["vendor_name"] == "DBT"
+    finally:
+        temp_path.unlink()
+
+
+def test_import_ontology_mapping_semantic_model():
+    """Test ontology files expose mapped logical semantic models."""
+    osi_yaml = {
+        "version": OSIAdapter.OSI_VERSION,
+        "name": "flight_ontology",
+        "ontology": [
+            {
+                "concept": {"name": "Flight", "type": "EntityType", "identify_by": ["id"]},
+                "relationships": [
+                    {
+                        "name": "id",
+                        "roles": [{"concept": "String"}],
+                        "verbalizes": ["{Flight} id {String}"],
+                    }
+                ],
+            }
+        ],
+        "ontology_mappings": [
+            {
+                "name": "flights_map",
+                "description": "Flight logical mapping",
+                "semantic_model": {
+                    "name": "logical_flights",
+                    "description": "Mapped logical model",
+                    "datasets": [
+                        {
+                            "name": "flights",
+                            "source": "analytics.flights",
+                            "fields": [
+                                {
+                                    "name": "flight_id",
+                                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "flight_id"}]},
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "concept_mappings": [{"concept": "Flight"}],
+            }
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(osi_yaml, f)
+        temp_path = Path(f.name)
+
+    try:
+        graph = OSIAdapter().parse(temp_path)
+
+        assert "flights" in graph.models
+        assert graph.models["flights"].table == "analytics.flights"
+        osi_meta = graph.metadata["osi"]
+        assert osi_meta["ontology"][0]["concept"]["name"] == "Flight"
+        sm_meta = osi_meta["semantic_models"][0]
+        assert sm_meta["source"] == "ontology_mappings[0].semantic_model"
+        assert sm_meta["name"] == "logical_flights"
+        assert sm_meta["ontology_mapping"]["name"] == "flights_map"
+        assert sm_meta["ontology_mapping"]["concept_mappings"] == [{"concept": "Flight"}]
+    finally:
+        temp_path.unlink()
+
+
 def test_import_ecommerce_osi_example():
     """Test importing the ecommerce OSI YAML file."""
     adapter = OSIAdapter()
@@ -273,6 +390,58 @@ def test_osi_relationship_parsing():
     assert rel.type == "many_to_one"
     assert rel.foreign_key == "customer_id"
     assert rel.primary_key == "customer_id"
+    assert rel.metadata["osi_name"] == "orders_to_customers"
+
+
+def test_osi_relationship_metadata_roundtrip():
+    """Test relationship-level OSI metadata is preserved."""
+    osi_yaml = {
+        "version": OSIAdapter.OSI_VERSION,
+        "semantic_model": [
+            {
+                "name": "test",
+                "datasets": [
+                    {"name": "orders", "source": "public.orders"},
+                    {"name": "customers", "source": "public.customers"},
+                ],
+                "relationships": [
+                    {
+                        "name": "orders_to_customers",
+                        "from": "orders",
+                        "to": "customers",
+                        "from_columns": ["customer_id"],
+                        "to_columns": ["id"],
+                        "ai_context": {"synonyms": ["buyer"]},
+                        "custom_extensions": [{"vendor_name": "COMMON", "data": '{"join": "customer"}'}],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(osi_yaml, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = OSIAdapter()
+        graph = adapter.parse(temp_path)
+        rel = graph.models["orders"].relationships[0]
+        assert rel.metadata["osi_name"] == "orders_to_customers"
+        assert rel.metadata["ai_context"]["synonyms"] == ["buyer"]
+        assert rel.metadata["custom_extensions"][0]["vendor_name"] == "COMMON"
+
+        adapter.export(graph, temp_path)
+        with open(temp_path) as f:
+            data = yaml.safe_load(f)
+
+        exported_rel = data["semantic_model"][0]["relationships"][0]
+        assert exported_rel["name"] == "orders_to_customers"
+        assert exported_rel["ai_context"]["synonyms"] == ["buyer"]
+        assert exported_rel["custom_extensions"][0]["vendor_name"] == "COMMON"
+        assert isinstance(exported_rel["custom_extensions"][0]["data"], str)
+    finally:
+        temp_path.unlink()
 
 
 def test_osi_multiple_relationships():
@@ -481,6 +650,7 @@ def test_osi_export_simple_model():
             data = yaml.safe_load(f)
 
         # Verify structure
+        assert data["version"] == OSIAdapter.OSI_VERSION
         assert "semantic_model" in data
         assert len(data["semantic_model"]) == 1
 
@@ -1053,7 +1223,7 @@ def test_export_meta_as_ai_context():
 
         # Model meta
         assert dataset["ai_context"] == {"synonyms": ["revenue", "transactions"]}
-        assert dataset["custom_extensions"] == {"vendor_id": "acme123"}
+        assert dataset["custom_extensions"] == [{"vendor_name": "SIDEMANTIC", "data": '{"vendor_id": "acme123"}'}]
 
         # Field meta
         amount_field = next(f for f in dataset["fields"] if f["name"] == "amount")
@@ -1099,6 +1269,12 @@ def test_roundtrip_preserves_meta():
     try:
         # Export
         adapter.export(graph, temp_path)
+
+        with open(temp_path) as f:
+            exported = yaml.safe_load(f)
+
+        dataset = exported["semantic_model"][0]["datasets"][0]
+        assert dataset["custom_extensions"] == [{"vendor_name": "SIDEMANTIC", "data": '{"catalog_version": "2.0"}'}]
 
         # Import back
         graph2 = adapter.parse(temp_path)
@@ -1208,17 +1384,15 @@ def test_export_empty_dialects_list():
         with open(temp_path) as f:
             data = yaml.safe_load(f)
 
-        # Should still have expression structure but empty dialects
         field = data["semantic_model"][0]["datasets"][0]["fields"][0]
         assert "expression" in field
-        # Empty dialects list means no dialect expressions
-        assert field["expression"]["dialects"] == []
+        assert field["expression"]["dialects"] == [{"dialect": "ANSI_SQL", "expression": "id"}]
     finally:
         temp_path.unlink()
 
 
-def test_export_unknown_dialect_fallback():
-    """Test export with unknown dialect falls back to original expression."""
+def test_export_unknown_dialect_raises():
+    """Test export rejects dialects outside the current OSI export support."""
     model = Model(
         name="test",
         table="public.test",
@@ -1235,17 +1409,8 @@ def test_export_unknown_dialect_fallback():
         temp_path = Path(f.name)
 
     try:
-        # Unknown dialect should fallback to original expression
-        adapter.export(graph, temp_path, dialects=["UNKNOWN_DIALECT"])
-
-        with open(temp_path) as f:
-            data = yaml.safe_load(f)
-
-        field = data["semantic_model"][0]["datasets"][0]["fields"][0]
-        dialects = field["expression"]["dialects"]
-        assert len(dialects) == 1
-        assert dialects[0]["dialect"] == "UNKNOWN_DIALECT"
-        assert dialects[0]["expression"] == "id"  # Falls back to original
+        with pytest.raises(ValueError, match="Unsupported OSI export dialect"):
+            adapter.export(graph, temp_path, dialects=["UNKNOWN_DIALECT"])
     finally:
         temp_path.unlink()
 
@@ -1351,8 +1516,7 @@ def test_sqlglot_transpilation_actually_transpiles():
         temp_path = Path(f.name)
 
     try:
-        # Export with BigQuery dialect (uses CONCAT instead of ||)
-        adapter.export(graph, temp_path, dialects=["ANSI_SQL", "BIGQUERY"])
+        adapter.export(graph, temp_path, dialects=["ANSI_SQL", "SNOWFLAKE"])
 
         with open(temp_path) as f:
             data = yaml.safe_load(f)
@@ -1361,12 +1525,11 @@ def test_sqlglot_transpilation_actually_transpiles():
         dialects = field["expression"]["dialects"]
 
         ansi = next(d for d in dialects if d["dialect"] == "ANSI_SQL")
-        bigquery = next(d for d in dialects if d["dialect"] == "BIGQUERY")
+        snowflake = next(d for d in dialects if d["dialect"] == "SNOWFLAKE")
 
         # ANSI should keep ||
         assert "||" in ansi["expression"] or "col1" in ansi["expression"]
-        # BigQuery might transpile to CONCAT or keep || depending on sqlglot version
-        assert bigquery["expression"] is not None
+        assert snowflake["expression"] is not None
     finally:
         temp_path.unlink()
 
@@ -1644,22 +1807,15 @@ class TestTpcdsRetailFixture:
         assert "ai_context" in store.meta
         assert "retail location" in store.meta["ai_context"]["synonyms"]
 
-    @pytest.mark.xfail(reason="OSI adapter does not parse model-level custom_extensions (only dataset-level)")
     def test_model_level_custom_extensions(self, graph):
         """custom_extensions at semantic_model level (SALESFORCE, DBT, SNOWFLAKE) are captured.
 
-        The current adapter only parses custom_extensions at the dataset level,
-        not the semantic_model level. This is a known gap.
+        Semantic-model-level metadata is stored on the graph because it does not
+        belong to any one Sidemantic Model.
         """
-        # These are defined at the semantic_model level, not on any particular dataset
-        # The adapter would need to store them on the graph or in a separate structure
-        has_custom_ext = False
-        for model in graph.models.values():
-            if model.meta and "custom_extensions" in model.meta:
-                has_custom_ext = True
-                break
-        # Also check graph-level storage (doesn't exist yet)
-        assert has_custom_ext or hasattr(graph, "custom_extensions")
+        extensions = graph.metadata["osi"]["semantic_models"][0]["custom_extensions"]
+        vendors = {extension["vendor_name"] for extension in extensions}
+        assert {"SALESFORCE", "DBT", "SNOWFLAKE"} <= vendors
 
     def test_dimension_tables_have_no_relationships(self, graph):
         """Dimension tables (customer, date_dim, store, item) have no outbound relationships."""
@@ -1831,15 +1987,11 @@ class TestSupplyChainFixture:
         assert "country" in dim_names
         assert "reliability_rating" in dim_names
 
-    @pytest.mark.xfail(reason="OSI adapter does not parse model-level custom_extensions (only dataset-level)")
     def test_model_level_custom_extensions(self, graph):
         """custom_extensions at semantic_model level (DATABRICKS, COMMON) are captured."""
-        has_custom_ext = False
-        for model in graph.models.values():
-            if model.meta and "custom_extensions" in model.meta:
-                has_custom_ext = True
-                break
-        assert has_custom_ext or hasattr(graph, "custom_extensions")
+        extensions = graph.metadata["osi"]["semantic_models"][0]["custom_extensions"]
+        vendors = {extension["vendor_name"] for extension in extensions}
+        assert {"DATABRICKS", "COMMON"} <= vendors
 
 
 # =============================================================================
@@ -2035,15 +2187,11 @@ class TestTpcdsOsiOfficialFixture:
         metric = graph.metrics["store_productivity"]
         assert "employee" in metric.description.lower()
 
-    @pytest.mark.xfail(reason="OSI adapter does not parse semantic_model-level custom_extensions")
     def test_custom_extensions_salesforce_dbt(self, graph):
         """custom_extensions for SALESFORCE and DBT vendors are captured."""
-        has_custom_ext = False
-        for model in graph.models.values():
-            if model.meta and "custom_extensions" in model.meta:
-                has_custom_ext = True
-                break
-        assert has_custom_ext or hasattr(graph, "custom_extensions")
+        extensions = graph.metadata["osi"]["semantic_models"][0]["custom_extensions"]
+        vendors = {extension["vendor_name"] for extension in extensions}
+        assert {"SALESFORCE", "DBT"} <= vendors
 
 
 # =============================================================================

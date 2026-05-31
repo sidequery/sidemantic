@@ -1263,7 +1263,7 @@ class SQLGenerator:
         """
         model = self.graph.get_model(model_name)
         all_models = all_models or {model_name}
-        needs_joins = len(all_models) > 1
+        needs_keyed_joins = self._model_needs_keyed_join_columns(model_name, all_models)
 
         # Find which dimensions are actually needed
         needed_dimensions = self._find_needed_dimensions(
@@ -1276,7 +1276,7 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
-        include_primary_keys = needs_joins or ungrouped or bool(model.sql)
+        include_primary_keys = needs_keyed_joins or ungrouped or bool(model.sql)
         if include_primary_keys:
             for pk_col in model.primary_key_columns:
                 if pk_col not in columns_added:
@@ -1289,7 +1289,9 @@ class SQLGenerator:
                 # Handle multi-column foreign keys
                 for fk in relationship.foreign_key_columns:
                     # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
-                    should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
+                    should_include = (
+                        needs_keyed_joins and relationship.name in all_models and relationship.type != "cross"
+                    ) or fk in needed_dimensions
                     if should_include and fk not in columns_added:
                         select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
                         columns_added.add(fk)
@@ -1297,7 +1299,7 @@ class SQLGenerator:
                         needed_dimensions.discard(fk)
 
         # Check if other models have has_many/has_one pointing to this model
-        if needs_joins:
+        if needs_keyed_joins:
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:
                     continue
@@ -1575,6 +1577,25 @@ class SQLGenerator:
         )
 
         return cte_sql
+
+    def _model_needs_keyed_join_columns(self, model_name: str, all_models: set[str]) -> bool:
+        """Return whether this model needs columns for non-cross joins in this query."""
+        if len(all_models) <= 1:
+            return False
+
+        model = self.graph.get_model(model_name)
+        for relationship in model.relationships:
+            if relationship.name in all_models and relationship.type != "cross":
+                return True
+
+        for other_model_name, other_model in self.graph.models.items():
+            if other_model_name not in all_models:
+                continue
+            for relationship in other_model.relationships:
+                if relationship.name == model_name and relationship.type != "cross":
+                    return True
+
+        return False
 
     def _has_fanout_joins(self, base_model_name: str, other_models: list[str]) -> dict[str, bool]:
         """Determine which models need symmetric aggregates due to fan-out.

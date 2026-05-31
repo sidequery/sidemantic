@@ -1415,6 +1415,8 @@ accounts:
         import tempfile
         from pathlib import Path
 
+        import duckdb
+
         from sidemantic.sql.generator import SQLGenerator
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -1447,6 +1449,14 @@ facts:
                 skip_default_time_dimensions=True,
             )
             assert "CROSS JOIN facts_cte" in sql
+            assert "id AS id" not in sql
+
+            conn = duckdb.connect(":memory:")
+            conn.execute("CREATE TABLE calendar(day DATE)")
+            conn.execute("INSERT INTO calendar VALUES (DATE '2024-01-01')")
+            conn.execute("CREATE TABLE facts(id INTEGER)")
+            conn.execute("INSERT INTO facts VALUES (1)")
+            assert len(conn.execute(sql).fetchall()) == 1
         finally:
             temp_path.unlink(missing_ok=True)
 

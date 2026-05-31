@@ -149,6 +149,50 @@ def test_semantic_graph_single_pk_still_works():
     assert jp.to_columns == ["id"]
 
 
+def test_semantic_graph_one_to_many_uses_explicit_local_key():
+    """Test one_to_many can join from a local unique key that is not the model primary key."""
+    accounts = Model(
+        name="accounts",
+        table="accounts",
+        primary_key="id",
+        relationships=[
+            Relationship(
+                name="invoices",
+                type="one_to_many",
+                foreign_key="account_id",
+                primary_key="account_id",
+            )
+        ],
+        dimensions=[
+            Dimension(name="id", type="categorical"),
+            Dimension(name="account_id", type="categorical"),
+        ],
+    )
+
+    invoices = Model(
+        name="invoices",
+        table="invoices",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", type="categorical"),
+            Dimension(name="account_id", type="categorical"),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(accounts)
+    graph.add_model(invoices)
+    graph.build_adjacency()
+
+    forward_path = graph.find_relationship_path("accounts", "invoices")
+    reverse_path = graph.find_relationship_path("invoices", "accounts")
+
+    assert forward_path[0].from_columns == ["account_id"]
+    assert forward_path[0].to_columns == ["account_id"]
+    assert reverse_path[0].from_columns == ["account_id"]
+    assert reverse_path[0].to_columns == ["account_id"]
+
+
 # =============================================================================
 # SQL GENERATION TESTS
 # =============================================================================

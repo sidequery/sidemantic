@@ -673,6 +673,19 @@ def test_format_join_condition_handles_all_relationship_shapes():
         _format_join_condition(
             "orders",
             Relationship(
+                name="line_items",
+                type="one_to_many",
+                foreign_key="account_id",
+                primary_key="account_id",
+            ),
+            models,
+        )
+        == "line_items.account_id = orders.account_id"
+    )
+    assert (
+        _format_join_condition(
+            "orders",
+            Relationship(
                 name="products",
                 type="many_to_many",
                 through="order_products",
@@ -684,6 +697,27 @@ def test_format_join_condition_handles_all_relationship_shapes():
         == "orders.id = order_products.order_id AND order_products.product_id = products.id"
     )
     assert _format_join_condition("orders", Relationship(name="missing", type="many_to_one"), models) is None
+
+
+def test_format_join_condition_handles_composite_one_to_many_keys():
+    models = {
+        "orders": Model(name="orders", table="orders", primary_key=["tenant_id", "order_id"]),
+        "line_items": Model(name="line_items", table="line_items", primary_key="id"),
+    }
+
+    assert (
+        _format_join_condition(
+            "orders",
+            Relationship(
+                name="line_items",
+                type="one_to_many",
+                foreign_key=["tenant_id", "order_id"],
+                primary_key=["tenant_id", "order_id"],
+            ),
+            models,
+        )
+        == "line_items.tenant_id = orders.tenant_id AND line_items.order_id = orders.order_id"
+    )
 
 
 def test_get_models_includes_join_conditions_and_source_metadata():

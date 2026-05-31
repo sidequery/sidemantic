@@ -1254,14 +1254,17 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
+        def add_passthrough_column(column: str) -> None:
+            if column not in columns_added:
+                select_cols.append(f"{self._quote_identifier(column)} AS {self._quote_alias(column)}")
+                columns_added.add(column)
+
         include_primary_keys = needs_joins or ungrouped or bool(model.sql)
         if include_primary_keys:
             for pk_col in model.primary_key_columns:
-                if pk_col not in columns_added:
-                    select_cols.append(f"{self._quote_identifier(pk_col)} AS {self._quote_alias(pk_col)}")
-                    columns_added.add(pk_col)
+                add_passthrough_column(pk_col)
 
-        # Include foreign keys if we're joining OR if they're explicitly requested as dimensions
+        # Include local relationship keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
             if relationship.type == "many_to_one":
                 # Handle multi-column foreign keys
@@ -1269,10 +1272,13 @@ class SQLGenerator:
                     # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
                     should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
                     if should_include and fk not in columns_added:
-                        select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
-                        columns_added.add(fk)
+                        add_passthrough_column(fk)
                         # Mark FK as "needed" so it's not duplicated as a dimension
                         needed_dimensions.discard(fk)
+            elif needs_joins and relationship.name in all_models and relationship.type in ("one_to_one", "one_to_many"):
+                local_keys = relationship.primary_key_columns if relationship.primary_key else model.primary_key_columns
+                for pk in local_keys:
+                    add_passthrough_column(pk)
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_joins:
@@ -1287,9 +1293,13 @@ class SQLGenerator:
                         # Other model expects this model to have a foreign key
                         # For has_many/has_one, foreign_key is the FK column in THIS model
                         for fk in other_join.foreign_key_columns:
-                            if fk not in columns_added:
-                                select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
-                                columns_added.add(fk)
+                            add_passthrough_column(fk)
+                    elif other_join.name == model_name and other_join.type == "many_to_one":
+                        target_keys = (
+                            other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
+                        )
+                        for pk in target_keys:
+                            add_passthrough_column(pk)
 
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:

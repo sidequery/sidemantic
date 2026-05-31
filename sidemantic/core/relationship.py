@@ -23,7 +23,10 @@ class Relationship(BaseModel):
         default=None, description="Foreign key column(s) (defaults to {name}_id for many_to_one)"
     )
     primary_key: str | list[str] | None = Field(
-        default=None, description="Primary key column(s) in related model (defaults to id)"
+        default=None,
+        description=(
+            "Primary/unique key column(s): related model key for many_to_one, local model key for one_to_many"
+        ),
     )
     through: str | None = Field(default=None, description="Junction model for many_to_many relationships")
     through_foreign_key: str | None = Field(

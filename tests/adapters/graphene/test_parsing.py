@@ -418,6 +418,41 @@ table invoices (
     assert path[0].to_columns == ["account_id"]
 
 
+def test_graphene_composite_explicit_primary_key_is_preserved(tmp_path):
+    (tmp_path / "orders.gsql").write_text(
+        """
+table orders (
+  tenant_id BIGINT primary_key
+  order_id BIGINT primary_key
+  status STRING
+
+  join many line_items on tenant_id = line_items.tenant_id and order_id = line_items.order_id
+)
+"""
+    )
+    (tmp_path / "line_items.gsql").write_text(
+        """
+table line_items (
+  tenant_id BIGINT
+  order_id BIGINT
+  line_number BIGINT
+)
+"""
+    )
+
+    graph = GrapheneAdapter().parse(tmp_path)
+    orders = graph.models["orders"]
+    relationship = next(rel for rel in orders.relationships if rel.name == "line_items")
+    path = graph.find_relationship_path("orders", "line_items")
+
+    assert orders.primary_key == ["tenant_id", "order_id"]
+    assert orders.primary_key_columns == ["tenant_id", "order_id"]
+    assert relationship.primary_key == ["tenant_id", "order_id"]
+    assert relationship.foreign_key == ["tenant_id", "order_id"]
+    assert path[0].from_columns == ["tenant_id", "order_id"]
+    assert path[0].to_columns == ["tenant_id", "order_id"]
+
+
 def test_graphene_unresolved_join_keys_are_preserved_but_not_planned(tmp_path):
     (tmp_path / "models.gsql").write_text(
         """

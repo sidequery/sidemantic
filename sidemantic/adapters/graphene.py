@@ -198,7 +198,7 @@ class GrapheneAdapter(BaseAdapter):
         metrics: list[Metric] = []
         relationships: list[Relationship] = []
         unsupported_joins: list[dict[str, Any]] = []
-        explicit_primary_key: str | None = None
+        explicit_primary_key_columns: list[str] = []
         metric_names = _computed_metric_names(statement.items)
 
         for item in statement.items:
@@ -218,8 +218,9 @@ class GrapheneAdapter(BaseAdapter):
                 dimension = _dimension_from_column(item)
                 dimensions.append(dimension)
                 if item.primary_key:
-                    explicit_primary_key = item.name
+                    explicit_primary_key_columns.append(item.name)
 
+        explicit_primary_key = _one_or_many(explicit_primary_key_columns)
         if explicit_primary_key is not None:
             explicit_primary_keys.add(model_name)
         primary_key = explicit_primary_key or _choose_primary_key(dimensions, primary_key_candidates.get(model_name))

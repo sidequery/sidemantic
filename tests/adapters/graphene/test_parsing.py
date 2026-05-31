@@ -423,3 +423,41 @@ table orders (
 
     assert "orders" in layer.graph.models
     assert layer.graph.models["orders"].get_metric("revenue") is not None
+
+
+def test_load_from_directory_parses_graphene_files_as_one_project(tmp_path):
+    (tmp_path / "orders.gsql").write_text(
+        """
+table orders (
+  id BIGINT
+  user_id BIGINT
+  amount FLOAT
+
+  join one users as buyer on user_id = buyer.id
+)
+"""
+    )
+    (tmp_path / "users.gsql").write_text(
+        """
+table users (
+  id BIGINT
+  email STRING
+)
+"""
+    )
+    (tmp_path / "orders_metrics.gsql").write_text(
+        """
+extend orders (
+  revenue: sum(amount)
+)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    assert "users" in layer.graph.models
+    assert "buyer" in layer.graph.models
+    assert layer.graph.models["orders"].get_metric("revenue") is not None
+    assert layer.graph.models["buyer"].table == "users"

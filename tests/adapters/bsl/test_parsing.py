@@ -385,6 +385,39 @@ class TestBSLAdapterImport:
         assert "conditions" in graph5.models
         assert "medications" in graph5.models
 
+    def test_bsl_all_count_distinct_uses_global_distinct_denominator(self, tmp_path):
+        """_.all() over count_distinct should not sum grouped distinct counts."""
+        from sidemantic import SemanticLayer
+
+        bsl_file = tmp_path / "events.yml"
+        bsl_file.write_text(
+            """
+events:
+  table: events
+  dimensions:
+    event_id:
+      expr: _.event_id
+      is_entity: true
+    segment: _.segment
+  measures:
+    users: _.user_id.nunique()
+  calculated_measures:
+    user_share: _.users / _.all(_.users)
+"""
+        )
+
+        layer = SemanticLayer(connection="duckdb:///:memory:")
+        layer.graph = BSLAdapter().parse(bsl_file)
+        layer.adapter.execute("CREATE TABLE events (event_id INTEGER, segment VARCHAR, user_id INTEGER)")
+        layer.adapter.execute("INSERT INTO events VALUES (1, 'a', 1), (2, 'b', 1), (3, 'b', 2)")
+
+        result = layer.query(metrics=["events.user_share"], dimensions=["events.segment"])
+        rows = result.fetchall()
+
+        by_segment = {segment: float(user_share) for segment, user_share in rows}
+        assert by_segment["a"] == pytest.approx(0.5)
+        assert by_segment["b"] == pytest.approx(1.0)
+
 
 class TestBSLAdapterExport:
     """Tests for BSL adapter export functionality."""

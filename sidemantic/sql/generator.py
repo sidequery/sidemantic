@@ -2463,7 +2463,7 @@ class SQLGenerator:
         raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
 
         if agg_func == "COUNT_DISTINCT":
-            return f"SUM(COUNT(DISTINCT {raw_col})) OVER ()"
+            return self._build_measure_total_subquery_sql(model_name, measure)
         if agg_func == "COUNT":
             return f"SUM(COUNT({raw_col})) OVER ()"
         if agg_func == "SUM":
@@ -2475,6 +2475,21 @@ class SQLGenerator:
         if agg_func == "MAX":
             return f"MAX(MAX({raw_col})) OVER ()"
         return f"SUM({self._build_measure_aggregation_sql(model_name, measure)}) OVER ()"
+
+    def _build_measure_total_subquery_sql(self, model_name: str, measure) -> str:
+        """Build a scalar all-rows aggregate from the model CTE."""
+        cte_name = self._quote_identifier(self._cte_name(model_name))
+        cte_alias = self._quote_identifier(f"{self._cte_name(model_name)}__all")
+        raw_col = f"{cte_alias}.{self._quote_identifier(f'{measure.name}_raw')}"
+        agg_func = measure.agg.upper()
+
+        if agg_func == "COUNT_DISTINCT":
+            expr = f"COUNT(DISTINCT {raw_col})"
+        else:
+            expr = self._build_measure_aggregation_sql(model_name, measure)
+            expr = expr.replace(self._cte_ref(model_name, f"{measure.name}_raw"), raw_col)
+
+        return f"(SELECT {expr} FROM {cte_name} AS {cte_alias})"
 
     def _extract_bsl_all_placeholders(self, formula: str) -> tuple[str, dict[str, str]]:
         """Replace BSL all-measure calls with placeholders before dependency replacement."""

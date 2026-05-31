@@ -173,6 +173,11 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 # Skip files that fail to parse
                 logging.warning("Could not parse %s: %s", file_path, e)
 
+    # BSL files are parsed one at a time during auto-discovery. Finalize join
+    # aliases after all files have been loaded so aliases can target models
+    # declared in separate files.
+    _finalize_bsl_join_aliases(all_models)
+
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
 
@@ -212,6 +217,22 @@ def _load_sml_directory(layer: "SemanticLayer", directory: Path, all_models: dic
         if model.name not in layer.graph.models:
             layer.add_model(model)
     layer.graph.build_adjacency()
+
+
+def _finalize_bsl_join_aliases(all_models: dict) -> None:
+    """Add BSL join alias models once directory-level loading has all models."""
+    if not all_models:
+        return
+
+    from sidemantic.adapters.bsl import BSLAdapter
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    graph = SemanticGraph()
+    for model in all_models.values():
+        graph.add_model(model)
+
+    BSLAdapter()._add_join_alias_models(graph)
+    all_models.update(graph.models)
 
 
 def _looks_like_python_semantic_definition(file_path: Path) -> bool:

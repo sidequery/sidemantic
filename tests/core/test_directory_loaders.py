@@ -101,3 +101,47 @@ FROM sales;
     assert sales.get_metric("revenue") is not None
     assert getattr(sales, "_source_format", None) == "Yardstick"
     assert getattr(sales, "_source_file", None) == "sales.sql"
+
+
+def test_load_from_directory_finalizes_bsl_join_aliases_across_files(tmp_path):
+    """BSL join aliases should work when the target model is in a separate file."""
+    (tmp_path / "flights.yml").write_text(
+        """
+flights:
+  table: flights
+  dimensions:
+    flight_id:
+      expr: _.flight_id
+      is_entity: true
+    origin: _.origin
+  measures:
+    count: _.count()
+  joins:
+    origin_airport:
+      model: airports
+      type: one
+      left_on: origin
+      right_on: code
+"""
+    )
+    (tmp_path / "airports.yml").write_text(
+        """
+airports:
+  table: airports
+  dimensions:
+    code:
+      expr: _.code
+      is_entity: true
+    name: _.name
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "origin_airport" in layer.graph.models
+    assert layer.graph.find_relationship_path("flights", "origin_airport")
+
+    sql = layer.compile(metrics=["flights.count"], dimensions=["origin_airport.name"])
+    assert "origin_airport_cte" in sql
+    assert "origin_airport_cte.code = flights_cte.origin" in sql

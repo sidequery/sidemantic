@@ -1673,6 +1673,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-test",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

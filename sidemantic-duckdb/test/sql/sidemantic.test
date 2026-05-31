@@ -85,13 +85,29 @@ products
 
 # Test CREATE METRIC/DIMENSION syntax
 statement ok
-SEMANTIC CREATE MODEL test_model (name test_model, table orders, primary_key order_id);
+SEMANTIC CREATE MODEL test_model (table orders, primary_key order_id);
+
+statement ok
+SEMANTIC CREATE OR REPLACE MODEL test_model (name 'test_model', table orders, primary_key order_id);
 
 statement ok
 SEMANTIC CREATE METRIC test_sum AS SUM(amount);
 
 statement ok
 SEMANTIC CREATE DIMENSION test_dim AS status;
+
+statement ok
+SEMANTIC CREATE SEGMENT completed AS status = 'completed';
+
+statement error
+SEMANTIC CREATE MODEL mismatched_model (name other_model, table orders, primary_key order_id);
+----
+CREATE MODEL name 'mismatched_model' does not match body name 'other_model'
+
+statement error
+SEMANTIC CREATE MODEL mismatched_quoted_model (name 'other_quoted_model', table orders, primary_key order_id);
+----
+CREATE MODEL name 'mismatched_quoted_model' does not match body name 'other_quoted_model'
 
 # Verify test_model is loaded
 query I rowsort
@@ -135,7 +151,7 @@ SEMANTIC SELECT reloadable.revenue FROM reloadable;
 
 # Test SEMANTIC MODEL active-model switching and repeated use/rewrite sequence
 statement ok
-SEMANTIC CREATE MODEL sql_orders (name sql_orders, table orders, primary_key order_id);
+SEMANTIC CREATE MODEL sql_orders (table orders, primary_key order_id);
 
 statement ok
 SEMANTIC CREATE METRIC sql_revenue AS SUM(amount);

@@ -12,11 +12,32 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 
 ## Installation
 
-```sql
--- From community extensions (when published)
-INSTALL sidemantic FROM community;
-LOAD sidemantic;
+Current builds are loaded from a local build or GitHub release artifact:
+
+Start DuckDB with unsigned-extension loading enabled because these artifacts are not signed yet:
+
+```bash
+duckdb -unsigned
 ```
+
+```sql
+LOAD '/absolute/path/to/sidemantic.duckdb_extension';
+```
+
+For local development:
+
+```bash
+make deps DUCKDB_VERSION=v1.4.2
+make
+make test
+./build/release/duckdb -unsigned
+```
+
+```sql
+LOAD 'build/release/extension/sidemantic/sidemantic.duckdb_extension';
+```
+
+For embedded clients, set DuckDB's `allow_unsigned_extensions` database configuration before opening the connection. Community extension installation is planned, but this repository does not yet publish the signed multi-platform artifacts required for `INSTALL sidemantic FROM community`.
 
 ## Quick Start (Pure SQL)
 
@@ -32,7 +53,6 @@ INSERT INTO orders VALUES
 
 -- 2. Define a semantic model
 SEMANTIC CREATE MODEL orders_model (
-    name orders_model,
     table orders,
     primary_key order_id
 );
@@ -67,11 +87,12 @@ Creates a new semantic model linked to a physical table.
 
 ```sql
 SEMANTIC CREATE MODEL model_name (
-    name model_name,
     table physical_table_name,
     primary_key pk_column
 );
 ```
+
+The model name may also be repeated inside the body for compatibility, but it must match the name after `MODEL`.
 
 ### SEMANTIC CREATE METRIC
 
@@ -286,23 +307,21 @@ SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders');
 ## Building from Source
 
 ```bash
-# Clone with submodules
-git clone --recurse-submodules https://github.com/your-repo/sidemantic-duckdb.git
+# From this repository checkout
 cd sidemantic-duckdb
 
-# Build the Rust library first
-cd ../sidemantic-rs
-cargo build --release
-cd ../sidemantic-duckdb
+# Fetch the DuckDB source version used by CI.
+# extension-ci-tools is vendored in this directory and pinned to v1.4.2.
+make deps DUCKDB_VERSION=v1.4.2
 
-# Build the extension
+# Build the extension. CMake builds the sibling sidemantic-rs static library automatically.
 make
 
 # Run tests
 make test
 
 # Use the extension
-./build/release/duckdb
+./build/release/duckdb -unsigned
 ```
 
 ## Architecture

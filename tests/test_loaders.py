@@ -31,3 +31,30 @@ def test_load_from_directory_does_not_require_antlr4_without_antlr_formats(tmp_p
     load_from_directory(layer, tmp_path)
 
     assert "orders" in layer.graph.models
+
+
+def test_native_inheritance_does_not_register_model_metrics_globally(tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: base_orders
+    table: orders
+    primary_key: order_id
+    metrics:
+      - name: margin_label
+        type: derived
+        sql: "'margin'"
+
+  - name: orders
+    extends: base_orders
+    table: orders
+    primary_key: order_id
+"""
+    )
+
+    layer = SemanticLayer(auto_register=True)
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    assert layer.graph.models["orders"].get_metric("margin_label") is not None
+    assert "margin_label" not in layer.graph.metrics

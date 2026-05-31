@@ -440,12 +440,16 @@ def _handle_parse_error(file_path: Path, error: Exception, *, strict: bool) -> N
 
 
 def _parse_adapter_without_auto_registration(adapter, file_path: Path):
+    return _run_without_auto_registration(adapter.parse, str(file_path))
+
+
+def _run_without_auto_registration(callback, *args):
     from sidemantic.core.registry import get_current_layer, set_current_layer
 
     previous_layer = get_current_layer()
     set_current_layer(None)
     try:
-        return adapter.parse(str(file_path))
+        return callback(*args)
     finally:
         set_current_layer(previous_layer)
 
@@ -506,7 +510,7 @@ def _resolve_native_model_inheritance(all_models: dict, *, strict: bool) -> None
         if parent is None:
             return None
 
-        merged = merge_model(model, parent)
+        merged = _run_without_auto_registration(merge_model, model, parent)
         _copy_model_source_attrs(model, merged)
         resolved[name] = merged
         all_models[name] = merged

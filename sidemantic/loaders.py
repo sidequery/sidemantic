@@ -28,6 +28,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     from sidemantic.adapters.bsl import BSLAdapter
     from sidemantic.adapters.cube import CubeAdapter
     from sidemantic.adapters.gooddata import GoodDataAdapter
+    from sidemantic.adapters.graphene import GrapheneAdapter
     from sidemantic.adapters.hex import HexAdapter
     from sidemantic.adapters.lookml import LookMLAdapter
     from sidemantic.adapters.metricflow import MetricFlowAdapter
@@ -71,6 +72,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
             from sidemantic.adapters.malloy import MalloyAdapter
 
             adapter = MalloyAdapter()
+        elif suffix == ".gsql":
+            adapter = GrapheneAdapter()
         elif suffix == ".sql":
             content = file_path.read_text()
             if _looks_like_yardstick_sql(content):

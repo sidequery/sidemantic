@@ -399,6 +399,66 @@ def test_no_prefix_when_no_collision(layer):
     assert "AS customers_customer_name" not in sql
 
 
+def test_custom_join_sql_projects_extra_predicate_columns():
+    conn = duckdb.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE orders (
+            order_id INTEGER,
+            customer_id INTEGER,
+            amount INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE customers (
+            customer_id INTEGER,
+            country VARCHAR,
+            valid_to DATE
+        )
+    """)
+    conn.execute("INSERT INTO orders VALUES (1, 100, 50)")
+    conn.execute("""
+        INSERT INTO customers VALUES
+        (100, 'US', NULL),
+        (100, 'Expired', DATE '2024-01-01')
+    """)
+
+    layer = SemanticLayer()
+    layer.conn = conn
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            relationships=[
+                Relationship(
+                    name="customers",
+                    type="many_to_one",
+                    foreign_key="customer_id",
+                    sql="{from}.customer_id = {to}.customer_id AND {to}.valid_to IS NULL",
+                )
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="customer_id",
+            dimensions=[Dimension(name="country", type="categorical")],
+        )
+    )
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["customers.country"], order_by=["customers.country"])
+    assert "valid_to AS valid_to" in sql
+    assert "customers_cte.valid_to IS NULL" in sql
+
+    rows = df_rows(
+        layer.query(metrics=["orders.revenue"], dimensions=["customers.country"], order_by=["customers.country"])
+    )
+    assert rows == [("Expired", None), ("US", 50)]
+
+
 def test_count_distinct_without_sql_uses_primary_key(layer):
     """Test that count_distinct without sql field uses primary key.
 

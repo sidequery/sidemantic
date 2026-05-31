@@ -309,6 +309,42 @@ class SQLGenerator:
         to_alias = self._quote_identifier(self._cte_name(join_path.to_model))
         return join_path.custom_condition.replace("{from}", from_alias).replace("{to}", to_alias)
 
+    def _custom_join_columns(self, join_path) -> dict[str, set[str]]:
+        """Extract raw columns that a custom join predicate reads from each side."""
+        if not join_path.custom_condition:
+            return {}
+
+        from_marker = "__from__"
+        to_marker = "__to__"
+        condition = join_path.custom_condition.replace("{from}", from_marker).replace("{to}", to_marker)
+        try:
+            parsed = sqlglot.parse_one(condition, dialect=self.dialect)
+        except Exception as exc:
+            raise ValueError(
+                "Could not parse custom relationship SQL for "
+                f"{join_path.from_model} -> {join_path.to_model}: {join_path.custom_condition}"
+            ) from exc
+
+        columns: dict[str, set[str]] = {join_path.from_model: set(), join_path.to_model: set()}
+        for column in parsed.find_all(exp.Column):
+            if column.table == from_marker:
+                columns[join_path.from_model].add(column.name)
+            elif column.table == to_marker:
+                columns[join_path.to_model].add(column.name)
+
+        return {model_name: cols for model_name, cols in columns.items() if cols}
+
+    def _custom_join_columns_by_model(self, base_model_name: str, other_models: list[str]) -> dict[str, set[str]]:
+        columns_by_model: dict[str, set[str]] = {}
+        for other_model in other_models:
+            join_path = self.graph.find_relationship_path(base_model_name, other_model)
+            if not join_path:
+                continue
+            for join_step in join_path:
+                for model_name, columns in self._custom_join_columns(join_step).items():
+                    columns_by_model.setdefault(model_name, set()).update(columns)
+        return columns_by_model
+
     def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
         """Auto-include default_time_dimension from models if not already present.
 
@@ -669,6 +705,9 @@ class SQLGenerator:
 
         # Extract columns needed for metric-level filters (before building CTEs)
         metric_filter_cols_by_model = self._extract_metric_filter_columns(metrics)
+        custom_join_cols_by_model = self._custom_join_columns_by_model(base_model_name, model_names[1:])
+        for model_name, column_names in custom_join_cols_by_model.items():
+            metric_filter_cols_by_model.setdefault(model_name, set()).update(column_names)
 
         # Ensure dimensions referenced in outer-query filters (e.g. window dims)
         # are included in the relevant CTE SELECT lists.

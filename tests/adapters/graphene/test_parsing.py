@@ -357,6 +357,66 @@ table events (
     assert event_count.agg == "count"
 
 
+def test_graphene_parameterized_column_types_preserve_internal_commas(tmp_path):
+    (tmp_path / "events.gsql").write_text(
+        """
+table events (
+  id BIGINT
+  location STRUCT<lat FLOAT64, lon FLOAT64>
+  items ARRAY<STRUCT<sku STRING, qty INT64>>
+  attributes MAP<STRING, NUMERIC(10, 2)>
+)
+"""
+    )
+
+    graph = GrapheneAdapter().parse(tmp_path)
+    events = graph.models["events"]
+    dimension_names = {dimension.name for dimension in events.dimensions}
+
+    assert {"id", "location", "items", "attributes"} <= dimension_names
+    assert "lon" not in dimension_names
+    assert "qty" not in dimension_names
+
+    location = events.get_dimension("location")
+    assert location is not None
+    assert location.metadata == {"graphene": {"data_type": "STRUCT<lat FLOAT64, lon FLOAT64>"}}
+
+    items = events.get_dimension("items")
+    assert items is not None
+    assert items.metadata == {"graphene": {"data_type": "ARRAY<STRUCT<sku STRING, qty INT64>>"}}
+
+    attributes = events.get_dimension("attributes")
+    assert attributes is not None
+    assert attributes.metadata == {"graphene": {"data_type": "MAP<STRING, NUMERIC(10, 2)>"}}
+
+
+def test_graphene_less_than_computed_fields_still_split_at_top_level(tmp_path):
+    (tmp_path / "events.gsql").write_text(
+        """
+table events (
+  id BIGINT
+  range BIGINT
+  max_value BIGINT
+  status STRING
+
+  in_range: range < max_value
+  status_label: case when status <> '' then status else 'unknown' end
+)
+"""
+    )
+
+    graph = GrapheneAdapter().parse(tmp_path)
+    events = graph.models["events"]
+
+    in_range = events.get_dimension("in_range")
+    assert in_range is not None
+    assert in_range.sql == "range < max_value"
+
+    status_label = events.get_dimension("status_label")
+    assert status_label is not None
+    assert status_label.sql == "case when status <> '' then status else 'unknown' end"
+
+
 def test_graphene_composite_join_keys(tmp_path):
     (tmp_path / "events.gsql").write_text(
         """

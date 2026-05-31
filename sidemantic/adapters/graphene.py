@@ -44,6 +44,7 @@ _AGGREGATE_FUNCTIONS = {
 _VALID_GRANULARITIES = {"second", "minute", "hour", "day", "week", "month", "quarter", "year"}
 _ANNOTATION_FLAGS = {"pii", "pct", "ratio"}
 _ANNOTATION_VALUE_KEYS = {"currency", "description", "timeGrain", "timeOrdinal", "unit"}
+_TYPE_PARAMETER_CONSTRUCTORS = {"array", "map", "range", "struct"}
 _METADATA_TOKEN_RE = re.compile(
     r"(?P<prefix>^|\s)(?P<hash>#)?(?P<key>[A-Za-z][\w-]*)"
     r"(?:\s*=\s*(?P<value>\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^\s#]+))?"
@@ -514,10 +515,16 @@ class _GsqlBlockParser:
         items: list[list[Token]] = []
         current: list[Token] = []
         depth = 0
+        type_parameter_depth = 0
         previous: Token | None = None
 
         for idx, token in enumerate(self.body_tokens):
-            if current and depth == 0 and token.token_type in {TokenType.COMMA, TokenType.SEMICOLON}:
+            if (
+                current
+                and depth == 0
+                and type_parameter_depth == 0
+                and token.token_type in {TokenType.COMMA, TokenType.SEMICOLON}
+            ):
                 items.append(current)
                 current = []
                 previous = token
@@ -527,6 +534,7 @@ class _GsqlBlockParser:
                 current
                 and previous is not None
                 and depth == 0
+                and type_parameter_depth == 0
                 and _has_newline_between(self.source, previous, token)
                 and _item_can_end(current)
                 and self._starts_item_at(idx)
@@ -535,7 +543,7 @@ class _GsqlBlockParser:
                 current = []
 
             current.append(token)
-            depth = _updated_depth(depth, token)
+            depth, type_parameter_depth = _updated_delimiter_depth(depth, type_parameter_depth, self.body_tokens, idx)
             previous = token
 
         if current:
@@ -675,6 +683,30 @@ def _updated_depth(depth: int, token: Token) -> int:
     return depth
 
 
+def _updated_delimiter_depth(depth: int, type_parameter_depth: int, tokens_: list[Token], idx: int) -> tuple[int, int]:
+    token = tokens_[idx]
+    depth = _updated_depth(depth, token)
+
+    if token.token_type == TokenType.LT and (type_parameter_depth > 0 or _opens_type_parameter(tokens_, idx)):
+        return depth, type_parameter_depth + 1
+    if token.token_type == TokenType.GT and type_parameter_depth > 0:
+        return depth, type_parameter_depth - 1
+    return depth, type_parameter_depth
+
+
+def _opens_type_parameter(tokens_: list[Token], idx: int) -> bool:
+    if idx == 0:
+        return False
+
+    previous = tokens_[idx - 1]
+    if previous.text.lower() not in _TYPE_PARAMETER_CONSTRUCTORS:
+        return False
+
+    # Keep SQL comparisons like `range < end` at top level; GSQL type
+    # parameters are written as adjacent constructors such as `STRUCT<...>`.
+    return previous.end + 1 == tokens_[idx].start
+
+
 def _has_newline_between(source: str, left: Token, right: Token) -> bool:
     return "\n" in source[left.end + 1 : right.start]
 
@@ -756,10 +788,11 @@ def _find_top_level_token(tokens_: list[Token], token_type: TokenType, start: in
 
 def _find_top_level(tokens_: list[Token], predicate: Any, start: int = 0) -> int | None:
     depth = 0
+    type_parameter_depth = 0
     for idx, token in enumerate(tokens_):
-        if idx >= start and depth == 0 and predicate(token):
+        if idx >= start and depth == 0 and type_parameter_depth == 0 and predicate(token):
             return idx
-        depth = _updated_depth(depth, token)
+        depth, type_parameter_depth = _updated_delimiter_depth(depth, type_parameter_depth, tokens_, idx)
     return None
 
 
@@ -911,12 +944,13 @@ def _dimensions_from_view_query(query: str) -> list[Dimension]:
         TokenType.INTERSECT,
     }
     depth = 0
+    type_parameter_depth = 0
     for idx in range(select_idx + 1, len(tokens_)):
         token = tokens_[idx]
-        if depth == 0 and token.token_type in clause_tokens:
+        if depth == 0 and type_parameter_depth == 0 and token.token_type in clause_tokens:
             end_idx = idx
             break
-        depth = _updated_depth(depth, token)
+        depth, type_parameter_depth = _updated_delimiter_depth(depth, type_parameter_depth, tokens_, idx)
 
     dimensions: list[Dimension] = []
     for projection_tokens in _split_top_level_commas(tokens_[select_idx + 1 : end_idx]):
@@ -943,13 +977,14 @@ def _split_top_level_commas(tokens_: list[Token]) -> list[list[Token]]:
     groups: list[list[Token]] = []
     current: list[Token] = []
     depth = 0
-    for token in tokens_:
-        if depth == 0 and token.token_type == TokenType.COMMA:
+    type_parameter_depth = 0
+    for idx, token in enumerate(tokens_):
+        if depth == 0 and type_parameter_depth == 0 and token.token_type == TokenType.COMMA:
             groups.append(current)
             current = []
             continue
         current.append(token)
-        depth = _updated_depth(depth, token)
+        depth, type_parameter_depth = _updated_delimiter_depth(depth, type_parameter_depth, tokens_, idx)
     groups.append(current)
     return groups
 

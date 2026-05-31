@@ -225,6 +225,11 @@ class SemanticGraph:
                 if related_model not in self.models:
                     continue  # Skip if related model doesn't exist yet
 
+                if relationship.type == "cross":
+                    add_edge(model_name, related_model, [], [], "cross")
+                    add_edge(related_model, model_name, [], [], "cross")
+                    continue
+
                 if relationship.type == "many_to_many":
                     junction_model = relationship.through
                     if not junction_model or junction_model not in self.models:

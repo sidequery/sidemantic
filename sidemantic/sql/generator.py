@@ -1280,6 +1280,13 @@ class SQLGenerator:
                 if other_model_name not in all_models:
                     continue
                 for other_join in other_model.relationships:
+                    if other_join.name == model_name and other_join.type == "many_to_one":
+                        for pk in (
+                            other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
+                        ):
+                            if pk not in columns_added:
+                                select_cols.append(f"{self._quote_identifier(pk)} AS {self._quote_alias(pk)}")
+                                columns_added.add(pk)
                     if other_join.name == model_name and other_join.type in (
                         "one_to_one",
                         "one_to_many",
@@ -1595,6 +1602,43 @@ class SQLGenerator:
                 needs_symmetric[other_model] = False
 
         return needs_symmetric
+
+    def _explicit_join_type_for_path(self, join_path) -> str | None:
+        """Return an adapter-provided SQL join type for a join path step."""
+        relation = None
+        reverse = False
+
+        try:
+            from_model = self.graph.get_model(join_path.from_model)
+            relation = next((rel for rel in from_model.relationships if rel.name == join_path.to_model), None)
+        except KeyError:
+            relation = None
+
+        if relation is None:
+            try:
+                to_model = self.graph.get_model(join_path.to_model)
+                relation = next((rel for rel in to_model.relationships if rel.name == join_path.from_model), None)
+                reverse = relation is not None
+            except KeyError:
+                relation = None
+
+        if not relation or not relation.metadata or "bsl_how" not in relation.metadata:
+            return None
+
+        how = str(relation.metadata["bsl_how"]).lower()
+        if reverse and how == "left":
+            how = "right"
+        elif reverse and how == "right":
+            how = "left"
+
+        return {
+            "inner": "inner",
+            "left": "left",
+            "right": "right",
+            "outer": "full",
+            "full": "full",
+            "full_outer": "full",
+        }.get(how)
 
     def _needs_preaggregation_for_fanout(self, metrics: list[str], dimensions: list[str]) -> bool:
         """Determine if pre-aggregation is needed to avoid fan-out.
@@ -2116,6 +2160,11 @@ class SQLGenerator:
                             continue
 
                         right_table = self._quote_identifier(self._cte_name(jp.to_model))
+                        if jp.relationship == "cross":
+                            query = query.join(right_table, join_type="cross")
+                            joined_models.add(jp.to_model)
+                            continue
+
                         # Validate column counts match for composite keys
                         if len(jp.from_columns) != len(jp.to_columns):
                             raise ValueError(
@@ -2129,8 +2178,11 @@ class SQLGenerator:
                         ]
                         join_cond = " AND ".join(join_conditions)
 
-                        # Use INNER JOIN if this model has filters applied, otherwise LEFT JOIN
-                        join_type = "inner" if jp.to_model in models_with_filters else "left"
+                        # Use adapter-provided join type when present; otherwise
+                        # INNER JOIN if this model has filters applied, else LEFT JOIN.
+                        join_type = self._explicit_join_type_for_path(jp)
+                        if join_type is None:
+                            join_type = "inner" if jp.to_model in models_with_filters else "left"
                         query = query.join(right_table, on=join_cond, join_type=join_type)
                         joined_models.add(jp.to_model)
 
@@ -2405,6 +2457,65 @@ class SQLGenerator:
             return f"COUNT({raw_col})"
         return f"{agg_func}({raw_col})"
 
+    def _build_measure_window_total_sql(self, model_name: str, measure) -> str:
+        """Build an all-rows window aggregate for a model-scoped measure."""
+        agg_func = measure.agg.upper()
+        raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
+
+        if agg_func == "COUNT_DISTINCT":
+            return f"SUM(COUNT(DISTINCT {raw_col})) OVER ()"
+        if agg_func == "COUNT":
+            return f"SUM(COUNT({raw_col})) OVER ()"
+        if agg_func == "SUM":
+            return f"SUM(SUM({raw_col})) OVER ()"
+        if agg_func == "AVG":
+            return f"(SUM(SUM({raw_col})) OVER ()) / NULLIF(SUM(COUNT({raw_col})) OVER (), 0)"
+        if agg_func == "MIN":
+            return f"MIN(MIN({raw_col})) OVER ()"
+        if agg_func == "MAX":
+            return f"MAX(MAX({raw_col})) OVER ()"
+        return f"SUM({self._build_measure_aggregation_sql(model_name, measure)}) OVER ()"
+
+    def _extract_bsl_all_placeholders(self, formula: str) -> tuple[str, dict[str, str]]:
+        """Replace BSL all-measure calls with placeholders before dependency replacement."""
+        import re
+
+        placeholders: dict[str, str] = {}
+
+        def replace(match) -> str:
+            placeholder = f"__bsl_all_{len(placeholders)}"
+            placeholders[placeholder] = match.group(1).strip()
+            return placeholder
+
+        formula = re.sub(r"__bsl_all\(([A-Za-z_][A-Za-z0-9_.]*)\)", replace, formula)
+        return formula, placeholders
+
+    def _build_bsl_all_sql(self, metric_ref: str, model_context: str | None) -> str:
+        """Resolve BSL _.all(metric) to a window total over the metric aggregate."""
+        model_name = None
+        measure_name = metric_ref
+
+        if "." in metric_ref:
+            model_name, measure_name = metric_ref.split(".", 1)
+        elif model_context:
+            model_name = model_context
+        else:
+            for candidate_name, candidate_model in self.graph.models.items():
+                if candidate_model.get_metric(metric_ref):
+                    model_name = candidate_name
+                    break
+
+        if not model_name:
+            raise ValueError(f"Metric {metric_ref} not found")
+
+        model = self.graph.get_model(model_name)
+        measure = model.get_metric(measure_name)
+        if not measure:
+            raise ValueError(f"Metric {metric_ref} not found")
+        if not measure.agg:
+            return f"SUM({self._build_metric_sql(measure, model_name)}) OVER ()"
+        return self._build_measure_window_total_sql(model_name, measure)
+
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.
 
@@ -2483,6 +2594,7 @@ class SQLGenerator:
                 raise ValueError(f"Derived metric {metric.name} missing sql")
 
             formula = metric.sql
+            formula, bsl_all_placeholders = self._extract_bsl_all_placeholders(formula)
 
             # Check if this is a SQL expression metric (has inline aggregations)
             # These metrics already contain complete SQL and shouldn't have dependencies replaced
@@ -2578,6 +2690,9 @@ class SQLGenerator:
                     # For simple names, use word boundaries
                     pattern = r"\b" + re.escape(metric_name) + r"\b"
                     formula = re.sub(pattern, f"({metric_sql})", formula)
+
+            for placeholder, metric_ref in bsl_all_placeholders.items():
+                formula = formula.replace(placeholder, f"({self._build_bsl_all_sql(metric_ref, model_context)})")
 
             return formula
 

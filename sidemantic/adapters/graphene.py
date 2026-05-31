@@ -197,12 +197,16 @@ class GrapheneAdapter(BaseAdapter):
         dimensions: list[Dimension] = []
         metrics: list[Metric] = []
         relationships: list[Relationship] = []
+        unsupported_joins: list[dict[str, Any]] = []
         explicit_primary_key: str | None = None
         metric_names = _computed_metric_names(statement.items)
 
         for item in statement.items:
             if isinstance(item, _GsqlJoin):
                 join = self._relationship_from_join(item, model_name, primary_key_candidates)
+                if join is None:
+                    unsupported_joins.append(_unsupported_join_metadata(item))
+                    continue
                 relationships.append(join.relationship)
             elif isinstance(item, _GsqlComputed):
                 computed = self._field_from_computed(item, metric_names)
@@ -219,6 +223,9 @@ class GrapheneAdapter(BaseAdapter):
         if explicit_primary_key is not None:
             explicit_primary_keys.add(model_name)
         primary_key = explicit_primary_key or _choose_primary_key(dimensions, primary_key_candidates.get(model_name))
+        metadata = {"table_ref": statement.ref, "type": "table"}
+        if unsupported_joins:
+            metadata["unsupported_joins"] = unsupported_joins
         return Model(
             name=model_name,
             table=statement.ref,
@@ -227,7 +234,7 @@ class GrapheneAdapter(BaseAdapter):
             dimensions=dimensions,
             metrics=metrics,
             relationships=relationships,
-            metadata={"graphene": {"table_ref": statement.ref, "type": "table"}},
+            metadata={"graphene": metadata},
         )
 
     def _apply_extends(
@@ -245,6 +252,9 @@ class GrapheneAdapter(BaseAdapter):
             for item in items:
                 if isinstance(item, _GsqlJoin):
                     join = self._relationship_from_join(item, model_name, primary_key_candidates)
+                    if join is None:
+                        _append_unsupported_join_metadata(model, item)
+                        continue
                     model.relationships.append(join.relationship)
                 elif isinstance(item, _GsqlComputed):
                     computed = self._field_from_computed(item, metric_names)
@@ -258,12 +268,14 @@ class GrapheneAdapter(BaseAdapter):
         item: _GsqlJoin,
         model_name: str,
         primary_key_candidates: dict[str, list[str]],
-    ) -> _ParsedJoin:
+    ) -> _ParsedJoin | None:
         target_model = _model_name_from_ref(item.target_ref)
         alias_model = item.alias
         relationship_name = alias_model or target_model
         target_scope = alias_model or target_model
         local_key, target_key = _extract_join_keys(item.on_sql, model_name, target_scope, target_model)
+        if local_key is None or target_key is None:
+            return None
 
         metadata = {
             "cardinality": item.cardinality,
@@ -1034,6 +1046,29 @@ def _one_or_many(values: list[str]) -> str | list[str] | None:
     if len(values) == 1:
         return values[0]
     return values
+
+
+def _unsupported_join_metadata(item: _GsqlJoin) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "cardinality": item.cardinality,
+        "on": item.on_sql,
+        "target_table": _model_name_from_ref(item.target_ref),
+        "target_ref": item.target_ref,
+        "unsupported_reason": "unresolved_join_keys",
+    }
+    if item.alias:
+        metadata["alias"] = item.alias
+    return metadata
+
+
+def _append_unsupported_join_metadata(model: Model, item: _GsqlJoin) -> None:
+    metadata = dict(model.metadata or {})
+    graphene_metadata = dict(metadata.get("graphene") or {})
+    unsupported_joins = list(graphene_metadata.get("unsupported_joins") or [])
+    unsupported_joins.append(_unsupported_join_metadata(item))
+    graphene_metadata["unsupported_joins"] = unsupported_joins
+    metadata["graphene"] = graphene_metadata
+    model.metadata = metadata
 
 
 def _append_primary_key_candidates(

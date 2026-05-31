@@ -418,6 +418,39 @@ table invoices (
     assert path[0].to_columns == ["account_id"]
 
 
+def test_graphene_unresolved_join_keys_are_preserved_but_not_planned(tmp_path):
+    (tmp_path / "models.gsql").write_text(
+        """
+table orders (
+  id BIGINT primary_key
+  customer_id BIGINT
+  customer_code VARCHAR
+
+  join one customers on customer_id = id
+  join one customers as customers_by_code on lower(customer_code) = customers_by_code.code
+)
+
+table customers (
+  id BIGINT primary_key
+  code VARCHAR
+)
+"""
+    )
+
+    graph = GrapheneAdapter().parse(tmp_path)
+
+    orders = graph.models["orders"]
+    unsupported = orders.metadata["graphene"]["unsupported_joins"]
+
+    assert orders.relationships == []
+    assert [join["on"] for join in unsupported] == [
+        "customer_id = id",
+        "lower(customer_code) = customers_by_code.code",
+    ]
+    assert {join["unsupported_reason"] for join in unsupported} == {"unresolved_join_keys"}
+    assert "customers_by_code" not in graph.models
+
+
 def test_graphene_comment_markers_inside_strings_are_preserved(tmp_path):
     (tmp_path / "orders.gsql").write_text(
         """

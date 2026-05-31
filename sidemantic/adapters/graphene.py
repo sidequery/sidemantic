@@ -1030,32 +1030,50 @@ def _extract_join_keys(
     if not parsed:
         return None, None
 
-    local_keys: list[str] = []
-    target_keys: list[str] = []
-    for equality in _join_equalities(parsed):
-        left = _column_parts(equality.left)
-        right = _column_parts(equality.right)
-        if not left or not right:
-            continue
+    key_pairs = _join_key_pairs(parsed, model_name, target_scope, target_model)
+    if key_pairs is None:
+        return None, None
 
-        left_side = _join_ref_side(left, model_name, target_scope, target_model)
-        right_side = _join_ref_side(right, model_name, target_scope, target_model)
-        if left_side == "local" and right_side == "target":
-            local_keys.append(left[-1])
-            target_keys.append(right[-1])
-        elif left_side == "target" and right_side == "local":
-            local_keys.append(right[-1])
-            target_keys.append(left[-1])
-
+    local_keys = [local_key for local_key, _ in key_pairs]
+    target_keys = [target_key for _, target_key in key_pairs]
     return _one_or_many(local_keys), _one_or_many(target_keys)
 
 
-def _join_equalities(expression: exp.Expression) -> list[exp.EQ]:
+def _join_key_pairs(
+    expression: exp.Expression,
+    model_name: str,
+    target_scope: str,
+    target_model: str,
+) -> list[tuple[str, str]] | None:
     if isinstance(expression, exp.EQ):
-        return [expression]
+        return _join_key_pair(expression, model_name, target_scope, target_model)
     if isinstance(expression, exp.And):
-        return _join_equalities(expression.left) + _join_equalities(expression.right)
-    return []
+        left_pairs = _join_key_pairs(expression.left, model_name, target_scope, target_model)
+        right_pairs = _join_key_pairs(expression.right, model_name, target_scope, target_model)
+        if left_pairs is None or right_pairs is None:
+            return None
+        return left_pairs + right_pairs
+    return None
+
+
+def _join_key_pair(
+    equality: exp.EQ,
+    model_name: str,
+    target_scope: str,
+    target_model: str,
+) -> list[tuple[str, str]] | None:
+    left = _column_parts(equality.left)
+    right = _column_parts(equality.right)
+    if not left or not right:
+        return None
+
+    left_side = _join_ref_side(left, model_name, target_scope, target_model)
+    right_side = _join_ref_side(right, model_name, target_scope, target_model)
+    if left_side == "local" and right_side == "target":
+        return [(left[-1], right[-1])]
+    if left_side == "target" and right_side == "local":
+        return [(right[-1], left[-1])]
+    return None
 
 
 def _column_parts(expression: exp.Expression) -> list[str] | None:

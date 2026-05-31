@@ -547,6 +547,34 @@ table customers (
     assert "customers_by_code" not in graph.models
 
 
+def test_graphene_join_with_extra_predicate_is_preserved_but_not_planned(tmp_path):
+    (tmp_path / "models.gsql").write_text(
+        """
+table orders (
+  id BIGINT primary_key
+  customer_id BIGINT
+
+  join one customers on customer_id = customers.id and customers.is_active = true
+)
+
+table customers (
+  id BIGINT primary_key
+  is_active BOOLEAN
+)
+"""
+    )
+
+    graph = GrapheneAdapter().parse(tmp_path)
+    orders = graph.models["orders"]
+    unsupported = orders.metadata["graphene"]["unsupported_joins"]
+
+    assert orders.relationships == []
+    assert [join["on"] for join in unsupported] == [
+        "customer_id = customers.id and customers.is_active = true",
+    ]
+    assert {join["unsupported_reason"] for join in unsupported} == {"unresolved_join_keys"}
+
+
 def test_graphene_comment_markers_inside_strings_are_preserved(tmp_path):
     (tmp_path / "orders.gsql").write_text(
         """

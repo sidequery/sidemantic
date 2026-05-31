@@ -690,7 +690,16 @@ def serve(
     """
     import logging
 
-    from sidemantic.server.server import start_server
+    try:
+        from sidemantic.server.server import start_server
+    except ImportError as exc:
+        typer.echo(
+            "Error: `sidemantic serve` requires the optional serve dependencies. "
+            "Install with `pip install 'sidemantic[serve]'` or run with "
+            "`uvx --from 'sidemantic[serve]' sidemantic serve ...`.",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
 
     logging.basicConfig(level=logging.INFO)
 
@@ -964,7 +973,7 @@ def validate(
     """
     Validate semantic layer definitions.
 
-    Shows errors, warnings, and optionally detailed info in an interactive view.
+    Shows errors, warnings, and optionally detailed info.
 
     Examples:
       sidemantic validate
@@ -992,13 +1001,36 @@ def validate(
                 typer.echo(f"Error: Rust validation failed: {e}", err=True)
                 raise typer.Exit(1)
 
-    from sidemantic.workbench import WorkbenchDependencyError, run_validation
-
     try:
-        run_validation(directory, verbose=verbose)
-    except WorkbenchDependencyError as e:
+        from sidemantic.validation_runner import validate_directory
+
+        report = validate_directory(directory)
+    except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
+
+    typer.echo(f"Validation Results: {directory}")
+
+    if report.errors:
+        typer.echo("Errors:")
+        for error in report.errors:
+            typer.echo(f"  - {error}")
+
+    if report.warnings:
+        typer.echo("Warnings:")
+        for warning in report.warnings:
+            typer.echo(f"  - {warning}")
+
+    if verbose or not (report.errors or report.warnings):
+        typer.echo("Info:")
+        for item in report.info:
+            typer.echo(f"  - {item}")
+
+    if report.errors:
+        typer.echo("Validation Failed", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("Validation Passed")
 
 
 @app.command()

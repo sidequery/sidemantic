@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Git tag for the GitHub Release to attach binaries to, for example v0.1.0.
+        description: Git tag for the GitHub Release to attach binaries to, for example sidemantic-rs-v0.1.0.
         required: true
         type: string
 
@@ -72,6 +72,27 @@ jobs:
         with:
           ref: ${{ needs.verify-release.outputs.tag }}
 
+      - name: Resolve Rust crate version
+        id: rust_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^version = ' sidemantic-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release tag matches crate version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.verify-release.outputs.tag }}
+          RUST_VERSION: ${{ steps.rust_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected_tag="sidemantic-rs-v${RUST_VERSION}"
+          if [ "$RELEASE_TAG" != "$expected_tag" ]; then
+            echo "Release tag '$RELEASE_TAG' does not match Rust crate version tag '$expected_tag'" >&2
+            exit 1
+          fi
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -115,11 +136,11 @@ jobs:
         if: runner.os != 'Windows'
         env:
           ASSET_SUFFIX: ${{ matrix.asset_suffix }}
-          TAG: ${{ needs.verify-release.outputs.tag }}
+          RUST_VERSION: ${{ steps.rust_version.outputs.version }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          version="${TAG#v}"
+          version="$RUST_VERSION"
           asset_name="sidemantic-rs-${version}-${ASSET_SUFFIX}"
           archive_path="dist/${asset_name}.tar.gz"
           checksum_path="${archive_path}.sha256"
@@ -147,14 +168,11 @@ jobs:
         if: runner.os == 'Windows'
         env:
           ASSET_SUFFIX: ${{ matrix.asset_suffix }}
-          TAG: ${{ needs.verify-release.outputs.tag }}
+          RUST_VERSION: ${{ steps.rust_version.outputs.version }}
           TARGET: ${{ matrix.target }}
         shell: pwsh
         run: |
-          $version = $env:TAG
-          if ($version.StartsWith("v")) {
-            $version = $version.Substring(1)
-          }
+          $version = $env:RUST_VERSION
           $assetName = "sidemantic-rs-$version-$env:ASSET_SUFFIX"
           $archivePath = "dist/$assetName.zip"
           $checksumPath = "$archivePath.sha256"

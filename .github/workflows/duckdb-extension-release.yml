@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       duckdb_version:
-        description: "DuckDB tag used for extension build and tests"
+        description: "DuckDB tag used for extension build and tests; currently v1.4.2 only"
         required: true
         default: "v1.4.2"
         type: string
@@ -42,12 +42,9 @@ jobs:
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Clone DuckDB dependencies
+      - name: Fetch DuckDB dependencies
         working-directory: sidemantic-duckdb
-        run: |
-          rm -rf duckdb extension-ci-tools
-          git clone --depth 1 --branch "${{ steps.duckdb.outputs.version }}" https://github.com/duckdb/duckdb.git duckdb
-          git clone --depth 1 --branch "${{ steps.duckdb.outputs.version }}" https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+        run: make deps DUCKDB_VERSION="${{ steps.duckdb.outputs.version }}"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

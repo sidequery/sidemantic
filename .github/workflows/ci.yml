@@ -46,6 +46,58 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+  base-install-cli:
+    name: Base Install CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Smoke base CLI install
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          mkdir -p "$tmpdir/models"
+          cat > "$tmpdir/models/models.yml" <<'YAML'
+          models:
+            - name: orders
+              table: orders
+              primary_key: id
+              dimensions:
+                - name: status
+                  type: categorical
+              metrics:
+                - name: order_count
+                  agg: count
+          YAML
+
+          uv run --no-project --with . sidemantic --version
+          uv run --no-project --with . sidemantic validate "$tmpdir/models"
+          uv run --no-project --with . sidemantic query "SELECT order_count, status FROM orders" --models "$tmpdir/models" --dry-run
+
+          set +e
+          timeout 10s uv run --no-project --with . sidemantic serve "$tmpdir/models" >"$tmpdir/serve.out" 2>"$tmpdir/serve.err"
+          serve_status=$?
+          set -e
+          if [ "$serve_status" -eq 0 ]; then
+            echo "base install unexpectedly ran sidemantic serve without the serve extra"
+            exit 1
+          fi
+          if [ "$serve_status" -eq 124 ]; then
+            echo "base install unexpectedly started sidemantic serve without the serve extra"
+            cat "$tmpdir/serve.out"
+            cat "$tmpdir/serve.err" >&2
+            exit 1
+          fi
+          grep -q "sidemantic\\[serve\\]" "$tmpdir/serve.err"
+
   update-schema:
     name: Update JSON Schema
     needs: python
@@ -267,14 +319,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone DuckDB dependencies
+      - name: Fetch DuckDB dependencies
         working-directory: sidemantic-duckdb
-        run: |
-          # These are listed as submodules in .gitmodules but aren't tracked properly
-          # Clone them directly at the commits the extension was built against
-          rm -rf duckdb extension-ci-tools
-          git clone --depth 1 --branch v1.4.2 https://github.com/duckdb/duckdb.git duckdb
-          git clone --depth 1 --branch v1.4.2 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+        run: make deps DUCKDB_VERSION=v1.4.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

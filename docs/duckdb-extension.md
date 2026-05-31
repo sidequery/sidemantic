@@ -14,6 +14,11 @@ LOAD sidemantic;
 ```
 
 Until community publication is complete, use a local extension artifact.
+Local artifacts are unsigned, so start the DuckDB CLI with unsigned-extension loading enabled:
+
+```bash
+duckdb -unsigned
+```
 
 ## Build From Source
 
@@ -21,12 +26,14 @@ The extension build needs Rust, DuckDB extension build tooling, and Ninja.
 
 ```bash
 cd sidemantic-duckdb
-rm -rf duckdb extension-ci-tools
-git clone --depth 1 --branch v1.4.2 https://github.com/duckdb/duckdb.git duckdb
-git clone --depth 1 --branch v1.4.2 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+make deps DUCKDB_VERSION=v1.4.2
 make
 make test
 ```
+
+`DUCKDB_VERSION` is intentionally guarded to `v1.4.2` because the repository
+vendors a matching `extension-ci-tools` checkout. Update both together before
+building against a different DuckDB tag.
 
 The local loadable extension is produced at:
 
@@ -36,9 +43,15 @@ sidemantic-duckdb/build/release/extension/sidemantic/sidemantic.duckdb_extension
 
 Load it in the DuckDB shell built by the extension workflow:
 
+```bash
+./build/release/duckdb -unsigned
+```
+
 ```sql
 LOAD 'build/release/extension/sidemantic/sidemantic.duckdb_extension';
 ```
+
+For embedded clients, set DuckDB's `allow_unsigned_extensions` database configuration before opening the connection.
 
 ## Runtime API
 
@@ -88,7 +101,7 @@ Use `.github/workflows/duckdb-extension-release.yml`.
 
 The workflow:
 
-- clones DuckDB and `extension-ci-tools` for the selected DuckDB tag,
+- fetches DuckDB with `make deps` and verifies the vendored `extension-ci-tools`,
 - builds the Rust-backed extension,
 - runs the DuckDB sqllogictests, including native YAML load, native SQL definition file load, relationship rewrite, semantic select, persistence, and invalid-version coverage,
 - uploads a Linux extension artifact,

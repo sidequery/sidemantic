@@ -121,6 +121,8 @@ class QueryRewriter:
         self.dialect = dialect
         self.use_preaggregations = use_preaggregations
         self.generator = SQLGenerator(graph, dialect=dialect)
+        self._rewrite_cache: dict[tuple[object, ...], str] = {}
+        self._rewrite_cache_limit = 256
         self._use_rust_rewriter = os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1"
         self._rust_no_fallback = os.getenv("SIDEMANTIC_RS_NO_FALLBACK", "0") == "1"
         self._rust_module = None
@@ -155,15 +157,25 @@ class QueryRewriter:
                        Only raised when strict=True
         """
         sql = sql.strip()
+        cache_key = (getattr(self.graph, "_version", 0), self.dialect, self.use_preaggregations, strict, sql)
+        cached = self._rewrite_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        def cache_result(result: str) -> str:
+            if len(self._rewrite_cache) >= self._rewrite_cache_limit:
+                self._rewrite_cache.pop(next(iter(self._rewrite_cache)))
+            self._rewrite_cache[cache_key] = result
+            return result
 
         if self._looks_like_yardstick_query(sql):
             try:
-                return self._rewrite_yardstick_query(sql, strict=strict)
+                return cache_result(self._rewrite_yardstick_query(sql, strict=strict))
             except Exception:
                 if strict:
                     raise
                 # Keep non-strict passthrough behavior when Yardstick rewrite cannot be applied safely.
-                return sql
+                return cache_result(sql)
 
         # Handle multiple statements (some PostgreSQL clients send these).
         # Use sqlglot.parse() so semicolons inside string literals are not
@@ -175,12 +187,12 @@ class QueryRewriter:
                 if strict:
                     raise
                 # In non-strict mode, pass through unparseable SQL
-                return sql
+                return cache_result(sql)
             if len(statements) > 1:
                 if strict:
                     raise ValueError("Multiple statements are not supported")
                 # In non-strict mode, pass through
-                return sql
+                return cache_result(sql)
 
         # Parse SQL
         try:
@@ -189,39 +201,39 @@ class QueryRewriter:
             if strict:
                 raise ValueError(f"Failed to parse SQL: {e}")
             # In non-strict mode, pass through unparseable SQL (e.g., SHOW, SET commands)
-            return sql
+            return cache_result(sql)
 
         if not isinstance(parsed, (exp.Select, exp.SetOperation)):
             if strict:
                 raise ValueError("Only SELECT queries are supported")
             # In non-strict mode, pass through non-SELECT queries
-            return sql
+            return cache_result(sql)
 
         if isinstance(parsed, exp.SetOperation):
             if not self._expression_tree_references_semantic_model(parsed):
-                return sql
+                return cache_result(sql)
             self._raise_on_user_cte_name_collision(parsed)
-            return self._rewrite_set_operation(parsed)
+            return cache_result(self._rewrite_set_operation(parsed))
 
         if self._contains_implicit_yardstick_measure_query(parsed):
             try:
-                return self._rewrite_yardstick_query(sql, strict=strict, allow_plain_measures=True)
+                return cache_result(self._rewrite_yardstick_query(sql, strict=strict, allow_plain_measures=True))
             except Exception:
                 if strict:
                     raise
-                return sql
+                return cache_result(sql)
 
         # Projection-only SQL (no root FROM/CTE) should pass through unless Yardstick paths above matched.
         if parsed.args.get("from") is None and parsed.args.get("with") is None:
             if any(isinstance(expr, exp.Star) for expr in parsed.expressions):
                 if strict:
                     raise ValueError("SELECT * requires a FROM clause with a single table")
-                return sql
-            return sql
+                return cache_result(sql)
+            return cache_result(sql)
 
         references_semantic_model = self._select_tree_references_semantic_model(parsed)
         if not references_semantic_model:
-            return sql
+            return cache_result(sql)
 
         self._raise_on_user_cte_name_collision(parsed)
 
@@ -229,7 +241,7 @@ class QueryRewriter:
             rust_sql = self._prepare_sql_for_rust(parsed, sql)
             rust_rewritten = self._rewrite_with_rust(rust_sql, strict=strict)
             if rust_rewritten is not None:
-                return rust_rewritten
+                return cache_result(rust_rewritten)
 
         # Check if this is a CTE-based query or has subqueries
         has_ctes = parsed.args.get("with") is not None
@@ -238,10 +250,10 @@ class QueryRewriter:
 
         if has_ctes or has_subquery_in_from or has_subquery_in_joins:
             # Handle CTEs and subqueries
-            return self._rewrite_with_ctes_or_subqueries(parsed)
+            return cache_result(self._rewrite_with_ctes_or_subqueries(parsed))
 
         # Otherwise, treat as simple semantic layer query
-        return self._rewrite_simple_query(parsed)
+        return cache_result(self._rewrite_simple_query(parsed))
 
     def _source_aliases(self, select: exp.Select) -> dict[str, str]:
         """Map source aliases in this SELECT scope to semantic model names."""

@@ -857,7 +857,29 @@ class SQLGenerator:
             """Recursively collect models needed from a metric."""
             if "." in metric_ref:
                 # Direct measure reference (model.measure)
-                add_model(metric_ref.split(".")[0])
+                model_name, measure_name = metric_ref.split(".", 1)
+                add_model(model_name)
+                try:
+                    model = self.graph.get_model(model_name)
+                    measure = model.get_metric(measure_name) if model else None
+                except KeyError:
+                    measure = None
+
+                if measure:
+                    if measure.type == "ratio":
+                        if measure.numerator:
+                            collect_models_from_metric(measure.numerator)
+                        if measure.denominator:
+                            collect_models_from_metric(measure.denominator)
+                    elif measure.type == "derived" or (not measure.type and not measure.agg and measure.sql):
+                        for ref_metric in measure.get_dependencies(self.graph, model_name):
+                            collect_models_from_metric(ref_metric)
+                        if measure.sql and "." in measure.sql:
+                            for ref_model_name in self._extract_models_from_sql(measure.sql):
+                                add_model(ref_model_name)
+                    elif measure.agg and measure.sql and "." in measure.sql:
+                        for ref_model_name in self._extract_models_from_sql(measure.sql):
+                            add_model(ref_model_name)
             else:
                 # It's a metric, need to resolve its dependencies
                 try:
@@ -2734,22 +2756,24 @@ class SQLGenerator:
                 # Use regex to only replace whole word matches
                 import re
 
-                # For qualified names (model.measure), also match unqualified version (measure)
+                # For qualified names (model.measure), preserve explicit qualification.
                 if "." in metric_name:
                     # Split into model and measure parts
                     parts = metric_name.split(".")
                     measure_only = parts[1]
 
-                    # First try to replace qualified form if present
+                    # First try to replace qualified form if present.
                     pattern = r"\b" + re.escape(metric_name).replace(r"\.", r"\.") + r"\b"
-                    formula = re.sub(pattern, f"({metric_sql})", formula)
-
-                    # Then also replace unqualified form (measure name only)
-                    pattern = r"\b" + re.escape(measure_only) + r"\b"
-                    formula = re.sub(pattern, f"({metric_sql})", formula)
+                    if re.search(pattern, formula):
+                        formula = re.sub(pattern, f"({metric_sql})", formula)
+                    else:
+                        # If the dependency resolved from an unqualified reference
+                        # (e.g. count -> orders.count), replace only bare refs.
+                        pattern = r"(?<!\.)\b" + re.escape(measure_only) + r"\b"
+                        formula = re.sub(pattern, f"({metric_sql})", formula)
                 else:
                     # For simple names, use word boundaries
-                    pattern = r"\b" + re.escape(metric_name) + r"\b"
+                    pattern = r"(?<!\.)\b" + re.escape(metric_name) + r"\b"
                     formula = re.sub(pattern, f"({metric_sql})", formula)
 
             for placeholder, metric_ref in bsl_all_placeholders.items():

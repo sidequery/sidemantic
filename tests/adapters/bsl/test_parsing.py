@@ -1083,6 +1083,60 @@ flights:
         finally:
             temp_path.unlink(missing_ok=True)
 
+    def test_qualified_calculated_measure_compiles_joined_measure(self):
+        import tempfile
+        from pathlib import Path
+
+        from sidemantic.sql.generator import SQLGenerator
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write("""
+orders:
+  table: orders
+  dimensions:
+    order_id:
+      expr: _.order_id
+      is_entity: true
+    customer_id: _.customer_id
+  measures:
+    count: _.count()
+  calculated_measures:
+    customer_order_ratio: _.customers.count / _.count
+  joins:
+    customers:
+      model: customers
+      type: one
+      left_on: customer_id
+      right_on: customer_id
+
+customers:
+  table: customers
+  dimensions:
+    customer_id:
+      expr: _.customer_id
+      is_entity: true
+  measures:
+    count: _.count()
+""")
+            temp_path = Path(f.name)
+
+        try:
+            graph = BSLAdapter().parse(temp_path)
+            metric = graph.models["orders"].get_metric("customer_order_ratio")
+            assert metric.sql == "customers.count / count"
+
+            sql = SQLGenerator(graph).generate(
+                metrics=["orders.customer_order_ratio"],
+                dimensions=["orders.customer_id"],
+                skip_default_time_dimensions=True,
+            )
+            assert "customers.(" not in sql
+            assert "JOIN customers_cte" in sql
+            assert "COUNT(customers_cte.count_raw)" in sql
+            assert "COUNT(orders_cte.count_raw)" in sql
+        finally:
+            temp_path.unlink(missing_ok=True)
+
     def test_event_timestamp_derived_dimensions_metadata_and_export(self):
         import tempfile
         from pathlib import Path

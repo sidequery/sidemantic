@@ -143,13 +143,14 @@ class GrapheneAdapter(BaseAdapter):
         graph = SemanticGraph()
         extends: list[tuple[str, list[_GsqlBlockItem]]] = []
         primary_key_candidates: dict[str, list[str]] = {}
+        explicit_primary_keys: set[str] = set()
 
         files = sorted(source_path.rglob("*.gsql")) if source_path.is_dir() else [source_path]
         for file_path in files:
-            self._parse_gsql_file(file_path, graph, extends, primary_key_candidates)
+            self._parse_gsql_file(file_path, graph, extends, primary_key_candidates, explicit_primary_keys)
 
         self._apply_extends(graph, extends, primary_key_candidates)
-        self._resolve_primary_keys(graph, primary_key_candidates)
+        self._resolve_primary_keys(graph, primary_key_candidates, explicit_primary_keys)
         self._add_alias_models(graph)
         return graph
 
@@ -159,6 +160,7 @@ class GrapheneAdapter(BaseAdapter):
         graph: SemanticGraph,
         extends: list[tuple[str, list[_GsqlBlockItem]]],
         primary_key_candidates: dict[str, list[str]],
+        explicit_primary_keys: set[str],
     ) -> None:
         content = path.read_text()
         document = _GsqlParser(content, path).parse()
@@ -179,7 +181,7 @@ class GrapheneAdapter(BaseAdapter):
                     metadata={"graphene": {"table_ref": statement.ref, "type": "view"}},
                 )
             else:
-                model = self._model_from_table_statement(statement, primary_key_candidates)
+                model = self._model_from_table_statement(statement, primary_key_candidates, explicit_primary_keys)
 
             if model.name in graph.models:
                 continue
@@ -189,6 +191,7 @@ class GrapheneAdapter(BaseAdapter):
         self,
         statement: _GsqlStatement,
         primary_key_candidates: dict[str, list[str]],
+        explicit_primary_keys: set[str],
     ) -> Model:
         model_name = _model_name_from_ref(statement.ref)
         dimensions: list[Dimension] = []
@@ -213,6 +216,8 @@ class GrapheneAdapter(BaseAdapter):
                 if item.primary_key:
                     explicit_primary_key = item.name
 
+        if explicit_primary_key is not None:
+            explicit_primary_keys.add(model_name)
         primary_key = explicit_primary_key or _choose_primary_key(dimensions, primary_key_candidates.get(model_name))
         return Model(
             name=model_name,
@@ -327,8 +332,15 @@ class GrapheneAdapter(BaseAdapter):
             value_format_name=formatting.get("value_format_name"),
         )
 
-    def _resolve_primary_keys(self, graph: SemanticGraph, candidates: dict[str, list[str]]) -> None:
+    def _resolve_primary_keys(
+        self,
+        graph: SemanticGraph,
+        candidates: dict[str, list[str]],
+        explicit_primary_keys: set[str],
+    ) -> None:
         for model_name, model in graph.models.items():
+            if model_name in explicit_primary_keys:
+                continue
             if model.primary_key != "id":
                 continue
             model.primary_key = _choose_primary_key(model.dimensions, candidates.get(model_name))

@@ -385,6 +385,33 @@ table accounts (
     assert account.primary_key == ["account_id", "tenant_id"]
 
 
+def test_graphene_explicit_id_primary_key_survives_join_many_candidate(tmp_path):
+    (tmp_path / "accounts.gsql").write_text(
+        """
+table accounts (
+  id BIGINT primary_key
+  account_id BIGINT
+  name STRING
+
+  join many invoices on account_id = invoices.account_id
+)
+"""
+    )
+    (tmp_path / "invoices.gsql").write_text(
+        """
+table invoices (
+  id BIGINT primary_key
+  account_id BIGINT
+  amount FLOAT
+)
+"""
+    )
+
+    graph = GrapheneAdapter().parse(tmp_path)
+
+    assert graph.models["accounts"].primary_key == "id"
+
+
 def test_graphene_comment_markers_inside_strings_are_preserved(tmp_path):
     (tmp_path / "orders.gsql").write_text(
         """

@@ -138,6 +138,30 @@ models:
     assert orders.metrics[1].sql == "total_revenue / order_count"
 
 
+def test_parse_native_yaml_accepts_legacy_metric_dependencies(tmp_path):
+    """Legacy exported derived metrics used `metrics` for dependency hints."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "metrics.yml"
+    yaml_path.write_text(
+        """
+version: 1
+metrics:
+  - name: revenue_per_order
+    type: derived
+    sql: total_revenue / order_count
+    metrics:
+      - total_revenue
+      - order_count
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+
+    metric = graph.metrics["revenue_per_order"]
+    assert metric.type == "derived"
+    assert metric.sql == "total_revenue / order_count"
+
+
 @pytest.mark.parametrize(
     ("yaml_body", "error_text"),
     [

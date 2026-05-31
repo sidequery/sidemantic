@@ -134,6 +134,8 @@ pub struct MetricConfig {
     pub agg: Option<String>,
     #[serde(default, alias = "expr", alias = "measure")]
     pub sql: Option<String>,
+    #[serde(default, rename = "metrics", skip_serializing_if = "Option::is_none")]
+    _legacy_metric_dependencies: Option<Vec<String>>,
     pub numerator: Option<String>,
     pub denominator: Option<String>,
     pub offset_window: Option<String>,
@@ -1357,6 +1359,27 @@ models:
             orders.metrics[1].sql.as_deref(),
             Some("revenue / order_count")
         );
+    }
+
+    #[test]
+    fn test_native_yaml_accepts_legacy_metric_dependencies() {
+        let yaml = r#"
+version: 1
+metrics:
+  - name: revenue_per_order
+    type: derived
+    sql: revenue / order_count
+    metrics:
+      - revenue
+      - order_count
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        let (_, metrics, _) = config.into_parts().unwrap();
+
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].name, "revenue_per_order");
+        assert_eq!(metrics[0].sql.as_deref(), Some("revenue / order_count"));
     }
 
     #[test]

@@ -81,6 +81,7 @@ METRIC_FIELDS = {
     "sql",
     "expr",
     "measure",
+    "metrics",
     "numerator",
     "denominator",
     "offset_window",

@@ -13,7 +13,7 @@ statement ok
 INSERT INTO events VALUES (1, 10), (2, 20), (3, 30);
 
 statement ok
-SEMANTIC CREATE MODEL events (name events, table events, primary_key event_id);
+SEMANTIC CREATE MODEL events (table events, primary_key event_id);
 
 statement ok
 SEMANTIC CREATE METRIC event_count AS COUNT(*);
@@ -38,7 +38,7 @@ SEMANTIC SELECT events.event_count FROM events;
 3
 
 statement ok
-SEMANTIC CREATE OR REPLACE MODEL events (name events, table events, primary_key event_id);
+SEMANTIC CREATE OR REPLACE MODEL events (table events, primary_key event_id);
 
 statement ok
 SEMANTIC MODEL events;

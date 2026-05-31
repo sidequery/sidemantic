@@ -9,21 +9,27 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
 
-use crate::config::{load_from_directory, load_from_file, load_from_string, parse_sql_model};
+use crate::config::{
+    load_from_directory_with_metadata, load_from_file_with_metadata,
+    load_from_sql_string_with_metadata, load_from_string_with_metadata, parse_sql_model,
+};
 use crate::core::SemanticGraph;
 use crate::sql::QueryRewriter;
 
 const DEFAULT_CONTEXT_KEY: &str = "__sidemantic_default_context__";
+const DEFINITIONS_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFINITIONS_STALE_LOCK_AFTER: Duration = Duration::from_secs(300);
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct FfiState {
     graph: SemanticGraph,
     active_model: Option<String>,
@@ -75,6 +81,14 @@ fn context_key(context: *const c_char) -> std::result::Result<String, *mut c_cha
     }
 }
 
+fn active_model_for_loaded_models(model_order: &[String]) -> Option<String> {
+    if model_order.len() == 1 {
+        model_order.first().cloned()
+    } else {
+        None
+    }
+}
+
 /// Load semantic models from YAML string
 ///
 /// Returns null on success, error message on failure.
@@ -99,16 +113,18 @@ pub extern "C" fn sidemantic_load_yaml_for_context(
         Err(error) => return error,
     };
 
-    match load_from_string(&yaml_str) {
-        Ok(new_graph) => {
+    match load_from_string_with_metadata(&yaml_str) {
+        Ok(metadata) => {
+            let active_model = active_model_for_loaded_models(&metadata.model_order);
             let mut states = FFI_STATES.lock().unwrap();
             let state = states.entry(key).or_default();
             // Merge new models into existing graph, replacing same-name definitions.
-            for model in new_graph.models() {
+            for model in metadata.graph.models() {
                 if let Err(e) = state.graph.replace_model(model.clone()) {
                     return to_c_string(&format!("Error adding model: {e}"));
                 }
             }
+            state.active_model = active_model;
             ptr::null_mut() // Success
         }
         Err(e) => to_c_string(&format!("Error: {e}")),
@@ -147,21 +163,23 @@ pub extern "C" fn sidemantic_load_file_for_context(
     }
 
     let result = if path.is_dir() {
-        load_from_directory(path)
+        load_from_directory_with_metadata(path)
     } else {
-        load_from_file(path)
+        load_from_file_with_metadata(path)
     };
 
     match result {
-        Ok(new_graph) => {
+        Ok(metadata) => {
+            let active_model = active_model_for_loaded_models(&metadata.model_order);
             let mut states = FFI_STATES.lock().unwrap();
             let state = states.entry(key).or_default();
             // Merge new models into existing graph, replacing same-name definitions.
-            for model in new_graph.models() {
+            for model in metadata.graph.models() {
                 if let Err(e) = state.graph.replace_model(model.clone()) {
                     return to_c_string(&format!("Error adding model: {e}"));
                 }
             }
+            state.active_model = active_model;
             ptr::null_mut() // Success
         }
         Err(e) => to_c_string(&format!("Error: {e}")),
@@ -225,39 +243,46 @@ pub extern "C" fn sidemantic_define_for_context(
 
     let model_name = model.name.clone();
 
-    // Determine the definitions file path
     let definitions_path = get_definitions_path(db_path);
 
-    // Handle OR REPLACE: read existing file, remove model if exists
-    if replace {
-        if let Some(definitions_path) = definitions_path.as_ref() {
-            if let Err(e) = remove_model_from_file(definitions_path, &model_name) {
-                return to_c_string(&format!("Error removing existing model: {e}"));
-            }
-        }
-    }
-
-    // Append definition to file
-    if let Some(definitions_path) = definitions_path.as_ref() {
-        if let Err(e) = append_definition_to_file(definitions_path, &sql_str) {
-            return to_c_string(&format!("Error writing to definitions file: {e}"));
-        }
-    }
-
-    // Load model into current session
+    // Stage all in-memory work first so duplicate/invalid definitions never touch disk.
     let mut states = FFI_STATES.lock().unwrap();
     let state = states.entry(key).or_default();
+    let mut candidate_state = state.clone();
     let result = if replace {
-        state.graph.replace_model(model)
+        candidate_state.graph.replace_model(model)
     } else {
-        state.graph.add_model(model)
+        candidate_state.graph.add_model(model)
     };
     if let Err(e) = result {
         return to_c_string(&format!("Error adding model to session: {e}"));
     }
+    candidate_state.active_model = Some(model_name.clone());
 
-    // Set this model as the active model for subsequent METRIC/DIMENSION additions
-    state.active_model = Some(model_name);
+    if let Some(definitions_path) = definitions_path.as_ref() {
+        let _definitions_lock = match lock_definitions_file(definitions_path) {
+            Ok(lock) => lock,
+            Err(e) => return to_c_string(&format!("Error locking definitions file: {e}")),
+        };
+        let content = match read_definitions_file(definitions_path) {
+            Ok(content) => content,
+            Err(e) => return to_c_string(&format!("Error reading definitions file: {e}")),
+        };
+        let content = if replace {
+            remove_model_from_content(&content, &model_name)
+        } else {
+            content
+        };
+        let candidate_content = append_definition_to_content(&content, &sql_str);
+        if let Err(e) = validate_definitions_content(&candidate_content) {
+            return to_c_string(&format!("Error validating definitions file: {e}"));
+        }
+        if let Err(e) = write_definitions_file_atomic(definitions_path, &candidate_content) {
+            return to_c_string(&format!("Error writing to definitions file: {e}"));
+        }
+    }
+
+    *state = candidate_state;
 
     ptr::null_mut() // Success
 }
@@ -287,16 +312,19 @@ fn get_definitions_path(db_path: *const c_char) -> Option<PathBuf> {
 }
 
 /// Remove a model definition from the file by name
+#[cfg(test)]
 fn remove_model_from_file(path: &Path, model_name: &str) -> std::io::Result<()> {
-    if !path.exists() {
-        return Ok(()); // Nothing to remove
-    }
+    let _definitions_lock = lock_definitions_file(path)?;
+    let content = read_definitions_file(path)?;
+    let result = remove_model_from_content(&content, model_name);
+    write_definitions_file_atomic(path, &result)
+}
 
-    let content = fs::read_to_string(path)?;
+fn remove_model_from_content(content: &str, model_name: &str) -> String {
     let mut result = String::new();
 
     let mut cursor = 0;
-    for (start, end) in model_definition_ranges(&content) {
+    for (start, end) in model_definition_ranges(content) {
         result.push_str(&content[cursor..start]);
 
         let block = &content[start..end];
@@ -312,40 +340,39 @@ fn remove_model_from_file(path: &Path, model_name: &str) -> std::io::Result<()> 
     }
     result.push_str(&content[cursor..]);
 
-    fs::write(path, result.trim_end())?;
-    Ok(())
+    result.trim_end().to_string()
+}
+
+fn content_has_model_block(content: &str, model_name: &str) -> bool {
+    model_definition_ranges(content)
+        .into_iter()
+        .filter_map(|(start, end)| parse_sql_model(&content[start..end]).ok())
+        .any(|model| model.name == model_name)
 }
 
 fn model_definition_ranges(content: &str) -> Vec<(usize, usize)> {
-    let mut starts = Vec::new();
-    let content_upper = content.to_uppercase();
-    let mut search_start = 0;
+    let mut ranges = Vec::new();
+    let mut current_start = None;
+    let mut current_end = None;
 
-    while let Some(pos) = content_upper[search_start..].find("MODEL") {
-        let actual_pos = search_start + pos;
-        let is_start =
-            actual_pos == 0 || !content.as_bytes()[actual_pos - 1].is_ascii_alphanumeric();
-        let is_followed_by_boundary = actual_pos + 5 >= content.len()
-            || matches!(
-                content.as_bytes()[actual_pos + 5],
-                b' ' | b'(' | b'\t' | b'\n'
-            );
-
-        if is_start && is_followed_by_boundary {
-            starts.push(actual_pos);
+    for (start, end) in statement_ranges(content) {
+        let statement = &content[start..end];
+        if starts_with_definition_keyword(statement, "MODEL") {
+            if let (Some(block_start), Some(block_end)) = (current_start, current_end) {
+                ranges.push((block_start, block_end));
+            }
+            current_start = Some(start);
         }
-
-        search_start = actual_pos + 1;
+        if current_start.is_some() {
+            current_end = Some(end);
+        }
     }
 
-    starts
-        .iter()
-        .enumerate()
-        .map(|(index, start)| {
-            let end = starts.get(index + 1).copied().unwrap_or(content.len());
-            (*start, end)
-        })
-        .collect()
+    if let (Some(block_start), Some(block_end)) = (current_start, current_end) {
+        ranges.push((block_start, block_end));
+    }
+
+    ranges
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -390,35 +417,93 @@ fn statement_ranges(block: &str) -> Vec<(usize, usize)> {
     let mut start = None;
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let bytes = block.as_bytes();
+    let mut idx = 0;
 
-    for (idx, ch) in block.char_indices() {
-        if start.is_none() && !ch.is_whitespace() {
-            start = Some(idx);
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+
+        if in_line_comment {
+            if byte == b'\n' {
+                in_line_comment = false;
+            }
+            idx += 1;
+            continue;
         }
-
+        if in_block_comment {
+            if byte == b'*' && bytes.get(idx + 1) == Some(&b'/') {
+                in_block_comment = false;
+                idx += 2;
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
         if in_single_quote {
-            if ch == '\'' {
+            if byte == b'\'' && bytes.get(idx + 1) == Some(&b'\'') {
+                idx += 2;
+                continue;
+            }
+            if byte == b'\'' {
                 in_single_quote = false;
             }
+            idx += 1;
             continue;
         }
         if in_double_quote {
-            if ch == '"' {
+            if byte == b'"' && bytes.get(idx + 1) == Some(&b'"') {
+                idx += 2;
+                continue;
+            }
+            if byte == b'"' {
                 in_double_quote = false;
             }
+            idx += 1;
             continue;
         }
 
-        match ch {
-            '\'' => in_single_quote = true,
-            '"' => in_double_quote = true,
-            ';' => {
+        if start.is_none() {
+            if byte.is_ascii_whitespace() {
+                idx += 1;
+                continue;
+            }
+            if byte == b'-' && bytes.get(idx + 1) == Some(&b'-') {
+                in_line_comment = true;
+                idx += 2;
+                continue;
+            }
+            if byte == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+                in_block_comment = true;
+                idx += 2;
+                continue;
+            }
+            start = Some(idx);
+        }
+
+        if byte == b'-' && bytes.get(idx + 1) == Some(&b'-') {
+            in_line_comment = true;
+            idx += 2;
+            continue;
+        }
+        if byte == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+            in_block_comment = true;
+            idx += 2;
+            continue;
+        }
+
+        match byte {
+            b'\'' => in_single_quote = true,
+            b'"' => in_double_quote = true,
+            b';' => {
                 if let Some(statement_start) = start.take() {
-                    ranges.push((statement_start, idx + ch.len_utf8()));
+                    ranges.push((statement_start, idx + 1));
                 }
             }
             _ => {}
         }
+        idx += 1;
     }
 
     if let Some(statement_start) = start {
@@ -430,26 +515,25 @@ fn statement_ranges(block: &str) -> Vec<(usize, usize)> {
     ranges
 }
 
-fn persist_model_item_definition_to_file(
-    path: &Path,
+fn persist_model_item_definition_to_content(
+    content: &str,
     model_name: &str,
     kind: DefinitionKind,
     item_names: &[String],
     definition: &str,
     is_replace: bool,
-) -> std::io::Result<()> {
-    if !path.exists() {
-        return append_definition_to_file(path, definition);
+) -> String {
+    if content.trim().is_empty() {
+        return append_definition_to_content(content, definition);
     }
 
-    let content = fs::read_to_string(path)?;
     let item_names: HashSet<&str> = item_names.iter().map(String::as_str).collect();
     let (_, adjusted_definition) = extract_model_prefix(definition.trim());
     let mut result = String::new();
     let mut cursor = 0;
     let mut inserted = false;
 
-    for (start, end) in model_definition_ranges(&content) {
+    for (start, end) in model_definition_ranges(content) {
         result.push_str(&content[cursor..start]);
 
         let block = &content[start..end];
@@ -480,13 +564,11 @@ fn persist_model_item_definition_to_file(
     }
     result.push_str(&content[cursor..]);
 
-    fs::write(path, result.trim_end())?;
-
     if !inserted {
-        append_definition_to_file(path, definition)?;
+        result = append_definition_to_content(&result, definition);
     }
 
-    Ok(())
+    result
 }
 
 fn remove_item_definitions_from_block(
@@ -575,17 +657,164 @@ fn insert_definition_at_block_end(block: &str, definition: &str) -> String {
     format!("{body}\n\n{trimmed_definition}{trailing}")
 }
 
-/// Append a definition to the file
-fn append_definition_to_file(path: &Path, definition: &str) -> std::io::Result<()> {
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-
-    // Add newlines for separation if file is not empty
-    if path.exists() && fs::metadata(path)?.len() > 0 {
-        writeln!(file)?;
-        writeln!(file)?;
+fn append_definition_to_content(content: &str, definition: &str) -> String {
+    let trimmed_definition = definition.trim();
+    if trimmed_definition.is_empty() {
+        return content.trim_end().to_string();
     }
 
-    writeln!(file, "{}", definition.trim())?;
+    let mut result = content.trim_end().to_string();
+    if !result.is_empty() {
+        result.push_str("\n\n");
+    }
+    result.push_str(trimmed_definition);
+    result.push('\n');
+    result
+}
+
+fn read_definitions_file(path: &Path) -> io::Result<String> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(content),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_definitions_content(content: &str) -> Result<(), String> {
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+    load_from_sql_string_with_metadata(content)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+struct DefinitionsFileLock {
+    path: PathBuf,
+    file: Option<fs::File>,
+}
+
+impl Drop for DefinitionsFileLock {
+    fn drop(&mut self) {
+        self.file.take();
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn definitions_lock_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("definitions.sql");
+    parent.join(format!(".{file_name}.lock"))
+}
+
+fn lock_definitions_file(path: &Path) -> io::Result<DefinitionsFileLock> {
+    let lock_path = definitions_lock_path(path);
+    let deadline = Instant::now() + DEFINITIONS_LOCK_TIMEOUT;
+
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                writeln!(file, "pid={}", std::process::id())?;
+                file.sync_all()?;
+                return Ok(DefinitionsFileLock {
+                    path: lock_path,
+                    file: Some(file),
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                if is_stale_definitions_lock(&lock_path) {
+                    let _ = fs::remove_file(&lock_path);
+                    continue;
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("timed out waiting for {}", lock_path.display()),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_stale_definitions_lock(lock_path: &Path) -> bool {
+    fs::metadata(lock_path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age > DEFINITIONS_STALE_LOCK_AFTER)
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomic(temp_path: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(temp_path, path)
+}
+
+#[cfg(windows)]
+fn replace_file_atomic(temp_path: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide_path(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let temp_wide = wide_path(temp_path);
+    let path_wide = wide_path(path);
+    let result = unsafe {
+        MoveFileExW(
+            temp_wide.as_ptr(),
+            path_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn write_definitions_file_atomic(path: &Path, content: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("definitions.sql");
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temp_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        unique
+    ));
+
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+    }
+
+    if let Err(error) = replace_file_atomic(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
     Ok(())
 }
 
@@ -609,10 +838,14 @@ pub extern "C" fn sidemantic_autoload_for_context(
         Err(error) => return error,
     };
     let Some(definitions_path) = get_definitions_path(db_path) else {
+        let mut states = FFI_STATES.lock().unwrap();
+        states.insert(key, FfiState::default());
         return ptr::null_mut();
     };
 
     if !definitions_path.exists() {
+        let mut states = FFI_STATES.lock().unwrap();
+        states.insert(key, FfiState::default());
         return ptr::null_mut(); // No file to load, success
     }
 
@@ -623,75 +856,39 @@ pub extern "C" fn sidemantic_autoload_for_context(
     };
 
     if content.trim().is_empty() {
+        let mut states = FFI_STATES.lock().unwrap();
+        states.insert(key, FfiState::default());
         return ptr::null_mut(); // Empty file, success
     }
 
-    // Parse each model definition in the file
-    // Split on MODEL keyword to handle multiple definitions
+    let metadata = match load_from_sql_string_with_metadata(&content) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            let mut states = FFI_STATES.lock().unwrap();
+            states.insert(key, FfiState::default());
+            return to_c_string(&format!("Error loading definitions file: {e}"));
+        }
+    };
+
     let mut states = FFI_STATES.lock().unwrap();
-    let state = states.entry(key).or_default();
-
-    let mut last_model_name = None;
-    for block in split_definitions(&content) {
-        if block.trim().is_empty() {
-            continue;
-        }
-        match parse_sql_model(block) {
-            Ok(model) => {
-                last_model_name = Some(model.name.clone());
-                if let Err(e) = state.graph.replace_model(model) {
-                    return to_c_string(&format!("Error loading model: {e}"));
-                }
-            }
-            Err(e) => {
-                // Log but don't fail on parse errors for individual models
-                eprintln!("Warning: failed to parse model definition: {e}");
-            }
-        }
-    }
-
-    state.active_model = last_model_name;
+    states.insert(
+        key,
+        FfiState {
+            active_model: active_model_for_loaded_models(&metadata.model_order),
+            graph: metadata.graph,
+        },
+    );
 
     ptr::null_mut() // Success
 }
 
 /// Split content into individual model definitions
+#[cfg(test)]
 fn split_definitions(content: &str) -> Vec<&str> {
-    let mut definitions = Vec::new();
-    let mut start = None;
-
-    // Find each MODEL keyword and split there
-    let content_upper = content.to_uppercase();
-    let mut search_start = 0;
-
-    while let Some(pos) = content_upper[search_start..].find("MODEL") {
-        let actual_pos = search_start + pos;
-
-        // Check this is actually the start of a MODEL statement (not inside a word)
-        let is_start =
-            actual_pos == 0 || !content.as_bytes()[actual_pos - 1].is_ascii_alphanumeric();
-        let is_followed_by_space = actual_pos + 5 < content.len()
-            && (content.as_bytes()[actual_pos + 5] == b' '
-                || content.as_bytes()[actual_pos + 5] == b'('
-                || content.as_bytes()[actual_pos + 5] == b'\t'
-                || content.as_bytes()[actual_pos + 5] == b'\n');
-
-        if is_start && is_followed_by_space {
-            if let Some(previous_start) = start {
-                definitions.push(&content[previous_start..actual_pos]);
-            }
-            start = Some(actual_pos);
-        }
-
-        search_start = actual_pos + 1;
-    }
-
-    // Don't forget the last definition
-    if let Some(start) = start {
-        definitions.push(&content[start..]);
-    }
-
-    definitions
+    model_definition_ranges(content)
+        .into_iter()
+        .map(|(start, end)| &content[start..end])
+        .collect()
 }
 
 /// Add a metric/dimension/segment to the most recently created model
@@ -753,16 +950,11 @@ pub extern "C" fn sidemantic_add_definition_for_context(
         }
         explicit_model
     } else {
-        // Use ACTIVE_MODEL or fall back to last model
+        // Use ACTIVE_MODEL. Multi-model loads intentionally require an explicit target.
         if let Some(ref name) = state.active_model {
             name.clone()
         } else {
-            // Fall back to last model
-            let model_names: Vec<String> = state.graph.models().map(|m| m.name.clone()).collect();
-            if model_names.is_empty() {
-                return to_c_string("Error: no model defined yet. Create a model first with SEMANTIC CREATE MODEL, or use SEMANTIC USE <model>.");
-            }
-            model_names.last().unwrap().clone()
+            return to_c_string("Error: no active model. Create a model first with SEMANTIC CREATE MODEL, select one with SEMANTIC MODEL <model>, or use METRIC/DIMENSION/SEGMENT model.name syntax.");
         }
     };
 
@@ -817,15 +1009,29 @@ pub extern "C" fn sidemantic_add_definition_for_context(
         }
     }
 
-    if let Err(e) = state.graph.replace_model(updated_model) {
+    let mut candidate_state = state.clone();
+    if let Err(e) = candidate_state.graph.replace_model(updated_model) {
         return to_c_string(&format!("Error updating model: {e}"));
     }
 
     // Persist the definition with the owning model so autoload sees the same graph.
     if let Some(definitions_path) = get_definitions_path(db_path) {
-        let result = if let Some(kind) = persisted_kind {
-            persist_model_item_definition_to_file(
-                &definitions_path,
+        let _definitions_lock = match lock_definitions_file(&definitions_path) {
+            Ok(lock) => lock,
+            Err(e) => return to_c_string(&format!("Error locking definitions file: {e}")),
+        };
+        let content = match read_definitions_file(&definitions_path) {
+            Ok(content) => content,
+            Err(e) => return to_c_string(&format!("Error reading definitions file: {e}")),
+        };
+        if !content_has_model_block(&content, &model_name) {
+            return to_c_string(&format!(
+                "Error: model '{model_name}' is not present in the persisted definitions file"
+            ));
+        }
+        let candidate_content = if let Some(kind) = persisted_kind {
+            persist_model_item_definition_to_content(
+                &content,
                 &model_name,
                 kind,
                 &persisted_item_names,
@@ -833,13 +1039,18 @@ pub extern "C" fn sidemantic_add_definition_for_context(
                 is_replace,
             )
         } else {
-            append_definition_to_file(&definitions_path, &sql_str)
+            append_definition_to_content(&content, &sql_str)
         };
 
-        if let Err(e) = result {
+        if let Err(e) = validate_definitions_content(&candidate_content) {
+            return to_c_string(&format!("Error validating definitions file: {e}"));
+        }
+        if let Err(e) = write_definitions_file_atomic(&definitions_path, &candidate_content) {
             return to_c_string(&format!("Error writing to definitions file: {e}"));
         }
     }
+
+    *state = candidate_state;
 
     ptr::null_mut() // Success
 }
@@ -1151,6 +1362,13 @@ mod tests {
         sql
     }
 
+    fn take_rewrite_error(result: SidemanticRewriteResult) -> String {
+        assert!(!result.error.is_null());
+        let message = unsafe { CStr::from_ptr(result.error).to_string_lossy().into_owned() };
+        sidemantic_free_result(result);
+        message
+    }
+
     fn unique_db_path(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1263,6 +1481,73 @@ models:
     }
 
     #[test]
+    fn test_define_duplicate_does_not_append_sidecar() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let db_path = unique_db_path("define_duplicate_atomic");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
+        let model =
+            CString::new("MODEL (name orders, table orders, primary_key order_id);").unwrap();
+        assert_success(sidemantic_define(model.as_ptr(), db_path.as_ptr(), false));
+
+        let error = take_error(sidemantic_define(model.as_ptr(), db_path.as_ptr(), false));
+        assert!(error.contains("already exists"), "{error}");
+
+        let content = fs::read_to_string(&definitions_path).unwrap();
+        assert_eq!(split_definitions(&content).len(), 1, "{content}");
+        assert_eq!(
+            content.matches("MODEL (name orders").count(),
+            1,
+            "{content}"
+        );
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
+    fn test_define_replace_invalid_rolls_back_sidecar_and_memory() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let db_path = unique_db_path("define_replace_invalid_atomic");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
+        let first = CString::new(
+            "MODEL (name orders, table orders, primary_key order_id);\nMETRIC revenue AS SUM(amount);",
+        )
+        .unwrap();
+        assert_success(sidemantic_define(first.as_ptr(), db_path.as_ptr(), false));
+        let before = fs::read_to_string(&definitions_path).unwrap();
+
+        let invalid = CString::new(
+            "MODEL (name orders, table orders_v2, primary_key order_id);\nMETRIC revenue AS SUM(amount);\nMETRIC revenue AS SUM(net_amount);",
+        )
+        .unwrap();
+        let error = take_error(sidemantic_define(invalid.as_ptr(), db_path.as_ptr(), true));
+        assert!(error.contains("duplicate metric"), "{error}");
+
+        let after = fs::read_to_string(&definitions_path).unwrap();
+        assert_eq!(after, before);
+
+        let rewritten = take_rewrite_sql(sidemantic_rewrite(
+            CString::new("SELECT orders.revenue FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(rewritten.contains("amount"), "{rewritten}");
+        assert!(!rewritten.contains("net_amount"), "{rewritten}");
+        assert!(!rewritten.contains("orders_v2"), "{rewritten}");
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
     fn test_add_definition_updates_existing_model() {
         let _guard = test_lock();
         sidemantic_clear();
@@ -1293,6 +1578,69 @@ models:
         let rewritten = unsafe { CStr::from_ptr(result.sql).to_string_lossy().into_owned() };
         assert!(rewritten.contains("SUM"), "{rewritten}");
         sidemantic_free_result(result);
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
+    fn test_add_definition_accepts_simple_segment_syntax() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let db_path = unique_db_path("add_segment_simple");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
+        let model =
+            CString::new("MODEL (name orders, table orders, primary_key order_id);").unwrap();
+        assert_success(sidemantic_define(model.as_ptr(), db_path.as_ptr(), false));
+
+        let segment = CString::new("SEGMENT completed AS status = 'completed';").unwrap();
+        assert_success(sidemantic_add_definition(
+            segment.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+
+        let content = fs::read_to_string(&definitions_path).unwrap();
+        let model = parse_sql_model(&content).unwrap();
+        let completed = model.get_segment("completed").unwrap();
+        assert_eq!(completed.sql, "status = 'completed'");
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
+    fn test_add_definition_persistence_failure_rolls_back_memory() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let model =
+            CString::new("MODEL (name orders, table orders, primary_key order_id);").unwrap();
+        assert_success(sidemantic_define(model.as_ptr(), ptr::null(), false));
+
+        let db_path = unique_db_path("add_definition_missing_sidecar");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+
+        let metric = CString::new("METRIC (name revenue, agg sum, sql amount);").unwrap();
+        let error = take_error(sidemantic_add_definition(
+            metric.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+        assert!(
+            error.contains("not present in the persisted definitions file"),
+            "{error}"
+        );
+
+        let rewrite_error = take_rewrite_error(sidemantic_rewrite(
+            CString::new("SELECT orders.revenue FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(rewrite_error.contains("revenue"), "{rewrite_error}");
 
         remove_definitions_file(&db_path);
     }
@@ -1487,7 +1835,7 @@ models:
             false,
         ));
 
-        assert!(error.contains("no model defined yet"), "{error}");
+        assert!(error.contains("no active model"), "{error}");
 
         remove_definitions_file(&db_path);
     }
@@ -1626,7 +1974,100 @@ models:
     }
 
     #[test]
-    fn test_autoload_sets_active_model_to_last_loaded_model() {
+    fn test_load_single_model_yaml_sets_active_model() {
+        let _guard = test_lock();
+
+        let context = CString::new("duckdb:single-load-active").unwrap();
+        sidemantic_clear_for_context(context.as_ptr());
+
+        let yaml = CString::new(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+"#,
+        )
+        .unwrap();
+        assert_success(sidemantic_load_yaml_for_context(
+            context.as_ptr(),
+            yaml.as_ptr(),
+        ));
+
+        let metric = CString::new("METRIC revenue AS SUM(amount);").unwrap();
+        assert_success(sidemantic_add_definition_for_context(
+            context.as_ptr(),
+            metric.as_ptr(),
+            ptr::null(),
+            false,
+        ));
+
+        let rewritten = take_rewrite_sql(sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            CString::new("SELECT orders.revenue FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(rewritten.contains("SUM"), "{rewritten}");
+        assert!(rewritten.contains("amount"), "{rewritten}");
+
+        sidemantic_clear_for_context(context.as_ptr());
+    }
+
+    #[test]
+    fn test_load_multi_model_yaml_requires_explicit_active_model() {
+        let _guard = test_lock();
+
+        let context = CString::new("duckdb:multi-load-active").unwrap();
+        sidemantic_clear_for_context(context.as_ptr());
+
+        let yaml = CString::new(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+  - name: customers
+    table: customers
+    primary_key: customer_id
+"#,
+        )
+        .unwrap();
+        assert_success(sidemantic_load_yaml_for_context(
+            context.as_ptr(),
+            yaml.as_ptr(),
+        ));
+
+        let metric = CString::new("METRIC revenue AS SUM(amount);").unwrap();
+        let error = take_error(sidemantic_add_definition_for_context(
+            context.as_ptr(),
+            metric.as_ptr(),
+            ptr::null(),
+            false,
+        ));
+        assert!(error.contains("no active model"), "{error}");
+
+        let explicit_metric = CString::new("METRIC orders.revenue AS SUM(amount);").unwrap();
+        assert_success(sidemantic_add_definition_for_context(
+            context.as_ptr(),
+            explicit_metric.as_ptr(),
+            ptr::null(),
+            false,
+        ));
+
+        let rewritten = take_rewrite_sql(sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            CString::new("SELECT orders.revenue FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(rewritten.contains("SUM"), "{rewritten}");
+
+        sidemantic_clear_for_context(context.as_ptr());
+    }
+
+    #[test]
+    fn test_autoload_sets_active_model_for_single_loaded_model() {
         let _guard = test_lock();
 
         let context = CString::new("duckdb:autoload-active").unwrap();
@@ -1705,18 +2146,19 @@ models:
     }
 
     #[test]
-    fn test_autoload_invalid_definition_is_best_effort() {
+    fn test_autoload_invalid_definition_clears_context_and_returns_error() {
         let _guard = test_lock();
 
-        let context = CString::new("duckdb:autoload-invalid-best-effort").unwrap();
+        let context = CString::new("duckdb:autoload-invalid-clears").unwrap();
         sidemantic_clear_for_context(context.as_ptr());
 
-        let db_path = unique_db_path("autoload_invalid_best_effort");
+        let db_path = unique_db_path("autoload_invalid_clears");
         let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
         let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
         fs::write(
             &definitions_path,
-            "MODEL (name events, table events, primary_key event_id);\nMETRIC event_count AS COUNT(*);\n\nMODEL (",
+            "MODEL (name events, table events, primary_key event_id);\nMETRIC event_count AS COUNT(*);",
         )
         .unwrap();
 
@@ -1725,14 +2167,154 @@ models:
             db_path.as_ptr(),
         ));
 
-        let sql = CString::new("SELECT events.event_count FROM events").unwrap();
-        let rewritten = take_rewrite_sql(sidemantic_rewrite_for_context(
+        let loaded = take_rewrite_sql(sidemantic_rewrite_for_context(
             context.as_ptr(),
-            sql.as_ptr(),
+            CString::new("SELECT events.event_count FROM events")
+                .unwrap()
+                .as_ptr(),
         ));
-        assert!(rewritten.contains("COUNT"), "{rewritten}");
+        assert!(loaded.contains("COUNT"), "{loaded}");
+
+        fs::write(&definitions_path, "MODEL (").unwrap();
+        let error = take_error(sidemantic_autoload_for_context(
+            context.as_ptr(),
+            db_path.as_ptr(),
+        ));
+        assert!(error.contains("Error loading definitions file"), "{error}");
+
+        let passthrough = sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            CString::new("SELECT events.event_count FROM events")
+                .unwrap()
+                .as_ptr(),
+        );
+        assert!(passthrough.error.is_null());
+        assert!(!passthrough.was_rewritten);
+        sidemantic_free_result(passthrough);
 
         sidemantic_clear_for_context(context.as_ptr());
+        let _ = fs::remove_file(definitions_path);
+    }
+
+    #[test]
+    fn test_autoload_missing_sidecar_clears_existing_context() {
+        let _guard = test_lock();
+
+        let context = CString::new("duckdb:autoload-missing-clears").unwrap();
+        sidemantic_clear_for_context(context.as_ptr());
+
+        let db_path = unique_db_path("autoload_missing_clears");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+        fs::write(
+            &definitions_path,
+            "MODEL (name orders, table orders, primary_key order_id);\nMETRIC order_count AS COUNT(*);",
+        )
+        .unwrap();
+
+        assert_success(sidemantic_autoload_for_context(
+            context.as_ptr(),
+            db_path.as_ptr(),
+        ));
+
+        let loaded = take_rewrite_sql(sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            CString::new("SELECT orders.order_count FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(loaded.contains("COUNT"), "{loaded}");
+
+        fs::remove_file(&definitions_path).unwrap();
+        assert_success(sidemantic_autoload_for_context(
+            context.as_ptr(),
+            db_path.as_ptr(),
+        ));
+
+        let passthrough = sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            CString::new("SELECT orders.order_count FROM orders")
+                .unwrap()
+                .as_ptr(),
+        );
+        assert!(passthrough.error.is_null());
+        assert!(!passthrough.was_rewritten);
+        sidemantic_free_result(passthrough);
+
+        sidemantic_clear_for_context(context.as_ptr());
+    }
+
+    #[test]
+    fn test_autoload_memory_context_clears_existing_context() {
+        let _guard = test_lock();
+
+        let context = CString::new("duckdb:autoload-memory-clears").unwrap();
+        sidemantic_clear_for_context(context.as_ptr());
+
+        let yaml = CString::new(
+            r#"
+models:
+  - name: temp_orders
+    table: temp_orders
+    primary_key: order_id
+    metrics:
+      - name: order_count
+        agg: count
+"#,
+        )
+        .unwrap();
+
+        assert_success(sidemantic_load_yaml_for_context(
+            context.as_ptr(),
+            yaml.as_ptr(),
+        ));
+        let loaded = take_rewrite_sql(sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            CString::new("SELECT temp_orders.order_count FROM temp_orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(loaded.contains("COUNT"), "{loaded}");
+
+        assert_success(sidemantic_autoload_for_context(
+            context.as_ptr(),
+            ptr::null(),
+        ));
+
+        let passthrough = sidemantic_rewrite_for_context(
+            context.as_ptr(),
+            CString::new("SELECT temp_orders.order_count FROM temp_orders")
+                .unwrap()
+                .as_ptr(),
+        );
+        assert!(passthrough.error.is_null());
+        assert!(!passthrough.was_rewritten);
+        sidemantic_free_result(passthrough);
+
+        sidemantic_clear_for_context(context.as_ptr());
+    }
+
+    #[test]
+    fn test_atomic_write_replaces_existing_definitions_file_and_cleans_lock() {
+        let _guard = test_lock();
+
+        let db_path = unique_db_path("atomic_replace");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+        let lock_path = definitions_lock_path(&definitions_path);
+
+        {
+            let _lock = lock_definitions_file(&definitions_path).unwrap();
+            assert!(lock_path.exists());
+        }
+        assert!(!lock_path.exists());
+
+        write_definitions_file_atomic(&definitions_path, "first\n").unwrap();
+        write_definitions_file_atomic(&definitions_path, "second\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&definitions_path).unwrap(), "second\n");
+        assert!(!lock_path.exists());
+
         let _ = fs::remove_file(definitions_path);
     }
 
@@ -1760,6 +2342,40 @@ MODEL (name customers, table customers, primary_key customer_id);
         assert!(!updated.contains("name orders"), "{updated}");
         assert!(!updated.contains("name revenue"), "{updated}");
         assert!(updated.contains("name customers"), "{updated}");
+
+        let _ = fs::remove_file(definitions_path);
+    }
+
+    #[test]
+    fn test_model_block_splitting_ignores_model_keyword_in_sql_string_and_comments() {
+        let _guard = test_lock();
+        let db_path = unique_db_path("remove_model_keyword_string");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+        let content = r#"
+-- MODEL (name ignored, table ignored);
+MODEL (name orders, table orders, primary_key order_id);
+METRIC suspicious AS SUM(CASE WHEN note = 'MODEL (' THEN amount ELSE 0 END);
+
+MODEL (name customers, table customers, primary_key customer_id);
+METRIC customer_count AS COUNT(*);
+"#;
+        fs::write(&definitions_path, content).unwrap();
+
+        let original = fs::read_to_string(&definitions_path).unwrap();
+        assert_eq!(split_definitions(&original).len(), 2, "{original}");
+
+        remove_model_from_file(&definitions_path, "customers").unwrap();
+
+        let updated = fs::read_to_string(&definitions_path).unwrap();
+        assert!(updated.contains("name orders"), "{updated}");
+        assert!(updated.contains("'MODEL ('"), "{updated}");
+        assert!(updated.contains("suspicious"), "{updated}");
+        assert!(!updated.contains("name customers"), "{updated}");
+        assert!(!updated.contains("customer_count"), "{updated}");
+
+        let loaded = load_from_sql_string_with_metadata(&updated).unwrap();
+        assert_eq!(loaded.model_order, vec!["orders"]);
 
         let _ = fs::remove_file(definitions_path);
     }

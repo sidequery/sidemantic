@@ -173,12 +173,13 @@ class GrapheneAdapter(BaseAdapter):
                 continue
 
             if statement.source_query is not None:
+                dimensions = _dimensions_from_view_query(statement.source_query)
                 model = Model(
                     name=model_name,
                     sql=statement.source_query.strip(),
                     description=statement.comments.description,
-                    primary_key="id",
-                    dimensions=_dimensions_from_view_query(statement.source_query),
+                    primary_key=_choose_primary_key(dimensions, None),
+                    dimensions=dimensions,
                     metadata={"graphene": {"table_ref": statement.ref, "type": "view"}},
                 )
             else:

@@ -298,6 +298,7 @@ extend regional_orders (
     load_from_directory(layer, tmp_path)
 
     model = layer.graph.models["regional_orders"]
+    assert model.primary_key == "region"
     total_revenue = model.get_dimension("total_revenue")
     assert total_revenue is not None
     assert total_revenue.sql == "total_revenue"

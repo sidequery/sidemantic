@@ -1,5 +1,6 @@
 from sidemantic import SemanticLayer, load_from_directory
 from sidemantic.adapters.graphene import GrapheneAdapter
+from tests.utils import df_rows
 
 
 def test_graphene_table_imports_columns_joins_and_measures(tmp_path):
@@ -583,3 +584,74 @@ extend orders (
     assert "buyer" in layer.graph.models
     assert layer.graph.models["orders"].get_metric("revenue") is not None
     assert layer.graph.models["buyer"].table == "users"
+
+
+def test_graphene_query_projects_alternate_target_join_key(tmp_path):
+    (tmp_path / "orders.gsql").write_text(
+        """
+table orders (
+  id BIGINT primary_key
+  user_code STRING
+  amount FLOAT
+
+  join one users on user_code = users.code
+  revenue: sum(amount)
+)
+"""
+    )
+    (tmp_path / "users.gsql").write_text(
+        """
+table users (
+  id BIGINT primary_key
+  code STRING
+  name STRING
+)
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE orders (id BIGINT, user_code VARCHAR, amount DOUBLE)")
+    layer.adapter.execute("INSERT INTO orders VALUES (1, 'U001', 10.0), (2, 'U001', 15.0)")
+    layer.adapter.execute("CREATE TABLE users (id BIGINT, code VARCHAR, name VARCHAR)")
+    layer.adapter.execute("INSERT INTO users VALUES (100, 'U001', 'Ada')")
+    load_from_directory(layer, tmp_path)
+
+    rows = df_rows(layer.query(metrics=["orders.revenue"], dimensions=["users.name"]))
+
+    assert rows == [("Ada", 25.0)]
+
+
+def test_graphene_query_projects_join_many_local_key(tmp_path):
+    (tmp_path / "accounts.gsql").write_text(
+        """
+table accounts (
+  id BIGINT primary_key
+  account_id BIGINT
+  name STRING
+
+  join many invoices on account_id = invoices.account_id
+)
+"""
+    )
+    (tmp_path / "invoices.gsql").write_text(
+        """
+table invoices (
+  id BIGINT primary_key
+  account_id BIGINT
+  amount FLOAT
+
+  total_amount: sum(amount)
+)
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE accounts (id BIGINT, account_id BIGINT, name VARCHAR)")
+    layer.adapter.execute("INSERT INTO accounts VALUES (1, 42, 'Acme')")
+    layer.adapter.execute("CREATE TABLE invoices (id BIGINT, account_id BIGINT, amount DOUBLE)")
+    layer.adapter.execute("INSERT INTO invoices VALUES (10, 42, 12.0), (11, 42, 8.0)")
+    load_from_directory(layer, tmp_path)
+
+    rows = df_rows(layer.query(metrics=["invoices.total_amount"], dimensions=["accounts.name"]))
+
+    assert rows == [("Acme", 20.0)]

@@ -73,6 +73,35 @@ table orders (
     assert order_items.foreign_key == "order_id"
 
 
+def test_graphene_metric_inlines_computed_dimensions_for_queries(tmp_path):
+    (tmp_path / "orders.gsql").write_text(
+        """
+table orders (
+  id BIGINT
+  status STRING
+  amount DOUBLE
+
+  is_complete: status = 'Complete'
+  completed_revenue: sum(case when is_complete then amount else 0 end)
+)
+"""
+    )
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE orders (id BIGINT, status VARCHAR, amount DOUBLE)")
+    layer.adapter.execute("INSERT INTO orders VALUES (1, 'Complete', 10.0), (2, 'Processing', 5.0)")
+    load_from_directory(layer, tmp_path)
+
+    completed_revenue = layer.graph.models["orders"].get_metric("completed_revenue")
+    assert completed_revenue is not None
+    assert completed_revenue.agg == "sum"
+    assert "is_complete" not in completed_revenue.sql
+    assert "status" in completed_revenue.sql
+
+    rows = df_rows(layer.query(metrics=["orders.completed_revenue"]))
+    assert rows == [(10.0,)]
+
+
 def test_graphene_alias_join_creates_role_model(tmp_path):
     (tmp_path / "flights.gsql").write_text(
         """

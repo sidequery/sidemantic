@@ -201,6 +201,7 @@ class GrapheneAdapter(BaseAdapter):
         unsupported_joins: list[dict[str, Any]] = []
         explicit_primary_key_columns: list[str] = []
         metric_names = _computed_metric_names(statement.items)
+        computed_dimension_sql = _computed_dimension_expressions(statement.items, metric_names)
 
         for item in statement.items:
             if isinstance(item, _GsqlJoin):
@@ -210,7 +211,7 @@ class GrapheneAdapter(BaseAdapter):
                     continue
                 relationships.append(join.relationship)
             elif isinstance(item, _GsqlComputed):
-                computed = self._field_from_computed(item, metric_names)
+                computed = self._field_from_computed(item, metric_names, computed_dimension_sql)
                 if isinstance(computed, Metric):
                     metrics.append(computed)
                 else:
@@ -251,6 +252,11 @@ class GrapheneAdapter(BaseAdapter):
                 continue
 
             metric_names = _computed_metric_names(items, {metric.name for metric in model.metrics})
+            computed_dimension_sql = _computed_dimension_expressions(
+                items,
+                metric_names,
+                _computed_dimension_expressions_from_model(model),
+            )
             for item in items:
                 if isinstance(item, _GsqlJoin):
                     join = self._relationship_from_join(item, model_name, primary_key_candidates)
@@ -259,7 +265,7 @@ class GrapheneAdapter(BaseAdapter):
                         continue
                     model.relationships.append(join.relationship)
                 elif isinstance(item, _GsqlComputed):
-                    computed = self._field_from_computed(item, metric_names)
+                    computed = self._field_from_computed(item, metric_names, computed_dimension_sql)
                     if isinstance(computed, Metric):
                         model.metrics.append(computed)
                     else:
@@ -317,9 +323,19 @@ class GrapheneAdapter(BaseAdapter):
             target_key=target_key,
         )
 
-    def _field_from_computed(self, item: _GsqlComputed, local_metric_names: set[str]) -> Dimension | Metric:
+    def _field_from_computed(
+        self,
+        item: _GsqlComputed,
+        local_metric_names: set[str],
+        computed_dimension_sql: dict[str, str] | None = None,
+    ) -> Dimension | Metric:
         expression = _normalize_sql_fragment(item.expression)
         expression, has_graphene_percentile = _rewrite_graphene_percentile_shorthand(expression)
+        expression = _inline_computed_dimensions(
+            expression,
+            computed_dimension_sql or {},
+            excluded_names={item.name},
+        )
         formatting = _formatting_from_metadata(item.comments.metadata)
 
         if _is_metric_expression(expression, local_metric_names):
@@ -1154,6 +1170,111 @@ def _computed_metric_names(items: list[_GsqlBlockItem], seed_names: set[str] | N
                 changed = True
 
     return metric_names
+
+
+def _computed_dimension_expressions(
+    items: list[_GsqlBlockItem],
+    metric_names: set[str],
+    seed_expressions: dict[str, str] | None = None,
+) -> dict[str, str]:
+    expressions = dict(seed_expressions or {})
+    expressions.update(
+        {
+            item.name: _normalize_sql_fragment(item.expression)
+            for item in items
+            if isinstance(item, _GsqlComputed) and item.name not in metric_names
+        }
+    )
+    cache: dict[str, str] = {}
+    return {name: _expand_computed_dimension_expression(name, expressions, cache, set()) for name in expressions}
+
+
+def _computed_dimension_expressions_from_model(model: Model) -> dict[str, str]:
+    return {
+        dimension.name: dimension.sql
+        for dimension in model.dimensions
+        if dimension.sql and dimension.sql != dimension.name
+    }
+
+
+def _expand_computed_dimension_expression(
+    name: str,
+    expressions: dict[str, str],
+    cache: dict[str, str],
+    visiting: set[str],
+) -> str:
+    if name in cache:
+        return cache[name]
+
+    expression = expressions[name]
+    replacements = {}
+    next_visiting = visiting | {name}
+    for referenced_name in _referenced_field_names(expression):
+        if referenced_name in expressions and referenced_name not in next_visiting:
+            replacements[referenced_name] = _expand_computed_dimension_expression(
+                referenced_name,
+                expressions,
+                cache,
+                next_visiting,
+            )
+
+    cache[name] = _inline_computed_dimensions(expression, replacements, excluded_names={name})
+    return cache[name]
+
+
+def _inline_computed_dimensions(
+    expression: str,
+    computed_dimension_sql: dict[str, str],
+    excluded_names: set[str] | None = None,
+) -> str:
+    excluded_names = excluded_names or set()
+    replacements = {name: sql for name, sql in computed_dimension_sql.items() if name not in excluded_names and sql}
+    if not replacements:
+        return expression
+
+    parsed = _parse_expression(expression)
+    if parsed:
+        changed = False
+
+        def replace(node: exp.Expression) -> exp.Expression:
+            nonlocal changed
+            if isinstance(node, exp.Column) and not node.table:
+                replacement_sql = replacements.get(node.name)
+                replacement = _parse_expression(replacement_sql) if replacement_sql else None
+                if replacement is not None:
+                    changed = True
+                    return replacement.copy()
+            return node
+
+        inlined = parsed.transform(replace, copy=True)
+        return inlined.sql(dialect="duckdb") if changed else expression
+
+    token_replacements: list[tuple[int, int, str]] = []
+    tokens_ = _tokenize_gsql(expression)
+    for idx, token in enumerate(tokens_):
+        if not _is_name_token(token) or not _is_unqualified_field_token(tokens_, idx):
+            continue
+        replacement_sql = replacements.get(_name_text(token))
+        if replacement_sql:
+            token_replacements.append((token.start, token.end + 1, f"({replacement_sql})"))
+
+    if not token_replacements:
+        return expression
+
+    inlined = expression
+    for start, end, replacement in reversed(token_replacements):
+        inlined = f"{inlined[:start]}{replacement}{inlined[end:]}"
+    return inlined
+
+
+def _is_unqualified_field_token(tokens_: list[Token], idx: int) -> bool:
+    if idx > 0 and tokens_[idx - 1].token_type == TokenType.DOT:
+        return False
+    if idx + 1 < len(tokens_):
+        next_token = tokens_[idx + 1]
+        if next_token.token_type in {TokenType.DOT, TokenType.L_PAREN}:
+            return False
+    return True
 
 
 def _is_metric_expression(expression: str, local_metric_names: set[str]) -> bool:

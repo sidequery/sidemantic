@@ -13,7 +13,10 @@ use std::io::{self, Write};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
@@ -38,6 +41,7 @@ struct FfiState {
 /// Semantic graph state keyed by DuckDB database/session context.
 static FFI_STATES: Lazy<Mutex<HashMap<String, FfiState>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static DEFINITIONS_LOCK_TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Result from rewrite operation
 #[repr(C)]
@@ -692,12 +696,15 @@ fn validate_definitions_content(content: &str) -> Result<(), String> {
 struct DefinitionsFileLock {
     path: PathBuf,
     file: Option<fs::File>,
+    owner_token: String,
 }
 
 impl Drop for DefinitionsFileLock {
     fn drop(&mut self) {
         self.file.take();
-        let _ = fs::remove_file(&self.path);
+        if definitions_lock_owned_by(&self.path, &self.owner_token) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -708,6 +715,22 @@ fn definitions_lock_path(path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("definitions.sql");
     parent.join(format!(".{file_name}.lock"))
+}
+
+fn definitions_lock_owner_token() -> String {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let sequence = DEFINITIONS_LOCK_TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("pid={};time={unique};seq={sequence}", std::process::id())
+}
+
+fn definitions_lock_owned_by(lock_path: &Path, owner_token: &str) -> bool {
+    fs::read_to_string(lock_path)
+        .ok()
+        .and_then(|content| content.lines().next().map(str::to_owned))
+        .is_some_and(|token| token == owner_token)
 }
 
 fn lock_definitions_file(path: &Path) -> io::Result<DefinitionsFileLock> {
@@ -721,11 +744,13 @@ fn lock_definitions_file(path: &Path) -> io::Result<DefinitionsFileLock> {
             .open(&lock_path)
         {
             Ok(mut file) => {
-                writeln!(file, "pid={}", std::process::id())?;
+                let owner_token = definitions_lock_owner_token();
+                writeln!(file, "{owner_token}")?;
                 file.sync_all()?;
                 return Ok(DefinitionsFileLock {
                     path: lock_path,
                     file: Some(file),
+                    owner_token,
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -2315,6 +2340,33 @@ models:
         assert_eq!(fs::read_to_string(&definitions_path).unwrap(), "second\n");
         assert!(!lock_path.exists());
 
+        let _ = fs::remove_file(definitions_path);
+    }
+
+    #[test]
+    fn test_lock_drop_does_not_remove_recreated_lock() {
+        let _guard = test_lock();
+
+        let db_path = unique_db_path("lock_recreated");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+        let lock_path = definitions_lock_path(&definitions_path);
+
+        let original_lock = lock_definitions_file(&definitions_path).unwrap();
+        assert!(lock_path.exists());
+
+        fs::remove_file(&lock_path).unwrap();
+        let recreated_token = "pid=recreated;time=1;seq=1";
+        fs::write(&lock_path, format!("{recreated_token}\n")).unwrap();
+
+        drop(original_lock);
+
+        assert_eq!(
+            fs::read_to_string(&lock_path).unwrap(),
+            format!("{recreated_token}\n")
+        );
+
+        let _ = fs::remove_file(lock_path);
         let _ = fs::remove_file(definitions_path);
     }
 

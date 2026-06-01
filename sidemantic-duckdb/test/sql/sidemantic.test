@@ -117,6 +117,14 @@ orders
 products
 test_model
 
+statement ok
+SEMANTIC CREATE MODEL nested_props_model (metadata {owner analytics, name internal}, table orders, primary_key order_id);
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'nested_props_model';
+----
+1
+
 # Test repeated YAML load replaces same-name model instead of failing on duplicates
 statement ok
 SELECT * FROM sidemantic_load('

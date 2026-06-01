@@ -312,18 +312,22 @@ static bool ExtractModelNameProperty(const std::string &body, std::string &name,
     size_t pos = open + 1;
     bool in_single_quote = false;
     bool in_double_quote = false;
-    int depth = 0;
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int brace_depth = 0;
 
     while (pos < body.size()) {
-        while (pos < body.size() && depth == 0 &&
-               (std::isspace(body[pos]) || body[pos] == ',')) {
+        while (pos < body.size() && paren_depth == 0 && bracket_depth == 0 &&
+               brace_depth == 0 && (std::isspace(body[pos]) || body[pos] == ',')) {
             pos++;
         }
-        if (pos >= body.size() || (depth == 0 && body[pos] == ')')) {
+        if (pos >= body.size() ||
+            (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 && body[pos] == ')')) {
             return false;
         }
 
-        if (depth == 0 && StartsWithNameProperty(body, pos)) {
+        if (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 &&
+            StartsWithNameProperty(body, pos)) {
             pos += 4;
             while (pos < body.size() && std::isspace(body[pos])) {
                 pos++;
@@ -391,13 +395,27 @@ static bool ExtractModelNameProperty(const std::string &body, std::string &name,
             } else if (ch == '"') {
                 in_double_quote = true;
             } else if (ch == '(') {
-                depth++;
+                paren_depth++;
             } else if (ch == ')') {
-                if (depth == 0) {
+                if (paren_depth > 0) {
+                    paren_depth--;
+                } else if (bracket_depth == 0 && brace_depth == 0) {
                     return false;
                 }
-                depth--;
-            } else if (ch == ',' && depth == 0) {
+            } else if (ch == '[') {
+                bracket_depth++;
+            } else if (ch == ']') {
+                if (bracket_depth > 0) {
+                    bracket_depth--;
+                }
+            } else if (ch == '{') {
+                brace_depth++;
+            } else if (ch == '}') {
+                if (brace_depth > 0) {
+                    brace_depth--;
+                }
+            } else if (ch == ',' && paren_depth == 0 && bracket_depth == 0 &&
+                       brace_depth == 0) {
                 break;
             }
             pos++;

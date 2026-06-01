@@ -715,18 +715,21 @@ fn should_remove_item_statement(
 fn insert_definition_at_block_end(block: &str, definition: &str) -> String {
     let trimmed_len = block.trim_end().len();
     let (body, trailing) = block.split_at(trimmed_len);
-    let trimmed_definition = definition.trim();
-
-    if body.is_empty() {
-        return format!("{trimmed_definition}{trailing}");
+    let terminated_definition = terminate_definition(definition);
+    if terminated_definition.is_empty() {
+        return block.to_string();
     }
 
-    format!("{body}\n\n{trimmed_definition}{trailing}")
+    if body.is_empty() {
+        return format!("{terminated_definition}{trailing}");
+    }
+
+    format!("{body}\n\n{terminated_definition}{trailing}")
 }
 
 fn append_definition_to_content(content: &str, definition: &str) -> String {
-    let trimmed_definition = definition.trim();
-    if trimmed_definition.is_empty() {
+    let terminated_definition = terminate_definition(definition);
+    if terminated_definition.is_empty() {
         return content.trim_end().to_string();
     }
 
@@ -734,9 +737,18 @@ fn append_definition_to_content(content: &str, definition: &str) -> String {
     if !result.is_empty() {
         result.push_str("\n\n");
     }
-    result.push_str(trimmed_definition);
+    result.push_str(&terminated_definition);
     result.push('\n');
     result
+}
+
+fn terminate_definition(definition: &str) -> String {
+    let trimmed_definition = definition.trim();
+    if trimmed_definition.is_empty() || trimmed_definition.ends_with(';') {
+        trimmed_definition.to_string()
+    } else {
+        format!("{trimmed_definition};")
+    }
 }
 
 fn read_definitions_file(path: &Path) -> io::Result<String> {
@@ -2004,6 +2016,60 @@ models:
         assert_eq!(orders_model.table.as_deref(), Some("orders_v2"));
         assert_eq!(customers_model.metrics.len(), 1);
         assert_eq!(customers_model.metrics[0].name, "customer_count");
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
+    fn test_semicolonless_simple_as_definition_is_terminated_before_append() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let db_path = unique_db_path("semicolonless_simple_as_append");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
+        let orders =
+            CString::new("MODEL (name orders, table orders, primary_key order_id)").unwrap();
+        assert_success(sidemantic_define(orders.as_ptr(), db_path.as_ptr(), false));
+
+        let metric = CString::new("METRIC revenue AS SUM(amount)").unwrap();
+        assert_success(sidemantic_add_definition(
+            metric.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+
+        let customers =
+            CString::new("MODEL (name customers, table customers, primary_key customer_id)")
+                .unwrap();
+        assert_success(sidemantic_define(
+            customers.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+
+        let content = fs::read_to_string(&definitions_path).unwrap();
+        assert!(
+            content.contains("METRIC revenue AS SUM(amount);\n\nMODEL (name customers"),
+            "{content}"
+        );
+
+        sidemantic_clear();
+        assert_success(sidemantic_autoload(db_path.as_ptr()));
+
+        let customers_name = CString::new("customers").unwrap();
+        assert!(sidemantic_is_model(customers_name.as_ptr()));
+
+        let rewritten = take_rewrite_sql(sidemantic_rewrite(
+            CString::new("SELECT orders.revenue FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(rewritten.contains("SUM"), "{rewritten}");
+        assert!(rewritten.contains("amount"), "{rewritten}");
+        assert!(!rewritten.contains("MODEL (name customers"), "{rewritten}");
 
         remove_definitions_file(&db_path);
     }

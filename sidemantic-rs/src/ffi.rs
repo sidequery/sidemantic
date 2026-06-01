@@ -412,7 +412,7 @@ fn starts_with_definition_keyword(sql: &str, keyword: &str) -> bool {
     trimmed[keyword.len()..]
         .chars()
         .next()
-        .map(|ch| ch.is_whitespace())
+        .map(|ch| ch.is_whitespace() || ch == '(')
         .unwrap_or(true)
 }
 
@@ -461,7 +461,7 @@ fn keyword_matches_at(bytes: &[u8], idx: usize, keyword: &[u8]) -> bool {
 
     bytes
         .get(idx + keyword.len())
-        .map(|byte| byte.is_ascii_whitespace())
+        .map(|byte| byte.is_ascii_whitespace() || *byte == b'(')
         .unwrap_or(true)
 }
 
@@ -1883,6 +1883,56 @@ models:
         ));
         assert!(dimension_sql.contains("clean_status"), "{dimension_sql}");
         assert!(!dimension_sql.contains("raw_status"), "{dimension_sql}");
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
+    fn test_compact_parenthesized_definitions_are_detected_for_persistence_updates() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let db_path = unique_db_path("compact_parenthesized_persistence");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
+        let model = CString::new("MODEL(name orders, table orders, primary_key order_id)").unwrap();
+        assert_success(sidemantic_define(model.as_ptr(), db_path.as_ptr(), false));
+
+        let old_metric = CString::new("METRIC(name revenue, agg sum, sql gross_amount)").unwrap();
+        assert_success(sidemantic_add_definition(
+            old_metric.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+
+        let new_metric = CString::new("METRIC(name revenue, agg sum, sql net_amount)").unwrap();
+        assert_success(sidemantic_add_definition(
+            new_metric.as_ptr(),
+            db_path.as_ptr(),
+            true,
+        ));
+
+        let content = fs::read_to_string(&definitions_path).unwrap();
+        assert_eq!(
+            content.matches("METRIC(name revenue").count(),
+            1,
+            "{content}"
+        );
+        assert!(!content.contains("gross_amount"), "{content}");
+        assert!(content.contains("net_amount"), "{content}");
+
+        sidemantic_clear();
+        assert_success(sidemantic_autoload(db_path.as_ptr()));
+
+        let rewritten = take_rewrite_sql(sidemantic_rewrite(
+            CString::new("SELECT orders.revenue FROM orders")
+                .unwrap()
+                .as_ptr(),
+        ));
+        assert!(rewritten.contains("net_amount"), "{rewritten}");
+        assert!(!rewritten.contains("gross_amount"), "{rewritten}");
 
         remove_definitions_file(&db_path);
     }

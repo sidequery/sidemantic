@@ -201,6 +201,54 @@ metrics:
     assert metric.denominator == "orders.order_count"
 
 
+def test_load_from_directory_resolves_native_graph_metric_inheritance_across_files(tmp_path):
+    (tmp_path / "base_metrics.yml").write_text(
+        """
+version: 1
+metrics:
+  - name: gross_revenue
+    agg: sum
+    sql: orders.amount
+"""
+    )
+    (tmp_path / "child_metrics.yml").write_text(
+        """
+version: 1
+metrics:
+  - name: paid_revenue
+    extends: gross_revenue
+    filters:
+      - orders.status = 'paid'
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    metric = layer.graph.metrics["paid_revenue"]
+    assert metric.extends is None
+    assert metric.agg == "sum"
+    assert metric.sql == "orders.amount"
+    assert metric.filters == ["orders.status = 'paid'"]
+
+
+def test_load_from_directory_strict_raises_on_missing_native_graph_metric_parent(tmp_path):
+    (tmp_path / "metrics.yml").write_text(
+        """
+version: 1
+metrics:
+  - name: paid_revenue
+    extends: missing_revenue
+    filters:
+      - orders.status = 'paid'
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="Native metric 'paid_revenue' extends unknown metric 'missing_revenue'"):
+        load_from_directory(layer, tmp_path)
+
+
 def test_load_from_directory_strict_raises_on_missing_native_parent(tmp_path):
     (tmp_path / "child.yml").write_text(
         """

@@ -443,8 +443,12 @@ class SidemanticAdapter(BaseAdapter):
             resolve_model_metric_inheritance(model)
 
         if any(metric.extends for metric in graph.metrics.values()):
-            graph.metrics = resolve_metric_inheritance(graph.metrics)
-            graph._mark_dirty()
+            missing_parent = any(
+                metric.extends and metric.extends not in graph.metrics for metric in graph.metrics.values()
+            )
+            if not missing_parent:
+                graph.metrics = resolve_metric_inheritance(graph.metrics)
+                graph._mark_dirty()
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Sidemantic YAML.

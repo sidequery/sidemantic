@@ -179,6 +179,11 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                         model._source_format = adapter_name
                     if not hasattr(model, "_source_file"):
                         model._source_file = str(file_path.relative_to(directory))
+                for metric in graph.metrics.values():
+                    if not hasattr(metric, "_source_format"):
+                        metric._source_format = adapter_name
+                    if not hasattr(metric, "_source_file"):
+                        metric._source_file = str(file_path.relative_to(directory))
                 all_models.update(graph.models)
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
@@ -186,6 +191,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 _handle_parse_error(file_path, e, strict=strict)
 
     _resolve_native_model_inheritance(all_models, strict=strict)
+    _resolve_native_metric_inheritance(all_metrics, strict=strict)
 
     # BSL files are parsed one at a time during auto-discovery. Finalize join
     # aliases after all files have been loaded so aliases can target models
@@ -465,7 +471,7 @@ def _run_without_auto_registration(callback, *args):
         set_current_layer(previous_layer)
 
 
-def _copy_model_source_attrs(source, target) -> None:
+def _copy_source_attrs(source, target) -> None:
     for attr in ("_source_format", "_source_file"):
         if hasattr(source, attr):
             setattr(target, attr, getattr(source, attr))
@@ -523,9 +529,69 @@ def _resolve_native_model_inheritance(all_models: dict, *, strict: bool) -> None
 
         merged = _run_without_auto_registration(merge_model, model, parent)
         _run_without_auto_registration(resolve_model_metric_inheritance, merged)
-        _copy_model_source_attrs(model, merged)
+        _copy_source_attrs(model, merged)
         resolved[name] = merged
         all_models[name] = merged
+        return merged
+
+    for name in native_children:
+        resolve(name)
+
+
+def _resolve_native_metric_inheritance(all_metrics: dict, *, strict: bool) -> None:
+    """Resolve Sidemantic-native graph metric inheritance after directory-wide parsing."""
+    native_children = {
+        name: metric
+        for name, metric in all_metrics.items()
+        if getattr(metric, "_source_format", None) == "Sidemantic" and metric.extends
+    }
+    if not native_children:
+        return
+
+    from sidemantic.core.inheritance import merge_metric
+
+    resolved = {}
+    resolving = set()
+
+    def fail(message: str):
+        if strict:
+            raise ValueError(message)
+        logging.warning(message)
+        return None
+
+    def resolve(name: str):
+        if name in resolved:
+            return resolved[name]
+
+        metric = all_metrics.get(name)
+        if metric is None:
+            return fail(f"Native metric '{name}' not found")
+
+        if name in resolving:
+            return fail(f"Circular native metric inheritance detected for metric '{name}'")
+
+        if not metric.extends:
+            resolved[name] = metric
+            return metric
+
+        parent = all_metrics.get(metric.extends)
+        if parent is None:
+            return fail(f"Native metric '{name}' extends unknown metric '{metric.extends}'")
+
+        resolving.add(name)
+        try:
+            if parent.extends:
+                parent = resolve(metric.extends)
+        finally:
+            resolving.remove(name)
+
+        if parent is None:
+            return None
+
+        merged = _run_without_auto_registration(merge_metric, metric, parent)
+        _copy_source_attrs(metric, merged)
+        resolved[name] = merged
+        all_metrics[name] = merged
         return merged
 
     for name in native_children:

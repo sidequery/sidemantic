@@ -820,46 +820,51 @@ impl<'a> SqlGenerator<'a> {
 
     fn graph_metric_owner_models(&self, reference: &str, metric: &Metric) -> Result<Vec<String>> {
         let mut owners = HashSet::new();
-        for model in self.graph.models() {
-            if model.get_metric(reference).is_some() {
-                owners.insert(model.name.clone());
+
+        for fragment in [
+            metric.sql.as_deref(),
+            metric.numerator.as_deref(),
+            metric.denominator.as_deref(),
+            metric.base_metric.as_deref(),
+            metric.entity.as_deref(),
+            metric.base_event.as_deref(),
+            metric.conversion_event.as_deref(),
+            metric.cohort_event.as_deref(),
+            metric.activity_event.as_deref(),
+            metric.having.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.collect_owner_models_from_fragment(fragment, &mut owners);
+        }
+
+        for filter in &metric.filters {
+            self.collect_owner_models_from_fragment(filter, &mut owners);
+        }
+
+        if let Some(steps) = metric.steps.as_ref() {
+            for step in steps {
+                self.collect_owner_models_from_fragment(step, &mut owners);
+            }
+        }
+        if let Some(inner_metrics) = metric.inner_metrics.as_ref() {
+            for inner_metric in inner_metrics {
+                if let Some(sql) = inner_metric.sql.as_deref() {
+                    self.collect_owner_models_from_fragment(sql, &mut owners);
+                }
+            }
+        }
+        if let Some(entity_dimensions) = metric.entity_dimensions.as_ref() {
+            for dimension in entity_dimensions {
+                self.collect_owner_models_from_fragment(dimension, &mut owners);
             }
         }
 
         if owners.is_empty() {
-            for fragment in [
-                metric.sql.as_deref(),
-                metric.numerator.as_deref(),
-                metric.denominator.as_deref(),
-                metric.base_metric.as_deref(),
-                metric.entity.as_deref(),
-                metric.base_event.as_deref(),
-                metric.conversion_event.as_deref(),
-                metric.cohort_event.as_deref(),
-                metric.activity_event.as_deref(),
-                metric.having.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                self.collect_owner_models_from_fragment(fragment, &mut owners);
-            }
-
-            if let Some(steps) = metric.steps.as_ref() {
-                for step in steps {
-                    self.collect_owner_models_from_fragment(step, &mut owners);
-                }
-            }
-            if let Some(inner_metrics) = metric.inner_metrics.as_ref() {
-                for inner_metric in inner_metrics {
-                    if let Some(sql) = inner_metric.sql.as_deref() {
-                        self.collect_owner_models_from_fragment(sql, &mut owners);
-                    }
-                }
-            }
-            if let Some(entity_dimensions) = metric.entity_dimensions.as_ref() {
-                for dimension in entity_dimensions {
-                    self.collect_owner_models_from_fragment(dimension, &mut owners);
+            for model in self.graph.models() {
+                if model.get_metric(reference).is_some() {
+                    owners.insert(model.name.clone());
                 }
             }
         }
@@ -4656,6 +4661,28 @@ mod tests {
 
         assert!(sql.contains("gross_cents AS revenue_raw"), "{sql}");
         assert!(!sql.contains("amount AS revenue_raw"), "{sql}");
+    }
+
+    #[test]
+    fn test_graph_metric_owner_comes_from_metric_sql_not_same_named_model_metric() {
+        let mut graph = create_test_graph();
+        let sales = Model::new("sales", "sale_id")
+            .with_table("sales")
+            .with_metric(Metric::sum("gross_sales", "amount"));
+        graph.add_model(sales).unwrap();
+        graph
+            .add_metric(Metric::sum("revenue", "sales.amount"))
+            .unwrap();
+        let generator = SqlGenerator::new(&graph);
+
+        let query = SemanticQuery::new().with_metrics(vec!["revenue".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("sales.amount AS revenue_raw"), "{sql}");
+        assert!(sql.contains("FROM sales"), "{sql}");
+        assert!(!sql.contains("\n    amount AS revenue_raw"), "{sql}");
+        assert!(!sql.contains("FROM orders"), "{sql}");
     }
 
     #[test]

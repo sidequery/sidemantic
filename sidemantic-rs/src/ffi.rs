@@ -416,6 +416,55 @@ fn starts_with_definition_keyword(sql: &str, keyword: &str) -> bool {
         .unwrap_or(true)
 }
 
+const DEFINITION_KEYWORDS: &[&str] = &[
+    "MODEL",
+    "METRIC",
+    "DIMENSION",
+    "SEGMENT",
+    "RELATIONSHIP",
+    "PARAMETER",
+    "PRE_AGGREGATION",
+];
+
+fn definition_keyword_at_line_start(bytes: &[u8], idx: usize) -> bool {
+    let Some(byte) = bytes.get(idx) else {
+        return false;
+    };
+    if !byte.is_ascii_alphabetic() {
+        return false;
+    }
+
+    let line_start = bytes[..idx]
+        .iter()
+        .rposition(|byte| *byte == b'\n' || *byte == b'\r')
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+    if !bytes[line_start..idx]
+        .iter()
+        .all(|byte| byte.is_ascii_whitespace())
+    {
+        return false;
+    }
+
+    DEFINITION_KEYWORDS
+        .iter()
+        .any(|keyword| keyword_matches_at(bytes, idx, keyword.as_bytes()))
+}
+
+fn keyword_matches_at(bytes: &[u8], idx: usize, keyword: &[u8]) -> bool {
+    let Some(candidate) = bytes.get(idx..idx + keyword.len()) else {
+        return false;
+    };
+    if !candidate.eq_ignore_ascii_case(keyword) {
+        return false;
+    }
+
+    bytes
+        .get(idx + keyword.len())
+        .map(|byte| byte.is_ascii_whitespace())
+        .unwrap_or(true)
+}
+
 fn statement_ranges(block: &str) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut start = None;
@@ -423,6 +472,7 @@ fn statement_ranges(block: &str) -> Vec<(usize, usize)> {
     let mut in_double_quote = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
+    let mut paren_depth = 0usize;
     let bytes = block.as_bytes();
     let mut idx = 0;
 
@@ -486,6 +536,16 @@ fn statement_ranges(block: &str) -> Vec<(usize, usize)> {
             start = Some(idx);
         }
 
+        if let Some(statement_start) = start {
+            if paren_depth == 0
+                && idx != statement_start
+                && definition_keyword_at_line_start(bytes, idx)
+            {
+                ranges.push((statement_start, idx));
+                start = Some(idx);
+            }
+        }
+
         if byte == b'-' && bytes.get(idx + 1) == Some(&b'-') {
             in_line_comment = true;
             idx += 2;
@@ -500,10 +560,13 @@ fn statement_ranges(block: &str) -> Vec<(usize, usize)> {
         match byte {
             b'\'' => in_single_quote = true,
             b'"' => in_double_quote = true,
+            b'(' => paren_depth = paren_depth.saturating_add(1),
+            b')' => paren_depth = paren_depth.saturating_sub(1),
             b';' => {
                 if let Some(statement_start) = start.take() {
                     ranges.push((statement_start, idx + 1));
                 }
+                paren_depth = 0;
             }
             _ => {}
         }
@@ -1834,6 +1897,74 @@ models:
         ));
         assert!(rewritten.contains("SUM"), "{rewritten}");
         assert!(rewritten.contains("amount"), "{rewritten}");
+
+        remove_definitions_file(&db_path);
+    }
+
+    #[test]
+    fn test_semicolonless_persisted_model_blocks_stay_separate_for_updates() {
+        let _guard = test_lock();
+        sidemantic_clear();
+
+        let db_path = unique_db_path("semicolonless_model_blocks");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        remove_definitions_file(&db_path);
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+
+        let orders =
+            CString::new("MODEL (name orders, table orders, primary_key order_id)").unwrap();
+        let customers =
+            CString::new("MODEL (name customers, table customers, primary_key customer_id)")
+                .unwrap();
+        assert_success(sidemantic_define(orders.as_ptr(), db_path.as_ptr(), false));
+        assert_success(sidemantic_define(
+            customers.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+
+        let initial = fs::read_to_string(&definitions_path).unwrap();
+        assert_eq!(split_definitions(&initial).len(), 2, "{initial}");
+
+        let metric = CString::new("METRIC customers.customer_count AS COUNT(*)").unwrap();
+        assert_success(sidemantic_add_definition(
+            metric.as_ptr(),
+            db_path.as_ptr(),
+            false,
+        ));
+
+        let replacement =
+            CString::new("MODEL (name orders, table orders_v2, primary_key order_id)").unwrap();
+        assert_success(sidemantic_define(
+            replacement.as_ptr(),
+            db_path.as_ptr(),
+            true,
+        ));
+
+        let updated = fs::read_to_string(&definitions_path).unwrap();
+        let blocks = split_definitions(&updated);
+        assert_eq!(blocks.len(), 2, "{updated}");
+        assert!(updated.contains("orders_v2"), "{updated}");
+        assert!(updated.contains("customer_count"), "{updated}");
+
+        let orders_model = blocks
+            .iter()
+            .find_map(|block| {
+                let model = parse_sql_model(block).ok()?;
+                (model.name == "orders").then_some(model)
+            })
+            .unwrap();
+        let customers_model = blocks
+            .iter()
+            .find_map(|block| {
+                let model = parse_sql_model(block).ok()?;
+                (model.name == "customers").then_some(model)
+            })
+            .unwrap();
+
+        assert_eq!(orders_model.table.as_deref(), Some("orders_v2"));
+        assert_eq!(customers_model.metrics.len(), 1);
+        assert_eq!(customers_model.metrics[0].name, "customer_count");
 
         remove_definitions_file(&db_path);
     }

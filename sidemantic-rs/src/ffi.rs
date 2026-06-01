@@ -853,6 +853,16 @@ fn remove_stale_definitions_lock(
     }
 }
 
+fn cleanup_unacquired_definitions_lock(
+    lock_path: &Path,
+    file: fs::File,
+    error: io::Error,
+) -> io::Error {
+    drop(file);
+    let _ = fs::remove_file(lock_path);
+    error
+}
+
 fn lock_definitions_file(path: &Path) -> io::Result<DefinitionsFileLock> {
     let lock_path = definitions_lock_path(path);
     let deadline = Instant::now() + DEFINITIONS_LOCK_TIMEOUT;
@@ -865,8 +875,12 @@ fn lock_definitions_file(path: &Path) -> io::Result<DefinitionsFileLock> {
         {
             Ok(mut file) => {
                 let owner_token = definitions_lock_owner_token();
-                writeln!(file, "{owner_token}")?;
-                file.sync_all()?;
+                if let Err(error) = writeln!(file, "{owner_token}") {
+                    return Err(cleanup_unacquired_definitions_lock(&lock_path, file, error));
+                }
+                if let Err(error) = file.sync_all() {
+                    return Err(cleanup_unacquired_definitions_lock(&lock_path, file, error));
+                }
                 return Ok(DefinitionsFileLock {
                     path: lock_path,
                     file: Some(file),
@@ -2624,6 +2638,34 @@ models:
         write_definitions_file_atomic(&definitions_path, "second\n").unwrap();
 
         assert_eq!(fs::read_to_string(&definitions_path).unwrap(), "second\n");
+        assert!(!lock_path.exists());
+
+        let _ = fs::remove_file(definitions_path);
+    }
+
+    #[test]
+    fn test_unacquired_lock_cleanup_removes_created_lock_file() {
+        let _guard = test_lock();
+
+        let db_path = unique_db_path("unacquired_lock_cleanup");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+        let lock_path = definitions_lock_path(&definitions_path);
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .unwrap();
+        assert!(lock_path.exists());
+
+        let error = cleanup_unacquired_definitions_lock(
+            &lock_path,
+            file,
+            io::Error::other("token write failed"),
+        );
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         assert!(!lock_path.exists());
 
         let _ = fs::remove_file(definitions_path);

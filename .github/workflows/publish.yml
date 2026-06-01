@@ -73,13 +73,14 @@ jobs:
       - name: Update lock file
         run: uv lock
 
+      - name: Validate release tree
+        run: |
+          uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+          uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+          uv run pytest -v
+
       - name: Build package
         run: uv build
-
-      - name: Publish to PyPI
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish --token $UV_PUBLISH_TOKEN
 
       - name: Commit version bump and create tag
         run: |
@@ -91,6 +92,11 @@ jobs:
           git push origin main
           git push origin "v${{ steps.version.outputs.new_version }}"
 
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish --token $UV_PUBLISH_TOKEN
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -98,12 +104,3 @@ jobs:
           gh release create "v${{ steps.version.outputs.new_version }}" \
             --title "v${{ steps.version.outputs.new_version }}" \
             --generate-notes
-
-  rust-binaries:
-    name: Release Rust binaries
-    needs: publish
-    permissions:
-      contents: write
-    uses: ./.github/workflows/release-rust-binaries.yml
-    with:
-      tag: ${{ needs.publish.outputs.tag }}

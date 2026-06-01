@@ -120,19 +120,19 @@ This creates tables like:
 - `preagg.orders_preagg_daily_region` - Daily metrics by region
 - `preagg.orders_preagg_monthly_summary` - Monthly rollup
 
-### 5. Query with Automatic Routing
+### 5. Query with Explicit Routing
 
-Queries automatically use pre-aggregations when available:
+Queries use pre-aggregations when routing is enabled:
 
 ```bash
-# Query from CLI - automatically uses pre-aggregations
-uvx sidemantic query "SELECT status, revenue FROM orders"
+# Query from CLI with pre-aggregation routing enabled
+uvx sidemantic query "SELECT status, revenue FROM orders" --models models --use-preaggregations
 
 # Or use the interactive workbench
-uvx sidemantic workbench
+uvx --from "sidemantic[workbench]" sidemantic workbench
 ```
 
-The config in `sidemantic.yaml` enables pre-aggregations and sets the schema.
+The config in `sidemantic.yaml` sets the pre-aggregation schema. CLI query routing is explicit, so use `--use-preaggregations`.
 
 ## How It Works
 
@@ -265,7 +265,7 @@ refresh_preaggs = BashOperator(
 
 Query from workbench or check the compiled SQL to see if pre-agg was used:
 ```bash
-uvx sidemantic workbench
+uvx --from "sidemantic[workbench]" sidemantic workbench
 # Run a query and look for "used_preagg=true" in the generated SQL
 ```
 

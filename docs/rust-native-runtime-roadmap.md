@@ -1225,7 +1225,7 @@ Until then, docs should clearly say "build from source."
 Track:
 
 - Native format version: `1`.
-- Python package version: `0.9.x`.
+- Python package version: `0.10.x`.
 - Rust runtime version: `0.1.x`.
 - DuckDB extension version: `0.1.x`.
 
@@ -1233,7 +1233,7 @@ Add compatibility docs:
 
 | Python package | Rust runtime | Native format | DuckDB extension |
 |---|---|---|---|
-| `0.9.6` | `0.1.0` | `1` | `0.1.0` |
+| `0.10.0` | `0.1.0` | `1` | `0.1.0` |
 
 ## Phase 13: Documentation Plan
 

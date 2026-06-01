@@ -39,5 +39,18 @@ def test_color_palette():
         pytest.skip("altair not installed")
 
 
+def test_missing_chart_dependencies_hint_names_charts_extra(monkeypatch):
+    from sidemantic import charts
+
+    monkeypatch.setattr(charts, "alt", None)
+    monkeypatch.setattr(charts, "vl_convert", None)
+
+    with pytest.raises(ImportError) as exc_info:
+        charts.check_altair_available()
+
+    assert "sidemantic[charts]" in str(exc_info.value)
+    assert "optional serve" not in str(exc_info.value)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

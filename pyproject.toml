@@ -44,6 +44,8 @@ mcp = [
 ]
 apps = [
     "mcp[cli]>=1.25.0,<2",
+    "altair>=5.0.0",
+    "vl-convert-python>=1.0.0",
 ]
 charts = [
     "altair>=5.0.0",

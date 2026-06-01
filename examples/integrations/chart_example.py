@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # /// script
-# dependencies = ["sidemantic[serve]", "duckdb"]
+# dependencies = ["sidemantic[charts]", "duckdb"]
 # ///
 """Example demonstrating chart generation from semantic layer queries.
 

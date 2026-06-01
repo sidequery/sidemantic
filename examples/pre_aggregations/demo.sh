@@ -6,7 +6,7 @@
 # 2. Discover pre-aggregation opportunities from query patterns
 # 3. Apply recommendations to model files
 # 4. Materialize pre-aggregations
-# 5. Query with automatic routing
+# 5. Query with explicit routing
 
 set -e
 
@@ -51,10 +51,10 @@ echo "====================================================================="
 echo ""
 echo "Try querying with pre-aggregations enabled:"
 echo ""
-echo "  uvx sidemantic workbench"
+echo "  uvx --from \"sidemantic[workbench]\" sidemantic workbench"
 echo ""
 echo "Or test from command line:"
 echo ""
-echo "  # This query will automatically use pre-aggregations when available"
-echo "  uvx sidemantic query \"SELECT status, revenue FROM orders\""
+echo "  # Enable pre-aggregation routing explicitly"
+echo "  uvx sidemantic query \"SELECT status, revenue FROM orders\" --models models --use-preaggregations"
 echo ""

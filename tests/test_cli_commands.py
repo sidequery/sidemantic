@@ -1,7 +1,9 @@
 """Tests for CLI command wiring."""
 
+import builtins
 import json
 import os
+import sys
 from pathlib import Path
 
 import duckdb
@@ -74,6 +76,23 @@ def test_info_prints_model_summary(tmp_path):
     assert "orders" in result.stdout
     assert "Dimensions: 1" in result.stdout
     assert "Metrics: 1" in result.stdout
+
+
+def test_info_fails_on_detected_parse_error(tmp_path):
+    _write_min_model(tmp_path)
+    (tmp_path / "bad.yml").write_text(
+        """
+models:
+  - name: broken
+    table: [
+"""
+    )
+
+    result = runner.invoke(app, ["info", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Could not parse" in result.output
+    assert "bad.yml" in result.output
 
 
 def test_query_dry_run_emits_sql(tmp_path):
@@ -336,22 +355,55 @@ def test_workbench_missing_extra_prints_install_hint(monkeypatch, tmp_path):
     assert "uvx --from 'sidemantic[workbench]' sidemantic workbench --demo" in result.output
 
 
-def test_validate_calls_runner(monkeypatch, tmp_path):
-    pytest.importorskip("textual")
-    called = {}
+def test_validate_python_runs_without_workbench_extra(monkeypatch, tmp_path):
+    for module_name in list(sys.modules):
+        if module_name == "sidemantic.workbench" or module_name.startswith("sidemantic.workbench."):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
 
-    def fake_run_validation(directory, verbose=False):
-        called["directory"] = directory
-        called["verbose"] = verbose
+    real_import = builtins.__import__
 
-    monkeypatch.setattr("sidemantic.workbench.run_validation", fake_run_validation)
+    def blocked_workbench_import(name, *args, **kwargs):
+        if name == "sidemantic.workbench" or name.startswith("sidemantic.workbench."):
+            raise ImportError("simulated missing workbench extra")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_workbench_import)
 
     _write_min_model(tmp_path)
-    result = runner.invoke(app, ["validate", str(tmp_path), "--verbose"])
+    result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "python", "--verbose"])
 
     assert result.exit_code == 0
-    assert called["directory"] == tmp_path
-    assert called["verbose"] is True
+    assert "Validation Results:" in result.output
+    assert "Loaded 1 models" in result.output
+    assert "Validation Passed" in result.output
+
+
+def test_validate_python_fails_on_validation_errors(tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        sql: status
+        type: categorical
+    metrics:
+      - name: order_count
+        agg: count
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+"""
+    )
+
+    result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "python"])
+
+    assert result.exit_code == 1
+    assert "relationship to 'customers' which doesn't exist" in result.output
+    assert "Validation Failed" in result.output
 
 
 def test_validate_engine_rust_uses_rust_loader(monkeypatch, tmp_path):
@@ -412,6 +464,28 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
     assert called["port"] == 5544
     assert called["username"] == "u"
     assert called["password"] == "p"
+
+
+def test_serve_missing_extra_prints_install_hint(monkeypatch, tmp_path):
+    for module_name in list(sys.modules):
+        if module_name == "sidemantic.server.server" or module_name.startswith("sidemantic.server."):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    real_import = builtins.__import__
+
+    def blocked_server_import(name, *args, **kwargs):
+        if name == "sidemantic.server.server":
+            raise ImportError("simulated missing serve extra")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_server_import)
+
+    _write_min_model(tmp_path)
+    result = runner.invoke(app, ["serve", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "requires the optional serve dependencies" in result.output
+    assert "sidemantic[serve]" in result.output
 
 
 def test_serve_rejects_partial_auth(monkeypatch, tmp_path):

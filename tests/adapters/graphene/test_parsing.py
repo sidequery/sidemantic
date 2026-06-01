@@ -1,3 +1,5 @@
+import pytest
+
 from sidemantic import SemanticLayer, load_from_directory
 from sidemantic.adapters.graphene import GrapheneAdapter
 from tests.utils import df_rows
@@ -678,6 +680,47 @@ table orders (
 
     assert "orders" in layer.graph.models
     assert layer.graph.models["orders"].get_metric("revenue") is not None
+
+
+def test_load_from_directory_strict_raises_on_graphene_parse_error(tmp_path):
+    (tmp_path / "broken.gsql").write_text(
+        """
+table broken (
+  id INT64
+"""
+    )
+    (tmp_path / "orders.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="Could not parse .*Unclosed table body"):
+        load_from_directory(layer, tmp_path)
+
+
+def test_load_from_directory_lenient_skips_graphene_parse_error(tmp_path):
+    (tmp_path / "broken.gsql").write_text(
+        """
+table broken (
+  id INT64
+"""
+    )
+    (tmp_path / "orders.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    assert set(layer.graph.models) == {"orders"}
 
 
 def test_load_from_directory_accepts_graphene_percentile_aggregate(tmp_path):

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from sidemantic.core.semantic_layer import SemanticLayer
 
 
-def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
+def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict: bool = True) -> None:
     """Load all semantic layer definitions from a directory.
 
     Automatically detects and parses Cube, Hex, LookML, and other formats.
@@ -21,6 +21,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     Args:
         layer: SemanticLayer to add models to
         directory: Directory containing semantic layer files
+        strict: If True, fail on parse errors in detected semantic files. If
+            False, log parse errors and continue loading other files.
 
     Example:
         >>> layer = SemanticLayer()
@@ -55,14 +57,14 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
     if _try_load_sml(layer, directory, all_models):
         return
 
-    _load_graphene_project(directory, all_models, all_metrics, all_parameters)
+    _load_graphene_project(directory, all_models, all_metrics, all_parameters, strict=strict)
 
     # Find and parse all files
     for file_path in directory.rglob("*"):
         if not file_path.is_file():
             continue
 
-        if _try_load_python_file(file_path, directory, all_models):
+        if _try_load_python_file(file_path, directory, all_models, strict=strict):
             continue
 
         # Detect format and parse
@@ -107,7 +109,12 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
         elif suffix in (".yml", ".yaml"):
             # Try to detect which format by reading the file
             content = file_path.read_text()
-            yaml_data = _load_yaml_mapping(content)
+            try:
+                yaml_data = _load_yaml_mapping(content)
+            except Exception as e:
+                if _looks_like_semantic_yaml_text(content):
+                    _handle_parse_error(file_path, e, strict=strict)
+                continue
             # Check for MetricFlow before Sidemantic native since
             # "semantic_models:" contains "models:" as a substring
             if _yaml_has_top_level_key(yaml_data, "semantic_models"):
@@ -162,7 +169,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
 
         if adapter:
             try:
-                graph = adapter.parse(str(file_path))
+                graph = _parse_adapter_without_auto_registration(adapter, file_path)
                 # Track source format for each model
                 adapter_name = adapter.__class__.__name__.replace("Adapter", "")
                 for model in graph.models.values():
@@ -174,8 +181,9 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path) -> None:
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
             except Exception as e:
-                # Skip files that fail to parse
-                logging.warning("Could not parse %s: %s", file_path, e)
+                _handle_parse_error(file_path, e, strict=strict)
+
+    _resolve_native_model_inheritance(all_models, strict=strict)
 
     # BSL files are parsed one at a time during auto-discovery. Finalize join
     # aliases after all files have been loaded so aliases can target models
@@ -208,6 +216,8 @@ def _load_graphene_project(
     all_models: dict,
     all_metrics: dict,
     all_parameters: dict,
+    *,
+    strict: bool,
 ) -> None:
     """Parse Graphene `.gsql` files together so project-level links resolve."""
     from sidemantic.adapters.graphene import GrapheneAdapter
@@ -219,7 +229,7 @@ def _load_graphene_project(
     try:
         graph = adapter.parse(str(directory))
     except Exception as e:
-        logging.warning("Could not parse Graphene project %s: %s", directory, e)
+        _handle_parse_error(directory, e, strict=strict)
         return
 
     adapter_name = adapter.__class__.__name__.replace("Adapter", "")
@@ -305,12 +315,30 @@ def _looks_like_python_semantic_definition(file_path: Path) -> bool:
 
 
 def _load_yaml_mapping(content: str) -> dict:
-    """Parse YAML content and return a mapping, or an empty mapping on failure."""
-    try:
-        data = yaml.safe_load(content)
-    except Exception:
-        return {}
+    """Parse YAML content and return a mapping, or an empty mapping for scalar/list YAML."""
+    data = yaml.safe_load(content)
     return data if isinstance(data, dict) else {}
+
+
+def _looks_like_semantic_yaml_text(content: str) -> bool:
+    """Return True when malformed YAML text contains a known semantic-layer key."""
+    semantic_keys = (
+        "base_sql_table",
+        "cubes",
+        "datasets",
+        "dimensions",
+        "measures",
+        "metrics",
+        "models",
+        "semantic_model",
+        "semantic_models",
+        "table_name",
+        "tables",
+        "views",
+        "worksheet",
+    )
+    prefixes = tuple(f"{key}:" for key in semantic_keys)
+    return any(line.lstrip().startswith(prefixes) for line in content.splitlines())
 
 
 def _yaml_has_top_level_key(data: dict, key: str) -> bool:
@@ -407,7 +435,94 @@ def _extract_models_from_python_namespace(namespace: dict, fallback_models: dict
     return extracted
 
 
-def _try_load_python_file(file_path: Path, directory: Path, all_models: dict) -> bool:
+def _handle_parse_error(file_path: Path, error: Exception, *, strict: bool) -> None:
+    if strict:
+        raise ValueError(f"Could not parse {file_path}: {error}") from error
+    logging.warning("Could not parse %s: %s", file_path, error)
+
+
+def _parse_adapter_without_auto_registration(adapter, file_path: Path):
+    return _run_without_auto_registration(adapter.parse, str(file_path))
+
+
+def _run_without_auto_registration(callback, *args):
+    from sidemantic.core.registry import get_current_layer, set_current_layer
+
+    previous_layer = get_current_layer()
+    set_current_layer(None)
+    try:
+        return callback(*args)
+    finally:
+        set_current_layer(previous_layer)
+
+
+def _copy_model_source_attrs(source, target) -> None:
+    for attr in ("_source_format", "_source_file"):
+        if hasattr(source, attr):
+            setattr(target, attr, getattr(source, attr))
+
+
+def _resolve_native_model_inheritance(all_models: dict, *, strict: bool) -> None:
+    """Resolve Sidemantic-native model inheritance after directory-wide parsing."""
+    native_children = {
+        name: model
+        for name, model in all_models.items()
+        if getattr(model, "_source_format", None) == "Sidemantic" and model.extends
+    }
+    if not native_children:
+        return
+
+    from sidemantic.core.inheritance import merge_model
+
+    resolved = {}
+    resolving = set()
+
+    def fail(message: str):
+        if strict:
+            raise ValueError(message)
+        logging.warning(message)
+        return None
+
+    def resolve(name: str):
+        if name in resolved:
+            return resolved[name]
+
+        model = all_models.get(name)
+        if model is None:
+            return fail(f"Native model '{name}' not found")
+
+        if name in resolving:
+            return fail(f"Circular native model inheritance detected for model '{name}'")
+
+        if not model.extends:
+            resolved[name] = model
+            return model
+
+        parent = all_models.get(model.extends)
+        if parent is None:
+            return fail(f"Native model '{name}' extends unknown model '{model.extends}'")
+
+        resolving.add(name)
+        try:
+            if getattr(parent, "_source_format", None) == "Sidemantic" and parent.extends:
+                parent = resolve(model.extends)
+        finally:
+            resolving.remove(name)
+
+        if parent is None:
+            return None
+
+        merged = _run_without_auto_registration(merge_model, model, parent)
+        _copy_model_source_attrs(model, merged)
+        resolved[name] = merged
+        all_models[name] = merged
+        return merged
+
+    for name in native_children:
+        resolve(name)
+
+
+def _try_load_python_file(file_path: Path, directory: Path, all_models: dict, *, strict: bool) -> bool:
     """Load semantic definitions from a Python file if it looks like Sidemantic code."""
     if not _looks_like_python_semantic_definition(file_path):
         return False
@@ -423,7 +538,7 @@ def _try_load_python_file(file_path: Path, directory: Path, all_models: dict) ->
         with captured_layer:
             namespace = runpy.run_path(str(file_path))
     except Exception as e:
-        logging.warning("Could not parse %s: %s", file_path, e)
+        _handle_parse_error(file_path, e, strict=strict)
         return False
     finally:
         if sys.path and sys.path[0] == script_dir:

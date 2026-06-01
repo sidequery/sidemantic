@@ -3356,7 +3356,9 @@ api = [
     { name = "uvicorn" },
 ]
 apps = [
+    { name = "altair" },
     { name = "mcp", extra = ["cli"] },
+    { name = "vl-convert-python" },
 ]
 bigquery = [
     { name = "google-cloud-bigquery" },
@@ -3475,6 +3477,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'adbc'", specifier = ">=1.0.0" },
+    { name = "altair", marker = "extra == 'apps'", specifier = ">=5.0.0" },
     { name = "altair", marker = "extra == 'charts'", specifier = ">=5.0.0" },
     { name = "antlr4-python3-runtime", specifier = ">=4.13.2" },
     { name = "antlr4-python3-runtime", marker = "extra == 'dev'", specifier = ">=4.13.2" },
@@ -3531,6 +3534,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.9.0" },
     { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.34.0" },
     { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.34.0" },
+    { name = "vl-convert-python", marker = "extra == 'apps'", specifier = ">=1.0.0" },
     { name = "vl-convert-python", marker = "extra == 'charts'", specifier = ">=1.0.0" },
 ]
 provides-extras = ["dev", "workbench", "mcp", "apps", "charts", "serve", "api", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "lookml", "malloy", "metricflow", "widget", "all-databases", "full"]

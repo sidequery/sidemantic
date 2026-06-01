@@ -39,6 +39,15 @@ def test_require_rust_subsystem_passes_for_rust_backed_target(monkeypatch, tmp_p
     rust_parity.require_rust_subsystem("sql_generator_entrypoint", "compile")
 
 
+def test_repo_matrix_declares_rust_backed_strict_subsystems():
+    matrix = rust_parity._load_parity_matrix()
+    subsystems = matrix["subsystems"]
+
+    assert subsystems["sql_generator_entrypoint"]["status"] == "rust_backed"
+    assert subsystems["semantic_core_query_validation"]["status"] == "rust_backed"
+    assert subsystems["semantic_sql_rewriter"]["status"] == "rust_backed_opt_in"
+
+
 def test_require_rust_subsystem_ignores_non_strict_targets(monkeypatch, tmp_path):
     _write_matrix(
         tmp_path,

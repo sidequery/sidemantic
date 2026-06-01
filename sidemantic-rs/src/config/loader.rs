@@ -1278,6 +1278,34 @@ model orders from orders (
     }
 
     #[test]
+    fn test_load_from_sql_string_collects_graph_definitions_after_compact_model() {
+        let sql = r#"
+model orders from orders (
+  primary key (order_id)
+  sum(amount) as revenue
+)
+
+METRIC (
+  name total_revenue,
+  sql orders.revenue
+);
+
+PARAMETER (
+  name region,
+  type string,
+  allowed_values [us, eu]
+);
+"#;
+
+        let loaded = load_from_sql_string_with_metadata(sql).unwrap();
+
+        let orders = loaded.graph.get_model("orders").unwrap();
+        assert!(orders.get_metric("revenue").is_some());
+        assert!(loaded.graph.get_metric("total_revenue").is_some());
+        assert!(loaded.graph.get_parameter("region").is_some());
+    }
+
+    #[test]
     fn test_load_from_sql_string_keeps_multiple_legacy_models_separate() {
         let sql = r#"
 MODEL (name orders, table orders, primary_key order_id);

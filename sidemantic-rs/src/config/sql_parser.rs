@@ -1490,15 +1490,23 @@ fn build_compact_model(
     Ok(model)
 }
 
-fn parse_compact_sql_models(sql: &str) -> Result<Vec<Model>> {
+fn parse_compact_sql_model_prefix(sql: &str) -> Result<(Vec<Model>, &str)> {
     let header_re = Regex::new(r"(?is)\bmodel\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s*")
         .expect("valid compact model header regex");
     let mut models = Vec::new();
     let mut remaining = sql;
 
-    while let Some(captures) = header_re.captures(remaining) {
+    loop {
+        remaining = remaining.trim_start();
+        if let Some(after_semicolon) = remaining.strip_prefix(';') {
+            remaining = after_semicolon;
+            continue;
+        }
+        let Some(captures) = header_re.captures(remaining) else {
+            break;
+        };
         let matched = captures.get(0).unwrap();
-        if !remaining[..matched.start()].trim().is_empty() {
+        if matched.start() != 0 {
             return Err(SidemanticError::Validation(
                 "Rust compact SQL model parser does not support non-model statements before compact model blocks".to_string(),
             ));
@@ -1548,10 +1556,7 @@ fn parse_compact_sql_models(sql: &str) -> Result<Vec<Model>> {
             SidemanticError::Validation(format!("compact model '{name}' has an unterminated body"))
         })?;
         models.push(build_compact_model(name, table, source_sql, body)?);
-        remaining = rest.trim_start();
-        if let Some(after_semicolon) = remaining.strip_prefix(';') {
-            remaining = after_semicolon;
-        }
+        remaining = rest;
     }
 
     if models.is_empty() {
@@ -1560,10 +1565,18 @@ fn parse_compact_sql_models(sql: &str) -> Result<Vec<Model>> {
         ));
     }
 
-    if !remaining.trim().is_empty() {
-        return Err(SidemanticError::Validation(
-            "Rust compact SQL model parser does not support trailing graph-level definitions after compact model blocks".to_string(),
-        ));
+    Ok((models, remaining))
+}
+
+fn parse_compact_sql_models(sql: &str) -> Result<Vec<Model>> {
+    let (models, remaining) = parse_compact_sql_model_prefix(sql)?;
+    let trailing = remaining.trim();
+    if !trailing.is_empty() {
+        parse_sql_graph_definitions_extended(trailing).map_err(|err| {
+            SidemanticError::Validation(format!(
+                "failed to parse trailing graph-level definitions after compact model blocks: {err}"
+            ))
+        })?;
     }
 
     Ok(models)
@@ -1634,6 +1647,12 @@ pub fn parse_sql_graph_definitions(
 
 /// Parse SQL definitions for graph-level definitions including pre-aggregations.
 pub fn parse_sql_graph_definitions_extended(sql: &str) -> Result<SqlGraphDefinitionParts> {
+    let sql = if has_compact_model_syntax(sql) {
+        let (_, remaining) = parse_compact_sql_model_prefix(sql)?;
+        remaining
+    } else {
+        sql
+    };
     let (_, statements) =
         parse_file(sql).map_err(|e| SidemanticError::Validation(format!("Parse error: {e}")))?;
 
@@ -2490,6 +2509,40 @@ model customers from public.customers (
         );
         assert_eq!(models[1].table.as_deref(), Some("public.customers"));
         assert!(models[1].get_dimension("region").is_some());
+    }
+
+    #[test]
+    fn test_parse_compact_sql_models_with_trailing_graph_definitions() {
+        let sql = r#"
+model orders from orders (
+  primary key (order_id)
+  sum(amount) as revenue
+)
+
+METRIC (
+  name total_revenue,
+  sql orders.revenue
+);
+
+PARAMETER (
+  name region,
+  type string,
+  allowed_values [us, eu]
+);
+"#;
+
+        let models = parse_sql_models(sql).unwrap();
+        assert_eq!(
+            models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["orders"]
+        );
+
+        let (metrics, segments, parameters) = parse_sql_graph_definitions(sql).unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].name, "total_revenue");
+        assert!(segments.is_empty());
+        assert_eq!(parameters.len(), 1);
+        assert_eq!(parameters[0].name, "region");
     }
 
     #[test]

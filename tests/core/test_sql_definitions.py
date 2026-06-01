@@ -391,6 +391,35 @@ METRIC (
         temp_path.unlink(missing_ok=True)
 
 
+def test_adapter_parse_sql_file_with_root_only_frontmatter():
+    """Root-only native frontmatter should not be parsed as a model."""
+    sql_content = """---
+version: 1
+connection:
+  type: duckdb
+---
+
+METRIC (
+    name total_revenue,
+    sql orders.revenue
+);
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
+        f.write(sql_content)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = SidemanticAdapter()
+        graph = adapter.parse(temp_path)
+
+        assert not graph.models
+        assert "total_revenue" in graph.metrics
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def test_yaml_with_embedded_sql_metrics():
     """Test YAML file with embedded sql_metrics field."""
     yaml_content = """

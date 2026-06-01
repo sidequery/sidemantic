@@ -264,6 +264,9 @@ def normalize_sql_frontmatter(frontmatter: dict) -> dict:
     validate_native_format_version(frontmatter)
     normalized = dict(frontmatter)
     normalized.pop("version", None)
+    normalized.pop("connection", None)
+    normalized.pop("models", None)
+    normalized.pop("parameters", None)
     return normalized
 
 

@@ -300,7 +300,8 @@ static bool StartsWithNameProperty(const std::string &value, size_t pos) {
             return false;
         }
     }
-    return std::isspace(value[pos + keyword.size()]);
+    auto separator = value[pos + keyword.size()];
+    return std::isspace(separator) || separator == ':' || separator == '=';
 }
 
 static bool ExtractModelNameProperty(const std::string &body, std::string &name, std::string &error) {
@@ -331,6 +332,12 @@ static bool ExtractModelNameProperty(const std::string &body, std::string &name,
             pos += 4;
             while (pos < body.size() && std::isspace(body[pos])) {
                 pos++;
+            }
+            if (pos < body.size() && (body[pos] == ':' || body[pos] == '=')) {
+                pos++;
+                while (pos < body.size() && std::isspace(body[pos])) {
+                    pos++;
+                }
             }
             if (pos < body.size() && (body[pos] == '\'' || body[pos] == '"')) {
                 auto quote = body[pos];

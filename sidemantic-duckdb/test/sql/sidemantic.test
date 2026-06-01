@@ -109,6 +109,16 @@ SEMANTIC CREATE MODEL mismatched_quoted_model (name 'other_quoted_model', table 
 ----
 CREATE MODEL name 'mismatched_quoted_model' does not match body name 'other_quoted_model'
 
+statement error
+SEMANTIC CREATE MODEL mismatched_colon_model (name: other_colon_model, table orders, primary_key order_id);
+----
+CREATE MODEL name 'mismatched_colon_model' does not match body name 'other_colon_model'
+
+statement error
+SEMANTIC CREATE MODEL mismatched_equals_model (name=other_equals_model, table orders, primary_key order_id);
+----
+CREATE MODEL name 'mismatched_equals_model' does not match body name 'other_equals_model'
+
 # Verify test_model is loaded
 query I rowsort
 SELECT * FROM sidemantic_models();

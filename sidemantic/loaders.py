@@ -130,6 +130,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
             # Check for Sidemantic native format (explicit models: key)
             elif _yaml_has_top_level_key(yaml_data, "models"):
                 adapter = SidemanticAdapter()
+            elif _looks_like_native_sidemantic_yaml(yaml_data):
+                adapter = SidemanticAdapter()
             elif _yaml_has_top_level_key(yaml_data, "metrics") and "type: " in content:
                 adapter = MetricFlowAdapter()
             elif _contains_yaml_key(yaml_data, "base_sql_table") and _contains_yaml_key(yaml_data, "measures"):
@@ -339,6 +341,13 @@ def _looks_like_semantic_yaml_text(content: str) -> bool:
     )
     prefixes = tuple(f"{key}:" for key in semantic_keys)
     return any(line.lstrip().startswith(prefixes) for line in content.splitlines())
+
+
+def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
+    """Return True for explicit native Sidemantic YAML files without models."""
+    if not isinstance(data, dict) or data.get("version") != 1:
+        return False
+    return any(_yaml_has_top_level_key(data, key) for key in ("metrics", "parameters", "sql_metrics", "sql_segments"))
 
 
 def _yaml_has_top_level_key(data: dict, key: str) -> bool:

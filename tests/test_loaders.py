@@ -166,6 +166,41 @@ models:
     assert paid_revenue.filters == ["status = 'paid'"]
 
 
+def test_load_from_directory_detects_native_metrics_only_file(tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+"""
+    )
+    (tmp_path / "metrics.yml").write_text(
+        """
+version: 1
+metrics:
+  - name: finance.revenue_per_order
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.order_count
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    metric = layer.graph.metrics["finance.revenue_per_order"]
+    assert metric.numerator == "orders.revenue"
+    assert metric.denominator == "orders.order_count"
+
+
 def test_load_from_directory_strict_raises_on_missing_native_parent(tmp_path):
     (tmp_path / "child.yml").write_text(
         """

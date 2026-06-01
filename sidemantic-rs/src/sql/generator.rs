@@ -819,6 +819,31 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn graph_metric_owner_models(&self, reference: &str, metric: &Metric) -> Result<Vec<String>> {
+        let mut visiting = HashSet::new();
+        self.graph_metric_owner_models_inner(reference, metric, &mut visiting)
+    }
+
+    fn graph_metric_owner_models_inner(
+        &self,
+        reference: &str,
+        metric: &Metric,
+        visiting: &mut HashSet<String>,
+    ) -> Result<Vec<String>> {
+        if !visiting.insert(reference.to_string()) {
+            return Ok(Vec::new());
+        }
+
+        let result = self.graph_metric_owner_models_uncycled(reference, metric, visiting);
+        visiting.remove(reference);
+        result
+    }
+
+    fn graph_metric_owner_models_uncycled(
+        &self,
+        reference: &str,
+        metric: &Metric,
+        visiting: &mut HashSet<String>,
+    ) -> Result<Vec<String>> {
         let mut owners = HashSet::new();
 
         for fragment in [
@@ -837,6 +862,13 @@ impl<'a> SqlGenerator<'a> {
         .flatten()
         {
             self.collect_owner_models_from_fragment(fragment, &mut owners);
+        }
+        for fragment in self.graph_metric_dependency_fragments(metric) {
+            self.collect_owner_models_from_graph_metric_dependencies(
+                fragment,
+                &mut owners,
+                visiting,
+            )?;
         }
 
         for filter in &metric.filters {
@@ -890,6 +922,23 @@ impl<'a> SqlGenerator<'a> {
         Ok(owners)
     }
 
+    fn graph_metric_dependency_fragments<'b>(&self, metric: &'b Metric) -> Vec<&'b str> {
+        match metric.r#type {
+            MetricType::Derived => metric.sql.iter().map(String::as_str).collect(),
+            MetricType::Ratio => [metric.numerator.as_deref(), metric.denominator.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect(),
+            MetricType::Cumulative | MetricType::TimeComparison => {
+                [metric.base_metric.as_deref(), metric.sql.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     fn collect_owner_models_from_fragment(&self, fragment: &str, owners: &mut HashSet<String>) {
         let model_ref_re =
             regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
@@ -903,6 +952,34 @@ impl<'a> SqlGenerator<'a> {
                 owners.insert(model_name.to_string());
             }
         }
+    }
+
+    fn collect_owner_models_from_graph_metric_dependencies(
+        &self,
+        fragment: &str,
+        owners: &mut HashSet<String>,
+        visiting: &mut HashSet<String>,
+    ) -> Result<()> {
+        let metric_ref_re = regex::Regex::new(
+            r"\b([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\b",
+        )
+        .expect("valid metric reference regex");
+        for cap in metric_ref_re.captures_iter(fragment) {
+            let Some(token_match) = cap.get(1) else {
+                continue;
+            };
+            let token = token_match.as_str();
+            if token.contains('.') || Self::is_sql_keyword_or_function(token) {
+                continue;
+            }
+            let Some(metric) = self.graph.get_metric(token) else {
+                continue;
+            };
+            for owner in self.graph_metric_owner_models_inner(token, metric, visiting)? {
+                owners.insert(owner);
+            }
+        }
+        Ok(())
     }
 
     fn metric_for_ref(&self, metric_ref: &MetricRef) -> Result<&Metric> {
@@ -4683,6 +4760,36 @@ mod tests {
         assert!(sql.contains("FROM sales"), "{sql}");
         assert!(!sql.contains("\n    amount AS revenue_raw"), "{sql}");
         assert!(!sql.contains("FROM orders"), "{sql}");
+    }
+
+    #[test]
+    fn test_graph_metric_owner_follows_unqualified_graph_metric_dependencies() {
+        let mut graph = create_test_graph();
+        graph
+            .add_metric(Metric::sum("signups", "orders.signups"))
+            .unwrap();
+        graph
+            .add_metric(Metric::sum("visitors", "orders.visitors"))
+            .unwrap();
+        graph
+            .add_metric(Metric::ratio("conversion_rate", "signups", "visitors"))
+            .unwrap();
+        let generator = SqlGenerator::new(&graph);
+
+        let refs = generator
+            .parse_metric_refs(&["conversion_rate".to_string()])
+            .unwrap();
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].model, "orders");
+        assert_eq!(refs[0].name, "conversion_rate");
+        assert!(refs[0].graph_metric);
+
+        let query = SemanticQuery::new().with_metrics(vec!["conversion_rate".into()]);
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("orders.signups AS signups_raw"), "{sql}");
+        assert!(sql.contains("orders.visitors AS visitors_raw"), "{sql}");
     }
 
     #[test]

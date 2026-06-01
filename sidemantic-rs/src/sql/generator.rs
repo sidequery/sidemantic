@@ -4805,6 +4805,34 @@ mod tests {
     }
 
     #[test]
+    fn test_explicit_derived_inline_aggregate_from_yaml_generates_aggregate() {
+        let graph = crate::config::load_from_string(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    metrics:
+      - name: derived_revenue
+        type: derived
+        sql: SUM(orders.amount)
+"#,
+        )
+        .unwrap();
+        let generator = SqlGenerator::new(&graph);
+
+        let query = SemanticQuery::new().with_metrics(vec!["orders.derived_revenue".into()]);
+
+        let sql = generator.generate(&query).unwrap();
+
+        assert!(sql.contains("amount AS amount"), "{sql}");
+        assert!(
+            sql.contains("SUM(orders_cte.amount) AS derived_revenue"),
+            "{sql}"
+        );
+    }
+
+    #[test]
     fn test_ordered_set_aggregate_metric_is_not_treated_as_metric_reference() {
         let mut graph = SemanticGraph::new();
         let ordered_set = Model::new("ordered_set_v", "category")

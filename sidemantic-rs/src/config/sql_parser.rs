@@ -1938,12 +1938,8 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
 
     metric.agg = parse_metric_aggregation(props.get("agg"));
 
-    if metric.agg.is_none()
-        && matches!(
-            metric.r#type,
-            MetricType::Simple | MetricType::Cumulative | MetricType::Derived
-        )
-    {
+    let explicit_metric_type = props.get("type").map(|value| value.to_ascii_lowercase());
+    if metric.agg.is_none() && matches!(explicit_metric_type.as_deref(), None | Some("simple")) {
         if let Some(sql) = metric.sql.as_deref() {
             if let Some((agg, inner_expr)) = extract_aggregation_with_polyglot(sql) {
                 metric.agg = parse_metric_aggregation(Some(&agg));
@@ -2226,6 +2222,20 @@ mod tests {
         let revenue = model.get_metric("revenue").unwrap();
         assert_eq!(revenue.agg, Some(Aggregation::Sum));
         assert_eq!(revenue.sql, Some("amount".to_string()));
+    }
+
+    #[test]
+    fn test_parse_explicit_derived_metric_preserves_inline_aggregate_expression() {
+        let sql = r#"
+            MODEL (name orders, table orders);
+            METRIC (name revenue, type derived, sql SUM(orders.amount));
+        "#;
+
+        let model = parse_sql_model(sql).unwrap();
+        let revenue = model.get_metric("revenue").unwrap();
+        assert_eq!(revenue.r#type, MetricType::Derived);
+        assert_eq!(revenue.agg, None);
+        assert_eq!(revenue.sql, Some("SUM(orders.amount)".to_string()));
     }
 
     #[test]

@@ -606,7 +606,10 @@ impl DimensionConfig {
 
 impl MetricConfig {
     fn into_metric(self) -> Metric {
-        let inline_aggregation = if self.agg.is_none() {
+        let explicit_metric_type = self.metric_type.as_deref().map(str::to_ascii_lowercase);
+        let can_normalize_inline_aggregation =
+            matches!(explicit_metric_type.as_deref(), None | Some("simple"));
+        let inline_aggregation = if self.agg.is_none() && can_normalize_inline_aggregation {
             self.sql
                 .as_deref()
                 .and_then(parse_inline_metric_aggregation)
@@ -614,12 +617,7 @@ impl MetricConfig {
             None
         };
 
-        let metric_type = match self
-            .metric_type
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
+        let metric_type = match explicit_metric_type.as_deref() {
             Some("simple") => MetricType::Simple,
             Some("derived") => MetricType::Derived,
             Some("ratio") => MetricType::Ratio,
@@ -1795,6 +1793,9 @@ models:
         sql: VARIANCE_POP(amount)
       - name: revenue_per_order
         sql: SUM(amount) / COUNT(*)
+      - name: explicit_derived_revenue
+        type: derived
+        sql: SUM(orders.amount)
 "#;
 
         let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
@@ -1843,6 +1844,18 @@ models:
         assert_eq!(
             revenue_per_order.sql.as_deref(),
             Some("SUM(amount) / COUNT(*)")
+        );
+
+        let explicit_derived_revenue = orders
+            .metrics
+            .iter()
+            .find(|m| m.name == "explicit_derived_revenue")
+            .unwrap();
+        assert_eq!(explicit_derived_revenue.r#type, MetricType::Derived);
+        assert_eq!(explicit_derived_revenue.agg, None);
+        assert_eq!(
+            explicit_derived_revenue.sql.as_deref(),
+            Some("SUM(orders.amount)")
         );
     }
 

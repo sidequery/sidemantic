@@ -2,6 +2,8 @@
 # description: Test native Sidemantic YAML and SQL contract paths in the DuckDB extension
 # group: [sidemantic]
 
+load __TEST_DIR__/sidemantic_native_contract.duckdb
+
 require sidemantic
 
 statement ok

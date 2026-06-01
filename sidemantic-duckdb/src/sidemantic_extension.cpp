@@ -6,7 +6,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "sidemantic.h"
 
-#include <cstdio>
+#include <cctype>
 #include <cstdint>
 
 namespace duckdb {
@@ -266,6 +266,172 @@ static bool StartsWithKeyword(const std::string &str, const std::string &keyword
     return true;
 }
 
+static std::string TrimCopy(const std::string &value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace(value[start])) {
+        start++;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace(value[end - 1])) {
+        end--;
+    }
+    return value.substr(start, end - start);
+}
+
+static bool IsBareIdentifier(const std::string &value) {
+    if (value.empty() || !(std::isalpha(value[0]) || value[0] == '_')) {
+        return false;
+    }
+    for (auto ch : value) {
+        if (!(std::isalnum(ch) || ch == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool StartsWithNameProperty(const std::string &value, size_t pos) {
+    const std::string keyword = "name";
+    if (pos + keyword.size() >= value.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < keyword.size(); i++) {
+        if (std::tolower(value[pos + i]) != keyword[i]) {
+            return false;
+        }
+    }
+    auto separator = value[pos + keyword.size()];
+    return std::isspace(separator) || separator == ':' || separator == '=';
+}
+
+static bool ExtractModelNameProperty(const std::string &body, std::string &name, std::string &error) {
+    auto open = body.find('(');
+    if (open == std::string::npos) {
+        return false;
+    }
+
+    size_t pos = open + 1;
+    bool in_single_quote = false;
+    bool in_double_quote = false;
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int brace_depth = 0;
+
+    while (pos < body.size()) {
+        while (pos < body.size() && paren_depth == 0 && bracket_depth == 0 &&
+               brace_depth == 0 && (std::isspace(body[pos]) || body[pos] == ',')) {
+            pos++;
+        }
+        if (pos >= body.size() ||
+            (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 && body[pos] == ')')) {
+            return false;
+        }
+
+        if (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 &&
+            StartsWithNameProperty(body, pos)) {
+            pos += 4;
+            while (pos < body.size() && std::isspace(body[pos])) {
+                pos++;
+            }
+            if (pos < body.size() && (body[pos] == ':' || body[pos] == '=')) {
+                pos++;
+                while (pos < body.size() && std::isspace(body[pos])) {
+                    pos++;
+                }
+            }
+            if (pos < body.size() && (body[pos] == '\'' || body[pos] == '"')) {
+                auto quote = body[pos];
+                pos++;
+                std::string quoted_name;
+                while (pos < body.size()) {
+                    auto ch = body[pos];
+                    if (ch == quote) {
+                        if (pos + 1 < body.size() && body[pos + 1] == quote) {
+                            quoted_name.push_back(quote);
+                            pos += 2;
+                            continue;
+                        }
+                        name = quoted_name;
+                        return true;
+                    }
+                    quoted_name.push_back(ch);
+                    pos++;
+                }
+                error = "CREATE MODEL body name is unterminated";
+                return false;
+            }
+            size_t name_start = pos;
+            while (pos < body.size() && (std::isalnum(body[pos]) || body[pos] == '_')) {
+                pos++;
+            }
+            if (pos > name_start) {
+                name = body.substr(name_start, pos - name_start);
+                return true;
+            }
+            error = "CREATE MODEL body name must be a bare or quoted identifier";
+            return false;
+        }
+
+        while (pos < body.size()) {
+            auto ch = body[pos];
+            if (in_single_quote) {
+                if (ch == '\'' && pos + 1 < body.size() && body[pos + 1] == '\'') {
+                    pos += 2;
+                    continue;
+                }
+                if (ch == '\'') {
+                    in_single_quote = false;
+                }
+                pos++;
+                continue;
+            }
+            if (in_double_quote) {
+                if (ch == '"' && pos + 1 < body.size() && body[pos + 1] == '"') {
+                    pos += 2;
+                    continue;
+                }
+                if (ch == '"') {
+                    in_double_quote = false;
+                }
+                pos++;
+                continue;
+            }
+
+            if (ch == '\'') {
+                in_single_quote = true;
+            } else if (ch == '"') {
+                in_double_quote = true;
+            } else if (ch == '(') {
+                paren_depth++;
+            } else if (ch == ')') {
+                if (paren_depth > 0) {
+                    paren_depth--;
+                } else if (bracket_depth == 0 && brace_depth == 0) {
+                    return false;
+                }
+            } else if (ch == '[') {
+                bracket_depth++;
+            } else if (ch == ']') {
+                if (bracket_depth > 0) {
+                    bracket_depth--;
+                }
+            } else if (ch == '{') {
+                brace_depth++;
+            } else if (ch == '}') {
+                if (brace_depth > 0) {
+                    brace_depth--;
+                }
+            } else if (ch == ',' && paren_depth == 0 && bracket_depth == 0 &&
+                       brace_depth == 0) {
+                break;
+            }
+            pos++;
+        }
+    }
+
+    return false;
+}
+
 // Check if query is a CREATE [OR REPLACE] METRIC/DIMENSION/SEGMENT statement
 // Returns the statement type or empty string if not matched
 // Handles syntaxes like:
@@ -393,7 +559,7 @@ static std::string IsDefinitionStatement(const std::string &query, std::string &
 // Check if stripped query is a CREATE [OR REPLACE] MODEL statement
 // Returns: 0 = not a create model, 1 = create model, 2 = create or replace model
 // Sets definition to be in nom-parser format: "MODEL (name ..., ...)"
-static int IsCreateModelStatement(const std::string &query, std::string &definition) {
+static int IsCreateModelStatement(const std::string &query, std::string &definition, std::string &error) {
     size_t pos = 0;
 
     // Check for CREATE
@@ -437,9 +603,40 @@ static int IsCreateModelStatement(const std::string &query, std::string &definit
         return 0; // No parenthesis found
     }
 
-    // Build definition in nom format: "MODEL (name ..., ...)"
-    // The content inside parens should already have "name xxx" as first property
-    definition = "MODEL " + rest.substr(paren_pos);
+    auto outer_name = TrimCopy(rest.substr(0, paren_pos));
+    auto body = rest.substr(paren_pos);
+    if (!outer_name.empty() && !IsBareIdentifier(outer_name)) {
+        error = "Invalid CREATE MODEL name: " + outer_name;
+        return -1;
+    }
+
+    std::string inner_name;
+    std::string name_error;
+    if (!outer_name.empty() && ExtractModelNameProperty(body, inner_name, name_error)) {
+        if (inner_name != outer_name) {
+            error = "CREATE MODEL name '" + outer_name + "' does not match body name '" + inner_name + "'";
+            return -1;
+        }
+        definition = "MODEL " + body;
+        return is_replace ? 2 : 1;
+    }
+    if (!name_error.empty()) {
+        error = name_error;
+        return -1;
+    }
+
+    if (!outer_name.empty()) {
+        auto after_open = body.substr(1);
+        auto trimmed_after_open = TrimCopy(after_open);
+        if (!trimmed_after_open.empty() && trimmed_after_open[0] == ')') {
+            definition = "MODEL (name " + outer_name + after_open;
+        } else {
+            definition = "MODEL (name " + outer_name + ", " + after_open;
+        }
+        return is_replace ? 2 : 1;
+    }
+
+    definition = "MODEL " + body;
     return is_replace ? 2 : 1;
 }
 
@@ -459,8 +656,12 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *info,
 
     // Check if this is a CREATE [OR REPLACE] MODEL statement
     std::string definition;
-    int create_type = IsCreateModelStatement(stripped_query, definition);
+    std::string create_model_error;
+    int create_type = IsCreateModelStatement(stripped_query, definition, create_model_error);
 
+    if (create_type < 0) {
+        return ParserExtensionParseResult(create_model_error);
+    }
     if (create_type > 0) {
         // This is a CREATE MODEL statement - handle specially
         bool replace = (create_type == 2);
@@ -627,9 +828,9 @@ static void LoadInternal(ExtensionLoader &loader) {
     const char *db_path_ptr = db_path.empty() ? nullptr : db_path.c_str();
     char *error = sidemantic_autoload_for_context(ContextKeyPtr(context_key), db_path_ptr);
     if (error) {
-        // Log warning but don't fail extension load
-        std::fprintf(stderr, "Warning: failed to autoload sidemantic definitions: %s\n", error);
+        std::string message = "Failed to autoload sidemantic definitions: " + std::string(error);
         sidemantic_free(error);
+        throw InvalidInputException("%s", message.c_str());
     }
 
     // Register parser extension

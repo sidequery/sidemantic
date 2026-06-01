@@ -45,20 +45,7 @@ COPY (SELECT 'MODEL (' AS line) TO '__TEST_DIR__/sidemantic_invalid_persistence.
 
 restart
 
-require sidemantic
-
-query I
-SELECT count(*) FROM sidemantic_models() WHERE model_name = 'valid_events';
+statement error
+LOAD sidemantic;
 ----
-0
-
-statement ok
-SEMANTIC CREATE MODEL valid_events (name valid_events, table valid_events, primary_key event_id);
-
-statement ok
-SEMANTIC CREATE METRIC event_count AS COUNT(*);
-
-query I
-SEMANTIC SELECT valid_events.event_count FROM valid_events;
-----
-2
+Failed to autoload sidemantic definitions

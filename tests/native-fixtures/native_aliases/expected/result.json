@@ -1,0 +1,12 @@
+[
+  {
+    "status": "paid",
+    "total_revenue": 150,
+    "revenue_per_order": 75
+  },
+  {
+    "status": "refunded",
+    "total_revenue": 30,
+    "revenue_per_order": 30
+  }
+]

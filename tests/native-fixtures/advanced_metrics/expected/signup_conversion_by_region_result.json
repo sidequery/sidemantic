@@ -1,0 +1,10 @@
+[
+  {
+    "region": "eu",
+    "signup_conversion": 1.0
+  },
+  {
+    "region": "us",
+    "signup_conversion": 0.5
+  }
+]

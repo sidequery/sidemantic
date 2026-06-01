@@ -4,6 +4,8 @@ import builtins
 import sys
 from pathlib import Path
 
+import pytest
+
 from sidemantic import SemanticLayer
 from sidemantic.loaders import load_from_directory
 
@@ -31,6 +33,238 @@ def test_load_from_directory_does_not_require_antlr4_without_antlr_formats(tmp_p
     load_from_directory(layer, tmp_path)
 
     assert "orders" in layer.graph.models
+
+
+def test_load_from_directory_strict_raises_on_detected_parse_error(tmp_path):
+    """Strict loading fails instead of returning a partial graph."""
+    (tmp_path / "good.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+"""
+    )
+    (tmp_path / "bad.yml").write_text(
+        """
+models:
+  - name: broken
+    table: [
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="Could not parse .*bad.yml"):
+        load_from_directory(layer, tmp_path)
+
+    assert not layer.graph.models
+
+
+def test_load_from_directory_lenient_mode_skips_detected_parse_error(tmp_path):
+    """Lenient loading remains available as an explicit opt-in."""
+    (tmp_path / "good.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+"""
+    )
+    (tmp_path / "bad.yml").write_text(
+        """
+models:
+  - name: broken
+    table: [
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    assert set(layer.graph.models) == {"orders"}
+
+
+def test_load_from_directory_resolves_native_inheritance_across_files(tmp_path):
+    (tmp_path / "base.yml").write_text(
+        """
+version: 1
+models:
+  - name: base_orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"""
+    )
+    (tmp_path / "child.yml").write_text(
+        """
+version: 1
+models:
+  - name: paid_orders
+    extends: base_orders
+    dimensions:
+      - name: paid_at
+        type: time
+        sql: paid_at
+        granularity: day
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    paid_orders = layer.graph.models["paid_orders"]
+    assert paid_orders.table == "orders"
+    assert paid_orders.primary_key == "id"
+    assert paid_orders.extends is None
+    assert paid_orders.get_dimension("status") is not None
+    assert paid_orders.get_dimension("paid_at") is not None
+    assert paid_orders.get_metric("revenue") is not None
+
+
+def test_load_from_directory_resolves_native_metric_inheritance_after_model_merge(tmp_path):
+    (tmp_path / "base.yml").write_text(
+        """
+version: 1
+models:
+  - name: base_orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"""
+    )
+    (tmp_path / "child.yml").write_text(
+        """
+version: 1
+models:
+  - name: paid_orders
+    extends: base_orders
+    metrics:
+      - name: paid_revenue
+        extends: revenue
+        filters:
+          - status = 'paid'
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    paid_revenue = layer.graph.models["paid_orders"].get_metric("paid_revenue")
+    assert paid_revenue is not None
+    assert paid_revenue.extends is None
+    assert paid_revenue.agg == "sum"
+    assert paid_revenue.sql == "amount"
+    assert paid_revenue.filters == ["status = 'paid'"]
+
+
+def test_load_from_directory_detects_native_metrics_only_file(tmp_path):
+    (tmp_path / "models.yml").write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+"""
+    )
+    (tmp_path / "metrics.yml").write_text(
+        """
+version: 1
+metrics:
+  - name: finance.revenue_per_order
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.order_count
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    metric = layer.graph.metrics["finance.revenue_per_order"]
+    assert metric.numerator == "orders.revenue"
+    assert metric.denominator == "orders.order_count"
+
+
+def test_load_from_directory_resolves_native_graph_metric_inheritance_across_files(tmp_path):
+    (tmp_path / "base_metrics.yml").write_text(
+        """
+version: 1
+metrics:
+  - name: gross_revenue
+    agg: sum
+    sql: orders.amount
+"""
+    )
+    (tmp_path / "child_metrics.yml").write_text(
+        """
+version: 1
+metrics:
+  - name: paid_revenue
+    extends: gross_revenue
+    filters:
+      - orders.status = 'paid'
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    metric = layer.graph.metrics["paid_revenue"]
+    assert metric.extends is None
+    assert metric.agg == "sum"
+    assert metric.sql == "orders.amount"
+    assert metric.filters == ["orders.status = 'paid'"]
+
+
+def test_load_from_directory_strict_raises_on_missing_native_graph_metric_parent(tmp_path):
+    (tmp_path / "metrics.yml").write_text(
+        """
+version: 1
+metrics:
+  - name: paid_revenue
+    extends: missing_revenue
+    filters:
+      - orders.status = 'paid'
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="Native metric 'paid_revenue' extends unknown metric 'missing_revenue'"):
+        load_from_directory(layer, tmp_path)
+
+
+def test_load_from_directory_strict_raises_on_missing_native_parent(tmp_path):
+    (tmp_path / "child.yml").write_text(
+        """
+version: 1
+models:
+  - name: paid_orders
+    extends: missing_base
+    table: orders
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="Native model 'paid_orders' extends unknown model 'missing_base'"):
+        load_from_directory(layer, tmp_path)
+
+    assert not layer.graph.models
 
 
 def test_native_inheritance_does_not_register_model_metrics_globally(tmp_path):

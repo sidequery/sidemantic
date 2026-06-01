@@ -1,0 +1,12 @@
+[
+  {
+    "event_date__month": "2024-01-01",
+    "total_revenue": 175,
+    "cumulative_revenue": 175
+  },
+  {
+    "event_date__month": "2024-02-01",
+    "total_revenue": 400,
+    "cumulative_revenue": 575
+  }
+]

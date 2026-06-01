@@ -116,8 +116,6 @@ class RustSemanticLayerAdapter:
         active_dialect = dialect or self.dialect
         if active_dialect not in {"duckdb", "bigquery"}:
             raise NotImplementedError(f"pure Rust test adapter does not support dialect '{active_dialect}' yet")
-        if offset is not None:
-            raise NotImplementedError("pure Rust test adapter does not support offset yet")
         if parameters:
             raise NotImplementedError("pure Rust test adapter does not support template parameters yet")
         effective_preaggregations = self.use_preaggregations if use_preaggregations is None else use_preaggregations
@@ -134,6 +132,7 @@ class RustSemanticLayerAdapter:
                 "segments": segments or [],
                 "order_by": order_by or [],
                 "limit": limit,
+                "offset": offset,
                 "ungrouped": ungrouped,
                 "skip_default_time_dimensions": skip_default_time_dimensions,
                 "dialect": active_dialect,
@@ -491,8 +490,6 @@ class RustSQLGeneratorAdapter:
         aliases: dict[str, str] | None = None,
         skip_default_time_dimensions: bool = False,
     ) -> str:
-        if offset is not None:
-            raise NotImplementedError("pure Rust test adapter does not support offset yet")
         if parameters:
             raise NotImplementedError("pure Rust test adapter does not support template parameters yet")
         if use_preaggregations:
@@ -510,6 +507,7 @@ class RustSQLGeneratorAdapter:
                 "segments": segments or [],
                 "order_by": order_by or [],
                 "limit": limit,
+                "offset": offset,
                 "ungrouped": ungrouped,
                 "skip_default_time_dimensions": skip_default_time_dimensions,
                 "dialect": self.dialect,
@@ -577,7 +575,7 @@ class RustQueryRewriterAdapter:
             if "parse" in error.lower():
                 raise ValueError(f"Failed to parse SQL: {error}") from None
             raise ValueError(error)
-        return response["sql"]
+        return _python_style_rewrite_sql(response["sql"])
 
 
 def rust_build_symmetric_aggregate_sql(
@@ -708,19 +706,26 @@ def _metric_to_rust_dict(metric: Metric) -> dict[str, Any]:
 
 
 def _relationship_to_rust_dict(relationship) -> dict[str, Any]:
-    return _drop_none(
-        {
-            "name": relationship.name,
-            "type": relationship.type,
-            "foreign_key": relationship.foreign_key,
-            "primary_key": relationship.primary_key,
-            "through": getattr(relationship, "through", None),
-            "through_foreign_key": getattr(relationship, "through_foreign_key", None),
-            "related_foreign_key": getattr(relationship, "related_foreign_key", None),
-            "sql": getattr(relationship, "sql", None),
-            "metadata": relationship.metadata,
-        }
-    )
+    payload = {
+        "name": relationship.name,
+        "type": relationship.type,
+        "through": getattr(relationship, "through", None),
+        "through_foreign_key": getattr(relationship, "through_foreign_key", None),
+        "through_foreign_key_columns": getattr(relationship, "through_foreign_key_columns", None),
+        "related_foreign_key": getattr(relationship, "related_foreign_key", None),
+        "related_foreign_key_columns": getattr(relationship, "related_foreign_key_columns", None),
+        "sql": getattr(relationship, "sql", None),
+        "metadata": relationship.metadata,
+    }
+    if isinstance(relationship.foreign_key, list):
+        payload["foreign_key_columns"] = relationship.foreign_key
+    else:
+        payload["foreign_key"] = relationship.foreign_key
+    if isinstance(relationship.primary_key, list):
+        payload["primary_key_columns"] = relationship.primary_key
+    else:
+        payload["primary_key"] = relationship.primary_key
+    return _drop_none(payload)
 
 
 def _segment_to_rust_dict(segment) -> dict[str, Any]:
@@ -755,6 +760,11 @@ def _table_calculation_to_rust_dict(calc) -> dict[str, Any]:
 
 def _drop_none(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item is not None}
+
+
+def _python_style_rewrite_sql(sql: str) -> str:
+    sql = re.sub(r"\s+(LIMIT\s+\d+\b)", r"\n\1", sql, flags=re.IGNORECASE)
+    return re.sub(r"\s+(OFFSET\s+\d+\b)", r"\n\1", sql, flags=re.IGNORECASE)
 
 
 def _single_model_yaml(model: Model) -> str:

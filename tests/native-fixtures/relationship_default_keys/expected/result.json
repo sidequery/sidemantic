@@ -1,0 +1,10 @@
+[
+  {
+    "status": "paid",
+    "customer_count": 1
+  },
+  {
+    "status": "refunded",
+    "customer_count": 1
+  }
+]

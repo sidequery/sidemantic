@@ -57,8 +57,10 @@ pub struct ModelConfig {
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
     #[serde(default)]
-    pub dimensions: Vec<DimensionConfig>,
+    pub auto_dimensions: bool,
     #[serde(default)]
+    pub dimensions: Vec<DimensionConfig>,
+    #[serde(default, alias = "measures")]
     pub metrics: Vec<MetricConfig>,
     #[serde(default)]
     pub relationships: Vec<RelationshipConfig>,
@@ -104,6 +106,7 @@ pub struct DimensionConfig {
     pub name: String,
     #[serde(default, rename = "type")]
     pub dim_type: Option<String>,
+    #[serde(default, alias = "expr")]
     pub sql: Option<String>,
     pub granularity: Option<String>,
     pub supported_granularities: Option<Vec<String>>,
@@ -129,7 +132,10 @@ pub struct MetricConfig {
     #[serde(default, rename = "type")]
     pub metric_type: Option<String>,
     pub agg: Option<String>,
+    #[serde(default, alias = "expr", alias = "measure")]
     pub sql: Option<String>,
+    #[serde(default, rename = "metrics", skip_serializing_if = "Option::is_none")]
+    _legacy_metric_dependencies: Option<Vec<String>>,
     pub numerator: Option<String>,
     pub denominator: Option<String>,
     pub offset_window: Option<String>,
@@ -194,7 +200,11 @@ pub struct RelationshipConfig {
     pub primary_key_columns: Option<Vec<String>>,
     pub through: Option<String>,
     pub through_foreign_key: Option<String>,
+    #[serde(default)]
+    pub through_foreign_key_columns: Option<Vec<String>>,
     pub related_foreign_key: Option<String>,
+    #[serde(default)]
+    pub related_foreign_key_columns: Option<Vec<String>>,
     /// Custom SQL join condition using {from} and {to} placeholders
     pub sql: Option<String>,
     #[serde(default)]
@@ -375,6 +385,15 @@ impl SidemanticConfig {
         self.validate_version()?;
 
         for model in &self.models {
+            if model.auto_dimensions {
+                return Err(crate::error::SidemanticError::validation_issue(
+                    "unsupported_auto_dimensions",
+                    Some(&model.name),
+                    &format!("models.{}.auto_dimensions", model.name),
+                    Some("true"),
+                    "Rust native runtime does not support auto_dimensions; declare dimensions explicitly or set auto_dimensions: false",
+                ));
+            }
             validate_optional_enum(
                 model.default_grain.as_deref(),
                 &format!("models.{}.default_grain", model.name),
@@ -587,12 +606,18 @@ impl DimensionConfig {
 
 impl MetricConfig {
     fn into_metric(self) -> Metric {
-        let metric_type = match self
-            .metric_type
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
+        let explicit_metric_type = self.metric_type.as_deref().map(str::to_ascii_lowercase);
+        let can_normalize_inline_aggregation =
+            matches!(explicit_metric_type.as_deref(), None | Some("simple"));
+        let inline_aggregation = if self.agg.is_none() && can_normalize_inline_aggregation {
+            self.sql
+                .as_deref()
+                .and_then(parse_inline_metric_aggregation)
+        } else {
+            None
+        };
+
+        let metric_type = match explicit_metric_type.as_deref() {
             Some("simple") => MetricType::Simple,
             Some("derived") => MetricType::Derived,
             Some("ratio") => MetricType::Ratio,
@@ -602,7 +627,7 @@ impl MetricConfig {
             Some("retention") => MetricType::Retention,
             Some("cohort") => MetricType::Cohort,
             _ => {
-                if self.agg.is_none() && self.sql.is_some() {
+                if inline_aggregation.is_none() && self.agg.is_none() && self.sql.is_some() {
                     MetricType::Derived
                 } else {
                     MetricType::Simple
@@ -610,7 +635,15 @@ impl MetricConfig {
             }
         };
 
-        let agg = self.agg.as_deref().map(parse_aggregation);
+        let agg = self
+            .agg
+            .as_deref()
+            .map(parse_aggregation)
+            .or_else(|| inline_aggregation.as_ref().map(|(agg, _)| agg.clone()));
+        let sql = inline_aggregation
+            .as_ref()
+            .and_then(|(_, inner_sql)| inner_sql.clone())
+            .or(self.sql);
         let grain_to_date = self.grain_to_date.as_deref().and_then(parse_time_grain);
         let comparison_type = self
             .comparison_type
@@ -636,7 +669,7 @@ impl MetricConfig {
             extends: self.extends,
             r#type: metric_type,
             agg,
-            sql: self.sql,
+            sql,
             numerator: self.numerator,
             denominator: self.denominator,
             offset_window: self.offset_window,
@@ -712,7 +745,13 @@ impl RelationshipConfig {
             primary_key_columns,
             through: self.through,
             through_foreign_key: self.through_foreign_key,
+            through_foreign_key_columns: self
+                .through_foreign_key_columns
+                .filter(|columns| !columns.is_empty()),
             related_foreign_key: self.related_foreign_key,
+            related_foreign_key_columns: self
+                .related_foreign_key_columns
+                .filter(|columns| !columns.is_empty()),
             sql: self.sql,
             metadata: self.metadata,
         }
@@ -880,6 +919,10 @@ impl CubeMeasure {
             Some("avg") => (MetricType::Simple, Some(Aggregation::Avg)),
             Some("min") => (MetricType::Simple, Some(Aggregation::Min)),
             Some("max") => (MetricType::Simple, Some(Aggregation::Max)),
+            Some("stddev") => (MetricType::Simple, Some(Aggregation::Stddev)),
+            Some("stddev_pop") => (MetricType::Simple, Some(Aggregation::StddevPop)),
+            Some("variance") => (MetricType::Simple, Some(Aggregation::Variance)),
+            Some("variance_pop") => (MetricType::Simple, Some(Aggregation::VariancePop)),
             Some("number") => (MetricType::Derived, None), // derived/calculated
             _ => (MetricType::Simple, Some(Aggregation::Sum)),
         };
@@ -1034,6 +1077,10 @@ fn validate_metric_config(metric: &MetricConfig, field_path: &str) -> crate::err
             "min",
             "max",
             "median",
+            "stddev",
+            "stddev_pop",
+            "variance",
+            "variance_pop",
             "expression",
         ],
     )?;
@@ -1078,6 +1125,10 @@ fn validate_metric_config(metric: &MetricConfig, field_path: &str) -> crate::err
                     "min",
                     "max",
                     "median",
+                    "stddev",
+                    "stddev_pop",
+                    "variance",
+                    "variance_pop",
                     "expression",
                 ],
             )?;
@@ -1096,8 +1147,95 @@ fn parse_aggregation(s: &str) -> Aggregation {
         "min" => Aggregation::Min,
         "max" => Aggregation::Max,
         "median" => Aggregation::Median,
+        "stddev" => Aggregation::Stddev,
+        "stddev_pop" => Aggregation::StddevPop,
+        "variance" => Aggregation::Variance,
+        "variance_pop" | "var_pop" => Aggregation::VariancePop,
         "expression" => Aggregation::Expression,
         _ => Aggregation::Sum,
+    }
+}
+
+fn parse_inline_metric_aggregation(sql_expr: &str) -> Option<(Aggregation, Option<String>)> {
+    let trimmed = sql_expr.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let open_paren = trimmed.find('(')?;
+    let func = trimmed[..open_paren].trim().to_ascii_lowercase();
+    if !matches!(
+        func.as_str(),
+        "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "median"
+            | "stddev"
+            | "stddev_pop"
+            | "variance"
+            | "variance_pop"
+            | "var_pop"
+            | "count"
+    ) {
+        return None;
+    }
+
+    let mut depth = 0i32;
+    let mut close_paren = None;
+    for (idx, ch) in trimmed.char_indices().skip(open_paren) {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_paren = Some(idx);
+                    break;
+                }
+                if depth < 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let close_paren = close_paren?;
+    if depth != 0 || !trimmed[close_paren + 1..].trim().is_empty() {
+        return None;
+    }
+
+    let inner = trimmed[open_paren + 1..close_paren].trim();
+    match func.as_str() {
+        "sum" | "avg" | "min" | "max" | "median" | "stddev" | "stddev_pop" | "variance"
+        | "variance_pop" | "var_pop" => {
+            if inner.is_empty() {
+                None
+            } else {
+                Some((parse_aggregation(&func), Some(inner.to_string())))
+            }
+        }
+        "count" => {
+            if inner.is_empty() {
+                return None;
+            }
+            if inner == "*" {
+                return Some((Aggregation::Count, Some("*".to_string())));
+            }
+
+            let inner_lower = inner.to_ascii_lowercase();
+            if inner_lower.starts_with("distinct ") {
+                let distinct_expr = inner[8..].trim();
+                if distinct_expr.is_empty() {
+                    None
+                } else {
+                    Some((Aggregation::CountDistinct, Some(distinct_expr.to_string())))
+                }
+            } else {
+                Some((Aggregation::Count, Some(inner.to_string())))
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1183,6 +1321,79 @@ parameters:
         assert_eq!(orders.segments.len(), 1);
         assert_eq!(parameters.len(), 1);
         assert_eq!(parameters[0].name, "status");
+    }
+
+    #[test]
+    fn test_native_yaml_accepts_python_compatibility_aliases() {
+        let yaml = r#"
+version: 1
+models:
+  - name: orders
+    table: orders
+    auto_dimensions: false
+    dimensions:
+      - name: status
+        type: categorical
+        expr: order_status
+    measures:
+      - name: revenue
+        agg: sum
+        expr: amount
+      - name: revenue_per_order
+        type: derived
+        measure: revenue / order_count
+      - name: order_count
+        agg: count
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        let (models, _, _) = config.into_parts().unwrap();
+        let orders = &models[0];
+
+        assert_eq!(orders.dimensions[0].sql.as_deref(), Some("order_status"));
+        assert_eq!(orders.metrics.len(), 3);
+        assert_eq!(orders.metrics[0].sql.as_deref(), Some("amount"));
+        assert_eq!(
+            orders.metrics[1].sql.as_deref(),
+            Some("revenue / order_count")
+        );
+    }
+
+    #[test]
+    fn test_native_yaml_accepts_legacy_metric_dependencies() {
+        let yaml = r#"
+version: 1
+metrics:
+  - name: revenue_per_order
+    type: derived
+    sql: revenue / order_count
+    metrics:
+      - revenue
+      - order_count
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        let (_, metrics, _) = config.into_parts().unwrap();
+
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].name, "revenue_per_order");
+        assert_eq!(metrics[0].sql.as_deref(), Some("revenue / order_count"));
+    }
+
+    #[test]
+    fn test_native_yaml_rejects_auto_dimensions_true() {
+        let yaml = r#"
+version: 1
+models:
+  - name: orders
+    table: orders
+    auto_dimensions: true
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = config.into_parts().unwrap_err();
+        assert!(err.to_string().contains("unsupported_auto_dimensions"));
+        assert!(err.to_string().contains("auto_dimensions"));
     }
 
     #[test]
@@ -1484,6 +1695,45 @@ models:
     }
 
     #[test]
+    fn test_parse_many_to_many_composite_junction_key_fields() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key_columns: [tenant_id, order_id]
+    relationships:
+      - name: products
+        type: many_to_many
+        through: order_items
+        through_foreign_key_columns: [tenant_id, order_id]
+        related_foreign_key_columns: [tenant_id, product_id]
+  - name: order_items
+    table: order_items
+  - name: products
+    table: products
+    primary_key_columns: [tenant_id, product_id]
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        let (models, _, _) = config.into_parts().unwrap();
+
+        let orders = models.iter().find(|m| m.name == "orders").unwrap();
+        let rel = orders
+            .relationships
+            .iter()
+            .find(|r| r.name == "products")
+            .unwrap();
+        assert_eq!(
+            rel.through_foreign_key_columns.as_ref().unwrap(),
+            &vec!["tenant_id".to_string(), "order_id".to_string()]
+        );
+        assert_eq!(
+            rel.related_foreign_key_columns.as_ref().unwrap(),
+            &vec!["tenant_id".to_string(), "product_id".to_string()]
+        );
+    }
+
+    #[test]
     fn test_parse_native_yaml_composite_keys() {
         let yaml = r#"
 models:
@@ -1522,6 +1772,90 @@ models:
         assert_eq!(
             rel.primary_key_columns.as_ref().unwrap(),
             &vec!["order_id".to_string(), "item_id".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_native_yaml_normalizes_inline_aggregate_metric() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    metrics:
+      - name: revenue
+        sql: SUM(amount)
+      - name: distinct_customers
+        sql: COUNT(DISTINCT customer_id)
+      - name: revenue_stddev
+        agg: stddev
+        sql: amount
+      - name: revenue_variance_pop
+        sql: VARIANCE_POP(amount)
+      - name: revenue_per_order
+        sql: SUM(amount) / COUNT(*)
+      - name: explicit_derived_revenue
+        type: derived
+        sql: SUM(orders.amount)
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        let (models, _, _) = config.into_parts().unwrap();
+        let orders = models.iter().find(|m| m.name == "orders").unwrap();
+
+        let revenue = orders.metrics.iter().find(|m| m.name == "revenue").unwrap();
+        assert_eq!(revenue.r#type, MetricType::Simple);
+        assert_eq!(revenue.agg, Some(Aggregation::Sum));
+        assert_eq!(revenue.sql.as_deref(), Some("amount"));
+
+        let distinct_customers = orders
+            .metrics
+            .iter()
+            .find(|m| m.name == "distinct_customers")
+            .unwrap();
+        assert_eq!(distinct_customers.r#type, MetricType::Simple);
+        assert_eq!(distinct_customers.agg, Some(Aggregation::CountDistinct));
+        assert_eq!(distinct_customers.sql.as_deref(), Some("customer_id"));
+
+        let revenue_stddev = orders
+            .metrics
+            .iter()
+            .find(|m| m.name == "revenue_stddev")
+            .unwrap();
+        assert_eq!(revenue_stddev.r#type, MetricType::Simple);
+        assert_eq!(revenue_stddev.agg, Some(Aggregation::Stddev));
+        assert_eq!(revenue_stddev.sql.as_deref(), Some("amount"));
+
+        let revenue_variance_pop = orders
+            .metrics
+            .iter()
+            .find(|m| m.name == "revenue_variance_pop")
+            .unwrap();
+        assert_eq!(revenue_variance_pop.r#type, MetricType::Simple);
+        assert_eq!(revenue_variance_pop.agg, Some(Aggregation::VariancePop));
+        assert_eq!(revenue_variance_pop.sql.as_deref(), Some("amount"));
+
+        let revenue_per_order = orders
+            .metrics
+            .iter()
+            .find(|m| m.name == "revenue_per_order")
+            .unwrap();
+        assert_eq!(revenue_per_order.r#type, MetricType::Derived);
+        assert_eq!(revenue_per_order.agg, None);
+        assert_eq!(
+            revenue_per_order.sql.as_deref(),
+            Some("SUM(amount) / COUNT(*)")
+        );
+
+        let explicit_derived_revenue = orders
+            .metrics
+            .iter()
+            .find(|m| m.name == "explicit_derived_revenue")
+            .unwrap();
+        assert_eq!(explicit_derived_revenue.r#type, MetricType::Derived);
+        assert_eq!(explicit_derived_revenue.agg, None);
+        assert_eq!(
+            explicit_derived_revenue.sql.as_deref(),
+            Some("SUM(orders.amount)")
         );
     }
 

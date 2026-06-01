@@ -15,5 +15,5 @@ pub use loader::{
 pub use schema::{CubeConfig, ModelConfig, SidemanticConfig};
 pub use sql_parser::{
     parse_sql_definitions, parse_sql_graph_definitions, parse_sql_graph_definitions_extended,
-    parse_sql_model, parse_sql_statement_blocks,
+    parse_sql_model, parse_sql_models, parse_sql_statement_blocks,
 };

@@ -1,6 +1,7 @@
 """Generate JSON Schema from Pydantic models for YAML editor completion."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from sidemantic.core.dimension import Dimension
@@ -8,6 +9,48 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
+
+
+def add_native_relationship_aliases(schema: dict) -> dict:
+    """Expose native YAML relationship aliases that map to Python API fields."""
+    properties = schema.setdefault("properties", {})
+
+    if "foreign_key" in properties and "foreign_key_columns" not in properties:
+        foreign_key_columns = deepcopy(properties["foreign_key"])
+        foreign_key_columns["title"] = "Foreign Key Columns"
+        foreign_key_columns["description"] = "Explicit source-column list (alias for foreign_key)"
+        properties["foreign_key_columns"] = foreign_key_columns
+
+    if "primary_key" in properties and "primary_key_columns" not in properties:
+        primary_key_columns = deepcopy(properties["primary_key"])
+        primary_key_columns["title"] = "Primary Key Columns"
+        primary_key_columns["description"] = "Explicit target-column list (alias for primary_key)"
+        properties["primary_key_columns"] = primary_key_columns
+
+    if "sql" not in properties:
+        properties["sql"] = {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "default": None,
+            "description": "Custom join SQL using {from} and {to} runtime placeholders",
+            "title": "Sql",
+        }
+
+    return schema
+
+
+def patch_relationship_schemas(schema: dict) -> None:
+    """Patch every embedded Relationship schema emitted by Pydantic."""
+    if not isinstance(schema, dict):
+        return
+    if schema.get("title") == "Relationship":
+        add_native_relationship_aliases(schema)
+    for value in schema.values():
+        if isinstance(value, dict):
+            patch_relationship_schemas(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    patch_relationship_schemas(item)
 
 
 def generate_yaml_schema() -> dict:
@@ -50,6 +93,8 @@ def generate_yaml_schema() -> dict:
             "Parameter": parameter_schema,
         },
     }
+
+    patch_relationship_schemas(schema)
 
     return schema
 

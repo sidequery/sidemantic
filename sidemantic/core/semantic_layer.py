@@ -1118,6 +1118,9 @@ class SemanticLayer:
         """
         from urllib.parse import quote, urlencode
 
+        def quote_userinfo(value) -> str:
+            return quote(str(value), safe="")
+
         conn_type = config.get("type", "duckdb").lower()
 
         if conn_type == "duckdb":
@@ -1134,9 +1137,9 @@ class SemanticLayer:
             password = config.get("password", "")
 
             if user and password:
-                return f"postgres://{quote(user)}:{quote(password)}@{host}:{port}/{database}"
+                return f"postgres://{quote_userinfo(user)}:{quote_userinfo(password)}@{host}:{port}/{database}"
             elif user:
-                return f"postgres://{quote(user)}@{host}:{port}/{database}"
+                return f"postgres://{quote_userinfo(user)}@{host}:{port}/{database}"
             else:
                 return f"postgres://{host}:{port}/{database}"
 
@@ -1162,9 +1165,9 @@ class SemanticLayer:
                 path += f"/{schema}"
 
             if user and password:
-                return f"snowflake://{quote(user)}:{quote(password)}@{account}{path}"
+                return f"snowflake://{quote_userinfo(user)}:{quote_userinfo(password)}@{account}{path}"
             elif user:
-                return f"snowflake://{quote(user)}@{account}{path}"
+                return f"snowflake://{quote_userinfo(user)}@{account}{path}"
             else:
                 return f"snowflake://{account}{path}"
 
@@ -1176,9 +1179,9 @@ class SemanticLayer:
             password = config.get("password", "")
 
             if user and password:
-                return f"clickhouse://{quote(user)}:{quote(password)}@{host}:{port}/{database}"
+                return f"clickhouse://{quote_userinfo(user)}:{quote_userinfo(password)}@{host}:{port}/{database}"
             elif user:
-                return f"clickhouse://{quote(user)}@{host}:{port}/{database}"
+                return f"clickhouse://{quote_userinfo(user)}@{host}:{port}/{database}"
             else:
                 return f"clickhouse://{host}:{port}/{database}"
 
@@ -1192,7 +1195,7 @@ class SemanticLayer:
             if not http_path:
                 raise ValueError("Databricks connection requires 'http_path' field")
 
-            return f"databricks://{token}@{server}/{http_path}"
+            return f"databricks://{quote_userinfo(token)}@{server}/{http_path}"
 
         elif conn_type == "spark":
             host = config.get("host", "localhost")

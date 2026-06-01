@@ -1,0 +1,6 @@
+metrics:
+  - invoices.invoice_count
+dimensions:
+  - vendors.segment
+order_by:
+  - vendors.segment

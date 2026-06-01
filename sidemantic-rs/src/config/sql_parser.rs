@@ -14,7 +14,7 @@
 //! DIMENSION status AS status;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nom::{
     branch::alt,
@@ -30,6 +30,7 @@ use nom::{
 #[cfg(not(target_arch = "wasm32"))]
 use polyglot_sql::parse as polyglot_parse;
 use polyglot_sql::{DialectType, Expression};
+use regex::Regex;
 
 use crate::core::{
     Aggregation, CohortInnerMetric, ComparisonCalculation, ComparisonType, Dimension,
@@ -322,6 +323,10 @@ fn parse_metric_aggregation(value: Option<&String>) -> Option<Aggregation> {
         "min" => Some(Aggregation::Min),
         "max" => Some(Aggregation::Max),
         "median" => Some(Aggregation::Median),
+        "stddev" => Some(Aggregation::Stddev),
+        "stddev_pop" => Some(Aggregation::StddevPop),
+        "variance" => Some(Aggregation::Variance),
+        "variance_pop" | "var_pop" => Some(Aggregation::VariancePop),
         "expression" => Some(Aggregation::Expression),
         _ => None,
     })
@@ -556,6 +561,28 @@ fn simple_dimension(input: &str) -> IResult<&str, Statement> {
     Ok((input, Statement::Dimension(props)))
 }
 
+/// Parse simple SEGMENT: SEGMENT name AS expr
+fn simple_segment(input: &str) -> IResult<&str, Statement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag_no_case("SEGMENT")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    let (input, name) = recognize(pair(identifier, opt(pair(char('.'), identifier))))(input)?;
+
+    let (input, _) = multispace1(input)?;
+    let (input, _) = tag_no_case("AS")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    let (input, expr) = take_while(|c| c != ';')(input)?;
+    let (input, _) = opt(char(';'))(input)?;
+
+    let mut props = HashMap::new();
+    props.insert("name".to_string(), name.trim().to_string());
+    props.insert("sql".to_string(), expr.trim().to_string());
+
+    Ok((input, Statement::Segment(props)))
+}
+
 /// Parse metric expression to extract aggregation function
 fn parse_metric_expression(name: &str, expr: &str) -> HashMap<String, String> {
     let mut props = HashMap::new();
@@ -612,6 +639,10 @@ fn parse_top_level_function_metric(expr: &str) -> Option<(String, String)> {
         "min" => "min",
         "max" => "max",
         "median" => "median",
+        "stddev" => "stddev",
+        "stddev_pop" => "stddev_pop",
+        "variance" => "variance",
+        "variance_pop" | "var_pop" => "variance_pop",
         "count_distinct" | "countdistinct" => "count_distinct",
         "count" => {
             if inner_expr == "*" {
@@ -761,6 +792,10 @@ fn extract_aggregation_from_function_name_polyglot(
         "min" => "min",
         "max" => "max",
         "median" => "median",
+        "stddev" => "stddev",
+        "stddev_pop" => "stddev_pop",
+        "variance" => "variance",
+        "variance_pop" | "var_pop" => "variance_pop",
         "count_distinct" => "count_distinct",
         _ => return None,
     };
@@ -856,6 +891,26 @@ fn prefixed_dimension(input: &str) -> IResult<&str, Statement> {
     Ok((input, Statement::Dimension(props)))
 }
 
+/// Parse SEGMENT with model prefix: SEGMENT model.name (props)
+fn prefixed_segment(input: &str) -> IResult<&str, Statement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag_no_case("SEGMENT")(input)?;
+    let (input, _) = multispace1(input)?;
+
+    let (input, model) = identifier(input)?;
+    let (input, _) = char('.')(input)?;
+    let (input, name) = identifier(input)?;
+
+    let (input, _) = multispace0(input)?;
+    let (input, props) = delimited(char('('), property_list, char(')'))(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = opt(char(';'))(input)?;
+
+    let mut props = props;
+    props.insert("name".to_string(), format!("{model}.{name}"));
+    Ok((input, Statement::Segment(props)))
+}
+
 /// Parse any statement (tries simple AS syntax first, then parenthesized)
 fn statement(input: &str) -> IResult<&str, Statement> {
     let (input, _) = multispace0(input)?;
@@ -865,9 +920,11 @@ fn statement(input: &str) -> IResult<&str, Statement> {
         // Try simple AS syntax first for METRIC and DIMENSION
         simple_metric,
         simple_dimension,
+        simple_segment,
         // Try model.name (props) syntax
         prefixed_metric,
         prefixed_dimension,
+        prefixed_segment,
         // Fall back to simple parenthesized syntax
         map(definition("DIMENSION"), Statement::Dimension),
         map(definition("METRIC"), Statement::Metric),
@@ -929,16 +986,15 @@ fn parse_file(input: &str) -> IResult<&str, Vec<Statement>> {
     Ok((remaining, statements))
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
+fn has_compact_model_syntax(sql: &str) -> bool {
+    Regex::new(r"(?i)\bmodel\s+[A-Za-z_][A-Za-z0-9_]*\s+from\b")
+        .expect("valid compact model regex")
+        .is_match(sql)
+}
 
-/// Parse SQL definitions into a Model
-pub fn parse_sql_model(sql: &str) -> Result<Model> {
-    let (_, statements) =
-        parse_file(sql).map_err(|e| SidemanticError::Validation(format!("Parse error: {e}")))?;
-
-    let mut model: Option<Model> = None;
+fn parse_legacy_sql_models_from_statements(statements: Vec<Statement>) -> Result<Vec<Model>> {
+    let mut models = Vec::new();
+    let mut current_model: Option<Model> = None;
     let mut dimensions = Vec::new();
     let mut metrics = Vec::new();
     let mut segments = Vec::new();
@@ -948,7 +1004,16 @@ pub fn parse_sql_model(sql: &str) -> Result<Model> {
     for stmt in statements {
         match stmt {
             Statement::Model(props) => {
-                model = Some(build_model(&props)?);
+                flush_legacy_sql_model(
+                    &mut models,
+                    &mut current_model,
+                    &mut dimensions,
+                    &mut metrics,
+                    &mut segments,
+                    &mut relationships,
+                    &mut pre_aggregations,
+                );
+                current_model = Some(build_model(&props)?);
             }
             Statement::Dimension(props) => {
                 if let Some(dim) = build_dimension(&props) {
@@ -979,17 +1044,567 @@ pub fn parse_sql_model(sql: &str) -> Result<Model> {
         }
     }
 
-    let mut model = model.ok_or_else(|| {
-        SidemanticError::Validation("SQL definitions must include a MODEL statement".into())
-    })?;
+    flush_legacy_sql_model(
+        &mut models,
+        &mut current_model,
+        &mut dimensions,
+        &mut metrics,
+        &mut segments,
+        &mut relationships,
+        &mut pre_aggregations,
+    );
 
-    model.dimensions.extend(dimensions);
-    model.metrics.extend(metrics);
-    model.segments.extend(segments);
-    model.relationships.extend(relationships);
-    model.pre_aggregations.extend(pre_aggregations);
+    if models.is_empty() {
+        return Err(SidemanticError::Validation(
+            "SQL definitions must include a MODEL statement".into(),
+        ));
+    }
+
+    Ok(models)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flush_legacy_sql_model(
+    models: &mut Vec<Model>,
+    current_model: &mut Option<Model>,
+    dimensions: &mut Vec<Dimension>,
+    metrics: &mut Vec<Metric>,
+    segments: &mut Vec<Segment>,
+    relationships: &mut Vec<Relationship>,
+    pre_aggregations: &mut Vec<PreAggregation>,
+) {
+    let Some(mut model) = current_model.take() else {
+        dimensions.clear();
+        metrics.clear();
+        segments.clear();
+        relationships.clear();
+        pre_aggregations.clear();
+        return;
+    };
+
+    model.dimensions.append(dimensions);
+    model.metrics.append(metrics);
+    model.segments.append(segments);
+    model.relationships.append(relationships);
+    model.pre_aggregations.append(pre_aggregations);
+    models.push(model);
+}
+
+fn strip_line_comment(line: &str) -> &str {
+    line.split_once("--")
+        .map(|(before, _)| before)
+        .unwrap_or(line)
+}
+
+fn split_annotation(line: &str) -> (&str, Option<&str>) {
+    let Some(idx) = line.rfind(" : ") else {
+        return (line, None);
+    };
+    (&line[..idx], Some(line[idx + 3..].trim()))
+}
+
+fn split_field_alias(line: &str) -> (String, String) {
+    let lower = line.to_ascii_lowercase();
+    if let Some(idx) = lower.rfind(" as ") {
+        let expr = line[..idx].trim().to_string();
+        let name = line[idx + 4..].trim().to_string();
+        (expr, name)
+    } else {
+        let name = line.trim().to_string();
+        (name.clone(), name)
+    }
+}
+
+fn split_columns(value: &str) -> Result<Vec<String>> {
+    let columns = value
+        .split(',')
+        .map(str::trim)
+        .filter(|column| !column.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if columns.is_empty() {
+        return Err(SidemanticError::Validation(
+            "Primary key requires at least one column".to_string(),
+        ));
+    }
+    Ok(columns)
+}
+
+fn parse_compact_annotation(annotation: Option<&str>) -> Result<(Option<String>, Option<String>)> {
+    let Some(annotation) = annotation else {
+        return Ok((None, None));
+    };
+
+    let mut dim_type = None;
+    let mut granularity = None;
+    let mut parts = annotation.split_whitespace().peekable();
+    while let Some(part) = parts.next() {
+        if part.eq_ignore_ascii_case("grain") {
+            let Some(grain) = parts.next() else {
+                return Err(SidemanticError::Validation(
+                    "field annotation grain requires a value".to_string(),
+                ));
+            };
+            granularity = Some(grain.to_ascii_lowercase());
+        } else if dim_type.is_none() {
+            dim_type = Some(part.to_ascii_lowercase());
+        } else {
+            return Err(SidemanticError::Validation(format!(
+                "Unrecognized field annotation '{annotation}'"
+            )));
+        }
+    }
+
+    if granularity.is_some()
+        && dim_type
+            .as_deref()
+            .is_some_and(|value| value != "time" && value != "timestamp" && value != "date")
+    {
+        return Err(SidemanticError::Validation(format!(
+            "field annotation cannot use grain with type '{}'",
+            dim_type.unwrap_or_default()
+        )));
+    }
+
+    Ok((dim_type, granularity))
+}
+
+fn compact_relationship_type(kind: &str) -> Result<RelationshipType> {
+    match kind.to_ascii_lowercase().as_str() {
+        "one" => Ok(RelationshipType::ManyToOne),
+        "many" => Ok(RelationshipType::OneToMany),
+        "one_to_one" => Ok(RelationshipType::OneToOne),
+        "many_to_one" => Ok(RelationshipType::ManyToOne),
+        "one_to_many" => Ok(RelationshipType::OneToMany),
+        "many_to_many" => Ok(RelationshipType::ManyToMany),
+        _ => Err(SidemanticError::Validation(format!(
+            "unsupported compact join relationship type '{kind}'"
+        ))),
+    }
+}
+
+fn parse_compact_join(line: &str) -> Result<Relationship> {
+    let join_re = Regex::new(r"(?i)^join\s+(\w+)\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+(.+)$")
+        .expect("valid compact join regex");
+    let captures = join_re.captures(line).ok_or_else(|| {
+        SidemanticError::Validation(format!("Unrecognized compact join statement: {line}"))
+    })?;
+    let rel_type = compact_relationship_type(&captures[1])?;
+    let target_model = captures[2].to_string();
+    let mut predicate = captures[3].trim();
+    if predicate.starts_with('(') && predicate.ends_with(')') {
+        predicate = predicate[1..predicate.len() - 1].trim();
+    }
+
+    let mut local_keys = Vec::new();
+    let mut target_keys = Vec::new();
+    for part in Regex::new(r"(?i)\s+and\s+")
+        .expect("valid and regex")
+        .split(predicate)
+    {
+        let Some((left, right)) = part.split_once('=') else {
+            return Err(SidemanticError::Validation(format!(
+                "compact join '{line}' must compare model columns"
+            )));
+        };
+        let left = left.trim().trim_matches(|c| c == '(' || c == ')').trim();
+        let right = right.trim().trim_matches(|c| c == '(' || c == ')').trim();
+        let Some((right_model, right_col)) = right.split_once('.') else {
+            return Err(SidemanticError::Validation(format!(
+                "compact join '{line}' must compare model columns"
+            )));
+        };
+        if right_model.trim() != target_model {
+            return Err(SidemanticError::Validation(format!(
+                "compact join '{line}' must compare columns from target model '{target_model}'"
+            )));
+        }
+        if left.contains('.') {
+            return Err(SidemanticError::Validation(format!(
+                "compact join '{line}' must use local columns on the left side"
+            )));
+        }
+        local_keys.push(left.to_string());
+        target_keys.push(right_col.trim().to_string());
+    }
+
+    if local_keys.is_empty() {
+        return Err(SidemanticError::Validation(format!(
+            "compact join '{line}' must compare model columns"
+        )));
+    }
+
+    let (foreign_keys, primary_keys) = match rel_type {
+        RelationshipType::ManyToOne | RelationshipType::OneToOne => (local_keys, target_keys),
+        _ => (target_keys, local_keys),
+    };
+
+    let mut rel = Relationship::new(target_model);
+    rel.r#type = rel_type;
+    Ok(rel.with_key_columns(foreign_keys, primary_keys))
+}
+
+fn infer_compact_dimension_type(name: &str, expression: &str) -> String {
+    let lowered_name = name.to_ascii_lowercase();
+    let lowered_expression = expression.to_ascii_lowercase();
+    if lowered_name.contains("date")
+        || lowered_name.contains("time")
+        || lowered_name.ends_with("_at")
+        || lowered_expression.contains("date_trunc")
+        || lowered_expression.contains("timestamp")
+        || lowered_expression.contains("::date")
+    {
+        "time".to_string()
+    } else if lowered_expression.contains(" = ")
+        || lowered_expression.contains(" != ")
+        || lowered_expression.contains(" <> ")
+        || lowered_expression.contains(" > ")
+        || lowered_expression.contains(" < ")
+    {
+        "boolean".to_string()
+    } else if [" + ", " - ", " * ", " / "]
+        .iter()
+        .any(|operator| lowered_expression.contains(operator))
+    {
+        "numeric".to_string()
+    } else {
+        infer_dimension_type(expression)
+    }
+}
+
+fn compact_expression_references_metrics(expression: &str, metric_names: &HashSet<String>) -> bool {
+    if metric_names.is_empty() {
+        return false;
+    }
+    let tokens = Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+        .expect("valid identifier regex")
+        .find_iter(expression)
+        .map(|m| m.as_str())
+        .collect::<HashSet<_>>();
+    metric_names
+        .iter()
+        .any(|name| tokens.contains(name.as_str()))
+}
+
+type CompactFieldDeclaration = (usize, String, String, Option<String>, Option<String>);
+
+fn build_compact_model(
+    name: String,
+    table: Option<String>,
+    source_sql: Option<String>,
+    body: &str,
+) -> Result<Model> {
+    let mut model = Model::new(&name, "id");
+    model.table = table;
+    model.sql = source_sql;
+
+    let mut field_declarations: Vec<CompactFieldDeclaration> = Vec::new();
+    let mut metric_names = HashSet::new();
+    let mut seen_fields = HashSet::new();
+    let mut seen_segments = HashSet::new();
+
+    for (idx, raw_line) in body.lines().enumerate() {
+        let line = strip_line_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("primary key") {
+            let open = line.find('(').ok_or_else(|| {
+                SidemanticError::Validation("Primary key requires column list".to_string())
+            })?;
+            let close = line.rfind(')').ok_or_else(|| {
+                SidemanticError::Validation("Primary key requires column list".to_string())
+            })?;
+            if close <= open {
+                return Err(SidemanticError::Validation(
+                    "Primary key requires at least one column".to_string(),
+                ));
+            }
+            let columns = split_columns(&line[open + 1..close])?;
+            model.primary_key = columns[0].clone();
+            model.primary_key_columns = columns;
+            continue;
+        }
+
+        if lower.starts_with("default time ") {
+            let rest = line["default time ".len()..].trim();
+            let mut parts = rest.split_whitespace();
+            let Some(dimension) = parts.next() else {
+                return Err(SidemanticError::Validation(
+                    "default time requires a dimension".to_string(),
+                ));
+            };
+            model.default_time_dimension = Some(dimension.to_string());
+            if parts
+                .next()
+                .is_some_and(|part| part.eq_ignore_ascii_case("grain"))
+            {
+                if let Some(grain) = parts.next() {
+                    model.default_grain = Some(grain.to_ascii_lowercase());
+                }
+            }
+            continue;
+        }
+
+        if lower.starts_with("segment ") {
+            let rest = line["segment ".len()..].trim();
+            let lower_rest = rest.to_ascii_lowercase();
+            let Some(as_idx) = lower_rest.find(" as ") else {
+                return Err(SidemanticError::Validation(format!(
+                    "Unrecognized compact segment statement: {line}"
+                )));
+            };
+            let segment_name = rest[..as_idx].trim();
+            let segment_sql = rest[as_idx + 4..].trim();
+            if !seen_segments.insert(segment_name.to_string()) {
+                return Err(SidemanticError::Validation(format!(
+                    "Model '{name}' defines segment '{segment_name}' more than once"
+                )));
+            }
+            model
+                .segments
+                .push(Segment::new(segment_name, segment_sql.to_string()));
+            continue;
+        }
+
+        if lower.starts_with("join ") {
+            model.relationships.push(parse_compact_join(line)?);
+            continue;
+        }
+
+        if lower.starts_with("table ") {
+            return Err(SidemanticError::Validation(format!(
+                "compact model '{name}' must use `model {name} from <table>` instead of a table statement"
+            )));
+        }
+
+        let (field_line, annotation) = split_annotation(line);
+        let (dimension_type, granularity) = parse_compact_annotation(annotation)?;
+        let (expression, field_name) = split_field_alias(field_line);
+        if field_name.is_empty() {
+            return Err(SidemanticError::Validation(format!(
+                "Unrecognized statement in model '{name}': {line}"
+            )));
+        }
+        if !seen_fields.insert(field_name.clone()) {
+            return Err(SidemanticError::Validation(format!(
+                "Model '{name}' defines field '{field_name}' more than once"
+            )));
+        }
+        field_declarations.push((idx, field_name, expression, dimension_type, granularity));
+    }
+
+    let mut pending = Vec::new();
+    let mut parsed_fields: Vec<(usize, bool, Dimension, Option<Metric>)> = Vec::new();
+    for (idx, field_name, expression, dimension_type, granularity) in field_declarations {
+        let metric_props = parse_metric_expression(&field_name, &expression);
+        if metric_props
+            .get("agg")
+            .is_some_and(|agg| agg != "expression")
+        {
+            if dimension_type.is_some() {
+                return Err(SidemanticError::Validation(format!(
+                    "Field '{field_name}' in model '{name}' is a metric and cannot use dimension annotation"
+                )));
+            }
+            let metric = build_metric(&metric_props).ok_or_else(|| {
+                SidemanticError::Validation(format!(
+                    "failed to build compact metric '{field_name}'"
+                ))
+            })?;
+            metric_names.insert(field_name);
+            parsed_fields.push((idx, false, Dimension::new("__unused"), Some(metric)));
+        } else {
+            pending.push((idx, field_name, expression, dimension_type, granularity));
+        }
+    }
+
+    let mut remaining = Vec::new();
+    for (idx, field_name, expression, dimension_type, granularity) in pending {
+        if compact_expression_references_metrics(&expression, &metric_names) {
+            if dimension_type.is_some() {
+                return Err(SidemanticError::Validation(format!(
+                    "Field '{field_name}' in model '{name}' is a metric and cannot use dimension annotation"
+                )));
+            }
+            let mut props = HashMap::new();
+            props.insert("name".to_string(), field_name.clone());
+            props.insert("type".to_string(), "derived".to_string());
+            props.insert("sql".to_string(), expression);
+            let metric = build_metric(&props).ok_or_else(|| {
+                SidemanticError::Validation(format!(
+                    "failed to build compact metric '{field_name}'"
+                ))
+            })?;
+            metric_names.insert(field_name);
+            parsed_fields.push((idx, false, Dimension::new("__unused"), Some(metric)));
+        } else {
+            remaining.push((idx, field_name, expression, dimension_type, granularity));
+        }
+    }
+
+    for (idx, field_name, expression, dimension_type, granularity) in remaining {
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), field_name.clone());
+        props.insert(
+            "type".to_string(),
+            dimension_type
+                .unwrap_or_else(|| infer_compact_dimension_type(&field_name, &expression)),
+        );
+        if expression != field_name {
+            props.insert("sql".to_string(), expression);
+        }
+        if let Some(granularity) = granularity {
+            props.insert("granularity".to_string(), granularity);
+        }
+        let dimension = build_dimension(&props).ok_or_else(|| {
+            SidemanticError::Validation(format!("failed to build compact dimension '{field_name}'"))
+        })?;
+        parsed_fields.push((idx, true, dimension, None));
+    }
+
+    parsed_fields.sort_by_key(|(idx, _, _, _)| *idx);
+    for (_, is_dimension, dimension, metric) in parsed_fields {
+        if is_dimension {
+            model.dimensions.push(dimension);
+        } else if let Some(metric) = metric {
+            model.metrics.push(metric);
+        }
+    }
+
+    if let Some(default_time) = model.default_time_dimension.as_ref() {
+        let Some(dimension) = model.get_dimension(default_time) else {
+            return Err(SidemanticError::Validation(format!(
+                "Default time dimension '{default_time}' in model '{name}' is not defined"
+            )));
+        };
+        if dimension.r#type != DimensionType::Time {
+            return Err(SidemanticError::Validation(format!(
+                "Default time dimension '{default_time}' in model '{name}' must be a time dimension"
+            )));
+        }
+    }
 
     Ok(model)
+}
+
+fn parse_compact_sql_model_prefix(sql: &str) -> Result<(Vec<Model>, &str)> {
+    let header_re = Regex::new(r"(?is)\bmodel\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s*")
+        .expect("valid compact model header regex");
+    let mut models = Vec::new();
+    let mut remaining = sql;
+
+    loop {
+        remaining = remaining.trim_start();
+        if let Some(after_semicolon) = remaining.strip_prefix(';') {
+            remaining = after_semicolon;
+            continue;
+        }
+        let Some(captures) = header_re.captures(remaining) else {
+            break;
+        };
+        let matched = captures.get(0).unwrap();
+        if matched.start() != 0 {
+            return Err(SidemanticError::Validation(
+                "Rust compact SQL model parser does not support non-model statements before compact model blocks".to_string(),
+            ));
+        }
+        let name = captures[1].to_string();
+        let after_from = &remaining[matched.end()..];
+        let after_from = after_from.trim_start();
+
+        let (table, source_sql, before_body) =
+            if let Some(source_rest) = after_from.strip_prefix('(') {
+                let (source_sql, source_remainder) = parse_balanced_parens(source_rest)
+                    .ok_or_else(|| {
+                        SidemanticError::Validation(format!(
+                            "compact model '{name}' has an unterminated SQL source"
+                        ))
+                    })?;
+                (
+                    None,
+                    Some(source_sql.trim().to_string()),
+                    source_remainder.trim_start(),
+                )
+            } else {
+                let open = after_from.find('(').ok_or_else(|| {
+                    SidemanticError::Validation(format!(
+                        "compact model '{name}' must use `model {name} from <table> (...)`"
+                    ))
+                })?;
+                let table = after_from[..open].trim();
+                if table.is_empty() {
+                    return Err(SidemanticError::Validation(format!(
+                        "compact model '{name}' must use `model {name} from <table> (...)`"
+                    )));
+                }
+                (
+                    Some(table.to_string()),
+                    None,
+                    after_from[open..].trim_start(),
+                )
+            };
+
+        let Some(body_rest) = before_body.strip_prefix('(') else {
+            return Err(SidemanticError::Validation(format!(
+                "compact model '{name}' must include a model body"
+            )));
+        };
+        let (body, rest) = parse_balanced_parens(body_rest).ok_or_else(|| {
+            SidemanticError::Validation(format!("compact model '{name}' has an unterminated body"))
+        })?;
+        models.push(build_compact_model(name, table, source_sql, body)?);
+        remaining = rest;
+    }
+
+    if models.is_empty() {
+        return Err(SidemanticError::Validation(
+            "SQL definitions must include a compact model statement".to_string(),
+        ));
+    }
+
+    Ok((models, remaining))
+}
+
+fn parse_compact_sql_models(sql: &str) -> Result<Vec<Model>> {
+    let (models, remaining) = parse_compact_sql_model_prefix(sql)?;
+    let trailing = remaining.trim();
+    if !trailing.is_empty() {
+        parse_sql_graph_definitions_extended(trailing).map_err(|err| {
+            SidemanticError::Validation(format!(
+                "failed to parse trailing graph-level definitions after compact model blocks: {err}"
+            ))
+        })?;
+    }
+
+    Ok(models)
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/// Parse SQL definitions into one or more models.
+pub fn parse_sql_models(sql: &str) -> Result<Vec<Model>> {
+    if has_compact_model_syntax(sql) {
+        return parse_compact_sql_models(sql);
+    }
+
+    let (_, statements) =
+        parse_file(sql).map_err(|e| SidemanticError::Validation(format!("Parse error: {e}")))?;
+
+    parse_legacy_sql_models_from_statements(statements)
+}
+
+/// Parse SQL definitions into the first model.
+pub fn parse_sql_model(sql: &str) -> Result<Model> {
+    parse_sql_models(sql).and_then(|models| {
+        models.into_iter().next().ok_or_else(|| {
+            SidemanticError::Validation("SQL definitions must include a MODEL statement".into())
+        })
+    })
 }
 
 /// Parse SQL into statement blocks preserving high-level statement kinds/properties.
@@ -1032,6 +1647,12 @@ pub fn parse_sql_graph_definitions(
 
 /// Parse SQL definitions for graph-level definitions including pre-aggregations.
 pub fn parse_sql_graph_definitions_extended(sql: &str) -> Result<SqlGraphDefinitionParts> {
+    let sql = if has_compact_model_syntax(sql) {
+        let (_, remaining) = parse_compact_sql_model_prefix(sql)?;
+        remaining
+    } else {
+        sql
+    };
     let (_, statements) =
         parse_file(sql).map_err(|e| SidemanticError::Validation(format!("Parse error: {e}")))?;
 
@@ -1317,12 +1938,8 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
 
     metric.agg = parse_metric_aggregation(props.get("agg"));
 
-    if metric.agg.is_none()
-        && matches!(
-            metric.r#type,
-            MetricType::Simple | MetricType::Cumulative | MetricType::Derived
-        )
-    {
+    let explicit_metric_type = props.get("type").map(|value| value.to_ascii_lowercase());
+    if metric.agg.is_none() && matches!(explicit_metric_type.as_deref(), None | Some("simple")) {
         if let Some(sql) = metric.sql.as_deref() {
             if let Some((agg, inner_expr)) = extract_aggregation_with_polyglot(sql) {
                 metric.agg = parse_metric_aggregation(Some(&agg));
@@ -1388,6 +2005,8 @@ fn build_relationship(props: &HashMap<String, String>) -> Option<Relationship> {
 
     let foreign_key_columns = parse_key_columns(props, "foreign_key");
     let primary_key_columns = parse_key_columns(props, "primary_key");
+    let through_foreign_key_columns = parse_key_columns(props, "through_foreign_key");
+    let related_foreign_key_columns = parse_key_columns(props, "related_foreign_key");
 
     Some(Relationship {
         name: name.clone(),
@@ -1401,8 +2020,14 @@ fn build_relationship(props: &HashMap<String, String>) -> Option<Relationship> {
             .and_then(|columns| columns.first().cloned()),
         primary_key_columns,
         through: props.get("through").cloned(),
-        through_foreign_key: props.get("through_foreign_key").cloned(),
-        related_foreign_key: props.get("related_foreign_key").cloned(),
+        through_foreign_key: through_foreign_key_columns
+            .as_ref()
+            .and_then(|columns| columns.first().cloned()),
+        through_foreign_key_columns,
+        related_foreign_key: related_foreign_key_columns
+            .as_ref()
+            .and_then(|columns| columns.first().cloned()),
+        related_foreign_key_columns,
         sql: props.get("sql").cloned(),
         metadata: props.get("metadata").map(|value| parse_literal(value)),
     })
@@ -1600,6 +2225,20 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_explicit_derived_metric_preserves_inline_aggregate_expression() {
+        let sql = r#"
+            MODEL (name orders, table orders);
+            METRIC (name revenue, type derived, sql SUM(orders.amount));
+        "#;
+
+        let model = parse_sql_model(sql).unwrap();
+        let revenue = model.get_metric("revenue").unwrap();
+        assert_eq!(revenue.r#type, MetricType::Derived);
+        assert_eq!(revenue.agg, None);
+        assert_eq!(revenue.sql, Some("SUM(orders.amount)".to_string()));
+    }
+
+    #[test]
     fn test_parse_cohort_metric_preserves_outer_aggregation() {
         let sql = r#"
             MODEL (name events, table events);
@@ -1707,6 +2346,10 @@ mod tests {
             METRIC revenue AS SUM(COALESCE(amount, 0));
             METRIC unique_customers AS COUNT(DISTINCT customer_id);
             METRIC median_amount AS MEDIAN(amount);
+            METRIC amount_stddev AS STDDEV(amount);
+            METRIC amount_stddev_pop AS STDDEV_POP(amount);
+            METRIC amount_variance AS VARIANCE(amount);
+            METRIC amount_variance_pop AS VARIANCE_POP(amount);
             METRIC approximate_customers AS APPROX_COUNT_DISTINCT(customer_id);
         "#;
 
@@ -1724,12 +2367,226 @@ mod tests {
         assert_eq!(median_amount.agg, Some(Aggregation::Median));
         assert_eq!(median_amount.sql, Some("amount".to_string()));
 
+        let amount_stddev = model.get_metric("amount_stddev").unwrap();
+        assert_eq!(amount_stddev.agg, Some(Aggregation::Stddev));
+        assert_eq!(amount_stddev.sql, Some("amount".to_string()));
+
+        let amount_stddev_pop = model.get_metric("amount_stddev_pop").unwrap();
+        assert_eq!(amount_stddev_pop.agg, Some(Aggregation::StddevPop));
+        assert_eq!(amount_stddev_pop.sql, Some("amount".to_string()));
+
+        let amount_variance = model.get_metric("amount_variance").unwrap();
+        assert_eq!(amount_variance.agg, Some(Aggregation::Variance));
+        assert_eq!(amount_variance.sql, Some("amount".to_string()));
+
+        let amount_variance_pop = model.get_metric("amount_variance_pop").unwrap();
+        assert_eq!(amount_variance_pop.agg, Some(Aggregation::VariancePop));
+        assert_eq!(amount_variance_pop.sql, Some("amount".to_string()));
+
         let approximate_customers = model.get_metric("approximate_customers").unwrap();
         assert_eq!(approximate_customers.agg, Some(Aggregation::Expression));
         assert_eq!(
             approximate_customers.sql,
             Some("APPROX_COUNT_DISTINCT(customer_id)".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_compact_sql_model() {
+        let sql = r#"
+model orders from orders (
+  primary key (order_id, store_id)
+  default time order_date grain day
+
+  status
+  date_trunc('day', created_at) as order_date : time grain day
+  status = 'completed' as is_complete : boolean
+  amount - discount as net_amount : numeric
+
+  segment completed as status = 'completed'
+
+  join one customers on customer_id = customers.id
+  join many order_items on (order_id = order_items.order_id and store_id = order_items.store_id)
+
+  revenue / order_count as average_order_value
+  sum(amount) as revenue
+  count(*) as order_count
+)
+"#;
+
+        let model = parse_sql_model(sql).unwrap();
+
+        assert_eq!(model.name, "orders");
+        assert_eq!(model.table.as_deref(), Some("orders"));
+        assert_eq!(
+            model.primary_key_columns,
+            vec!["order_id".to_string(), "store_id".to_string()]
+        );
+        assert_eq!(model.default_time_dimension.as_deref(), Some("order_date"));
+        assert_eq!(model.default_grain.as_deref(), Some("day"));
+
+        let status = model.get_dimension("status").unwrap();
+        assert_eq!(status.r#type, DimensionType::Categorical);
+        assert_eq!(status.sql, None);
+
+        let order_date = model.get_dimension("order_date").unwrap();
+        assert_eq!(order_date.r#type, DimensionType::Time);
+        assert_eq!(
+            order_date.sql.as_deref(),
+            Some("date_trunc('day', created_at)")
+        );
+        assert_eq!(order_date.granularity.as_deref(), Some("day"));
+
+        let is_complete = model.get_dimension("is_complete").unwrap();
+        assert_eq!(is_complete.r#type, DimensionType::Boolean);
+        assert_eq!(is_complete.sql.as_deref(), Some("status = 'completed'"));
+
+        let net_amount = model.get_dimension("net_amount").unwrap();
+        assert_eq!(net_amount.r#type, DimensionType::Numeric);
+        assert_eq!(net_amount.sql.as_deref(), Some("amount - discount"));
+
+        let completed = model.get_segment("completed").unwrap();
+        assert_eq!(completed.sql, "status = 'completed'");
+
+        let customers = model.get_relationship("customers").unwrap();
+        assert_eq!(customers.r#type, RelationshipType::ManyToOne);
+        assert_eq!(
+            customers.foreign_key_columns(),
+            vec!["customer_id".to_string()]
+        );
+        assert_eq!(customers.primary_key_columns(), vec!["id".to_string()]);
+
+        let order_items = model.get_relationship("order_items").unwrap();
+        assert_eq!(order_items.r#type, RelationshipType::OneToMany);
+        assert_eq!(
+            order_items.foreign_key_columns(),
+            vec!["order_id".to_string(), "store_id".to_string()]
+        );
+        assert_eq!(
+            order_items.primary_key_columns(),
+            vec!["order_id".to_string(), "store_id".to_string()]
+        );
+
+        let revenue = model.get_metric("revenue").unwrap();
+        assert_eq!(revenue.agg, Some(Aggregation::Sum));
+        assert_eq!(revenue.sql.as_deref(), Some("amount"));
+
+        let order_count = model.get_metric("order_count").unwrap();
+        assert_eq!(order_count.agg, Some(Aggregation::Count));
+        assert_eq!(order_count.sql, None);
+
+        let average_order_value = model.get_metric("average_order_value").unwrap();
+        assert_eq!(average_order_value.r#type, MetricType::Derived);
+        assert_eq!(
+            average_order_value.sql.as_deref(),
+            Some("revenue / order_count")
+        );
+    }
+
+    #[test]
+    fn test_parse_compact_sql_models_multiple_and_derived_source() {
+        let sql = r#"
+model completed_orders from (
+  select *
+  from raw.orders
+  where status = 'completed'
+) (
+  primary key (order_id)
+  created_at as order_date : time grain day
+  sum(amount) as revenue
+)
+
+model customers from public.customers (
+  primary key (id)
+  region
+)
+"#;
+
+        let models = parse_sql_models(sql).unwrap();
+
+        assert_eq!(
+            models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["completed_orders", "customers"]
+        );
+        assert!(models[0].table.is_none());
+        assert_eq!(
+            models[0].sql.as_deref(),
+            Some("select *\n  from raw.orders\n  where status = 'completed'")
+        );
+        assert_eq!(
+            models[0].get_metric("revenue").unwrap().agg,
+            Some(Aggregation::Sum)
+        );
+        assert_eq!(models[1].table.as_deref(), Some("public.customers"));
+        assert!(models[1].get_dimension("region").is_some());
+    }
+
+    #[test]
+    fn test_parse_compact_sql_models_with_trailing_graph_definitions() {
+        let sql = r#"
+model orders from orders (
+  primary key (order_id)
+  sum(amount) as revenue
+)
+
+METRIC (
+  name total_revenue,
+  sql orders.revenue
+);
+
+PARAMETER (
+  name region,
+  type string,
+  allowed_values [us, eu]
+);
+"#;
+
+        let models = parse_sql_models(sql).unwrap();
+        assert_eq!(
+            models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["orders"]
+        );
+
+        let (metrics, segments, parameters) = parse_sql_graph_definitions(sql).unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].name, "total_revenue");
+        assert!(segments.is_empty());
+        assert_eq!(parameters.len(), 1);
+        assert_eq!(parameters[0].name, "region");
+    }
+
+    #[test]
+    fn test_parse_legacy_sql_models_multiple() {
+        let sql = r#"
+MODEL (name orders, table orders, primary_key order_id);
+METRIC order_count AS COUNT(*);
+
+MODEL (name customers, table customers, primary_key customer_id);
+METRIC customer_count AS COUNT(*);
+"#;
+
+        let models = parse_sql_models(sql).unwrap();
+
+        assert_eq!(
+            models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["orders", "customers"]
+        );
+        assert!(models[0].get_metric("order_count").is_some());
+        assert!(models[0].get_metric("customer_count").is_none());
+        assert!(models[1].get_metric("customer_count").is_some());
+    }
+
+    #[test]
+    fn test_parse_compact_sql_model_rejects_bad_join() {
+        let sql = r#"
+model orders from orders (
+  primary key (order_id)
+  join one customers on customer_id = 1
+)
+"#;
+
+        let err = parse_sql_model(sql).unwrap_err();
+        assert!(err.to_string().contains("must compare model columns"));
     }
 
     #[test]
@@ -1748,6 +2605,30 @@ mod tests {
 
         let order_date = model.get_dimension("order_date").unwrap();
         assert_eq!(order_date.sql, Some("created_at".to_string()));
+    }
+
+    #[test]
+    fn test_simple_segment_syntax() {
+        let sql = r#"
+            MODEL (name orders, table orders);
+            SEGMENT completed AS status = 'completed';
+        "#;
+
+        let model = parse_sql_model(sql).unwrap();
+        assert_eq!(model.segments.len(), 1);
+
+        let completed = model.get_segment("completed").unwrap();
+        assert_eq!(completed.sql, "status = 'completed'");
+    }
+
+    #[test]
+    fn test_simple_segment_graph_definition_syntax() {
+        let sql = "SEGMENT completed AS status = 'completed';";
+
+        let (_metrics, segments) = parse_sql_definitions(sql).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].name, "completed");
+        assert_eq!(segments[0].sql, "status = 'completed'");
     }
 
     #[test]

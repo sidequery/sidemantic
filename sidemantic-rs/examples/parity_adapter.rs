@@ -28,6 +28,7 @@ enum Request {
         #[serde(default)]
         order_by: Vec<String>,
         limit: Option<usize>,
+        offset: Option<usize>,
         #[serde(default)]
         ungrouped: bool,
         #[serde(default)]
@@ -137,6 +138,7 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
             segments,
             order_by,
             limit,
+            offset,
             ungrouped,
             skip_default_time_dimensions,
             dialect,
@@ -152,6 +154,9 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                 .with_skip_default_time_dimensions(skip_default_time_dimensions);
             if let Some(limit) = limit {
                 query = query.with_limit(limit);
+            }
+            if let Some(offset) = offset {
+                query = query.with_offset(offset);
             }
             let mut generator = SqlGenerator::new(&graph);
             if let Some(dialect) = dialect {
@@ -654,6 +659,10 @@ fn metric_aggregation_name(aggregation: Option<&Aggregation>) -> &'static str {
         Some(Aggregation::Min) => "min",
         Some(Aggregation::Max) => "max",
         Some(Aggregation::Median) => "median",
+        Some(Aggregation::Stddev) => "stddev",
+        Some(Aggregation::StddevPop) => "stddev_pop",
+        Some(Aggregation::Variance) => "variance",
+        Some(Aggregation::VariancePop) => "variance_pop",
         Some(Aggregation::Expression) | None => "sum",
     }
 }

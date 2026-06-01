@@ -128,6 +128,10 @@ pub enum Aggregation {
     Min,
     Max,
     Median,
+    Stddev,
+    StddevPop,
+    Variance,
+    VariancePop,
     /// Raw expression that already contains aggregation (e.g., SUM(amount) * 2)
     Expression,
 }
@@ -142,6 +146,10 @@ impl Aggregation {
             Aggregation::Min => "MIN",
             Aggregation::Max => "MAX",
             Aggregation::Median => "MEDIAN",
+            Aggregation::Stddev => "STDDEV",
+            Aggregation::StddevPop => "STDDEV_POP",
+            Aggregation::Variance => "VARIANCE",
+            Aggregation::VariancePop => "VAR_POP",
             Aggregation::Expression => "", // Not used - expression stored in sql field
         }
     }
@@ -605,7 +613,8 @@ pub struct Relationship {
     pub name: String,
     #[serde(default)]
     pub r#type: RelationshipType,
-    /// Foreign key column (defaults to {name}_id)
+    /// Foreign key column.
+    /// Defaults to `{name}_id` for `many_to_one`, and `id` for one-to-one/one-to-many compatibility.
     pub foreign_key: Option<String>,
     /// Foreign key columns for composite relationships
     #[serde(default)]
@@ -621,9 +630,15 @@ pub struct Relationship {
     /// Foreign key in junction model pointing to this model
     #[serde(default)]
     pub through_foreign_key: Option<String>,
+    /// Foreign key columns in junction model pointing to this model
+    #[serde(default)]
+    pub through_foreign_key_columns: Option<Vec<String>>,
     /// Foreign key in junction model pointing to related model
     #[serde(default)]
     pub related_foreign_key: Option<String>,
+    /// Foreign key columns in junction model pointing to related model
+    #[serde(default)]
+    pub related_foreign_key_columns: Option<Vec<String>>,
     /// Custom SQL join condition (overrides FK/PK)
     /// Use {from} and {to} placeholders for table aliases
     #[serde(default)]
@@ -644,7 +659,9 @@ impl Relationship {
             primary_key_columns: None,
             through: None,
             through_foreign_key: None,
+            through_foreign_key_columns: None,
             related_foreign_key: None,
+            related_foreign_key_columns: None,
             sql: None,
             metadata: None,
         }
@@ -716,7 +733,13 @@ impl Relationship {
             .clone()
             .filter(|columns| !columns.is_empty())
             .or_else(|| self.foreign_key.clone().map(|key| vec![key]))
-            .unwrap_or_else(|| vec![format!("{}_id", self.name)])
+            .unwrap_or_else(|| {
+                if self.r#type == RelationshipType::ManyToOne {
+                    vec![format!("{}_id", self.name)]
+                } else {
+                    vec!["id".to_string()]
+                }
+            })
     }
 
     pub fn primary_key_columns(&self) -> Vec<String> {
@@ -738,12 +761,39 @@ impl Relationship {
         if self.r#type != RelationshipType::ManyToMany {
             return (None, None);
         }
+        let (source_keys, target_keys) = self.junction_key_columns();
         (
-            self.through_foreign_key
-                .clone()
-                .or_else(|| self.foreign_key.clone()),
-            self.related_foreign_key.clone(),
+            source_keys.into_iter().next(),
+            target_keys.into_iter().next(),
         )
+    }
+
+    /// Get junction key columns for many-to-many relationships.
+    pub fn junction_key_columns(&self) -> (Vec<String>, Vec<String>) {
+        if self.r#type != RelationshipType::ManyToMany {
+            return (Vec::new(), Vec::new());
+        }
+
+        let source_keys = self
+            .through_foreign_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.through_foreign_key.clone().map(|key| vec![key]))
+            .or_else(|| {
+                self.foreign_key_columns
+                    .clone()
+                    .filter(|columns| !columns.is_empty())
+            })
+            .or_else(|| self.foreign_key.clone().map(|key| vec![key]))
+            .unwrap_or_default();
+        let target_keys = self
+            .related_foreign_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.related_foreign_key.clone().map(|key| vec![key]))
+            .unwrap_or_default();
+
+        (source_keys, target_keys)
     }
 }
 
@@ -1049,6 +1099,40 @@ mod tests {
 
         let metric = Metric::count_distinct("unique_customers", "customer_id");
         assert_eq!(metric.to_sql(Some("o")), "COUNT(DISTINCT o.customer_id)");
+
+        let metric = Metric {
+            name: "revenue_stddev".to_string(),
+            extends: None,
+            agg: Some(Aggregation::Stddev),
+            sql: Some("amount".to_string()),
+            ..Metric::new("revenue_stddev")
+        };
+        assert_eq!(metric.to_sql(Some("o")), "STDDEV(o.amount)");
+
+        let metric = Metric {
+            name: "revenue_variance_pop".to_string(),
+            extends: None,
+            agg: Some(Aggregation::VariancePop),
+            sql: Some("amount".to_string()),
+            ..Metric::new("revenue_variance_pop")
+        };
+        assert_eq!(metric.to_sql(None), "VAR_POP(amount)");
+    }
+
+    #[test]
+    fn test_relationship_default_foreign_keys_match_native_contract() {
+        let rel = Relationship::many_to_one("customers");
+        assert_eq!(rel.foreign_key_columns(), vec!["customers_id".to_string()]);
+        assert_eq!(rel.primary_key_columns(), vec!["id".to_string()]);
+
+        let rel = Relationship::one_to_many("orders");
+        assert_eq!(rel.foreign_key_columns(), vec!["id".to_string()]);
+        assert_eq!(rel.primary_key_columns(), vec!["id".to_string()]);
+
+        let mut rel = Relationship::new("profile");
+        rel.r#type = RelationshipType::OneToOne;
+        assert_eq!(rel.foreign_key_columns(), vec!["id".to_string()]);
+        assert_eq!(rel.primary_key_columns(), vec!["id".to_string()]);
     }
 
     #[test]

@@ -230,3 +230,12 @@ def resolve_metric_inheritance(metrics: dict[str, Metric]) -> dict[str, Metric]:
         resolve(name)
 
     return resolved
+
+
+def resolve_model_metric_inheritance(model: Model) -> None:
+    """Resolve inheritance between metrics declared on a single model."""
+    if not any(metric.extends for metric in model.metrics):
+        return
+
+    resolved_metrics = resolve_metric_inheritance({metric.name: metric for metric in model.metrics})
+    model.metrics = list(resolved_metrics.values())

@@ -127,6 +127,45 @@ models:
     assert paid_orders.get_metric("revenue") is not None
 
 
+def test_load_from_directory_resolves_native_metric_inheritance_after_model_merge(tmp_path):
+    (tmp_path / "base.yml").write_text(
+        """
+version: 1
+models:
+  - name: base_orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"""
+    )
+    (tmp_path / "child.yml").write_text(
+        """
+version: 1
+models:
+  - name: paid_orders
+    extends: base_orders
+    metrics:
+      - name: paid_revenue
+        extends: revenue
+        filters:
+          - status = 'paid'
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    paid_revenue = layer.graph.models["paid_orders"].get_metric("paid_revenue")
+    assert paid_revenue is not None
+    assert paid_revenue.extends is None
+    assert paid_revenue.agg == "sum"
+    assert paid_revenue.sql == "amount"
+    assert paid_revenue.filters == ["status = 'paid'"]
+
+
 def test_load_from_directory_strict_raises_on_missing_native_parent(tmp_path):
     (tmp_path / "child.yml").write_text(
         """

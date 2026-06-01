@@ -422,7 +422,11 @@ class SidemanticAdapter(BaseAdapter):
             raise ValueError(f"{location}invalid {scope}: {exc}") from exc
 
     def _resolve_inheritance(self, graph: SemanticGraph) -> None:
-        from sidemantic.core.inheritance import resolve_metric_inheritance, resolve_model_inheritance
+        from sidemantic.core.inheritance import (
+            resolve_metric_inheritance,
+            resolve_model_inheritance,
+            resolve_model_metric_inheritance,
+        )
 
         if any(model.extends for model in graph.models.values()):
             missing_parent = any(model.extends and model.extends not in graph.models for model in graph.models.values())
@@ -431,9 +435,9 @@ class SidemanticAdapter(BaseAdapter):
                 graph._mark_dirty()
 
         for model in graph.models.values():
-            if any(metric.extends for metric in model.metrics):
-                resolved_metrics = resolve_metric_inheritance({metric.name: metric for metric in model.metrics})
-                model.metrics = list(resolved_metrics.values())
+            if model.extends and model.extends not in graph.models:
+                continue
+            resolve_model_metric_inheritance(model)
 
         if any(metric.extends for metric in graph.metrics.values()):
             graph.metrics = resolve_metric_inheritance(graph.metrics)

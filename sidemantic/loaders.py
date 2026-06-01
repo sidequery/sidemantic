@@ -472,7 +472,7 @@ def _resolve_native_model_inheritance(all_models: dict, *, strict: bool) -> None
     if not native_children:
         return
 
-    from sidemantic.core.inheritance import merge_model
+    from sidemantic.core.inheritance import merge_model, resolve_model_metric_inheritance
 
     resolved = {}
     resolving = set()
@@ -513,6 +513,7 @@ def _resolve_native_model_inheritance(all_models: dict, *, strict: bool) -> None
             return None
 
         merged = _run_without_auto_registration(merge_model, model, parent)
+        _run_without_auto_registration(resolve_model_metric_inheritance, merged)
         _copy_model_source_attrs(model, merged)
         resolved[name] = merged
         all_models[name] = merged

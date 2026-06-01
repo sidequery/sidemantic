@@ -796,6 +796,51 @@ fn definitions_lock_owned_by(lock_path: &Path, owner_token: &str) -> bool {
         .is_some_and(|token| token == owner_token)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct DefinitionsLockSnapshot {
+    owner_token: String,
+    modified: SystemTime,
+    len: u64,
+}
+
+fn definitions_lock_snapshot(lock_path: &Path) -> io::Result<DefinitionsLockSnapshot> {
+    let content = fs::read_to_string(lock_path)?;
+    let metadata = fs::metadata(lock_path)?;
+    let owner_token = content.lines().next().unwrap_or_default().to_string();
+    Ok(DefinitionsLockSnapshot {
+        owner_token,
+        modified: metadata.modified()?,
+        len: metadata.len(),
+    })
+}
+
+fn stale_definitions_lock_snapshot(lock_path: &Path) -> Option<DefinitionsLockSnapshot> {
+    let snapshot = definitions_lock_snapshot(lock_path).ok()?;
+    SystemTime::now()
+        .duration_since(snapshot.modified)
+        .ok()
+        .filter(|age| *age > DEFINITIONS_STALE_LOCK_AFTER)
+        .map(|_| snapshot)
+}
+
+fn remove_stale_definitions_lock(
+    lock_path: &Path,
+    stale_snapshot: &DefinitionsLockSnapshot,
+) -> io::Result<bool> {
+    match definitions_lock_snapshot(lock_path) {
+        Ok(current_snapshot) if current_snapshot == *stale_snapshot => {
+            match fs::remove_file(lock_path) {
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 fn lock_definitions_file(path: &Path) -> io::Result<DefinitionsFileLock> {
     let lock_path = definitions_lock_path(path);
     let deadline = Instant::now() + DEFINITIONS_LOCK_TIMEOUT;
@@ -817,8 +862,10 @@ fn lock_definitions_file(path: &Path) -> io::Result<DefinitionsFileLock> {
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                if is_stale_definitions_lock(&lock_path) {
-                    let _ = fs::remove_file(&lock_path);
+                if let Some(stale_snapshot) = stale_definitions_lock_snapshot(&lock_path) {
+                    if remove_stale_definitions_lock(&lock_path, &stale_snapshot)? {
+                        continue;
+                    }
                     continue;
                 }
                 if Instant::now() >= deadline {
@@ -832,14 +879,6 @@ fn lock_definitions_file(path: &Path) -> io::Result<DefinitionsFileLock> {
             Err(error) => return Err(error),
         }
     }
-}
-
-fn is_stale_definitions_lock(lock_path: &Path) -> bool {
-    fs::metadata(lock_path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age > DEFINITIONS_STALE_LOCK_AFTER)
 }
 
 #[cfg(not(windows))]
@@ -2492,6 +2531,32 @@ models:
 
         drop(original_lock);
 
+        assert_eq!(
+            fs::read_to_string(&lock_path).unwrap(),
+            format!("{recreated_token}\n")
+        );
+
+        let _ = fs::remove_file(lock_path);
+        let _ = fs::remove_file(definitions_path);
+    }
+
+    #[test]
+    fn test_stale_lock_cleanup_does_not_remove_recreated_lock() {
+        let _guard = test_lock();
+
+        let db_path = unique_db_path("stale_lock_recreated");
+        let db_path = CString::new(db_path.to_string_lossy().to_string()).unwrap();
+        let definitions_path = get_definitions_path(db_path.as_ptr()).unwrap();
+        let lock_path = definitions_lock_path(&definitions_path);
+
+        let stale_token = "pid=stale;time=1;seq=1";
+        fs::write(&lock_path, format!("{stale_token}\n")).unwrap();
+        let stale_snapshot = definitions_lock_snapshot(&lock_path).unwrap();
+
+        let recreated_token = "pid=recreated;time=2;seq=2";
+        fs::write(&lock_path, format!("{recreated_token}\n")).unwrap();
+
+        assert!(!remove_stale_definitions_lock(&lock_path, &stale_snapshot).unwrap());
         assert_eq!(
             fs::read_to_string(&lock_path).unwrap(),
             format!("{recreated_token}\n")

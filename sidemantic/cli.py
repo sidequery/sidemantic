@@ -1,6 +1,7 @@
 """CLI for sidemantic semantic layer operations."""
 
 import os
+import tempfile
 from pathlib import Path
 
 import typer
@@ -20,6 +21,11 @@ app = typer.Typer(
     help="Sidemantic: SQL-first semantic layer",
     no_args_is_help=True,
 )
+dashboard_app = typer.Typer(
+    help="Validate, serve, and type semantic dashboard specs",
+    no_args_is_help=True,
+)
+app.add_typer(dashboard_app, name="dashboard")
 
 # Global state for config (set in callback, used in commands)
 _loaded_config: SidemanticConfig | None = None
@@ -67,6 +73,19 @@ def _resolve_engine_options(engine: str | None, fallback: bool | None) -> tuple[
         resolved_fallback = True
 
     return resolved_engine, resolved_fallback
+
+
+def _normalize_chart_renderer(renderer: str) -> str:
+    normalized = renderer.lower().replace("_", "-")
+    aliases = {
+        "vegalite": "vega-lite",
+        "vl": "vega-lite",
+        "observable": "observable-plot",
+        "plot": "observable-plot",
+        "linked": "crossfilter",
+        "dashboard": "crossfilter",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def _load_query_layer(
@@ -614,6 +633,253 @@ def query(
             writer.writerow(columns)
             writer.writerows(rows)
 
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def chart(
+    metric: str = typer.Argument(..., help="Metric to chart, e.g. orders.revenue"),
+    by: list[str] = typer.Option([], "--by", help="Dimension to group by; may be repeated"),
+    extra_metric: list[str] = typer.Option([], "--metric", help="Additional metric to chart; may be repeated"),
+    mark: str = typer.Option("auto", "--mark", help="Chart mark: auto, bar, line, area, scatter, or point"),
+    renderer: str = typer.Option(
+        "vega-lite",
+        "--renderer",
+        "-r",
+        help="Renderer spec to emit: vega-lite, plotly, observable-plot, d3, or crossfilter",
+    ),
+    output_format: str = typer.Option("json", "--format", help="Output format: json or html"),
+    output: Path = typer.Option(None, "--output", "-o", help="Output file (default: stdout)"),
+    output_dir: Path = typer.Option(None, "--output-dir", help="Directory for --serve assets"),
+    title: str = typer.Option(None, "--title", help="Chart title"),
+    where: list[str] = typer.Option([], "--where", help="Filter expression; may be repeated"),
+    order_by: list[str] = typer.Option([], "--order-by", help="Order expression; may be repeated"),
+    limit: int = typer.Option(None, "--limit", help="Maximum rows to query"),
+    interactive: bool = typer.Option(False, "--interactive", help="Add portable interval selection metadata"),
+    serve_chart: bool = typer.Option(
+        False,
+        "--serve",
+        help="Serve a live database-backed crossfilter chart",
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host for --serve"),
+    port: int = typer.Option(8877, "--port", help="Port for --serve"),
+    interaction_preaggregations: bool = typer.Option(
+        False,
+        "--interaction-preaggregations",
+        help="Build and route live crossfilter selections through database-side interaction preaggregates",
+    ),
+    warm_interaction_preaggregations: bool = typer.Option(
+        False,
+        "--warm-interaction-preaggregations",
+        help="Build interaction preaggregates before accepting requests",
+    ),
+    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    use_preaggregations: bool = typer.Option(
+        False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
+    ),
+):
+    """
+    Build a headless chart spec from semantic fields.
+
+    Examples:
+      sidemantic chart orders.revenue --by orders.created_at__month --mark line
+      sidemantic chart orders.revenue --by orders.region --mark bar --renderer plotly
+      sidemantic chart orders.revenue --by orders.created_at__month --interactive --format html -o chart.html
+      sidemantic chart orders.revenue --by orders.created_at__month --by orders.region --renderer crossfilter --format html
+      sidemantic chart orders.revenue --metric orders.order_count --by orders.created_at__month --by orders.region --renderer crossfilter --serve --interaction-preaggregations
+    """
+    if not models.exists():
+        typer.echo(f"Error: Directory {models} does not exist", err=True)
+        raise typer.Exit(1)
+
+    normalized_format = output_format.lower()
+    if normalized_format not in {"json", "html"}:
+        typer.echo("Error: --format must be one of: json, html", err=True)
+        raise typer.Exit(1)
+
+    if mark not in {"auto", "bar", "line", "area", "scatter", "point"}:
+        typer.echo("Error: --mark must be one of: auto, bar, line, area, scatter, point", err=True)
+        raise typer.Exit(1)
+
+    normalized_renderer = _normalize_chart_renderer(renderer)
+    if serve_chart and normalized_renderer != "crossfilter":
+        typer.echo("Error: --serve currently requires --renderer crossfilter", err=True)
+        raise typer.Exit(1)
+    if interaction_preaggregations and normalized_renderer != "crossfilter":
+        typer.echo("Error: --interaction-preaggregations requires --renderer crossfilter", err=True)
+        raise typer.Exit(1)
+    if interaction_preaggregations and not serve_chart:
+        typer.echo("Error: --interaction-preaggregations requires --serve", err=True)
+        raise typer.Exit(1)
+    if warm_interaction_preaggregations and not interaction_preaggregations:
+        typer.echo("Error: --warm-interaction-preaggregations requires --interaction-preaggregations", err=True)
+        raise typer.Exit(1)
+
+    try:
+        import json
+
+        layer = _load_query_layer(
+            models,
+            connection=connection,
+            db=db,
+            use_preaggregations=use_preaggregations,
+        )
+        builder = layer.chart(
+            [metric, *extra_metric],
+            by=by or None,
+            mark=mark,
+            filters=where or None,
+            order_by=order_by or None,
+            limit=limit,
+            title=title,
+            use_preaggregations=use_preaggregations,
+        )
+        if interactive:
+            builder.interactive()
+
+        if serve_chart:
+            from sidemantic.viz import CrossfilterDashboard, CrossfilterTab
+
+            session = builder.crossfilter(interaction_preaggregations=interaction_preaggregations)
+            chart_title = title or str(session.spec.get("title") or metric)
+            dashboard = CrossfilterDashboard(
+                chart_title,
+                [CrossfilterTab("chart", chart_title, session)],
+            )
+            serve_dir = output_dir or Path(tempfile.mkdtemp(prefix="sidemantic-chart-"))
+            if warm_interaction_preaggregations:
+                typer.echo("Building interaction preaggregations...", err=True)
+                dashboard.warm_interaction_preaggregations()
+            dashboard.serve(serve_dir, host=host, port=port)
+            return
+
+        if normalized_format == "html":
+            rendered = builder.to_html(normalized_renderer)
+        else:
+            rendered = json.dumps(builder.to_renderer(normalized_renderer), indent=2, default=str)
+
+        if output:
+            output.write_text(rendered)
+            typer.echo(f"Chart written to {output}", err=True)
+        else:
+            typer.echo(rendered)
+
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@dashboard_app.command("validate")
+def dashboard_validate(
+    spec: Path = typer.Argument(..., help="Dashboard YAML or JSON spec"),
+    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    use_preaggregations: bool = typer.Option(
+        False, "--use-preaggregations", help="Enable automatic pre-aggregation routing while validating SQL"
+    ),
+):
+    """Validate a semantic dashboard spec against loaded models."""
+    try:
+        from sidemantic.dashboard import DashboardDocument
+
+        layer = _load_query_layer(
+            models,
+            connection=connection,
+            db=db,
+            use_preaggregations=use_preaggregations,
+        )
+        document = DashboardDocument.from_file(spec)
+        errors = document.validate(layer)
+        if errors:
+            for error in errors:
+                typer.echo(f"Error: {error}", err=True)
+            raise typer.Exit(1)
+        chart_count = sum(len(tab.get("charts") or []) for tab in document.tabs)
+        typer.echo(f"Dashboard spec is valid: {len(document.tabs)} tab(s), {chart_count} chart(s)")
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@dashboard_app.command("serve")
+def dashboard_serve(
+    spec: Path = typer.Argument(..., help="Dashboard YAML or JSON spec"),
+    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    connection: str = typer.Option(
+        None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
+    ),
+    db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    output_dir: Path = typer.Option(None, "--output-dir", help="Directory for served dashboard assets"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host for dashboard server"),
+    port: int = typer.Option(8877, "--port", help="Port for dashboard server"),
+    use_preaggregations: bool = typer.Option(
+        False, "--use-preaggregations", help="Enable automatic pre-aggregation routing"
+    ),
+    warm_interaction_preaggregations: bool = typer.Option(
+        False,
+        "--warm-interaction-preaggregations",
+        help="Build declared interaction preaggregates before accepting requests",
+    ),
+):
+    """Serve a database-backed dashboard spec with live crossfilter interactions."""
+    try:
+        from sidemantic.dashboard import DashboardDocument
+
+        layer = _load_query_layer(
+            models,
+            connection=connection,
+            db=db,
+            use_preaggregations=use_preaggregations,
+        )
+        document = DashboardDocument.from_file(spec)
+        errors = document.validate(layer)
+        if errors:
+            for error in errors:
+                typer.echo(f"Error: {error}", err=True)
+            raise typer.Exit(1)
+        dashboard = document.to_crossfilter_dashboard(layer)
+        serve_dir = output_dir or Path(tempfile.mkdtemp(prefix="sidemantic-dashboard-"))
+        if warm_interaction_preaggregations:
+            typer.echo("Building interaction preaggregations...", err=True)
+            dashboard.warm_interaction_preaggregations()
+        dashboard.serve(serve_dir, host=host, port=port)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@dashboard_app.command("types")
+def dashboard_types(
+    models: Path = typer.Option(".", "--models", "-m", help="Directory containing semantic layer files"),
+    output: Path = typer.Option(None, "--out", "--output", "-o", help="TypeScript output file; defaults to stdout"),
+    schema_name: str = typer.Option(
+        "sidemanticSchema", "--schema-name", help="Generated TypeScript schema export name"
+    ),
+):
+    """Generate TypeScript dashboard config types from the semantic layer."""
+    try:
+        from sidemantic.dashboard import generate_dashboard_typescript
+
+        layer = _load_query_layer(models)
+        rendered = generate_dashboard_typescript(layer, schema_name=schema_name)
+        if output:
+            output.write_text(rendered)
+            typer.echo(f"Dashboard TypeScript definitions written to {output}", err=True)
+        else:
+            typer.echo(rendered)
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)

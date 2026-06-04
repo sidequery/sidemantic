@@ -541,6 +541,41 @@ class SemanticLayer:
 
         return self.adapter.execute(sql)
 
+    def chart(
+        self,
+        metric: str | list[str],
+        *,
+        by: str | list[str] | None = None,
+        mark: str = "auto",
+        filters: list[str] | None = None,
+        segments: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        title: str | None = None,
+        use_preaggregations: bool | None = None,
+    ):
+        """Create a headless chart builder from semantic fields.
+
+        Examples:
+            >>> chart = layer.chart("orders.revenue", by="orders.created_at__month").line().brush("x")
+            >>> chart.to_vegalite()
+            >>> chart.to_plotly()
+        """
+        from sidemantic.viz import ChartBuilder
+
+        return ChartBuilder(
+            self,
+            metric,
+            by=by,
+            mark=mark,
+            filters=filters,
+            segments=segments,
+            order_by=order_by,
+            limit=limit,
+            title=title,
+            use_preaggregations=use_preaggregations,
+        )
+
     def compile(
         self,
         metrics: list[str] | None = None,

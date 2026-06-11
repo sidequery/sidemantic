@@ -201,6 +201,87 @@ metrics:
     assert metric.denominator == "orders.order_count"
 
 
+def test_load_from_directory_detects_unversioned_native_metrics_only_file(tmp_path):
+    """Native metrics-only files without a version key must not route to MetricFlow."""
+    (tmp_path / "models.yml").write_text(
+        """
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+"""
+    )
+    (tmp_path / "metrics.yml").write_text(
+        """
+metrics:
+  - name: total_revenue
+    sql: orders.revenue
+
+  - name: completion_rate
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.order_count
+
+  - name: revenue_per_order
+    type: derived
+    sql: total_revenue / order_count
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    metric = layer.graph.metrics["completion_rate"]
+    assert metric._source_format == "Sidemantic"
+    assert metric.numerator == "orders.revenue"
+    assert metric.denominator == "orders.order_count"
+    assert layer.graph.metrics["total_revenue"].sql == "orders.revenue"
+    assert layer.graph.metrics["revenue_per_order"].type == "derived"
+
+
+def test_load_from_directory_loads_ecommerce_example():
+    """The ecommerce example uses unversioned native metric files and must load."""
+    examples_dir = Path(__file__).parent.parent / "examples" / "ecommerce" / "models"
+
+    layer = SemanticLayer()
+    load_from_directory(layer, examples_dir)
+
+    assert "orders" in layer.graph.models
+    metric = layer.graph.metrics["completion_rate"]
+    assert metric.numerator == "orders.completed_orders"
+    assert metric.denominator == "orders.order_count"
+
+
+def test_load_from_directory_routes_metricflow_metrics_only_file_to_metricflow(tmp_path):
+    """MetricFlow metrics files keep routing to MetricFlow via type_params."""
+    (tmp_path / "metrics.yml").write_text(
+        """
+metrics:
+  - name: revenue_per_order
+    type: ratio
+    type_params:
+      numerator:
+        name: revenue
+      denominator:
+        name: order_count
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    metric = layer.graph.metrics["revenue_per_order"]
+    assert metric._source_format == "MetricFlow"
+    assert metric.numerator == "revenue"
+    assert metric.denominator == "order_count"
+
+
 def test_load_from_directory_resolves_native_graph_metric_inheritance_across_files(tmp_path):
     (tmp_path / "base_metrics.yml").write_text(
         """

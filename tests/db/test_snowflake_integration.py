@@ -35,6 +35,27 @@ def patch_snowflake():
             pytest.skip(f"fakesnow not compatible with installed DuckDB: {exc}")
         raise
 
+    conn = None
+    try:
+        import snowflake.connector
+
+        conn = snowflake.connector.connect(
+            user="test",
+            password="test",
+            account="test",
+            database="testdb",
+            schema="public",
+            warehouse="test_warehouse",
+        )
+    except Exception as exc:
+        patch.__exit__(None, None, None)
+        if "WITH ORDINALITY not implemented" in str(exc):
+            pytest.skip(f"fakesnow not compatible with installed DuckDB: {exc}")
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+
     try:
         yield
     finally:

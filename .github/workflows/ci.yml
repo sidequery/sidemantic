@@ -352,7 +352,9 @@ jobs:
         run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown --lib
 
       - name: Install wasm-bindgen test runner
-        run: cargo install wasm-bindgen-cli --version 0.2.110
+        run: |
+          WASM_BINDGEN_VERSION="$(cargo metadata --format-version 1 | python3 -c 'import json, sys; print(next(pkg["version"] for pkg in json.load(sys.stdin)["packages"] if pkg["name"] == "wasm-bindgen"))')"
+          cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
 
       - name: Run WASM runtime tests
         run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown --features wasm --test wasm_bindgen_runtime

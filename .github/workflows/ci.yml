@@ -199,7 +199,7 @@ jobs:
 
       - name: Install DuckDB ADBC driver
         run: |
-          curl -L https://github.com/duckdb/duckdb/releases/download/v1.4.2/libduckdb-linux-amd64.zip -o /tmp/libduckdb.zip
+          curl -L https://github.com/duckdb/duckdb/releases/download/v1.5.3/libduckdb-linux-amd64.zip -o /tmp/libduckdb.zip
           unzip -q /tmp/libduckdb.zip -d /tmp/libduckdb
           echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
 
@@ -318,7 +318,7 @@ jobs:
 
       - name: Install DuckDB ADBC driver
         run: |
-          curl -L https://github.com/duckdb/duckdb/releases/download/v1.4.2/libduckdb-linux-amd64.zip -o /tmp/libduckdb.zip
+          curl -L https://github.com/duckdb/duckdb/releases/download/v1.5.3/libduckdb-linux-amd64.zip -o /tmp/libduckdb.zip
           unzip -q /tmp/libduckdb.zip -d /tmp/libduckdb
           echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
 
@@ -393,7 +393,7 @@ jobs:
 
       - name: Fetch DuckDB dependencies
         working-directory: sidemantic-duckdb
-        run: make deps DUCKDB_VERSION=v1.4.2
+        run: make deps DUCKDB_VERSION=v1.5.3
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

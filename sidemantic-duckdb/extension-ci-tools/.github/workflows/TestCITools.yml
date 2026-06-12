@@ -20,7 +20,7 @@ jobs:
       extension_name: quack
       override_repository: duckdb/extension-template
       override_ref: main
-      duckdb_version: v1.4.2
+      duckdb_version: v1.5.2
       override_ci_tools_repository: ${{ github.repository }}
       ci_tools_version: ${{ github.sha }}
       extra_toolchains: 'python3'
@@ -32,10 +32,12 @@ jobs:
       extension_name: capi_quack
       override_repository: duckdb/extension-template-c
       override_ref: main
-      duckdb_version: v1.4.2
+      duckdb_version: v1.5.2
       override_ci_tools_repository: ${{ github.repository }}
       ci_tools_version: ${{ github.sha }}
-      extra_toolchains: 'python3'
+      extra_toolchains: 'python3;unixodbc'
+      # mingw arch below is not opt-in, included to check that it is allowed in the list
+      opt_in_archs: 'windows_arm64;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw;'
       save_cache: ${{ github.event_name != 'pull_request' }}
 
   extension-template-main:
@@ -48,7 +50,7 @@ jobs:
       extension_name: quack
       override_repository: duckdb/extension-template
       override_ref: main
-      duckdb_version: v1.4.2
+      duckdb_version: v1.5.2
       override_ci_tools_repository: ${{ github.repository }}
       ci_tools_version: ${{ github.sha }}
       extra_toolchains: 'parser_tools;fortran;omp;go;python3;downgraded_aws_cli;'
@@ -71,11 +73,11 @@ jobs:
       extension_name: rusty_quack
       override_repository: duckdb/extension-template-rs
       override_ref: main
-      duckdb_version: v1.4.2
+      duckdb_version: v1.5.2
       override_ci_tools_repository: ${{ github.repository }}
       ci_tools_version: ${{ github.sha }}
       extra_toolchains: 'rust;python3'
-      exclude_archs: 'windows_amd64_mingw;linux_amd64_musl;wasm_mvp;wasm_eh;wasm_threads' # TODO: remove once fixed upstream
+      exclude_archs: 'windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads' # TODO: remove once fixed upstream
       save_cache: ${{ github.event_name != 'pull_request' }}
 
   delta-extension-main:
@@ -90,8 +92,8 @@ jobs:
       override_ref: main
       override_ci_tools_repository: ${{ github.repository }}
       ci_tools_version: ${{ github.sha }}
-      duckdb_version: v1.4.2
-      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;windows_amd64;linux_amd64_musl'
+      duckdb_version: v1.5.2
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;windows_amd64'
       extra_toolchains: 'rust'
       save_cache: ${{ github.event_name != 'pull_request' }}
       vcpkg_binary_sources: ${{ github.event_name == 'push' && vars.VCPKG_BINARY_SOURCES || '' }}

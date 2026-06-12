@@ -1107,7 +1107,7 @@ pub extern "C" fn sidemantic_add_definition_for_context(
         if let Some(ref name) = state.active_model {
             name.clone()
         } else {
-            return to_c_string("Error: no active model. Create a model first with SEMANTIC CREATE MODEL, select one with SEMANTIC MODEL <model>, or use METRIC/DIMENSION/SEGMENT model.name syntax.");
+            return to_c_string("Error: no active model. Create a model first with CREATE MODEL, select one with MODEL <model>, or use METRIC/DIMENSION/SEGMENT model.name syntax.");
         }
     };
 

@@ -26,12 +26,12 @@ The extension build needs Rust, DuckDB extension build tooling, and Ninja.
 
 ```bash
 cd sidemantic-duckdb
-make deps DUCKDB_VERSION=v1.4.2
+make deps DUCKDB_VERSION=v1.5.3
 make
 make test
 ```
 
-`DUCKDB_VERSION` is intentionally guarded to `v1.4.2` because the repository
+`DUCKDB_VERSION` is intentionally guarded to `v1.5.3` because the repository
 vendors a matching `extension-ci-tools` checkout. Update both together before
 building against a different DuckDB tag.
 
@@ -77,6 +77,31 @@ Load native YAML from disk:
 SELECT * FROM sidemantic_load_file('/path/to/models.yml');
 ```
 
+Load native SQL definitions from disk:
+
+```sql
+SELECT * FROM sidemantic_load_file('/path/to/models.sql');
+```
+
+Native SQL definitions can also be entered directly through the parser extension:
+
+```sql
+MODEL (name orders, table orders, primary_key order_id);
+DIMENSION (name status, type categorical);
+METRIC revenue AS SUM(amount);
+```
+
+Compact native SQL model blocks are also accepted directly:
+
+```sql
+model orders from orders (
+  primary key (order_id)
+  status
+  sum(amount) as revenue
+  count(*) as order_count
+);
+```
+
 Inspect loaded models:
 
 ```sql
@@ -89,11 +114,13 @@ Rewrite semantic SQL without executing it:
 SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders');
 ```
 
-Run a semantic query through the parser extension:
+Run a semantic query through the parser override:
 
 ```sql
-SEMANTIC SELECT orders.revenue FROM orders;
+SELECT orders.revenue FROM orders;
 ```
+
+The legacy `SEMANTIC SELECT ...` form remains supported.
 
 ## Release Path
 
@@ -116,7 +143,7 @@ The workflow is source-package oriented. It does not publish to the DuckDB commu
 | Native format | `1` |
 | Rust runtime crate | `0.1.0` |
 | DuckDB extension source package | `0.1.0` |
-| DuckDB build target | `1.4.2` |
+| DuckDB build target | `1.5.3` |
 
 DuckDB extension artifacts are ABI-sensitive. Rebuild the extension when changing the DuckDB target version or the Rust native runtime version.
 

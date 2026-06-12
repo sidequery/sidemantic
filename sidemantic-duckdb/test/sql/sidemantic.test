@@ -60,6 +60,27 @@ SEMANTIC SELECT orders.revenue FROM orders;
 ----
 225.00
 
+# Test no-prefix semantic query - revenue by status
+query IR
+SELECT orders.status, orders.revenue FROM orders ORDER BY orders.status;
+----
+completed	150.00
+pending	75.00
+
+# Test no-prefix semantic query - total revenue (no dimensions)
+query R
+SELECT orders.revenue FROM orders;
+----
+225.00
+
+# Test ordinary DuckDB SELECT still falls through
+query ITR
+SELECT * FROM orders ORDER BY order_id;
+----
+1	completed	100.00
+2	completed	50.00
+3	pending	75.00
+
 # Test loading Cube.js format
 statement ok
 SELECT * FROM sidemantic_load('
@@ -83,39 +104,43 @@ SELECT * FROM sidemantic_models();
 orders
 products
 
-# Test CREATE METRIC/DIMENSION syntax
+# Test no-prefix CREATE METRIC/DIMENSION syntax
 statement ok
-SEMANTIC CREATE MODEL test_model (table orders, primary_key order_id);
+CREATE MODEL test_model (table orders, primary_key order_id);
 
 statement ok
-SEMANTIC CREATE OR REPLACE MODEL test_model (name 'test_model', table orders, primary_key order_id);
+CREATE OR REPLACE MODEL test_model (name 'test_model', table orders, primary_key order_id);
 
 statement ok
-SEMANTIC CREATE METRIC test_sum AS SUM(amount);
+CREATE METRIC test_sum AS SUM(amount);
 
 statement ok
-SEMANTIC CREATE DIMENSION test_dim AS status;
+CREATE DIMENSION test_dim AS status;
 
 statement ok
-SEMANTIC CREATE SEGMENT completed AS status = 'completed';
+CREATE SEGMENT completed AS status = 'completed';
+
+# Test legacy SEMANTIC prefix remains supported
+statement ok
+SEMANTIC CREATE MODEL semantic_prefix_model (table orders, primary_key order_id);
 
 statement error
-SEMANTIC CREATE MODEL mismatched_model (name other_model, table orders, primary_key order_id);
+CREATE MODEL mismatched_model (name other_model, table orders, primary_key order_id);
 ----
 CREATE MODEL name 'mismatched_model' does not match body name 'other_model'
 
 statement error
-SEMANTIC CREATE MODEL mismatched_quoted_model (name 'other_quoted_model', table orders, primary_key order_id);
+CREATE MODEL mismatched_quoted_model (name 'other_quoted_model', table orders, primary_key order_id);
 ----
 CREATE MODEL name 'mismatched_quoted_model' does not match body name 'other_quoted_model'
 
 statement error
-SEMANTIC CREATE MODEL mismatched_colon_model (name: other_colon_model, table orders, primary_key order_id);
+CREATE MODEL mismatched_colon_model (name: other_colon_model, table orders, primary_key order_id);
 ----
 CREATE MODEL name 'mismatched_colon_model' does not match body name 'other_colon_model'
 
 statement error
-SEMANTIC CREATE MODEL mismatched_equals_model (name=other_equals_model, table orders, primary_key order_id);
+CREATE MODEL mismatched_equals_model (name=other_equals_model, table orders, primary_key order_id);
 ----
 CREATE MODEL name 'mismatched_equals_model' does not match body name 'other_equals_model'
 
@@ -125,15 +150,60 @@ SELECT * FROM sidemantic_models();
 ----
 orders
 products
+semantic_prefix_model
 test_model
 
 statement ok
-SEMANTIC CREATE MODEL nested_props_model (metadata {owner analytics, name internal}, table orders, primary_key order_id);
+CREATE MODEL nested_props_model (metadata {owner analytics, name internal}, table orders, primary_key order_id);
 
 query I
 SELECT count(*) FROM sidemantic_models() WHERE model_name = 'nested_props_model';
 ----
 1
+
+# Test native SQL block definitions through the parser extension
+statement ok
+MODEL (name block_orders, table orders, primary_key order_id);
+
+statement ok
+DIMENSION (name status, type categorical);
+
+statement ok
+METRIC (name block_revenue, agg sum, sql amount);
+
+statement ok
+METRIC block_order_count AS COUNT(*);
+
+query IR
+SELECT block_orders.status, block_orders.block_revenue FROM block_orders ORDER BY block_orders.status;
+----
+completed	150.00
+pending	75.00
+
+query I
+SELECT block_orders.block_order_count FROM block_orders;
+----
+3
+
+# Test compact native SQL model block through the parser extension
+statement ok
+model compact_orders from orders (
+  primary key (order_id)
+  status
+  sum(amount) as compact_revenue
+  count(*) as compact_order_count
+);
+
+query IR
+SELECT compact_orders.status, compact_orders.compact_revenue FROM compact_orders ORDER BY compact_orders.status;
+----
+completed	150.00
+pending	75.00
+
+query I
+SELECT compact_orders.compact_order_count FROM compact_orders;
+----
+3
 
 # Test repeated YAML load replaces same-name model instead of failing on duplicates
 statement ok
@@ -167,15 +237,15 @@ SEMANTIC SELECT reloadable.revenue FROM reloadable;
 ----
 225.00
 
-# Test SEMANTIC MODEL active-model switching and repeated use/rewrite sequence
+# Test no-prefix MODEL active-model switching and repeated use/rewrite sequence
 statement ok
-SEMANTIC CREATE MODEL sql_orders (table orders, primary_key order_id);
+CREATE MODEL sql_orders (table orders, primary_key order_id);
 
 statement ok
-SEMANTIC CREATE METRIC sql_revenue AS SUM(amount);
+CREATE METRIC sql_revenue AS SUM(amount);
 
 statement ok
-SEMANTIC CREATE DIMENSION status AS status;
+CREATE DIMENSION status AS status;
 
 query IR
 SEMANTIC SELECT sql_orders.status, sql_orders.sql_revenue FROM sql_orders ORDER BY sql_orders.status;
@@ -184,13 +254,13 @@ completed	150.00
 pending	75.00
 
 statement ok
-SEMANTIC CREATE OR REPLACE MODEL sql_orders (name sql_orders, table orders, primary_key order_id);
+CREATE OR REPLACE MODEL sql_orders (name sql_orders, table orders, primary_key order_id);
 
 statement ok
-SEMANTIC MODEL sql_orders;
+MODEL sql_orders;
 
 statement ok
-SEMANTIC CREATE OR REPLACE METRIC sql_order_count AS COUNT(*);
+CREATE OR REPLACE METRIC sql_order_count AS COUNT(*);
 
 query I
 SEMANTIC SELECT sql_orders.sql_order_count FROM sql_orders;

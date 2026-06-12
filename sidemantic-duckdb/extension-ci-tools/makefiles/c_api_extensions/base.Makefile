@@ -39,11 +39,6 @@ ifeq ($(DUCKDB_PLATFORM),windows_amd64_mingw)
 	EXTENSION_LIB_FILENAME=lib$(EXTENSION_NAME).dll
 endif
 
-# Propagate toolchains
-ifeq ($(DUCKDB_PLATFORM),windows_amd64)
-       TOOLCHAIN_FLAGS:=${TOOLCHAIN_FLAGS} -DVCPKG_OVERLAY_TRIPLETS=${PROJ_DIR}extension-ci-tools/toolchains/
-endif
-
 #############################################
 ### Main extension parameters
 #############################################
@@ -144,6 +139,9 @@ endif
 
 # _musl tests would need to be run in the container
 ifeq ($(DUCKDB_PLATFORM),linux_amd64_musl)
+	SKIP_TESTS=1
+endif
+ifeq ($(DUCKDB_PLATFORM),linux_arm64_musl)
 	SKIP_TESTS=1
 endif
 

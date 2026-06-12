@@ -346,10 +346,22 @@ fn normalize_json_number(value: &JsonValue) -> Option<f64> {
 }
 
 #[cfg(feature = "adbc-exec")]
-fn expected_date_days(value: &str) -> Option<i64> {
+fn expected_date_integer_values(value: &str) -> Option<Vec<i64>> {
     let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
     let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)?;
-    Some((date.num_days_from_ce() - epoch.num_days_from_ce()) as i64)
+    let days = (date.num_days_from_ce() - epoch.num_days_from_ce()) as i64;
+    let seconds = date
+        .and_hms_opt(0, 0, 0)?
+        .signed_duration_since(epoch.and_hms_opt(0, 0, 0)?)
+        .num_seconds();
+
+    Some(vec![
+        days,
+        seconds,
+        seconds * 1_000,
+        seconds * 1_000_000,
+        seconds * 1_000_000_000,
+    ])
 }
 
 #[cfg(feature = "adbc-exec")]
@@ -377,12 +389,15 @@ fn assert_adbc_value_matches_json(actual: &AdbcValue, expected: &JsonValue, cont
             );
         }
         (AdbcValue::I64(actual), JsonValue::String(expected)) => {
-            let Some(expected_days) = expected_date_days(expected) else {
+            let Some(expected_values) = expected_date_integer_values(expected) else {
                 panic!(
                     "{context}: expected string '{expected}' is not comparable to integer {actual}"
                 );
             };
-            assert_eq!(*actual, expected_days, "{context}");
+            assert!(
+                expected_values.contains(actual),
+                "{context}: expected date '{expected}' as days/seconds/milliseconds/microseconds/nanoseconds since epoch, got {actual}"
+            );
         }
         (AdbcValue::I64(actual), _) => {
             let Some(expected_number) = normalize_json_number(expected) else {

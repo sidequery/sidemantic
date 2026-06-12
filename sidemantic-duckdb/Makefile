@@ -4,7 +4,7 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 # Configuration of extension
 EXT_NAME=sidemantic
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
-SUPPORTED_DUCKDB_VERSION := v1.4.2
+SUPPORTED_DUCKDB_VERSION := v1.5.3
 DUCKDB_VERSION ?= $(SUPPORTED_DUCKDB_VERSION)
 
 .PHONY: deps
@@ -18,8 +18,8 @@ deps:
 		rm -rf duckdb; \
 		git clone --depth 1 --branch $(DUCKDB_VERSION) https://github.com/duckdb/duckdb.git duckdb; \
 	else \
-		git -C duckdb fetch --depth 1 origin $(DUCKDB_VERSION); \
-		git -C duckdb checkout FETCH_HEAD; \
+		git -C duckdb fetch --depth 1 origin refs/tags/$(DUCKDB_VERSION):refs/tags/$(DUCKDB_VERSION); \
+		git -C duckdb checkout $(DUCKDB_VERSION); \
 	fi
 	@test -f extension-ci-tools/makefiles/duckdb_extension.Makefile || \
 		(echo "extension-ci-tools is missing from this checkout" && exit 1)

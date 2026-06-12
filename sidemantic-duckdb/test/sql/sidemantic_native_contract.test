@@ -53,6 +53,12 @@ SEMANTIC SELECT native_customers.country, native_orders.revenue FROM native_orde
 CA	120
 US	250
 
+query IR rowsort
+SELECT native_customers.country, native_orders.revenue FROM native_orders ORDER BY native_customers.country;
+----
+CA	120
+US	250
+
 query I
 SELECT sidemantic_rewrite_sql('SELECT native_orders.revenue, native_customers.country FROM native_orders') LIKE '%JOIN%';
 ----

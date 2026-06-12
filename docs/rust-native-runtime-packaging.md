@@ -93,7 +93,7 @@ The DuckDB extension is currently documented as a source-build path. Do not docu
 
 See `docs/duckdb-extension.md` for build and load commands.
 
-Use `.github/workflows/duckdb-extension-release.yml` to build a Linux extension artifact and run the sqllogictests. The repository currently supports DuckDB `v1.4.2` only, matching the vendored `extension-ci-tools` checkout. GitHub release upload is optional and controlled by `create_github_release`.
+Use `.github/workflows/duckdb-extension-release.yml` to build a Linux extension artifact and run the sqllogictests. The repository currently supports DuckDB `v1.5.3` only, matching the vendored `extension-ci-tools` checkout. GitHub release upload is optional and controlled by `create_github_release`.
 
 Community extension publication remains a separate release step until repository signing, platform matrix, and DuckDB community registry metadata are finalized.
 

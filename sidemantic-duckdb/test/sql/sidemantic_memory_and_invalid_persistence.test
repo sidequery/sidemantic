@@ -43,9 +43,9 @@ SEMANTIC SELECT valid_events.event_count FROM valid_events;
 statement ok
 COPY (SELECT 'MODEL (' AS line) TO '__TEST_DIR__/sidemantic_invalid_persistence.sidemantic.sql' (HEADER false);
 
-restart
+restart no_extension_load
 
 statement error
-LOAD sidemantic;
+LOAD '__BUILD_DIRECTORY__/extension/sidemantic/sidemantic.duckdb_extension';
 ----
 Failed to autoload sidemantic definitions

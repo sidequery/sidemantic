@@ -2,7 +2,11 @@
 
 #include "duckdb.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/parser_extension.hpp"
 #include "duckdb/parser/statement/extension_statement.hpp"
+#include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/operator/logical_extension_operator.hpp"
+#include "duckdb/planner/operator_extension.hpp"
 
 namespace duckdb {
 
@@ -20,6 +24,10 @@ BoundStatement sidemantic_bind(ClientContext &context, Binder &binder,
 
 ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
                                             const std::string &query);
+
+ParserOverrideResult sidemantic_parser_override(ParserExtensionInfo *info,
+                                                const std::string &query,
+                                                ParserOptions &options);
 
 ParserExtensionPlanResult sidemantic_plan(ParserExtensionInfo *, ClientContext &,
                                           unique_ptr<ParserExtensionParseData>);
@@ -47,6 +55,7 @@ struct SidemanticParserExtension : public ParserExtension {
     SidemanticParserExtension(string db_path, string context_key) : ParserExtension() {
         parse_function = sidemantic_parse;
         plan_function = sidemantic_plan;
+        parser_override = sidemantic_parser_override;
         parser_info =
             make_shared_ptr<SidemanticParserInfo>(std::move(db_path), std::move(context_key));
     }

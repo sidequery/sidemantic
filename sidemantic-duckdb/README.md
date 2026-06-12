@@ -4,11 +4,11 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 
 ## Features
 
-- **Pure SQL Definition**: Define models, metrics, and dimensions using `SEMANTIC CREATE` statements
-- **Automatic Query Rewriting**: Use `SEMANTIC SELECT` to automatically rewrite queries with proper aggregations
+- **Pure SQL Definition**: Define models, metrics, and dimensions using SQL statements
+- **Automatic Query Rewriting**: Query qualified model fields directly and get proper aggregations automatically
 - **Cross-Model JOINs**: Automatically generates JOINs when querying across related models
 - **Fan-out Detection**: Warns when joins may cause metric inflation
-- **YAML Support**: Also supports loading definitions from YAML files (native and Cube.js formats)
+- **Definition Files**: Load native YAML, Cube.js YAML, and native SQL definition files
 
 ## Installation
 
@@ -27,7 +27,7 @@ LOAD '/absolute/path/to/sidemantic.duckdb_extension';
 For local development:
 
 ```bash
-make deps DUCKDB_VERSION=v1.4.2
+make deps DUCKDB_VERSION=v1.5.3
 make
 make test
 ./build/release/duckdb -unsigned
@@ -52,21 +52,22 @@ INSERT INTO orders VALUES
     (3, 'pending', 75.00);
 
 -- 2. Define a semantic model
-SEMANTIC CREATE MODEL orders_model (
+MODEL (
+    name orders_model,
     table orders,
     primary_key order_id
 );
 
 -- 3. Define metrics (aggregations)
-SEMANTIC CREATE METRIC revenue AS SUM(amount);
-SEMANTIC CREATE METRIC order_count AS COUNT(*);
-SEMANTIC CREATE METRIC avg_order_value AS AVG(amount);
+METRIC revenue AS SUM(amount);
+METRIC order_count AS COUNT(*);
+METRIC avg_order_value AS AVG(amount);
 
 -- 4. Define dimensions (grouping attributes)
-SEMANTIC CREATE DIMENSION status AS status;
+DIMENSION (name status, type categorical);
 
 -- 5. Query using semantic layer
-SEMANTIC SELECT orders_model.status, orders_model.revenue FROM orders_model;
+SELECT orders_model.status, orders_model.revenue FROM orders_model;
 -- Automatically rewrites to:
 -- SELECT status, SUM(amount) FROM orders GROUP BY 1
 
@@ -81,70 +82,82 @@ SEMANTIC SELECT orders_model.status, orders_model.revenue FROM orders_model;
 
 ## SQL Syntax Reference
 
-### SEMANTIC CREATE MODEL
+### MODEL
 
 Creates a new semantic model linked to a physical table.
 
 ```sql
-SEMANTIC CREATE MODEL model_name (
+MODEL (
+    name model_name,
     table physical_table_name,
     primary_key pk_column
 );
 ```
 
-The model name may also be repeated inside the body for compatibility, but it must match the name after `MODEL`.
+The `CREATE MODEL model_name (...)` form is also supported for interactive compatibility.
 
-### SEMANTIC CREATE METRIC
+### METRIC
 
 Defines a metric (aggregation) on the current model.
 
 ```sql
 -- Sum aggregation
-SEMANTIC CREATE METRIC revenue AS SUM(amount);
+METRIC revenue AS SUM(amount);
 
 -- Count aggregation
-SEMANTIC CREATE METRIC order_count AS COUNT(*);
+METRIC order_count AS COUNT(*);
 
 -- Average aggregation
-SEMANTIC CREATE METRIC avg_value AS AVG(price);
+METRIC avg_value AS AVG(price);
 
 -- With custom SQL expression
-SEMANTIC CREATE METRIC margin AS SUM(price - cost);
+METRIC margin AS SUM(price - cost);
+
+-- Native block form
+METRIC (name revenue, agg sum, sql amount);
 ```
 
-### SEMANTIC CREATE DIMENSION
+The `CREATE METRIC ...` form is also supported.
+
+### DIMENSION
 
 Defines a dimension (grouping attribute) on the current model.
 
 ```sql
 -- Simple column reference
-SEMANTIC CREATE DIMENSION status AS status;
+DIMENSION (name status, type categorical);
 
 -- With SQL expression
-SEMANTIC CREATE DIMENSION order_year AS YEAR(created_at);
+DIMENSION (name order_year, type time, sql created_at, granularity day);
 ```
 
-### SEMANTIC SELECT
+The `CREATE DIMENSION ...`, `CREATE SEGMENT ...`, `SEMANTIC CREATE ...`, and `SEMANTIC MODEL ...` forms are also supported for compatibility.
+
+### Semantic SELECT
 
 Queries the semantic layer with automatic SQL rewriting.
 
 ```sql
 -- Query metric with dimension
-SEMANTIC SELECT model.dimension, model.metric FROM model;
+SELECT model.dimension, model.metric FROM model;
 
 -- Query just a metric (no grouping)
-SEMANTIC SELECT model.metric FROM model;
+SELECT model.metric FROM model;
 
 -- With filters and ordering
-SEMANTIC SELECT model.status, model.revenue
+SELECT model.status, model.revenue
 FROM model
 WHERE model.status = 'completed'
 ORDER BY model.revenue DESC;
 ```
 
-## Alternative: YAML Configuration
+The older `SEMANTIC SELECT ...` form is still supported as a compatibility fallback.
 
-For larger deployments or version-controlled definitions, you can also load models from YAML:
+## Alternative: Definition Files
+
+For larger deployments or version-controlled definitions, load models from YAML or SQL files.
+
+### YAML Configuration
 
 ```sql
 SELECT * FROM sidemantic_load('
@@ -164,7 +177,63 @@ models:
 ');
 
 -- Query works the same way
-SEMANTIC SELECT orders.revenue, orders.status FROM orders;
+SELECT orders.revenue, orders.status FROM orders;
+```
+
+### Native SQL Definition Files
+
+Native SQL files support the `MODEL (...)`, `DIMENSION (...)`, `METRIC (...)`, and `SEGMENT (...)` block syntax:
+
+```sql
+-- orders.sql
+MODEL (name orders, table orders, primary_key order_id);
+
+DIMENSION (name status, type categorical);
+
+METRIC (
+  name revenue,
+  agg sum,
+  sql amount
+);
+
+SEGMENT (
+  name completed,
+  sql {model}.status = 'completed'
+);
+```
+
+They can also use the compact model-block syntax added for native SQL projects:
+
+```sql
+-- orders.sql
+model orders from orders (
+  primary key (order_id)
+
+  status
+  date_trunc('day', created_at) as order_date : time grain day
+
+  segment completed as status = 'completed'
+
+  sum(amount) as revenue
+  count(*) as order_count
+  revenue / order_count as average_order_value
+)
+```
+
+Both SQL forms can be pasted directly into DuckDB with the extension loaded, or loaded from a file:
+
+```sql
+model orders from orders (
+  primary key (order_id)
+  status
+  sum(amount) as revenue
+);
+
+SELECT * FROM sidemantic_load_file('/path/to/orders.sql');
+
+SELECT orders.status, orders.revenue
+FROM orders
+ORDER BY orders.status;
 ```
 
 ### Loading from Files
@@ -172,8 +241,9 @@ SEMANTIC SELECT orders.revenue, orders.status FROM orders;
 ```sql
 -- Load from a single file
 SELECT * FROM sidemantic_load_file('/path/to/models.yaml');
+SELECT * FROM sidemantic_load_file('/path/to/orders.sql');
 
--- Load all YAML files from a directory
+-- Load all YAML and SQL files from a directory
 SELECT * FROM sidemantic_load_file('/path/to/models/');
 ```
 
@@ -257,7 +327,7 @@ models:
 ');
 
 -- Query order revenue by customer country (auto-JOIN)
-SEMANTIC SELECT orders.revenue, customers.country FROM orders;
+SELECT orders.revenue, customers.country FROM orders;
 
 -- Automatically rewrites to:
 -- SELECT SUM(orders.amount), c.country
@@ -300,9 +370,10 @@ SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders');
 
 ## How It Works
 
-1. **Parser Extension**: The `SEMANTIC` keyword causes DuckDB's parser to fail, triggering the sidemantic parser extension
-2. **Query Rewriting**: The Rust-based sidemantic library rewrites `model.metric` references to actual SQL aggregations
-3. **Execution**: The rewritten SQL is parsed by DuckDB and executed normally
+1. **Parser Override**: DuckDB 1.5+ lets the extension intercept qualified semantic `SELECT` queries before native parsing
+2. **Parser Extension Fallback**: The legacy `SEMANTIC` prefix still routes through the parser extension
+3. **Query Rewriting**: The Rust-based sidemantic library rewrites `model.metric` references to actual SQL aggregations
+4. **Execution**: The rewritten SQL is parsed by DuckDB and executed normally
 
 ## Building from Source
 
@@ -311,8 +382,8 @@ SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders');
 cd sidemantic-duckdb
 
 # Fetch the DuckDB source version used by CI.
-# extension-ci-tools is vendored in this directory and pinned to v1.4.2.
-make deps DUCKDB_VERSION=v1.4.2
+# extension-ci-tools is vendored in this directory and pinned to v1.5.3.
+make deps DUCKDB_VERSION=v1.5.3
 
 # Build the extension. CMake builds the sibling sidemantic-rs static library automatically.
 make
@@ -329,7 +400,8 @@ make test
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    DuckDB Extension (C++)                    │
-│  - Parser extension (intercepts SEMANTIC queries)           │
+│  - Parser override (intercepts qualified semantic SELECTs)  │
+│  - Parser extension (supports legacy SEMANTIC queries)      │
 │  - Table functions (sidemantic_load, sidemantic_models)     │
 │  - Scalar function (sidemantic_rewrite_sql)                 │
 └─────────────────────────────────────────────────────────────┘

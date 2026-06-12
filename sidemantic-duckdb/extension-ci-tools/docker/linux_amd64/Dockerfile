@@ -1,13 +1,17 @@
 FROM quay.io/pypa/manylinux_2_28_x86_64
 
 # Setup the basic necessities
+RUN yum groupinstall -y "Development Tools"
 RUN yum install -y curl zip unzip tar autoconf libtool
 RUN yum install -y ninja-build
 RUN yum install -y perl-IPC-Cmd
+RUN yum install -y perl-core
 RUN yum install -y ccache
 RUN yum install -y java-11-openjdk-devel maven
 RUN yum install -y wget
 RUN yum install -y kernel-headers
+RUN yum install -y kernel-devel
+RUN yum install -y glibc-devel
 RUN yum install -y jq
 
 # We need a recent CMake
@@ -98,3 +102,19 @@ RUN case "$extra_toolchains" in \
   ;; \
 esac
 
+# Install unixODBC
+RUN case "$extra_toolchains" in \
+  *\;unixodbc\;*) \
+    yum install -y unixODBC-devel \
+  ;; \
+esac
+
+# Install multimedia libraries (FFmpeg, SDL2) for audio/video extensions
+# Requires EPEL and RPM Fusion repositories
+RUN case "$extra_toolchains" in \
+  *\;multimedia\;*) \
+    yum install -y epel-release && \
+    yum install -y --nogpgcheck https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm && \
+    yum install -y nasm SDL2-devel ffmpeg-devel \
+  ;; \
+esac

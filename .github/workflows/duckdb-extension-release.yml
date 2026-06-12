@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       duckdb_version:
-        description: "DuckDB tag used for extension build and tests; currently v1.4.2 only"
+        description: "DuckDB tag used for extension build and tests; currently v1.5.3 only"
         required: true
-        default: "v1.4.2"
+        default: "v1.5.3"
         type: string
       create_github_release:
         description: "Create or update a GitHub release with extension artifacts"
@@ -37,7 +37,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.duckdb_version }}"
           else
-            VERSION="v1.4.2"
+            VERSION="v1.5.3"
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

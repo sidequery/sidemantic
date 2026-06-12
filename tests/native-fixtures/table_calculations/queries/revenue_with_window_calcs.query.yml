@@ -1,0 +1,11 @@
+metrics: [orders.total_revenue]
+dimensions: [orders.status]
+order_by: [orders.status]
+table_calculations:
+  - name: running_revenue
+    type: running_total
+    field: total_revenue
+    order_by: [status]
+  - name: revenue_pct_of_total
+    type: percent_of_total
+    field: total_revenue

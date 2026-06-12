@@ -176,13 +176,13 @@ TMDLAdapter().export(layer.graph, "exported_tmdl/")
 sidemantic query "SELECT revenue FROM orders" --db data.duckdb
 
 # Interactive workbench (TUI with SQL editor + charts)
-sidemantic workbench models/ --db data.duckdb
+uvx --from "sidemantic[workbench]" sidemantic workbench models/ --db data.duckdb
 
 # PostgreSQL server (connect Tableau, DBeaver, etc.)
-sidemantic serve models/ --port 5433
+uvx --from "sidemantic[serve]" sidemantic serve models/ --port 5433
 
 # HTTP API server (JSON or Arrow)
-sidemantic api-serve models/ --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic api-serve models/ --port 4400 --auth-token secret
 
 # Validate definitions
 sidemantic validate models/
@@ -206,7 +206,7 @@ uvx --from "sidemantic[workbench]" sidemantic workbench --demo
 
 **PostgreSQL server** (connect Tableau, DBeaver, etc.):
 ```bash
-uvx sidemantic serve --demo --port 5433
+uvx --from "sidemantic[serve]" sidemantic serve --demo --port 5433
 ```
 
 **HTTP API server** (JSON or Arrow):
@@ -271,10 +271,10 @@ See `examples/` for more.
 
 - SQL query interface with automatic rewriting
 - Automatic joins across models
-- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML)
+- Multi-format adapters (Cube, MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML, Graphene GSQL)
 - SQLGlot-based SQL generation and transpilation
 - Pydantic validation and type safety
-- Pre-aggregations with automatic routing
+- Pre-aggregations with explicit routing
 - Predicate pushdown for faster queries
 - Segments and metric-level filters
 - Jinja2 templating for dynamic SQL
@@ -283,7 +283,7 @@ See `examples/` for more.
 
 ## Multi-Format Support
 
-Auto-detects: Sidemantic (SQL/YAML), Power BI TMDL, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML
+Auto-detects: Sidemantic (SQL/YAML), Power BI TMDL, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, OSI, AtScale SML, ThoughtSpot TML, Graphene GSQL
 
 ```bash
 sidemantic query "SELECT revenue FROM orders" --models ./my_models
@@ -332,7 +332,7 @@ For Cloudflare Worker + Container deployment, see [`examples/cloudflare_containe
 Start the API server:
 
 ```bash
-sidemantic api-serve models/ --db data.duckdb --port 4400 --auth-token secret
+uvx --from "sidemantic[api]" sidemantic api-serve models/ --db data.duckdb --port 4400 --auth-token secret
 ```
 
 Compile a structured semantic query:

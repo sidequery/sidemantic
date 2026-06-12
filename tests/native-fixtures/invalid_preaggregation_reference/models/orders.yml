@@ -1,0 +1,20 @@
+version: 1
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: day
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount
+    pre_aggregations:
+      - name: monthly
+        type: rollup
+        measures: [missing_revenue]
+        time_dimension: created_at
+        granularity: month

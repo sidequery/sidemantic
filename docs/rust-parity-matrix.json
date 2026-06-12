@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "description": "Strict-mode source of truth for Python surfaces that can require Rust-backed execution.",
+  "status_legend": {
+    "rust_backed": "The subsystem is backed by sidemantic-rs and may be required by strict mode.",
+    "rust_backed_opt_in": "A Rust path exists but is not complete enough for strict all-subsystem enforcement.",
+    "python_only": "The subsystem is intentionally Python-only."
+  },
+  "subsystems": {
+    "sql_generator_entrypoint": {
+      "status": "rust_backed",
+      "python_surface": "SemanticLayer.compile and CLI structured query compilation",
+      "rust_surface": "sidemantic-rs native query compiler",
+      "notes": "Covers structured metric/dimension query compilation through the Rust entrypoint."
+    },
+    "semantic_core_query_validation": {
+      "status": "rust_backed",
+      "python_surface": "SemanticLayer query reference validation",
+      "rust_surface": "sidemantic-rs validate_query_references",
+      "notes": "Covers metric and dimension reference validation before query compilation."
+    },
+    "semantic_sql_rewriter": {
+      "status": "rust_backed_opt_in",
+      "python_surface": "QueryRewriter and CLI semantic SQL rewrite",
+      "rust_surface": "sidemantic-rs semantic SQL rewriter",
+      "notes": "Rust supports the native semantic SQL subset, but Python remains the full rewrite implementation."
+    }
+  }
+}

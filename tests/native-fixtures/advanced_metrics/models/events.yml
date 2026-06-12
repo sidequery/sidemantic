@@ -1,0 +1,58 @@
+version: 1
+
+models:
+  - name: events
+    table: events
+    primary_key: event_id
+    dimensions:
+      - name: event_id
+        type: numeric
+      - name: user_id
+        type: categorical
+      - name: event_type
+        type: categorical
+      - name: event_date
+        type: time
+        granularity: day
+        supported_granularities: [day, week, month]
+      - name: region
+        type: categorical
+      - name: platform
+        type: categorical
+        sql: raw_platform
+    metrics:
+      - name: event_count
+        agg: count
+      - name: total_revenue
+        agg: sum
+        sql: amount
+      - name: cumulative_revenue
+        type: cumulative
+        sql: total_revenue
+      - name: revenue_mom
+        type: time_comparison
+        base_metric: total_revenue
+        comparison_type: mom
+      - name: signup_conversion
+        type: conversion
+        entity: user_id
+        base_event: signup
+        conversion_event: purchase
+        conversion_window: 7 days
+      - name: signup_retention
+        type: retention
+        entity: user_id
+        cohort_event: "event_type = 'signup'"
+        activity_event: "event_type = 'active'"
+        periods: 7
+        retention_granularity: day
+      - name: multi_platform_users
+        type: cohort
+        agg: count
+        entity: user_id
+        inner_metrics:
+          - name: platform_count
+            agg: count_distinct
+            sql: platform
+        entity_dimensions: [region]
+        having: platform_count >= 2

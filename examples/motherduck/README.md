@@ -7,7 +7,7 @@ This example demonstrates using Sidemantic with MotherDuck, a cloud-based DuckDB
 - Connect to MotherDuck cloud database
 - Define semantic models using YAML configuration
 - Create and refresh pre-aggregations for fast queries
-- Query with automatic pre-aggregation routing
+- Query with explicit pre-aggregation routing
 - Data persists in the cloud
 
 ## Prerequisites
@@ -53,7 +53,7 @@ Two pre-aggregations speed up common queries:
 - **daily_status**: Orders aggregated by day and status
 - **monthly_summary**: Orders aggregated by month and status
 
-Pre-aggregations are automatically used when queries match their definition.
+Pre-aggregations are used when query routing is enabled and a query matches their definition.
 
 ## Queries
 

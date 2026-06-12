@@ -1048,6 +1048,20 @@
           "description": "Measures to pre-aggregate (e.g., ['count', 'revenue'])",
           "title": "Measures"
         },
+        "meta": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Adapter-specific metadata payload",
+          "title": "Meta"
+        },
         "name": {
           "description": "Unique pre-aggregation name",
           "title": "Name",
@@ -1090,6 +1104,19 @@
           "description": "Whether to enable scheduled refresh",
           "title": "Scheduled Refresh",
           "type": "boolean"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL for original_sql or custom pre-aggregation definitions",
+          "title": "Sql"
         },
         "time_dimension": {
           "anyOf": [
@@ -1176,7 +1203,7 @@
       "type": "object"
     },
     "Relationship": {
-      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
+      "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table\n- cross: This model should be cross joined to another",
       "properties": {
         "active": {
           "default": true,
@@ -1202,6 +1229,25 @@
           "default": null,
           "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
           "title": "Foreign Key"
+        },
+        "foreign_key_columns": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit source-column list (alias for foreign_key)",
+          "title": "Foreign Key Columns"
         },
         "metadata": {
           "anyOf": [
@@ -1238,8 +1284,27 @@
             }
           ],
           "default": null,
-          "description": "Primary key column(s) in related model (defaults to id)",
+          "description": "Primary/unique key column(s): related model key for many_to_one, local model key for one_to_many",
           "title": "Primary Key"
+        },
+        "primary_key_columns": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit target-column list (alias for primary_key)",
+          "title": "Primary Key Columns"
         },
         "related_foreign_key": {
           "anyOf": [
@@ -1253,6 +1318,35 @@
           "default": null,
           "description": "Foreign key in junction model pointing to related model",
           "title": "Related Foreign Key"
+        },
+        "related_foreign_key_columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key columns in junction model pointing to related model",
+          "title": "Related Foreign Key Columns"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom join SQL using {from} and {to} runtime placeholders",
+          "title": "Sql"
         },
         "through": {
           "anyOf": [
@@ -1280,13 +1374,30 @@
           "description": "Foreign key in junction model pointing to this model",
           "title": "Through Foreign Key"
         },
+        "through_foreign_key_columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreign key columns in junction model pointing to this model",
+          "title": "Through Foreign Key Columns"
+        },
         "type": {
           "description": "Type of relationship",
           "enum": [
             "many_to_one",
             "one_to_one",
             "one_to_many",
-            "many_to_many"
+            "many_to_many",
+            "cross"
           ],
           "title": "Type",
           "type": "string"
@@ -2936,6 +3047,20 @@
                 "description": "Measures to pre-aggregate (e.g., ['count', 'revenue'])",
                 "title": "Measures"
               },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Adapter-specific metadata payload",
+                "title": "Meta"
+              },
               "name": {
                 "description": "Unique pre-aggregation name",
                 "title": "Name",
@@ -2978,6 +3103,19 @@
                 "description": "Whether to enable scheduled refresh",
                 "title": "Scheduled Refresh",
                 "type": "boolean"
+              },
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "SQL for original_sql or custom pre-aggregation definitions",
+                "title": "Sql"
               },
               "time_dimension": {
                 "anyOf": [
@@ -3064,7 +3202,7 @@
             "type": "object"
           },
           "Relationship": {
-            "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table",
+            "description": "Represents a relationship between models.\n\nRelationship types:\n- many_to_one: This model has a foreign key to another\n- one_to_one: This model is referenced by another with unique constraint\n- one_to_many: This model is referenced by another\n- many_to_many: This model relates to another through a junction table\n- cross: This model should be cross joined to another",
             "properties": {
               "active": {
                 "default": true,
@@ -3090,6 +3228,25 @@
                 "default": null,
                 "description": "Foreign key column(s) (defaults to {name}_id for many_to_one)",
                 "title": "Foreign Key"
+              },
+              "foreign_key_columns": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Explicit source-column list (alias for foreign_key)",
+                "title": "Foreign Key Columns"
               },
               "metadata": {
                 "anyOf": [
@@ -3126,8 +3283,27 @@
                   }
                 ],
                 "default": null,
-                "description": "Primary key column(s) in related model (defaults to id)",
+                "description": "Primary/unique key column(s): related model key for many_to_one, local model key for one_to_many",
                 "title": "Primary Key"
+              },
+              "primary_key_columns": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Explicit target-column list (alias for primary_key)",
+                "title": "Primary Key Columns"
               },
               "related_foreign_key": {
                 "anyOf": [
@@ -3141,6 +3317,35 @@
                 "default": null,
                 "description": "Foreign key in junction model pointing to related model",
                 "title": "Related Foreign Key"
+              },
+              "related_foreign_key_columns": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key columns in junction model pointing to related model",
+                "title": "Related Foreign Key Columns"
+              },
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Custom join SQL using {from} and {to} runtime placeholders",
+                "title": "Sql"
               },
               "through": {
                 "anyOf": [
@@ -3168,13 +3373,30 @@
                 "description": "Foreign key in junction model pointing to this model",
                 "title": "Through Foreign Key"
               },
+              "through_foreign_key_columns": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Foreign key columns in junction model pointing to this model",
+                "title": "Through Foreign Key Columns"
+              },
               "type": {
                 "description": "Type of relationship",
                 "enum": [
                   "many_to_one",
                   "one_to_one",
                   "one_to_many",
-                  "many_to_many"
+                  "many_to_many",
+                  "cross"
                 ],
                 "title": "Type",
                 "type": "string"

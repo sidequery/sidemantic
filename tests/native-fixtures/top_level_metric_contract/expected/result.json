@@ -1,0 +1,10 @@
+[
+  {
+    "status": "paid",
+    "finance.revenue_per_order": 75.0
+  },
+  {
+    "status": "refunded",
+    "finance.revenue_per_order": 25.0
+  }
+]

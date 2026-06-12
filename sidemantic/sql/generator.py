@@ -9,6 +9,7 @@ from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
+from sidemantic.validation import QueryValidationError
 
 
 class SQLGenerator:
@@ -33,6 +34,96 @@ class SQLGenerator:
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self._generate_cache: dict[tuple[object, ...], str] = {}
+        self._generate_cache_limit = 256
+
+    @staticmethod
+    def _agg_sql_name(agg: str) -> str:
+        """Return the SQL function name for a normalized metric aggregation."""
+        return {"variance_pop": "VAR_POP", "var_pop": "VAR_POP"}.get(agg, agg.upper())
+
+    @staticmethod
+    def _model_from_clause(model) -> str:
+        if model.sql:
+            return f"({model.sql}) AS t"
+        if model.table:
+            return model.table
+        if model.source_uri:
+            raise ValueError(
+                f"Model '{model.name}' uses source_uri '{model.source_uri}', but Python SQL generation does not "
+                "load source_uri data. Define table or sql for query compilation."
+            )
+        raise ValueError(f"Model '{model.name}' must define table or sql for query compilation")
+
+    def _model_source_as(self, model, alias: str) -> str:
+        quoted_alias = self._quote_identifier(alias)
+        if model.sql:
+            return f"({model.sql}) AS {quoted_alias}"
+        if model.table:
+            return f"{model.table} AS {quoted_alias}"
+        if model.source_uri:
+            raise ValueError(
+                f"Model '{model.name}' uses source_uri '{model.source_uri}', but Python SQL generation does not "
+                "load source_uri data. Define table or sql for query compilation."
+            )
+        raise ValueError(f"Model '{model.name}' must define table or sql for query compilation")
+
+    @staticmethod
+    def _freeze_cache_value(value):
+        if isinstance(value, dict):
+            items = (
+                (SQLGenerator._freeze_cache_value(k), SQLGenerator._freeze_cache_value(v)) for k, v in value.items()
+            )
+            return tuple(sorted(items, key=repr))
+        if isinstance(value, (list, tuple)):
+            return tuple(SQLGenerator._freeze_cache_value(item) for item in value)
+        if isinstance(value, set):
+            return tuple(sorted((SQLGenerator._freeze_cache_value(item) for item in value), key=repr))
+        try:
+            hash(value)
+            return value
+        except TypeError:
+            return repr(value)
+
+    def _generate_cache_key(
+        self,
+        metrics,
+        dimensions,
+        filters,
+        segments,
+        order_by,
+        limit,
+        offset,
+        parameters,
+        ungrouped,
+        use_preaggregations,
+        aliases,
+        skip_default_time_dimensions,
+    ) -> tuple[object, ...]:
+        return (
+            getattr(self.graph, "_version", 0),
+            self.dialect,
+            self.preagg_database,
+            self.preagg_schema,
+            self._freeze_cache_value(metrics),
+            self._freeze_cache_value(dimensions),
+            self._freeze_cache_value(filters),
+            self._freeze_cache_value(segments),
+            self._freeze_cache_value(order_by),
+            limit,
+            offset,
+            self._freeze_cache_value(parameters),
+            ungrouped,
+            use_preaggregations,
+            self._freeze_cache_value(aliases),
+            skip_default_time_dimensions,
+        )
+
+    def _cache_generate_result(self, cache_key: tuple[object, ...], sql: str) -> str:
+        if len(self._generate_cache) >= self._generate_cache_limit:
+            self._generate_cache.pop(next(iter(self._generate_cache)))
+        self._generate_cache[cache_key] = sql
+        return sql
 
     def _date_trunc(self, granularity: str, column_expr: str) -> str:
         """Generate dialect-specific time truncation expression.
@@ -213,6 +304,48 @@ class SQLGenerator:
         """Build a quoted reference to a CTE column."""
         return f"{self._quote_identifier(self._cte_name(model_name))}.{self._quote_identifier(column_name)}"
 
+    def _custom_join_condition(self, join_path) -> str:
+        """Render a relationship custom SQL join condition for generated CTE names."""
+        from_alias = self._quote_identifier(self._cte_name(join_path.from_model))
+        to_alias = self._quote_identifier(self._cte_name(join_path.to_model))
+        return join_path.custom_condition.replace("{from}", from_alias).replace("{to}", to_alias)
+
+    def _custom_join_columns(self, join_path) -> dict[str, set[str]]:
+        """Extract raw columns that a custom join predicate reads from each side."""
+        if not join_path.custom_condition:
+            return {}
+
+        from_marker = "__from__"
+        to_marker = "__to__"
+        condition = join_path.custom_condition.replace("{from}", from_marker).replace("{to}", to_marker)
+        try:
+            parsed = sqlglot.parse_one(condition, dialect=self.dialect)
+        except Exception as exc:
+            raise ValueError(
+                "Could not parse custom relationship SQL for "
+                f"{join_path.from_model} -> {join_path.to_model}: {join_path.custom_condition}"
+            ) from exc
+
+        columns: dict[str, set[str]] = {join_path.from_model: set(), join_path.to_model: set()}
+        for column in parsed.find_all(exp.Column):
+            if column.table == from_marker:
+                columns[join_path.from_model].add(column.name)
+            elif column.table == to_marker:
+                columns[join_path.to_model].add(column.name)
+
+        return {model_name: cols for model_name, cols in columns.items() if cols}
+
+    def _custom_join_columns_by_model(self, base_model_name: str, other_models: list[str]) -> dict[str, set[str]]:
+        columns_by_model: dict[str, set[str]] = {}
+        for other_model in other_models:
+            join_path = self.graph.find_relationship_path(base_model_name, other_model)
+            if not join_path:
+                continue
+            for join_step in join_path:
+                for model_name, columns in self._custom_join_columns(join_step).items():
+                    columns_by_model.setdefault(model_name, set()).update(columns)
+        return columns_by_model
+
     def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
         """Auto-include default_time_dimension from models if not already present.
 
@@ -243,28 +376,28 @@ class SQLGenerator:
         added_dims = []
         models_checked = set()
         for metric_ref in metrics:
-            if "." in metric_ref:
-                model_name, _ = metric_ref.split(".")
-                if model_name in models_checked:
-                    continue
-                models_checked.add(model_name)
+            try:
+                model_name, _ = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                continue
+            if not model_name or model_name in models_checked:
+                continue
+            models_checked.add(model_name)
 
-                # Try to get model - may not exist if this is a graph-level metric
-                # with a dotted name (not model.measure format)
-                try:
-                    model = self.graph.get_model(model_name)
-                except KeyError:
-                    model = None
-                if model and model.default_time_dimension:
-                    # Only add if this model doesn't already have a time dimension
-                    if model_name not in models_with_time_dims:
-                        time_dim_ref = f"{model_name}.{model.default_time_dimension}"
-                        # Apply default_grain if specified
-                        if model.default_grain:
-                            time_dim_ref = f"{time_dim_ref}__{model.default_grain}"
-                        if time_dim_ref not in dimensions and time_dim_ref not in added_dims:
-                            added_dims.append(time_dim_ref)
-                        models_with_time_dims.add(model_name)
+            try:
+                model = self.graph.get_model(model_name)
+            except KeyError:
+                model = None
+            if model and model.default_time_dimension:
+                # Only add if this model doesn't already have a time dimension
+                if model_name not in models_with_time_dims:
+                    time_dim_ref = f"{model_name}.{model.default_time_dimension}"
+                    # Apply default_grain if specified
+                    if model.default_grain:
+                        time_dim_ref = f"{time_dim_ref}__{model.default_grain}"
+                    if time_dim_ref not in dimensions and time_dim_ref not in added_dims:
+                        added_dims.append(time_dim_ref)
+                    models_with_time_dims.add(model_name)
 
         return dimensions + added_dims
 
@@ -339,6 +472,23 @@ class SQLGenerator:
         segments = segments or []
         parameters = parameters or {}
         aliases = aliases or {}
+        cache_key = self._generate_cache_key(
+            metrics,
+            dimensions,
+            filters,
+            segments,
+            order_by,
+            limit,
+            offset,
+            parameters,
+            ungrouped,
+            use_preaggregations,
+            aliases,
+            skip_default_time_dimensions,
+        )
+        cached = self._generate_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         # Auto-include default_time_dimension from metrics if not already present
         if not skip_default_time_dimensions:
@@ -393,22 +543,12 @@ class SQLGenerator:
         def metric_needs_window(m):
             # Try to get metric - could be model.measure or just metric name
             metric = None
-            if "." in m:
-                # model.measure format
-                model_name, measure_name = m.split(".")
-                try:
-                    model = self.graph.get_model(model_name)
-                    if model:
-                        metric = model.get_metric(measure_name)
-                except KeyError:
-                    pass
-                # Fall back to graph-level metric with dotted name
-                if not metric:
-                    try:
-                        metric = self.graph.get_metric(m)
-                    except KeyError:
-                        pass
-            else:
+            try:
+                _, metric = self.graph.resolve_metric_reference(m)
+            except KeyError:
+                pass
+
+            if not metric and "." not in m:
                 # Just metric name - try graph-level metric
                 try:
                     metric = self.graph.get_metric(m)
@@ -445,7 +585,19 @@ class SQLGenerator:
         needs_window_functions = any(metric_needs_window(m) for m in metrics)
 
         if needs_window_functions:
-            return self._generate_with_window_functions(metrics, dimensions, filters, order_by, limit, offset, aliases)
+            return self._cache_generate_result(
+                cache_key,
+                self._generate_with_window_functions(
+                    metrics,
+                    dimensions,
+                    filters,
+                    order_by,
+                    limit,
+                    offset,
+                    aliases,
+                    use_preaggregations=use_preaggregations,
+                ),
+            )
 
         # Parse dimension references and extract granularities
         parsed_dims = self._parse_dimension_refs(dimensions)
@@ -453,18 +605,38 @@ class SQLGenerator:
         # Find all models needed for the query
         model_names = self._find_required_models(metrics, dimensions, filters)
 
-        # Check if we need symmetric aggregation (pre-aggregation approach)
-        # This is needed when metrics come from different models at different join levels
-        if self._needs_preaggregation_for_fanout(metrics, dimensions):
-            return self._generate_with_preaggregation(
+        if use_preaggregations and not ungrouped:
+            join_key_preagg_sql = self._try_use_join_key_preaggregation(
                 metrics=metrics,
                 dimensions=dimensions,
                 filters=filters,
-                segments=None,  # Already resolved into filters above
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
                 aliases=aliases,
+            )
+            if join_key_preagg_sql:
+                instrumentation = self._generate_instrumentation_comment(
+                    models=model_names, metrics=metrics, dimensions=dimensions, used_preagg=True
+                )
+                return self._cache_generate_result(cache_key, join_key_preagg_sql + "\n" + instrumentation)
+
+        # Check if we need symmetric aggregation (pre-aggregation approach)
+        # This is needed when metrics come from different models at different join levels
+        if self._needs_preaggregation_for_fanout(metrics, dimensions):
+            return self._cache_generate_result(
+                cache_key,
+                self._generate_with_preaggregation(
+                    metrics=metrics,
+                    dimensions=dimensions,
+                    filters=filters,
+                    segments=None,  # Already resolved into filters above
+                    order_by=order_by,
+                    limit=limit,
+                    offset=offset,
+                    aliases=aliases,
+                    use_preaggregations=use_preaggregations,
+                ),
             )
 
         # Try to use pre-aggregation if enabled (single model queries only)
@@ -477,13 +649,14 @@ class SQLGenerator:
                 order_by=order_by,
                 limit=limit,
                 offset=offset,
+                aliases=aliases,
             )
             if preagg_sql:
                 # Add instrumentation comment
                 instrumentation = self._generate_instrumentation_comment(
                     models=[model_names[0]], metrics=metrics, dimensions=dimensions, used_preagg=True
                 )
-                return preagg_sql + "\n" + instrumentation
+                return self._cache_generate_result(cache_key, preagg_sql + "\n" + instrumentation)
 
         if not model_names:
             raise ValueError("No models found for query")
@@ -533,6 +706,9 @@ class SQLGenerator:
 
         # Extract columns needed for metric-level filters (before building CTEs)
         metric_filter_cols_by_model = self._extract_metric_filter_columns(metrics)
+        custom_join_cols_by_model = self._custom_join_columns_by_model(base_model_name, model_names[1:])
+        for model_name, column_names in custom_join_cols_by_model.items():
+            metric_filter_cols_by_model.setdefault(model_name, set()).update(column_names)
 
         # Ensure dimensions referenced in outer-query filters (e.g. window dims)
         # are included in the relevant CTE SELECT lists.
@@ -566,6 +742,7 @@ class SQLGenerator:
                 order_by=order_by,
                 all_models=all_models,
                 metric_filter_columns=metric_filter_cols,
+                ungrouped=ungrouped,
             )
             cte_sqls.append(cte_sql)
 
@@ -598,7 +775,7 @@ class SQLGenerator:
         )
         full_sql = full_sql + "\n" + instrumentation
 
-        return full_sql
+        return self._cache_generate_result(cache_key, full_sql)
 
     def _parse_dimension_refs(self, dimensions: list[str]) -> list[tuple[str, str | None]]:
         """Parse dimension references to extract granularities.
@@ -719,35 +896,49 @@ class SQLGenerator:
 
         def collect_models_from_metric(metric_ref: str):
             """Recursively collect models needed from a metric."""
-            if "." in metric_ref:
-                # Direct measure reference (model.measure)
-                add_model(metric_ref.split(".")[0])
-            else:
-                # It's a metric, need to resolve its dependencies
-                try:
-                    metric = self.graph.get_metric(metric_ref)
-                    if metric:
-                        if metric.type == "ratio":
-                            if metric.numerator:
-                                collect_models_from_metric(metric.numerator)
-                            if metric.denominator:
-                                collect_models_from_metric(metric.denominator)
-                        elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
-                            # Derived or untyped metrics with sql - auto-detect dependencies
-                            for ref_metric in metric.get_dependencies(self.graph):
-                                collect_models_from_metric(ref_metric)
-                            # Inline SQL expression metrics (e.g., SUM(orders.amount))
-                            # can have empty dependencies, so also parse model refs directly.
-                            if metric.sql:
-                                for model_name in self._extract_models_from_sql(metric.sql):
-                                    add_model(model_name)
-                        elif metric.agg and metric.sql:
-                            # Graph-level simple aggregations can qualify fields
-                            # (e.g., SUM(orders.amount)); include those models.
-                            for model_name in self._extract_models_from_sql(metric.sql):
-                                add_model(model_name)
-                except KeyError:
-                    pass
+            try:
+                model_name, metric = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                return
+
+            if model_name:
+                add_model(model_name)
+                if metric.type == "ratio":
+                    if metric.numerator:
+                        collect_models_from_metric(metric.numerator)
+                    if metric.denominator:
+                        collect_models_from_metric(metric.denominator)
+                elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+                    for ref_metric in metric.get_dependencies(self.graph, model_name):
+                        collect_models_from_metric(ref_metric)
+                    if metric.sql:
+                        for ref_model_name in self._extract_models_from_sql(metric.sql):
+                            add_model(ref_model_name)
+                elif metric.agg and metric.sql:
+                    for ref_model_name in self._extract_models_from_sql(metric.sql):
+                        add_model(ref_model_name)
+                return
+
+            # It's a graph-level metric, need to resolve its dependencies.
+            if metric.type == "ratio":
+                if metric.numerator:
+                    collect_models_from_metric(metric.numerator)
+                if metric.denominator:
+                    collect_models_from_metric(metric.denominator)
+            elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+                # Derived or untyped metrics with sql - auto-detect dependencies
+                for ref_metric in metric.get_dependencies(self.graph):
+                    collect_models_from_metric(ref_metric)
+                # Inline SQL expression metrics (e.g., SUM(orders.amount))
+                # can have empty dependencies, so also parse model refs directly.
+                if metric.sql:
+                    for model_name in self._extract_models_from_sql(metric.sql):
+                        add_model(model_name)
+            elif metric.agg and metric.sql:
+                # Graph-level simple aggregations can qualify fields
+                # (e.g., SUM(orders.amount)); include those models.
+                for model_name in self._extract_models_from_sql(metric.sql):
+                    add_model(model_name)
 
         # Collect from dimensions first (since they define the grain)
         for dim in dimensions:
@@ -935,7 +1126,10 @@ class SQLGenerator:
             """Extract filter columns from a model.measure reference."""
             if "." not in metric_ref:
                 return
-            model_name, measure_name = metric_ref.split(".")
+            if metric_ref in self.graph.metrics:
+                extract_from_metric(self.graph.metrics[metric_ref])
+                return
+            model_name, measure_name = metric_ref.split(".", 1)
             model = self.graph.get_model(model_name)
             if model:
                 measure = model.get_metric(measure_name)
@@ -977,8 +1171,11 @@ class SQLGenerator:
             if metric.filters:
                 deps = metric.get_dependencies(self.graph)
                 for dep in deps:
-                    if "." in dep:
-                        dep_model_name = dep.split(".")[0]
+                    try:
+                        dep_model_name, _ = self.graph.resolve_metric_reference(dep)
+                    except KeyError:
+                        dep_model_name = dep.split(".", 1)[0] if "." in dep else None
+                    if dep_model_name:
                         add_filter_columns(dep_model_name, metric.filters)
                         break
 
@@ -1009,16 +1206,16 @@ class SQLGenerator:
                 add_sql_columns(metric.sql)
 
         for metric_ref in metrics:
-            if "." in metric_ref:
+            try:
+                model_name, metric = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                continue
+            if model_name:
                 # model.measure format - extract directly
                 extract_from_measure_ref(metric_ref)
             else:
                 # Graph-level metric - recursively extract
-                try:
-                    metric = self.graph.get_metric(metric_ref)
-                    extract_from_metric(metric)
-                except KeyError:
-                    pass
+                extract_from_metric(metric)
 
         return columns_by_model
 
@@ -1086,6 +1283,7 @@ class SQLGenerator:
         order_by: list[str] | None = None,
         all_models: set[str] | None = None,
         metric_filter_columns: set[str] | None = None,
+        ungrouped: bool = False,
     ) -> str:
         """Build CTE SQL for a model with optional filter pushdown.
 
@@ -1097,6 +1295,7 @@ class SQLGenerator:
             order_by: Order by fields (for determining needed dimensions)
             all_models: All models in query (for determining if joins needed)
             metric_filter_columns: Columns needed for metric-level filters
+            ungrouped: Whether the query is returning raw ungrouped rows
 
         Returns:
             CTE SQL string
@@ -1104,7 +1303,7 @@ class SQLGenerator:
         model = self.graph.get_model(model_name)
         self._ensure_sql_model(model_name, model)
         all_models = all_models or {model_name}
-        needs_joins = len(all_models) > 1
+        needs_keyed_joins = self._model_needs_keyed_join_columns(model_name, all_models)
 
         # Find which dimensions are actually needed
         needed_dimensions = self._find_needed_dimensions(
@@ -1117,27 +1316,38 @@ class SQLGenerator:
         # Track all columns added (not just join keys) to avoid duplicates
         columns_added = set()
 
-        # Include this model's primary key columns (always needed for joins/grouping)
-        for pk_col in model.primary_key_columns:
-            if pk_col not in columns_added:
-                select_cols.append(f"{self._quote_identifier(pk_col)} AS {self._quote_alias(pk_col)}")
-                columns_added.add(pk_col)
+        def add_passthrough_column(column: str) -> None:
+            if column not in columns_added:
+                select_cols.append(f"{self._quote_identifier(column)} AS {self._quote_alias(column)}")
+                columns_added.add(column)
 
-        # Include foreign keys if we're joining OR if they're explicitly requested as dimensions
+        include_primary_keys = needs_keyed_joins or ungrouped or bool(model.sql)
+        if include_primary_keys:
+            for pk_col in model.primary_key_columns:
+                add_passthrough_column(pk_col)
+
+        # Include local relationship keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
             if relationship.type == "many_to_one":
                 # Handle multi-column foreign keys
                 for fk in relationship.foreign_key_columns:
                     # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
-                    should_include = (needs_joins and relationship.name in all_models) or fk in needed_dimensions
+                    should_include = (needs_keyed_joins and relationship.name in all_models) or fk in needed_dimensions
                     if should_include and fk not in columns_added:
-                        select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
-                        columns_added.add(fk)
+                        add_passthrough_column(fk)
                         # Mark FK as "needed" so it's not duplicated as a dimension
                         needed_dimensions.discard(fk)
+            elif (
+                needs_keyed_joins
+                and relationship.name in all_models
+                and relationship.type in ("one_to_one", "one_to_many")
+            ):
+                local_keys = relationship.primary_key_columns if relationship.primary_key else model.primary_key_columns
+                for pk in local_keys:
+                    add_passthrough_column(pk)
 
         # Check if other models have has_many/has_one pointing to this model
-        if needs_joins:
+        if needs_keyed_joins:
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:
                     continue
@@ -1148,10 +1358,14 @@ class SQLGenerator:
                     ):
                         # Other model expects this model to have a foreign key
                         # For has_many/has_one, foreign_key is the FK column in THIS model
-                        fk = other_join.foreign_key or other_join.sql_expr
-                        if fk not in columns_added:
-                            select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
-                            columns_added.add(fk)
+                        for fk in other_join.foreign_key_columns:
+                            add_passthrough_column(fk)
+                    elif other_join.name == model_name and other_join.type == "many_to_one":
+                        target_keys = (
+                            other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
+                        )
+                        for pk in target_keys:
+                            add_passthrough_column(pk)
 
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:
@@ -1159,8 +1373,8 @@ class SQLGenerator:
                 for other_join in other_model.relationships:
                     if other_join.type != "many_to_many" or other_join.through != model_name:
                         continue
-                    junction_self_fk, junction_related_fk = other_join.junction_keys()
-                    for fk in (junction_self_fk, junction_related_fk):
+                    junction_self_fks, junction_related_fks = other_join.junction_key_columns()
+                    for fk in (*junction_self_fks, *junction_related_fks):
                         if fk and fk not in columns_added:
                             select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
                             columns_added.add(fk)
@@ -1245,30 +1459,44 @@ class SQLGenerator:
                 return
             visited.add(metric_ref)
 
-            if "." in metric_ref:
+            try:
+                ref_model_name, resolved_metric = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                ref_model_name = None
+                resolved_metric = None
+
+            if resolved_metric and ref_model_name is None:
+                for dep in resolved_metric.get_dependencies(self.graph, model_name):
+                    collect_measures_from_metric(dep, visited)
+                if resolved_metric.sql and (
+                    resolved_metric.agg or sql_has_aggregate(resolved_metric.sql, self.dialect)
+                ):
+                    collect_sql_columns_for_model(resolved_metric.sql)
+                return
+
+            if resolved_metric and ref_model_name:
                 # It's a qualified reference (model.measure)
-                ref_model_name, measure_name = metric_ref.split(".", 1)
-                if ref_model_name == model_name:
-                    # It's for this model - check if it's a derived measure
-                    measure = model.get_metric(measure_name)
-                    if measure:
-                        if (
-                            not measure.type
-                            and not measure.agg
-                            and measure.sql
-                            and sql_has_aggregate(measure.sql, self.dialect)
-                        ):
-                            collect_sql_columns_for_model(measure.sql)
-                            return
-                        if measure.type in ("derived", "ratio") or (
-                            not measure.type and not measure.agg and measure.sql
-                        ):
-                            # Derived/ratio measure - get its dependencies
-                            for dep in measure.get_dependencies(self.graph, ref_model_name):
-                                collect_measures_from_metric(dep, visited)
-                        elif measure.agg:
-                            # Simple aggregation measure - add it
-                            measures_needed.add(measure_name)
+                if ref_model_name != model_name:
+                    return
+                measure_name = metric_ref.split(".", 1)[1]
+                measure = resolved_metric
+                if (
+                    not measure.type
+                    and not measure.agg
+                    and measure.sql
+                    and sql_has_aggregate(measure.sql, self.dialect)
+                ):
+                    collect_sql_columns_for_model(measure.sql)
+                    return
+                if measure.type in ("derived", "ratio") or (not measure.type and not measure.agg and measure.sql):
+                    # Derived/ratio measure - get its dependencies
+                    for dep in measure.get_dependencies(self.graph, ref_model_name):
+                        collect_measures_from_metric(dep, visited)
+                elif measure.agg:
+                    # Simple aggregation measure - add it
+                    measures_needed.add(measure_name)
+            elif "." in metric_ref:
+                return
             else:
                 # Unqualified reference - could be:
                 # 1. A graph-level metric
@@ -1379,10 +1607,7 @@ class SQLGenerator:
                 select_cols.append(f"{measure_sql} AS {self._quote_alias(f'{measure_name}_raw')}")
 
         # Build FROM clause
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Build WHERE clause for pushed-down filters
         where_clause = ""
@@ -1414,6 +1639,31 @@ class SQLGenerator:
         )
 
         return cte_sql
+
+    def _model_needs_keyed_join_columns(self, model_name: str, all_models: set[str]) -> bool:
+        """Return whether this model needs columns for non-cross joins in this query."""
+        if len(all_models) <= 1:
+            return False
+
+        model = self.graph.get_model(model_name)
+        for relationship in model.relationships:
+            if relationship.name in all_models and relationship.type != "cross":
+                return True
+
+        for other_model_name, other_model in self.graph.models.items():
+            if other_model_name not in all_models:
+                continue
+            for relationship in other_model.relationships:
+                if relationship.name == model_name and relationship.type != "cross":
+                    return True
+                if (
+                    relationship.type == "many_to_many"
+                    and relationship.through == model_name
+                    and relationship.name in all_models
+                ):
+                    return True
+
+        return False
 
     def _has_fanout_joins(self, base_model_name: str, other_models: list[str]) -> dict[str, bool]:
         """Determine which models need symmetric aggregates due to fan-out.
@@ -1464,6 +1714,43 @@ class SQLGenerator:
 
         return needs_symmetric
 
+    def _explicit_join_type_for_path(self, join_path) -> str | None:
+        """Return an adapter-provided SQL join type for a join path step."""
+        relation = None
+        reverse = False
+
+        try:
+            from_model = self.graph.get_model(join_path.from_model)
+            relation = next((rel for rel in from_model.relationships if rel.name == join_path.to_model), None)
+        except KeyError:
+            relation = None
+
+        if relation is None:
+            try:
+                to_model = self.graph.get_model(join_path.to_model)
+                relation = next((rel for rel in to_model.relationships if rel.name == join_path.from_model), None)
+                reverse = relation is not None
+            except KeyError:
+                relation = None
+
+        if not relation or not relation.metadata or "bsl_how" not in relation.metadata:
+            return None
+
+        how = str(relation.metadata["bsl_how"]).lower()
+        if reverse and how == "left":
+            how = "right"
+        elif reverse and how == "right":
+            how = "left"
+
+        return {
+            "inner": "inner",
+            "left": "left",
+            "right": "right",
+            "outer": "full",
+            "full": "full",
+            "full_outer": "full",
+        }.get(how)
+
     def _needs_preaggregation_for_fanout(self, metrics: list[str], dimensions: list[str]) -> bool:
         """Determine if pre-aggregation is needed to avoid fan-out.
 
@@ -1490,8 +1777,11 @@ class SQLGenerator:
         # Get unique metric models
         metric_models = set()
         for metric_ref in metrics:
-            if "." in metric_ref:
-                model_name = metric_ref.split(".")[0]
+            try:
+                model_name, _ = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                model_name = None
+            if model_name:
                 metric_models.add(model_name)
 
         if len(metric_models) < 2:
@@ -1537,6 +1827,7 @@ class SQLGenerator:
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
+        use_preaggregations: bool = False,
     ) -> str:
         """Generate SQL using pre-aggregation to avoid fan-out.
 
@@ -1552,6 +1843,7 @@ class SQLGenerator:
             limit: Maximum number of rows
             offset: Number of rows to skip
             aliases: Custom aliases for fields
+            use_preaggregations: Try materialized pre-aggregation routing for each child query
 
         Returns:
             SQL query string
@@ -1562,8 +1854,11 @@ class SQLGenerator:
         # Group metrics by their model
         metrics_by_model: dict[str, list[str]] = {}
         for metric_ref in metrics:
-            if "." in metric_ref:
-                model_name = metric_ref.split(".")[0]
+            try:
+                model_name, _ = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                model_name = None
+            if model_name:
                 if model_name not in metrics_by_model:
                     metrics_by_model[model_name] = []
                 metrics_by_model[model_name].append(metric_ref)
@@ -1580,6 +1875,7 @@ class SQLGenerator:
                 limit=limit,
                 offset=offset,
                 aliases=aliases,
+                use_preaggregations=use_preaggregations,
             )
 
         # Resolve segments to SQL filters
@@ -1620,6 +1916,7 @@ class SQLGenerator:
                 limit=None,
                 offset=None,
                 aliases=aliases,
+                use_preaggregations=use_preaggregations,
             )
 
             # Remove the instrumentation comment from sub-query
@@ -1632,28 +1929,54 @@ class SQLGenerator:
 
         # Build the final SELECT that joins all pre-aggregated CTEs
         select_exprs = []
+        output_names: dict[str, str] = {}
+
+        def register_output_name(output_name: str, *refs: str) -> None:
+            for ref in refs:
+                if ref:
+                    output_names[ref] = output_name
+
+        def dimension_output_name(dim_ref: str, dim_name: str, gran: str | None) -> str:
+            if gran:
+                full_ref = f"{dim_ref}__{gran}"
+                default = f"{dim_name}__{gran}"
+            else:
+                full_ref = dim_ref
+                default = dim_name
+
+            canonical_ref = full_ref
+            return aliases.get(full_ref) or aliases.get(canonical_ref) or default
+
+        def metric_source_name(metric_ref: str, metric_name: str) -> str:
+            return aliases.get(metric_ref) or aliases.get(f"{metric_ref.split('.')[0]}.{metric_name}") or metric_name
 
         # Add dimensions - use COALESCE across all CTEs
         for dim_ref, gran in parsed_dims:
             dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
             col_name = f"{dim_name}__{gran}" if gran else dim_name
+            output_name = dimension_output_name(dim_ref, dim_name, gran)
+            full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+            canonical_ref = full_ref
+            register_output_name(output_name, full_ref, canonical_ref, dim_name, col_name, output_name)
 
             # Build COALESCE expression
-            coalesce_parts = [f"{cte}.{col_name}" for cte in cte_names]
-            select_exprs.append(f"COALESCE({', '.join(coalesce_parts)}) AS {col_name}")
+            quoted_source = self._quote_identifier(output_name)
+            coalesce_parts = [f"{cte}.{quoted_source}" for cte in cte_names]
+            select_exprs.append(f"COALESCE({', '.join(coalesce_parts)}) AS {self._quote_alias(output_name)}")
 
         # Check for metric name collisions across models
         metric_name_counts: dict[str, int] = {}
         for model_metrics in metrics_by_model.values():
             for metric_ref in model_metrics:
-                metric_name = metric_ref.split(".")[1] if "." in metric_ref else metric_ref
+                metric_name = metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
                 metric_name_counts[metric_name] = metric_name_counts.get(metric_name, 0) + 1
 
         # Add metrics from each CTE
         for model_name, model_metrics in metrics_by_model.items():
             cte_name = f"{model_name}_preagg"
             for metric_ref in model_metrics:
-                metric_name = metric_ref.split(".")[1] if "." in metric_ref else metric_ref
+                metric_name = metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
+                source_name = metric_source_name(metric_ref, metric_name)
                 # Check for custom alias first
                 if metric_ref in aliases:
                     alias = aliases[metric_ref]
@@ -1662,7 +1985,8 @@ class SQLGenerator:
                     alias = f"{model_name}_{metric_name}"
                 else:
                     alias = metric_name
-                select_exprs.append(f"{cte_name}.{metric_name} AS {alias}")
+                register_output_name(alias, metric_ref, f"{model_name}.{metric_name}", metric_name, alias)
+                select_exprs.append(f"{cte_name}.{self._quote_identifier(source_name)} AS {self._quote_alias(alias)}")
 
         # Build FROM clause with FULL OUTER JOINs (or CROSS JOIN if no dimensions)
         # Start with first CTE
@@ -1679,10 +2003,10 @@ class SQLGenerator:
                 join_conditions = []
                 for dim_ref, gran in parsed_dims:
                     dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
-                    col_name = f"{dim_name}__{gran}" if gran else dim_name
+                    col_name = dimension_output_name(dim_ref, dim_name, gran)
                     # NULL-safe equality that works for all column types
-                    lhs = exp.Column(this=col_name, table=cte_names[0])
-                    rhs = exp.Column(this=col_name, table=cte_name)
+                    lhs = exp.column(col_name, table=cte_names[0])
+                    rhs = exp.column(col_name, table=cte_name)
                     join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self.dialect))
 
                 join_clause = " AND ".join(join_conditions)
@@ -1724,17 +2048,22 @@ class SQLGenerator:
         if order_by:
             order_clauses = []
             for field in order_by:
-                if "." in field:
-                    field_name = field.split(".", 1)[1]
-                else:
-                    field_name = field
-                order_clauses.append(field_name)
+                parts = field.rsplit(" ", 1)
+                direction = ""
+                field_ref = field
+                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
+                    field_ref = parts[0]
+                    direction = f" {parts[1].upper()}"
+
+                field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
+                output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
             final_query += f"\nORDER BY {', '.join(order_clauses)}"
 
         # Add LIMIT and OFFSET
-        if limit:
+        if limit is not None:
             final_query += f"\nLIMIT {limit}"
-        if offset:
+        if offset is not None:
             final_query += f"\nOFFSET {offset}"
 
         # Combine CTEs and main query
@@ -1749,6 +2078,143 @@ class SQLGenerator:
         full_sql = full_sql + "\n" + instrumentation
 
         return full_sql
+
+    def _add_join_paths_to_query(
+        self,
+        query,
+        base_model_name: str,
+        other_models: list[str],
+        models_with_filters: set[str],
+    ):
+        """Add the same multi-hop joins used by the main grouped query."""
+        if not other_models:
+            return query
+
+        joined_models = {base_model_name}
+        for other_model in other_models:
+            join_path = self.graph.find_relationship_path(base_model_name, other_model)
+            if not join_path:
+                continue
+
+            for jp in join_path:
+                if jp.to_model in joined_models:
+                    continue
+
+                right_table = self._quote_identifier(self._cte_name(jp.to_model))
+                if jp.relationship == "cross":
+                    query = query.join(right_table, join_type="cross")
+                    joined_models.add(jp.to_model)
+                    continue
+
+                if jp.custom_condition:
+                    join_cond = self._custom_join_condition(jp)
+                else:
+                    if len(jp.from_columns) != len(jp.to_columns):
+                        raise ValueError(
+                            f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
+                            f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
+                        )
+
+                    join_conditions = [
+                        self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
+                        for fk, pk in zip(jp.from_columns, jp.to_columns)
+                    ]
+                    join_cond = " AND ".join(join_conditions)
+                join_type = self._explicit_join_type_for_path(jp)
+                if join_type is None:
+                    join_type = "inner" if jp.to_model in models_with_filters else "left"
+                query = query.join(right_table, on=join_cond, join_type=join_type)
+                joined_models.add(jp.to_model)
+
+        return query
+
+    def _split_where_having_filters(self, filters: list[str], model_names: list[str]) -> tuple[list[str], list[str]]:
+        """Split query-level filters into row filters and aggregate filters."""
+        import re
+
+        where_filters = []
+        having_filters = []
+
+        for filter_expr in filters:
+            references_metric = False
+
+            for model_name in model_names:
+                model_obj = self.graph.get_model(model_name)
+                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
+                matches = re.findall(pattern, filter_expr)
+                for field_name in matches:
+                    if model_obj.get_metric(field_name):
+                        references_metric = True
+                        break
+                if references_metric:
+                    break
+
+            references_window_dim = False
+            if references_metric:
+                for model_name in model_names:
+                    model_obj = self.graph.get_model(model_name)
+                    if not model_obj:
+                        continue
+                    for field_name in re.findall(f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)", filter_expr):
+                        dim = model_obj.get_dimension(field_name)
+                        if dim and getattr(dim, "window", None) is not None:
+                            references_window_dim = True
+                            break
+                    if references_window_dim:
+                        break
+
+            if references_metric and not references_window_dim:
+                having_filters.append(filter_expr)
+            else:
+                where_filters.append(filter_expr)
+
+        return where_filters, having_filters
+
+    def _add_where_filters_to_query(self, query, where_filters: list[str], model_names: list[str]):
+        """Add row-level filters with CTE-qualified field references."""
+        import re
+
+        for filter_expr in where_filters:
+            parsed_filter = filter_expr
+            for model_name in model_names:
+                model_obj = self.graph.get_model(model_name)
+
+                parts = []
+                in_quotes = False
+                current = ""
+
+                for char in parsed_filter:
+                    if char == "'":
+                        if current:
+                            parts.append((current, in_quotes))
+                            current = ""
+                        in_quotes = not in_quotes
+                        parts.append(("'", False))
+                    else:
+                        current += char
+                if current:
+                    parts.append((current, in_quotes))
+
+                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
+
+                def replace_field(match):
+                    field_name = match.group(1)
+                    if model_obj.get_metric(field_name):
+                        return self._cte_ref(model_name, f"{field_name}_raw")
+                    return self._cte_ref(model_name, field_name)
+
+                result_parts = []
+                for part, is_quoted in parts:
+                    if is_quoted or part == "'":
+                        result_parts.append(part)
+                    else:
+                        result_parts.append(re.sub(pattern, replace_field, part))
+
+                parsed_filter = "".join(result_parts)
+
+            query = query.where(parsed_filter)
+
+        return query
 
     def _build_main_select(
         self,
@@ -1786,6 +2252,27 @@ class SQLGenerator:
         # Detect if symmetric aggregates are needed
         symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
 
+        dimension_models = {dim_ref.split(".")[0] for dim_ref, _ in parsed_dims if "." in dim_ref}
+        metric_models = set()
+        for metric_ref in metrics:
+            try:
+                metric_model_name, _ = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                metric_model_name = None
+            if metric_model_name:
+                metric_models.add(metric_model_name)
+        for metric_model in metric_models:
+            for dimension_model in dimension_models:
+                if metric_model == dimension_model:
+                    continue
+                try:
+                    join_path = self.graph.find_relationship_path(metric_model, dimension_model)
+                except ValueError:
+                    continue
+                if any(jp.relationship == "one_to_many" for jp in join_path):
+                    symmetric_agg_needed[metric_model] = True
+                    break
+
         # Check for dimension/metric name collisions across models
         # If there are collisions, prefix with model name
         field_names = {}  # field_name -> list of model names
@@ -1797,17 +2284,27 @@ class SQLGenerator:
             field_names[field_key].append(model_name)
 
         for metric_ref in metrics:
-            if "." in metric_ref:
-                model_name, measure_name = metric_ref.split(".")
+            try:
+                model_name, resolved_metric = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                model_name = None
+                resolved_metric = None
+            if model_name:
+                measure_name = metric_ref.split(".", 1)[1]
                 if measure_name not in field_names:
                     field_names[measure_name] = []
                 field_names[measure_name].append(model_name)
+            elif resolved_metric:
+                if resolved_metric.name not in field_names:
+                    field_names[resolved_metric.name] = []
+                field_names[resolved_metric.name].append("")
 
         # Determine which fields have collisions
         has_collision = {name: len(models) > 1 for name, models in field_names.items()}
 
         # Build SELECT columns
         select_exprs = []
+        output_aliases: dict[str, str] = {}
 
         # Add dimensions
         for dim_ref, gran in parsed_dims:
@@ -1816,25 +2313,49 @@ class SQLGenerator:
 
             # Check for custom alias first
             full_ref = f"{model_name}.{dim_name}__{gran}" if gran else dim_ref
+            base_alias = f"{dim_name}__{gran}" if gran else dim_name
             if full_ref in aliases:
                 alias = aliases[full_ref]
             else:
                 # Generate alias (with model prefix if collision)
-                base_alias = f"{dim_name}__{gran}" if gran else dim_name
                 if has_collision.get(base_alias, False):
                     alias = f"{model_name}_{base_alias}"
                 else:
                     alias = base_alias
 
             select_exprs.append(f"{self._cte_ref(model_name, cte_col_name)} AS {self._quote_alias(alias)}")
+            output_aliases[full_ref] = alias
+            output_aliases[dim_ref] = alias
+            output_aliases[base_alias] = alias
+
+        previous_bsl_all_context = getattr(self, "_bsl_all_query_context", None)
+        self._bsl_all_query_context = {
+            "base_model_name": base_model_name,
+            "other_models": other_models,
+            "filters": filters or [],
+            "models_with_filters": models_with_filters,
+        }
 
         # Add metrics
         for metric_ref in metrics:
-            if "." in metric_ref:
+            try:
+                resolved_model_name, resolved_metric = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                resolved_model_name = None
+                resolved_metric = None
+
+            if resolved_metric and resolved_model_name is None:
+                metric_expr = self._build_metric_sql(resolved_metric)
+                metric_expr = self._wrap_with_fill_nulls(metric_expr, resolved_metric)
+                alias = aliases.get(metric_ref, resolved_metric.name)
+                select_exprs.append(f"{metric_expr} AS {self._quote_alias(alias)}")
+                output_aliases[metric_ref] = alias
+                output_aliases[resolved_metric.name] = alias
+            elif resolved_metric and resolved_model_name:
                 # It's a measure reference (model.measure)
-                model_name, measure_name = metric_ref.split(".")
-                model = self.graph.get_model(model_name)
-                measure = model.get_metric(measure_name)
+                model_name = resolved_model_name
+                measure_name = metric_ref.split(".", 1)[1]
+                measure = resolved_metric
 
                 if measure:
                     # Check for custom alias first
@@ -1846,6 +2367,9 @@ class SQLGenerator:
                             alias = f"{model_name}_{measure_name}"
                         else:
                             alias = measure_name
+
+                    output_aliases[metric_ref] = alias
+                    output_aliases[measure_name] = alias
 
                     # Complex metric types (derived, ratio) can be built inline
                     # Note: cumulative, time_comparison, conversion are handled via special query generators
@@ -1878,19 +2402,20 @@ class SQLGenerator:
                             pk_cols = model_obj.primary_key_columns
                             # For composite keys, concatenate columns for hashing
                             if len(pk_cols) == 1:
-                                pk = self._quote_identifier(pk_cols[0])
+                                pk = self._cte_ref(model_name, pk_cols[0])
                             else:
                                 pk = (
                                     "CONCAT("
-                                    + ", '|', ".join(f"CAST({self._quote_identifier(c)} AS VARCHAR)" for c in pk_cols)
+                                    + ", '|', ".join(
+                                        f"CAST({self._cte_ref(model_name, c)} AS VARCHAR)" for c in pk_cols
+                                    )
                                     + ")"
                                 )
 
                             agg_expr = build_symmetric_aggregate_sql(
-                                measure_expr=f"{measure_name}_raw",
+                                measure_expr=self._cte_ref(model_name, f"{measure_name}_raw"),
                                 primary_key=pk,
                                 agg_type=measure.agg,
-                                model_alias=f"{model_name}_cte",
                                 dialect=self.dialect,
                             )
                         else:
@@ -1906,6 +2431,8 @@ class SQLGenerator:
                         metric_expr = self._build_metric_sql(metric)
                         metric_expr = self._wrap_with_fill_nulls(metric_expr, metric)
                         select_exprs.append(f"{metric_expr} AS {self._quote_alias(metric.name)}")
+                        output_aliases[metric_ref] = metric.name
+                        output_aliases[metric.name] = metric.name
             else:
                 # It's a metric reference (just metric name)
                 metric = self.graph.get_metric(metric_ref)
@@ -1913,142 +2440,33 @@ class SQLGenerator:
                     metric_expr = self._build_metric_sql(metric)
                     metric_expr = self._wrap_with_fill_nulls(metric_expr, metric)
                     select_exprs.append(f"{metric_expr} AS {self._quote_alias(metric.name)}")
+                    output_aliases[metric_ref] = metric.name
+                    output_aliases[metric.name] = metric.name
                 else:
                     raise ValueError(f"Metric {metric_ref} not found")
+
+        if previous_bsl_all_context is None:
+            delattr(self, "_bsl_all_query_context")
+        else:
+            self._bsl_all_query_context = previous_bsl_all_context
 
         # Build query using builder API
         query = select(*select_exprs).from_(self._quote_identifier(self._cte_name(base_model_name)))
 
         # Add joins (supports multi-hop)
-        if other_models:
-            # Track which models we've already joined
-            joined_models = {base_model_name}
-
-            for other_model in other_models:
-                join_path = self.graph.find_relationship_path(base_model_name, other_model)
-                if join_path:
-                    # Apply each join in the path
-                    for jp in join_path:
-                        # Skip if we've already joined this model
-                        if jp.to_model in joined_models:
-                            continue
-
-                        right_table = self._quote_identifier(self._cte_name(jp.to_model))
-                        # Validate column counts match for composite keys
-                        if len(jp.from_columns) != len(jp.to_columns):
-                            raise ValueError(
-                                f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
-                                f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
-                            )
-                        # Build join condition for single or multi-column keys
-                        join_conditions = [
-                            self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
-                            for fk, pk in zip(jp.from_columns, jp.to_columns)
-                        ]
-                        join_cond = " AND ".join(join_conditions)
-
-                        # Use INNER JOIN if this model has filters applied, otherwise LEFT JOIN
-                        join_type = "inner" if jp.to_model in models_with_filters else "left"
-                        query = query.join(right_table, on=join_cond, join_type=join_type)
-                        joined_models.add(jp.to_model)
+        query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
 
         # Separate filters into WHERE (dimension/row-level) and HAVING (metric/aggregation-level)
         # Note: metric-level filters (Metric.filters) are applied via CASE WHEN inside each
         # metric's aggregation, NOT in the WHERE clause. This ensures each metric's filter
         # only affects that specific metric, not all metrics in the query.
-        where_filters = []
-        having_filters = []
-
+        where_filters, having_filters = self._split_where_having_filters(
+            filters or [], [base_model_name] + other_models
+        )
         import re
 
-        # Process query-level filters
-        for filter_expr in filters or []:
-            # Determine if this filter references a metric or dimension
-            references_metric = False
-
-            for model_name in [base_model_name] + other_models:
-                model_obj = self.graph.get_model(model_name)
-                # Check if filter contains model.metric_name
-                pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
-                matches = re.findall(pattern, filter_expr)
-                for field_name in matches:
-                    if model_obj.get_metric(field_name):
-                        references_metric = True
-                        break
-                if references_metric:
-                    break
-
-            # Check if filter also references a window dimension.
-            # Window dims are projected as regular columns in the CTE, so
-            # they belong in WHERE, not HAVING (they aren't aggregated).
-            references_window_dim = False
-            if references_metric:
-                for model_name in [base_model_name] + other_models:
-                    model_obj = self.graph.get_model(model_name)
-                    if not model_obj:
-                        continue
-                    for field_name in re.findall(f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)", filter_expr):
-                        dim = model_obj.get_dimension(field_name)
-                        if dim and getattr(dim, "window", None) is not None:
-                            references_window_dim = True
-                            break
-                    if references_window_dim:
-                        break
-
-            if references_metric and not references_window_dim:
-                having_filters.append(filter_expr)
-            else:
-                where_filters.append(filter_expr)
-
         # Add WHERE clause (dimension filters only - metric-level filters are in CASE WHEN)
-        if where_filters:
-            # Parse filters to add table aliases and handle measure vs dimension columns
-            for filter_expr in where_filters:
-                parsed_filter = filter_expr
-                for model_name in [base_model_name] + other_models:
-                    # Replace model.field references
-                    # Check if field is a measure (needs _raw suffix) or dimension
-                    model_obj = self.graph.get_model(model_name)
-
-                    # Split by quotes to avoid replacing inside string literals
-                    parts = []
-                    in_quotes = False
-                    current = ""
-
-                    for char in parsed_filter:
-                        if char == "'":
-                            if current:
-                                parts.append((current, in_quotes))
-                                current = ""
-                            in_quotes = not in_quotes
-                            parts.append(("'", False))
-                        else:
-                            current += char
-                    if current:
-                        parts.append((current, in_quotes))
-
-                    # Only replace in non-quoted parts
-                    pattern = f"{model_name}\\.([a-zA-Z_][a-zA-Z0-9_]*)"
-
-                    def replace_field(match):
-                        field_name = match.group(1)
-                        # Check if it's a measure
-                        if model_obj.get_metric(field_name):
-                            return self._cte_ref(model_name, f"{field_name}_raw")
-                        else:
-                            # It's a dimension or other column
-                            return self._cte_ref(model_name, field_name)
-
-                    result_parts = []
-                    for part, is_quoted in parts:
-                        if is_quoted or part == "'":
-                            result_parts.append(part)
-                        else:
-                            result_parts.append(re.sub(pattern, replace_field, part))
-
-                    parsed_filter = "".join(result_parts)
-
-                query = query.where(parsed_filter)
+        query = self._add_where_filters_to_query(query, where_filters, [base_model_name] + other_models)
 
         # Add GROUP BY (all dimensions by position)
         # Skip GROUP BY for ungrouped queries
@@ -2077,21 +2495,28 @@ class SQLGenerator:
 
         # Add ORDER BY
         if order_by:
-            # Strip model prefixes from order_by fields to use column aliases
             order_by_aliases = []
             for field in order_by:
-                if "." in field:
-                    # Extract just the field name (with optional granularity)
-                    field_alias = field.split(".", 1)[1]
+                parts = field.rsplit(" ", 1)
+                direction = ""
+                field_ref = field
+                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
+                    field_ref = parts[0]
+                    direction = f" {parts[1].upper()}"
+
+                if field_ref in output_aliases:
+                    field_alias = self._quote_alias(output_aliases[field_ref])
+                elif "." in field_ref:
+                    field_alias = field_ref.split(".", 1)[1]
                 else:
-                    field_alias = field
-                order_by_aliases.append(field_alias)
+                    field_alias = field_ref
+                order_by_aliases.append(f"{field_alias}{direction}")
             query = query.order_by(*order_by_aliases)
 
         # Add LIMIT and OFFSET
-        if limit:
+        if limit is not None:
             query = query.limit(limit)
-        if offset:
+        if offset is not None:
             query = query.offset(offset)
 
         return query.sql(dialect=self.dialect, pretty=True)
@@ -2210,7 +2635,7 @@ class SQLGenerator:
         Returns:
             SQL aggregation expression string
         """
-        agg_func = measure.agg.upper()
+        agg_func = self._agg_sql_name(measure.agg)
         raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
 
         # Simple aggregation - filters are already applied in CTE's raw column
@@ -2225,17 +2650,115 @@ class SQLGenerator:
 
     def _ensure_sql_dimension(self, model_name: str, dimension) -> None:
         if getattr(dimension, "has_untranslated_dax", False):
-            raise ValueError(
+            raise QueryValidationError(
                 f"Dimension '{model_name}.{dimension.name}' contains DAX expression but has no SQL translation. "
                 "DAX lowering is not available in this build."
             )
 
     def _ensure_sql_model(self, model_name: str, model) -> None:
         if getattr(model, "has_untranslated_dax", False):
-            raise ValueError(
+            raise QueryValidationError(
                 f"Model '{model_name}' contains DAX table expression but has no SQL/table translation. "
                 "DAX table lowering is not available in this build."
             )
+
+    def _build_measure_window_total_sql(self, model_name: str, measure) -> str:
+        """Build an all-rows window aggregate for a model-scoped measure."""
+        agg_func = measure.agg.upper()
+        raw_col = self._cte_ref(model_name, f"{measure.name}_raw")
+
+        if agg_func == "COUNT_DISTINCT":
+            return self._build_bsl_count_distinct_total_sql(model_name, measure)
+        if agg_func == "COUNT":
+            return f"SUM(COUNT({raw_col})) OVER ()"
+        if agg_func == "SUM":
+            return f"SUM(SUM({raw_col})) OVER ()"
+        if agg_func == "AVG":
+            return f"(SUM(SUM({raw_col})) OVER ()) / NULLIF(SUM(COUNT({raw_col})) OVER (), 0)"
+        if agg_func == "MIN":
+            return f"MIN(MIN({raw_col})) OVER ()"
+        if agg_func == "MAX":
+            return f"MAX(MAX({raw_col})) OVER ()"
+        return f"SUM({self._build_measure_aggregation_sql(model_name, measure)}) OVER ()"
+
+    def _build_measure_total_subquery_sql(self, model_name: str, measure) -> str:
+        """Build a scalar all-rows aggregate from the model CTE."""
+        cte_name = self._quote_identifier(self._cte_name(model_name))
+        cte_alias = self._quote_identifier(f"{self._cte_name(model_name)}__all")
+        raw_col = f"{cte_alias}.{self._quote_identifier(f'{measure.name}_raw')}"
+        agg_func = measure.agg.upper()
+
+        if agg_func == "COUNT_DISTINCT":
+            expr = f"COUNT(DISTINCT {raw_col})"
+        else:
+            expr = self._build_measure_aggregation_sql(model_name, measure)
+            expr = expr.replace(self._cte_ref(model_name, f"{measure.name}_raw"), raw_col)
+
+        return f"(SELECT {expr} FROM {cte_name} AS {cte_alias})"
+
+    def _build_bsl_count_distinct_total_sql(self, model_name: str, measure) -> str:
+        """Build BSL _.all() SQL for a count-distinct measure."""
+        context = getattr(self, "_bsl_all_query_context", None)
+        if not context:
+            return self._build_measure_total_subquery_sql(model_name, measure)
+
+        base_model_name = context["base_model_name"]
+        other_models = context["other_models"]
+        models_with_filters = context["models_with_filters"]
+        filters = context["filters"]
+        query_model_names = [base_model_name] + other_models
+
+        if model_name not in query_model_names:
+            return self._build_measure_total_subquery_sql(model_name, measure)
+
+        query = select(f"COUNT(DISTINCT {self._cte_ref(model_name, f'{measure.name}_raw')})").from_(
+            self._quote_identifier(self._cte_name(base_model_name))
+        )
+        query = self._add_join_paths_to_query(query, base_model_name, other_models, models_with_filters)
+        where_filters, _ = self._split_where_having_filters(filters, query_model_names)
+        query = self._add_where_filters_to_query(query, where_filters, query_model_names)
+
+        return f"({query.sql(dialect=self.dialect, pretty=True)})"
+
+    def _extract_bsl_all_placeholders(self, formula: str) -> tuple[str, dict[str, str]]:
+        """Replace BSL all-measure calls with placeholders before dependency replacement."""
+        import re
+
+        placeholders: dict[str, str] = {}
+
+        def replace(match) -> str:
+            placeholder = f"__bsl_all_{len(placeholders)}"
+            placeholders[placeholder] = match.group(1).strip()
+            return placeholder
+
+        formula = re.sub(r"__bsl_all\(([A-Za-z_][A-Za-z0-9_.]*)\)", replace, formula)
+        return formula, placeholders
+
+    def _build_bsl_all_sql(self, metric_ref: str, model_context: str | None) -> str:
+        """Resolve BSL _.all(metric) to a window total over the metric aggregate."""
+        model_name = None
+        measure_name = metric_ref
+
+        if "." in metric_ref:
+            model_name, measure_name = metric_ref.split(".", 1)
+        elif model_context:
+            model_name = model_context
+        else:
+            for candidate_name, candidate_model in self.graph.models.items():
+                if candidate_model.get_metric(metric_ref):
+                    model_name = candidate_name
+                    break
+
+        if not model_name:
+            raise ValueError(f"Metric {metric_ref} not found")
+
+        model = self.graph.get_model(model_name)
+        measure = model.get_metric(measure_name)
+        if not measure:
+            raise ValueError(f"Metric {metric_ref} not found")
+        if not measure.agg:
+            return f"SUM({self._build_metric_sql(measure, model_name)}) OVER ()"
+        return self._build_measure_window_total_sql(model_name, measure)
 
     def _build_metric_sql(self, metric, model_context: str | None = None) -> str:
         """Build SQL expression for a metric.
@@ -2248,7 +2771,7 @@ class SQLGenerator:
             SQL expression string
         """
         if getattr(metric, "has_untranslated_dax", False):
-            raise ValueError(
+            raise QueryValidationError(
                 f"Metric '{metric.name}' contains DAX expression but has no SQL translation. "
                 "DAX lowering is not available in this build."
             )
@@ -2259,22 +2782,7 @@ class SQLGenerator:
                 raise ValueError(f"Ratio metric {metric.name} requires numerator and denominator")
 
             def resolve_ratio_ref(ref: str) -> str:
-                # First try model-scoped references (qualified or model_context-qualified).
-                if "." in ref:
-                    ref_model, ref_name = ref.split(".", 1)
-                    try:
-                        ref_model_obj = self.graph.get_model(ref_model)
-                    except KeyError:
-                        ref_model_obj = None
-
-                    if ref_model_obj:
-                        ref_metric = ref_model_obj.get_metric(ref_name)
-                        if ref_metric:
-                            if ref_metric.agg:
-                                return self._build_measure_aggregation_sql(ref_model, ref_metric)
-                            return self._build_metric_sql(ref_metric, ref_model)
-
-                elif model_context:
+                if "." not in ref and model_context:
                     try:
                         context_model = self.graph.get_model(model_context)
                     except KeyError:
@@ -2287,11 +2795,15 @@ class SQLGenerator:
                                 return self._build_measure_aggregation_sql(model_context, ref_metric)
                             return self._build_metric_sql(ref_metric, model_context)
 
-                # Fallback to graph-level metrics (including dotted metric names).
                 try:
-                    ref_metric = self.graph.get_metric(ref)
+                    ref_model, ref_metric = self.graph.resolve_metric_reference(ref)
                 except KeyError as exc:
                     raise ValueError(f"Metric {ref} not found") from exc
+
+                if ref_model:
+                    if ref_metric.agg:
+                        return self._build_measure_aggregation_sql(ref_model, ref_metric)
+                    return self._build_metric_sql(ref_metric, ref_model)
 
                 return self._build_metric_sql(ref_metric, model_context)
 
@@ -2313,7 +2825,7 @@ class SQLGenerator:
                 return f"COUNT({inner_expr})"
             if metric.agg == "count_distinct":
                 return f"COUNT(DISTINCT {inner_expr})"
-            return f"{metric.agg.upper()}({inner_expr})"
+            return f"{self._agg_sql_name(metric.agg)}({inner_expr})"
 
         elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
             # Parse formula and replace metric references (handles both typed "derived" and untyped metrics with sql)
@@ -2321,6 +2833,7 @@ class SQLGenerator:
                 raise ValueError(f"Derived metric {metric.name} missing sql")
 
             formula = metric.sql
+            formula, bsl_all_placeholders = self._extract_bsl_all_placeholders(formula)
 
             # Check if this is a SQL expression metric (has inline aggregations)
             # These metrics already contain complete SQL and shouldn't have dependencies replaced
@@ -2372,20 +2885,20 @@ class SQLGenerator:
 
             # Replace each metric reference with its SQL expression
             for metric_name in sorted_deps:
-                # Check if it's a measure reference (model.measure) first
-                if "." in metric_name:
-                    model_name, measure_name = metric_name.split(".")
-                    model = self.graph.get_model(model_name)
-                    measure = model.get_metric(measure_name)
+                try:
+                    ref_model_name, ref_metric = self.graph.resolve_metric_reference(metric_name)
+                except KeyError:
+                    ref_model_name = None
+                    ref_metric = None
 
-                    if measure:
-                        if measure.agg:
-                            # Use helper that applies metric-level filters
-                            metric_sql = self._build_measure_aggregation_sql(model_name, measure)
-                        else:
-                            metric_sql = self._build_metric_sql(measure, model_name)
+                if ref_metric and ref_model_name:
+                    if ref_metric.agg:
+                        # Use helper that applies metric-level filters
+                        metric_sql = self._build_measure_aggregation_sql(ref_model_name, ref_metric)
                     else:
-                        raise ValueError(f"Measure {metric_name} not found")
+                        metric_sql = self._build_metric_sql(ref_metric, ref_model_name)
+                elif ref_metric:
+                    metric_sql = self._build_metric_sql(ref_metric, model_context)
                 else:
                     # Try as graph-level metric
                     try:
@@ -2399,23 +2912,28 @@ class SQLGenerator:
                 # Use regex to only replace whole word matches
                 import re
 
-                # For qualified names (model.measure), also match unqualified version (measure)
+                # For qualified names (model.measure), preserve explicit qualification.
                 if "." in metric_name:
                     # Split into model and measure parts
                     parts = metric_name.split(".")
                     measure_only = parts[1]
 
-                    # First try to replace qualified form if present
+                    # First try to replace qualified form if present.
                     pattern = r"\b" + re.escape(metric_name).replace(r"\.", r"\.") + r"\b"
-                    formula = re.sub(pattern, f"({metric_sql})", formula)
-
-                    # Then also replace unqualified form (measure name only)
-                    pattern = r"\b" + re.escape(measure_only) + r"\b"
-                    formula = re.sub(pattern, f"({metric_sql})", formula)
+                    if re.search(pattern, formula):
+                        formula = re.sub(pattern, f"({metric_sql})", formula)
+                    else:
+                        # If the dependency resolved from an unqualified reference
+                        # (e.g. count -> orders.count), replace only bare refs.
+                        pattern = r"(?<!\.)\b" + re.escape(measure_only) + r"\b"
+                        formula = re.sub(pattern, f"({metric_sql})", formula)
                 else:
                     # For simple names, use word boundaries
-                    pattern = r"\b" + re.escape(metric_name) + r"\b"
+                    pattern = r"(?<!\.)\b" + re.escape(metric_name) + r"\b"
                     formula = re.sub(pattern, f"({metric_sql})", formula)
+
+            for placeholder, metric_ref in bsl_all_placeholders.items():
+                formula = formula.replace(placeholder, f"({self._build_bsl_all_sql(metric_ref, model_context)})")
 
             return formula
 
@@ -2526,10 +3044,7 @@ class SQLGenerator:
             raise ValueError(f"Invalid entity identifier: {metric.entity}")
 
         # Build FROM clause
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Resolve entity SQL expression -- it might be a dimension name
         entity_sql = metric.entity
@@ -2599,7 +3114,7 @@ class SQLGenerator:
         inner_metric_selects = []
         for im in metric.inner_metrics:
             im_name = im["name"]
-            im_agg = im.get("agg", "count").upper()
+            im_agg = self._agg_sql_name(im.get("agg", "count"))
             im_sql = im.get("sql")
 
             if im_sql:
@@ -2627,7 +3142,7 @@ class SQLGenerator:
         having_clause = _replace_model_placeholder(metric.having)
 
         # Build outer query
-        outer_agg = metric.agg.upper()
+        outer_agg = self._agg_sql_name(metric.agg)
         outer_sql = metric.sql
         if outer_sql:
             # Outer SQL references columns from the inner subquery (aliased as
@@ -2852,10 +3367,7 @@ FROM (
         ts_sql = _replace_model_placeholder(timestamp_dim.sql_expr)
 
         # Build FROM clause
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Build granularity-specific date truncation and date diff (dialect-aware)
         if granularity == "day":
@@ -3055,10 +3567,7 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
             raise ValueError("Conversion metrics require event_type and timestamp dimensions")
 
         # Build FROM clause - handle both SQL and table-backed models
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Normalize filters: strip model name prefixes and resolve dimension names
         normalized_filters = self._strip_model_prefixes(filters or [], model.name)
@@ -3235,10 +3744,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         ts_sql_raw = timestamp_dim.sql_expr
 
         # Build FROM clause
-        if model.sql:
-            from_clause = f"({model.sql}) AS t"
-        else:
-            from_clause = model.table
+        from_clause = self._model_from_clause(model)
 
         # Normalize SQL expressions for use inside subqueries.
         # Expressions may contain {model} placeholders (e.g. "{model}.created_at")
@@ -3452,6 +3958,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         limit: int | None = None,
         offset: int | None = None,
         aliases: dict[str, str] | None = None,
+        use_preaggregations: bool = False,
     ) -> str:
         """Generate SQL with window functions for cumulative metrics.
 
@@ -3466,6 +3973,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             order_by: List of fields to order by
             limit: Maximum number of rows to return
             aliases: Custom aliases for fields (dict mapping field reference to alias)
+            use_preaggregations: Try materialized pre-aggregation routing for the inner base query
 
         Returns:
             SQL query string
@@ -3730,6 +4238,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             filters=filters,
             order_by=None,  # Apply ordering in outer query
             limit=None,  # Apply limit in outer query
+            use_preaggregations=use_preaggregations,
         )
 
         # Parse dimensions for outer SELECT
@@ -3911,17 +4420,14 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                         pass
 
                 if base_metric and base_metric.sql:
-                    # Use the underlying measure name
-                    if "." in base_metric.sql:
-                        base_alias = base_metric.sql.split(".")[1]
-                    else:
-                        base_alias = base_metric.sql
+                    # Window over the base query's metric alias, not the raw column behind that metric.
+                    base_alias = base_metric.name
                 else:
                     # Fallback to the metric name itself
                     base_alias = base_ref
 
             # Determine aggregation function (default to SUM for backwards compatibility)
-            agg_func = (metric.agg or "sum").upper()
+            agg_func = self._agg_sql_name(metric.agg or "sum")
             if agg_func == "COUNT_DISTINCT":
                 agg_func = "COUNT"
                 base_col = f"DISTINCT base.{base_alias}"
@@ -4192,12 +4698,390 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             outer_query += f"\nORDER BY {', '.join(order_clauses)}"
 
         # Add LIMIT and OFFSET if specified
-        if limit:
+        if limit is not None:
             outer_query += f"\nLIMIT {limit}"
-        if offset:
+        if offset is not None:
             outer_query += f"\nOFFSET {offset}"
 
         return outer_query
+
+    def _split_preaggregation_filters(self, model, filters: list[str]) -> tuple[list[str], list[str]]:
+        row_filters: list[str] = []
+        aggregate_filters: list[str] = []
+        for filter_expr in filters:
+            if self._filter_references_model_metric(model, filter_expr):
+                aggregate_filters.append(filter_expr)
+            else:
+                row_filters.append(filter_expr)
+        return row_filters, aggregate_filters
+
+    def _filter_references_model_metric(self, model, filter_expr: str) -> bool:
+        try:
+            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+        except Exception:
+            return False
+
+        for column in parsed.find_all(exp.Column):
+            table_name = column.table.replace("_cte", "") if column.table else None
+            field_name = column.name.rsplit("__", 1)[0] if "__" in column.name else column.name
+            if table_name and table_name != model.name:
+                continue
+            if model.get_metric(field_name):
+                return True
+        return False
+
+    def _preaggregation_metric_expression(self, model, preagg, metric_name: str) -> str:
+        metric = model.get_metric(metric_name)
+        raw_col = f"{metric_name}_raw"
+        if not metric:
+            return raw_col
+        if metric.type == "ratio":
+            numerator = self._preaggregation_metric_expression(model, preagg, (metric.numerator or "").split(".")[-1])
+            denominator = self._preaggregation_metric_expression(
+                model,
+                preagg,
+                (metric.denominator or "").split(".")[-1],
+            )
+            return f"{numerator} / NULLIF({denominator}, 0)"
+        if metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
+            return self._preaggregation_derived_metric_expression(model, preagg, metric)
+        if metric.agg in {"sum", "count"}:
+            return f"SUM({raw_col})"
+        if metric.agg == "avg":
+            matcher = PreAggregationMatcher(model)
+            count_measure = matcher._find_count_measure_for_avg(metric, preagg.measures or []) or "count"
+            return f"SUM({raw_col}) / NULLIF(SUM({count_measure}_raw), 0)"
+        if metric.agg in {"min", "max"}:
+            return f"{metric.agg.upper()}({raw_col})"
+        return f"SUM({raw_col})"
+
+    def _preaggregation_derived_metric_expression(self, model, preagg, metric) -> str:
+        if not metric.sql:
+            return f"SUM({metric.name}_raw)"
+        try:
+            expression = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+        except Exception:
+            return metric.sql
+
+        def replace_column(node):
+            if not isinstance(node, exp.Column):
+                return node
+            field_name = node.name
+            if model.get_metric(field_name):
+                return sqlglot.parse_one(
+                    self._preaggregation_metric_expression(model, preagg, field_name),
+                    dialect=self.dialect,
+                )
+            return node
+
+        return expression.transform(replace_column).sql(dialect=self.dialect)
+
+    def _rewrite_preaggregation_aggregate_filter(self, model, preagg, filter_expr: str) -> str:
+        try:
+            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+        except Exception:
+            return filter_expr.replace(f"{model.name}_cte.", "").replace(f"{model.name}.", "")
+
+        def replace_column(node):
+            if not isinstance(node, exp.Column):
+                return node
+
+            table_name = node.table.replace("_cte", "") if node.table else None
+            if table_name and table_name != model.name:
+                return node
+
+            field_name = node.name.rsplit("__", 1)[0] if "__" in node.name else node.name
+            if model.get_metric(field_name):
+                return sqlglot.parse_one(
+                    self._preaggregation_metric_expression(model, preagg, field_name),
+                    dialect=self.dialect,
+                )
+
+            if preagg.time_dimension and preagg.granularity and field_name == preagg.time_dimension:
+                return exp.column(f"{preagg.time_dimension}_{preagg.granularity}")
+            return exp.column(node.name)
+
+        return parsed.transform(replace_column).sql(dialect=self.dialect)
+
+    def explain_join_key_preaggregation(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        route, reason = self._join_key_preaggregation_route(metrics, dimensions, filters or [], aliases or {})
+        if route is None:
+            return {"eligible": False, "reason": reason}
+
+        preagg = route["preagg"]
+        join_path = route["join_path"]
+        return {
+            "eligible": True,
+            "reason": "matching_join_key_preaggregation",
+            "model": route["metric_model_name"],
+            "remote_model": route["remote_model_name"],
+            "preaggregation": preagg.name,
+            "preaggregation_dimensions": route["preaggregation_dimensions"],
+            "join_keys": [
+                {
+                    "from_model": hop.from_model,
+                    "to_model": hop.to_model,
+                    "from_columns": hop.from_columns,
+                    "to_columns": hop.to_columns,
+                    "relationship": hop.relationship,
+                }
+                for hop in join_path
+            ],
+        }
+
+    def _try_use_join_key_preaggregation(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        filters: list[str] | None = None,
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> str | None:
+        route, _reason = self._join_key_preaggregation_route(metrics, dimensions, filters or [], aliases or {})
+        if route is None:
+            return None
+        return self._generate_join_key_preaggregation(
+            route=route,
+            metrics=metrics,
+            dimensions=dimensions,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            aliases=aliases or {},
+        )
+
+    def _join_key_preaggregation_route(
+        self,
+        metrics: list[str],
+        dimensions: list[str],
+        filters: list[str],
+        aliases: dict[str, str],
+    ) -> tuple[dict[str, object] | None, str]:
+        if filters:
+            return None, "filters_not_supported"
+
+        metric_models = []
+        metric_names = []
+        for metric_ref in metrics:
+            if "." not in metric_ref:
+                return None, "graph_metrics_not_supported"
+            model_name, metric_name = metric_ref.split(".", 1)
+            if model_name not in metric_models:
+                metric_models.append(model_name)
+            metric_names.append(metric_name)
+
+        if len(metric_models) != 1:
+            return None, "not_single_metric_model_query"
+        if not dimensions:
+            return None, "no_remote_dimensions"
+
+        metric_model_name = metric_models[0]
+        metric_model = self.graph.get_model(metric_model_name)
+        if not metric_model.pre_aggregations:
+            return None, "model_has_no_preaggregations"
+
+        parsed_dims = self._parse_dimension_refs(dimensions)
+        local_preagg_dimensions: list[str] = []
+        local_time_granularity: str | None = None
+        remote_model_name: str | None = None
+        join_path = None
+        remote_dimensions: list[tuple[str, str | None]] = []
+        join_keys: list[str] = []
+
+        for dim_ref, granularity in parsed_dims:
+            if "." not in dim_ref:
+                return None, "unqualified_dimensions_not_supported"
+            dim_model_name, dim_name = dim_ref.split(".", 1)
+            if dim_model_name == metric_model_name:
+                local_preagg_dimensions.append(dim_name)
+                dimension = metric_model.get_dimension(dim_name)
+                if dimension and dimension.type == "time":
+                    effective_granularity = granularity or dimension.granularity
+                    if local_time_granularity and local_time_granularity != effective_granularity:
+                        return None, "multiple_local_time_granularities_not_supported"
+                    local_time_granularity = effective_granularity
+                continue
+
+            try:
+                path = self.graph.find_relationship_path(metric_model_name, dim_model_name)
+            except (KeyError, ValueError):
+                return None, "remote_dimension_not_reachable"
+
+            if len(path) != 1:
+                return None, "multi_hop_remote_dimension_not_supported"
+            if path[0].relationship != "many_to_one":
+                return None, "remote_dimension_not_many_to_one"
+            if remote_model_name and remote_model_name != dim_model_name:
+                return None, "multiple_remote_models_not_supported"
+
+            remote_model_name = dim_model_name
+            join_path = path
+            remote_dimensions.append((dim_ref, granularity))
+            for join_key in path[0].from_columns:
+                if join_key not in join_keys:
+                    join_keys.append(join_key)
+
+        if not remote_model_name or not join_path:
+            return None, "no_remote_dimensions"
+
+        preaggregation_dimensions = [*local_preagg_dimensions, *join_keys]
+        matcher = PreAggregationMatcher(metric_model)
+        preagg = matcher.find_matching_preagg(
+            metrics=metric_names,
+            dimensions=preaggregation_dimensions,
+            time_granularity=local_time_granularity,
+            filters=[],
+        )
+        if not preagg:
+            return None, "missing_join_key_preaggregation"
+
+        return (
+            {
+                "metric_model_name": metric_model_name,
+                "metric_model": metric_model,
+                "remote_model_name": remote_model_name,
+                "remote_model": self.graph.get_model(remote_model_name),
+                "join_path": join_path,
+                "preagg": preagg,
+                "parsed_dims": parsed_dims,
+                "remote_dimensions": remote_dimensions,
+                "preaggregation_dimensions": preaggregation_dimensions,
+                "aliases": aliases,
+            },
+            "matching_join_key_preaggregation",
+        )
+
+    def _generate_join_key_preaggregation(
+        self,
+        route: dict[str, object],
+        metrics: list[str],
+        dimensions: list[str],
+        order_by: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> str:
+        aliases = aliases or {}
+        metric_model = route["metric_model"]
+        metric_model_name = route["metric_model_name"]
+        remote_model = route["remote_model"]
+        remote_model_name = route["remote_model_name"]
+        preagg = route["preagg"]
+        join_path = route["join_path"]
+        parsed_dims = route["parsed_dims"]
+
+        rollup_alias = f"{metric_model_name}_rollup"
+        remote_alias = remote_model_name
+        preagg_table = preagg.get_table_name(
+            metric_model.name,
+            database=self.preagg_database,
+            schema=self.preagg_schema,
+        )
+
+        select_exprs: list[str] = []
+        output_names: dict[str, str] = {}
+
+        def register_output_name(output_name: str, *refs: str) -> None:
+            for ref in refs:
+                if ref:
+                    output_names[ref] = output_name
+
+        def dimension_output_name(dim_ref: str, dim_name: str, granularity: str | None) -> str:
+            full_ref = f"{dim_ref}__{granularity}" if granularity else dim_ref
+            default = f"{dim_name}__{granularity}" if granularity else dim_name
+            return aliases.get(full_ref) or aliases.get(dim_ref) or default
+
+        for dim_ref, granularity in parsed_dims:
+            dim_model_name, dim_name = dim_ref.split(".", 1)
+            output_name = dimension_output_name(dim_ref, dim_name, granularity)
+            full_ref = f"{dim_ref}__{granularity}" if granularity else dim_ref
+            default_name = f"{dim_name}__{granularity}" if granularity else dim_name
+            register_output_name(output_name, full_ref, dim_ref, dim_name, default_name, output_name)
+
+            if dim_model_name == metric_model_name:
+                column_name = dim_name
+                if preagg.time_dimension == dim_name and preagg.granularity:
+                    column_name = f"{dim_name}_{preagg.granularity}"
+                column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
+            else:
+                dimension = remote_model.get_dimension(dim_name)
+                dimension_sql = dimension.sql if dimension and dimension.sql else dim_name
+                column_expr = self._qualify_model_expression(dimension_sql, remote_model_name, remote_alias)
+
+            if granularity:
+                column_expr = self._date_trunc(granularity, column_expr)
+            select_exprs.append(f"{column_expr} AS {self._quote_alias(output_name)}")
+
+        for metric_ref in metrics:
+            _model_name, metric_name = metric_ref.split(".", 1)
+            output_name = aliases.get(metric_ref) or metric_name
+            register_output_name(output_name, metric_ref, metric_name, output_name)
+            metric_expr = self._preaggregation_metric_expression(metric_model, preagg, metric_name)
+            metric_expr = self._qualify_model_expression(metric_expr, metric_model_name, rollup_alias)
+            select_exprs.append(f"{metric_expr} AS {self._quote_alias(output_name)}")
+
+        hop = join_path[0]
+        join_conditions = [
+            f"{rollup_alias}.{self._quote_identifier(from_column)} = {remote_alias}.{self._quote_identifier(to_column)}"
+            for from_column, to_column in zip(hop.from_columns, hop.to_columns)
+        ]
+
+        group_by_clause = ""
+        if parsed_dims:
+            group_by_clause = "\nGROUP BY " + ", ".join(str(i) for i in range(1, len(parsed_dims) + 1))
+
+        order_by_clause = ""
+        if order_by:
+            order_clauses = []
+            for field in order_by:
+                parts = field.rsplit(" ", 1)
+                direction = ""
+                field_ref = field
+                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
+                    field_ref = parts[0]
+                    direction = f" {parts[1].upper()}"
+                field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
+                output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
+            order_by_clause = "\nORDER BY " + ", ".join(order_clauses)
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"\nLIMIT {limit}"
+        if offset is not None:
+            limit_clause += f"\nOFFSET {offset}"
+
+        select_exprs_str = ",\n  ".join(select_exprs)
+        remote_source = self._model_source_as(remote_model, remote_alias)
+        return f"""SELECT
+  {select_exprs_str}
+FROM {remote_source}
+LEFT JOIN {preagg_table} AS {rollup_alias}
+  ON {" AND ".join(join_conditions)}{group_by_clause}{order_by_clause}{limit_clause}"""
+
+    def _qualify_model_expression(self, expression_sql: str, model_name: str, alias: str) -> str:
+        expression_sql = expression_sql.replace("{model}", alias)
+        try:
+            expression = sqlglot.parse_one(expression_sql, dialect=self.dialect)
+        except Exception:
+            if self._is_simple_identifier(expression_sql):
+                return f"{alias}.{self._quote_identifier(expression_sql)}"
+            return expression_sql
+
+        for column in expression.find_all(exp.Column):
+            if not column.table:
+                column.set("table", exp.to_identifier(alias))
+            elif column.table == model_name:
+                column.set("table", exp.to_identifier(alias))
+        return expression.sql(dialect=self.dialect)
 
     def _try_use_preaggregation(
         self,
@@ -4208,6 +5092,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         order_by: list[str] | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        aliases: dict[str, str] | None = None,
     ) -> str | None:
         """Try to generate query using a pre-aggregation.
 
@@ -4253,11 +5138,14 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 metric_name = m
             metric_names.append(metric_name)
 
-        # Try to find matching pre-aggregation
-        # Need to extract filter column names (without model prefix) for compatibility checking
+        row_filters, aggregate_filters = self._split_preaggregation_filters(model, filters or [])
+
+        # Try to find matching pre-aggregation. Only row-stage filters constrain
+        # matching dimensions; aggregate-stage metric filters are rendered as
+        # HAVING over derivable rollup measures.
         filter_exprs = []
-        if filters:
-            for f in filters:
+        if row_filters:
+            for f in row_filters:
                 # Strip model prefix for filter compatibility check
                 # e.g., "orders.status = 'completed'" -> "status = 'completed'"
                 filter_expr = f.replace(f"{model_name}.", "").replace(f"{model_name}_cte.", "")
@@ -4280,10 +5168,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             preagg=preagg,
             metrics=metrics,
             parsed_dims=parsed_dims,
-            filters=filters,
+            filters=row_filters,
+            aggregate_filters=aggregate_filters,
             order_by=order_by,
             limit=limit,
             offset=offset,
+            aliases=aliases,
         )
 
     def _generate_from_preaggregation(
@@ -4293,9 +5183,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         metrics: list[str],
         parsed_dims: list[tuple[str, str | None]],
         filters: list[str] | None = None,
+        aggregate_filters: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        aliases: dict[str, str] | None = None,
     ) -> str:
         """Generate SQL query from a pre-aggregation.
 
@@ -4304,7 +5196,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             preagg: The pre-aggregation to use
             metrics: List of metric references
             parsed_dims: Parsed dimension references with granularities
-            filters: List of filter expressions
+            filters: List of row-stage filter expressions
+            aggregate_filters: List of metric-stage filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows
             offset: Number of rows to skip
@@ -4312,10 +5205,32 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         Returns:
             SQL query string
         """
+        aliases = aliases or {}
         preagg_table = preagg.get_table_name(model.name, database=self.preagg_database, schema=self.preagg_schema)
 
         # Build SELECT clause
         select_exprs = []
+        output_names: dict[str, str] = {}
+
+        def register_output_name(output_name: str, *refs: str) -> None:
+            for ref in refs:
+                if ref:
+                    output_names[ref] = output_name
+
+        def dimension_output_name(dim_ref: str, dim_name: str, gran: str | None) -> str:
+            if gran:
+                full_ref = f"{dim_ref}__{gran}"
+                default = f"{dim_name}__{gran}"
+            else:
+                full_ref = dim_ref
+                default = dim_name
+
+            canonical_ref = full_ref if "." in full_ref else f"{model.name}.{full_ref}"
+            return aliases.get(full_ref) or aliases.get(canonical_ref) or default
+
+        def metric_output_name(metric_ref: str, metric_name: str) -> str:
+            canonical_ref = metric_ref if "." in metric_ref else f"{model.name}.{metric_ref}"
+            return aliases.get(metric_ref) or aliases.get(canonical_ref) or metric_name
 
         # Add dimensions
         for dim_ref, gran in parsed_dims:
@@ -4325,6 +5240,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             else:
                 dim_name = dim_ref
 
+            output_name = dimension_output_name(dim_ref, dim_name, gran)
+            full_ref = f"{dim_ref}__{gran}" if gran else dim_ref
+            canonical_ref = full_ref if "." in full_ref else f"{model.name}.{full_ref}"
+            default_name = f"{dim_name}__{gran}" if gran else dim_name
+            register_output_name(output_name, full_ref, canonical_ref, dim_name, default_name, output_name)
+
             # Check if this is the time dimension and needs granularity conversion
             if gran and preagg.time_dimension == dim_name:
                 # Need to convert from pre-agg granularity to query granularity
@@ -4332,14 +5253,17 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
                 if gran == preagg.granularity:
                     # Exact match - use as is with proper alias
-                    select_exprs.append(f"{preagg_col} as {dim_name}__{gran}")
+                    select_exprs.append(f"{preagg_col} AS {self._quote_alias(output_name)}")
                 else:
                     # Roll up to coarser granularity
                     date_trunc_expr = self._date_trunc(gran, preagg_col)
-                    select_exprs.append(f"{date_trunc_expr} as {dim_name}__{gran}")
+                    select_exprs.append(f"{date_trunc_expr} AS {self._quote_alias(output_name)}")
             else:
                 # Regular dimension - use as is
-                select_exprs.append(f"{dim_name}")
+                if output_name == dim_name:
+                    select_exprs.append(f"{dim_name}")
+                else:
+                    select_exprs.append(f"{dim_name} AS {self._quote_alias(output_name)}")
 
         # Add metrics
         for metric_ref in metrics:
@@ -4353,34 +5277,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if not metric:
                 continue
 
-            # Get the raw column name from pre-agg
-            raw_col = f"{metric_name}_raw"
+            output_name = metric_output_name(metric_ref, metric_name)
+            canonical_ref = metric_ref if "." in metric_ref else f"{model.name}.{metric_ref}"
+            register_output_name(output_name, metric_ref, canonical_ref, metric_name, output_name)
 
-            # Determine aggregation based on metric type
-            if metric.agg == "sum":
-                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
-            elif metric.agg == "count":
-                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
-            elif metric.agg == "avg":
-                # AVG = SUM(sum_raw) / SUM(count_raw)
-                # Need to find the correct count measure from pre-agg
-                from sidemantic.core.preagg_matcher import PreAggregationMatcher
-
-                matcher = PreAggregationMatcher(model)
-                count_measure = matcher._find_count_measure_for_avg(metric, preagg.measures or [])
-
-                if not count_measure:
-                    # Fallback to hard-coded count_raw (old behavior)
-                    count_measure = "count"
-
-                sum_col = f"{metric_name}_raw"
-                count_col = f"{count_measure}_raw"
-                select_exprs.append(f"SUM({sum_col}) / NULLIF(SUM({count_col}), 0) as {metric_name}")
-            elif metric.agg in ["min", "max"]:
-                select_exprs.append(f"{metric.agg.upper()}({raw_col}) as {metric_name}")
-            else:
-                # Default to SUM
-                select_exprs.append(f"SUM({raw_col}) as {metric_name}")
+            metric_expr = self._preaggregation_metric_expression(model, preagg, metric_name)
+            select_exprs.append(f"{metric_expr} AS {self._quote_alias(output_name)}")
 
         # Build FROM clause
         from_clause = preagg_table
@@ -4418,30 +5320,43 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         if group_by_exprs:
             group_by_clause = f"\nGROUP BY {', '.join(group_by_exprs)}"
 
+        # Build HAVING clause for aggregate-stage metric filters
+        having_clause = ""
+        if aggregate_filters:
+            rewritten_having_filters = [
+                self._rewrite_preaggregation_aggregate_filter(model, preagg, f) for f in aggregate_filters
+            ]
+            having_clause = f"\nHAVING {' AND '.join(rewritten_having_filters)}"
+
         # Build ORDER BY clause
         order_by_clause = ""
         if order_by:
             order_clauses = []
             for field in order_by:
-                if "." in field:
-                    field_name = field.split(".", 1)[1]
-                else:
-                    field_name = field
-                order_clauses.append(field_name)
+                parts = field.rsplit(" ", 1)
+                direction = ""
+                field_ref = field
+                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
+                    field_ref = parts[0]
+                    direction = f" {parts[1].upper()}"
+
+                field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
+                output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
             order_by_clause = f"\nORDER BY {', '.join(order_clauses)}"
 
         # Build LIMIT/OFFSET clause
         limit_clause = ""
-        if limit:
+        if limit is not None:
             limit_clause = f"\nLIMIT {limit}"
-        if offset:
+        if offset is not None:
             limit_clause += f"\nOFFSET {offset}"
 
         # Combine into final query
         select_exprs_str = ",\n  ".join(select_exprs)
         query = f"""SELECT
   {select_exprs_str}
-FROM {from_clause}{where_clause}{group_by_clause}{order_by_clause}{limit_clause}"""
+FROM {from_clause}{where_clause}{group_by_clause}{having_clause}{order_by_clause}{limit_clause}"""
 
         return query
 

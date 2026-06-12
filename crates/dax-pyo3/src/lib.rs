@@ -6,7 +6,9 @@ use serde_json::to_value;
 
 fn to_py_object(py: Python<'_>, value: impl serde::Serialize) -> PyResult<PyObject> {
     let json = to_value(value).map_err(|err| PyValueError::new_err(err.to_string()))?;
-    pythonize(py, &json).map_err(|err| PyValueError::new_err(err.to_string()))
+    pythonize(py, &json)
+        .map(|obj| obj.unbind())
+        .map_err(|err| PyValueError::new_err(err.to_string()))
 }
 
 #[pyfunction(name = "parse_expression")]

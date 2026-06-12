@@ -162,6 +162,19 @@ def test_limit(semantic_layer):
     assert len(rows) == 1
 
 
+def test_zero_limit_and_offset_are_preserved(semantic_layer):
+    """Test rewriting query with explicit zero pagination values."""
+    sql = "SELECT orders.revenue, orders.status FROM orders ORDER BY orders.status LIMIT 0 OFFSET 0"
+
+    rewritten = QueryRewriter(semantic_layer.graph).rewrite(sql)
+    assert "\nLIMIT 0" in rewritten
+    assert "\nOFFSET 0" in rewritten
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    assert rows == []
+
+
 def test_join_query(semantic_layer):
     """Test query that requires join."""
     sql = "SELECT orders.revenue, customers.region FROM orders"
@@ -207,24 +220,151 @@ def test_missing_table_prefix(semantic_layer):
     assert len(rows) == 1  # Should aggregate all rows
 
 
-def test_unsupported_aggregation(semantic_layer):
-    """Test error for unsupported aggregation function."""
+def test_ad_hoc_count_aggregation(semantic_layer):
+    """Test ad hoc COUNT aggregation without predefining a metric."""
     sql = "SELECT COUNT(*) FROM orders"
 
-    with pytest.raises(ValueError, match="must be defined as a metric"):
-        semantic_layer.sql(sql)
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert rows[0]["count"] == 3
 
 
-def test_explicit_join_not_supported(semantic_layer):
-    """Test that explicit JOIN syntax is rejected."""
+def test_explicit_join_matching_relationship_supported(semantic_layer):
+    """Test explicit JOIN syntax when it matches a declared relationship."""
     sql = """
         SELECT orders.revenue, customers.region
         FROM orders
         JOIN customers ON orders.customer_id = customers.id
     """
 
-    with pytest.raises(ValueError, match="Explicit JOIN syntax is not supported"):
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 2
+    assert {row["region"] for row in rows} == {"US", "EU"}
+
+
+def test_explicit_join_with_aliases_supported(semantic_layer):
+    """Test explicit JOIN syntax with SQL table aliases."""
+    sql = """
+        SELECT o.revenue, c.region
+        FROM orders AS o
+        JOIN customers AS c ON o.customer_id = c.id
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 2
+    assert {row["region"] for row in rows} == {"US", "EU"}
+
+
+def test_explicit_join_accepts_parenthesized_on_clause(semantic_layer):
+    """Test explicit JOIN validation accepts parenthesized relationship predicates."""
+    sql = """
+        SELECT orders.revenue, customers.region
+        FROM orders
+        JOIN customers ON (orders.customer_id = customers.id)
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 2
+    assert {row["region"] for row in rows} == {"US", "EU"}
+
+
+def test_explicit_inner_join_preserves_existence_filter(semantic_layer):
+    """Test explicit INNER JOIN keeps join-existence semantics."""
+    semantic_layer.conn.execute("INSERT INTO orders VALUES (4, 999, 'orphaned', '2024-01-04', 50.00)")
+
+    sql = """
+        SELECT orders.revenue
+        FROM orders
+        JOIN customers ON orders.customer_id = customers.id
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 450.00
+
+
+def test_explicit_left_join_preserves_base_rows(semantic_layer):
+    """Test explicit LEFT JOIN does not add an existence filter."""
+    semantic_layer.conn.execute("INSERT INTO orders VALUES (4, 999, 'orphaned', '2024-01-04', 50.00)")
+
+    sql = """
+        SELECT orders.revenue
+        FROM orders
+        LEFT JOIN customers ON orders.customer_id = customers.id
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 500.00
+
+
+def test_explicit_join_rejects_unsupported_join_type(semantic_layer):
+    """Test unsupported explicit semantic join types fail clearly."""
+    sql = """
+        SELECT orders.revenue
+        FROM orders
+        RIGHT JOIN customers ON orders.customer_id = customers.id
+    """
+
+    with pytest.raises(ValueError, match="INNER and LEFT"):
         semantic_layer.sql(sql)
+
+
+def test_explicit_join_requires_complete_composite_relationship():
+    """Test explicit JOIN syntax must include all keys for composite relationships."""
+    layer = SemanticLayer(auto_register=False)
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key=["id", "store_id"],
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        relationships=[
+            Relationship(
+                name="order_items",
+                type="one_to_many",
+                foreign_key=["order_id", "store_id"],
+                primary_key=["id", "store_id"],
+            )
+        ],
+    )
+    order_items = Model(
+        name="order_items",
+        table="order_items",
+        primary_key=["order_id", "store_id"],
+        dimensions=[Dimension(name="sku", type="categorical", sql="sku")],
+        metrics=[Metric(name="count", agg="count")],
+    )
+    layer.add_model(orders)
+    layer.add_model(order_items)
+    rewriter = QueryRewriter(layer.graph)
+
+    incomplete_sql = """
+        SELECT orders.revenue, order_items.sku
+        FROM orders
+        JOIN order_items ON orders.id = order_items.order_id
+    """
+    with pytest.raises(ValueError, match="does not match a declared relationship"):
+        rewriter.rewrite(incomplete_sql)
+
+    complete_sql = """
+        SELECT orders.revenue, order_items.sku
+        FROM orders
+        JOIN order_items ON orders.id = order_items.order_id AND orders.store_id = order_items.store_id
+    """
+    rewritten = rewriter.rewrite(complete_sql)
+    assert "order_items" in rewritten
 
 
 def test_rewriter_directly(layer):
@@ -451,6 +591,93 @@ def test_column_alias(semantic_layer):
     assert "order_status" in columns
     assert "revenue" not in columns
     assert "status" not in columns
+
+
+def test_semantic_scalar_expression_over_measures(semantic_layer):
+    """Test scalar SQL expressions over self-aggregating measures."""
+    sql = """
+        SELECT
+            orders.status,
+            orders.revenue / orders.count AS average_order_value
+        FROM orders
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    columns = _columns(result)
+
+    assert "average_order_value" in columns
+    completed = [row for row in rows if row["status"] == "completed"][0]
+    assert completed["average_order_value"] == 125.00
+
+
+def test_semantic_expression_order_by_projection_alias(semantic_layer):
+    """Test expression-mode ORDER BY can reference a SELECT alias."""
+    sql = """
+        SELECT
+            orders.status,
+            orders.revenue / orders.count AS aov
+        FROM orders
+        ORDER BY aov DESC
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert [row["status"] for row in rows] == ["pending", "completed"]
+    assert rows[0]["aov"] == 200.00
+    assert rows[1]["aov"] == 125.00
+
+
+def test_semantic_scalar_function_over_measure(semantic_layer):
+    """Test arbitrary scalar SQL functions over semantic measures."""
+    sql = "SELECT ROUND(orders.revenue / orders.count, 2) AS aov FROM orders"
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["aov"] == 150.00
+
+
+def test_semantic_ad_hoc_aggregate_expression(semantic_layer):
+    """Test ad hoc aggregate expressions without predefining a metric."""
+    sql = "SELECT SUM(orders.amount) AS total_amount FROM orders"
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["total_amount"] == 450.00
+
+
+def test_semantic_ad_hoc_aggregate_expression_with_dimension(semantic_layer):
+    """Test ad hoc aggregate expressions grouped by a semantic dimension."""
+    sql = """
+        SELECT
+            orders.status,
+            SUM(orders.amount) AS total_amount
+        FROM orders
+    """
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 2
+    completed = [row for row in rows if row["status"] == "completed"][0]
+    assert completed["total_amount"] == 250.00
+
+
+def test_semantic_ad_hoc_aggregate_rejects_joined_model_column(semantic_layer):
+    """Test ad hoc aggregates fail early when they target a joined model."""
+    sql = """
+        SELECT SUM(customers.id) AS customer_id_sum
+        FROM orders
+        JOIN customers ON orders.customer_id = customers.id
+    """
+
+    with pytest.raises(ValueError, match="base semantic model"):
+        semantic_layer.sql(sql)
 
 
 def test_graph_level_metrics(semantic_layer):
@@ -1221,6 +1448,26 @@ def test_postprocess_limit_in_outer(semantic_layer):
     assert rows[0]["revenue"] == 250.00
 
 
+def test_postprocess_zero_limit_and_offset_in_outer(semantic_layer):
+    """Test zero pagination in outer query over semantic results."""
+    sql = """
+        SELECT status, revenue
+        FROM (
+            SELECT orders.revenue, orders.status FROM orders
+        ) AS sq
+        ORDER BY revenue DESC
+        LIMIT 0 OFFSET 0
+    """
+
+    rewritten = QueryRewriter(semantic_layer.graph).rewrite(sql)
+    assert "\nLIMIT 0" in rewritten
+    assert "\nOFFSET 0" in rewritten
+
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+    assert rows == []
+
+
 def test_postprocess_cross_model_subquery(semantic_layer):
     """Test post-processing over cross-model semantic subquery."""
     sql = """
@@ -1367,7 +1614,7 @@ def test_dry_run_with_postprocess_subquery(semantic_layer):
 
 
 def test_semantic_root_with_join_subquery_rejected(semantic_layer):
-    """Explicit JOINs on semantic models are rejected even when JOIN has a subquery."""
+    """Explicit JOINs on semantic roots reject arbitrary SQL joins."""
     semantic_layer.conn.execute("""
         CREATE TABLE IF NOT EXISTS lookup AS SELECT 1 AS id, 'x' AS val
     """)
@@ -1376,7 +1623,7 @@ def test_semantic_root_with_join_subquery_rejected(semantic_layer):
         FROM orders
         JOIN (SELECT * FROM lookup) AS lk ON 1 = 1
     """
-    with pytest.raises(ValueError, match="Explicit JOIN syntax is not supported"):
+    with pytest.raises(ValueError, match="only support direct model tables"):
         semantic_layer.sql(sql)
 
 
@@ -1389,6 +1636,23 @@ def test_semantic_root_with_user_cte_preserved(semantic_layer):
         SELECT orders.revenue
         FROM orders
         WHERE orders.status IN (SELECT status FROM allowed_statuses)
+    """
+    result = semantic_layer.sql(sql)
+    rows = _rows(result)
+
+    assert len(rows) == 1
+    assert rows[0]["revenue"] == 250.00
+
+
+def test_semantic_root_allows_unrelated_generated_cte_name(semantic_layer):
+    """User CTE names are rejected only when this query actually generates the same CTE."""
+    sql = """
+        WITH customers_cte AS (
+            SELECT 'completed' AS status
+        )
+        SELECT orders.revenue
+        FROM orders
+        WHERE orders.status IN (SELECT status FROM customers_cte)
     """
     result = semantic_layer.sql(sql)
     rows = _rows(result)

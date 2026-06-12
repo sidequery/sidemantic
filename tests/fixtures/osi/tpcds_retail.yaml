@@ -1,4 +1,4 @@
-version: "1.0"
+version: "0.2.0.dev0"
 
 semantic_model:
   - name: tpcds_retail_model

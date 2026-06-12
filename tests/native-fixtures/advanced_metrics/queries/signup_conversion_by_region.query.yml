@@ -1,0 +1,9 @@
+metrics:
+  - events.signup_conversion
+dimensions:
+  - events.region
+filters:
+  - events.event_date >= '2024-01-01'
+order_by:
+  - events.signup_conversion DESC
+limit: 5

@@ -12,6 +12,8 @@
 #   - Defining metrics for query routing
 # ---------------------------------------------------------------------------
 
+version: "0.2.0.dev0"
+
 semantic_model:
 - name: member_knowledge
   description: Auto-scaffolded OSI semantic model for 'member'. Generated from graph_config.node_types.

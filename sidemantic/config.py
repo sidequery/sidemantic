@@ -124,6 +124,13 @@ class APIServerConfig(BaseModel):
     max_request_body_bytes: int = Field(default=1024 * 1024, description="Maximum request body size in bytes")
 
 
+class RuntimeConfig(BaseModel):
+    """Runtime engine selection."""
+
+    engine: Literal["python", "rust", "auto"] = Field(default="python", description="Runtime engine")
+    fallback: bool = Field(default=False, description="Allow Rust runtime fallback to Python")
+
+
 Connection = (
     DuckDBConnection
     | PostgreSQLConnection
@@ -182,6 +189,7 @@ class SidemanticConfig(BaseModel):
     connection: Connection | None = Field(default=None, description="Database connection configuration")
     preagg_database: str | None = Field(default=None, description="Database for pre-aggregation tables (optional)")
     preagg_schema: str | None = Field(default=None, description="Schema for pre-aggregation tables (optional)")
+    runtime: RuntimeConfig | None = Field(default=None, description="Runtime engine settings")
     pg_server: PostgresServerConfig = Field(
         default_factory=PostgresServerConfig, description="PostgreSQL server settings (ALPHA)"
     )
@@ -215,6 +223,7 @@ class SidemanticConfig(BaseModel):
             connection=connection,
             preagg_database=self.preagg_database,
             preagg_schema=self.preagg_schema,
+            runtime=self.runtime,
             pg_server=self.pg_server,
             api_server=self.api_server,
         )

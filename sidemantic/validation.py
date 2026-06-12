@@ -17,7 +17,7 @@ class ValidationError(Exception):
     pass
 
 
-class QueryValidationError(ValidationError):
+class QueryValidationError(ValidationError, ValueError):
     """Raised when query validation fails."""
 
     pass
@@ -68,9 +68,34 @@ def validate_model(model: "Model") -> list[str]:
     if not model.primary_key:
         errors.append(f"Model '{model.name}' must have a primary_key defined")
 
-    # Check for table, SQL, or preserved DAX expression source.
-    if not model.table and not model.sql and not model.dax:
-        errors.append(f"Model '{model.name}' must have 'table', 'sql', or 'dax' defined")
+    # Check for a physical, SQL, DAX, or externally sourced model definition.
+    if not model.table and not model.sql and not getattr(model, "source_uri", None) and not getattr(model, "dax", None):
+        errors.append(f"Model '{model.name}' must have one of 'table', 'sql', 'dax', or 'source_uri' defined")
+
+    for label, items in [
+        ("dimension", model.dimensions),
+        ("metric", model.metrics),
+        ("segment", model.segments),
+        ("pre-aggregation", model.pre_aggregations),
+    ]:
+        seen_names = set()
+        for item in items:
+            if item.name in seen_names:
+                errors.append(f"Model '{model.name}' has duplicate {label} '{item.name}'")
+            seen_names.add(item.name)
+
+    if model.default_time_dimension:
+        default_time_dimension = model.get_dimension(model.default_time_dimension)
+        if default_time_dimension is None:
+            errors.append(
+                f"Model '{model.name}' default_time_dimension "
+                f"'{model.default_time_dimension}' does not reference a dimension"
+            )
+        elif default_time_dimension.type != "time":
+            errors.append(
+                f"Model '{model.name}' default_time_dimension "
+                f"'{model.default_time_dimension}' must reference a time dimension"
+            )
 
     # Check that dimensions have valid types
     for dim in model.dimensions:
@@ -103,6 +128,30 @@ def validate_model(model: "Model") -> list[str]:
                 f"Model '{model.name}': measure '{measure.name}' has invalid aggregation '{measure.agg}'. "
                 f"Must be one of: {valid_aggs_str}"
             )
+
+    for preagg in model.pre_aggregations:
+        for measure_name in preagg.measures or []:
+            if model.get_metric(measure_name) is None:
+                errors.append(
+                    f"Pre-aggregation '{model.name}.{preagg.name}' references unknown measure '{measure_name}'"
+                )
+        for dimension_name in preagg.dimensions or []:
+            if model.get_dimension(dimension_name) is None:
+                errors.append(
+                    f"Pre-aggregation '{model.name}.{preagg.name}' references unknown dimension '{dimension_name}'"
+                )
+        if preagg.time_dimension:
+            time_dimension = model.get_dimension(preagg.time_dimension)
+            if time_dimension is None:
+                errors.append(
+                    f"Pre-aggregation '{model.name}.{preagg.name}' references unknown time_dimension "
+                    f"'{preagg.time_dimension}'"
+                )
+            elif time_dimension.type != "time":
+                errors.append(
+                    f"Pre-aggregation '{model.name}.{preagg.name}' time_dimension "
+                    f"'{preagg.time_dimension}' must reference a time dimension"
+                )
 
     return errors
 
@@ -164,8 +213,8 @@ def validate_metric(measure: "Metric", graph: "SemanticGraph") -> list[str]:
             ("numerator", measure.numerator),
             ("denominator", measure.denominator),
         ]:
-            if ref and "." in ref:
-                model_name, measure_name = ref.split(".")
+            if ref and "." in ref and ref not in graph.metrics:
+                model_name, measure_name = ref.split(".", 1)
                 model = graph.models.get(model_name)
                 if not model:
                     errors.append(f"Ratio measure '{measure.name}': {ref_type} model '{model_name}' not found")
@@ -283,9 +332,15 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
 
     # Validate metric references
     for metric_ref in metrics:
+        try:
+            graph.resolve_metric_reference(metric_ref)
+            continue
+        except KeyError:
+            pass
+
         if "." in metric_ref:
             # Direct measure reference
-            model_name, measure_name = metric_ref.split(".")
+            model_name, measure_name = metric_ref.split(".", 1)
             model = graph.models.get(model_name)
             if not model:
                 errors.append(f"Model '{model_name}' not found (referenced in '{metric_ref}')")
@@ -320,7 +375,7 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
             dim_ref = dim_ref_base
 
         if "." in dim_ref:
-            model_name, dim_name = dim_ref.split(".")
+            model_name, dim_name = dim_ref.split(".", 1)
             model = graph.models.get(model_name)
             if not model:
                 errors.append(f"Model '{model_name}' not found (referenced in '{dim_ref}')")
@@ -339,21 +394,20 @@ def validate_query(metrics: list[str], dimensions: list[str], graph: "SemanticGr
     # Check for join paths
     model_names = set()
     for metric_ref in metrics:
-        if "." in metric_ref:
-            model_names.add(metric_ref.split(".")[0])
-        else:
-            try:
-                measure = graph.get_metric(metric_ref)
-                if measure and measure.sql and "." in measure.sql:
-                    model_names.add(measure.sql.split(".")[0])
-            except KeyError:
-                pass  # Already reported as error above
+        try:
+            metric_model_name, measure = graph.resolve_metric_reference(metric_ref)
+        except KeyError:
+            continue  # Already reported as error above
+        if metric_model_name:
+            model_names.add(metric_model_name)
+        elif measure and measure.sql and "." in measure.sql:
+            model_names.add(measure.sql.split(".", 1)[0])
 
     for dim_ref in dimensions:
         if "__" in dim_ref:
             dim_ref = dim_ref.rsplit("__", 1)[0]
         if "." in dim_ref:
-            model_names.add(dim_ref.split(".")[0])
+            model_names.add(dim_ref.split(".", 1)[0])
 
     # Check that all model pairs can be joined
     # Only check models that exist in the graph (errors for missing models already reported above)

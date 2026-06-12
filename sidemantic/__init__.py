@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.9.6"
+__version__ = "0.10.1"
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -19,6 +19,8 @@ Measure = Metric
 
 __all__ = [
     "Dimension",
+    "DashboardDocument",
+    "DashboardSpecError",
     "Measure",  # Backwards compatibility
     "Metric",
     "Model",
@@ -52,4 +54,12 @@ def __getattr__(name):  # Lazy import to avoid importing duckdb on package impor
         from sidemantic.loaders import load_from_directory  # type: ignore
 
         return load_from_directory
+    if name == "DashboardDocument":
+        from sidemantic.dashboard import DashboardDocument  # type: ignore
+
+        return DashboardDocument
+    if name == "DashboardSpecError":
+        from sidemantic.dashboard import DashboardSpecError  # type: ignore
+
+        return DashboardSpecError
     raise AttributeError(name)

@@ -1,0 +1,209 @@
+name: Release Rust Binaries
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Git tag for the GitHub Release to attach binaries to.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag for the GitHub Release to attach binaries to, for example sidemantic-rs-v0.1.0.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: sidemantic-rs/target
+  RUST_FEATURES: mcp-server,runtime-server,runtime-lsp,workbench-tui
+
+jobs:
+  verify-release:
+    name: Verify release
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Verify GitHub Release exists
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then
+            echo "tag input is required" >&2
+            exit 1
+          fi
+          gh release view "$TAG" --json tagName --jq .tagName
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.asset_suffix }}
+    needs: verify-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            asset_suffix: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_suffix: linux-aarch64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset_suffix: macos-x86_64
+          - os: macos-15
+            target: aarch64-apple-darwin
+            asset_suffix: macos-aarch64
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            asset_suffix: windows-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify-release.outputs.tag }}
+
+      - name: Resolve Rust crate version
+        id: rust_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^version = ' sidemantic-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release tag matches crate version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.verify-release.outputs.tag }}
+          RUST_VERSION: ${{ steps.rust_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected_tag="sidemantic-rs-v${RUST_VERSION}"
+          if [ "$RELEASE_TAG" != "$expected_tag" ]; then
+            echo "Release tag '$RELEASE_TAG' does not match Rust crate version tag '$expected_tag'" >&2
+            exit 1
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sidemantic-rs
+
+      - name: Build Rust binaries
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo build \
+            --manifest-path sidemantic-rs/Cargo.toml \
+            --release \
+            --locked \
+            --target "$TARGET" \
+            --features "$RUST_FEATURES" \
+            --bin sidemantic \
+            --bin sidemantic-mcp \
+            --bin sidemantic-server \
+            --bin sidemantic-lsp \
+            --bin sidemantic-workbench
+
+      - name: Smoke CLI
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: sidemantic-rs/target/"$TARGET"/release/sidemantic --help
+
+      - name: Smoke CLI
+        if: runner.os == 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: pwsh
+        run: sidemantic-rs/target/$env:TARGET/release/sidemantic.exe --help
+
+      - name: Package archive
+        if: runner.os != 'Windows'
+        env:
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          RUST_VERSION: ${{ steps.rust_version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="$RUST_VERSION"
+          asset_name="sidemantic-rs-${version}-${ASSET_SUFFIX}"
+          archive_path="dist/${asset_name}.tar.gz"
+          checksum_path="${archive_path}.sha256"
+          target_dir="sidemantic-rs/target/${TARGET}/release"
+
+          mkdir -p "dist/${asset_name}"
+          install -m 755 "${target_dir}/sidemantic" "dist/${asset_name}/sidemantic"
+          install -m 755 "${target_dir}/sidemantic-mcp" "dist/${asset_name}/sidemantic-mcp"
+          install -m 755 "${target_dir}/sidemantic-server" "dist/${asset_name}/sidemantic-server"
+          install -m 755 "${target_dir}/sidemantic-lsp" "dist/${asset_name}/sidemantic-lsp"
+          install -m 755 "${target_dir}/sidemantic-workbench" "dist/${asset_name}/sidemantic-workbench"
+          cp LICENSE "dist/${asset_name}/LICENSE"
+
+          tar -C dist -czf "$archive_path" "$asset_name"
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$archive_path" > "$checksum_path"
+          else
+            sha256sum "$archive_path" > "$checksum_path"
+          fi
+
+          echo "ARCHIVE_PATH=$archive_path" >> "$GITHUB_ENV"
+          echo "CHECKSUM_PATH=$checksum_path" >> "$GITHUB_ENV"
+
+      - name: Package archive
+        if: runner.os == 'Windows'
+        env:
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          RUST_VERSION: ${{ steps.rust_version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        shell: pwsh
+        run: |
+          $version = $env:RUST_VERSION
+          $assetName = "sidemantic-rs-$version-$env:ASSET_SUFFIX"
+          $archivePath = "dist/$assetName.zip"
+          $checksumPath = "$archivePath.sha256"
+          $targetDir = "sidemantic-rs/target/$env:TARGET/release"
+
+          New-Item -ItemType Directory -Force -Path "dist/$assetName"
+          Copy-Item "$targetDir/sidemantic.exe" "dist/$assetName/sidemantic.exe"
+          Copy-Item "$targetDir/sidemantic-mcp.exe" "dist/$assetName/sidemantic-mcp.exe"
+          Copy-Item "$targetDir/sidemantic-server.exe" "dist/$assetName/sidemantic-server.exe"
+          Copy-Item "$targetDir/sidemantic-lsp.exe" "dist/$assetName/sidemantic-lsp.exe"
+          Copy-Item "$targetDir/sidemantic-workbench.exe" "dist/$assetName/sidemantic-workbench.exe"
+          Copy-Item LICENSE "dist/$assetName/LICENSE"
+
+          Compress-Archive -Path "dist/$assetName" -DestinationPath $archivePath -Force
+          $hash = Get-FileHash -Path $archivePath -Algorithm SHA256
+          "$($hash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $archivePath)" | Out-File -FilePath $checksumPath -Encoding ascii
+
+          "ARCHIVE_PATH=$archivePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CHECKSUM_PATH=$checksumPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload archive to release
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify-release.outputs.tag }}
+        run: gh release upload "$TAG" "$ARCHIVE_PATH" "$CHECKSUM_PATH" --clobber
+
+      - name: Upload archive to release
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify-release.outputs.tag }}
+        shell: pwsh
+        run: gh release upload $env:TAG $env:ARCHIVE_PATH $env:CHECKSUM_PATH --clobber

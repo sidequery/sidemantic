@@ -71,3 +71,58 @@ def test_many_to_many_join_path(layer):
         "order_items_cte.product_id = products_cte.product_id" in sql
         or "products_cte.product_id = order_items_cte.product_id" in sql
     )
+
+
+def test_many_to_many_through_composite_junction_keys(layer):
+    """Composite many-to-many joins use every source and target junction key."""
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key=["tenant_id", "order_id"],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        relationships=[
+            Relationship(
+                name="products",
+                type="many_to_many",
+                through="order_items",
+                through_foreign_key_columns=["tenant_id", "order_id"],
+                related_foreign_key_columns=["tenant_id", "product_id"],
+            )
+        ],
+    )
+    products = Model(
+        name="products",
+        table="products",
+        primary_key=["tenant_id", "product_id"],
+        dimensions=[Dimension(name="name", type="categorical")],
+    )
+    order_items = Model(
+        name="order_items",
+        table="order_items",
+        primary_key=["tenant_id", "order_id", "product_id"],
+    )
+
+    layer.add_model(orders)
+    layer.add_model(products)
+    layer.add_model(order_items)
+
+    path = layer.graph.find_relationship_path("orders", "products")
+    assert len(path) == 2
+    assert path[0].from_columns == ["tenant_id", "order_id"]
+    assert path[0].to_columns == ["tenant_id", "order_id"]
+    assert path[1].from_columns == ["tenant_id", "product_id"]
+    assert path[1].to_columns == ["tenant_id", "product_id"]
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["products.name"])
+    assert "orders_cte.tenant_id = order_items_cte.tenant_id" in sql or (
+        "order_items_cte.tenant_id = orders_cte.tenant_id" in sql
+    )
+    assert "orders_cte.order_id = order_items_cte.order_id" in sql or (
+        "order_items_cte.order_id = orders_cte.order_id" in sql
+    )
+    assert "order_items_cte.tenant_id = products_cte.tenant_id" in sql or (
+        "products_cte.tenant_id = order_items_cte.tenant_id" in sql
+    )
+    assert "order_items_cte.product_id = products_cte.product_id" in sql or (
+        "products_cte.product_id = order_items_cte.product_id" in sql
+    )

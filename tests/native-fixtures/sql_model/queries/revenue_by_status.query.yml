@@ -1,0 +1,6 @@
+metrics:
+  - orders_from_sql.total_revenue
+dimensions:
+  - orders_from_sql.status
+order_by:
+  - orders_from_sql.status

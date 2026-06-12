@@ -24,6 +24,14 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *,
 ParserExtensionPlanResult sidemantic_plan(ParserExtensionInfo *, ClientContext &,
                                           unique_ptr<ParserExtensionParseData>);
 
+struct SidemanticParserInfo : ParserExtensionInfo {
+    SidemanticParserInfo(string db_path, string context_key)
+        : db_path(std::move(db_path)), context_key(std::move(context_key)) {}
+
+    string db_path;
+    string context_key;
+};
+
 // Operator extension: handles binding after parsing
 struct SidemanticOperatorExtension : public OperatorExtension {
     SidemanticOperatorExtension() : OperatorExtension() { Bind = sidemantic_bind; }
@@ -36,9 +44,11 @@ struct SidemanticOperatorExtension : public OperatorExtension {
 
 // Parser extension: intercepts query strings
 struct SidemanticParserExtension : public ParserExtension {
-    SidemanticParserExtension() : ParserExtension() {
+    SidemanticParserExtension(string db_path, string context_key) : ParserExtension() {
         parse_function = sidemantic_parse;
         plan_function = sidemantic_plan;
+        parser_info =
+            make_shared_ptr<SidemanticParserInfo>(std::move(db_path), std::move(context_key));
     }
 };
 

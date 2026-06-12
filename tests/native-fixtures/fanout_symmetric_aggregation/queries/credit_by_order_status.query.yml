@@ -1,0 +1,3 @@
+metrics: [customers.total_credit_limit]
+dimensions: [orders.status]
+order_by: [orders.status]

@@ -25,10 +25,34 @@ pub struct Dimension {
     pub sql: Option<String>,
     /// Time granularity (for time dimensions)
     pub granularity: Option<String>,
+    /// Supported granularities for time dimensions
+    #[serde(default)]
+    pub supported_granularities: Option<Vec<String>>,
     /// Human-readable label
     pub label: Option<String>,
     /// Description
     pub description: Option<String>,
+    /// Adapter-specific metadata payload
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Arbitrary extension metadata
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
+    /// Display format string
+    #[serde(default)]
+    pub format: Option<String>,
+    /// Named display format
+    #[serde(default)]
+    pub value_format_name: Option<String>,
+    /// Parent dimension name for hierarchies
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Window expression projected in model CTEs.
+    #[serde(default)]
+    pub window: Option<String>,
+    /// Whether dimension is visible in API/UI.
+    #[serde(default = "default_true")]
+    pub public: bool,
 }
 
 impl Dimension {
@@ -38,8 +62,16 @@ impl Dimension {
             r#type: DimensionType::Categorical,
             sql: None,
             granularity: None,
+            supported_granularities: None,
             label: None,
             description: None,
+            metadata: None,
+            meta: None,
+            format: None,
+            value_format_name: None,
+            parent: None,
+            window: None,
+            public: true,
         }
     }
 
@@ -69,6 +101,11 @@ impl Dimension {
         self.sql.as_deref().unwrap_or(&self.name)
     }
 
+    /// Returns the window expression when configured, otherwise the row-level SQL expression.
+    pub fn window_sql_expr(&self) -> &str {
+        self.window.as_deref().unwrap_or_else(|| self.sql_expr())
+    }
+
     /// Returns SQL with time granularity applied (DATE_TRUNC)
     pub fn sql_with_granularity(&self, granularity: Option<&str>) -> String {
         let base_sql = self.sql_expr();
@@ -91,6 +128,10 @@ pub enum Aggregation {
     Min,
     Max,
     Median,
+    Stddev,
+    StddevPop,
+    Variance,
+    VariancePop,
     /// Raw expression that already contains aggregation (e.g., SUM(amount) * 2)
     Expression,
 }
@@ -105,6 +146,10 @@ impl Aggregation {
             Aggregation::Min => "MIN",
             Aggregation::Max => "MAX",
             Aggregation::Median => "MEDIAN",
+            Aggregation::Stddev => "STDDEV",
+            Aggregation::StddevPop => "STDDEV_POP",
+            Aggregation::Variance => "VARIANCE",
+            Aggregation::VariancePop => "VAR_POP",
             Aggregation::Expression => "", // Not used - expression stored in sql field
         }
     }
@@ -112,14 +157,18 @@ impl Aggregation {
 
 /// Metric type
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum MetricType {
     #[default]
     Simple,
     Derived,
     Ratio,
     Cumulative,
+    #[serde(alias = "timecomparison")]
     TimeComparison,
+    Conversion,
+    Retention,
+    Cohort,
 }
 
 /// Time comparison type
@@ -155,10 +204,23 @@ pub enum TimeGrain {
     Year,
 }
 
+/// Inner per-entity aggregate for cohort metrics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CohortInnerMetric {
+    pub name: String,
+    #[serde(default)]
+    pub agg: Option<Aggregation>,
+    #[serde(default)]
+    pub sql: Option<String>,
+}
+
 /// A metric represents a business measure (aggregation)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metric {
     pub name: String,
+    /// Parent metric to inherit from.
+    #[serde(default)]
+    pub extends: Option<String>,
     #[serde(default)]
     pub r#type: MetricType,
     /// Aggregation function (for simple metrics)
@@ -169,6 +231,9 @@ pub struct Metric {
     pub numerator: Option<String>,
     /// Denominator metric (for ratio metrics)
     pub denominator: Option<String>,
+    /// Time offset for ratio denominator (e.g. "1 month")
+    #[serde(default)]
+    pub offset_window: Option<String>,
     /// Filters to apply
     #[serde(default)]
     pub filters: Vec<String>,
@@ -176,6 +241,12 @@ pub struct Metric {
     pub label: Option<String>,
     /// Description
     pub description: Option<String>,
+    /// Adapter-specific metadata payload.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Arbitrary extension metadata.
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
 
     // Cumulative metric fields
     /// Time window for cumulative (e.g., "7 days")
@@ -184,6 +255,15 @@ pub struct Metric {
     /// Grain for period-to-date (e.g., month for MTD)
     #[serde(default)]
     pub grain_to_date: Option<TimeGrain>,
+    /// Raw SQL expression used inside a window function
+    #[serde(default)]
+    pub window_expression: Option<String>,
+    /// Explicit window frame clause
+    #[serde(default)]
+    pub window_frame: Option<String>,
+    /// ORDER BY column override for window metrics
+    #[serde(default)]
+    pub window_order: Option<String>,
 
     // Time comparison fields
     /// Base metric for time comparison
@@ -199,6 +279,48 @@ pub struct Metric {
     #[serde(default)]
     pub calculation: Option<ComparisonCalculation>,
 
+    // Conversion metric fields
+    /// Entity identifier expression (e.g. user_id)
+    #[serde(default)]
+    pub entity: Option<String>,
+    /// Base event predicate/value
+    #[serde(default)]
+    pub base_event: Option<String>,
+    /// Conversion event predicate/value
+    #[serde(default)]
+    pub conversion_event: Option<String>,
+    /// Conversion window (e.g. "7 days")
+    #[serde(default)]
+    pub conversion_window: Option<String>,
+    /// N-step funnel filter expressions.
+    #[serde(default)]
+    pub steps: Option<Vec<String>>,
+
+    // Retention metric fields
+    /// Cohort-defining event predicate.
+    #[serde(default)]
+    pub cohort_event: Option<String>,
+    /// Activity event predicate.
+    #[serde(default)]
+    pub activity_event: Option<String>,
+    /// Number of retention periods to include.
+    #[serde(default)]
+    pub periods: Option<usize>,
+    /// Retention time grain.
+    #[serde(default)]
+    pub retention_granularity: Option<String>,
+
+    // Cohort metric fields
+    /// Per-entity inner aggregations.
+    #[serde(default)]
+    pub inner_metrics: Option<Vec<CohortInnerMetric>>,
+    /// Dimensions carried through from inner to outer aggregation.
+    #[serde(default)]
+    pub entity_dimensions: Option<Vec<String>>,
+    /// HAVING predicate applied to the inner aggregation.
+    #[serde(default)]
+    pub having: Option<String>,
+
     // Display formatting
     /// Default value when result is NULL
     #[serde(default)]
@@ -206,28 +328,63 @@ pub struct Metric {
     /// Display format string (e.g., "$#,##0.00", "0.00%")
     #[serde(default)]
     pub format: Option<String>,
+    /// Named format (e.g., "usd", "percent", "decimal_2")
+    #[serde(default)]
+    pub value_format_name: Option<String>,
+    /// Fields to include in drill-down results
+    #[serde(default)]
+    pub drill_fields: Option<Vec<String>>,
+    /// Dimension across which this metric is non-additive
+    #[serde(default)]
+    pub non_additive_dimension: Option<String>,
+    /// Whether metric is visible in API/UI.
+    #[serde(default = "default_true")]
+    pub public: bool,
 }
 
 impl Metric {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extends: None,
             r#type: MetricType::Simple,
             agg: Some(Aggregation::Sum),
             sql: None,
             numerator: None,
             denominator: None,
+            offset_window: None,
             filters: Vec::new(),
             label: None,
             description: None,
+            metadata: None,
+            meta: None,
             window: None,
             grain_to_date: None,
+            window_expression: None,
+            window_frame: None,
+            window_order: None,
             base_metric: None,
             comparison_type: None,
             time_offset: None,
             calculation: None,
+            entity: None,
+            base_event: None,
+            conversion_event: None,
+            conversion_window: None,
+            steps: None,
+            cohort_event: None,
+            activity_event: None,
+            periods: None,
+            retention_granularity: None,
+            inner_metrics: None,
+            entity_dimensions: None,
+            having: None,
             fill_nulls_with: None,
             format: None,
+            value_format_name: None,
+            drill_fields: None,
+            non_additive_dimension: None,
+            public: true,
         }
     }
 
@@ -426,6 +583,9 @@ impl Metric {
                     }
                 }
             }
+            MetricType::Conversion | MetricType::Retention | MetricType::Cohort => {
+                "NULL /* complex metric */".to_string()
+            }
         }
     }
 
@@ -453,14 +613,39 @@ pub struct Relationship {
     pub name: String,
     #[serde(default)]
     pub r#type: RelationshipType,
-    /// Foreign key column (defaults to {name}_id)
+    /// Foreign key column.
+    /// Defaults to `{name}_id` for `many_to_one`, and `id` for one-to-one/one-to-many compatibility.
     pub foreign_key: Option<String>,
+    /// Foreign key columns for composite relationships
+    #[serde(default)]
+    pub foreign_key_columns: Option<Vec<String>>,
     /// Primary key in related model (defaults to "id")
     pub primary_key: Option<String>,
+    /// Primary key columns in related model for composite relationships
+    #[serde(default)]
+    pub primary_key_columns: Option<Vec<String>>,
+    /// Junction model for many-to-many relationships
+    #[serde(default)]
+    pub through: Option<String>,
+    /// Foreign key in junction model pointing to this model
+    #[serde(default)]
+    pub through_foreign_key: Option<String>,
+    /// Foreign key columns in junction model pointing to this model
+    #[serde(default)]
+    pub through_foreign_key_columns: Option<Vec<String>>,
+    /// Foreign key in junction model pointing to related model
+    #[serde(default)]
+    pub related_foreign_key: Option<String>,
+    /// Foreign key columns in junction model pointing to related model
+    #[serde(default)]
+    pub related_foreign_key_columns: Option<Vec<String>>,
     /// Custom SQL join condition (overrides FK/PK)
     /// Use {from} and {to} placeholders for table aliases
     #[serde(default)]
     pub sql: Option<String>,
+    /// Adapter-specific metadata payload.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl Relationship {
@@ -469,8 +654,16 @@ impl Relationship {
             name: target.into(),
             r#type: RelationshipType::ManyToOne,
             foreign_key: None,
+            foreign_key_columns: None,
             primary_key: None,
+            primary_key_columns: None,
+            through: None,
+            through_foreign_key: None,
+            through_foreign_key_columns: None,
+            related_foreign_key: None,
+            related_foreign_key_columns: None,
             sql: None,
+            metadata: None,
         }
     }
 
@@ -490,8 +683,24 @@ impl Relationship {
         foreign_key: impl Into<String>,
         primary_key: impl Into<String>,
     ) -> Self {
-        self.foreign_key = Some(foreign_key.into());
-        self.primary_key = Some(primary_key.into());
+        let foreign_key = foreign_key.into();
+        let primary_key = primary_key.into();
+        self.foreign_key = Some(foreign_key.clone());
+        self.foreign_key_columns = Some(vec![foreign_key]);
+        self.primary_key = Some(primary_key.clone());
+        self.primary_key_columns = Some(vec![primary_key]);
+        self
+    }
+
+    pub fn with_key_columns(
+        mut self,
+        foreign_keys: Vec<String>,
+        primary_keys: Vec<String>,
+    ) -> Self {
+        self.foreign_key = foreign_keys.first().cloned();
+        self.foreign_key_columns = Some(foreign_keys);
+        self.primary_key = primary_keys.first().cloned();
+        self.primary_key_columns = Some(primary_keys);
         self
     }
 
@@ -505,19 +714,182 @@ impl Relationship {
 
     /// Returns the foreign key column name
     pub fn fk(&self) -> String {
-        self.foreign_key
-            .clone()
+        self.foreign_key_columns()
+            .into_iter()
+            .next()
             .unwrap_or_else(|| format!("{}_id", self.name))
     }
 
     /// Returns the primary key column name in the related model
     pub fn pk(&self) -> String {
-        self.primary_key.clone().unwrap_or_else(|| "id".to_string())
+        self.primary_key_columns()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "id".to_string())
+    }
+
+    pub fn foreign_key_columns(&self) -> Vec<String> {
+        self.foreign_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.foreign_key.clone().map(|key| vec![key]))
+            .unwrap_or_else(|| {
+                if self.r#type == RelationshipType::ManyToOne {
+                    vec![format!("{}_id", self.name)]
+                } else {
+                    vec!["id".to_string()]
+                }
+            })
+    }
+
+    pub fn primary_key_columns(&self) -> Vec<String> {
+        self.primary_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.primary_key.clone().map(|key| vec![key]))
+            .unwrap_or_else(|| vec!["id".to_string()])
     }
 
     /// Returns the custom SQL condition if set
     pub fn custom_condition(&self) -> Option<&str> {
         self.sql.as_deref()
+    }
+
+    /// Get junction keys for many-to-many relationships.
+    /// Returns (source_fk_in_through, target_fk_in_through).
+    pub fn junction_keys(&self) -> (Option<String>, Option<String>) {
+        if self.r#type != RelationshipType::ManyToMany {
+            return (None, None);
+        }
+        let (source_keys, target_keys) = self.junction_key_columns();
+        (
+            source_keys.into_iter().next(),
+            target_keys.into_iter().next(),
+        )
+    }
+
+    /// Get junction key columns for many-to-many relationships.
+    pub fn junction_key_columns(&self) -> (Vec<String>, Vec<String>) {
+        if self.r#type != RelationshipType::ManyToMany {
+            return (Vec::new(), Vec::new());
+        }
+
+        let source_keys = self
+            .through_foreign_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.through_foreign_key.clone().map(|key| vec![key]))
+            .or_else(|| {
+                self.foreign_key_columns
+                    .clone()
+                    .filter(|columns| !columns.is_empty())
+            })
+            .or_else(|| self.foreign_key.clone().map(|key| vec![key]))
+            .unwrap_or_default();
+        let target_keys = self
+            .related_foreign_key_columns
+            .clone()
+            .filter(|columns| !columns.is_empty())
+            .or_else(|| self.related_foreign_key.clone().map(|key| vec![key]))
+            .unwrap_or_default();
+
+        (source_keys, target_keys)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PreAggregationType {
+    #[default]
+    Rollup,
+    OriginalSql,
+    RollupJoin,
+    Lambda,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_false() -> bool {
+    false
+}
+
+fn default_index_type() -> String {
+    "regular".to_string()
+}
+
+/// Refresh strategy configuration for pre-aggregations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshKey {
+    #[serde(default)]
+    pub every: Option<String>,
+    #[serde(default)]
+    pub sql: Option<String>,
+    #[serde(default = "default_false")]
+    pub incremental: bool,
+    #[serde(default)]
+    pub update_window: Option<String>,
+}
+
+/// Index definition for pre-aggregation performance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Index {
+    pub name: String,
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default = "default_index_type", rename = "type")]
+    pub index_type: String,
+}
+
+/// Pre-aggregation definition for query routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreAggregation {
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub preagg_type: PreAggregationType,
+    #[serde(default)]
+    pub sql: Option<String>,
+    #[serde(default)]
+    pub measures: Option<Vec<String>>,
+    #[serde(default)]
+    pub dimensions: Option<Vec<String>>,
+    #[serde(default)]
+    pub time_dimension: Option<String>,
+    #[serde(default)]
+    pub granularity: Option<String>,
+    #[serde(default)]
+    pub partition_granularity: Option<String>,
+    #[serde(default)]
+    pub build_range_start: Option<String>,
+    #[serde(default)]
+    pub build_range_end: Option<String>,
+    #[serde(default = "default_true")]
+    pub scheduled_refresh: bool,
+    #[serde(default)]
+    pub refresh_key: Option<RefreshKey>,
+    #[serde(default)]
+    pub indexes: Option<Vec<Index>>,
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
+}
+
+impl PreAggregation {
+    /// Returns pre-aggregation table name in [database.][schema.]model_preagg_name form.
+    pub fn table_name(
+        &self,
+        model_name: &str,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> String {
+        let mut table_name = format!("{model_name}_preagg_{}", self.name);
+        if let Some(schema) = schema {
+            table_name = format!("{schema}.{table_name}");
+        }
+        if let Some(database) = database {
+            table_name = format!("{database}.{table_name}");
+        }
+        table_name
     }
 }
 
@@ -529,8 +901,20 @@ pub struct Model {
     pub table: Option<String>,
     /// SQL expression for derived tables
     pub sql: Option<String>,
+    /// Remote source URI
+    #[serde(default)]
+    pub source_uri: Option<String>,
+    /// Parent model name for inheritance
+    #[serde(default)]
+    pub extends: Option<String>,
     /// Primary key column
     pub primary_key: String,
+    /// Primary key columns for composite keys
+    #[serde(default)]
+    pub primary_key_columns: Vec<String>,
+    /// Unique key constraints
+    #[serde(default)]
+    pub unique_keys: Option<Vec<Vec<String>>>,
     /// Dimensions (grouping attributes)
     #[serde(default)]
     pub dimensions: Vec<Dimension>,
@@ -543,26 +927,59 @@ pub struct Model {
     /// Segments (reusable filters)
     #[serde(default)]
     pub segments: Vec<Segment>,
+    /// Pre-aggregations for query routing
+    #[serde(default)]
+    pub pre_aggregations: Vec<PreAggregation>,
+    /// Default time dimension auto-included when querying this model's metrics
+    #[serde(default)]
+    pub default_time_dimension: Option<String>,
+    /// Default grain used with default_time_dimension
+    #[serde(default)]
+    pub default_grain: Option<String>,
     /// Human-readable label
     pub label: Option<String>,
     /// Description
     pub description: Option<String>,
+    /// Adapter-specific metadata payload.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Arbitrary extension metadata.
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
 }
 
 impl Model {
     pub fn new(name: impl Into<String>, primary_key: impl Into<String>) -> Self {
+        let primary_key = primary_key.into();
         Self {
             name: name.into(),
             table: None,
             sql: None,
-            primary_key: primary_key.into(),
+            source_uri: None,
+            extends: None,
+            primary_key: primary_key.clone(),
+            primary_key_columns: vec![primary_key],
+            unique_keys: None,
             dimensions: Vec::new(),
             metrics: Vec::new(),
             relationships: Vec::new(),
             segments: Vec::new(),
+            pre_aggregations: Vec::new(),
+            default_time_dimension: None,
+            default_grain: None,
             label: None,
             description: None,
+            metadata: None,
+            meta: None,
         }
+    }
+
+    pub fn with_primary_key_columns(mut self, primary_key_columns: Vec<String>) -> Self {
+        if let Some(primary_key) = primary_key_columns.first() {
+            self.primary_key = primary_key.clone();
+        }
+        self.primary_key_columns = primary_key_columns;
+        self
     }
 
     pub fn with_table(mut self, table: impl Into<String>) -> Self {
@@ -595,9 +1012,22 @@ impl Model {
         self
     }
 
+    pub fn with_pre_aggregation(mut self, pre_aggregation: PreAggregation) -> Self {
+        self.pre_aggregations.push(pre_aggregation);
+        self
+    }
+
     /// Returns the table name or model name as fallback
     pub fn table_name(&self) -> &str {
         self.table.as_deref().unwrap_or(&self.name)
+    }
+
+    pub fn primary_keys(&self) -> Vec<String> {
+        if self.primary_key_columns.is_empty() {
+            vec![self.primary_key.clone()]
+        } else {
+            self.primary_key_columns.clone()
+        }
     }
 
     /// Returns the table source (table name or SQL subquery)
@@ -628,6 +1058,11 @@ impl Model {
     pub fn get_segment(&self, name: &str) -> Option<&Segment> {
         self.segments.iter().find(|s| s.name == name)
     }
+
+    /// Find a pre-aggregation by name
+    pub fn get_pre_aggregation(&self, name: &str) -> Option<&PreAggregation> {
+        self.pre_aggregations.iter().find(|p| p.name == name)
+    }
 }
 
 #[cfg(test)]
@@ -655,6 +1090,7 @@ mod tests {
         // COUNT without explicit sql (simulates parsed definition)
         let metric = Metric {
             name: "order_count".to_string(),
+            extends: None,
             agg: Some(Aggregation::Count),
             sql: None,
             ..Metric::new("order_count")
@@ -663,6 +1099,40 @@ mod tests {
 
         let metric = Metric::count_distinct("unique_customers", "customer_id");
         assert_eq!(metric.to_sql(Some("o")), "COUNT(DISTINCT o.customer_id)");
+
+        let metric = Metric {
+            name: "revenue_stddev".to_string(),
+            extends: None,
+            agg: Some(Aggregation::Stddev),
+            sql: Some("amount".to_string()),
+            ..Metric::new("revenue_stddev")
+        };
+        assert_eq!(metric.to_sql(Some("o")), "STDDEV(o.amount)");
+
+        let metric = Metric {
+            name: "revenue_variance_pop".to_string(),
+            extends: None,
+            agg: Some(Aggregation::VariancePop),
+            sql: Some("amount".to_string()),
+            ..Metric::new("revenue_variance_pop")
+        };
+        assert_eq!(metric.to_sql(None), "VAR_POP(amount)");
+    }
+
+    #[test]
+    fn test_relationship_default_foreign_keys_match_native_contract() {
+        let rel = Relationship::many_to_one("customers");
+        assert_eq!(rel.foreign_key_columns(), vec!["customers_id".to_string()]);
+        assert_eq!(rel.primary_key_columns(), vec!["id".to_string()]);
+
+        let rel = Relationship::one_to_many("orders");
+        assert_eq!(rel.foreign_key_columns(), vec!["id".to_string()]);
+        assert_eq!(rel.primary_key_columns(), vec!["id".to_string()]);
+
+        let mut rel = Relationship::new("profile");
+        rel.r#type = RelationshipType::OneToOne;
+        assert_eq!(rel.foreign_key_columns(), vec!["id".to_string()]);
+        assert_eq!(rel.primary_key_columns(), vec!["id".to_string()]);
     }
 
     #[test]

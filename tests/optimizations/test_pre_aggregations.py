@@ -222,6 +222,44 @@ def test_preagg_matcher_granularity_rollup():
     assert preagg is None
 
 
+def test_preagg_matcher_prefers_total_rollup_over_time_rollup_for_total_query():
+    """Test total queries choose the smallest compatible rollup."""
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[
+            Dimension(name="created_at", type="time"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+        pre_aggregations=[
+            PreAggregation(
+                name="daily",
+                measures=["revenue"],
+                dimensions=[],
+                time_dimension="created_at",
+                granularity="day",
+            ),
+            PreAggregation(
+                name="total",
+                measures=["revenue"],
+                dimensions=[],
+            ),
+        ],
+    )
+
+    matcher = PreAggregationMatcher(model)
+
+    preagg = matcher.find_matching_preagg(
+        metrics=["revenue"],
+        dimensions=[],
+    )
+
+    assert preagg is not None
+    assert preagg.name == "total"
+
+
 def test_preagg_matcher_measure_not_available():
     """Test pre-aggregation matching fails when measure not available."""
     model = Model(
@@ -408,6 +446,75 @@ def test_preagg_with_filters(layer):
     # Should use pre-aggregation with filter applied
     assert "orders_preagg_by_status_region" in sql
     assert "region = 'US'" in sql or "region='US'" in sql
+
+
+@pytest.mark.parametrize(
+    "filter_expr",
+    [
+        "orders.region IN ('US', 'EU')",
+        "orders.created_at BETWEEN DATE '2024-01-01' AND DATE '2024-01-31'",
+        "orders.region IS NOT NULL",
+        "LOWER(orders.region) LIKE 'u%'",
+        "\"Order Region\" = 'US'",
+    ],
+)
+def test_preagg_filter_column_extraction_uses_sqlglot(filter_expr):
+    model = Model(
+        name="orders",
+        table="public.orders",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="status", type="categorical", sql="status"),
+            Dimension(name="region", type="categorical", sql="region"),
+            Dimension(name="created_at", type="time", sql="created_at"),
+            Dimension(name="Order Region", type="categorical", sql='"Order Region"'),
+        ],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        pre_aggregations=[
+            PreAggregation(
+                name="wide",
+                measures=["revenue"],
+                dimensions=["status", "region", "created_at", "Order Region"],
+            )
+        ],
+    )
+    matcher = PreAggregationMatcher(model)
+
+    preagg = matcher.find_matching_preagg(
+        metrics=["revenue"],
+        dimensions=["status"],
+        filters=[filter_expr],
+    )
+
+    assert preagg is not None
+    assert preagg.name == "wide"
+
+
+def test_preagg_filter_column_extraction_ignores_subquery_columns():
+    model = Model(
+        name="orders",
+        table="public.orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        pre_aggregations=[
+            PreAggregation(
+                name="by_status",
+                measures=["revenue"],
+                dimensions=["status"],
+            )
+        ],
+    )
+    matcher = PreAggregationMatcher(model)
+
+    preagg = matcher.find_matching_preagg(
+        metrics=["revenue"],
+        dimensions=["status"],
+        filters=["status IN (SELECT status FROM allowed_statuses)"],
+    )
+
+    assert preagg is not None
+    assert preagg.name == "by_status"
 
 
 def test_preagg_granularity_conversion(layer):
@@ -883,7 +990,249 @@ def test_generate_materialization_sql_no_time_dimension():
     # Should have dimensions and measures
     assert "category as category" in sql
     assert "brand as brand" in sql
-    assert "AVG(price) as avg_price_raw" in sql
+    assert "SUM(price) as avg_price_raw" in sql
+
+
+def test_avg_preaggregation_rolls_up_with_sum_count_state(layer):
+    layer.use_preaggregations = True
+    layer.conn.execute("""
+        CREATE TABLE products (
+            id INTEGER,
+            category VARCHAR,
+            price DECIMAL(10, 2)
+        )
+    """)
+    layer.conn.execute("""
+        INSERT INTO products VALUES
+            (1, 'hardware', 10.00),
+            (2, 'hardware', 20.00),
+            (3, 'software', 50.00)
+    """)
+    layer.conn.execute("""
+        CREATE TABLE products_preagg_by_category AS
+        SELECT
+            category,
+            SUM(price) AS avg_price_raw,
+            COUNT(*) AS count_raw
+        FROM products
+        GROUP BY category
+    """)
+    model = Model(
+        name="products",
+        table="products",
+        primary_key="id",
+        dimensions=[Dimension(name="category", type="categorical", sql="category")],
+        metrics=[
+            Metric(name="avg_price", agg="avg", sql="price"),
+            Metric(name="count", agg="count"),
+        ],
+        pre_aggregations=[
+            PreAggregation(
+                name="by_category",
+                measures=["avg_price", "count"],
+                dimensions=["category"],
+            )
+        ],
+    )
+    layer.add_model(model)
+
+    preagg_sql = layer.compile(
+        metrics=["products.avg_price"],
+        dimensions=["products.category"],
+        order_by=["category"],
+    )
+    baseline_rows = layer.query(
+        metrics=["products.avg_price"],
+        dimensions=["products.category"],
+        order_by=["category"],
+        use_preaggregations=False,
+    ).fetchall()
+    preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
+
+    assert "products_preagg_by_category" in preagg_sql
+    assert "SUM(avg_price_raw) / NULLIF(SUM(count_raw), 0)" in preagg_sql
+    assert preagg_rows == baseline_rows
+
+
+def test_avg_preaggregation_rejects_missing_count_state(layer):
+    layer.use_preaggregations = True
+    model = Model(
+        name="products",
+        table="products",
+        primary_key="id",
+        dimensions=[Dimension(name="category", type="categorical", sql="category")],
+        metrics=[Metric(name="avg_price", agg="avg", sql="price")],
+        pre_aggregations=[
+            PreAggregation(
+                name="by_category",
+                measures=["avg_price"],
+                dimensions=["category"],
+            )
+        ],
+    )
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["products.avg_price"],
+        dimensions=["products.category"],
+    )
+
+    assert "products_preagg_by_category" not in sql
+
+
+def test_ratio_metric_preaggregation_rebuilds_from_additive_leaves(layer):
+    layer.use_preaggregations = True
+    layer.conn.execute("""
+        CREATE TABLE orders (
+            id INTEGER,
+            status VARCHAR,
+            amount DECIMAL(10, 2)
+        )
+    """)
+    layer.conn.execute("""
+        INSERT INTO orders VALUES
+            (1, 'completed', 100.00),
+            (2, 'completed', 300.00),
+            (3, 'pending', 50.00)
+    """)
+    layer.conn.execute("""
+        CREATE TABLE orders_preagg_by_status AS
+        SELECT
+            status,
+            SUM(amount) AS revenue_raw,
+            COUNT(*) AS count_raw
+        FROM orders
+        GROUP BY status
+    """)
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+            Metric(name="count", agg="count"),
+            Metric(name="revenue_per_order", type="ratio", numerator="revenue", denominator="count"),
+        ],
+        pre_aggregations=[
+            PreAggregation(
+                name="by_status",
+                measures=["revenue", "count"],
+                dimensions=["status"],
+            )
+        ],
+    )
+    layer.add_model(model)
+
+    preagg_sql = layer.compile(
+        metrics=["orders.revenue_per_order"],
+        dimensions=["orders.status"],
+        order_by=["status"],
+    )
+    baseline_rows = layer.query(
+        metrics=["orders.revenue_per_order"],
+        dimensions=["orders.status"],
+        order_by=["status"],
+        use_preaggregations=False,
+    ).fetchall()
+    preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
+
+    assert "orders_preagg_by_status" in preagg_sql
+    assert "SUM(revenue_raw) / NULLIF(SUM(count_raw), 0)" in preagg_sql
+    assert preagg_rows == baseline_rows
+
+
+def test_derived_metric_preaggregation_rebuilds_from_additive_leaves(layer):
+    layer.use_preaggregations = True
+    layer.conn.execute("""
+        CREATE TABLE orders (
+            id INTEGER,
+            status VARCHAR,
+            amount DECIMAL(10, 2),
+            discount DECIMAL(10, 2)
+        )
+    """)
+    layer.conn.execute("""
+        INSERT INTO orders VALUES
+            (1, 'completed', 100.00, 5.00),
+            (2, 'completed', 300.00, 10.00),
+            (3, 'pending', 50.00, 0.00)
+    """)
+    layer.conn.execute("""
+        CREATE TABLE orders_preagg_by_status AS
+        SELECT
+            status,
+            SUM(amount) AS revenue_raw,
+            SUM(discount) AS discounts_raw
+        FROM orders
+        GROUP BY status
+    """)
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+            Metric(name="discounts", agg="sum", sql="discount"),
+            Metric(name="net_revenue", type="derived", sql="revenue - discounts"),
+        ],
+        pre_aggregations=[
+            PreAggregation(
+                name="by_status",
+                measures=["revenue", "discounts"],
+                dimensions=["status"],
+            )
+        ],
+    )
+    layer.add_model(model)
+
+    preagg_sql = layer.compile(
+        metrics=["orders.net_revenue"],
+        dimensions=["orders.status"],
+        order_by=["status"],
+    )
+    baseline_rows = layer.query(
+        metrics=["orders.net_revenue"],
+        dimensions=["orders.status"],
+        order_by=["status"],
+        use_preaggregations=False,
+    ).fetchall()
+    preagg_rows = layer.adapter.execute(preagg_sql).fetchall()
+
+    assert "orders_preagg_by_status" in preagg_sql
+    assert "SUM(revenue_raw) - SUM(discounts_raw)" in preagg_sql
+    assert preagg_rows == baseline_rows
+
+
+def test_ratio_metric_preaggregation_rejects_count_distinct_leaf(layer):
+    layer.use_preaggregations = True
+    model = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+            Metric(name="unique_customers", agg="count_distinct", sql="customer_id"),
+            Metric(name="revenue_per_customer", type="ratio", numerator="revenue", denominator="unique_customers"),
+        ],
+        pre_aggregations=[
+            PreAggregation(
+                name="by_status",
+                measures=["revenue", "unique_customers"],
+                dimensions=["status"],
+            )
+        ],
+    )
+    layer.add_model(model)
+
+    sql = layer.compile(
+        metrics=["orders.revenue_per_customer"],
+        dimensions=["orders.status"],
+    )
+
+    assert "orders_preagg_by_status" not in sql
 
 
 def test_generate_materialization_sql_with_duckdb():

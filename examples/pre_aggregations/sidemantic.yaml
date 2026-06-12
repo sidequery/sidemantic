@@ -7,5 +7,5 @@ connection:
 # Pre-aggregation configuration
 preagg_schema: preagg  # Store in 'preagg' schema
 
-# Note: Pre-aggregations are automatically used when querying via CLI
-# The schema above tells the system where to find/create pre-agg tables
+# Note: CLI query routing is explicit; pass --use-preaggregations to opt in.
+# The schema above tells the system where to find/create pre-agg tables.

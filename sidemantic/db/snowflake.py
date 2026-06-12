@@ -3,7 +3,7 @@
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
+from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier, validate_query_history_params
 
 
 class SnowflakeResult:
@@ -232,6 +232,7 @@ class SnowflakeAdapter(BaseDatabaseAdapter):
         Returns:
             List of SQL query strings containing '-- sidemantic:' comments
         """
+        days_back, limit = validate_query_history_params(days_back, limit, max_days_back=7)
         sql = f"""
         SELECT query_text
         FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(

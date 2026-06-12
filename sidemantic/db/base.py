@@ -40,6 +40,47 @@ def validate_identifier(value: str, name: str = "identifier") -> str:
     return value
 
 
+def _coerce_positive_int(value: Any, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive integer")
+
+    if isinstance(value, int):
+        coerced = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError(f"{name} must be a positive integer")
+        try:
+            coerced = int(stripped, 10)
+        except ValueError:
+            raise ValueError(f"{name} must be a positive integer")
+    else:
+        raise ValueError(f"{name} must be a positive integer")
+
+    if coerced < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return coerced
+
+
+def validate_query_history_params(
+    days_back: int,
+    limit: int,
+    *,
+    max_days_back: int = 365,
+    max_limit: int = 10_000,
+) -> tuple[int, int]:
+    """Validate query-history lookback and row limit values for SQL interpolation."""
+    days_back_int = _coerce_positive_int(days_back, "days_back")
+    limit_int = _coerce_positive_int(limit, "limit")
+
+    if days_back_int > max_days_back:
+        raise ValueError(f"days_back must be <= {max_days_back}")
+    if limit_int > max_limit:
+        raise ValueError(f"limit must be <= {max_limit}")
+
+    return days_back_int, limit_int
+
+
 class BaseDatabaseAdapter(ABC):
     """Abstract base class for database adapters.
 

@@ -45,7 +45,7 @@ def check_altair_available() -> None:
     if alt is None or vl_convert is None:
         raise ImportError(
             "Altair and vl-convert-python are required for chart generation. "
-            "Install with: uv add altair vl-convert-python --optional serve"
+            "Install with: pip install 'sidemantic[charts]' or `uvx --from 'sidemantic[charts]' sidemantic ...`"
         )
 
 

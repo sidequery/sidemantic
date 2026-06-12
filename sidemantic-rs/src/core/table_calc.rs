@@ -153,7 +153,7 @@ impl TableCalculation {
         let partition = self.partition_clause();
         let over = self.combine_partition_order(&partition, &order);
         Ok(format!(
-            "SUM({field}) OVER ({over} ROWS UNBOUNDED PRECEDING)"
+            "SUM({field}) OVER ({over} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
         ))
     }
 
@@ -276,7 +276,7 @@ mod tests {
         let sql = calc.to_sql().unwrap();
         assert!(sql.contains("SUM(revenue) OVER"));
         assert!(sql.contains("ORDER BY order_date"));
-        assert!(sql.contains("ROWS UNBOUNDED PRECEDING"));
+        assert!(sql.contains("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"));
     }
 
     #[test]

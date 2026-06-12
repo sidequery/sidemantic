@@ -107,6 +107,15 @@ class Metric(BaseModel):
                         exp.Max: "max",
                         exp.Median: "median",
                     }
+                    for agg_class_name, agg_name in {
+                        "Stddev": "stddev",
+                        "StddevPop": "stddev_pop",
+                        "Variance": "variance",
+                        "VariancePop": "variance_pop",
+                    }.items():
+                        agg_class = getattr(exp, agg_class_name, None)
+                        if agg_class is not None:
+                            agg_map[agg_class] = agg_name
 
                     agg_func = None
                     inner_expr = None
@@ -148,6 +157,11 @@ class Metric(BaseModel):
                             "min": "min",
                             "max": "max",
                             "median": "median",
+                            "stddev": "stddev",
+                            "stddev_pop": "stddev_pop",
+                            "variance": "variance",
+                            "variance_pop": "variance_pop",
+                            "var_pop": "variance_pop",
                             "count": "count",
                         }
                         if func_name in func_map:
@@ -365,7 +379,7 @@ class Metric(BaseModel):
         if not self.agg:
             raise ValueError(f"Cannot convert complex metric '{self.name}' to SQL - use type-specific logic")
 
-        agg_func = self.agg.upper()
+        agg_func = {"variance_pop": "VAR_POP"}.get(self.agg, self.agg.upper())
         if agg_func == "COUNT_DISTINCT":
             agg_func = "COUNT(DISTINCT"
             return f"{agg_func} {self.sql_expr})"

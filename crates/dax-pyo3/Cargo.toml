@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 dax-parser = { path = "../dax-parser" }
-pyo3 = { version = "0.21", features = ["extension-module", "abi3-py311"] }
-pythonize = "0.21"
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py311"] }
+pythonize = "0.24"
 serde_json = "1.0"
 serde = "1.0"

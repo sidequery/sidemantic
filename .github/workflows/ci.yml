@@ -344,7 +344,8 @@ jobs:
       - name: Smoke C ABI header and static library
         run: |
           cargo build --release --lib
-          cc -std=c11 -Wall -Wextra -I include tests/c_abi_smoke.c target/release/libsidemantic.a -lpthread -ldl -lm -lrt -o /tmp/sidemantic_c_abi_smoke
+          SIDEMANTIC_STATICLIB="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/release/libsidemantic.a"
+          cc -std=c11 -Wall -Wextra -I include tests/c_abi_smoke.c "$SIDEMANTIC_STATICLIB" -lpthread -ldl -lm -lrt -o /tmp/sidemantic_c_abi_smoke
           /tmp/sidemantic_c_abi_smoke
 
       - name: Check WASM build

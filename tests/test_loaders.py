@@ -373,3 +373,84 @@ models:
     assert "orders" in layer.graph.models
     assert layer.graph.models["orders"].get_metric("margin_label") is not None
     assert "margin_label" not in layer.graph.metrics
+
+
+def test_load_from_directory_lenient_surfaces_adapter_parse_failures(tmp_path, monkeypatch):
+    from sidemantic.adapters.sidemantic import SidemanticAdapter
+
+    (tmp_path / "broken.yml").write_text("models:\n  - name: broken\n")
+
+    def _raise_parse_failure(self, path):
+        raise ValueError("simulated native yaml failure")
+
+    monkeypatch.setattr(SidemanticAdapter, "parse", _raise_parse_failure)
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    warnings = layer.describe_models()["import_warnings"]
+    assert warnings == [
+        {
+            "code": "adapter_parse_error",
+            "context": "loader",
+            "source_format": "Sidemantic",
+            "source_file": "broken.yml",
+            "message": "simulated native yaml failure",
+        }
+    ]
+
+
+def test_load_from_directory_strict_raises_tmdl_project_parse_failures(tmp_path, monkeypatch):
+    from sidemantic.adapters.tmdl import TMDLAdapter
+
+    tmdl_file = tmp_path / "definition" / "tables" / "Sales.tmdl"
+    tmdl_file.parent.mkdir(parents=True)
+    tmdl_file.write_text("table Sales\n")
+
+    def _raise_parse_failure(self, path):
+        raise ValueError("simulated tmdl failure")
+
+    monkeypatch.setattr(TMDLAdapter, "parse", _raise_parse_failure)
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="Could not parse .*definition"):
+        load_from_directory(layer, tmp_path)
+
+
+def test_load_from_directory_lenient_does_not_partially_parse_tmdl_project_after_project_failure(tmp_path, monkeypatch):
+    from sidemantic.adapters.tmdl import TMDLAdapter
+    from sidemantic.core.model import Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    definition_dir = tmp_path / "definition"
+    tmdl_file = definition_dir / "tables" / "Sales.tmdl"
+    tmdl_file.parent.mkdir(parents=True)
+    tmdl_file.write_text("table Sales\n")
+
+    calls: list[Path] = []
+
+    def _parse_project_only(self, path):
+        source = Path(path)
+        calls.append(source)
+        if source.is_dir():
+            raise ValueError("simulated project-level failure")
+        graph = SemanticGraph()
+        graph.add_model(Model(name="PartialSales", table="sales", primary_key="id"))
+        return graph
+
+    monkeypatch.setattr(TMDLAdapter, "parse", _parse_project_only)
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path, strict=False)
+
+    assert calls == [definition_dir]
+    assert layer.graph.models == {}
+    assert layer.describe_models()["import_warnings"] == [
+        {
+            "code": "tmdl_parse_error",
+            "context": "loader",
+            "source_format": "TMDL",
+            "source_file": "definition",
+            "message": "simulated project-level failure",
+        }
+    ]

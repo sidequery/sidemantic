@@ -10,6 +10,16 @@ from sidemantic.core.parameter import Parameter
 from sidemantic.core.table_calculation import TableCalculation
 
 
+def _relationship_local_key_columns(model: Model, relationship: object) -> list[str]:
+    primary_key = getattr(relationship, "primary_key", None)
+    if primary_key:
+        return relationship.primary_key_columns
+    tmdl_from_column = getattr(relationship, "_tmdl_from_column", None)
+    if isinstance(tmdl_from_column, str) and tmdl_from_column.strip():
+        return [tmdl_from_column]
+    return model.primary_key_columns
+
+
 def _reverse_custom_join_condition(sql: str | None) -> str | None:
     if sql is None:
         return None
@@ -60,6 +70,7 @@ class SemanticGraph:
         self.metrics: dict[str, Metric] = {}
         self.table_calculations: dict[str, TableCalculation] = {}
         self.parameters: dict[str, Parameter] = {}
+        self.import_warnings: list[dict[str, object]] = []
         self.metadata: dict[str, Any] = {}
         self._version = 0
         self._adjacency_dirty = True
@@ -264,6 +275,9 @@ class SemanticGraph:
         # Build adjacency from join relationships
         for model_name, model in self.models.items():
             for relationship in model.relationships:
+                if not relationship.active:
+                    continue
+
                 related_model = relationship.name
                 if related_model not in self.models:
                     continue  # Skip if related model doesn't exist yet
@@ -323,9 +337,7 @@ class SemanticGraph:
                 else:
                     # one_to_one or one_to_many: related model has foreign key pointing here
                     # Example: customers one_to_many orders (customers.id <- orders.customer_id)
-                    local_keys = (
-                        relationship.primary_key_columns if relationship.primary_key else model.primary_key_columns
-                    )
+                    local_keys = _relationship_local_key_columns(model, relationship)
                     remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
 
                 custom_condition = _custom_join_condition(relationship.sql)

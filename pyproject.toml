@@ -100,6 +100,9 @@ lsp = [
     "lsprotocol>=2025.0.0",
     "pygls>=2.0.0",
 ]
+dax = [
+    "sidemantic-dax>=0.1.0",
+]
 lookml = [
     "lkml>=1.3.7",
 ]
@@ -118,7 +121,7 @@ all-databases = [
     "sidemantic[postgres,bigquery,snowflake,clickhouse,databricks,spark,adbc]",
 ]
 full = [
-    "sidemantic[workbench,mcp,apps,charts,lsp,lookml,malloy,metricflow,widget,api]",
+    "sidemantic[workbench,mcp,apps,charts,lsp,dax,lookml,malloy,metricflow,widget,api]",
 ]
 
 [build-system]
@@ -128,6 +131,16 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.sdist]
 exclude = [
   "/.claude",
+  "/.git",
+  "/.github",
+  "/.mypy_cache",
+  "/.pytest_cache",
+  "/.ruff_cache",
+  "/.venv",
+  "/crates/dax-pyo3/dist",
+  "/crates/dax-pyo3/target",
+  "/crates/dax-parser/target",
+  "/dist",
   "/docs",
   "/tests",
   "/examples/__pycache__",
@@ -140,6 +153,13 @@ exclude = [
   "/examples/sidemantic",
   "/examples/sql",
   "/examples/superset",
+  "/sidemantic-duckdb",
+  "/sidemantic-rs",
+  "/skills",
+  "/target",
+  "/vscode-sidemantic",
+  "**/__pycache__",
+  "*.pyc",
   "*.pkg",
   "test_*.py",
   "uv.lock",
@@ -185,6 +205,9 @@ source = ["sidemantic"]
 
 [tool.uv]
 prerelease = "if-necessary"
+
+[tool.uv.sources]
+sidemantic-dax = { path = "crates/dax-pyo3" }
 
 [dependency-groups]
 dev = [

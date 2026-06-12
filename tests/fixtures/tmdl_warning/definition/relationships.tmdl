@@ -1,0 +1,5 @@
+relationship 'Bad-Relationship'
+    fromColumn: SalesCategory
+    toColumn: Missing[Category]
+    fromCardinality: many
+    toCardinality: one

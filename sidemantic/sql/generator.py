@@ -12,6 +12,7 @@ from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
+from sidemantic.validation import QueryValidationError
 
 
 @lru_cache(maxsize=4096)
@@ -1339,6 +1340,7 @@ class SQLGenerator:
             CTE SQL string
         """
         model = self.graph.get_model(model_name)
+        self._ensure_sql_model(model_name, model)
         all_models = all_models or {model_name}
         needs_keyed_joins = self._model_needs_keyed_join_columns(model_name, all_models)
 
@@ -1431,6 +1433,7 @@ class SQLGenerator:
         # Add only needed dimension columns
         for dimension in model.dimensions:
             if dimension.name in needed_dimensions and dimension.name not in columns_added:
+                self._ensure_sql_dimension(model_name, dimension)
                 # For time dimensions with granularity, apply DATE_TRUNC
                 # Use window_sql_expr for CTE projection so window functions
                 # (LEAD, LAG, etc.) are evaluated here.
@@ -1454,6 +1457,7 @@ class SQLGenerator:
 
             if not dimension:
                 continue
+            self._ensure_sql_dimension(model_name, dimension)
 
             if gran and dimension.type == "time":
                 # Apply time granularity (in addition to base column)
@@ -1577,6 +1581,7 @@ class SQLGenerator:
                 continue
             dim = model.get_dimension(col_name)
             if dim:
+                self._ensure_sql_dimension(model_name, dim)
                 dim_sql = replace_model_placeholder(dim.window_sql_expr)
                 select_cols.append(f"{dim_sql} AS {self._quote_alias(col_name)}")
                 columns_added.add(col_name)
@@ -2682,6 +2687,20 @@ class SQLGenerator:
             return f"COUNT({raw_col})"
         return f"{agg_func}({raw_col})"
 
+    def _ensure_sql_dimension(self, model_name: str, dimension) -> None:
+        if getattr(dimension, "has_untranslated_dax", False):
+            raise QueryValidationError(
+                f"Dimension '{model_name}.{dimension.name}' contains DAX expression but has no SQL translation. "
+                "DAX lowering is not available in this build."
+            )
+
+    def _ensure_sql_model(self, model_name: str, model) -> None:
+        if getattr(model, "has_untranslated_dax", False):
+            raise QueryValidationError(
+                f"Model '{model_name}' contains DAX table expression but has no SQL/table translation. "
+                "DAX table lowering is not available in this build."
+            )
+
     def _build_measure_window_total_sql(self, model_name: str, measure) -> str:
         """Build an all-rows window aggregate for a model-scoped measure."""
         agg_func = measure.agg.upper()
@@ -2790,6 +2809,12 @@ class SQLGenerator:
         Returns:
             SQL expression string
         """
+        if getattr(metric, "has_untranslated_dax", False):
+            raise QueryValidationError(
+                f"Metric '{metric.name}' contains DAX expression but has no SQL translation. "
+                "DAX lowering is not available in this build."
+            )
+
         if metric.type == "ratio":
             # numerator / NULLIF(denominator, 0)
             if not metric.numerator or not metric.denominator:
@@ -3051,6 +3076,7 @@ class SQLGenerator:
 
         if not model or not metric:
             raise ValueError(f"No model found for cohort metric {metric_name}")
+        self._ensure_sql_model(model_name or model.name, model)
 
         # Validate entity identifier
         if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", metric.entity):
@@ -3333,6 +3359,7 @@ FROM (
 
         if not model:
             raise ValueError(f"No model found for retention metric {metric_name}")
+        self._ensure_sql_model(model.name, model)
 
         # Defaults (use `is not None` to avoid converting 0 to the default)
         periods = metric.periods if metric.periods is not None else 28
@@ -3542,6 +3569,7 @@ JOIN cohort_sizes c ON r.cohort_date = c.cohort_date{order_clause}{limit_clause}
 
         if not model:
             raise ValueError(f"No model found for conversion metric {metric_name}")
+        self._ensure_sql_model(model.name, model)
 
         # Build SQL with self-join pattern
         # base_events: filter for base_event
@@ -3734,6 +3762,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         if not model:
             raise ValueError(f"No model found for conversion metric {metric_name}")
+        self._ensure_sql_model(model.name, model)
 
         # Find timestamp dimension: prefer model.default_time_dimension, fall back to first time dim
         timestamp_dim = None

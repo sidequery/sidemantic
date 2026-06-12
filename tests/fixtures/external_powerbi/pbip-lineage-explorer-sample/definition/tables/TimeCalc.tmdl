@@ -1,0 +1,7 @@
+table TimeCalcGroup
+	calculationGroup
+	column Name
+		dataType: string
+	calculationItem YTD = CALCULATE(SELECTEDMEASURE(), DATESYTD(DateTable[Date]))
+	calculationItem QTD = CALCULATE(SELECTEDMEASURE(), DATESQTD(DateTable[Date]))
+	calculationItem MTD = CALCULATE(SELECTEDMEASURE(), DATESMTD(DateTable[Date]))

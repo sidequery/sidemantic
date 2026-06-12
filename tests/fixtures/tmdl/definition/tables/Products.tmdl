@@ -1,0 +1,9 @@
+/// Product dimension
+table Products
+    column 'Product Key'
+        dataType: int64
+        isKey
+        sourceColumn: ProductKey
+    column 'Product Name'
+        dataType: string
+        sourceColumn: ProductName

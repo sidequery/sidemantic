@@ -1,0 +1,13 @@
+table Customers
+	column CustomerID
+		dataType: int64
+		sourceColumn: CustomerID
+	column CustomerName
+		dataType: string
+		sourceColumn: CustomerName
+	column Region
+		dataType: string
+		sourceColumn: Region
+	column Segment
+		dataType: string
+		sourceColumn: Segment

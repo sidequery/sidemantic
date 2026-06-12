@@ -1,0 +1,33 @@
+table Sales
+	column OrderDate
+		dataType: dateTime
+		sourceColumn: OrderDate
+	column Amount
+		dataType: decimal
+		sourceColumn: Amount
+	column ProductID
+		dataType: int64
+		sourceColumn: ProductID
+	column CustomerID
+		dataType: int64
+		sourceColumn: CustomerID
+	column Quantity
+		dataType: int64
+		sourceColumn: Quantity
+	measure 'Total Sales' = SUM(Sales[Amount])
+		formatString: $#,##0.00
+	measure 'Avg Sales' = AVERAGE(Sales[Amount])
+		formatString: $#,##0.00
+	measure 'YoY Growth' =
+		VAR CurrentYear = CALCULATE([Total Sales], DATESINPERIOD(DateTable[Date], MAX(DateTable[Date]), -1, YEAR))
+		VAR PreviousYear = CALCULATE([Total Sales], DATESINPERIOD(DateTable[Date], MAX(DateTable[Date]), -2, YEAR))
+		RETURN
+			DIVIDE(CurrentYear - PreviousYear, PreviousYear)
+		formatString: 0.00%
+	measure 'Total Quantity' = SUM(Sales[Quantity])
+		formatString: #,##0
+	measure 'Unused Metric' = COUNTROWS(Sales) * 0
+		formatString: #,##0
+	partition Sales = m
+		mode: import
+		source = sales_src

@@ -22,6 +22,19 @@ def test_generate_yaml_schema_structure():
     assert "Parameter" in defs
 
 
+def test_generate_yaml_schema_includes_dax_authoring_fields():
+    schema = generate_yaml_schema()
+
+    model_props = schema["properties"]["models"]["items"]["properties"]
+    top_metric_props = schema["properties"]["metrics"]["items"]["properties"]
+    dimension_props = schema["$defs"]["Dimension"]["properties"]
+    metric_props = schema["$defs"]["Metric"]["properties"]
+
+    for props in (model_props, top_metric_props, dimension_props, metric_props):
+        assert props["dax"]["anyOf"][0] == {"type": "string"}
+        assert props["expression_language"]["anyOf"][0] == {"enum": ["sql", "dax"], "type": "string"}
+
+
 def test_export_schema_writes_file(tmp_path):
     output_path = tmp_path / "schema.json"
     export_schema(output_path)

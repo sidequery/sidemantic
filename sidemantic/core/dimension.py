@@ -14,6 +14,10 @@ class Dimension(BaseModel):
     name: str = Field(..., description="Unique dimension name within model")
     type: Literal["categorical", "time", "boolean", "numeric"] = Field(..., description="Dimension type")
     sql: str | None = Field(None, description="SQL expression (defaults to name; accepts 'expr' as alias)")
+    dax: str | None = Field(None, description="DAX expression source text")
+    expression_language: Literal["sql", "dax"] | None = Field(
+        None, description="Expression language for sql/expr/dax authoring"
+    )
     granularity: Literal["second", "minute", "hour", "day", "week", "month", "quarter", "year"] | None = Field(
         None, description="Base granularity for time dimensions"
     )
@@ -81,6 +85,11 @@ class Dimension(BaseModel):
         expression for CTE projection.
         """
         return self.sql or self.name
+
+    @property
+    def has_untranslated_dax(self) -> bool:
+        """Whether this dimension preserves DAX source without a SQL translation."""
+        return self.expression_language == "dax" and bool(self.dax) and not self.sql
 
     @property
     def window_sql_expr(self) -> str:

@@ -223,7 +223,7 @@ class RustSemanticLayerAdapter:
     def _rust_validate(self) -> None:
         response = self._rust_request({"action": "validate", "models_yaml": self._models_yaml()})
         if response["status"] == "error":
-            raise ModelValidationError(response["error"])
+            raise ModelValidationError(_python_style_model_validation_error(response["error"]))
 
     def _initial_connection(self, connection: Any):
         if not isinstance(connection, str):
@@ -760,6 +760,13 @@ def _table_calculation_to_rust_dict(calc) -> dict[str, Any]:
 
 def _drop_none(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item is not None}
+
+
+def _python_style_model_validation_error(error: str) -> str:
+    return error.replace(
+        "must have one of 'table', 'sql', or 'source_uri' defined",
+        "must have one of 'table', 'sql', 'dax', or 'source_uri' defined",
+    )
 
 
 def _python_style_rewrite_sql(sql: str) -> str:

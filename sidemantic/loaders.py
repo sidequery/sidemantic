@@ -351,9 +351,26 @@ def _looks_like_semantic_yaml_text(content: str) -> bool:
 
 def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
     """Return True for explicit native Sidemantic YAML files without models."""
-    if not isinstance(data, dict) or data.get("version") != 1:
+    from sidemantic.adapters.sidemantic import METRIC_FIELDS, NATIVE_FORMAT_VERSION, ROOT_FIELDS
+
+    if not isinstance(data, dict):
         return False
-    return any(_yaml_has_top_level_key(data, key) for key in ("metrics", "parameters", "sql_metrics", "sql_segments"))
+    if not any(_yaml_has_top_level_key(data, key) for key in ("metrics", "parameters", "sql_metrics", "sql_segments")):
+        return False
+    if data.get("version") == NATIVE_FORMAT_VERSION:
+        return True
+    if data.get("version") is not None:
+        return False
+
+    # The version key is optional in the native format. Unversioned files count
+    # as native when their root keys match the native schema and metric entries
+    # use flat native fields (MetricFlow nests details under type_params).
+    if not set(data) <= ROOT_FIELDS:
+        return False
+    metrics = data.get("metrics") or []
+    if not isinstance(metrics, list):
+        return False
+    return all(isinstance(metric_def, dict) and set(metric_def) <= METRIC_FIELDS for metric_def in metrics)
 
 
 def _yaml_has_top_level_key(data: dict, key: str) -> bool:

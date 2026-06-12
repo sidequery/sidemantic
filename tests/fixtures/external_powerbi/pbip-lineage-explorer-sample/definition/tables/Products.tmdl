@@ -1,0 +1,15 @@
+table Products
+	column ProductID
+		dataType: int64
+		sourceColumn: ProductID
+	column ProductName
+		dataType: string
+		sourceColumn: ProductName
+	column Category
+		dataType: string
+		sourceColumn: Category
+	column UnitPrice
+		dataType: decimal
+		sourceColumn: UnitPrice
+	measure 'Product Count' = DISTINCTCOUNT(Products[ProductID])
+		formatString: #,##0

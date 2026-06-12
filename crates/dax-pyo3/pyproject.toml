@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.7"]
+build-backend = "maturin"
+
+[project]
+name = "sidemantic-dax"
+version = "0.1.0"
+description = "Python bindings for dax-parser"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "AGPL-3.0-only"}
+
+[tool.maturin]
+module-name = "sidemantic_dax._native"
+python-source = "python"
+features = ["pyo3/extension-module", "pyo3/abi3-py311"]
+exclude = ["dist/*", "target/*"]

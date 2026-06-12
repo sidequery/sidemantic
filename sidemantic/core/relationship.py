@@ -39,6 +39,7 @@ class Relationship(BaseModel):
     related_foreign_key: str | None = Field(
         default=None, description="Foreign key in junction model pointing to related model"
     )
+    active: bool = Field(default=True, description="Whether the relationship is active by default")
     related_foreign_key_columns: list[str] | None = Field(
         default=None, description="Foreign key columns in junction model pointing to related model"
     )

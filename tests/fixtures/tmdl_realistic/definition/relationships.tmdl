@@ -1,0 +1,15 @@
+relationship 'Sales-Products'
+    fromColumn: Sales[ProductKey]
+    toColumn: Products[ProductKey]
+    fromCardinality: many
+    toCardinality: one
+    isActive
+    annotation RelationshipLineage
+        value: "sales_to_products"
+
+relationship 'Sales-Calendar'
+    fromColumn: Sales[OrderDate]
+    toColumn: Calendar[Date]
+    fromCardinality: many
+    toCardinality: one
+    crossFilteringBehavior: bothDirections

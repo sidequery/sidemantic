@@ -1,0 +1,25 @@
+# comment that should be ignored
+/// Sales fact table
+table 'Sales'
+    column 'Sale ID'
+        dataType: int64
+        isKey
+        sourceColumn: SaleID
+    column 'Product Key'
+        dataType: int64
+        sourceColumn: ProductKey
+    column 'Order Date'
+        dataType: date
+        sourceColumn: OrderDate
+    column Amount
+        dataType: decimal
+        sourceColumn: Amount
+        formatString: "$#,##0.00"
+    measure 'Total Sales' = SUM('Sales'[Amount])
+        formatString: "$#,##0.00"
+    measure 'Sales LY' =
+        VAR ly = CALCULATE([Total Sales], SAMEPERIODLASTYEAR('Sales'[Order Date]))
+        RETURN ly
+    measure 'Backtick Measure' = ```
+        SUM('Sales'[Amount])
+        ```

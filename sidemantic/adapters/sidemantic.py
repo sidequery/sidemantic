@@ -36,6 +36,8 @@ MODEL_FIELDS = {
     "extends",
     "table",
     "sql",
+    "dax",
+    "expression_language",
     "source_uri",
     "primary_key",
     "primary_key_columns",
@@ -61,6 +63,8 @@ DIMENSION_FIELDS = {
     "type",
     "sql",
     "expr",
+    "dax",
+    "expression_language",
     "granularity",
     "supported_granularities",
     "description",
@@ -81,6 +85,8 @@ METRIC_FIELDS = {
     "sql",
     "expr",
     "measure",
+    "dax",
+    "expression_language",
     "metrics",
     "numerator",
     "denominator",
@@ -516,6 +522,7 @@ class SidemanticAdapter(BaseAdapter):
                 through_foreign_key=relationship_def.get("through_foreign_key"),
                 through_foreign_key_columns=relationship_def.get("through_foreign_key_columns"),
                 related_foreign_key=relationship_def.get("related_foreign_key"),
+                active=relationship_def.get("active", True),
                 related_foreign_key_columns=relationship_def.get("related_foreign_key_columns"),
                 sql=relationship_sql,
             )
@@ -534,17 +541,19 @@ class SidemanticAdapter(BaseAdapter):
                 name=dim_def.get("name"),
                 type=dim_def.get("type", "categorical"),  # Default to categorical
                 sql=dim_def.get("sql") or dim_def.get("expr"),
+                dax=dim_def.get("dax"),
+                expression_language=dim_def.get("expression_language"),
                 granularity=dim_def.get("granularity"),
                 supported_granularities=dim_def.get("supported_granularities"),
                 description=dim_def.get("description"),
                 label=dim_def.get("label"),
                 format=dim_def.get("format"),
                 value_format_name=dim_def.get("value_format_name"),
+                public=dim_def.get("public", True),
                 parent=dim_def.get("parent"),
                 metadata=dim_def.get("metadata"),
                 meta=dim_def.get("meta"),
                 window=dim_def.get("window"),
-                public=dim_def.get("public", True),
             )
             dimensions.append(dimension)
 
@@ -651,6 +660,8 @@ class SidemanticAdapter(BaseAdapter):
         for field in [
             "table",
             "sql",
+            "dax",
+            "expression_language",
             "source_uri",
             "description",
             "extends",
@@ -701,6 +712,8 @@ class SidemanticAdapter(BaseAdapter):
             "description",
             "label",
             "metadata",
+            "dax",
+            "expression_language",
             "agg",
             "numerator",
             "denominator",
@@ -790,10 +803,14 @@ class SidemanticAdapter(BaseAdapter):
             Model definition dictionary
         """
         result = {"name": model.name}
+        model_dax = _dax_text(model)
 
-        if model.table:
+        if model_dax:
+            result["dax"] = model_dax
+            result["expression_language"] = "dax"
+        elif model.table:
             result["table"] = model.table
-        if model.sql:
+        if model.sql and not model_dax:
             result["sql"] = model.sql
         if model.source_uri:
             result["source_uri"] = model.source_uri
@@ -829,6 +846,7 @@ class SidemanticAdapter(BaseAdapter):
                         if relationship.related_foreign_key
                         else {}
                     ),
+                    **({"active": relationship.active} if relationship.active is not True else {}),
                     **(
                         {"related_foreign_key_columns": relationship.related_foreign_key_columns}
                         if relationship.related_foreign_key_columns
@@ -836,6 +854,7 @@ class SidemanticAdapter(BaseAdapter):
                     ),
                     **({"sql": relationship.sql} if relationship.sql else {}),
                     **({"metadata": relationship.metadata} if relationship.metadata else {}),
+                    **({"active": relationship.active} if relationship.active is not True else {}),
                 }
                 for relationship in model.relationships
             ]
@@ -852,7 +871,13 @@ class SidemanticAdapter(BaseAdapter):
                     "name": dim.name,
                     "type": dim.type,
                 }
-                if dim.sql:
+                dim_dax = _dax_text(dim)
+                if dim_dax:
+                    dim_def["dax"] = dim_dax
+                    dim_def["expression_language"] = "dax"
+                    if dim.sql:
+                        dim_def["sql"] = dim.sql
+                elif dim.sql:
                     dim_def["sql"] = dim.sql
                 if dim.granularity:
                     dim_def["granularity"] = dim.granularity
@@ -886,7 +911,13 @@ class SidemanticAdapter(BaseAdapter):
                     "name": measure.name,
                     "agg": measure.agg,
                 }
-                if measure.sql:
+                measure_dax = _dax_text(measure)
+                if measure_dax:
+                    measure_def["dax"] = measure_dax
+                    measure_def["expression_language"] = "dax"
+                    if measure.sql:
+                        measure_def["sql"] = measure.sql
+                elif measure.sql:
                     measure_def["sql"] = measure.sql
                 if measure.filters:
                     measure_def["filters"] = measure.filters
@@ -957,6 +988,8 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["window_frame"] = measure.window_frame
                 if measure.window_order:
                     measure_def["window_order"] = measure.window_order
+                if not measure.public:
+                    measure_def["public"] = measure.public
                 result["metrics"].append(measure_def)
 
         # Export model-level default_time_dimension
@@ -1053,13 +1086,31 @@ class SidemanticAdapter(BaseAdapter):
         if measure.having:
             result["having"] = measure.having
         if measure.sql:
-            result["sql"] = measure.sql
+            measure_dax = _dax_text(measure)
+            if measure_dax:
+                result["dax"] = measure_dax
+                result["expression_language"] = "dax"
+                result["sql"] = measure.sql
+            else:
+                result["sql"] = measure.sql
+                # Auto-detect and export dependencies for derived measures
+                if measure.type == "derived":
+                    dependencies = measure.get_dependencies(graph)
+                    if dependencies:
+                        result["metrics"] = list(dependencies)
+        else:
+            measure_dax = _dax_text(measure)
+            if measure_dax:
+                result["dax"] = measure_dax
+                result["expression_language"] = "dax"
         if measure.agg:
             result["agg"] = measure.agg
         if measure.window:
             result["window"] = measure.window
         if measure.filters:
             result["filters"] = measure.filters
+        if not measure.public:
+            result["public"] = measure.public
 
         return result
 
@@ -1136,3 +1187,13 @@ class SidemanticAdapter(BaseAdapter):
             result["default_to_today"] = parameter.default_to_today
 
         return result
+
+
+def _dax_text(obj) -> str | None:
+    dax = getattr(obj, "dax", None)
+    if isinstance(dax, str) and dax.strip():
+        return dax
+    expression = getattr(obj, "_dax_expression", None)
+    if isinstance(expression, str) and expression.strip():
+        return expression
+    return None

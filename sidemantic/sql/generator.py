@@ -1,15 +1,55 @@
 """SQL generation using SQLGlot builder API."""
 
 import logging
+import threading
+from functools import lru_cache
 
 import sqlglot
 from sqlglot import exp, select
+from sqlglot.dialects.dialect import Dialect
 
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.validation import QueryValidationError
+
+
+@lru_cache(maxsize=4096)
+def _quote_identifier_cached(name: str, dialect: str, is_simple: bool) -> str:
+    """Cached identifier quoting, shared across all SQLGenerator instances."""
+    if is_simple:
+        return sqlglot.to_identifier(name).sql(dialect=dialect)
+    return sqlglot.to_identifier(name, quoted=True).sql(dialect=dialect)
+
+
+_dialect_cache: dict[str, Dialect] = {}
+_tls = threading.local()
+
+
+def _cached_dialect(dialect: str) -> Dialect:
+    """Get a Dialect instance with a thread-local cached generator."""
+    if dialect in _dialect_cache:
+        return _dialect_cache[dialect]
+    instance = Dialect.get_or_raise(dialect)
+    orig_generator = instance.generator
+
+    def _fast_generator(**opts):
+        if opts:
+            return orig_generator(**opts)
+        generators = getattr(_tls, "generators", None)
+        if generators is None:
+            generators = {}
+            _tls.generators = generators
+        gen = generators.get(dialect)
+        if gen is None:
+            gen = orig_generator()
+            generators[dialect] = gen
+        return gen
+
+    instance.generator = _fast_generator
+    _dialect_cache[dialect] = instance
+    return instance
 
 
 class SQLGenerator:
@@ -34,6 +74,7 @@ class SQLGenerator:
         self.dialect = dialect
         self.preagg_database = preagg_database
         self.preagg_schema = preagg_schema
+        self._dialect_instance = _cached_dialect(dialect)
         self._generate_cache: dict[tuple[object, ...], str] = {}
         self._generate_cache_limit = 256
 
@@ -292,9 +333,7 @@ class SQLGenerator:
         Delegates to sqlglot which handles reserved words (e.g., 'order')
         and special characters automatically.
         """
-        if self._is_simple_identifier(name):
-            return sqlglot.to_identifier(name, quoted=False).sql(dialect=self.dialect)
-        return sqlglot.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+        return _quote_identifier_cached(name, self.dialect, self._is_simple_identifier(name))
 
     def _cte_name(self, model_name: str) -> str:
         """Get the CTE identifier name for a model."""
@@ -2005,9 +2044,9 @@ class SQLGenerator:
                     dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
                     col_name = dimension_output_name(dim_ref, dim_name, gran)
                     # NULL-safe equality that works for all column types
-                    lhs = exp.column(col_name, table=cte_names[0])
-                    rhs = exp.column(col_name, table=cte_name)
-                    join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self.dialect))
+                    lhs = exp.Column(this=col_name, table=cte_names[0])
+                    rhs = exp.Column(this=col_name, table=cte_name)
+                    join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self._dialect_instance))
 
                 join_clause = " AND ".join(join_conditions)
                 join_clauses.append(f"FULL OUTER JOIN {cte_name} ON {join_clause}")

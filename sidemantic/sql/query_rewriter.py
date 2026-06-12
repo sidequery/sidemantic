@@ -124,6 +124,7 @@ class QueryRewriter:
         self.dialect = dialect
         self.use_preaggregations = use_preaggregations
         self.generator = SQLGenerator(graph, dialect=dialect)
+        self._dialect_instance = self.generator._dialect_instance
         self._rewrite_cache: dict[tuple[object, ...], str] = {}
         self._rewrite_cache_limit = 256
         self._use_rust_rewriter = os.getenv("SIDEMANTIC_RS_REWRITER", "0") == "1"
@@ -227,7 +228,7 @@ class QueryRewriter:
                 return cache_result(sql)
 
         # Projection-only SQL (no root FROM/CTE) should pass through unless Yardstick paths above matched.
-        if parsed.args.get("from") is None and parsed.args.get("with") is None:
+        if parsed.args.get("from_") is None and parsed.args.get("with_") is None:
             if any(isinstance(expr, exp.Star) for expr in parsed.expressions):
                 if strict:
                     raise ValueError("SELECT * requires a FROM clause with a single table")
@@ -247,7 +248,7 @@ class QueryRewriter:
                 return cache_result(rust_rewritten)
 
         # Check if this is a CTE-based query or has subqueries
-        has_ctes = parsed.args.get("with") is not None
+        has_ctes = parsed.args.get("with_") is not None
         has_subquery_in_from = self._has_subquery_in_from(parsed)
         has_subquery_in_joins = any(isinstance(join.this, exp.Subquery) for join in (parsed.args.get("joins") or []))
 
@@ -270,7 +271,7 @@ class QueryRewriter:
                 aliases[table_expr.alias_or_name] = model_name
                 aliases[model_name] = model_name
 
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if from_clause:
             add_table(from_clause.this)
         for join in select.args.get("joins") or []:
@@ -394,7 +395,7 @@ class QueryRewriter:
                 warnings=["Yardstick semantic SQL uses a separate rewrite path."],
             )
 
-        if parsed.args.get("from") is None and parsed.args.get("with") is None:
+        if parsed.args.get("from_") is None and parsed.args.get("with_") is None:
             if any(isinstance(expr, exp.Star) for expr in parsed.expressions):
                 if strict:
                     raise ValueError("SELECT * requires a FROM clause with a single table")
@@ -426,7 +427,7 @@ class QueryRewriter:
                     warnings=["Rust rewriter handled this query before the Python planner."],
                 )
 
-        has_ctes = parsed.args.get("with") is not None
+        has_ctes = parsed.args.get("with_") is not None
         has_subquery_in_from = self._has_subquery_in_from(parsed)
         has_subquery_in_joins = any(isinstance(join.this, exp.Subquery) for join in (parsed.args.get("joins") or []))
 
@@ -846,11 +847,11 @@ class QueryRewriter:
         parsed: exp.Select,
         rejected_rules: dict[str, str],
     ) -> _WrappedOptimization | None:
-        with_clause = parsed.args.get("with")
+        with_clause = parsed.args.get("with_")
         if not with_clause or len(with_clause.expressions) < 2:
             return None
 
-        from_clause = parsed.args.get("from")
+        from_clause = parsed.args.get("from_")
         if not from_clause or not isinstance(from_clause.this, exp.Table):
             rejected_rules["linear_cte_chain_flattening"] = "root query does not read from a CTE"
             return None
@@ -887,7 +888,7 @@ class QueryRewriter:
             if self._references_semantic_model(cte_select):
                 base_cte = cte
                 break
-            cte_from = cte_select.args.get("from")
+            cte_from = cte_select.args.get("from_")
             if (
                 not cte_from
                 or not isinstance(cte_from.this, exp.Table)
@@ -931,7 +932,7 @@ class QueryRewriter:
             previous_name = step_name
 
         root_step = parsed.copy()
-        root_step.set("with", None)
+        root_step.set("with_", None)
         root_filters = self._apply_linear_wrapper_step(
             plan,
             root_step,
@@ -964,7 +965,7 @@ class QueryRewriter:
         applied_rules: list[str],
     ) -> list[str] | None:
         rule_name = "linear_cte_chain_flattening"
-        if select.args.get("with"):
+        if select.args.get("with_"):
             rejected_rules[rule_name] = "nested WITH is not supported in a linear CTE step"
             return None
         if self._outer_has_aggregate_boundary(select):
@@ -1130,7 +1131,7 @@ class QueryRewriter:
         parsed: exp.Select,
         rejected_rules: dict[str, str],
     ) -> _WrappedOptimization | None:
-        from_clause = parsed.args.get("from")
+        from_clause = parsed.args.get("from_")
         if not from_clause or not isinstance(from_clause.this, exp.Subquery):
             return None
 
@@ -1536,12 +1537,12 @@ class QueryRewriter:
     def _wrapped_semantic_source(
         self, select: exp.Select, rejected_rules: dict[str, str]
     ) -> _WrappedSemanticSource | None:
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause:
             rejected_rules["wrapped_semantic_optimizer"] = "outer query has no FROM clause"
             return None
 
-        with_clause = select.args.get("with")
+        with_clause = select.args.get("with_")
         table_expr = from_clause.this
 
         if isinstance(table_expr, exp.Subquery):
@@ -3359,7 +3360,7 @@ class QueryRewriter:
             if isinstance(relation, exp.Table):
                 qualifiers.add(relation.name.lower())
 
-        from_clause = select_scope.args.get("from")
+        from_clause = select_scope.args.get("from_")
         if from_clause:
             add_relation(from_clause.this)
 
@@ -3700,7 +3701,7 @@ class QueryRewriter:
             alias = table_expr.alias_or_name
             alias_to_model[alias] = model_name
 
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if from_clause:
             add_table(from_clause.this)
 
@@ -3711,14 +3712,14 @@ class QueryRewriter:
 
     def _has_single_source_relation(self, select: exp.Select) -> bool:
         """Return True only when SELECT scope has exactly one FROM relation and no JOINs."""
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause or from_clause.this is None:
             return False
         return len(select.args.get("joins") or []) == 0
 
     def _parse_relation_factor(self, relation_sql: str) -> exp.Expression:
         probe = sqlglot.parse_one(f"SELECT 1 FROM {relation_sql}", dialect=self.dialect)
-        from_clause = probe.args.get("from")
+        from_clause = probe.args.get("from_")
         if not from_clause:
             raise ValueError(f"Failed to parse relation: {relation_sql}")
         return from_clause.this
@@ -3747,7 +3748,7 @@ class QueryRewriter:
                 return self._parse_relation_factor(f"{model.table} AS {alias}")
             return self._parse_relation_factor(f"{model_name} AS {alias}")
 
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if from_clause:
             from_clause.set("this", replace_table(from_clause.this))
 
@@ -4820,7 +4821,7 @@ class QueryRewriter:
 
     def _has_subquery_in_from(self, select: exp.Select) -> bool:
         """Check if FROM clause contains a subquery."""
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause:
             return False
 
@@ -4854,7 +4855,7 @@ class QueryRewriter:
         if self._references_semantic_model(parsed):
             # Save user-defined CTEs before _rewrite_simple_query replaces
             # the entire query with fresh generator output.
-            original_with = parsed.args.get("with")
+            original_with = parsed.args.get("with_")
 
             rewritten_sql = self._rewrite_simple_query(parsed)
 
@@ -4863,7 +4864,7 @@ class QueryRewriter:
                 # from filters/expressions (e.g. IN (SELECT ... FROM cte))
                 # remain valid.
                 rewritten = sqlglot.parse_one(rewritten_sql, dialect=self.dialect)
-                gen_with = rewritten.args.get("with")
+                gen_with = rewritten.args.get("with_")
                 if gen_with:
                     # Check for CTE name collisions between user and generated CTEs
                     user_names = {cte.alias for cte in original_with.expressions}
@@ -4880,7 +4881,7 @@ class QueryRewriter:
                     if original_with.args.get("recursive"):
                         gen_with.set("recursive", True)
                 else:
-                    rewritten.set("with", original_with.copy())
+                    rewritten.set("with_", original_with.copy())
                 return rewritten.sql(dialect=self.dialect), semantic_islands, rejected_rules, warnings
 
             return rewritten_sql, semantic_islands, rejected_rules, warnings
@@ -4916,7 +4917,7 @@ class QueryRewriter:
         return False
 
     def _raise_on_user_cte_name_collision(self, expression: exp.Expression) -> None:
-        with_clause = expression.args.get("with")
+        with_clause = expression.args.get("with_")
         if not with_clause:
             return
 
@@ -5025,8 +5026,8 @@ class QueryRewriter:
         warnings: list[str] = []
 
         # Recurse into CTEs
-        if select.args.get("with"):
-            for cte in select.args["with"].expressions:
+        if select.args.get("with_"):
+            for cte in select.args["with_"].expressions:
                 cte_query = cte.this
                 if isinstance(cte_query, (exp.Select, exp.SetOperation)):
                     replacement, child_islands, child_rejected, child_warnings = self._rewrite_query_island(
@@ -5040,7 +5041,7 @@ class QueryRewriter:
                     warnings.extend(child_warnings)
 
         # Recurse into FROM subquery
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if from_clause and isinstance(from_clause.this, exp.Subquery):
             subquery = from_clause.this
             subquery_select = subquery.this
@@ -5253,7 +5254,7 @@ class QueryRewriter:
             rejected_rules["set_operation_branch_optimization"] = set_rejection
             return semantic_islands, rejected_rules, warnings
 
-        with_clause = expression.args.get("with")
+        with_clause = expression.args.get("with_")
         if with_clause:
             for cte in with_clause.expressions:
                 cte_query = cte.this
@@ -5418,12 +5419,12 @@ class QueryRewriter:
 
     def _current_select_relation_names(self, select: exp.Select) -> set[str]:
         names: set[str] = set()
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if from_clause is not None:
             self._add_relation_names(from_clause.this, names)
         for join in select.args.get("joins") or []:
             self._add_relation_names(join.this, names)
-        with_clause = select.args.get("with")
+        with_clause = select.args.get("with_")
         if with_clause:
             for cte in with_clause.expressions:
                 if cte.alias:
@@ -5442,7 +5443,7 @@ class QueryRewriter:
 
     def _references_semantic_model(self, select: exp.Select) -> bool:
         """Check if a SELECT statement references any semantic models."""
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause:
             return False
 
@@ -5481,7 +5482,7 @@ class QueryRewriter:
 
     def _validate_explicit_semantic_joins(self, select: exp.Select) -> list[str]:
         """Allow explicit joins only when they point at modeled semantic relationships."""
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause or not isinstance(from_clause.this, exp.Table):
             raise ValueError("Explicit JOIN syntax is only supported from a semantic model table")
 
@@ -6113,7 +6114,7 @@ class QueryRewriter:
             Table name or None if multiple tables or no FROM.
             Returns "metrics" if FROM metrics (special generic semantic layer table)
         """
-        from_clause = select.args.get("from")
+        from_clause = select.args.get("from_")
         if not from_clause:
             return None
 

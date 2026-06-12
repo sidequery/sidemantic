@@ -10,21 +10,21 @@ from sqlglot import exp
 
 from sidemantic.core.dialect import (
     PROPERTY_ALIASES,
-    DimensionDef,
-    MetricDef,
-    ModelDef,
-    ParameterDef,
-    PreAggregationDef,
-    PropertyEQ,
-    RelationshipDef,
-    SegmentDef,
-    TableBlockDefaultTimeDef,
-    TableBlockFieldDef,
-    TableBlockJoinDef,
-    TableBlockModelDef,
     TableBlockParseError,
-    TableBlockPrimaryKeyDef,
-    TableBlockSegmentDef,
+    is_dimension_def,
+    is_metric_def,
+    is_model_def,
+    is_parameter_def,
+    is_pre_aggregation_def,
+    is_property_eq,
+    is_relationship_def,
+    is_segment_def,
+    is_table_block_default_time_def,
+    is_table_block_field_def,
+    is_table_block_join_def,
+    is_table_block_model_def,
+    is_table_block_primary_key_def,
+    is_table_block_segment_def,
     parse,
 )
 from sidemantic.core.dimension import Dimension
@@ -209,7 +209,7 @@ def parse_sql_models(sql: str) -> list[Model]:
     except Exception:
         return []
 
-    if any(isinstance(stmt, (TableBlockModelDef, ModelDef)) for stmt in statements):
+    if any(is_table_block_model_def(stmt) or is_model_def(stmt) for stmt in statements):
         return _parse_mixed_sql_models(statements)
     return []
 
@@ -243,18 +243,22 @@ def _parse_mixed_sql_models(statements: list[exp.Expression | None]) -> list[Mod
         models.append(model_def)
 
     for statement in statements:
-        if isinstance(statement, TableBlockModelDef):
+        if is_table_block_model_def(statement):
             flush_legacy_model()
             models.append(_parse_table_block_model_def(statement))
             continue
 
-        if isinstance(statement, ModelDef):
+        if is_model_def(statement):
             flush_legacy_model()
             legacy_statements.append(statement)
             continue
 
-        if legacy_statements and isinstance(
-            statement, (DimensionDef, RelationshipDef, MetricDef, SegmentDef, PreAggregationDef)
+        if legacy_statements and (
+            is_dimension_def(statement)
+            or is_relationship_def(statement)
+            or is_metric_def(statement)
+            or is_segment_def(statement)
+            or is_pre_aggregation_def(statement)
         ):
             legacy_statements.append(statement)
 
@@ -262,8 +266,8 @@ def _parse_mixed_sql_models(statements: list[exp.Expression | None]) -> list[Mod
     return models
 
 
-def _parse_table_block_model_def(model_def: TableBlockModelDef) -> Model:
-    model_name = model_def.this.name
+def _parse_table_block_model_def(model_def: exp.Expression) -> Model:
+    model_name = model_def.args["model_name"].name
     table = model_def.args.get("table")
     source_sql = model_def.args.get("source_sql")
     primary_key: str | list[str] = "id"
@@ -279,36 +283,36 @@ def _parse_table_block_model_def(model_def: TableBlockModelDef) -> Model:
     seen_default_time = False
 
     for statement_idx, statement in enumerate(model_def.expressions):
-        if isinstance(statement, TableBlockPrimaryKeyDef):
+        if is_table_block_primary_key_def(statement):
             if seen_primary_key:
                 raise TableBlockParseError(f"Model '{model_name}' defines primary key more than once")
             seen_primary_key = True
             primary_key = _collapse_table_block_key_columns(statement.args["columns"])
             continue
 
-        if isinstance(statement, TableBlockDefaultTimeDef):
+        if is_table_block_default_time_def(statement):
             if seen_default_time:
                 raise TableBlockParseError(f"Model '{model_name}' defines default time more than once")
             seen_default_time = True
-            default_time_dimension = statement.this.name
+            default_time_dimension = statement.args["field"].name
             default_grain = statement.args.get("grain")
             continue
 
-        if isinstance(statement, TableBlockSegmentDef):
-            segment = Segment(name=statement.this.name, sql=statement.args["sql"])
+        if is_table_block_segment_def(statement):
+            segment = Segment(name=statement.args["name"].name, sql=statement.args["sql"])
             if segment.name in seen_segments:
                 raise TableBlockParseError(f"Model '{model_name}' defines segment '{segment.name}' more than once")
             seen_segments.add(segment.name)
             segments.append(segment)
             continue
 
-        if isinstance(statement, TableBlockJoinDef):
+        if is_table_block_join_def(statement):
             relationship = _parse_table_block_join_def(statement)
             relationships.append(relationship)
             continue
 
-        if isinstance(statement, TableBlockFieldDef):
-            name = statement.this.name
+        if is_table_block_field_def(statement):
+            name = statement.args["name"].name
             if name in seen_fields:
                 raise TableBlockParseError(f"Model '{model_name}' defines field '{name}' more than once")
             seen_fields.add(name)
@@ -339,7 +343,7 @@ def _parse_table_block_model_def(model_def: TableBlockModelDef) -> Model:
     )
 
 
-def _table_block_field_annotation(field_def: TableBlockFieldDef) -> TableBlockFieldAnnotation | None:
+def _table_block_field_annotation(field_def: exp.Expression) -> TableBlockFieldAnnotation | None:
     dimension_type = field_def.args.get("dimension_type")
     granularity = field_def.args.get("granularity")
     if not dimension_type and not granularity:
@@ -347,20 +351,20 @@ def _table_block_field_annotation(field_def: TableBlockFieldDef) -> TableBlockFi
     return TableBlockFieldAnnotation(dimension_type=dimension_type, granularity=granularity)
 
 
-def _parse_table_block_join_def(join_def: TableBlockJoinDef) -> Relationship:
+def _parse_table_block_join_def(join_def: exp.Expression) -> Relationship:
     relationship_type = join_def.args["relationship_type"]
     local_keys = join_def.args["local_keys"]
     target_keys = join_def.args["target_keys"]
     if relationship_type in ("many_to_one", "one_to_one"):
         return Relationship(
-            name=join_def.this.name,
+            name=join_def.args["target"].name,
             type=relationship_type,
             foreign_key=_collapse_table_block_key_columns(local_keys),
             primary_key=_collapse_table_block_key_columns(target_keys),
         )
 
     return Relationship(
-        name=join_def.this.name,
+        name=join_def.args["target"].name,
         type=relationship_type,
         foreign_key=_collapse_table_block_key_columns(target_keys),
         primary_key=_collapse_table_block_key_columns(local_keys),
@@ -627,31 +631,31 @@ def _parse_statement_defs(
     for stmt in statements:
         if stmt is None:
             continue
-        if isinstance(stmt, TableBlockModelDef):
+        if is_table_block_model_def(stmt):
             model_def = _parse_table_block_model_def(stmt)
-        elif isinstance(stmt, ModelDef):
+        elif is_model_def(stmt):
             model_def = _parse_model_def(stmt)
-        elif isinstance(stmt, DimensionDef):
+        elif is_dimension_def(stmt):
             dimension = _parse_dimension_def(stmt)
             if dimension:
                 dimensions.append(dimension)
-        elif isinstance(stmt, RelationshipDef):
+        elif is_relationship_def(stmt):
             relationship = _parse_relationship_def(stmt)
             if relationship:
                 relationships.append(relationship)
-        elif isinstance(stmt, MetricDef):
+        elif is_metric_def(stmt):
             metric = _parse_metric_def(stmt)
             if metric:
                 metrics.append(metric)
-        elif isinstance(stmt, SegmentDef):
+        elif is_segment_def(stmt):
             segment = _parse_segment_def(stmt)
             if segment:
                 segments.append(segment)
-        elif isinstance(stmt, ParameterDef):
+        elif is_parameter_def(stmt):
             parameter = _parse_parameter_def(stmt)
             if parameter:
                 parameters.append(parameter)
-        elif isinstance(stmt, PreAggregationDef):
+        elif is_pre_aggregation_def(stmt):
             preagg = _parse_pre_aggregation_def(stmt)
             if preagg:
                 pre_aggregations.append(preagg)
@@ -761,7 +765,7 @@ def parse_sql_file_with_frontmatter(path: Path) -> tuple[dict, list[Metric], lis
     return frontmatter, metrics, segments
 
 
-def _parse_model_def(model_def: ModelDef) -> Model | None:
+def _parse_model_def(model_def: exp.Expression) -> Model | None:
     """Convert ModelDef expression to Model instance.
 
     Args:
@@ -801,7 +805,7 @@ def _parse_model_def(model_def: ModelDef) -> Model | None:
     return Model(**model_data)
 
 
-def _parse_dimension_def(dimension_def: DimensionDef) -> Dimension | None:
+def _parse_dimension_def(dimension_def: exp.Expression) -> Dimension | None:
     """Convert DimensionDef expression to Dimension instance.
 
     Args:
@@ -835,7 +839,7 @@ def _parse_dimension_def(dimension_def: DimensionDef) -> Dimension | None:
     return Dimension(**dimension_data)
 
 
-def _parse_relationship_def(relationship_def: RelationshipDef) -> Relationship | None:
+def _parse_relationship_def(relationship_def: exp.Expression) -> Relationship | None:
     """Convert RelationshipDef expression to Relationship instance.
 
     Args:
@@ -869,7 +873,7 @@ def _parse_relationship_def(relationship_def: RelationshipDef) -> Relationship |
     return Relationship(**relationship_data)
 
 
-def _parse_metric_def(metric_def: MetricDef) -> Metric | None:
+def _parse_metric_def(metric_def: exp.Expression) -> Metric | None:
     """Convert MetricDef expression to Metric instance.
 
     Args:
@@ -905,7 +909,7 @@ def _parse_metric_def(metric_def: MetricDef) -> Metric | None:
     return Metric(**metric_data)
 
 
-def _parse_parameter_def(parameter_def: ParameterDef) -> Parameter | None:
+def _parse_parameter_def(parameter_def: exp.Expression) -> Parameter | None:
     """Convert ParameterDef expression to Parameter instance."""
     props = _extract_properties(parameter_def)
 
@@ -931,7 +935,7 @@ def _parse_parameter_def(parameter_def: ParameterDef) -> Parameter | None:
     return Parameter(**parameter_data)
 
 
-def _parse_pre_aggregation_def(preagg_def: PreAggregationDef) -> PreAggregation | None:
+def _parse_pre_aggregation_def(preagg_def: exp.Expression) -> PreAggregation | None:
     """Convert PreAggregationDef expression to PreAggregation instance."""
     props = _extract_properties(preagg_def)
 
@@ -976,7 +980,7 @@ def _parse_pre_aggregation_def(preagg_def: PreAggregationDef) -> PreAggregation 
     return PreAggregation(**preagg_data)
 
 
-def _parse_segment_def(segment_def: SegmentDef) -> Segment | None:
+def _parse_segment_def(segment_def: exp.Expression) -> Segment | None:
     """Convert SegmentDef expression to Segment instance.
 
     Args:
@@ -1030,7 +1034,7 @@ def _extract_properties(definition: exp.Expression) -> dict[str, object]:
     props = {}
 
     for expr in definition.expressions:
-        if isinstance(expr, PropertyEQ):
+        if is_property_eq(expr):
             key = expr.this.name.lower()
             value_expr = expr.expression
 

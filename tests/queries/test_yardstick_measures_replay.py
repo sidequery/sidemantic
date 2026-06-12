@@ -415,10 +415,10 @@ def _create_view_model_from_statement(
 
 
 def _expected_model_source(select: exp.Select, dialect: str) -> tuple[str | None, str | None]:
-    from_clause = select.args.get("from")
+    from_clause = select.args.get("from_")
     joins = select.args.get("joins") or []
     where_clause = select.args.get("where")
-    with_clause = select.args.get("with")
+    with_clause = select.args.get("with_")
 
     if (
         isinstance(from_clause, exp.From)
@@ -436,8 +436,8 @@ def _expected_model_source(select: exp.Select, dialect: str) -> tuple[str | None
 
     base_relation = exp.select("*")
     if with_clause is not None:
-        base_relation.set("with", with_clause.copy())
-    base_relation.set("from", from_clause.copy())
+        base_relation.set("with_", with_clause.copy())
+    base_relation.set("from_", from_clause.copy())
     if joins:
         base_relation.set("joins", [join.copy() for join in joins])
     if where_clause is not None:

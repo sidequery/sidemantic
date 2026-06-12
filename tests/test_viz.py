@@ -1,15 +1,32 @@
 import io
 import json
+import re
 
 import pytest
 from typer.testing import CliRunner
 
 from examples.integrations.headless_charting import _build_chart, build_layer
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic import Dimension, Freshness, Metric, Model, Relationship, SemanticLayer
 from sidemantic.cli import app
-from sidemantic.viz import CrossfilterDashboard, CrossfilterTab, DimensionEquals, MetricRange, TimeRange
+from sidemantic.viz import (
+    CrossfilterDashboard,
+    CrossfilterTab,
+    DimensionEquals,
+    MetricRange,
+    TimeRange,
+    _freshness_datetime,
+)
 
 runner = CliRunner()
+
+
+def _strip_vendored_script_bodies(html: str) -> str:
+    return re.sub(
+        r'<script data-sidemantic-vendor="[^"]+">.*?</script>',
+        '<script data-sidemantic-vendor=""></script>',
+        html,
+        flags=re.DOTALL,
+    )
 
 
 def _build_layer() -> SemanticLayer:
@@ -88,6 +105,14 @@ def test_layer_chart_emits_renderer_specs():
     assert crossfilter["renderer"] == "sidemantic-crossfilter"
     assert crossfilter["fields"]["series"] == "region"
     assert crossfilter["fields"]["metric_aggs"] == {"revenue": "sum"}
+    assert crossfilter["field_plan"]["protocol"] == "sidemantic-field-plan-v1"
+    assert crossfilter["field_plan"]["aliases"] == {
+        "created_at__month": "orders.created_at__month",
+        "region": "orders.region",
+        "revenue": "orders.revenue",
+    }
+    assert crossfilter["field_plan"]["encodings"]["x"]["id"] == "orders.created_at__month"
+    assert crossfilter["interaction_plan"]["brush"]["fields"][0]["id"] == "orders.created_at__month"
     assert [view["id"] for view in crossfilter["views"]] == ["trend", "scatter", "breakdown_region", "rows"]
 
 
@@ -150,6 +175,79 @@ def test_crossfilter_metadata_spec_does_not_pollute_full_spec_cache():
     full_spec = session.to_spec()
     assert full_spec.get("data_deferred") is not True
     assert len(full_spec["data"]) == 6
+
+
+def test_crossfilter_metadata_compiles_duplicate_bare_aliases_to_unique_fields():
+    layer = _build_layer()
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+            metrics=[Metric(name="customer_count", agg="count")],
+        )
+    )
+    session = layer.chart(
+        "orders.revenue",
+        by=["orders.region", "customers.region"],
+    ).crossfilter()
+
+    spec = session.to_metadata_spec()
+
+    assert spec["fields"]["dimensions"] == ["orders_region", "customers_region"]
+    assert spec["field_plan"]["aliases"] == {
+        "orders_region": "orders.region",
+        "customers_region": "customers.region",
+        "revenue": "orders.revenue",
+    }
+
+
+def test_chart_sql_uses_stable_aliases_for_same_named_join_fields():
+    layer = SemanticLayer(connection="duckdb:///:memory:", auto_register=False)
+    layer.adapter.execute("""
+        CREATE TABLE customers (
+            id INTEGER,
+            region VARCHAR
+        )
+    """)
+    layer.adapter.execute("""
+        CREATE TABLE orders (
+            id INTEGER,
+            customer_id INTEGER,
+            region VARCHAR,
+            amount DOUBLE
+        )
+    """)
+    layer.adapter.execute("INSERT INTO customers VALUES (1, 'Enterprise'), (2, 'Self Serve')")
+    layer.adapter.execute("INSERT INTO orders VALUES (1, 1, 'West', 100.0), (2, 2, 'East', 50.0)")
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+            relationships=[
+                Relationship(name="customers", type="many_to_one", foreign_key="customer_id", primary_key="id")
+            ],
+        )
+    )
+
+    spec = layer.chart("orders.revenue", by=["orders.region", "customers.region"]).to_crossfilter()
+
+    assert spec["fields"]["dimensions"] == ["orders_region", "customers_region"]
+    assert "AS orders_region" in spec["sidemantic"]["sql"]
+    assert "AS customers_region" in spec["sidemantic"]["sql"]
+    assert set(spec["data"][0]) == {"orders_region", "customers_region", "revenue"}
 
 
 def test_crossfilter_live_query_counts_records_without_materializing_lazy_spec():
@@ -221,6 +319,34 @@ def test_layer_chart_html_contains_vega_embed():
     assert "__SIDEMANTIC_CROSSFILTER_API__" in crossfilter_html
 
 
+def test_chart_html_uses_vendored_renderer_assets():
+    layer = _build_layer()
+    chart = layer.chart("orders.revenue", by="orders.created_at__month").line()
+    forbidden_loaders = [
+        "<script src=",
+        'src="https://',
+        "src='https://",
+        'type="module"',
+        "import embed from",
+        "cdn.jsdelivr",
+        "esm.sh",
+    ]
+
+    for renderer, expected_vendors in [
+        ("vega-lite", ["vega", "vega_lite", "vega_embed"]),
+        ("plotly", ["plotly"]),
+        ("observable-plot", ["d3", "observable_plot"]),
+        ("d3", ["d3"]),
+        ("crossfilter", ["d3", "vega", "vega_lite", "vega_embed", "plotly", "observable_plot"]),
+    ]:
+        html = chart.to_html(renderer)
+        shell_html = _strip_vendored_script_bodies(html)
+        for vendor in expected_vendors:
+            assert f'data-sidemantic-vendor="{vendor}"' in html
+        for forbidden in forbidden_loaders:
+            assert forbidden not in shell_html
+
+
 def test_layer_chart_crossfilter_session_api():
     layer = _build_layer()
     session = layer.chart(
@@ -249,6 +375,10 @@ def test_layer_chart_crossfilter_session_api():
     response = session.query([DimensionEquals("orders.region", "North")])
     assert response["protocol"] == "sidemantic-crossfilter-v1"
     assert response["diagnostics"]["mode"] == "database"
+    assert response["freshness"]["protocol"] == "sidemantic-freshness-v1"
+    assert response["freshness"]["status"] == "direct"
+    assert response["freshness"]["stale"] is False
+    assert response["diagnostics"]["freshness"] == response["freshness"]
     assert "orders.region = 'North'" in response["filter_expressions"]
     assert "WHERE region = 'North'" in response["sql"]
     assert response["views"]["kpis"]["order_count"] == 2
@@ -268,7 +398,12 @@ def test_crossfilter_interaction_preagg_materializes_and_reuses_table():
     preagg = activated["diagnostics"]["interaction_preagg"]
     assert preagg["used"] is True
     assert preagg["reused"] is False
+    assert activated["freshness"]["status"] == "preaggregated"
+    assert activated["freshness"]["stale"] is False
+    assert activated["freshness"]["interaction_preagg"]["built_at"]
     assert preagg["table"]["table_name"].startswith("sidemantic_ipreagg_")
+    assert preagg["table"]["built_at"]
+    assert preagg["table"]["model_version"]
     assert preagg["table"]["row_count"] == 6
     assert f'FROM "{preagg["table"]["table_name"]}"' in activated["sql"]
 
@@ -278,10 +413,164 @@ def test_crossfilter_interaction_preagg_materializes_and_reuses_table():
     reused = filtered["diagnostics"]["interaction_preagg"]
     assert reused["used"] is True
     assert reused["reused"] is True
+    assert filtered["freshness"]["status"] == "preaggregated"
+    assert filtered["freshness"]["stale"] is None
+    assert "source watermark unavailable" in filtered["freshness"]["stale_reason"]
     assert reused["table"]["table_name"] == preagg["table"]["table_name"]
     assert '"region" = ' in filtered["sql"]
     assert "FROM orders" not in filtered["sql"]
     assert filtered["views"]["kpis"]["order_count"] == 2
+
+
+def test_crossfilter_source_watermark_marks_reused_preagg_fresh_when_current():
+    layer = _build_layer()
+    session = layer.chart(
+        ["orders.revenue", "orders.order_count"],
+        by=["orders.created_at__month", "orders.region"],
+    ).crossfilter(
+        interaction_preaggregations=True,
+        source_watermark_sql="SELECT MAX(created_at) FROM orders",
+    )
+
+    activated = session.query(event="activate", active={"type": "xRange", "field": "created_at"})
+    filtered = session.query([DimensionEquals("region", "North")], event="category:region:North")
+
+    assert activated["freshness"]["source_watermark"]["status"] == "available"
+    assert activated["freshness"]["interaction_preagg"]["source_watermark"]["status"] == "available"
+    assert filtered["used_interaction_preagg"] is True
+    assert filtered["freshness"]["stale"] is False
+    assert filtered["freshness"]["stale_reason"] is None
+    assert filtered["freshness"]["source_watermark"]["value"] == "2024-03-29"
+    assert filtered["freshness"]["policy"]["source_watermark_sql"] == "SELECT MAX(created_at) FROM orders"
+
+
+def test_crossfilter_inherits_model_freshness_watermark_without_chart_sql():
+    layer = SemanticLayer(connection="duckdb:///:memory:", auto_register=False)
+    layer.adapter.execute("""
+        CREATE TABLE orders (
+            id INTEGER,
+            updated_at DATE,
+            region VARCHAR,
+            amount DOUBLE
+        )
+    """)
+    layer.adapter.execute("""
+        INSERT INTO orders VALUES
+            (1, DATE '2024-01-03', 'North', 120.0),
+            (2, DATE '2024-03-29', 'South', 80.0)
+    """)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            freshness=Freshness(watermark="updated_at", ttl_seconds=86_400),
+            dimensions=[
+                Dimension(name="updated_at", type="time", granularity="day"),
+                Dimension(name="region", type="categorical"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+
+    response = layer.chart("orders.revenue", by="orders.region").crossfilter().query(event="tab")
+
+    assert response["freshness"]["policy"]["source"] == "model_freshness"
+    assert response["freshness"]["policy"]["source_model"] == "orders"
+    assert response["freshness"]["policy"]["watermark"] == "orders.updated_at"
+    assert response["freshness"]["policy"]["ttl_seconds"] == 86_400
+    assert response["freshness"]["source_watermark"]["status"] == "available"
+    assert response["freshness"]["source_watermark"]["value"] == "2024-03-29"
+    assert response["freshness"]["source_watermark"]["sql"] == "SELECT MAX(updated_at) FROM orders"
+
+
+def test_crossfilter_infers_freshness_watermark_from_updated_at_dimension():
+    layer = SemanticLayer(connection="duckdb:///:memory:", auto_register=False)
+    layer.adapter.execute("""
+        CREATE TABLE orders (
+            id INTEGER,
+            updated_at DATE,
+            region VARCHAR,
+            amount DOUBLE
+        )
+    """)
+    layer.adapter.execute("""
+        INSERT INTO orders VALUES
+            (1, DATE '2024-01-03', 'North', 120.0),
+            (2, DATE '2024-03-29', 'South', 80.0)
+    """)
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="updated_at", type="time", granularity="day"),
+                Dimension(name="region", type="categorical"),
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+
+    response = layer.chart("orders.revenue", by="orders.region").crossfilter().query(event="tab")
+
+    assert response["freshness"]["policy"]["source"] == "model_inferred_watermark"
+    assert response["freshness"]["policy"]["watermark"] == "orders.updated_at"
+    assert response["freshness"]["source_watermark"]["status"] == "available"
+    assert response["freshness"]["source_watermark"]["value"] == "2024-03-29"
+
+
+def test_crossfilter_freshness_ttl_marks_old_watermark_stale():
+    layer = _build_layer()
+    session = layer.chart("orders.revenue", by="orders.region").crossfilter(
+        source_watermark_sql="SELECT DATE '2024-01-01'",
+        freshness_ttl_seconds=1,
+    )
+
+    response = session.query(event="tab")
+
+    assert response["freshness"]["source_watermark"]["status"] == "available"
+    assert response["freshness"]["policy"]["ttl_seconds"] == 1
+    assert response["freshness"]["stale"] is True
+    assert "freshness TTL" in response["freshness"]["stale_reason"]
+
+
+def test_crossfilter_freshness_null_watermark_is_unknown_not_fresh():
+    layer = _build_layer()
+    session = layer.chart("orders.revenue", by="orders.region").crossfilter(
+        source_watermark_sql="SELECT NULL",
+        freshness_ttl_seconds=60,
+    )
+
+    response = session.query(event="tab")
+
+    assert response["freshness"]["source_watermark"]["status"] == "unavailable"
+    assert response["freshness"]["source_watermark"]["error"] == "query returned NULL"
+    assert response["freshness"]["data_as_of"] is None
+    assert response["freshness"]["stale"] is None
+    assert "source watermark unavailable" in response["freshness"]["stale_reason"]
+
+
+def test_crossfilter_freshness_ttl_without_watermark_is_unknown_for_direct_data():
+    layer = _build_layer()
+    session = layer.chart("orders.revenue", by="orders.region").crossfilter(freshness_ttl_seconds=60)
+
+    response = session.query(event="tab")
+
+    assert response["freshness"]["source_watermark"]["status"] == "not_configured"
+    assert response["freshness"]["data_as_of"] is None
+    assert response["freshness"]["stale"] is None
+    assert response["freshness"]["stale_reason"] == "freshness TTL could not be evaluated"
+
+
+def test_freshness_datetime_normalizes_timezone_aware_values_to_utc():
+    assert _freshness_datetime("2026-06-04T16:00:00-07:00").isoformat() == "2026-06-04T23:00:00+00:00"
+
+
+def test_freshness_accepts_ttl_alias_and_rejects_unknown_fields():
+    assert Freshness(ttlSeconds=60).ttl_seconds == 60
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        Freshness(watermark="updated_at", unexpected=True)
 
 
 def test_crossfilter_interaction_preagg_reuses_persisted_table(tmp_path):
@@ -317,6 +606,9 @@ def test_crossfilter_interaction_preagg_reuses_persisted_table(tmp_path):
     assert restored_query["used_interaction_preagg"] is True
     assert restored["used"] is True
     assert restored["reused"] is True
+    assert restored_query["freshness"]["status"] == "preaggregated"
+    assert restored_query["freshness"]["interaction_preagg"]["built_at"]
+    assert restored_query["freshness"]["stale"] is None
     assert restored["table"]["table_name"] == table_name
     assert restored["table"]["row_count"] == 972
     next_layer.adapter.close()

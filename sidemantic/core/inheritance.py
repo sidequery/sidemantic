@@ -58,6 +58,7 @@ def merge_model(child: Model, parent: Model) -> Model:
         "unique_keys",
         "default_time_dimension",
         "default_grain",
+        "freshness",
         "metadata",
         "auto_dimensions",
         "meta",

@@ -8,6 +8,7 @@ import yaml
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
@@ -55,8 +56,15 @@ MODEL_FIELDS = {
     "pre_aggregations",
     "default_time_dimension",
     "default_grain",
+    "freshness",
     "sql_metrics",
     "sql_segments",
+}
+FRESHNESS_FIELDS = {
+    "watermark",
+    "sql",
+    "ttl_seconds",
+    "ttlSeconds",
 }
 DIMENSION_FIELDS = {
     "name",
@@ -675,6 +683,35 @@ class SidemanticAdapter(BaseAdapter):
             if field in model_def:
                 model_kwargs[field] = model_def.get(field)
 
+        if "freshness" in model_def:
+            freshness_def = model_def.get("freshness")
+            if freshness_def is None:
+                model_kwargs["freshness"] = None
+            elif not isinstance(freshness_def, dict):
+                location = f"{source_path}: " if source_path else ""
+                raise ValueError(f"{location}model '{name}' freshness must be a mapping")
+            else:
+                reject_unknown_fields(
+                    freshness_def,
+                    FRESHNESS_FIELDS,
+                    f"model '{name}' freshness",
+                    source_path=source_path,
+                )
+                if (
+                    "ttl_seconds" in freshness_def
+                    and "ttlSeconds" in freshness_def
+                    and freshness_def["ttl_seconds"] != freshness_def["ttlSeconds"]
+                ):
+                    location = f"{source_path}: " if source_path else ""
+                    raise ValueError(
+                        f"{location}model '{name}' freshness has conflicting ttl_seconds and ttlSeconds values"
+                    )
+                model_kwargs["freshness"] = Freshness(
+                    watermark=freshness_def.get("watermark"),
+                    sql=freshness_def.get("sql"),
+                    ttl_seconds=freshness_def.get("ttl_seconds", freshness_def.get("ttlSeconds")),
+                )
+
         if "primary_key_columns" in model_def:
             model_kwargs["primary_key"] = model_def.get("primary_key_columns")
         elif "primary_key" in model_def:
@@ -997,6 +1034,15 @@ class SidemanticAdapter(BaseAdapter):
             result["default_time_dimension"] = model.default_time_dimension
         if model.default_grain:
             result["default_grain"] = model.default_grain
+        if model.freshness:
+            freshness = {}
+            if model.freshness.watermark:
+                freshness["watermark"] = model.freshness.watermark
+            if model.freshness.sql:
+                freshness["sql"] = model.freshness.sql
+            if model.freshness.ttl_seconds is not None:
+                freshness["ttl_seconds"] = model.freshness.ttl_seconds
+            result["freshness"] = freshness
 
         # Export segments
         if model.segments:

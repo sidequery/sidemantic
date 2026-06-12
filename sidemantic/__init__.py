@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 __version__ = "0.10.1"
 
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
@@ -21,6 +22,7 @@ __all__ = [
     "Dimension",
     "DashboardDocument",
     "DashboardSpecError",
+    "Freshness",
     "Measure",  # Backwards compatibility
     "Metric",
     "Model",

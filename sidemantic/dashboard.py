@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from sidemantic.viz import CrossfilterDashboard, CrossfilterTab
+from sidemantic.viz import CrossfilterDashboard, CrossfilterTab, _unique_field_aliases
 
 DASHBOARD_SCHEMA = "sidemantic.dashboard.v1"
 TS_SCHEMA = "sidemantic.schema.v1"
@@ -79,7 +79,7 @@ class DashboardDocument:
         """Return the portable dashboard payload."""
         return dict(self.payload)
 
-    def validate(self, layer) -> list[str]:
+    def validate(self, layer, *, execute_sql: bool = False) -> list[str]:
         """Return validation errors for this dashboard against a semantic layer."""
         schema = build_semantic_types_schema(layer)
         metrics = set(schema["metrics"])
@@ -134,7 +134,18 @@ class DashboardDocument:
                 if not isinstance(chart, Mapping):
                     errors.append(f"{chart_path} must be a mapping")
                     continue
-                errors.extend(_validate_chart(chart_path, chart, metrics, dimensions, fields, layer))
+                errors.extend(
+                    _validate_chart(
+                        chart_path,
+                        chart,
+                        self.payload,
+                        metrics,
+                        dimensions,
+                        fields,
+                        layer,
+                        execute_sql=execute_sql,
+                    )
+                )
                 chart_id = chart.get("id")
                 if isinstance(chart_id, str):
                     if chart_id in chart_ids:
@@ -156,6 +167,8 @@ class DashboardDocument:
                 source_record_count=_optional_int(_first_present(chart, "source_record_count", "sourceRecordCount")),
                 interaction_preaggregations=_interaction_preaggregations(self.payload, chart),
                 renderer=_dashboard_renderer(self.payload, chart),
+                source_watermark_sql=_source_watermark_sql(self.payload, chart),
+                freshness_ttl_seconds=_freshness_ttl_seconds(self.payload, chart),
             )
             tabs.append(
                 CrossfilterTab(
@@ -274,6 +287,10 @@ export type DashboardDefaults = {{
     interaction_preaggregations?: boolean;
     usePreaggregations?: boolean;
     use_preaggregations?: boolean;
+    sourceWatermarkSql?: string;
+    source_watermark_sql?: string;
+    freshnessTtlSeconds?: number;
+    freshness_ttl_seconds?: number;
   }};
   interactions?: {{
     scope?: "chart" | "tab" | "dashboard";
@@ -314,6 +331,10 @@ export type ChartQuery = {{
   interaction_preaggregations?: boolean;
   usePreaggregations?: boolean;
   use_preaggregations?: boolean;
+  sourceWatermarkSql?: string;
+  source_watermark_sql?: string;
+  freshnessTtlSeconds?: number;
+  freshness_ttl_seconds?: number;
 }};
 
 export type ChartEncoding = {{
@@ -344,10 +365,13 @@ export function defineDashboard<const T extends DashboardConfig>(dashboard: T): 
 def _validate_chart(
     path: str,
     chart: Mapping[str, Any],
+    dashboard_payload: Mapping[str, Any],
     metrics: set[str],
     dimensions: set[str],
     fields: set[str],
     layer,
+    *,
+    execute_sql: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     chart_type = str(chart.get("type") or "auto")
@@ -373,9 +397,22 @@ def _validate_chart(
     for dimension in query_dimensions:
         if dimension not in dimensions:
             errors.append(f"{path}.query.dimensions contains unknown dimension {dimension!r}")
+    source_watermark_sql = _configured_source_watermark_sql(dashboard_payload, chart)
+    if source_watermark_sql is not None and (not isinstance(source_watermark_sql, str) or not source_watermark_sql):
+        errors.append(f"{path}.source_watermark_sql must be a non-empty SQL string")
+    ttl_seconds = _configured_freshness_ttl_seconds(dashboard_payload, chart)
+    resolved_ttl_seconds: int | None = None
+    if ttl_seconds is not None:
+        try:
+            resolved_ttl_seconds = int(ttl_seconds)
+            if resolved_ttl_seconds <= 0:
+                errors.append(f"{path}.freshness_ttl_seconds must be positive")
+        except (TypeError, ValueError):
+            errors.append(f"{path}.freshness_ttl_seconds must be an integer")
     errors.extend(_validate_order_by(path, _order_by(query), query_metrics, query_dimensions, fields))
 
     encoding = chart.get("encoding") or {}
+    encoding_mapping = encoding if isinstance(encoding, Mapping) else {}
     if encoding and not isinstance(encoding, Mapping):
         errors.append(f"{path}.encoding must be a mapping")
     elif isinstance(encoding, Mapping):
@@ -385,11 +422,13 @@ def _validate_chart(
     if interactions and not isinstance(interactions, Mapping):
         errors.append(f"{path}.interactions must be a mapping")
     elif isinstance(interactions, Mapping):
-        errors.extend(_validate_interactions(path, interactions, fields))
+        errors.extend(
+            _validate_interactions(path, interactions, query_metrics, query_dimensions, fields, encoding_mapping)
+        )
 
     if not errors:
         try:
-            layer.compile(
+            compiled_sql = layer.compile(
                 metrics=query_metrics,
                 dimensions=query_dimensions or None,
                 filters=_as_list(query.get("filters")) or None,
@@ -397,7 +436,28 @@ def _validate_chart(
                 order_by=_order_by(query) or None,
                 limit=_optional_int(query.get("limit")),
                 use_preaggregations=_optional_bool(_first_present(query, "use_preaggregations", "usePreaggregations")),
+                aliases=_unique_field_aliases([*query_dimensions, *query_metrics]),
             )
+            if execute_sql:
+                _execute_validation_smoke(layer, compiled_sql)
+                chart_builder = layer.chart(
+                    query_metrics,
+                    by=query_dimensions or None,
+                    filters=_as_list(query.get("filters")) or None,
+                    segments=_as_list(query.get("segments")) or None,
+                    order_by=_order_by(query) or None,
+                    limit=_optional_int(query.get("limit")),
+                    use_preaggregations=_optional_bool(
+                        _first_present(query, "use_preaggregations", "usePreaggregations")
+                    ),
+                )
+                session = chart_builder.crossfilter(
+                    source_watermark_sql=source_watermark_sql if isinstance(source_watermark_sql, str) else None,
+                    freshness_ttl_seconds=resolved_ttl_seconds,
+                )
+                source_watermark = session.source_watermark_payload()
+                if source_watermark.get("status") == "unavailable":
+                    raise ValueError(source_watermark.get("error") or "source watermark unavailable")
         except Exception as exc:
             errors.append(f"{path}.query cannot compile: {exc}")
     return errors
@@ -460,7 +520,14 @@ def _order_by_field_ref(order_field: Any) -> str | None:
     return order_field.strip()
 
 
-def _validate_interactions(path: str, interactions: Mapping[str, Any], fields: set[str]) -> list[str]:
+def _validate_interactions(
+    path: str,
+    interactions: Mapping[str, Any],
+    query_metrics: list[str],
+    query_dimensions: list[str],
+    fields: set[str],
+    encoding: Mapping[str, Any],
+) -> list[str]:
     errors: list[str] = []
     for key in ("brush", "select"):
         interaction = interactions.get(key)
@@ -472,6 +539,21 @@ def _validate_interactions(path: str, interactions: Mapping[str, Any], fields: s
         for field in _as_list(interaction.get("fields")):
             if field not in fields:
                 errors.append(f"{path}.interactions.{key}.fields contains unknown field {field!r}")
+            elif field not in {*query_metrics, *query_dimensions}:
+                errors.append(
+                    f"{path}.interactions.{key}.fields field {field!r} must also appear in query.metrics or query.dimensions"
+                )
+            elif key == "select" and field not in query_dimensions:
+                errors.append(f"{path}.interactions.select.fields field {field!r} must be a query dimension")
+    brush = interactions.get("brush")
+    if isinstance(brush, Mapping):
+        channel = str(brush.get("channel") or "x")
+        if channel != "x":
+            errors.append(f"{path}.interactions.brush.channel currently supports only 'x'")
+        brush_fields = _as_list(brush.get("fields"))
+        x_field = encoding.get("x") or (query_dimensions[0] if query_dimensions else None)
+        if brush_fields and x_field is not None and brush_fields != [x_field]:
+            errors.append(f"{path}.interactions.brush.fields must target the x field {x_field!r} for live crossfilter")
     return errors
 
 
@@ -495,9 +577,15 @@ def _build_chart(layer, chart: Mapping[str, Any], dashboard_payload: Mapping[str
     brush = interactions.get("brush") if isinstance(interactions, Mapping) else None
     if brush:
         channel = "x"
+        fields = None
         if isinstance(brush, Mapping):
             channel = str(brush.get("channel") or channel)
-        builder.brush(channel=channel if channel in {"x", "y", "xy"} else "x")
+            fields = _as_list(brush.get("fields")) or None
+        builder.brush(channel=channel if channel in {"x", "y", "xy"} else "x", fields=fields)
+    select = interactions.get("select") if isinstance(interactions, Mapping) else None
+    if select:
+        fields = _as_list(select.get("fields")) if isinstance(select, Mapping) else None
+        builder.select(fields=fields or None)
     return builder
 
 
@@ -534,6 +622,40 @@ def _interaction_preaggregations(dashboard_payload: Mapping[str, Any], chart: Ma
             "interactionPreaggregations",
         )
     return bool(_optional_bool(configured))
+
+
+def _source_watermark_sql(dashboard_payload: Mapping[str, Any], chart: Mapping[str, Any]) -> str | None:
+    configured = _configured_source_watermark_sql(dashboard_payload, chart)
+    return str(configured) if configured is not None else None
+
+
+def _configured_source_watermark_sql(dashboard_payload: Mapping[str, Any], chart: Mapping[str, Any]) -> Any:
+    query = chart.get("query") or {}
+    defaults = dashboard_payload.get("defaults") or {}
+    default_query = defaults.get("query") if isinstance(defaults, Mapping) else {}
+    configured = _first_present(query, "source_watermark_sql", "sourceWatermarkSql")
+    if configured is None:
+        configured = _first_present(chart, "source_watermark_sql", "sourceWatermarkSql")
+    if configured is None:
+        configured = _first_present(default_query or {}, "source_watermark_sql", "sourceWatermarkSql")
+    return configured
+
+
+def _freshness_ttl_seconds(dashboard_payload: Mapping[str, Any], chart: Mapping[str, Any]) -> int | None:
+    configured = _configured_freshness_ttl_seconds(dashboard_payload, chart)
+    return _optional_int(configured)
+
+
+def _configured_freshness_ttl_seconds(dashboard_payload: Mapping[str, Any], chart: Mapping[str, Any]) -> Any:
+    query = chart.get("query") or {}
+    defaults = dashboard_payload.get("defaults") or {}
+    default_query = defaults.get("query") if isinstance(defaults, Mapping) else {}
+    configured = _first_present(query, "freshness_ttl_seconds", "freshnessTtlSeconds")
+    if configured is None:
+        configured = _first_present(chart, "freshness_ttl_seconds", "freshnessTtlSeconds")
+    if configured is None:
+        configured = _first_present(default_query or {}, "freshness_ttl_seconds", "freshnessTtlSeconds")
+    return configured
 
 
 def _dashboard_renderer(dashboard_payload: Mapping[str, Any], chart: Mapping[str, Any]) -> str:
@@ -588,6 +710,22 @@ def _normalize_renderer(renderer: str) -> str:
         "dashboard": "crossfilter",
     }
     return aliases.get(normalized, normalized)
+
+
+def _execute_validation_smoke(layer, sql: str) -> None:
+    adapter = getattr(layer, "adapter", None)
+    execute = getattr(adapter, "execute", None)
+    if not callable(execute):
+        return
+    cleaned = _strip_validation_sql(sql)
+    execute(f"SELECT * FROM (\n{cleaned}\n) AS sidemantic_dashboard_validate LIMIT 0")
+
+
+def _strip_validation_sql(sql: str) -> str:
+    lines = str(sql).rstrip().rstrip(";").splitlines()
+    while lines and lines[-1].lstrip().startswith("-- sidemantic:"):
+        lines.pop()
+    return "\n".join(lines).rstrip().rstrip(";")
 
 
 def _ts_scalar_for_dimension(dimension_type: str) -> str:

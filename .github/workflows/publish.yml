@@ -35,6 +35,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Install browser test runtime
+        run: uv run python -m playwright install --with-deps chromium
+
       - name: Get current version
         id: get_version
         run: |

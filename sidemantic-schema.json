@@ -221,6 +221,54 @@
       "title": "Dimension",
       "type": "object"
     },
+    "Freshness": {
+      "additionalProperties": false,
+      "description": "Model-level freshness policy for live chart/runtime responses.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
+      "properties": {
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Advanced SQL query returning one scalar freshness marker",
+          "title": "Sql"
+        },
+        "ttl_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum allowed age in seconds before data is considered stale",
+          "title": "Ttl Seconds"
+        },
+        "watermark": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dimension or source column whose MAX value represents source freshness",
+          "title": "Watermark"
+        }
+      },
+      "title": "Freshness",
+      "type": "object"
+    },
     "Index": {
       "description": "Index definition for pre-aggregation performance.",
       "properties": {
@@ -2299,6 +2347,54 @@
             "title": "Dimension",
             "type": "object"
           },
+          "Freshness": {
+            "additionalProperties": false,
+            "description": "Model-level freshness policy for live chart/runtime responses.\n\nPrefer ``watermark`` for normal semantic-model usage. ``sql`` is retained as\nan advanced escape hatch when the source freshness marker cannot be expressed\nas a model dimension or physical column.",
+            "properties": {
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Advanced SQL query returning one scalar freshness marker",
+                "title": "Sql"
+              },
+              "ttl_seconds": {
+                "anyOf": [
+                  {
+                    "exclusiveMinimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Maximum allowed age in seconds before data is considered stale",
+                "title": "Ttl Seconds"
+              },
+              "watermark": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Dimension or source column whose MAX value represents source freshness",
+                "title": "Watermark"
+              }
+            },
+            "title": "Freshness",
+            "type": "object"
+          },
           "Index": {
             "description": "Index definition for pre-aggregation performance.",
             "properties": {
@@ -3557,6 +3653,18 @@
             "default": null,
             "description": "Parent model to inherit from",
             "title": "Extends"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Freshness"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model-level source freshness policy inherited by live chart runtimes"
           },
           "meta": {
             "anyOf": [

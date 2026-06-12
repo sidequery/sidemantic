@@ -1,13 +1,18 @@
 """SQLGlot dialect extensions for Sidemantic SQL syntax.
 
-Compatible with sqlglot's mypyc C extension (sqlglotc) by avoiding
-subclasses of compiled classes (Parser, Expression). Uses factory
-functions that return exp.Anonymous/exp.EQ nodes instead.
+SQLGlot expression classes can be compiled in some installations, and custom
+Expression subclasses have been brittle across sqlglot releases. Sidemantic
+therefore stores its custom syntax as normal SQLGlot nodes:
+
+- definition calls are ``exp.Anonymous`` nodes tagged with Sidemantic names
+- property assignments are ``exp.EQ`` nodes tagged as Sidemantic properties
+
+The small factory classes below preserve the old public call-site shape
+(``MetricDef([...])`` and ``isinstance(node, MetricDef)``) without introducing
+new SQLGlot Expression subclasses.
 """
 
 from __future__ import annotations
-
-import threading
 
 import sqlglot
 from sqlglot import exp, parser, tokens
@@ -337,16 +342,6 @@ def def_type_name(node) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Parser monkey-patching infrastructure (thread-safe)
-# ---------------------------------------------------------------------------
-
-_sidemantic_parsing = threading.local()
-_original_parse = None
-_original_parse_statement = None
-_patch_installed = False
-
-
 def _get_property_names() -> set[str]:
     """Derive property names from all Sidemantic models."""
     from sidemantic.core.dimension import Dimension
@@ -427,7 +422,7 @@ _STATEMENT_CONTINUATION_TOKEN_TYPES = {
 
 
 def _parse_table_block_model(self) -> TableBlockModelDef:
-    model_name = self._parse_table_block_identifier()
+    model_name = _parse_table_block_identifier(self)
     if not model_name:
         raise TableBlockParseError("Compact model block requires a model name")
 
@@ -437,18 +432,18 @@ def _parse_table_block_model(self) -> TableBlockModelDef:
     table = None
     source_sql = None
     if self._curr and self._curr.token_type == TokenType.L_PAREN:
-        source_sql = self._parse_table_block_derived_source(model_name)
+        source_sql = _parse_table_block_derived_source(self, model_name)
     else:
-        table = self._parse_table_block_source_table(model_name)
+        table = _parse_table_block_source_table(self, model_name)
 
     if not self._curr or self._curr.token_type != TokenType.L_PAREN:
         source = "derived SQL source" if source_sql else "table source"
         raise TableBlockParseError(f"Model '{model_name}' must include a body block after the {source}")
 
-    body_tokens = self._consume_balanced_tokens(model_name, "model block")
+    body_tokens = _consume_balanced_tokens(self, model_name, "model block")
     body_expressions = [
-        self._parse_table_block_body_statement(model_name, statement_tokens)
-        for statement_tokens in self._split_table_block_body_statements(body_tokens)
+        _parse_table_block_body_statement(self, model_name, statement_tokens)
+        for statement_tokens in _split_table_block_body_statements(self, body_tokens)
     ]
 
     return TableBlockModelDef(
@@ -461,7 +456,7 @@ def _parse_table_block_model(self) -> TableBlockModelDef:
 
 def _parse_table_block_derived_source(self, model_name: str) -> str:
     open_token = self._curr
-    source_tokens = self._consume_balanced_tokens(model_name, "derived SQL source")
+    source_tokens = _consume_balanced_tokens(self, model_name, "derived SQL source")
     if not source_tokens:
         raise TableBlockParseError(f"Derived SQL source for model '{model_name}' cannot be empty")
 
@@ -474,13 +469,13 @@ def _parse_table_block_derived_source(self, model_name: str) -> str:
 
 def _parse_table_block_source_table(self, model_name: str) -> str:
     parts = []
-    first = self._parse_table_block_identifier()
+    first = _parse_table_block_identifier(self)
     if not first:
         raise TableBlockParseError(f"Model '{model_name}' must declare a table or derived SQL source after `from`")
     parts.append(first)
 
     while self._match(TokenType.DOT):
-        part = self._parse_table_block_identifier()
+        part = _parse_table_block_identifier(self)
         if not part:
             raise TableBlockParseError(f"Model '{model_name}' has an invalid table source")
         parts.append(part)
@@ -520,7 +515,7 @@ def _split_table_block_body_statements(self, body_tokens: list[Token]) -> list[l
             previous_token
             and statement
             and depth == 0
-            and self._has_statement_separator_between(statement, previous_token, token)
+            and _has_statement_separator_between(self, statement, previous_token, token)
         ):
             statements.append(statement)
             statement = []
@@ -553,11 +548,11 @@ def _has_statement_separator_between(self, statement_tokens: list[Token], left: 
         return True
     if "\n" not in gap:
         return False
-    return self._table_block_statement_can_end(statement_tokens) and not self._token_continues_statement(right)
+    return _table_block_statement_can_end(self, statement_tokens) and not _token_continues_statement(self, right)
 
 
 def _table_block_statement_can_end(self, statement_tokens: list[Token]) -> bool:
-    if not statement_tokens or self._token_continues_statement(statement_tokens[-1]):
+    if not statement_tokens or _token_continues_statement(self, statement_tokens[-1]):
         return False
 
     first_text = statement_tokens[0].text.lower()
@@ -570,28 +565,28 @@ def _table_block_statement_can_end(self, statement_tokens: list[Token]) -> bool:
         return len(statement_tokens) == 3 or len(statement_tokens) == 5
 
     if first_text == "segment":
-        alias_idx = self._find_top_level_token(statement_tokens, TokenType.ALIAS, start=2)
+        alias_idx = _find_top_level_token(self, statement_tokens, TokenType.ALIAS, start=2)
         return alias_idx is not None and alias_idx < len(statement_tokens) - 1
 
     if first_type == TokenType.JOIN:
-        on_idx = self._find_top_level_token(statement_tokens, TokenType.ON, start=1)
+        on_idx = _find_top_level_token(self, statement_tokens, TokenType.ON, start=1)
         return on_idx is not None and on_idx < len(statement_tokens) - 1
 
-    colon_idx = self._find_top_level_token(statement_tokens, TokenType.COLON)
+    colon_idx = _find_top_level_token(self, statement_tokens, TokenType.COLON)
     base_tokens = statement_tokens[:colon_idx] if colon_idx is not None else statement_tokens
     if not base_tokens:
         return False
 
-    alias_idx = self._find_top_level_token(base_tokens, TokenType.ALIAS)
+    alias_idx = _find_top_level_token(self, base_tokens, TokenType.ALIAS)
     if alias_idx is not None:
         name_tokens = base_tokens[alias_idx + 1 :]
-        return alias_idx > 0 and len(name_tokens) == 1 and self._identifier_from_token(name_tokens[0]) is not None
+        return alias_idx > 0 and len(name_tokens) == 1 and _identifier_from_token(self, name_tokens[0]) is not None
 
-    return len(base_tokens) == 1 and self._identifier_from_token(base_tokens[0]) is not None
+    return len(base_tokens) == 1 and _identifier_from_token(self, base_tokens[0]) is not None
 
 
 def _token_continues_statement(self, token: Token) -> bool:
-    return token.token_type in self._STATEMENT_CONTINUATION_TOKEN_TYPES
+    return token.token_type in _STATEMENT_CONTINUATION_TOKEN_TYPES
 
 
 def _parse_table_block_body_statement(self, model_name: str, statement_tokens: list[Token]) -> exp.Expression:
@@ -603,20 +598,20 @@ def _parse_table_block_body_statement(self, model_name: str, statement_tokens: l
             f"Model '{model_name}' uses table source inside the block; use `model {model_name} from <table> (...)`"
         )
     if first_type == TokenType.PRIMARY_KEY or first_text == "primary_key":
-        return self._parse_table_block_primary_key(model_name, statement_tokens)
+        return _parse_table_block_primary_key(self, model_name, statement_tokens)
     if first_type == TokenType.DEFAULT:
-        return self._parse_table_block_default_time(model_name, statement_tokens)
+        return _parse_table_block_default_time(self, model_name, statement_tokens)
     if first_text == "segment":
-        return self._parse_table_block_segment(model_name, statement_tokens)
+        return _parse_table_block_segment(self, model_name, statement_tokens)
     if first_type == TokenType.JOIN:
-        return self._parse_table_block_join(model_name, statement_tokens)
+        return _parse_table_block_join(self, model_name, statement_tokens)
 
-    field = self._parse_table_block_field(model_name, statement_tokens)
+    field = _parse_table_block_field(self, model_name, statement_tokens)
     if field:
         return field
 
     raise TableBlockParseError(
-        f"Unrecognized statement in model '{model_name}': {self._statement_sql(statement_tokens)}"
+        f"Unrecognized statement in model '{model_name}': {_statement_sql(self, statement_tokens)}"
     )
 
 
@@ -634,7 +629,7 @@ def _parse_table_block_primary_key(
     if not value_tokens:
         raise TableBlockParseError("Primary key requires at least one column")
 
-    columns = self._parse_identifier_list(value_tokens)
+    columns = _parse_identifier_list(self, value_tokens)
     if not columns:
         raise TableBlockParseError("Primary key requires at least one column")
 
@@ -648,13 +643,13 @@ def _parse_table_block_default_time(
 ) -> TableBlockDefaultTimeDef:
     if len(statement_tokens) < 3 or statement_tokens[1].text.lower() != "time":
         raise TableBlockParseError(
-            f"Invalid default time in model '{model_name}': {self._statement_sql(statement_tokens)}"
+            f"Invalid default time in model '{model_name}': {_statement_sql(self, statement_tokens)}"
         )
 
-    dimension_name = self._identifier_from_token(statement_tokens[2])
+    dimension_name = _identifier_from_token(self, statement_tokens[2])
     if not dimension_name:
         raise TableBlockParseError(
-            f"Invalid default time in model '{model_name}': {self._statement_sql(statement_tokens)}"
+            f"Invalid default time in model '{model_name}': {_statement_sql(self, statement_tokens)}"
         )
 
     grain = None
@@ -662,13 +657,13 @@ def _parse_table_block_default_time(
         if (
             len(statement_tokens) != 5
             or statement_tokens[3].text.lower() not in ("grain", "granularity")
-            or not self._identifier_from_token(statement_tokens[4])
+            or not _identifier_from_token(self, statement_tokens[4])
         ):
             raise TableBlockParseError(
-                f"Invalid default time in model '{model_name}': {self._statement_sql(statement_tokens)}"
+                f"Invalid default time in model '{model_name}': {_statement_sql(self, statement_tokens)}"
             )
         grain = statement_tokens[4].text.lower()
-        self._validate_time_grain(model_name, "default time", grain)
+        _validate_time_grain(self, model_name, "default time", grain)
 
     return TableBlockDefaultTimeDef(this=exp.to_identifier(dimension_name), grain=grain)
 
@@ -679,14 +674,14 @@ def _parse_table_block_segment(
     statement_tokens: list[Token],
 ) -> TableBlockSegmentDef:
     if len(statement_tokens) < 4:
-        raise TableBlockParseError(f"Invalid segment in model '{model_name}': {self._statement_sql(statement_tokens)}")
+        raise TableBlockParseError(f"Invalid segment in model '{model_name}': {_statement_sql(self, statement_tokens)}")
 
-    segment_name = self._identifier_from_token(statement_tokens[1])
-    alias_idx = self._find_top_level_token(statement_tokens, TokenType.ALIAS, start=2)
+    segment_name = _identifier_from_token(self, statement_tokens[1])
+    alias_idx = _find_top_level_token(self, statement_tokens, TokenType.ALIAS, start=2)
     if not segment_name or alias_idx is None or alias_idx == len(statement_tokens) - 1:
-        raise TableBlockParseError(f"Invalid segment in model '{model_name}': {self._statement_sql(statement_tokens)}")
+        raise TableBlockParseError(f"Invalid segment in model '{model_name}': {_statement_sql(self, statement_tokens)}")
 
-    expression_sql = self._statement_sql(statement_tokens[alias_idx + 1 :])
+    expression_sql = _statement_sql(self, statement_tokens[alias_idx + 1 :])
     if not expression_sql:
         raise TableBlockParseError(f"Segment '{segment_name}' in model '{model_name}' requires a SQL expression")
 
@@ -698,37 +693,40 @@ def _parse_table_block_join(
     model_name: str,
     statement_tokens: list[Token],
 ) -> TableBlockJoinDef:
-    on_idx = self._find_top_level_token(statement_tokens, TokenType.ON, start=1)
+    on_idx = _find_top_level_token(self, statement_tokens, TokenType.ON, start=1)
     if on_idx is None or on_idx <= 1 or on_idx == len(statement_tokens) - 1:
-        raise TableBlockParseError(f"Invalid join in model '{model_name}': {self._statement_sql(statement_tokens)}")
+        raise TableBlockParseError(f"Invalid join in model '{model_name}': {_statement_sql(self, statement_tokens)}")
 
     header_tokens = statement_tokens[1:on_idx]
     cardinality = None
     target_idx = 0
-    if header_tokens[0].text.lower() in self._CARDINALITY_ALIASES:
+    if header_tokens[0].text.lower() in _CARDINALITY_ALIASES:
         cardinality = header_tokens[0].text.lower()
         target_idx = 1
 
     if target_idx >= len(header_tokens):
-        raise TableBlockParseError(f"Invalid join in model '{model_name}': {self._statement_sql(statement_tokens)}")
+        raise TableBlockParseError(f"Invalid join in model '{model_name}': {_statement_sql(self, statement_tokens)}")
 
-    target_model = self._identifier_from_token(header_tokens[target_idx])
+    target_model = _identifier_from_token(self, header_tokens[target_idx])
     if not target_model:
-        raise TableBlockParseError(f"Invalid join in model '{model_name}': {self._statement_sql(statement_tokens)}")
+        raise TableBlockParseError(f"Invalid join in model '{model_name}': {_statement_sql(self, statement_tokens)}")
 
     alias = None
     alias_tokens = header_tokens[target_idx + 1 :]
     if alias_tokens:
         if len(alias_tokens) == 2 and alias_tokens[0].token_type == TokenType.ALIAS:
-            alias = self._identifier_from_token(alias_tokens[1])
+            alias = _identifier_from_token(self, alias_tokens[1])
         elif len(alias_tokens) == 1:
-            alias = self._identifier_from_token(alias_tokens[0])
+            alias = _identifier_from_token(self, alias_tokens[0])
         if not alias:
-            raise TableBlockParseError(f"Invalid join in model '{model_name}': {self._statement_sql(statement_tokens)}")
+            raise TableBlockParseError(
+                f"Invalid join in model '{model_name}': {_statement_sql(self, statement_tokens)}"
+            )
 
-    relationship_type = self._CARDINALITY_ALIASES.get(cardinality or "one", "many_to_one")
-    on_expression = self._statement_sql(statement_tokens[on_idx + 1 :])
-    join_keys = self._extract_table_block_join_keys(
+    relationship_type = _CARDINALITY_ALIASES.get(cardinality or "one", "many_to_one")
+    on_expression = _statement_sql(self, statement_tokens[on_idx + 1 :])
+    join_keys = _extract_table_block_join_keys(
+        self,
         on_expression=on_expression,
         current_model_name=model_name,
         target_model_name=target_model,
@@ -736,7 +734,7 @@ def _parse_table_block_join(
     )
     if not join_keys:
         raise TableBlockParseError(
-            f"Join in model '{model_name}' must compare model columns: {self._statement_sql(statement_tokens)}"
+            f"Join in model '{model_name}' must compare model columns: {_statement_sql(self, statement_tokens)}"
         )
 
     local_keys, target_keys = join_keys
@@ -753,32 +751,32 @@ def _parse_table_block_field(
     model_name: str,
     statement_tokens: list[Token],
 ) -> TableBlockFieldDef | None:
-    colon_idx = self._find_top_level_token(statement_tokens, TokenType.COLON)
+    colon_idx = _find_top_level_token(self, statement_tokens, TokenType.COLON)
     base_tokens = statement_tokens[:colon_idx] if colon_idx is not None else statement_tokens
     annotation_tokens = statement_tokens[colon_idx + 1 :] if colon_idx is not None else []
     if not base_tokens:
         return None
 
-    dimension_type, granularity = self._parse_table_block_field_annotation(model_name, base_tokens, annotation_tokens)
-    alias_idx = self._find_top_level_token(base_tokens, TokenType.ALIAS)
+    dimension_type, granularity = _parse_table_block_field_annotation(self, model_name, base_tokens, annotation_tokens)
+    alias_idx = _find_top_level_token(self, base_tokens, TokenType.ALIAS)
     if alias_idx is not None:
         if alias_idx == 0 or alias_idx == len(base_tokens) - 1:
             return None
         name_tokens = base_tokens[alias_idx + 1 :]
         if len(name_tokens) != 1:
             return None
-        name = self._identifier_from_token(name_tokens[0])
+        name = _identifier_from_token(self, name_tokens[0])
         if not name:
             return None
         return TableBlockFieldDef(
             this=exp.to_identifier(name),
-            sql=self._statement_sql(base_tokens[:alias_idx]),
+            sql=_statement_sql(self, base_tokens[:alias_idx]),
             dimension_type=dimension_type,
             granularity=granularity,
         )
 
     if len(base_tokens) == 1:
-        name = self._identifier_from_token(base_tokens[0])
+        name = _identifier_from_token(self, base_tokens[0])
         if name:
             return TableBlockFieldDef(
                 this=exp.to_identifier(name),
@@ -799,16 +797,16 @@ def _parse_table_block_field_annotation(
     if not annotation_tokens:
         return None, None
 
-    field_name = self._statement_sql(base_tokens)
+    field_name = _statement_sql(self, base_tokens)
     dimension_type = None
     granularity = None
     idx = 0
 
     while idx < len(annotation_tokens):
         token = annotation_tokens[idx].text.lower()
-        normalized_type = self._DIMENSION_TYPE_ALIASES.get(token, token)
+        normalized_type = _DIMENSION_TYPE_ALIASES.get(token, token)
 
-        if normalized_type in self._DIMENSION_TYPES:
+        if normalized_type in _DIMENSION_TYPES:
             if dimension_type and dimension_type != normalized_type:
                 raise TableBlockParseError(
                     f"Field '{field_name}' in model '{model_name}' has conflicting type annotations"
@@ -821,7 +819,7 @@ def _parse_table_block_field_annotation(
             if idx + 1 >= len(annotation_tokens):
                 raise TableBlockParseError(f"Field '{field_name}' in model '{model_name}' is missing a {token} value")
             grain = annotation_tokens[idx + 1].text.lower()
-            self._validate_time_grain(model_name, field_name, grain)
+            _validate_time_grain(self, model_name, field_name, grain)
             granularity = grain
             if not dimension_type:
                 dimension_type = "time"
@@ -851,7 +849,7 @@ def _extract_table_block_join_keys(
     except Exception:
         return None
 
-    equalities = self._table_block_join_equalities(parsed)
+    equalities = _table_block_join_equalities(self, parsed)
     if equalities is None:
         return None
 
@@ -863,8 +861,8 @@ def _extract_table_block_join_keys(
         if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
             return None
 
-        left_side = self._classify_join_column(left, current_model_name, target_model_name, target_alias)
-        right_side = self._classify_join_column(right, current_model_name, target_model_name, target_alias)
+        left_side = _classify_join_column(self, left, current_model_name, target_model_name, target_alias)
+        right_side = _classify_join_column(self, right, current_model_name, target_model_name, target_alias)
         if left_side == "local" and right_side == "target":
             local_keys.append(left.name)
             target_keys.append(right.name)
@@ -881,12 +879,12 @@ def _extract_table_block_join_keys(
 
 
 def _table_block_join_equalities(self, expression: exp.Expression) -> list[exp.EQ] | None:
-    expression = self._unwrap_table_block_join_expression(expression)
+    expression = _unwrap_table_block_join_expression(self, expression)
     if isinstance(expression, exp.EQ):
         return [expression]
     if isinstance(expression, exp.And):
-        left = self._table_block_join_equalities(expression.left)
-        right = self._table_block_join_equalities(expression.right)
+        left = _table_block_join_equalities(self, expression.left)
+        right = _table_block_join_equalities(self, expression.right)
         if left is None or right is None:
             return None
         return left + right
@@ -940,7 +938,7 @@ def _parse_identifier_list(self, value_tokens: list[Token]) -> list[str]:
 
     for token in value_tokens:
         if token.token_type == TokenType.COMMA and depth == 0:
-            column = self._identifier_from_tokens(current)
+            column = _identifier_from_tokens(self, current)
             if not column:
                 return []
             columns.append(column)
@@ -953,7 +951,7 @@ def _parse_identifier_list(self, value_tokens: list[Token]) -> list[str]:
             depth = max(depth - 1, 0)
         current.append(token)
 
-    column = self._identifier_from_tokens(current)
+    column = _identifier_from_tokens(self, current)
     if not column:
         return []
     columns.append(column)
@@ -963,20 +961,20 @@ def _parse_identifier_list(self, value_tokens: list[Token]) -> list[str]:
 def _identifier_from_tokens(self, value_tokens: list[Token]) -> str | None:
     if len(value_tokens) != 1:
         return None
-    return self._identifier_from_token(value_tokens[0])
+    return _identifier_from_token(self, value_tokens[0])
 
 
 def _parse_table_block_identifier(self) -> str | None:
     if not self._curr:
         return None
-    identifier = self._identifier_from_token(self._curr)
+    identifier = _identifier_from_token(self, self._curr)
     if identifier:
         self._advance()
     return identifier
 
 
 def _identifier_from_token(self, token: Token) -> str | None:
-    if token.token_type not in self._IDENTIFIER_TOKEN_TYPES:
+    if token.token_type not in _IDENTIFIER_TOKEN_TYPES:
         return None
     return token.text
 
@@ -988,7 +986,7 @@ def _statement_sql(self, statement_tokens: list[Token]) -> str:
 
 
 def _validate_time_grain(self, model_name: str, field_name: str, grain: str) -> None:
-    if grain not in self._TIME_GRAINS:
+    if grain not in _TIME_GRAINS:
         raise TableBlockParseError(f"Field '{field_name}' in model '{model_name}' uses invalid grain '{grain}'")
 
 
@@ -1062,10 +1060,7 @@ def _parse_property(self) -> exp.Expression | None:
     return PropertyEQ(this=exp.Identifier(this=key), expression=exp.Literal.string(value))
 
 
-def _patched_parse(self, raw_tokens: list[Token], sql: str):
-    if not getattr(_sidemantic_parsing, "active", False) or not _has_table_block_model(raw_tokens):
-        return _original_parse(self, raw_tokens, sql)
-
+def _parse_table_block_statements(self, raw_tokens: list[Token], sql: str):
     self.reset()
     self.sql = sql or ""
     self._index = -1
@@ -1077,7 +1072,7 @@ def _patched_parse(self, raw_tokens: list[Token], sql: str):
     while self._curr:
         if self._match(TokenType.SEMICOLON):
             continue
-        statement = self._parse_statement()
+        statement = _parse_sidemantic_statement(self)
         if statement:
             expressions.append(statement)
             continue
@@ -1087,15 +1082,12 @@ def _patched_parse(self, raw_tokens: list[Token], sql: str):
     return expressions
 
 
-def _patched_parse_statement(self):
-    """Replacement for parser.Parser._parse_statement when Sidemantic parsing is active."""
-    if not getattr(_sidemantic_parsing, "active", False):
-        return _original_parse_statement(self)
-
+def _parse_sidemantic_statement(self):
+    """Parse Sidemantic definitions before falling back to SQLGlot SQL."""
     if self._match_texts(("MODEL", "DIMENSION", "RELATIONSHIP", "METRIC", "SEGMENT", "PARAMETER", "PRE_AGGREGATION")):
         func_name = self._prev.text.upper()
         if func_name == "MODEL" and (not self._curr or self._curr.token_type != tokens.TokenType.L_PAREN):
-            return self._parse_table_block_model()
+            return _parse_table_block_model(self)
 
         self._match(tokens.TokenType.L_PAREN)
 
@@ -1112,87 +1104,31 @@ def _patched_parse_statement(self):
         if def_name:
             return exp.Anonymous(this=def_name, expressions=properties)
 
-    return _original_parse_statement(self)
-
-
-def _install_parser_patch():
-    """Install the Sidemantic parser patch on parser.Parser once."""
-    global _original_parse, _original_parse_statement, _patch_installed
-    if _patch_installed:
-        return
-
-    _original_parse = parser.Parser.parse
-    _original_parse_statement = parser.Parser._parse_statement
-    parser.Parser.parse = _patched_parse
-    parser.Parser._parse_statement = _patched_parse_statement
-
-    for name in (
-        "_IDENTIFIER_TOKEN_TYPES",
-        "_TIME_GRAINS",
-        "_DIMENSION_TYPES",
-        "_DIMENSION_TYPE_ALIASES",
-        "_CARDINALITY_ALIASES",
-        "_STATEMENT_CONTINUATION_TOKEN_TYPES",
-    ):
-        setattr(parser.Parser, name, globals()[name])
-
-    for name in (
-        "_parse_table_block_model",
-        "_parse_table_block_derived_source",
-        "_parse_table_block_source_table",
-        "_consume_balanced_tokens",
-        "_split_table_block_body_statements",
-        "_has_statement_separator_between",
-        "_table_block_statement_can_end",
-        "_token_continues_statement",
-        "_parse_table_block_body_statement",
-        "_parse_table_block_primary_key",
-        "_parse_table_block_default_time",
-        "_parse_table_block_segment",
-        "_parse_table_block_join",
-        "_parse_table_block_field",
-        "_parse_table_block_field_annotation",
-        "_extract_table_block_join_keys",
-        "_table_block_join_equalities",
-        "_unwrap_table_block_join_expression",
-        "_classify_join_column",
-        "_find_top_level_token",
-        "_parse_identifier_list",
-        "_identifier_from_tokens",
-        "_parse_table_block_identifier",
-        "_identifier_from_token",
-        "_statement_sql",
-        "_validate_time_grain",
-    ):
-        setattr(parser.Parser, name, globals()[name])
-
-    _patch_installed = True
-
-
-_install_parser_patch()
+    return parser.Parser._parse_statement(self)
 
 
 # ---------------------------------------------------------------------------
-# SidemanticDialect (Dialect is not compiled, safe to subclass)
+# Sidemantic dialect
 # ---------------------------------------------------------------------------
 
 
 class SidemanticDialect(Dialect):
     """Sidemantic SQL dialect with METRIC, SEGMENT, and compact model-block support."""
 
-    def parse(self, sql: str, **opts):
-        _sidemantic_parsing.active = True
-        try:
-            return super().parse(sql, **opts)
-        finally:
-            _sidemantic_parsing.active = False
+    def parse(self, sql: str, **opts) -> list[exp.Expression | None]:
+        sidemantic_parser = self.parser(**opts)
+        raw_tokens = self.tokenize(sql)
 
-    def parse_into(self, expression_type, sql: str, **opts):
-        _sidemantic_parsing.active = True
-        try:
-            return super().parse_into(expression_type, sql, **opts)
-        finally:
-            _sidemantic_parsing.active = False
+        # Keep custom parsing scoped to this dialect instance. With sqlglot[c],
+        # Parser is compiled and cannot be subclassed or patched per instance.
+        if _has_table_block_model(raw_tokens):
+            return _parse_table_block_statements(sidemantic_parser, raw_tokens, sql)
+
+        return sidemantic_parser._parse(
+            parse_method=_parse_sidemantic_statement,
+            raw_tokens=raw_tokens,
+            sql=sql,
+        )
 
 
 # Singleton instance for convenience functions.
@@ -1201,7 +1137,10 @@ _dialect = SidemanticDialect()
 
 def parse_one(sql: str) -> exp.Expression:
     """Parse SQL with Sidemantic extensions."""
-    return _dialect.parse_one(sql)
+    statements = parse(sql)
+    if not statements:
+        raise sqlglot.errors.ParseError("No expression was parsed")
+    return statements[0]
 
 
 def parse(sql: str) -> list[exp.Expression]:

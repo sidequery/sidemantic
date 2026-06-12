@@ -4,6 +4,7 @@ import difflib
 import json
 import tempfile
 import textwrap
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,27 @@ from sidemantic.validation import QueryValidationError
 # =============================================================================
 # BASIC PARSING TESTS
 # =============================================================================
+
+
+def _dax_parser_available() -> bool:
+    try:
+        from sidemantic_dax import parse_expression
+    except Exception:
+        return False
+
+    try:
+        parse_expression("SUM(Sales[Amount])")
+    except Exception:
+        return False
+
+    return True
+
+
+def _assert_expected_import_warnings(warnings: list[dict], *, dax_parser_unavailable: int = 0):
+    expected = Counter()
+    if dax_parser_unavailable and not _dax_parser_available():
+        expected["dax_parser_unavailable"] = dax_parser_unavailable
+    assert Counter(warning["code"] for warning in warnings) == expected
 
 
 def test_import_tmdl_directory():
@@ -298,7 +320,7 @@ def test_tmdl_realistic_fixture_import_export_contract(tmp_path):
     fixture_root = Path("tests/fixtures/tmdl_realistic")
     graph = TMDLAdapter().parse(fixture_root)
 
-    assert getattr(graph, "import_warnings") == []
+    _assert_expected_import_warnings(getattr(graph, "import_warnings"), dax_parser_unavailable=5)
     assert set(graph.models) == {"Sales", "Products", "Calendar", "Sales By Category"}
 
     sales = graph.models["Sales"]
@@ -346,7 +368,7 @@ def test_tmdl_realistic_fixture_import_export_contract(tmp_path):
     assert export_files == fixture_files
 
     reparsed_graph = TMDLAdapter().parse(export_dir)
-    assert getattr(reparsed_graph, "import_warnings") == []
+    _assert_expected_import_warnings(getattr(reparsed_graph, "import_warnings"), dax_parser_unavailable=5)
     assert set(reparsed_graph.models) == set(graph.models)
     reparsed_sales = reparsed_graph.models["Sales"]
     reparsed_calculated = reparsed_graph.models["Sales By Category"]
@@ -1149,7 +1171,7 @@ def test_tmdl_loader_auto_detects_standalone_tmdl_files(tmp_path):
 
     assert set(layer.graph.models) == {"Sales"}
     description = layer.describe_models()
-    assert description["import_warnings"] == []
+    _assert_expected_import_warnings(description["import_warnings"], dax_parser_unavailable=1)
 
     sales = description["models"][0]
     revenue = next(metric for metric in sales["metrics"] if metric["name"] == "Revenue")
@@ -2618,7 +2640,7 @@ def test_tmdl_export_script_preserves_realistic_project_metadata(tmp_path):
     assert "annotation RelationshipLineage" in content
 
     reparsed = TMDLAdapter().parse(out_path)
-    assert getattr(reparsed, "import_warnings") == []
+    _assert_expected_import_warnings(getattr(reparsed, "import_warnings"), dax_parser_unavailable=5)
     assert set(reparsed.models) == {"Sales", "Products", "Calendar", "Sales By Category"}
     assert getattr(reparsed, "_tmdl_database_name") == "Retail Analytics"
     assert getattr(reparsed, "_tmdl_model_child_nodes")[0].name == "Executive"

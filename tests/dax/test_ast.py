@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import sidemantic_dax.ast as dax_ast
+import pytest
+
+dax_ast = pytest.importorskip("sidemantic_dax.ast")
 
 
 def test_from_raw_expr_function_call():

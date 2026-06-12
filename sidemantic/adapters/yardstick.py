@@ -54,7 +54,7 @@ def _strip_measure_tokens(sql: str, dialect: str = "duckdb") -> tuple[str, set[s
             tokens[i].token_type == TokenType.ALIAS
             and tokens[i + 1].token_type == TokenType.VAR
             and tokens[i + 1].text.upper() == "MEASURE"
-            and tokens[i + 2].token_type in (TokenType.VAR, TokenType.STRING)
+            and tokens[i + 2].token_type in (TokenType.VAR, TokenType.STRING, TokenType.IDENTIFIER)
         ):
             measure_names.add(tokens[i + 2].text.strip('"'))
             remove_indices.add(i + 1)

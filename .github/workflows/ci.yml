@@ -16,6 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -24,8 +27,24 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Install core dependencies
         run: uv sync --extra dev
+
+      - name: Check core import without DAX extra
+        run: |
+          uv run python - <<'PY'
+          import sys
+
+          from sidemantic import Dimension, Metric, Model
+
+          assert Model.__name__ == "Model"
+          assert Dimension.__name__ == "Dimension"
+          assert Metric.__name__ == "Metric"
+          assert "sidemantic_dax" not in sys.modules
+          PY
+
+      - name: Install DAX dependencies
+        run: uv sync --extra dev --extra dax
 
       - name: Check version consistency
         run: |
@@ -45,6 +64,18 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -v
+
+      - name: Run installed-wheel DAX smoke
+        run: |
+          uv build crates/dax-pyo3 --out-dir /tmp/sidemantic-dax-dist
+          uv build --out-dir /tmp/sidemantic-dist
+          SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
+          cd /tmp
+          uv run --no-project --find-links /tmp/sidemantic-dax-dist --with "${SIDEMANTIC_WHEEL}[dax]" -- python - <<'PY'
+          import sidemantic_dax
+
+          sidemantic_dax.parse_expression("1")
+          PY
 
   base-install-cli:
     name: Base Install CLI
@@ -118,8 +149,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra dax
 
       - name: Generate and commit schema if needed
         run: |
@@ -178,6 +212,7 @@ jobs:
     outputs:
       rust_changed: ${{ steps.changes.outputs.rust }}
       duckdb_changed: ${{ steps.changes.outputs.duckdb }}
+      dax_changed: ${{ steps.changes.outputs.dax }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -189,6 +224,37 @@ jobs:
             duckdb:
               - 'sidemantic-duckdb/**'
               - 'sidemantic-rs/**'
+            dax:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'tests/dax/fixtures/**'
+
+  dax-rust:
+    name: Rust (DAX crates)
+    needs: check-rust-changes
+    if: needs.check-rust-changes.outputs.dax_changed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Run cargo fmt check
+        run: cargo fmt --check
+
+      - name: Run cargo clippy
+        run: cargo clippy -p dax-parser -p dax-pyo3 --all-targets -- -D warnings
+
+      - name: Run cargo test
+        run: cargo test -p dax-parser -p dax-pyo3
 
   rust:
     name: Rust (sidemantic-rs)
@@ -278,14 +344,17 @@ jobs:
       - name: Smoke C ABI header and static library
         run: |
           cargo build --release --lib
-          cc -std=c11 -Wall -Wextra -I include tests/c_abi_smoke.c target/release/libsidemantic.a -lpthread -ldl -lm -lrt -o /tmp/sidemantic_c_abi_smoke
+          SIDEMANTIC_STATICLIB="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/release/libsidemantic.a"
+          cc -std=c11 -Wall -Wextra -I include tests/c_abi_smoke.c "$SIDEMANTIC_STATICLIB" -lpthread -ldl -lm -lrt -o /tmp/sidemantic_c_abi_smoke
           /tmp/sidemantic_c_abi_smoke
 
       - name: Check WASM build
         run: cargo check --no-default-features --features wasm --target wasm32-unknown-unknown --lib
 
       - name: Install wasm-bindgen test runner
-        run: cargo install wasm-bindgen-cli --version 0.2.110
+        run: |
+          WASM_BINDGEN_VERSION="$(cargo metadata --format-version 1 | python3 -c 'import json, sys; print(next(pkg["version"] for pkg in json.load(sys.stdin)["packages"] if pkg["name"] == "wasm-bindgen"))')"
+          cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
 
       - name: Run WASM runtime tests
         run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown --features wasm --test wasm_bindgen_runtime

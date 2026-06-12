@@ -544,6 +544,72 @@ pg_server:
     assert "Loaded config from:" in result.stderr
 
 
+def test_chart_serve_uses_crossfilter_dashboard(monkeypatch, tmp_path):
+    called = {}
+    output_dir = tmp_path / "chart-assets"
+    db_path = tmp_path / "orders.db"
+    _write_min_model(tmp_path)
+    _write_orders_db(db_path)
+
+    def fake_serve(self, output_dir_arg, *, host, port):
+        called["dashboard"] = self
+        called["output_dir"] = output_dir_arg
+        called["host"] = host
+        called["port"] = port
+
+    monkeypatch.setattr("sidemantic.viz.CrossfilterDashboard.serve", fake_serve)
+
+    result = runner.invoke(
+        app,
+        [
+            "chart",
+            "orders.order_count",
+            "--by",
+            "orders.status",
+            "--renderer",
+            "crossfilter",
+            "--serve",
+            "--interaction-preaggregations",
+            "--models",
+            str(tmp_path),
+            "--db",
+            str(db_path),
+            "--output-dir",
+            str(output_dir),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9001",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert called["output_dir"] == output_dir
+    assert called["host"] == "0.0.0.0"
+    assert called["port"] == 9001
+    assert called["dashboard"].tabs[0].session.interaction_preaggregations is True
+
+
+def test_chart_interaction_preaggregations_require_serve(tmp_path):
+    _write_min_model(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "chart",
+            "orders.order_count",
+            "--renderer",
+            "crossfilter",
+            "--interaction-preaggregations",
+            "--models",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--interaction-preaggregations requires --serve" in result.output
+
+
 def test_api_serve_calls_start_server(monkeypatch, tmp_path):
     pytest.importorskip("fastapi")
     called = {}

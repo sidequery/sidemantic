@@ -105,10 +105,10 @@ impl<'a> QueryRewriter<'a> {
                 })?;
                 self.ensure_queryable_source(&base_model, base_table)?;
                 select.from = Some(From {
-                    expressions: vec![Expression::Table(table_ref_for(
+                    expressions: vec![Expression::Table(Box::new(table_ref_for(
                         base_table.table_name(),
                         Some(&base_alias),
-                    ))],
+                    )))],
                 });
             }
 
@@ -190,6 +190,7 @@ impl<'a> QueryRewriter<'a> {
         if let Some(having) = select.having.take() {
             select.having = Some(Having {
                 this: self.rewrite_expr(having.this, &model_refs)?,
+                comments: having.comments,
             });
         }
 
@@ -302,13 +303,14 @@ impl<'a> QueryRewriter<'a> {
                 materialized: None,
                 key_expressions: vec![],
                 alias_first: false,
+                comments: vec![],
             }],
             recursive: false,
             leading_comments: vec![],
             search: None,
         });
         outer_select.from = Some(From {
-            expressions: vec![Expression::Table(table_ref_for(&cte_alias, None))],
+            expressions: vec![Expression::Table(Box::new(table_ref_for(&cte_alias, None)))],
         });
 
         for (_, alias_name) in &dimensions {
@@ -335,6 +337,7 @@ impl<'a> QueryRewriter<'a> {
                 .collect(),
             all: None,
             totals: false,
+            comments: vec![],
         });
 
         Ok(outer_select)
@@ -700,10 +703,10 @@ impl<'a> QueryRewriter<'a> {
                         };
 
                         select.joins.push(Join {
-                            this: Expression::Table(table_ref_for(
+                            this: Expression::Table(Box::new(table_ref_for(
                                 target_model.table_name(),
                                 Some(&to_alias),
-                            )),
+                            ))),
                             on: Some(join_condition),
                             using: vec![],
                             kind: JoinKind::Left,
@@ -713,6 +716,9 @@ impl<'a> QueryRewriter<'a> {
                             join_hint: None,
                             match_condition: None,
                             pivots: vec![],
+                            comments: vec![],
+                            nesting_group: 0,
+                            directed: false,
                         });
                     }
                 }
@@ -1009,6 +1015,7 @@ impl<'a> QueryRewriter<'a> {
             expressions: group_by_exprs,
             all: None,
             totals: false,
+            comments: vec![],
         }
     }
 }

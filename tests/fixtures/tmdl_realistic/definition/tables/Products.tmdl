@@ -1,0 +1,12 @@
+/// Product dimension
+table Products
+    column ProductKey
+        dataType: int64
+        isKey
+        sourceColumn: ProductKey
+    column ProductName
+        dataType: string
+        sourceColumn: ProductName
+    column Category
+        dataType: string
+        sourceColumn: Category

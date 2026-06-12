@@ -1,0 +1,90 @@
+table Store
+
+	measure '# Stores' = COUNTROWS('Store')
+		formatString: #,##0
+
+	column StoreKey
+		dataType: int64
+		isHidden
+		isKey
+		formatString: 0
+		isAvailableInMdx: false
+		summarizeBy: none
+		sourceColumn: StoreKey
+
+	column 'Store Code'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Store Code
+
+	column Country
+		dataType: string
+		dataCategory: Uncategorized
+		summarizeBy: none
+		sourceColumn: Country
+
+	column State
+		dataType: string
+		summarizeBy: none
+		sourceColumn: State
+
+	column Store
+		dataType: string
+		isDefaultLabel
+		summarizeBy: none
+		sourceColumn: Store
+
+	column 'Square Meters'
+		dataType: int64
+		formatString: 0
+		summarizeBy: none
+		sourceColumn: Square Meters
+
+	column 'Open Date'
+		dataType: dateTime
+		formatString: Long Date
+		summarizeBy: none
+		sourceColumn: Open Date
+
+	column 'Close Date'
+		dataType: dateTime
+		formatString: Long Date
+		summarizeBy: count
+		sourceColumn: Close Date
+
+	column Status
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Status
+
+	partition Store-c0e5ba98-f95a-4712-91ec-71c7dc35e177 = m
+		mode: import
+		source =
+				let
+					Source = Csv.Document(
+						Web.Contents(HttpSource, [RelativePath = "RAW-Store.csv"]),
+						[
+							Delimiter = ",",
+							Columns = 9,
+							Encoding = 65001,
+							QuoteStyle = QuoteStyle.None
+						]
+					),
+					#"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+					#"Changed Column Types" = Table.TransformColumnTypes(
+						#"Promoted Headers",
+						{
+							{"StoreKey", Int64.Type},
+							{"Store Code", type text},
+							{"Country", type text},
+							{"State", type text},
+							{"Name", type text},
+							{"Square Meters", Int64.Type},
+							{"Open Date", type date},
+							{"Close Date", type date},
+							{"Status", type text}
+						}
+					),
+					#"Renamed Columns" = Table.RenameColumns(#"Changed Column Types", {{"Name", "Store"}})
+				in
+					#"Renamed Columns"

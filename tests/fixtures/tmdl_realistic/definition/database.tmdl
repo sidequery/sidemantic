@@ -1,0 +1,6 @@
+/// Retail analytics model
+database 'Retail Analytics'
+    compatibilityLevel: 1601
+    annotation DatabaseTag
+        value: "retail"
+    model 'Retail Analytics'

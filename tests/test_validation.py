@@ -26,7 +26,7 @@ def test_model_has_default_primary_key(layer):
 
 
 def test_model_validation_no_table(layer):
-    """Test that models without a physical, SQL, or source URI definition are rejected."""
+    """Test that models without a physical, SQL, DAX, or source URI definition are rejected."""
     invalid_model = Model(
         name="orders",
         primary_key="id",
@@ -37,7 +37,7 @@ def test_model_validation_no_table(layer):
     with pytest.raises(ModelValidationError) as exc_info:
         layer.add_model(invalid_model)
 
-    assert "must have one of 'table', 'sql', or 'source_uri' defined" in str(exc_info.value)
+    assert "must have one of 'table', 'sql', 'dax', or 'source_uri' defined" in str(exc_info.value)
 
 
 def test_source_uri_model_validates_but_python_compile_is_not_supported(layer):

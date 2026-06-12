@@ -1,0 +1,49 @@
+// ==============================================================================
+// Power BI DAX Measures for Helsingin Soitinhuolto
+// Purpose: Business Intelligence & Performance Tracking
+// ==============================================================================
+
+// 1. DYNAMIC REVENUE METRICS
+// Calculates Total Revenue including base price and dynamic add-ons
+Total Revenue =
+SUMX(
+    'Orders',
+    'Orders'[Base_Service_Price] + 'Orders'[Addon_Value]
+)
+
+// 2. TIME INTELLIGENCE: Month-over-Month (MoM) Growth
+// Demonstrates ability to compare current performance against historical data
+Revenue MoM Growth % =
+VAR CurrentMonthRev = [Total Revenue]
+VAR PreviousMonthRev = CALCULATE(
+    [Total Revenue],
+    DATEADD('Calendar'[Date], -1, MONTH)
+)
+RETURN
+    DIVIDE(CurrentMonthRev - PreviousMonthRev, PreviousMonthRev, 0)
+
+// 3. OPERATIONAL KPI: Average Turnaround Time (TAT)
+// Measures the efficiency of the workshop from pickup to delivery
+Avg Turnaround Days =
+AVERAGEX(
+    FILTER('Logistics', 'Logistics'[Delivery_Status] = "Delivered"),
+    DATEDIFF('Logistics'[Pickup_Date], 'Logistics'[Delivery_Date], DAY)
+)
+
+// 4. CUSTOMER SEGMENTATION: High Value Client Flag
+// A calculated column to identify clients spending above the 80th percentile
+Is High Value Client =
+IF(
+    'Orders'[Total_Order_Value] > PERCENTILE.INC('Orders'[Total_Order_Value], 0.8),
+    "VIP",
+    "Standard"
+)
+
+// 5. LOGISTICS EFFICIENCY: Pickup Utilization Rate
+// Measures how many clients prefer the premium pickup service vs. drop-off
+Pickup Preference % =
+DIVIDE(
+    CALCULATE(COUNT('Orders'[ID]), 'Orders'[Logistics_Type] = "Pickup"),
+    COUNT('Orders'[ID]),
+    0
+)

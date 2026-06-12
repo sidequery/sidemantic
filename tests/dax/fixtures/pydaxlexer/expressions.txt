@@ -1,0 +1,520 @@
+# source: resources/sample_dax_expressions/calc_column_dimCities_Column.txt
+kanton_zug_udf()
+---
+# source: resources/sample_dax_expressions/calc_column_dimCountries_Owner.txt
+gato_obelix_function(dimCountries[country_name_full])
+---
+# source: resources/sample_dax_expressions/calc_column_dimWeather_dts_Datetime.txt
+CALCULATE(MIN(factWeather[Datetime]),FILTER(factWeather,factWeather[Datetime slicer]=dimWeather_dts[DT AUX]))
+---
+# source: resources/sample_dax_expressions/calc_column_factWeather_Datetime slicer.txt
+IF(factWeather[Forecast]="Forecast",CONVERT(factWeather[Datetime],STRING),"Now")
+---
+# source: resources/sample_dax_expressions/calc_column_factWeather_parent_column_used_by_unused.txt
+rand()
+---
+# source: resources/sample_dax_expressions/measure_Year_Year Value.txt
+SELECTEDVALUE('Year'[Year], 1700)
+---
+# source: resources/sample_dax_expressions/measure__Measures_1950 year.txt
+IF([Year Value]<=1950,1950,BLANK())
+---
+# source: resources/sample_dax_expressions/measure__Measures_Actual Temperature (℃).txt
+CALCULATE(AVERAGE(factWeather[temp_c]), factWeather[Forecast]="Aktuell")
+---
+# source: resources/sample_dax_expressions/measure__Measures_Actual Wind Speed (km_h).txt
+0+ CALCULATE(AVERAGE(factWeather[wind_kph]), factWeather[Forecast]="Aktuell",NOT ISBLANK(dimCompassDir[Arrow64]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Average Pressure (mB).txt
+AVERAGE(factWeather[pressure_mb])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Average Temperature (℃).txt
+AVERAGE(factWeather[temp_c])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Average wind speed (km_h).txt
+AVERAGE(factWeather[wind_kph])+0
+---
+# source: resources/sample_dax_expressions/measure__Measures_CondForm.txt
+VAR _value = [randomMeasure]
+RETURN IF(_value>0,"TriangleHigh","TriangleLow")
+---
+# source: resources/sample_dax_expressions/measure__Measures_Conditional color bg max.txt
+SWITCH(
+        [Selected metric],
+        "Temperature", "#f6b53d",
+        "Condition", "#f6b53d",
+        "Pressure","#f6b53d",
+        "Humidity","#9fb6d1",
+        "Wind direction","#f6b53d",
+        "Wind speed","#f6b53d",
+        "Rain probability","#9fb6d1")
+---
+# source: resources/sample_dax_expressions/measure__Measures_Conditional color bg min.txt
+SWITCH(
+        [Selected metric],
+        "Temperature", "#9fb6d1",
+        "Condition", "#9fb6d1",
+        "Pressure","#9fb6d1",
+        "Humidity","#f6b53d",
+        "Wind direction","#9fb6d1",
+        "Wind speed","#9fb6d1",
+        "Rain probability","#f6b53d")
+---
+# source: resources/sample_dax_expressions/measure__Measures_Current year.txt
+YEAR(TODAY())
+---
+# source: resources/sample_dax_expressions/measure__Measures_Datetime control.txt
+VAR selected_date = SELECTEDVALUE(factWeather[Datetime])
+VAR max_date_all=CALCULATE(MAX(factWeather[Datetime]),ALL(factWeather))
+VAR min_date_all= CALCULATE(MIN(factWeather[Datetime]),ALL(factWeather))
+VAR max_date=MAX(factWeather[Datetime])
+VAR min_date= MIN(factWeather[Datetime])
+VAR actual_datetime = CALCULATE(MIN(factWeather[Datetime]),ALL(factWeather),factWeather[Forecast]="Aktuell")
+
+var _datetime = 
+    IF(
+        NOT ISBLANK(selected_date),
+        selected_date,
+        IF(
+            max_date=max_date_all
+             &&min_date=min_date_all,
+            actual_datetime,min_date&" - "&max_date))
+return _datetime
+---
+# source: resources/sample_dax_expressions/measure__Measures_Direct reference to Measure.txt
+'_Measures'[Measure displayed conditional colors]
+---
+# source: resources/sample_dax_expressions/measure__Measures_Displayed Icon.txt
+SWITCH([Selected metric],
+    "Condition",[Weather Icon],
+    "Wind direction",[Wind direction Icon],
+    "Wind speed",[Wind direction Icon])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Exports (Billions of CHF).txt
+ROUNDUP([Exports]/10^9,0)
+---
+# source: resources/sample_dax_expressions/measure__Measures_Exports LY.txt
+CALCULATE([Exports],SAMEPERIODLASTYEAR(dimCalendar[Date]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Exports delta.txt
+[Exports]-[Exports LY]
+---
+# source: resources/sample_dax_expressions/measure__Measures_Exports.txt
+CALCULATE(SUM(factTrades[Value (thousands USD)]),factTrades[Export]="Export")
+---
+# source: resources/sample_dax_expressions/measure__Measures_FahrenheitConstant.txt
+32
+---
+# source: resources/sample_dax_expressions/measure__Measures_Filter with Measure _ Value.txt
+CALCULATE(MAX(factWeather[temp_c]),FILTER(factWeather,[Average wind speed (km/h)]>5))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Icon width_height.txt
+VAR  wind_normalized = 
+    DIVIDE(
+        ([Average wind speed (km/h)]-[Min wind speed]),
+        ([Max wind speed]-[Min wind speed]))*20+7 
+RETURN
+
+SWITCH([Selected metric],
+    "Condition",45,
+    "Wind direction",15,
+    "Wind speed",wind_normalized)
+---
+# source: resources/sample_dax_expressions/measure__Measures_Imports (Billions of CHF).txt
+ROUNDUP([Imports]/10^9,0)
+---
+# source: resources/sample_dax_expressions/measure__Measures_Imports LY.txt
+CALCULATE([Imports],SAMEPERIODLASTYEAR(dimCalendar[Date]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Imports delta.txt
+[Imports]-[Imports LY]
+---
+# source: resources/sample_dax_expressions/measure__Measures_Imports.txt
+CALCULATE(SUM(factTrades[Value (thousands USD)]),factTrades[Export]="Import")
+---
+# source: resources/sample_dax_expressions/measure__Measures_JackTest2.txt
+VAR HDI_Value = [Human Development Index] //The measure that will be used
+VAR radius = 16 // Radius of the donut chart
+VAR strokeWidth = 6  // width of the chart
+VAR backgroundColor = "%23686868"  //Unfilled bg of the donut
+VAR textColor = "%23ffffff" // White text color for contrast (encoded # as %23 to make it work)
+ 
+//Conditional color logic for the donut chart
+VAR foregroundColor =
+    IF(HDI_Value < 0.55, "%23FF6F61", // Red for bad HDI (< 0.55)
+    IF(HDI_Value < 0.70, "%23FCB714",  //Yellow for average HDI (0.55 <= HDI < 0.70)
+    "%230EB194")) // Green for good HDI (>= 0.70)
+ 
+VAR circumference = 2 * PI() * radius
+VAR strokeDasharray = circumference
+VAR strokeDashoffset = circumference * (1 - HDI_Value)
+ 
+VAR svg =
+    "data:image/svg+xml;utf8,<svg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'>
+        <circle cx='20' cy='20' r='" & radius & "' stroke='" & backgroundColor & "' fill='none' stroke-width='" & strokeWidth & "'/>
+        <circle cx='20' cy='20' r='" & radius & "' stroke='" & foregroundColor & "' fill='none' stroke-width='" & strokeWidth & "'
+            stroke-dasharray='" & strokeDasharray & "'
+            stroke-dashoffset='" & strokeDashoffset & "'
+            transform='rotate(-90 20 20)'/>
+        <text x='20' y='22' text-anchor='middle' font-size='9' fill='" & textColor & "' font-family='Arial'>" & FORMAT(HDI_Value, "0.000") & "</text>
+    </svg>"
+ 
+-- Return blank if HDI is blank, otherwise return the SVG
+RETURN IF(ISBLANK(HDI_Value), BLANK(), svg)
+---
+# source: resources/sample_dax_expressions/measure__Measures_Kanton card conditional.txt
+IF([Kanton averages text tooltip]=BLANK(),1,0)
+---
+# source: resources/sample_dax_expressions/measure__Measures_Last update dt.txt
+CALCULATE(MIN(factWeather[Datetime]),factWeather[Forecast]="Aktuell")
+---
+# source: resources/sample_dax_expressions/measure__Measures_Map overlay.txt
+VAR _key = "ba65bf7ce74616797f7b2055aea2596e"
+VAR _type  = 
+    SWITCH(
+        [Selected metric],
+        "Temperature", "temp_new",
+        "Condition", "temp_new",
+        "Pressure","pressure_new",
+        "Humidity","clouds_new",
+        "Wind direction","wind_new",
+        "Wind speed","wind_new",
+        "Rain probability","precipitation_new")
+RETURN
+    "https://tile.openweathermap.org/map/"&_type&"/{z}/{x}/{y}.png?appid="&_key
+---
+# source: resources/sample_dax_expressions/measure__Measures_Max wind speed.txt
+CALCULATE(MAX(factWeather[wind_kph]),ALLSELECTED(factWeather))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Measure with IFERROR and division without DIVIDE.txt
+IFERROR( 1/0, "Mamma Mia!")
+---
+# source: resources/sample_dax_expressions/measure__Measures_Measure with USERALTIONSHIP in a Table with RLS.txt
+CALCULATE(COUNTROWS(trCountries),USERELATIONSHIP(dimCountries[country_code],trCountries[Country]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Measure with date hierarchy.txt
+CALCULATE(
+    SUM(factPopulation[Population (historical estimates and future projections)]),
+    factPopulation[Date].[Year] = 2021)
+---
+# source: resources/sample_dax_expressions/measure__Measures_Measure.txt
+SUMX(dimKantone,IF(dimKantone[Kanton]="ZUG",BLANK(),2))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Min wind speed.txt
+CALCULATE(MIN(factWeather[wind_kph]),ALLSELECTED(factWeather))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Now.txt
+NOW()
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population Age 0-5.txt
+VAR pop= 
+    CALCULATE(
+        SUM(factAgeGroups[Population]),
+        dimAgeGroups[Age Group]="0-5")
+RETURN
+IF(ISBLANK(pop),"No Data",pop/SUM(factAgeGroups[Population]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population Age 15-24.txt
+VAR pop= 
+    CALCULATE(
+        SUM(factAgeGroups[Population]),
+        dimAgeGroups[Age Group]="15-24")
+RETURN
+IF(ISBLANK(pop),"No Data",pop/SUM(factAgeGroups[Population]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population Age 25-64.txt
+VAR pop= 
+    CALCULATE(
+        SUM(factAgeGroups[Population]),
+        dimAgeGroups[Age Group]="25-64")
+RETURN
+IF(ISBLANK(pop),"No Data",pop/SUM(factAgeGroups[Population]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population Age 5-14.txt
+VAR pop= 
+    CALCULATE(
+        SUM(factAgeGroups[Population]),
+        dimAgeGroups[Age Group]="5-14")
+RETURN
+IF(ISBLANK(pop),"No Data",pop/SUM(factAgeGroups[Population]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population Age 65+.txt
+VAR pop= 
+    CALCULATE(
+        SUM(factAgeGroups[Population]),
+        dimAgeGroups[Age Group]="65+")
+RETURN
+IF(ISBLANK(pop),"No Data",pop/SUM(factAgeGroups[Population]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population Gapminder.txt
+CALCULATE(
+        SUM(factPopulation[Population (historical estimates and future projections)]),
+        FILTER(factPopulation,factPopulation[Year]>'Year'[Year Value]))
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population PBI.txt
+CALCULATE(
+        SUM(factPopulation[Population (historical estimates and future projections)]),
+        FILTER(factPopulation,factPopulation[Year]<=YEAR(TODAY())&&factPopulation[Year]>[Year Value])
+        
+    )
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population by Age Group 2.txt
+sum(factAgeGroups[Population])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population by Age Group.txt
+SUM(factAgeGroups[Population])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population forecast PBI source title.txt
+[Population by year title]&" - Forecast "&[Population source PBI]
+---
+# source: resources/sample_dax_expressions/measure__Measures_Population forecast gapminder source title.txt
+[Population by year title]&" - Forecast "&[Population source]
+---
+# source: resources/sample_dax_expressions/measure__Measures_Rain probability (%).txt
+AVERAGE(factWeather[chance_of_rain])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Relative humidity (%).txt
+AVERAGE(factWeather[humidity])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Selected Language.txt
+SELECTEDVALUE(trLanguages[Language])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Selected Map Background.txt
+SELECTEDVALUE(MapBackgrounds[URL],"https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png")
+---
+# source: resources/sample_dax_expressions/measure__Measures_Selected metric.txt
+SELECTEDVALUE(dimMetrics[Metric])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Selected translated metric.txt
+SELECTEDVALUE(trMetrics[Metric])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Size axis metric.txt
+SELECTEDVALUE('trMetrics_size'[Original])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Tooltip text.txt
+"Tooltip"
+---
+# source: resources/sample_dax_expressions/measure__Measures_Total Trade.txt
+SUM(factTrades[Value (thousands USD)])
+---
+# source: resources/sample_dax_expressions/measure__Measures_TotalSales.txt
+SUM ( factWeather[temp_c])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Treta.txt
+"TT Page 1"
+---
+# source: resources/sample_dax_expressions/measure__Measures_Weather Icon.txt
+VAR _date = SELECTEDVALUE(factWeather[Date]) 
+
+VAR actual_icon=
+  CALCULATE(
+        FIRSTNONBLANK(factWeather[condition.icon],TRUE()),
+        factWeather[Forecast]="Aktuell"
+    )
+
+VAR _icon=
+  CALCULATE(
+        FIRSTNONBLANK(factWeather[condition.icon],TRUE()),
+        factWeather[Datetime]=MIN(factWeather[Datetime])
+    )
+RETURN
+
+IF(ISBLANK(_date),actual_icon,_icon)
+---
+# source: resources/sample_dax_expressions/measure__Measures_Wind direction Icon.txt
+CALCULATE(
+        FIRSTNONBLANK(dimCompassDir[Arrow64],TRUE()),
+        factWeather[Datetime]=MIN(factWeather[Datetime])
+    )
+---
+# source: resources/sample_dax_expressions/measure__Measures_X axis metric.txt
+SELECTEDVALUE('trMetrics_X'[Original])
+---
+# source: resources/sample_dax_expressions/measure__Measures_Y axis metric.txt
+SELECTEDVALUE('trMetrics_Y'[Original])
+---
+# source: resources/sample_dax_expressions/measure__Measures_another_unused.txt
+SUM(factWeather[parent_column_used_by_unused])
+---
+# source: resources/sample_dax_expressions/measure__Measures_child_used_by_unused.txt
+[parent_used_by_unused]+SUM(factWeather[parent_column_used_by_unused])
+---
+# source: resources/sample_dax_expressions/measure__Measures_child_used_by_unused_2.txt
+sum(factWeather[parent_column_used_by_unused]) + 3
+---
+# source: resources/sample_dax_expressions/measure__Measures_grand_child_unused.txt
+[child_used_by_unused]*2
+---
+# source: resources/sample_dax_expressions/measure__Measures_grand_child_unused_2.txt
+[child_used_by_unused] + [child_used_by_unused_2]
+---
+# source: resources/sample_dax_expressions/measure__Measures_parent_used_by_unused.txt
+RAND()
+---
+# source: resources/sample_dax_expressions/measure__Measures_randomMeasure.txt
+RANDBETWEEN(-1,1)
+---
+# source: resources/sample_dax_expressions/table_DimYears.txt
+DISTINCT(factPopulation[Year])
+---
+# source: resources/sample_dax_expressions/table_Field parameters 2.txt
+{
+    ("Relative humidity (%)", NAMEOF('_Measures'[Relative humidity (%)]), 0),
+    ("Rain probability (%)", NAMEOF('_Measures'[Rain probability (%)]), 1),
+    ("Measure displayed charts", NAMEOF('_Measures'[Measure displayed charts]), 2),
+    ("Average wind speed (km/h)", NAMEOF('_Measures'[Average wind speed (km/h)]), 3)
+}
+---
+# source: resources/sample_dax_expressions/table_Table 2.txt
+INFO.PARTITIONS()
+---
+# source: resources/sample_dax_expressions/table_Table.txt
+trCountries
+---
+# source: resources/sample_dax_expressions/table_UDF generated table.txt
+create_decades_table(dimCalendar)
+---
+# source: resources/sample_dax_expressions/table_Year.txt
+GENERATESERIES(100, 2100, 1)
+---
+# source: resources/sample_dax_expressions/table_dimAgeGroups.txt
+ADDCOLUMNS(
+        DISTINCT(factAgeGroups[Age Group]),
+        "Age_ID",
+        SWITCH(
+            [Age Group],
+            "0-5",1,
+            "5-14",2,
+            "15-24",3,
+            "25-64",4,
+            "65+",5
+            )
+        )
+---
+# source: resources/sample_dax_expressions/table_dimCalendar.txt
+ADDCOLUMNS(CALENDAR(MIN(facttrades[Date]),MAX(factWeather[Date])),"Year",YEAR([Date]))
+---
+# source: resources/sample_dax_expressions/table_dimWeather_dts.txt
+DISTINCT(SELECTCOLUMNS(factWeather,"Datetime slicer",[Datetime slicer],"DT AUX",[Datetime slicer]))
+---
+# source: resources/sample_dax_expressions/table_factCopy.txt
+factWeather
+---
+# source: resources/sample_dax_expressions/table_trLanguages.txt
+DISTINCT(trMetrics[Language])
+---
+# source: tests/test_use_treatas_instead_of_intersect.py
+INTERSECT(Table1, Table2)
+---
+# source: tests/test_use_treatas_instead_of_intersect.py
+TREATAS(Table1, Table2)
+---
+# source: tests/test_use_treatas_instead_of_intersect.py
+INTERSECT(Table1, Table2) + INTERSECT(Table3, Table4)
+---
+# source: tests/test_use_treatas_instead_of_intersect.py
+VAR x = INTERSECT(Table1, Table2) RETURN x
+---
+# source: tests/test_use_treatas_instead_of_intersect.py
+TREATAS(Table1[ColumnA], Table2[ColumnB])
+---
+# source: tests/test_evaluatelog_rule.py
+SUM(factWeather[temp_c])
+---
+# source: tests/test_evaluatelog_rule.py
+EVALUATEANDLOG([Measure1]) + EVALUATEANDLOG([Measure2])
+---
+# source: tests/test_use_divide.py
+1 / 0
+---
+# source: tests/test_use_divide.py
+DIVIDE(1, 0)
+---
+# source: tests/test_use_divide.py
+1 / 0 + 2 / 0
+---
+# source: tests/test_use_divide.py
+VAR x = 1 / 0 RETURN x
+---
+# source: tests/test_use_divide.py
+DIVIDE(Sales[Amount], Sales[Total])
+---
+# source: tests/test_use_divide.py
+1 / 0 + DIVIDE(Sales[Amount], Sales[Total])
+---
+# source: tests/test_userelationship_references.py
+CALCULATE(COUNTROWS(trCountries), USERELATIONSHIP(dimCountries[country_code], trCountries[Country]))
+---
+# source: tests/test_userelationship_references.py
+USERELATIONSHIP(trCountries[Country], dimCountries[country_code])
+---
+# source: tests/test_userelationship_references.py
+USERELATIONSHIP(trCountries[Country],/*comment here*/ dimCountries[country_code])
+---
+# source: tests/test_userelationship_references.py
+CALCULATE( [Some Measure], USERELATIONSHIP('Dim Date'[Date], 'Fact Sales'[Date]), USERELATIONSHIP(Inventory[ProductId], 'Dim Product'[ProductId]))
+---
+# source: tests/test_userelationship_references.py
+VAR x = CALCULATE(    [Total Sales],    USERELATIONSHIP('Dim Date'[Date], 'Fact Sales'[OrderDate]),    FILTER('Fact Sales', 'Fact Sales'[Amount] > 0)) RETURN x
+---
+# source: tests/test_avoid_if_error.py
+IFERROR(1/0, 0)
+---
+# source: tests/test_avoid_if_error.py
+IFERROR(1/0, 0) + IFERROR(2/0, 0)
+---
+# source: tests/test_avoid_if_error.py
+VAR x = IFERROR(1/0, 0) RETURN x
+---
+# source: tests/test_more_dax_cases.py
+VAR Sales = SUM(Sales[Amount])
+RETURN Sales
+---
+# source: tests/test_more_dax_cases.py
+OuterUDF(InnerUDF(1))
+---
+# source: tests/test_more_dax_cases.py
+CALCULATE(
+    SUM('Dim Date'[Year]),
+    FILTER('Dim Date', 'Dim Date'[Year] > 2020),
+    VALUES('Dim Date')
+)
+---
+# source: tests/test_more_dax_cases.py
+CALCULATETABLE(
+    VALUES(DimCustomer[CustomerKey]),
+    TREATAS(MyUDFTable(), DimCustomer[CustomerKey])
+)
+---
+# source: tests/test_more_dax_cases.py
+VAR a = SUMX(VALUES(DimProduct[Category]), [Measure])
+VAR b = DIVIDE(a, COUNTROWS(DimProduct))
+RETURN a + b
+---
+# source: tests/test_more_dax_cases.py
+SUMX(MyTableUDF(), [Value])
+---
+# source: tests/test_avoid_one_minus_division.py
+1 - (Sales[Amount] / Sales[Total])
+---
+# source: tests/test_avoid_one_minus_division.py
+1 - (Sales[Amount] / Sales[Total]) + 1 + (Profit[Value] / Profit[Total])
+---
+# source: tests/test_avoid_one_minus_division.py
+VAR x = 1 - (Sales[Amount] / Sales[Total]) RETURN x
+---
+# source: tests/test_avoid_one_minus_division.py
+1 + (Sales[Amount] / Sales[Total])
+---
+# source: tests/test_variables_and_functions.py
+VAR x = COUNTROWS(DimCustomer) VAR y = x + 1 RETURN y
+---
+# source: tests/test_variables_and_functions.py
+MyUDF(1) + 2
+---
+# source: tests/test_variables_and_functions.py
+CALCULATE(SUM(factTrades[Value]), FILTER(factTrades, factTrades[Export]="Import"))
+---
+# source: main.py
+UDF_model_extension_dependencies()
+

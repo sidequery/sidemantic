@@ -1,0 +1,16 @@
+table DateTable
+	column Date
+		dataType: dateTime
+		sourceColumn: Date
+	column Year
+		dataType: int64
+		sourceColumn: Year
+	column Month
+		dataType: string
+		sourceColumn: Month
+	column Quarter
+		dataType: string
+		sourceColumn: Quarter
+	column MonthNumber
+		dataType: int64
+		sourceColumn: MonthNumber

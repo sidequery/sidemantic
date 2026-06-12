@@ -1,0 +1,4 @@
+calculatedTable 'Bad Table' = UNKNOWNTABLEFN(Sales)
+    column Category
+        dataType: string
+        sourceColumn: Category

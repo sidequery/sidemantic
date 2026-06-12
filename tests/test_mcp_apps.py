@@ -49,6 +49,12 @@ def test_build_chart_html():
     assert '"$schema"' in html
     assert '"mark"' in html
     assert "vega-embed" in html
+    assert 'data-sidemantic-vendor="vega"' in html
+    assert 'data-sidemantic-vendor="vega_lite"' in html
+    assert 'data-sidemantic-vendor="vega_embed"' in html
+    assert 'type="module"' not in html
+    assert "esm.sh" not in html
+    assert "<script src=" not in html
 
 
 def test_build_chart_html_escapes_json():

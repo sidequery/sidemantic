@@ -35,8 +35,21 @@ Update BOTH when releasing:
 
 ```bash
 # Run these in order:
+uv sync --extra dev
+uv run python - <<'PY'
+import sys
+
+from sidemantic import Dimension, Metric, Model
+
+assert Model.__name__ == "Model"
+assert Dimension.__name__ == "Dimension"
+assert Metric.__name__ == "Metric"
+assert "sidemantic_dax" not in sys.modules
+PY
+uv sync --extra dev --extra dax
 uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
 uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+uv run python -m playwright install --with-deps chromium
 uv run pytest -v
 ```
 

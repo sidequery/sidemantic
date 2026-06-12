@@ -101,6 +101,103 @@ models:
     assert "orders" in graph.models
 
 
+def test_parse_native_yaml_round_trips_model_freshness(tmp_path):
+    """Model-level freshness is a first-class native YAML field."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    freshness:
+      watermark: updated_at
+      ttl_seconds: 3600
+    dimensions:
+      - name: updated_at
+        type: time
+      - name: status
+        type: categorical
+    metrics:
+      - name: order_count
+        agg: count
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+    model = graph.models["orders"]
+
+    assert model.freshness is not None
+    assert model.freshness.watermark == "updated_at"
+    assert model.freshness.ttl_seconds == 3600
+
+    export_path = tmp_path / "exported.yml"
+    adapter.export(graph, export_path)
+    exported = yaml.safe_load(export_path.read_text())
+
+    assert exported["models"][0]["freshness"] == {"watermark": "updated_at", "ttl_seconds": 3600}
+
+
+def test_parse_native_yaml_model_freshness_inheritance_override_and_clear(tmp_path):
+    """Child models can override or explicitly clear inherited freshness."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 1
+models:
+  - name: base_orders
+    table: orders
+    freshness:
+      watermark: updated_at
+      ttl_seconds: 3600
+    metrics:
+      - name: order_count
+        agg: count
+  - name: loaded_orders
+    extends: base_orders
+    table: loaded_orders
+    freshness:
+      watermark: loaded_at
+      ttl_seconds: 7200
+  - name: unmanaged_orders
+    extends: base_orders
+    table: unmanaged_orders
+    freshness: null
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+
+    loaded_freshness = graph.models["loaded_orders"].freshness
+    assert loaded_freshness is not None
+    assert loaded_freshness.watermark == "loaded_at"
+    assert loaded_freshness.ttl_seconds == 7200
+    assert graph.models["unmanaged_orders"].freshness is None
+
+
+def test_parse_native_yaml_rejects_conflicting_freshness_ttl_aliases(tmp_path):
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    freshness:
+      watermark: updated_at
+      ttl_seconds: 3600
+      ttlSeconds: 7200
+"""
+    )
+
+    with pytest.raises(ValueError, match="conflicting ttl_seconds and ttlSeconds"):
+        adapter.parse(yaml_path)
+
+
 def test_parse_native_yaml_accepts_compatibility_aliases(tmp_path):
     """Python compatibility aliases are accepted as native input."""
     adapter = SidemanticAdapter()

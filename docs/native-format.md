@@ -98,6 +98,9 @@ models:
     primary_key: order_id
     default_time_dimension: created_at
     default_grain: day
+    freshness:
+      watermark: updated_at
+      ttl_seconds: 3600
 ```
 
 At least one of `table`, `sql`, or `source_uri` should be present unless the model extends another model that provides one.
@@ -120,6 +123,7 @@ At least one of `table`, `sql`, or `source_uri` should be present unless the mod
 | `pre_aggregations` | No | List of pre-aggregation definitions. |
 | `default_time_dimension` | No | Time dimension to add by default when the query needs time grouping. |
 | `default_grain` | No | Default time grain for the default time dimension. |
+| `freshness` | No | Source freshness policy for live chart/dashboard runtimes. |
 | `auto_dimensions` | No | Python auto-discovery flag. Rust accepts `false` for compatibility and rejects `true` because it does not perform schema discovery. |
 
 Canonical CLI-authored files should use `metrics` and `sql`. The native loaders
@@ -146,6 +150,29 @@ primary_key_columns:
   - order_id
   - line_item_id
 ```
+
+### Model Freshness
+
+Model-level `freshness` describes how live chart and dashboard runtimes should
+decide whether source-backed results are fresh, stale, or unknown.
+
+```yaml
+freshness:
+  watermark: updated_at
+  ttl_seconds: 3600
+```
+
+Fields:
+
+| Field | Required | Notes |
+|---|---:|---|
+| `watermark` | Conditional | Dimension or source column whose `MAX` value represents source freshness. Prefer this for normal semantic-model usage. |
+| `sql` | Conditional | Advanced SQL query that returns one scalar freshness marker. Use only when a source freshness marker cannot be expressed as a model dimension or physical column. |
+| `ttl_seconds` | No | Positive integer maximum age before data is stale. Native input also accepts compatibility alias `ttlSeconds`; exports use `ttl_seconds`. |
+
+`watermark` and `sql` are mutually exclusive. A TTL without a real source
+watermark is accepted as configuration, but live runtimes report freshness as
+unknown when there is no real `data_as_of` timestamp to compare.
 
 ## Dimensions
 

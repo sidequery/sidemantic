@@ -4,7 +4,16 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from sidemantic import DashboardDocument, Dimension, Metric, Model, SemanticLayer, load_from_directory
+from sidemantic import (
+    DashboardDocument,
+    Dimension,
+    Freshness,
+    Metric,
+    Model,
+    Relationship,
+    SemanticLayer,
+    load_from_directory,
+)
 from sidemantic.cli import app
 from sidemantic.dashboard import generate_dashboard_typescript
 from sidemantic.viz import CrossfilterDashboard, CrossfilterTab
@@ -98,6 +107,9 @@ def test_dashboard_document_builds_crossfilter_dashboard():
     assert dashboard.tabs[0].session.interaction_preaggregations is True
     assert dashboard.tabs[0].session.chart_renderer == "vega-lite"
     assert dashboard.tabs[0].session.chart.dimensions[:2] == ["orders.created_at__month", "orders.region"]
+    assert spec["tabs"][0]["spec"]["interactions"]["select"]["fields"] == ["region", "status"]
+    assert spec["tabs"][0]["spec"]["interaction_plan"]["select"]["fields"][0]["id"] == "orders.region"
+    assert spec["tabs"][0]["spec"]["field_plan"]["aliases"]["status"] == "orders.status"
 
 
 def test_dashboard_document_honors_encoding_y_as_primary_metric():
@@ -245,6 +257,119 @@ def test_dashboard_document_validates_order_by_against_query_fields():
     errors = DashboardDocument.from_dict(payload).validate(layer)
 
     assert "query.order_by field 'orders.status' must also appear in query.metrics or query.dimensions" in errors[0]
+
+
+def test_dashboard_document_compiles_duplicate_output_aliases():
+    layer = _build_layer()
+    layer.adapter.execute("CREATE TABLE customers (id INTEGER, status VARCHAR)")
+    layer.adapter.execute("INSERT INTO customers VALUES (1, 'enterprise'), (2, 'self_serve'), (3, 'enterprise')")
+    layer.get_model("orders").relationships.append(
+        Relationship(name="customers", type="many_to_one", foreign_key="id", primary_key="id")
+    )
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="id",
+            dimensions=[Dimension(name="status", type="categorical")],
+            metrics=[Metric(name="customer_count", agg="count")],
+        )
+    )
+    payload = _dashboard_payload()
+    chart = payload["tabs"][0]["charts"][0]
+    chart["query"]["dimensions"] = ["orders.created_at__month", "orders.status", "customers.status"]
+    chart["encoding"]["color"] = "orders.status"
+    chart["interactions"]["select"]["fields"] = ["orders.status", "customers.status"]
+
+    errors = DashboardDocument.from_dict(payload).validate(layer)
+
+    assert errors == []
+
+    dashboard = DashboardDocument.from_dict(payload).to_crossfilter_dashboard(layer)
+    spec = dashboard.tab_spec("overview", include_data=False)["spec"]
+
+    assert spec["fields"]["dimensions"] == ["created_at__month", "orders_status", "customers_status"]
+    assert spec["field_plan"]["aliases"]["orders_status"] == "orders.status"
+    assert spec["field_plan"]["aliases"]["customers_status"] == "customers.status"
+
+
+def test_dashboard_document_validates_interaction_fields_are_real_behavior():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    payload["tabs"][0]["charts"][0]["interactions"]["select"]["fields"] = ["orders.revenue"]
+    payload["tabs"][0]["charts"][0]["interactions"]["brush"]["fields"] = ["orders.status"]
+
+    errors = DashboardDocument.from_dict(payload).validate(layer, execute_sql=True)
+
+    assert any(
+        "interactions.select.fields field 'orders.revenue' must be a query dimension" in error for error in errors
+    )
+    assert any(
+        "interactions.brush.fields must target the x field 'orders.created_at__month'" in error for error in errors
+    )
+
+
+def test_dashboard_document_validate_executes_sql_when_database_is_available():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    layer.adapter.execute("DROP TABLE orders")
+
+    errors = DashboardDocument.from_dict(payload).validate(layer, execute_sql=True)
+
+    assert any("Table with name orders does not exist" in error for error in errors)
+
+
+def test_dashboard_select_fields_drive_live_breakdown_queries():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    payload["tabs"][0]["charts"][0]["interactions"]["select"]["fields"] = ["orders.status"]
+
+    dashboard = DashboardDocument.from_dict(payload).to_crossfilter_dashboard(layer)
+    response = dashboard.tabs[0].session.query(event="tab")
+
+    assert set(response["views"]["bars"]) == {"status"}
+    assert "bar:status" in response["sqls"]
+    assert "bar:region" not in response["sqls"]
+
+
+def test_dashboard_freshness_policy_is_propagated_to_live_session():
+    layer = _build_layer()
+    layer.get_model("orders").freshness = Freshness(watermark="created_at", ttl_seconds=86_400)
+    payload = _dashboard_payload()
+
+    document = DashboardDocument.from_dict(payload)
+    assert document.validate(layer, execute_sql=True) == []
+
+    dashboard = document.to_crossfilter_dashboard(layer)
+    spec = dashboard.tab_spec("overview", include_data=False)["spec"]
+    response = dashboard.handle_request({"tab": "overview", "event": "tab", "filters": []})
+
+    assert spec["freshness_policy"]["source_watermark_configured"] is True
+    assert spec["freshness_policy"]["source"] == "model_freshness"
+    assert spec["freshness_policy"]["watermark"] == "orders.created_at"
+    assert spec["freshness_policy"]["ttl_seconds"] == 86_400
+    assert response["freshness"]["source_watermark"]["status"] == "available"
+    assert response["freshness"]["policy"]["ttl_seconds"] == 86_400
+
+
+def test_dashboard_validate_checks_default_freshness_sql_with_execute_sql():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    payload["defaults"]["query"]["source_watermark_sql"] = "SELECT MAX(missing_at) FROM missing_orders"
+
+    errors = DashboardDocument.from_dict(payload).validate(layer, execute_sql=True)
+
+    assert any("source watermark unavailable" in error or "missing_orders" in error for error in errors)
+
+
+def test_dashboard_validate_checks_chart_level_freshness_ttl():
+    layer = _build_layer()
+    payload = _dashboard_payload()
+    payload["tabs"][0]["charts"][0]["freshness_ttl_seconds"] = "tomorrow"
+
+    errors = DashboardDocument.from_dict(payload).validate(layer)
+
+    assert any("freshness_ttl_seconds must be an integer" in error for error in errors)
 
 
 def test_dashboard_typescript_is_generated_from_semantic_layer():

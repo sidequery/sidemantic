@@ -71,6 +71,8 @@ pub struct ModelConfig {
     pub default_time_dimension: Option<String>,
     pub default_grain: Option<String>,
     #[serde(default)]
+    pub freshness: Option<FreshnessConfig>,
+    #[serde(default)]
     pub sql_metrics: Option<String>,
     #[serde(default)]
     pub sql_segments: Option<String>,
@@ -98,6 +100,17 @@ impl KeyConfig {
             Self::Multiple(values) => values,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FreshnessConfig {
+    #[serde(default)]
+    pub watermark: Option<String>,
+    #[serde(default)]
+    pub sql: Option<String>,
+    #[serde(default, alias = "ttlSeconds")]
+    pub ttl_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,6 +412,26 @@ impl SidemanticConfig {
                 &format!("models.{}.default_grain", model.name),
                 TIME_GRAINS,
             )?;
+            if let Some(freshness) = &model.freshness {
+                if freshness.watermark.is_some() && freshness.sql.is_some() {
+                    return Err(crate::error::SidemanticError::validation_issue(
+                        "invalid_freshness_policy",
+                        Some(&model.name),
+                        &format!("models.{}.freshness", model.name),
+                        None,
+                        "Model freshness cannot define both watermark and sql",
+                    ));
+                }
+                if freshness.ttl_seconds == Some(0) {
+                    return Err(crate::error::SidemanticError::validation_issue(
+                        "invalid_freshness_ttl",
+                        Some(&model.name),
+                        &format!("models.{}.freshness.ttl_seconds", model.name),
+                        Some("0"),
+                        "Model freshness ttl_seconds must be positive",
+                    ));
+                }
+            }
             for dimension in &model.dimensions {
                 validate_optional_enum(
                     dimension.dim_type.as_deref(),
@@ -1357,6 +1390,46 @@ models:
             orders.metrics[1].sql.as_deref(),
             Some("revenue / order_count")
         );
+    }
+
+    #[test]
+    fn test_native_yaml_accepts_model_freshness() {
+        let yaml = r#"
+version: 1
+models:
+  - name: orders
+    table: orders
+    freshness:
+      watermark: updated_at
+      ttl_seconds: 3600
+    metrics:
+      - name: order_count
+        agg: count
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        config.validate_contract().unwrap();
+
+        let freshness = config.models[0].freshness.as_ref().unwrap();
+        assert_eq!(freshness.watermark.as_deref(), Some("updated_at"));
+        assert_eq!(freshness.ttl_seconds, Some(3600));
+    }
+
+    #[test]
+    fn test_native_yaml_rejects_invalid_model_freshness() {
+        let yaml = r#"
+version: 1
+models:
+  - name: orders
+    table: orders
+    freshness:
+      watermark: updated_at
+      sql: SELECT MAX(updated_at) FROM orders
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = config.validate_contract().unwrap_err();
+        assert!(err.to_string().contains("invalid_freshness_policy"));
     }
 
     #[test]

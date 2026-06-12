@@ -5,10 +5,12 @@ from copy import deepcopy
 from pathlib import Path
 
 from sidemantic.core.dimension import Dimension
+from sidemantic.core.freshness import Freshness
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.parameter import Parameter
 from sidemantic.core.relationship import Relationship
+from sidemantic.core.segment import Segment
 
 
 def add_native_relationship_aliases(schema: dict) -> dict:
@@ -87,9 +89,14 @@ def generate_yaml_schema() -> dict:
         },
         "required": ["models"],
         "$defs": {
+            **model_schema.get("$defs", {}),
+            **metric_schema.get("$defs", {}),
+            **parameter_schema.get("$defs", {}),
             "Dimension": dimension_schema,
+            "Freshness": Freshness.model_json_schema(),
             "Metric": metric_schema,
             "Relationship": relationship_schema,
+            "Segment": Segment.model_json_schema(),
             "Parameter": parameter_schema,
         },
     }

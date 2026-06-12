@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from sidemantic.vendor_assets import inline_vendor_scripts
+
 _WIDGET_TEMPLATE: str | None = None
 
 
@@ -33,7 +35,10 @@ def build_chart_html(vega_spec: dict[str, Any]) -> str:
     # Escape </script> sequences to prevent XSS when user-provided strings
     # (e.g., chart titles) flow into the Vega spec.
     safe_json = json.dumps(vega_spec).replace("<", "\\u003c")
-    return template.replace("{{VEGA_SPEC}}", safe_json)
+    return template.replace("{{VEGA_SPEC}}", safe_json).replace(
+        "{{VEGA_VENDOR_JS}}",
+        inline_vendor_scripts("vega", "vega_lite", "vega_embed"),
+    )
 
 
 def create_chart_resource(vega_spec: dict[str, Any]):

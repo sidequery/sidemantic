@@ -13,12 +13,13 @@ import time
 from calendar import monthrange
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
 from sidemantic.server.common import to_json_compatible
+from sidemantic.vendor_assets import inline_vendor_scripts
 
 ChartMark = Literal["auto", "bar", "line", "area", "scatter", "point"]
 Renderer = Literal["vega-lite", "plotly", "observable-plot", "d3", "crossfilter"]
@@ -65,6 +66,130 @@ class ChartData:
     rows: list[dict[str, Any]]
     dimension_columns: list[str]
     metric_columns: list[str]
+
+
+@dataclass(frozen=True)
+class CompiledField:
+    """One semantic field compiled to one renderer/runtime column."""
+
+    id: str
+    semantic_ref: str
+    alias: str
+    kind: Literal["dimension", "metric"]
+    source_model: str | None
+    roles: tuple[str, ...] = ()
+    metric_agg: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": self.id,
+            "semantic_ref": self.semantic_ref,
+            "alias": self.alias,
+            "label": _label(self.alias),
+            "kind": self.kind,
+            "source_model": self.source_model,
+            "roles": list(self.roles),
+        }
+        if self.kind == "metric":
+            payload["metric_agg"] = self.metric_agg
+        return payload
+
+
+@dataclass(frozen=True)
+class CompiledChartPlan:
+    """Canonical field lineage and interaction plan for a chart runtime."""
+
+    fields: tuple[CompiledField, ...]
+    encodings: dict[str, Any]
+    interactions: dict[str, Any]
+    fingerprint: str
+
+    @classmethod
+    def build(cls, chart: ChartBuilder, data: ChartData) -> CompiledChartPlan:
+        aliases = [*data.dimension_columns, *data.metric_columns]
+        duplicate_aliases = _duplicates(aliases)
+        if duplicate_aliases:
+            duplicate_list = ", ".join(sorted(duplicate_aliases))
+            raise ValueError(
+                f"Compiled chart plan received duplicate output alias(es): {duplicate_list}. "
+                "Chart SQL aliases must be unique before plan compilation."
+            )
+
+        x_alias = chart._x_column(data)
+        y_aliases = chart._y_columns(data)
+        series_alias = chart._series_column(data)
+        metric_aggs = _metric_aggs(chart, data.metric_columns)
+
+        fields: list[CompiledField] = []
+        for ref, alias in zip(chart.dimensions, data.dimension_columns):
+            roles = ["dimension"]
+            if alias == x_alias:
+                roles.append("x")
+            if alias == series_alias:
+                roles.append("series")
+            if alias != x_alias:
+                roles.append("breakdown")
+            fields.append(
+                CompiledField(
+                    id=ref,
+                    semantic_ref=ref,
+                    alias=alias,
+                    kind="dimension",
+                    source_model=_ref_model(ref),
+                    roles=tuple(roles),
+                )
+            )
+
+        for ref, alias in zip(chart.metrics, data.metric_columns):
+            roles = ["metric"]
+            if alias in y_aliases:
+                roles.append("y")
+            fields.append(
+                CompiledField(
+                    id=ref,
+                    semantic_ref=ref,
+                    alias=alias,
+                    kind="metric",
+                    source_model=_ref_model(ref),
+                    roles=tuple(roles),
+                    metric_agg=metric_aggs.get(alias),
+                )
+            )
+
+        field_tuple = tuple(fields)
+        encodings = _compiled_encodings(field_tuple, x_alias, y_aliases, series_alias)
+        interactions = _compiled_interactions(chart, data, field_tuple, encodings)
+        fingerprint = _chart_plan_fingerprint(chart, field_tuple, encodings, interactions)
+        return cls(field_tuple, encodings, interactions, fingerprint)
+
+    def field_plan(self) -> dict[str, Any]:
+        return {
+            "protocol": "sidemantic-field-plan-v1",
+            "fingerprint": self.fingerprint,
+            "fields": [field.to_dict() for field in self.fields],
+            "aliases": {field.alias: field.id for field in self.fields},
+            "encodings": self.encodings,
+        }
+
+    def interaction_plan(self) -> dict[str, Any]:
+        return {
+            "protocol": "sidemantic-interaction-plan-v1",
+            "fingerprint": self.fingerprint,
+            **self.interactions,
+        }
+
+    def legacy_interactions(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        brush = self.interactions.get("brush")
+        if brush:
+            payload["brush"] = {
+                "fields": [field["alias"] for field in brush.get("fields", [])],
+                "channel": brush.get("channel") or "x",
+            }
+        select = self.interactions.get("select")
+        if select:
+            payload["select"] = {"fields": [field["alias"] for field in select.get("fields", [])]}
+        return payload
 
 
 @dataclass(frozen=True)
@@ -258,11 +383,15 @@ class InteractionPreaggTable:
     create_sql: str
     row_count: int
     build_ms: float
+    built_at: str | None = None
+    model_version: str | None = None
+    source_watermark: dict[str, Any] | None = None
 
     def to_dict(self, *, reused: bool, reason: str | None = None) -> dict[str, Any]:
         return {
             "table_name": self.table_name,
             "cache_key": self.cache_key,
+            "model_version": self.model_version,
             "model": self.model_name,
             "dimensions": self.dimensions,
             "dimension_columns": self.dimension_columns,
@@ -270,8 +399,39 @@ class InteractionPreaggTable:
             "metric_columns": self.metric_columns,
             "row_count": self.row_count,
             "build_ms": round(self.build_ms, 2),
+            "built_at": self.built_at,
+            "source_watermark": self.source_watermark,
             "reused": reused,
             "reason": reason,
+        }
+
+
+@dataclass(frozen=True)
+class ResolvedFreshnessPolicy:
+    """Freshness policy resolved from chart overrides or semantic model metadata."""
+
+    source_watermark_sql: str | None = None
+    ttl_seconds: int | None = None
+    source: str = "none"
+    source_model: str | None = None
+    watermark: str | None = None
+    reason: str | None = None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.source_watermark_sql or self.ttl_seconds is not None)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol": "sidemantic-freshness-policy-v1",
+            "configured": self.configured,
+            "source": self.source,
+            "source_model": self.source_model,
+            "watermark": self.watermark,
+            "source_watermark_configured": bool(self.source_watermark_sql),
+            "source_watermark_sql": self.source_watermark_sql,
+            "ttl_seconds": self.ttl_seconds,
+            "reason": self.reason,
         }
 
 
@@ -289,8 +449,19 @@ class CrossfilterQueryResponse:
     used_interaction_preagg: bool = False
     interaction_preagg: dict[str, Any] | None = None
     timings_ms: dict[str, float] | None = None
+    updated_at: str | None = None
+    freshness: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        updated_at = self.updated_at or datetime.now(UTC).isoformat()
+        freshness = self.freshness or {
+            "protocol": "sidemantic-freshness-v1",
+            "computed_at": updated_at,
+            "updated_at": updated_at,
+            "data_as_of": updated_at,
+            "status": "direct",
+            "stale": False,
+        }
         upper_sql = self.sql.upper()
         diagnostics = {
             "protocol": "sidemantic-crossfilter-v1",
@@ -303,9 +474,13 @@ class CrossfilterQueryResponse:
             "used_interaction_preagg": self.used_interaction_preagg,
             "interaction_preagg": self.interaction_preagg,
             "timings_ms": self.timings_ms or {},
+            "updated_at": updated_at,
+            "freshness": freshness,
         }
         return {
             "protocol": "sidemantic-crossfilter-v1",
+            "updated_at": updated_at,
+            "freshness": freshness,
             "rows": self.rows,
             "row_count": len(self.rows),
             "total_groups": self.total_groups,
@@ -332,6 +507,8 @@ class CrossfilterSession:
         source_record_count: int | None = None,
         interaction_preaggregations: bool = False,
         renderer: Renderer = "d3",
+        source_watermark_sql: str | None = None,
+        freshness_ttl_seconds: int | None = None,
     ):
         self.chart = chart
         self.table_limit = table_limit
@@ -344,6 +521,12 @@ class CrossfilterSession:
         self._interaction_preaggregations_active = interaction_preaggregations
         self._interaction_preagg_cache = InteractionPreaggCache(self) if interaction_preaggregations else None
         self._last_interaction_preagg: dict[str, Any] | None = None
+        self._freshness_policy = chart._resolve_freshness_policy(
+            source_watermark_sql=source_watermark_sql,
+            freshness_ttl_seconds=freshness_ttl_seconds,
+        )
+        self.source_watermark_sql = self._freshness_policy.source_watermark_sql
+        self.freshness_ttl_seconds = self._freshness_policy.ttl_seconds
 
     def to_spec(self, *, query_endpoint: str | None = None) -> dict[str, Any]:
         spec = dict(self.spec)
@@ -352,11 +535,15 @@ class CrossfilterSession:
         sidemantic["interaction_preaggregations"] = self.interaction_preaggregations
         sidemantic["chart_renderer"] = self.chart_renderer
         sidemantic["chart_renderer_options"] = list(CROSSFILTER_CHART_RENDERERS)
+        sidemantic["table_limit"] = self.table_limit
+        sidemantic["freshness_policy"] = self.freshness_policy()
         spec["sidemantic"] = sidemantic
         spec["protocol"] = "sidemantic-crossfilter-v1"
         spec["chart_renderer"] = self.chart_renderer
         spec["chart_renderer_options"] = list(CROSSFILTER_CHART_RENDERERS)
         spec["interaction_preaggregations"] = self.interaction_preaggregations
+        spec["table_limit"] = self.table_limit
+        spec["freshness_policy"] = self.freshness_policy()
         if query_endpoint:
             spec["query_endpoint"] = query_endpoint
         return spec
@@ -370,11 +557,15 @@ class CrossfilterSession:
         sidemantic["interaction_preaggregations"] = self.interaction_preaggregations
         sidemantic["chart_renderer"] = self.chart_renderer
         sidemantic["chart_renderer_options"] = list(CROSSFILTER_CHART_RENDERERS)
+        sidemantic["table_limit"] = self.table_limit
+        sidemantic["freshness_policy"] = self.freshness_policy()
         spec["sidemantic"] = sidemantic
         spec["protocol"] = "sidemantic-crossfilter-v1"
         spec["chart_renderer"] = self.chart_renderer
         spec["chart_renderer_options"] = list(CROSSFILTER_CHART_RENDERERS)
         spec["interaction_preaggregations"] = self.interaction_preaggregations
+        spec["table_limit"] = self.table_limit
+        spec["freshness_policy"] = self.freshness_policy()
         if query_endpoint:
             spec["query_endpoint"] = query_endpoint
         return spec
@@ -517,6 +708,73 @@ class CrossfilterSession:
     @property
     def interaction_preagg_diagnostics(self) -> dict[str, Any] | None:
         return self._last_interaction_preagg
+
+    def freshness_policy(self) -> dict[str, Any]:
+        return self._freshness_policy.to_dict()
+
+    def source_watermark_payload(self, *, checked_at: str | None = None) -> dict[str, Any]:
+        checked_at = checked_at or datetime.now(UTC).isoformat()
+        if not self.source_watermark_sql:
+            return {
+                "protocol": "sidemantic-source-watermark-v1",
+                "configured": False,
+                "status": "not_configured",
+                "checked_at": checked_at,
+                "sql": None,
+                "value": None,
+                "source": self._freshness_policy.source,
+                "watermark": self._freshness_policy.watermark,
+                "reason": self._freshness_policy.reason,
+            }
+        try:
+            row = self.chart.layer.adapter.execute(self.source_watermark_sql).fetchone()
+            if row is None:
+                return {
+                    "protocol": "sidemantic-source-watermark-v1",
+                    "configured": True,
+                    "status": "unavailable",
+                    "checked_at": checked_at,
+                    "sql": self.source_watermark_sql,
+                    "value": None,
+                    "error": "query returned no rows",
+                    "source": self._freshness_policy.source,
+                    "watermark": self._freshness_policy.watermark,
+                }
+            value = to_json_compatible(row[0])
+            if value is None:
+                return {
+                    "protocol": "sidemantic-source-watermark-v1",
+                    "configured": True,
+                    "status": "unavailable",
+                    "checked_at": checked_at,
+                    "sql": self.source_watermark_sql,
+                    "value": None,
+                    "error": "query returned NULL",
+                    "source": self._freshness_policy.source,
+                    "watermark": self._freshness_policy.watermark,
+                }
+        except Exception as exc:
+            return {
+                "protocol": "sidemantic-source-watermark-v1",
+                "configured": True,
+                "status": "unavailable",
+                "checked_at": checked_at,
+                "sql": self.source_watermark_sql,
+                "value": None,
+                "error": str(exc),
+                "source": self._freshness_policy.source,
+                "watermark": self._freshness_policy.watermark,
+            }
+        return {
+            "protocol": "sidemantic-source-watermark-v1",
+            "configured": True,
+            "status": "available",
+            "checked_at": checked_at,
+            "sql": self.source_watermark_sql,
+            "value": value,
+            "source": self._freshness_policy.source,
+            "watermark": self._freshness_policy.watermark,
+        }
 
 
 @dataclass(frozen=True)
@@ -888,6 +1146,11 @@ class InteractionPreaggCache:
         row_count_result = self.chart.layer.adapter.execute(
             f"SELECT COUNT(*) FROM {_identifier(candidate['table_name'])}"
         ).fetchone()
+        built_at = datetime.now(UTC).isoformat()
+        source_watermark = self.session.source_watermark_payload(checked_at=built_at)
+        self.chart.layer.adapter.execute(
+            self._metadata_create_sql(candidate, built_at=built_at, source_watermark=source_watermark)
+        )
         build_ms = (time.perf_counter() - started) * 1000
 
         self.info = InteractionPreaggTable(
@@ -895,13 +1158,16 @@ class InteractionPreaggCache:
             cache_key=candidate["cache_key"],
             model_name=candidate["model_name"],
             dimensions=list(self.chart.dimensions),
-            dimension_columns=[_field_alias(dimension) for dimension in self.chart.dimensions],
+            dimension_columns=self.chart._dimension_aliases(),
             metrics=list(self.chart.metrics),
-            metric_columns=[_field_alias(metric) for metric in self.chart.metrics],
+            metric_columns=self.chart._metric_aliases(),
             source_sql=candidate["source_sql"],
             create_sql=candidate["create_sql"],
             row_count=int(row_count_result[0] if row_count_result else 0),
             build_ms=build_ms,
+            built_at=built_at,
+            model_version=candidate["model_version"],
+            source_watermark=source_watermark,
         )
         return self.info, {
             "enabled": True,
@@ -948,23 +1214,47 @@ class InteractionPreaggCache:
             order_by=None,
             limit=None,
             use_preaggregations=self.chart.use_preaggregations,
+            aliases=self.chart._output_aliases(),
         )
         source_sql_clean = _strip_sidemantic_comment(source_sql).strip()
         cache_key = self._cache_key()
         table_name = f"{self.table_prefix}_{cache_key[:16]}"
         return {
             "table_name": table_name,
+            "metadata_table_name": f"{table_name}__meta",
             "cache_key": cache_key,
+            "model_version": _chart_model_version(self.chart),
             "model_name": _single_model_name([*self.chart.metrics, *self.chart.dimensions]) or "",
             "source_sql": source_sql_clean,
             "create_sql": f"CREATE OR REPLACE TABLE {_identifier(table_name)} AS\n{source_sql_clean}",
         }
 
+    def _metadata_create_sql(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        built_at: str,
+        source_watermark: Mapping[str, Any],
+    ) -> str:
+        ttl_value = (
+            "NULL" if self.session.freshness_ttl_seconds is None else str(int(self.session.freshness_ttl_seconds))
+        )
+        return f"""CREATE OR REPLACE TABLE {_identifier(str(candidate["metadata_table_name"]))} AS
+SELECT
+  {_literal("sidemantic-interaction-preagg-v1")} AS protocol,
+  {_literal(candidate["cache_key"])} AS cache_key,
+  {_literal(candidate["model_version"])} AS model_version,
+  {_literal(built_at)} AS built_at,
+  {_literal(json.dumps(source_watermark, sort_keys=True, default=str))} AS source_watermark,
+  {ttl_value} AS freshness_ttl_seconds"""
+
     def _existing_table_info(
         self,
         *,
         table_name: str,
+        metadata_table_name: str,
         cache_key: str,
+        model_version: str,
         model_name: str,
         source_sql: str,
         create_sql: str,
@@ -978,8 +1268,8 @@ class InteractionPreaggCache:
 
         started = time.perf_counter()
         expected_columns = [
-            *[_field_alias(dimension) for dimension in self.chart.dimensions],
-            *[_field_alias(metric) for metric in self.chart.metrics],
+            *self.chart._dimension_aliases(),
+            *self.chart._metric_aliases(),
         ]
         try:
             schema_result = self.chart.layer.adapter.execute(f"SELECT * FROM {_identifier(table_name)} LIMIT 0")
@@ -991,20 +1281,51 @@ class InteractionPreaggCache:
             ).fetchone()
         except Exception:
             return None
+        metadata = self._read_metadata(metadata_table_name)
+        if metadata and metadata.get("cache_key") != cache_key:
+            return None
         lookup_ms = (time.perf_counter() - started) * 1000
         return InteractionPreaggTable(
             table_name=table_name,
             cache_key=cache_key,
             model_name=model_name,
             dimensions=list(self.chart.dimensions),
-            dimension_columns=[_field_alias(dimension) for dimension in self.chart.dimensions],
+            dimension_columns=self.chart._dimension_aliases(),
             metrics=list(self.chart.metrics),
-            metric_columns=[_field_alias(metric) for metric in self.chart.metrics],
+            metric_columns=self.chart._metric_aliases(),
             source_sql=source_sql,
             create_sql=create_sql,
             row_count=int(row_count_result[0] if row_count_result else 0),
             build_ms=lookup_ms,
+            built_at=metadata.get("built_at"),
+            model_version=metadata.get("model_version") or model_version,
+            source_watermark=metadata.get("source_watermark"),
         )
+
+    def _read_metadata(self, metadata_table_name: str) -> dict[str, Any]:
+        try:
+            tables = self.chart.layer.adapter.get_tables()
+        except Exception:
+            return {}
+        if not any(table.get("table_name") == metadata_table_name for table in tables):
+            return {}
+        try:
+            result = self.chart.layer.adapter.execute(
+                f"SELECT cache_key, model_version, built_at, source_watermark "
+                f"FROM {_identifier(metadata_table_name)} LIMIT 1"
+            )
+            row = result.fetchone()
+        except Exception:
+            return {}
+        if not row:
+            return {}
+        source_watermark = {}
+        if row[3]:
+            try:
+                source_watermark = json.loads(row[3])
+            except Exception:
+                source_watermark = {}
+        return {"cache_key": row[0], "model_version": row[1], "built_at": row[2], "source_watermark": source_watermark}
 
     def _unsupported_reason(self) -> str | None:
         dialect = _layer_dialect(self.chart.layer)
@@ -1059,10 +1380,7 @@ class CrossfilterPlanner:
         self.session = session
         self.chart = session.chart
         self.spec = session._spec if session._spec is not None else session.chart.to_crossfilter_metadata()
-        self.context = _FilterContext(
-            dimension_refs=dict(zip(self.spec["fields"]["dimensions"], self.spec["query"]["dimensions"])),
-            metric_refs=dict(zip(self.spec["fields"]["metrics"], self.spec["query"]["metrics"])),
-        )
+        self.context = _filter_context_from_spec(self.spec)
         self.metric_aggs = _metric_aggs(self.chart, self.spec["fields"]["metrics"])
 
     def query(self, selection: CrossfilterSelection) -> CrossfilterQueryResponse:
@@ -1079,6 +1397,7 @@ class CrossfilterPlanner:
             self.chart.dimensions,
             self._filter_expressions(selection, preagg=preagg),
             preagg=preagg,
+            limit=self.chart.limit,
         )
         mark("current")
         metric_aliases = self.spec["fields"]["metrics"]
@@ -1095,6 +1414,7 @@ class CrossfilterPlanner:
                 metric_aliases,
                 preagg,
                 order_by=self.spec["fields"]["x"],
+                limit=self.chart.limit,
             )
         else:
             trend = self._query_chart(
@@ -1102,12 +1422,14 @@ class CrossfilterPlanner:
                 self._filter_expressions(selection, ignore="xRange", preagg=preagg),
                 preagg=preagg,
                 order_by=[],
+                limit=self.chart.limit,
             )
         mark("trend")
         scatter = self._query_chart(
             self.chart.dimensions,
             self._filter_expressions(selection, ignore="metricRange", preagg=preagg),
             preagg=preagg,
+            limit=self.chart.limit,
         )
         mark("scatter")
         if preagg is not None:
@@ -1127,13 +1449,14 @@ class CrossfilterPlanner:
         mark("kpis")
         bars: dict[str, list[dict[str, Any]]] = {}
         bar_sqls: dict[str, str] = {}
-        for field in self.spec["fields"]["dimensions"][1:]:
+        for field in self._select_dimension_aliases():
             if preagg is not None:
                 result = self._aggregate_interaction_preagg(
                     [field],
                     self._filter_expressions(selection, ignore=f"category:{field}", preagg=preagg),
                     metric_aliases,
                     preagg,
+                    limit=self.chart.limit,
                 )
             else:
                 result = self._query_chart(
@@ -1141,6 +1464,7 @@ class CrossfilterPlanner:
                     self._filter_expressions(selection, ignore=f"category:{field}", preagg=preagg),
                     preagg=preagg,
                     order_by=[],
+                    limit=self.chart.limit,
                 )
             bars[field] = result["rows"]
             bar_sqls[field] = result["sql"]
@@ -1154,6 +1478,7 @@ class CrossfilterPlanner:
             **{f"bar:{field}": sql for field, sql in bar_sqls.items()},
         }
         total_groups = self._total_groups(selection, current, preagg)
+        updated_at = datetime.now(UTC).isoformat()
         return CrossfilterQueryResponse(
             rows=current["rows"],
             total_groups=total_groups,
@@ -1171,7 +1496,75 @@ class CrossfilterPlanner:
             used_interaction_preagg=preagg is not None,
             interaction_preagg=self.session.interaction_preagg_diagnostics,
             timings_ms=timings,
+            updated_at=updated_at,
+            freshness=self._freshness_payload(updated_at, preagg),
         )
+
+    def _select_dimension_aliases(self) -> list[str]:
+        interaction_plan = self.spec.get("interaction_plan") or {}
+        select = interaction_plan.get("select") if isinstance(interaction_plan, Mapping) else None
+        if isinstance(select, Mapping):
+            fields = select.get("fields") or []
+            return [
+                str(field.get("alias"))
+                for field in fields
+                if isinstance(field, Mapping) and field.get("kind") == "dimension" and field.get("alias")
+            ]
+        return list(self.spec["fields"]["dimensions"][1:])
+
+    def _freshness_payload(
+        self,
+        computed_at: str,
+        preagg: InteractionPreaggTable | None,
+    ) -> dict[str, Any]:
+        field_plan = self.spec.get("field_plan") or {}
+        diagnostics = self.session.interaction_preagg_diagnostics or {}
+        reused = bool(diagnostics.get("reused"))
+        source_watermark = self.session.source_watermark_payload(checked_at=computed_at)
+        source_watermark_value = (
+            source_watermark.get("value") if source_watermark.get("status") == "available" else None
+        )
+        if source_watermark_value is not None:
+            data_as_of = source_watermark_value
+        elif preagg is not None:
+            data_as_of = preagg.built_at
+        elif self.session.freshness_ttl_seconds is not None:
+            data_as_of = None
+        else:
+            data_as_of = computed_at
+        stale, stale_reason = _freshness_state(
+            computed_at=computed_at,
+            data_as_of=data_as_of,
+            source_watermark=source_watermark,
+            preagg=preagg,
+            reused=reused,
+            ttl_seconds=self.session.freshness_ttl_seconds,
+        )
+        status = "direct"
+        interaction_preagg = None
+        if preagg is not None:
+            status = "preaggregated"
+            interaction_preagg = {
+                "table_name": preagg.table_name,
+                "cache_key": preagg.cache_key,
+                "model_version": preagg.model_version,
+                "built_at": preagg.built_at,
+                "reused": reused,
+                "source_watermark": preagg.source_watermark,
+            }
+        return {
+            "protocol": "sidemantic-freshness-v1",
+            "computed_at": computed_at,
+            "updated_at": computed_at,
+            "data_as_of": data_as_of,
+            "status": status,
+            "stale": stale,
+            "stale_reason": stale_reason,
+            "policy": self.session.freshness_policy(),
+            "plan_fingerprint": field_plan.get("fingerprint"),
+            "source_watermark": source_watermark,
+            "interaction_preagg": interaction_preagg,
+        }
 
     def _total_groups(
         self,
@@ -1230,6 +1623,7 @@ class CrossfilterPlanner:
             order_by=None,
             limit=None,
             use_preaggregations=self.chart.use_preaggregations,
+            aliases=self.chart._output_aliases(),
         )
         return _execute_rows(self.chart.layer, sql)
 
@@ -1242,6 +1636,7 @@ class CrossfilterPlanner:
             order_by=None,
             limit=None,
             use_preaggregations=self.chart.use_preaggregations,
+            aliases=self.chart._output_aliases(),
         )
         grouped_sql = _strip_sidemantic_comment(grouped_sql).strip()
         result = self.chart.layer.adapter.execute(
@@ -1267,9 +1662,10 @@ class CrossfilterPlanner:
         *,
         preagg: InteractionPreaggTable | None = None,
         order_by: list[str] | str | None = None,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         if preagg is not None:
-            return self._query_interaction_preagg(dimensions, filters, preagg)
+            return self._query_interaction_preagg(dimensions, filters, preagg, limit=limit)
         resolved_order_by = (
             _as_list(order_by) if order_by is not None else _order_by_for_dimensions(dimensions, self.chart)
         )
@@ -1279,8 +1675,9 @@ class CrossfilterPlanner:
             filters=[*self.chart.filters, *filters] or None,
             segments=self.chart.segments or None,
             order_by=resolved_order_by,
-            limit=None,
+            limit=limit,
             use_preaggregations=self.chart.use_preaggregations,
+            aliases=self.chart._output_aliases(),
         )
         return _execute_rows(self.chart.layer, sql)
 
@@ -1292,6 +1689,8 @@ class CrossfilterPlanner:
         dimensions: list[str],
         filters: list[str],
         preagg: InteractionPreaggTable,
+        *,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         dimension_aliases = [self.context.dimension_alias(dimension) for dimension in dimensions]
         dimension_selects = [f"{_identifier(dimension)} AS {_identifier(dimension)}" for dimension in dimension_aliases]
@@ -1307,6 +1706,8 @@ FROM {_identifier(preagg.table_name)}"""
         if dimension_aliases:
             positions = ",\n  ".join(str(index) for index in range(1, len(dimension_aliases) + 1))
             sql += f"\nORDER BY\n  {positions}"
+        if limit is not None:
+            sql += f"\nLIMIT {int(limit)}"
         return _execute_rows(self.chart.layer, sql)
 
     def _aggregate_interaction_preagg(
@@ -1316,6 +1717,7 @@ FROM {_identifier(preagg.table_name)}"""
         metrics: list[str],
         preagg: InteractionPreaggTable,
         order_by: str | None = None,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         dimension_aliases = [self.context.dimension_alias(dimension) for dimension in dimensions]
         dimension_selects = [f"{_identifier(dimension)} AS {_identifier(dimension)}" for dimension in dimension_aliases]
@@ -1334,6 +1736,8 @@ FROM {_identifier(preagg.table_name)}"""
             sql += f"\nGROUP BY\n  {positions}"
         if order_by:
             sql += f"\nORDER BY\n  {_identifier(self.context.dimension_alias(order_by))} NULLS FIRST"
+        if limit is not None:
+            sql += f"\nLIMIT {int(limit)}"
         return _execute_rows(self.chart.layer, sql)
 
 
@@ -1363,6 +1767,102 @@ class _FilterContext:
                 return alias, ref
         expected = ", ".join(sorted({*refs.keys(), *refs.values()}))
         raise ValueError(f"Unknown crossfilter {kind} field {field!r}. Expected one of: {expected}")
+
+
+def _filter_context_from_spec(spec: Mapping[str, Any]) -> _FilterContext:
+    field_plan = spec.get("field_plan") or {}
+    planned_fields = field_plan.get("fields") if isinstance(field_plan, Mapping) else None
+    if isinstance(planned_fields, list) and planned_fields:
+        dimension_refs: dict[str, str] = {}
+        metric_refs: dict[str, str] = {}
+        for field in planned_fields:
+            if not isinstance(field, Mapping):
+                continue
+            alias = field.get("alias")
+            ref = field.get("semantic_ref") or field.get("id")
+            kind = field.get("kind")
+            if not alias or not ref:
+                continue
+            if kind == "dimension":
+                dimension_refs[str(alias)] = str(ref)
+            elif kind == "metric":
+                metric_refs[str(alias)] = str(ref)
+        if dimension_refs or metric_refs:
+            return _FilterContext(dimension_refs=dimension_refs, metric_refs=metric_refs)
+
+    fields = spec.get("fields") or {}
+    query = spec.get("query") or {}
+    return _FilterContext(
+        dimension_refs=dict(zip(fields.get("dimensions") or [], query.get("dimensions") or [])),
+        metric_refs=dict(zip(fields.get("metrics") or [], query.get("metrics") or [])),
+    )
+
+
+def _freshness_state(
+    *,
+    computed_at: str,
+    data_as_of: Any,
+    source_watermark: Mapping[str, Any],
+    preagg: InteractionPreaggTable | None,
+    reused: bool,
+    ttl_seconds: int | None,
+) -> tuple[bool | None, str | None]:
+    stale: bool | None = False
+    reason: str | None = None
+    watermark_status = str(source_watermark.get("status") or "")
+
+    if source_watermark.get("configured") and watermark_status == "unavailable":
+        stale = None
+        reason = f"source watermark unavailable: {source_watermark.get('error') or 'query failed'}"
+
+    if preagg is not None:
+        if watermark_status == "available" and source_watermark.get("value") is not None:
+            watermark_at = _freshness_datetime(source_watermark.get("value"))
+            preagg_built_at = _freshness_datetime(preagg.built_at)
+            if watermark_at is None or preagg_built_at is None:
+                stale = None
+                reason = "source watermark could not be compared with interaction preaggregation build time"
+            elif watermark_at > preagg_built_at:
+                stale = True
+                reason = "source watermark is newer than interaction preaggregation"
+        elif reused and ttl_seconds is None:
+            stale = None
+            reason = "source watermark unavailable for reused interaction preaggregation"
+
+    ttl_stale, ttl_reason = _ttl_freshness_state(computed_at, data_as_of, ttl_seconds)
+    if ttl_stale is True:
+        return True, ttl_reason
+    if ttl_stale is None and stale is False:
+        return None, ttl_reason
+    return stale, reason
+
+
+def _ttl_freshness_state(computed_at: str, data_as_of: Any, ttl_seconds: int | None) -> tuple[bool | None, str | None]:
+    if ttl_seconds is None:
+        return False, None
+    computed_dt = _freshness_datetime(computed_at)
+    data_dt = _freshness_datetime(data_as_of)
+    if computed_dt is None or data_dt is None:
+        return None, "freshness TTL could not be evaluated"
+    if computed_dt - data_dt > timedelta(seconds=int(ttl_seconds)):
+        return True, f"data_as_of is older than freshness TTL ({int(ttl_seconds)}s)"
+    return False, None
+
+
+def _freshness_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        parsed = _parse_temporal_value(value)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(parsed, datetime):
+        parsed_dt = parsed
+    else:
+        parsed_dt = datetime.combine(parsed, datetime.min.time())
+    if parsed_dt.tzinfo is None:
+        return parsed_dt.replace(tzinfo=UTC)
+    return parsed_dt.astimezone(UTC)
 
 
 class ChartBuilder:
@@ -1397,6 +1897,7 @@ class ChartBuilder:
         self.title = title
         self.use_preaggregations = use_preaggregations
         self.selection: BrushSelection | None = None
+        self.interactions: dict[str, Any] = {}
         self._data: ChartData | None = None
 
         if not self.metrics:
@@ -1422,12 +1923,31 @@ class ChartBuilder:
         self.mark = "point"
         return self
 
-    def brush(self, channel: Literal["x", "y", "xy"] = "x", name: str = "brush") -> ChartBuilder:
+    def brush(
+        self,
+        channel: Literal["x", "y", "xy"] = "x",
+        name: str = "brush",
+        fields: str | list[str] | None = None,
+    ) -> ChartBuilder:
         self.selection = BrushSelection(name=name, channel=channel)
+        self.interactions["brush"] = {
+            "fields": _as_list(fields) if fields is not None else [],
+            "channel": channel,
+        }
         return self
 
     def interactive(self, enabled: bool = True) -> ChartBuilder:
         self.selection = BrushSelection() if enabled else None
+        if enabled:
+            self.interactions.setdefault("brush", {"fields": [], "channel": "x"})
+        else:
+            self.interactions.pop("brush", None)
+        return self
+
+    def select(self, fields: str | list[str] | None = None) -> ChartBuilder:
+        self.interactions["select"] = {
+            "fields": _as_list(fields) if fields is not None else [],
+        }
         return self
 
     def where(self, filter_expr: str) -> ChartBuilder:
@@ -1442,6 +1962,8 @@ class ChartBuilder:
         source_record_count: int | None = None,
         interaction_preaggregations: bool = False,
         renderer: Renderer = "d3",
+        source_watermark_sql: str | None = None,
+        freshness_ttl_seconds: int | None = None,
     ) -> CrossfilterSession:
         """Create a database-backed crossfilter session for this chart."""
         return CrossfilterSession(
@@ -1450,6 +1972,8 @@ class ChartBuilder:
             source_record_count=source_record_count,
             interaction_preaggregations=interaction_preaggregations,
             renderer=renderer,
+            source_watermark_sql=source_watermark_sql,
+            freshness_ttl_seconds=freshness_ttl_seconds,
         )
 
     def data(self) -> ChartData:
@@ -1624,8 +2148,8 @@ class ChartBuilder:
 
     def to_crossfilter_metadata(self) -> dict[str, Any]:
         """Return a crossfilter spec without executing the query."""
-        dimension_columns = [_field_alias(dimension) for dimension in self.dimensions]
-        metric_columns = [_field_alias(metric) for metric in self.metrics]
+        dimension_columns = self._dimension_aliases()
+        metric_columns = self._metric_aliases()
         data = ChartData(
             sql="",
             columns=[*dimension_columns, *metric_columns],
@@ -1638,6 +2162,9 @@ class ChartBuilder:
         return spec
 
     def _crossfilter_spec(self, data: ChartData) -> dict[str, Any]:
+        plan = self._compiled_plan(data)
+        field_plan = plan.field_plan()
+        interaction_plan = plan.interaction_plan()
         return {
             "renderer": "sidemantic-crossfilter",
             "protocol": "sidemantic-crossfilter-v1",
@@ -1651,6 +2178,7 @@ class ChartBuilder:
                 "metrics": data.metric_columns,
                 "metric_aggs": _metric_aggs(self, data.metric_columns),
             },
+            "field_plan": field_plan,
             "query": {
                 "metrics": self.metrics,
                 "dimensions": self.dimensions,
@@ -1660,6 +2188,8 @@ class ChartBuilder:
                 "limit": self.limit,
                 "use_preaggregations": self.use_preaggregations,
             },
+            "interactions": plan.legacy_interactions(),
+            "interaction_plan": interaction_plan,
             "views": [
                 {"id": "trend", "type": "line", "title": "Trend"},
                 {"id": "scatter", "type": "scatter", "title": "Metric Relationship"},
@@ -1698,9 +2228,7 @@ class ChartBuilder:
 <div id="chart"></div>
 <div id="interaction-status" aria-live="polite">Drag across the chart to brush a range.</div>
 <script id="chart-spec" type="application/json">{safe_json}</script>
-<script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-<script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-<script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+{inline_vendor_scripts("vega", "vega_lite", "vega_embed")}
 <script>
   const spec = JSON.parse(document.getElementById('chart-spec').textContent);
   spec.width = 'container';
@@ -1737,7 +2265,7 @@ class ChartBuilder:
 <div id="chart"></div>
 <div id="interaction-status" aria-live="polite">Drag to select points or hover for details.</div>
 <script id="chart-spec" type="application/json">{safe_json}</script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+{inline_vendor_scripts("plotly")}
 <script>
   const spec = JSON.parse(document.getElementById('chart-spec').textContent);
   const chart = document.getElementById('chart');
@@ -1776,8 +2304,9 @@ class ChartBuilder:
 <div id="chart"></div>
 <div id="interaction-status" aria-live="polite">Move over marks for Observable Plot tips.</div>
 <script id="chart-spec" type="application/json">{safe_json}</script>
-<script type="module">
-  import * as Plot from 'https://esm.sh/@observablehq/plot@0.6';
+{inline_vendor_scripts("d3", "observable_plot")}
+<script>
+  const Plot = window.Plot;
   const spec = JSON.parse(document.getElementById('chart-spec').textContent);
   const xField = spec.marks[0]?.options?.x;
   if (xField) {{
@@ -1814,7 +2343,7 @@ class ChartBuilder:
 <svg id="chart" viewBox="0 0 800 460" role="img"></svg>
 <div id="interaction-status" aria-live="polite">Drag across the chart to brush a range.</div>
 <script id="chart-spec" type="application/json">{safe_json}</script>
-<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+{inline_vendor_scripts("d3")}
 <script>
   const spec = JSON.parse(document.getElementById('chart-spec').textContent);
   const svg = d3.select('#chart');
@@ -1911,6 +2440,7 @@ class ChartBuilder:
             order_by=order_by,
             limit=self.limit,
             use_preaggregations=self.use_preaggregations,
+            aliases=self._output_aliases(),
         )
         result = self.layer.adapter.execute(sql)
         columns = [desc[0] for desc in result.description]
@@ -1967,15 +2497,64 @@ class ChartBuilder:
         return None
 
     def _metadata(self, data: ChartData) -> dict[str, Any]:
+        plan = self._compiled_plan(data)
         metadata: dict[str, Any] = {
             "sql": data.sql,
             "metrics": self.metrics,
             "dimensions": self.dimensions,
             "row_count": len(data.rows),
+            "field_plan": plan.field_plan(),
+            "interaction_plan": plan.interaction_plan(),
         }
         if self.selection:
             metadata["selection"] = self.selection.to_dict()
+        interaction_spec = plan.legacy_interactions()
+        if interaction_spec:
+            metadata["interactions"] = interaction_spec
         return metadata
+
+    def _compiled_plan(self, data: ChartData) -> CompiledChartPlan:
+        return CompiledChartPlan.build(self, data)
+
+    def _interaction_spec(self, data: ChartData) -> dict[str, Any]:
+        return self._compiled_plan(data).legacy_interactions()
+
+    def _output_aliases(self) -> dict[str, str]:
+        return _unique_field_aliases([*self.dimensions, *self.metrics])
+
+    def _dimension_aliases(self) -> list[str]:
+        aliases = self._output_aliases()
+        return [aliases[dimension] for dimension in self.dimensions]
+
+    def _metric_aliases(self) -> list[str]:
+        aliases = self._output_aliases()
+        return [aliases[metric] for metric in self.metrics]
+
+    def _resolve_freshness_policy(
+        self,
+        *,
+        source_watermark_sql: str | None = None,
+        freshness_ttl_seconds: int | None = None,
+    ) -> ResolvedFreshnessPolicy:
+        if source_watermark_sql:
+            return ResolvedFreshnessPolicy(
+                source_watermark_sql=source_watermark_sql,
+                ttl_seconds=freshness_ttl_seconds,
+                source="chart_override_sql",
+                reason="explicit crossfilter source_watermark_sql override",
+            )
+
+        policy = _model_freshness_policy(self.layer, [*self.metrics, *self.dimensions])
+        if freshness_ttl_seconds is not None:
+            return ResolvedFreshnessPolicy(
+                source_watermark_sql=policy.source_watermark_sql,
+                ttl_seconds=freshness_ttl_seconds,
+                source=policy.source if policy.source != "none" else "chart_override_ttl",
+                source_model=policy.source_model,
+                watermark=policy.watermark,
+                reason=policy.reason or "explicit crossfilter freshness_ttl_seconds override",
+            )
+        return policy
 
 
 def _as_list(value: str | list[str] | None) -> list[str]:
@@ -1995,6 +2574,161 @@ def _duplicates(values: Iterable[str]) -> set[str]:
         else:
             seen.add(value)
     return duplicates
+
+
+def _unique_field_aliases(fields: Sequence[str]) -> dict[str, str]:
+    """Return deterministic SQL/result aliases for semantic fields."""
+    counts: dict[str, int] = {}
+    for field in fields:
+        base = _field_alias(field)
+        counts[base] = counts.get(base, 0) + 1
+
+    aliases: dict[str, str] = {}
+    used: set[str] = set()
+    for field in fields:
+        base = _field_alias(field)
+        if counts[base] > 1 and _ref_model(field):
+            candidate = f"{_ref_model(field)}_{base}"
+        else:
+            candidate = base
+        candidate = _safe_alias(candidate)
+        unique_candidate = candidate
+        index = 2
+        while unique_candidate in used:
+            unique_candidate = f"{candidate}_{index}"
+            index += 1
+        aliases[field] = unique_candidate
+        used.add(unique_candidate)
+    return aliases
+
+
+def _safe_alias(value: str) -> str:
+    alias = "".join(char if char.isalnum() or char == "_" else "_" for char in value.strip())
+    alias = alias.strip("_") or "field"
+    if alias[0].isdigit():
+        alias = f"field_{alias}"
+    return alias
+
+
+def _compiled_encodings(
+    fields: tuple[CompiledField, ...],
+    x_alias: str,
+    y_aliases: list[str],
+    series_alias: str | None,
+) -> dict[str, Any]:
+    by_alias = {field.alias: field for field in fields}
+    return {
+        "x": _compiled_field_ref(by_alias[x_alias]) if x_alias in by_alias else None,
+        "y": [_compiled_field_ref(by_alias[alias]) for alias in y_aliases if alias in by_alias],
+        "series": _compiled_field_ref(by_alias[series_alias]) if series_alias and series_alias in by_alias else None,
+    }
+
+
+def _compiled_interactions(
+    chart: ChartBuilder,
+    data: ChartData,
+    fields: tuple[CompiledField, ...],
+    encodings: Mapping[str, Any],
+) -> dict[str, Any]:
+    interactions: dict[str, Any] = {}
+    if chart.selection:
+        brush = dict(chart.interactions.get("brush") or {})
+        raw_fields = list(brush.get("fields") or [])
+        if raw_fields:
+            planned_fields = [_resolve_compiled_field(field, fields) for field in raw_fields]
+        else:
+            x_field = encodings.get("x")
+            planned_fields = [_resolve_compiled_field(x_field["id"], fields)] if x_field else []
+        channel = str(brush.get("channel") or chart.selection.channel or "x")
+        supported = channel == "x" and all(field.kind == "dimension" for field in planned_fields)
+        reason = None if supported else "live crossfilter brush currently supports x-channel dimension ranges"
+        interactions["brush"] = {
+            "channel": channel,
+            "fields": [_compiled_field_ref(field) for field in planned_fields],
+            "filter_type": "range",
+            "request_type": "xRange",
+            "supported": supported,
+            "unsupported_reason": reason,
+            "ignored_by": ["trend"],
+        }
+
+    if "select" in chart.interactions:
+        select = dict(chart.interactions.get("select") or {})
+        raw_fields = list(select.get("fields") or [])
+        if raw_fields:
+            planned_fields = [_resolve_compiled_field(field, fields, expected_kind="dimension") for field in raw_fields]
+        else:
+            planned_fields = [
+                _resolve_compiled_field(alias, fields, expected_kind="dimension")
+                for alias in data.dimension_columns[1:]
+            ]
+        interactions["select"] = {
+            "fields": [_compiled_field_ref(field) for field in planned_fields],
+            "filter_type": "category",
+            "request_type": "category",
+            "supported": True,
+            "ignored_by": ["matching breakdown"],
+        }
+    return interactions
+
+
+def _compiled_field_ref(field: CompiledField) -> dict[str, Any]:
+    return {
+        "id": field.id,
+        "semantic_ref": field.semantic_ref,
+        "alias": field.alias,
+        "label": _label(field.alias),
+        "kind": field.kind,
+        "source_model": field.source_model,
+    }
+
+
+def _resolve_compiled_field(
+    value: Any,
+    fields: tuple[CompiledField, ...],
+    *,
+    expected_kind: Literal["dimension", "metric"] | None = None,
+) -> CompiledField:
+    if isinstance(value, Mapping):
+        candidate = value.get("id") or value.get("semantic_ref") or value.get("alias")
+    else:
+        candidate = value
+    text = str(candidate or "")
+    for field in fields:
+        if text in {field.id, field.semantic_ref, field.alias}:
+            if expected_kind is not None and field.kind != expected_kind:
+                raise ValueError(
+                    f"Chart interaction field {text!r} must be a {expected_kind}; {field.id!r} is a {field.kind}"
+                )
+            return field
+    expected = ", ".join(sorted({field.id for field in fields} | {field.alias for field in fields}))
+    raise ValueError(f"Unknown chart interaction field {text!r}. Expected one of: {expected}")
+
+
+def _chart_plan_fingerprint(
+    chart: ChartBuilder,
+    fields: tuple[CompiledField, ...],
+    encodings: Mapping[str, Any],
+    interactions: Mapping[str, Any],
+) -> str:
+    payload = {
+        "protocol": "sidemantic-chart-plan-v1",
+        "model_version": _chart_model_version(chart),
+        "fields": [field.to_dict() for field in fields],
+        "encodings": encodings,
+        "interactions": interactions,
+        "query": {
+            "metrics": chart.metrics,
+            "dimensions": chart.dimensions,
+            "filters": chart.filters,
+            "segments": chart.segments,
+            "order_by": chart.order_by or chart._default_order_by(),
+            "limit": chart.limit,
+            "use_preaggregations": chart.use_preaggregations,
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _normalize_renderer(renderer: str) -> Renderer:
@@ -2141,8 +2875,6 @@ def _parse_temporal_value(value: Any) -> date | datetime:
         return date.fromisoformat(text)
     normalized = text.replace("Z", "+00:00")
     parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is not None:
-        parsed = parsed.replace(tzinfo=None)
     return parsed
 
 
@@ -2216,6 +2948,174 @@ def _single_model_name(refs: list[str]) -> str | None:
     if len(model_names) != 1:
         return None
     return next(iter(model_names))
+
+
+def _model_freshness_policy(layer: Any, refs: list[str]) -> ResolvedFreshnessPolicy:
+    model_names = sorted({_ref_model(ref) for ref in refs if _ref_model(ref)})
+    if not model_names:
+        return ResolvedFreshnessPolicy(reason="semantic fields do not identify a source model")
+    if len(model_names) != 1:
+        return ResolvedFreshnessPolicy(
+            source="ambiguous_models",
+            reason=f"chart references multiple models without a combined freshness policy: {', '.join(model_names)}",
+        )
+
+    model_name = model_names[0]
+    try:
+        model = layer.get_model(model_name)
+    except Exception as exc:
+        return ResolvedFreshnessPolicy(source_model=model_name, reason=f"model freshness could not be resolved: {exc}")
+
+    freshness = getattr(model, "freshness", None)
+    if freshness is not None:
+        if freshness.sql:
+            return ResolvedFreshnessPolicy(
+                source_watermark_sql=freshness.sql,
+                ttl_seconds=freshness.ttl_seconds,
+                source="model_freshness_sql",
+                source_model=model_name,
+                reason="model freshness sql",
+            )
+        if freshness.watermark:
+            source_sql = _model_watermark_sql(model, freshness.watermark)
+            if source_sql:
+                return ResolvedFreshnessPolicy(
+                    source_watermark_sql=source_sql,
+                    ttl_seconds=freshness.ttl_seconds,
+                    source="model_freshness",
+                    source_model=model_name,
+                    watermark=_canonical_model_watermark(model_name, freshness.watermark),
+                    reason="model freshness watermark",
+                )
+            return ResolvedFreshnessPolicy(
+                ttl_seconds=freshness.ttl_seconds,
+                source="model_freshness",
+                source_model=model_name,
+                watermark=_canonical_model_watermark(model_name, freshness.watermark),
+                reason="model freshness watermark could not be compiled",
+            )
+        return ResolvedFreshnessPolicy(
+            ttl_seconds=freshness.ttl_seconds,
+            source="model_freshness",
+            source_model=model_name,
+            reason="model freshness ttl without source watermark",
+        )
+
+    inferred_watermark = _infer_model_watermark(model)
+    if inferred_watermark:
+        source_sql = _model_watermark_sql(model, inferred_watermark)
+        if source_sql:
+            return ResolvedFreshnessPolicy(
+                source_watermark_sql=source_sql,
+                source="model_inferred_watermark",
+                source_model=model_name,
+                watermark=_canonical_model_watermark(model_name, inferred_watermark),
+                reason="inferred model freshness watermark from time dimension metadata/name",
+            )
+
+    return ResolvedFreshnessPolicy(source_model=model_name, reason="model has no freshness policy")
+
+
+def _infer_model_watermark(model: Any) -> str | None:
+    preferred_names = [
+        "_ingested_at",
+        "ingested_at",
+        "_loaded_at",
+        "loaded_at",
+        "_updated_at",
+        "updated_at",
+        "synced_at",
+        "refreshed_at",
+    ]
+    dimensions = list(getattr(model, "dimensions", []) or [])
+    for dimension in dimensions:
+        role = _metadata_role(dimension)
+        if getattr(dimension, "type", None) == "time" and role in {
+            "freshness",
+            "watermark",
+            "source_watermark",
+            "ingestion_time",
+            "updated_at",
+        }:
+            return str(dimension.name)
+    by_name = {
+        str(dimension.name).lower(): dimension for dimension in dimensions if getattr(dimension, "type", None) == "time"
+    }
+    for name in preferred_names:
+        if name in by_name:
+            return str(by_name[name].name)
+    return None
+
+
+def _metadata_role(value: Any) -> str | None:
+    for attr in ("meta", "metadata"):
+        metadata = getattr(value, attr, None)
+        if isinstance(metadata, Mapping):
+            role = metadata.get("role") or metadata.get("semantic_role")
+            if role:
+                return str(role).lower()
+    return None
+
+
+def _model_watermark_sql(model: Any, watermark: str) -> str | None:
+    from_clause = _model_from_clause(model)
+    if not from_clause:
+        return None
+    expression = _model_watermark_expression(model, watermark)
+    return f"SELECT MAX({expression}) FROM {from_clause}"
+
+
+def _model_from_clause(model: Any) -> str | None:
+    model_sql = getattr(model, "sql", None)
+    if model_sql:
+        return f"({model_sql}) AS t"
+    model_table = getattr(model, "table", None)
+    if model_table:
+        return str(model_table)
+    return None
+
+
+def _model_watermark_expression(model: Any, watermark: str) -> str:
+    field_name = _bare_ref(watermark)
+    dimension = model.get_dimension(field_name) if hasattr(model, "get_dimension") else None
+    expression = str(dimension.sql_expr) if dimension is not None else _identifier(field_name)
+    return _replace_model_placeholder_for_freshness(expression, model_has_sql=bool(getattr(model, "sql", None)))
+
+
+def _replace_model_placeholder_for_freshness(expression: str, *, model_has_sql: bool) -> str:
+    if model_has_sql:
+        return expression.replace("{model}", "t").replace("${TABLE}", "t")
+    return expression.replace("{model}.", "").replace("${TABLE}.", "").replace("{model}", "").replace("${TABLE}", "")
+
+
+def _canonical_model_watermark(model_name: str, watermark: str) -> str:
+    if "." in watermark:
+        return watermark
+    return f"{model_name}.{watermark}"
+
+
+def _chart_model_version(chart: ChartBuilder) -> str:
+    model_payloads: dict[str, Any] = {}
+    model_names = sorted({_ref_model(ref) for ref in [*chart.metrics, *chart.dimensions] if _ref_model(ref)})
+    for model_name in model_names:
+        if model_name is None:
+            continue
+        try:
+            model = chart.layer.get_model(model_name)
+            model_payloads[model_name] = model.model_dump(mode="json", exclude_none=True)
+        except Exception:
+            model_payloads[model_name] = {"name": model_name}
+    payload = {
+        "protocol": "sidemantic-chart-model-v1",
+        "models": model_payloads,
+        "metrics": chart.metrics,
+        "dimensions": chart.dimensions,
+        "filters": chart.filters,
+        "segments": chart.segments,
+        "use_preaggregations": chart.use_preaggregations,
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _metric_aggs(chart: ChartBuilder, metric_aliases: list[str]) -> dict[str, str | None]:
@@ -2473,14 +3373,9 @@ def _crossfilter_body(safe_json: str) -> str:
   </div>
 </div>
 <script id="chart-spec" type="application/json">__SPEC_JSON__</script>
-<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-<script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-<script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-<script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script type="module">
-  import * as Plot from 'https://esm.sh/@observablehq/plot@0.6';
-  window.__SIDEMANTIC_OBSERVABLE_PLOT__ = Plot;
+__VENDOR_SCRIPTS__
+<script>
+  window.__SIDEMANTIC_OBSERVABLE_PLOT__ = window.Plot;
   window.dispatchEvent(new Event('sidemantic:observable-plot-ready'));
 </script>
 <script>
@@ -2490,6 +3385,9 @@ def _crossfilter_body(safe_json: str) -> str:
   let activeTabIndex = 0;
   let spec;
   let fields;
+  let fieldPlan;
+  let interactionPlan;
+  let freshnessPolicy;
   let xField;
   let metrics;
   let yField;
@@ -2499,6 +3397,7 @@ def _crossfilter_body(safe_json: str) -> str:
   let categoryFields;
   let seriesField;
   let columns;
+  let tableLimit;
   let rows;
   let domainRows;
   let xValues;
@@ -2508,6 +3407,7 @@ def _crossfilter_body(safe_json: str) -> str:
   let color;
   let liveEndpoint;
   let liveViews;
+  let lastUpdatedAt;
   let activeRenderer;
   let pendingRequestId = 0;
   let requestInFlight = false;
@@ -2600,6 +3500,9 @@ def _crossfilter_body(safe_json: str) -> str:
     }
     activeRenderer = tabRendererState[currentTabId()];
     fields = spec.fields;
+    fieldPlan = spec.field_plan || spec.sidemantic?.field_plan || null;
+    interactionPlan = spec.interaction_plan || spec.sidemantic?.interaction_plan || null;
+    freshnessPolicy = spec.freshness_policy || spec.sidemantic?.freshness_policy || null;
     xField = fields.x;
     metrics = fields.metrics || fields.y;
     metricAggs = fields.metric_aggs || spec.metric_aggs || spec.sidemantic?.metric_aggs || {};
@@ -2607,12 +3510,14 @@ def _crossfilter_body(safe_json: str) -> str:
     scatterXField = metrics[2] || metrics[1] || metrics[0];
     scatterYField = metrics[0];
     sizeField = metrics[1] || metrics[0];
-    categoryFields = (fields.dimensions || []).filter(field => field !== xField);
-    seriesField = fields.series || categoryFields[0] || xField;
+    categoryFields = ((interactionFieldList('select') || fields.dimensions || [])).filter(field => field !== xField);
+    seriesField = fields.series || categoryFields[0] || null;
     columns = Array.from(new Set([...(fields.dimensions || []), ...metrics].filter(Boolean)));
+    tableLimit = Number(spec.table_limit || spec.sidemantic?.table_limit || 75);
     domainRows = (spec.data || []).map((row, rowIndex) => ({ ...row, __index: rowIndex }));
     rows = domainRows.slice();
     liveViews = null;
+    lastUpdatedAt = null;
     liveEndpoint = tab.query_endpoint || spec.query_endpoint || spec.sidemantic?.query_endpoint || null;
     if (tabPreaggState[currentTabId()] == null) {
       tabPreaggState[currentTabId()] = Boolean(spec.interaction_preaggregations);
@@ -2620,7 +3525,7 @@ def _crossfilter_body(safe_json: str) -> str:
     preaggToggle.checked = tabPreaggState[currentTabId()];
     preaggToggle.disabled = !liveEndpoint;
     xValues = valuesFrom(domainSourceRows(), xField);
-    seriesValues = valuesFor(seriesField);
+    seriesValues = seriesField ? valuesFor(seriesField) : [label(yField)];
     state = { xRange: null, xBrushValue: null, metricRange: null, metricBrushValue: null, categories: {}, lastEvent: 'tab' };
     color = d3.scaleOrdinal(seriesValues, d3.schemeTableau10);
     color.domain(seriesValues);
@@ -2739,7 +3644,9 @@ def _crossfilter_body(safe_json: str) -> str:
     ];
     const nextXValues = valuesFrom((liveViews?.trend || []).length ? liveViews.trend : liveDomainRows, xField);
     if (nextXValues.length) xValues = nextXValues;
-    const nextSeriesValues = valuesFrom(liveDomainRows.length ? liveDomainRows : domainSourceRows(), seriesField);
+    const nextSeriesValues = seriesField
+      ? valuesFrom(liveDomainRows.length ? liveDomainRows : domainSourceRows(), seriesField)
+      : [label(yField)];
     if (nextSeriesValues.length || !seriesValues?.length) {
       seriesValues = nextSeriesValues;
       color = d3.scaleOrdinal(seriesValues, d3.schemeTableau10);
@@ -2762,6 +3669,8 @@ def _crossfilter_body(safe_json: str) -> str:
     const filteredSourceRows = recordCount(filtered);
     const totalSourceRows = liveViews?.total_source_rows ?? recordCount(domainSourceRows());
     const totalGroups = liveViews?.total_groups ?? domainSourceRows().length;
+    const updatedAt = liveViews?.updated_at || liveViews?.diagnostics?.updated_at || lastUpdatedAt;
+    const freshness = liveViews?.freshness || liveViews?.diagnostics?.freshness || null;
     window.__SIDEMANTIC_CROSSFILTER__.filteredRows = filtered.length;
     window.__SIDEMANTIC_CROSSFILTER__.totalRows = totalGroups;
     window.__SIDEMANTIC_CROSSFILTER__.filteredSourceRows = filteredSourceRows;
@@ -2779,6 +3688,11 @@ def _crossfilter_body(safe_json: str) -> str:
     window.__SIDEMANTIC_CROSSFILTER__.sql = currentSql || null;
     window.__SIDEMANTIC_CROSSFILTER__.viewSql = liveViews?.sqls || {};
     window.__SIDEMANTIC_CROSSFILTER__.interactionPreagg = diagnostics.interaction_preagg || null;
+    window.__SIDEMANTIC_CROSSFILTER__.updatedAt = updatedAt || null;
+    window.__SIDEMANTIC_CROSSFILTER__.freshness = freshness;
+    window.__SIDEMANTIC_CROSSFILTER__.freshnessPolicy = freshnessPolicy;
+    window.__SIDEMANTIC_CROSSFILTER__.fieldPlan = fieldPlan;
+    window.__SIDEMANTIC_CROSSFILTER__.interactionPlan = interactionPlan;
     document.documentElement.dataset.sidemanticCrossfilterEvent = state.lastEvent || '';
     document.documentElement.dataset.sidemanticCrossfilterRenderer = activeRenderer;
     document.documentElement.dataset.sidemanticCrossfilterMode = liveEndpoint ? 'database' : 'static';
@@ -2788,11 +3702,17 @@ def _crossfilter_body(safe_json: str) -> str:
     document.documentElement.dataset.sidemanticCrossfilterSemanticFilters = String(liveViews?.filter_expressions?.length || 0);
     document.documentElement.dataset.sidemanticCrossfilterUsedPreagg = diagnostics.used_interaction_preagg ? 'true' : 'false';
     document.documentElement.dataset.sidemanticCrossfilterPreaggTable = diagnostics.interaction_preagg?.table?.table_name || '';
+    document.documentElement.dataset.sidemanticCrossfilterUpdatedAt = updatedAt || '';
+    document.documentElement.dataset.sidemanticCrossfilterFreshnessStatus = freshness?.status || '';
+    document.documentElement.dataset.sidemanticCrossfilterStale = freshness?.stale == null ? 'unknown' : String(Boolean(freshness.stale));
+    document.documentElement.dataset.sidemanticCrossfilterSourceWatermarkStatus = freshness?.source_watermark?.status || '';
+    document.documentElement.dataset.sidemanticCrossfilterFreshnessTtlSeconds = freshness?.policy?.ttl_seconds == null ? '' : String(freshness.policy.ttl_seconds);
     const upperSql = currentSql.toUpperCase();
     document.documentElement.dataset.sidemanticCrossfilterSqlHasWhere = upperSql.includes('WHERE') ? 'true' : 'false';
     document.documentElement.dataset.sidemanticCrossfilterSqlHasHaving = upperSql.includes('HAVING') ? 'true' : 'false';
     summary.textContent = summaryText(filtered.length, totalGroups);
-    datasetMeta.textContent = `${formatMetric(filteredSourceRows, 'count')} of ${formatMetric(totalSourceRows, 'count')} source records | ${formatMetric(filtered.length, 'count')} of ${formatMetric(totalGroups, 'count')} groups`;
+    const freshnessText = updatedAt ? ` | Updated ${formatTimestamp(updatedAt)}${freshnessLabel(freshness)}` : '';
+    datasetMeta.textContent = `${formatMetric(filteredSourceRows, 'count')} of ${formatMetric(totalSourceRows, 'count')} source records | ${formatMetric(filtered.length, 'count')} of ${formatMetric(totalGroups, 'count')} groups${freshnessText}`;
     renderRendererControls();
     renderPreaggDiagnostics(diagnostics.interaction_preagg);
     renderFilterPills(filters);
@@ -2832,8 +3752,11 @@ def _crossfilter_body(safe_json: str) -> str:
       liveViews.sqls = payload.sqls || diagnostics.sqls || {};
       liveViews.total_source_rows = payload.total_source_rows;
       liveViews.total_groups = payload.total_groups;
+      liveViews.updated_at = payload.updated_at || diagnostics.updated_at || new Date().toISOString();
+      liveViews.freshness = payload.freshness || diagnostics.freshness || null;
       liveViews.filter_expressions = payload.filter_expressions || diagnostics.filter_expressions || [];
       liveViews.diagnostics = diagnostics;
+      lastUpdatedAt = liveViews.updated_at;
       refreshDomainsFromLiveViews();
       state.lastEvent = eventName;
       render();
@@ -2867,6 +3790,7 @@ def _crossfilter_body(safe_json: str) -> str:
       const payload = await response.json();
       liveViews = liveViews || {};
       liveViews.diagnostics = payload.diagnostics || {};
+      liveViews.freshness = payload.freshness || liveViews.diagnostics.freshness || liveViews.freshness || null;
       renderPreaggDiagnostics(liveViews.diagnostics.interaction_preagg);
       document.documentElement.dataset.sidemanticCrossfilterUsedPreagg = liveViews.diagnostics.used_interaction_preagg ? 'true' : 'false';
       document.documentElement.dataset.sidemanticCrossfilterPreaggTable = liveViews.diagnostics.interaction_preagg?.table?.table_name || '';
@@ -2905,6 +3829,13 @@ def _crossfilter_body(safe_json: str) -> str:
     const table = preagg.table || {};
     const reuseText = table.reused ? 'reused' : 'built';
     preaggDiagnostics.innerHTML = `<strong>Interaction preagg ${reuseText}</strong>: ${escapeHtml(table.table_name || '')} | ${formatMetric(table.row_count || 0, 'count')} groups | ${Number(table.build_ms || 0).toFixed(1)} ms`;
+  }
+
+  function freshnessLabel(freshness) {
+    if (!freshness) return '';
+    if (freshness.stale === true) return ' | Stale';
+    if (freshness.stale == null) return ' | Freshness unknown';
+    return '';
   }
 
   function requestFilters() {
@@ -2981,6 +3912,13 @@ def _crossfilter_body(safe_json: str) -> str:
   }
 
   function aggregateByX(data) {
+    if (!seriesField) {
+      return d3.rollups(
+        data,
+        values => ({ value: aggregateMetric(values, yField) }),
+        row => row[xField]
+      ).map(([xValue, value]) => ({ [xField]: xValue, [yField]: value.value }));
+    }
     const grouped = d3.rollups(
       data,
       values => ({
@@ -3734,7 +4672,7 @@ def _crossfilter_body(safe_json: str) -> str:
     const header = table.append('thead').append('tr');
     header.selectAll('th').data(columns).join('th').text(label);
     const body = table.append('tbody');
-    body.selectAll('tr').data(tableData.slice(0, 75)).join('tr')
+    body.selectAll('tr').data(tableData.slice(0, tableLimit)).join('tr')
       .selectAll('td')
       .data(row => columns.map(column => formatValue(row[column])))
       .join('td')
@@ -3797,6 +4735,35 @@ def _crossfilter_body(safe_json: str) -> str:
     return currentTab().id || String(activeTabIndex);
   }
 
+  function interactionFieldList(kind) {
+    const planned = interactionPlan?.[kind];
+    if (planned && Array.isArray(planned.fields)) {
+      return planned.fields
+        .map(field => field?.alias || aliasField(field?.id || field?.semantic_ref || field))
+        .filter(field => availableFieldAliases().has(field));
+    }
+    const interaction = spec.interactions?.[kind] || spec.sidemantic?.interactions?.[kind];
+    if (!interaction || interaction === true) return null;
+    const configuredFields = Array.isArray(interaction.fields) ? interaction.fields : [];
+    if (!configuredFields.length) return [];
+    return configuredFields
+      .map(aliasField)
+      .filter(field => availableFieldAliases().has(field));
+  }
+
+  function availableFieldAliases() {
+    const planned = fieldPlan?.fields;
+    if (Array.isArray(planned) && planned.length) {
+      return new Set(planned.map(field => field?.alias).filter(Boolean));
+    }
+    return new Set([...(fields?.dimensions || []), ...(metrics || [])]);
+  }
+
+  function aliasField(field) {
+    const text = String(field || '');
+    return text.includes('.') ? text.split('.').pop() : text;
+  }
+
   function normalizeChartRenderer(renderer) {
     const normalized = String(renderer || 'd3').toLowerCase().replace(/_/g, '-');
     const aliases = {
@@ -3816,6 +4783,10 @@ def _crossfilter_body(safe_json: str) -> str:
       get spec() { return spec; },
       get rows() { return rows; },
       get views() { return liveViews; },
+      get fieldPlan() { return fieldPlan; },
+      get interactionPlan() { return interactionPlan; },
+      get freshnessPolicy() { return freshnessPolicy; },
+      get freshness() { return liveViews?.freshness || liveViews?.diagnostics?.freshness || null; },
       get state() { return state; },
       get renderer() { return activeRenderer; },
       get rendererOptions() { return chartRendererOptions(); },
@@ -3855,7 +4826,7 @@ def _crossfilter_body(safe_json: str) -> str:
         const response = await fetch(liveEndpoint, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ tab: currentTabId(), event, active, filters })
+          body: JSON.stringify({ tab: currentTabId(), event, active, filters, interaction_preaggregations: interactionPreaggEnabled() })
         });
         if (!response.ok) throw new Error(`Crossfilter query failed: ${response.status}`);
         return response.json();
@@ -3910,6 +4881,19 @@ def _crossfilter_body(safe_json: str) -> str:
     return numeric.toLocaleString(undefined, { maximumFractionDigits: 0 });
   }
 
+  function formatTimestamp(value) {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return String(value);
+    return parsed.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  }
+
   function formatValue(value) {
     if (typeof value === 'number') return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
     return value == null ? '' : String(value);
@@ -3953,7 +4937,10 @@ def _crossfilter_body(safe_json: str) -> str:
   }
 })();
 </script>
-""".replace("__SPEC_JSON__", safe_json)
+""".replace("__SPEC_JSON__", safe_json).replace(
+        "__VENDOR_SCRIPTS__",
+        inline_vendor_scripts("d3", "vega", "vega_lite", "vega_embed", "plotly", "observable_plot"),
+    )
 
 
 def _html_shell(title: str, body: str) -> str:

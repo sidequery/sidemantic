@@ -613,6 +613,7 @@ class SemanticLayer:
         ungrouped: bool = False,
         parameters: dict[str, any] | None = None,
         use_preaggregations: bool | None = None,
+        aliases: dict[str, str] | None = None,
         post_process: str | None = None,
     ) -> str:
         """Compile a query to SQL without executing.
@@ -628,6 +629,7 @@ class SemanticLayer:
             dialect: SQL dialect override (defaults to layer's dialect)
             ungrouped: If True, return raw rows without aggregation (no GROUP BY)
             use_preaggregations: Override pre-aggregation routing setting for this query
+            aliases: Custom output aliases keyed by semantic field reference
             post_process: Optional SQL to wrap around the semantic query result.
                 Use {inner} as a placeholder for the compiled semantic query, e.g.:
                 "SELECT *, revenue / count AS avg_value FROM ({inner})"
@@ -665,6 +667,7 @@ class SemanticLayer:
                 ungrouped=ungrouped,
                 parameters=parameters,
                 use_preaggregations=use_preaggs,
+                aliases=aliases,
             )
             if inner_sql is None and self._strict_rust_sql_generator_entrypoint:
                 raise ValueError("Rust SQL generator returned no SQL in strict mode")
@@ -681,6 +684,7 @@ class SemanticLayer:
                     ungrouped=ungrouped,
                     parameters=parameters,
                     use_preaggregations=use_preaggs,
+                    aliases=aliases,
                 )
                 if inner_sql.strip() != python_sql.strip():
                     if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
@@ -700,6 +704,7 @@ class SemanticLayer:
                 ungrouped=ungrouped,
                 parameters=parameters,
                 use_preaggregations=use_preaggs,
+                aliases=aliases,
             )
 
         return self._apply_post_process(inner_sql, post_process)
@@ -736,6 +741,7 @@ class SemanticLayer:
         ungrouped: bool,
         parameters: dict[str, any] | None,
         use_preaggregations: bool,
+        aliases: dict[str, str] | None,
     ) -> str:
         generator = SQLGenerator(
             self.graph,
@@ -755,6 +761,7 @@ class SemanticLayer:
             ungrouped=ungrouped,
             parameters=parameters,
             use_preaggregations=use_preaggregations,
+            aliases=aliases,
         )
 
     def _compile_with_rust(
@@ -770,10 +777,15 @@ class SemanticLayer:
         ungrouped: bool,
         parameters: dict[str, any] | None,
         use_preaggregations: bool,
+        aliases: dict[str, str] | None,
     ) -> str | None:
         if not self._rust_module:
             if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
                 raise ValueError("Rust SQL generator backend is not initialized")
+            return None
+        if aliases:
+            if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                raise ValueError("Rust SQL generator backend does not support compile aliases")
             return None
 
         payload = {

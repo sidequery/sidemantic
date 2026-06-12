@@ -798,7 +798,7 @@ def dashboard_validate(
             use_preaggregations=use_preaggregations,
         )
         document = DashboardDocument.from_file(spec)
-        errors = document.validate(layer)
+        errors = document.validate(layer, execute_sql=bool(connection or db))
         if errors:
             for error in errors:
                 typer.echo(f"Error: {error}", err=True)
@@ -843,7 +843,7 @@ def dashboard_serve(
             use_preaggregations=use_preaggregations,
         )
         document = DashboardDocument.from_file(spec)
-        errors = document.validate(layer)
+        errors = document.validate(layer, execute_sql=True)
         if errors:
             for error in errors:
                 typer.echo(f"Error: {error}", err=True)

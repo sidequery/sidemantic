@@ -27,8 +27,18 @@ def patch_snowflake():
     except (ImportError, ModuleNotFoundError) as exc:
         pytest.skip(f"fakesnow not compatible with installed sqlglot: {exc}")
 
-    with fakesnow.patch():
+    try:
+        patch = fakesnow.patch()
+        patch.__enter__()
+    except Exception as exc:
+        if "WITH ORDINALITY not implemented" in str(exc):
+            pytest.skip(f"fakesnow not compatible with installed DuckDB: {exc}")
+        raise
+
+    try:
         yield
+    finally:
+        patch.__exit__(None, None, None)
 
 
 @pytest.fixture(scope="module")

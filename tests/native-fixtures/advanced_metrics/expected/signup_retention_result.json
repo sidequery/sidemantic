@@ -1,0 +1,30 @@
+[
+  {
+    "cohort_date": "2024-01-01",
+    "days_since": 1,
+    "active_users": 1,
+    "cohort_size": 1,
+    "retention_pct": 100.0
+  },
+  {
+    "cohort_date": "2024-01-01",
+    "days_since": 4,
+    "active_users": 1,
+    "cohort_size": 1,
+    "retention_pct": 100.0
+  },
+  {
+    "cohort_date": "2024-01-05",
+    "days_since": 2,
+    "active_users": 1,
+    "cohort_size": 1,
+    "retention_pct": 100.0
+  },
+  {
+    "cohort_date": "2024-02-01",
+    "days_since": 6,
+    "active_users": 1,
+    "cohort_size": 2,
+    "retention_pct": 50.0
+  }
+]

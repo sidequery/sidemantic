@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<workbook version='18.1'>
+  <datasources>
+    <datasource formatted-name='orders' version='18.1'>
+      <connection class='postgres' dbname='analytics' server='localhost'>
+        <relation type='table' name='orders' table='[public].[orders]' />
+      </connection>
+      <column caption='Order ID' datatype='integer' name='[id]' role='dimension' type='ordinal' />
+      <column caption='Amount' datatype='real' name='[amount]' role='measure' type='quantitative' aggregation='sum' />
+    </datasource>
+  </datasources>
+</workbook>

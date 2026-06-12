@@ -1,0 +1,10 @@
+[
+  {
+    "segment": "enterprise",
+    "invoice_count": 1
+  },
+  {
+    "segment": "midmarket",
+    "invoice_count": 1
+  }
+]

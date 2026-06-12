@@ -92,7 +92,15 @@ class YardstickAdapter(BaseAdapter):
         exp.Variance: "variance",
         exp.VariancePop: "variance_pop",
     }
-    _ANONYMOUS_AGGREGATIONS: set[str] = {"mode"}
+    _ANONYMOUS_AGGREGATIONS: set[str] = {
+        "entropy",
+        "geometric_mean",
+        "kurtosis",
+        "mode",
+        "product",
+        "skewness",
+        "weighted_avg",
+    }
 
     def __init__(self, dialect: str = "duckdb"):
         self.dialect = dialect
@@ -350,6 +358,8 @@ class YardstickAdapter(BaseAdapter):
             return True
 
         for node in expression.walk():
+            if isinstance(node, exp.List):
+                return True
             if isinstance(node, exp.Anonymous) and (node.name or "").lower() in self._ANONYMOUS_AGGREGATIONS:
                 return True
         return False

@@ -1,6 +1,6 @@
 [project]
 name = "sidemantic"
-version = "0.9.5"
+version = "0.10.1"
 description = "Universal semantic layer - import from Cube, dbt, LookML, Hex, and more"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -46,6 +46,8 @@ mcp = [
 ]
 apps = [
     "mcp[cli]>=1.25.0,<2",
+    "altair>=5.0.0",
+    "vl-convert-python>=1.0.0",
 ]
 charts = [
     "altair>=5.0.0",
@@ -174,8 +176,12 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "integration: marks tests as integration tests requiring external services (deselect with '-m \"not integration\"')",
+    "yardstick_upstream: opt-in tests that fetch and replay live upstream Yardstick SQL tests",
 ]
-addopts = "-m 'not integration'"  # Skip integration tests by default
+addopts = "-m 'not integration' --cov=sidemantic --cov-report=term-missing"  # Skip integration tests by default and show coverage
+
+[tool.coverage.run]
+source = ["sidemantic"]
 
 [tool.uv]
 prerelease = "if-necessary"
@@ -189,13 +195,14 @@ dev = [
     "jupyterlab>=4.5.1",
     "lkml>=1.3.7",
     "lsprotocol>=2025.0.0",
-    "marimo==0.16.5",
+    "marimo==0.23.0",
     "numpy>=1.26,<3",
     "pandas>=2.2,<3",
     "polars>=1.36.1",
     "pyarrow>=14.0.0",
     "pygls>=2.0.0",
     "pytest>=8.4.2",
+    "pytest-cov>=5.0.0",
     "ruff>=0.14.0",
     "uvicorn>=0.34.0",
 ]

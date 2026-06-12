@@ -1,0 +1,21 @@
+version: 1
+
+models:
+  - name: orders_from_sql
+    sql: |
+      select
+        order_id,
+        status,
+        amount
+      from raw_orders
+      where is_deleted = false
+    primary_key: order_id
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: status
+        type: categorical
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount

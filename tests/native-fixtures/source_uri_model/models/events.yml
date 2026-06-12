@@ -1,0 +1,11 @@
+version: 1
+models:
+  - name: events
+    source_uri: s3://warehouse/events.parquet
+    primary_key: event_id
+    dimensions:
+      - name: event_type
+        type: categorical
+    metrics:
+      - name: event_count
+        agg: count

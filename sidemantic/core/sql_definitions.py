@@ -1,13 +1,16 @@
 """Parse SQL-based metric and segment definitions."""
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
+import sqlglot
 import yaml
 from sqlglot import exp
 
 from sidemantic.core.dialect import (
     PROPERTY_ALIASES,
+    TableBlockParseError,
     is_dimension_def,
     is_metric_def,
     is_model_def,
@@ -16,6 +19,12 @@ from sidemantic.core.dialect import (
     is_property_eq,
     is_relationship_def,
     is_segment_def,
+    is_table_block_default_time_def,
+    is_table_block_field_def,
+    is_table_block_join_def,
+    is_table_block_model_def,
+    is_table_block_primary_key_def,
+    is_table_block_segment_def,
     parse,
 )
 from sidemantic.core.dimension import Dimension
@@ -25,6 +34,7 @@ from sidemantic.core.parameter import Parameter
 from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
+from sidemantic.sql.aggregation_detection import sql_has_aggregate
 
 
 def _split_top_level(text: str, delimiter: str = ",") -> list[str]:
@@ -169,6 +179,10 @@ def _parse_literal(value: str) -> object:
     return _parse_scalar_literal(raw)
 
 
+def _normalize_definition_placeholders(value: str) -> str:
+    return re.sub(r"\{\s*model\s*\}\s*\.", "{model}.", value)
+
+
 def _normalize_list(value: object | None) -> list[object] | None:
     if value is None:
         return None
@@ -177,8 +191,426 @@ def _normalize_list(value: object | None) -> list[object] | None:
     return [value]
 
 
+_TIME_GRAINS = {"second", "minute", "hour", "day", "week", "month", "quarter", "year"}
+
+
+@dataclass(frozen=True)
+class TableBlockFieldAnnotation:
+    dimension_type: str | None = None
+    granularity: str | None = None
+
+
+def parse_sql_models(sql: str) -> list[Model]:
+    """Parse SQL string containing one or more complete model definitions."""
+    try:
+        statements = parse(sql)
+    except TableBlockParseError:
+        raise
+    except Exception:
+        return []
+
+    if any(is_table_block_model_def(stmt) or is_model_def(stmt) for stmt in statements):
+        return _parse_mixed_sql_models(statements)
+    return []
+
+
+def _parse_mixed_sql_models(statements: list[exp.Expression | None]) -> list[Model]:
+    models = []
+    legacy_statements: list[exp.Expression | None] = []
+
+    def flush_legacy_model() -> None:
+        if not legacy_statements:
+            return
+
+        model_def, dimensions, relationships, metrics, segments, _, pre_aggregations = _parse_statement_defs(
+            legacy_statements
+        )
+        legacy_statements.clear()
+        if not model_def:
+            return
+
+        if dimensions:
+            model_def.dimensions.extend(dimensions)
+        if relationships:
+            model_def.relationships.extend(relationships)
+        if metrics:
+            model_def.metrics.extend(metrics)
+        if segments:
+            model_def.segments.extend(segments)
+        if pre_aggregations:
+            model_def.pre_aggregations.extend(pre_aggregations)
+
+        models.append(model_def)
+
+    for statement in statements:
+        if is_table_block_model_def(statement):
+            flush_legacy_model()
+            models.append(_parse_table_block_model_def(statement))
+            continue
+
+        if is_model_def(statement):
+            flush_legacy_model()
+            legacy_statements.append(statement)
+            continue
+
+        if legacy_statements and (
+            is_dimension_def(statement)
+            or is_relationship_def(statement)
+            or is_metric_def(statement)
+            or is_segment_def(statement)
+            or is_pre_aggregation_def(statement)
+        ):
+            legacy_statements.append(statement)
+
+    flush_legacy_model()
+    return models
+
+
+def _parse_table_block_model_def(model_def: exp.Expression) -> Model:
+    model_name = model_def.args["model_name"].name
+    table = model_def.args.get("table")
+    source_sql = model_def.args.get("source_sql")
+    primary_key: str | list[str] = "id"
+    default_time_dimension: str | None = None
+    default_grain: str | None = None
+    relationships: list[Relationship] = []
+    segments: list[Segment] = []
+    field_declarations: list[tuple[int, str, str, TableBlockFieldAnnotation | None]] = []
+    parsed_fields: list[tuple[int, str, Dimension | Metric]] = []
+    seen_fields: set[str] = set()
+    seen_segments: set[str] = set()
+    seen_primary_key = False
+    seen_default_time = False
+
+    for statement_idx, statement in enumerate(model_def.expressions):
+        if is_table_block_primary_key_def(statement):
+            if seen_primary_key:
+                raise TableBlockParseError(f"Model '{model_name}' defines primary key more than once")
+            seen_primary_key = True
+            primary_key = _collapse_table_block_key_columns(statement.args["columns"])
+            continue
+
+        if is_table_block_default_time_def(statement):
+            if seen_default_time:
+                raise TableBlockParseError(f"Model '{model_name}' defines default time more than once")
+            seen_default_time = True
+            default_time_dimension = statement.args["field"].name
+            default_grain = statement.args.get("grain")
+            continue
+
+        if is_table_block_segment_def(statement):
+            segment = Segment(name=statement.args["name"].name, sql=statement.args["sql"])
+            if segment.name in seen_segments:
+                raise TableBlockParseError(f"Model '{model_name}' defines segment '{segment.name}' more than once")
+            seen_segments.add(segment.name)
+            segments.append(segment)
+            continue
+
+        if is_table_block_join_def(statement):
+            relationship = _parse_table_block_join_def(statement)
+            relationships.append(relationship)
+            continue
+
+        if is_table_block_field_def(statement):
+            name = statement.args["name"].name
+            if name in seen_fields:
+                raise TableBlockParseError(f"Model '{model_name}' defines field '{name}' more than once")
+            seen_fields.add(name)
+            annotation = _table_block_field_annotation(statement)
+            field_declarations.append((statement_idx, name, statement.args["sql"], annotation))
+            continue
+
+        raise TableBlockParseError(f"Unrecognized statement in model '{model_name}': {statement.sql()}")
+
+    parsed_fields.extend(_classify_table_block_fields(model_name, field_declarations))
+    parsed_fields.sort(key=lambda item: item[0])
+
+    dimensions = [field for _, kind, field in parsed_fields if kind == "dimension"]
+    metrics = [field for _, kind, field in parsed_fields if kind == "metric"]
+    _validate_table_block_default_time(model_name, default_time_dimension, dimensions)
+
+    return Model(
+        name=model_name,
+        table=table,
+        sql=source_sql,
+        primary_key=primary_key,
+        dimensions=dimensions,
+        relationships=relationships,
+        metrics=metrics,
+        segments=segments,
+        default_time_dimension=default_time_dimension,
+        default_grain=default_grain,
+    )
+
+
+def _table_block_field_annotation(field_def: exp.Expression) -> TableBlockFieldAnnotation | None:
+    dimension_type = field_def.args.get("dimension_type")
+    granularity = field_def.args.get("granularity")
+    if not dimension_type and not granularity:
+        return None
+    return TableBlockFieldAnnotation(dimension_type=dimension_type, granularity=granularity)
+
+
+def _parse_table_block_join_def(join_def: exp.Expression) -> Relationship:
+    relationship_type = join_def.args["relationship_type"]
+    local_keys = join_def.args["local_keys"]
+    target_keys = join_def.args["target_keys"]
+    if relationship_type in ("many_to_one", "one_to_one"):
+        return Relationship(
+            name=join_def.args["target"].name,
+            type=relationship_type,
+            foreign_key=_collapse_table_block_key_columns(local_keys),
+            primary_key=_collapse_table_block_key_columns(target_keys),
+        )
+
+    return Relationship(
+        name=join_def.args["target"].name,
+        type=relationship_type,
+        foreign_key=_collapse_table_block_key_columns(target_keys),
+        primary_key=_collapse_table_block_key_columns(local_keys),
+    )
+
+
+def _validate_table_block_default_time(
+    model_name: str,
+    default_time_dimension: str | None,
+    dimensions: list[Dimension],
+) -> None:
+    if not default_time_dimension:
+        return
+
+    dimension_by_name = {dimension.name: dimension for dimension in dimensions}
+    dimension = dimension_by_name.get(default_time_dimension)
+    if not dimension:
+        raise TableBlockParseError(
+            f"Default time dimension '{default_time_dimension}' in model '{model_name}' is not defined"
+        )
+    if dimension.type != "time":
+        raise TableBlockParseError(
+            f"Default time dimension '{default_time_dimension}' in model '{model_name}' must be a time dimension"
+        )
+
+
+def _classify_table_block_fields(
+    model_name: str, field_declarations: list[tuple[int, str, str, TableBlockFieldAnnotation | None]]
+) -> list[tuple[int, str, Dimension | Metric]]:
+    parsed_fields: list[tuple[int, str, Dimension | Metric]] = []
+    pending_fields: list[tuple[int, str, str, TableBlockFieldAnnotation | None]] = []
+    metric_names: set[str] = set()
+    field_names = {field_name for _, field_name, _, _ in field_declarations}
+
+    for statement_idx, name, expression, annotation in field_declarations:
+        if sql_has_aggregate(expression, dialect="duckdb"):
+            _validate_no_dimension_annotation_on_metric(model_name, name, annotation)
+            metric = Metric(name=name, sql=expression)
+            parsed_fields.append((statement_idx, "metric", metric))
+            metric_names.add(name)
+        else:
+            pending_fields.append((statement_idx, name, expression, annotation))
+
+    changed = True
+    while changed and pending_fields:
+        changed = False
+        next_pending: list[tuple[int, str, str, TableBlockFieldAnnotation | None]] = []
+
+        for statement_idx, name, expression, annotation in pending_fields:
+            if _expression_references_metric(expression, metric_names):
+                _validate_no_dimension_annotation_on_metric(model_name, name, annotation)
+                metric = Metric(name=name, type="derived", sql=expression)
+                parsed_fields.append((statement_idx, "metric", metric))
+                metric_names.add(name)
+                changed = True
+            else:
+                next_pending.append((statement_idx, name, expression, annotation))
+
+        pending_fields = next_pending
+
+    for statement_idx, name, expression, annotation in pending_fields:
+        if _expression_references_declared_field(expression, field_names):
+            _validate_table_block_dimension_expression(model_name, name, expression, metric_names)
+        parsed_fields.append((statement_idx, "dimension", _parse_table_block_dimension(name, expression, annotation)))
+
+    return parsed_fields
+
+
+def _validate_no_dimension_annotation_on_metric(
+    model_name: str,
+    field_name: str,
+    annotation: TableBlockFieldAnnotation | None,
+) -> None:
+    if annotation and annotation.dimension_type:
+        raise TableBlockParseError(
+            f"Field '{field_name}' in model '{model_name}' is a metric and cannot use dimension annotation"
+        )
+
+
+def _parse_table_block_dimension(
+    name: str,
+    expression: str,
+    annotation: TableBlockFieldAnnotation | None = None,
+) -> Dimension:
+    dimension_type = (
+        annotation.dimension_type
+        if annotation and annotation.dimension_type
+        else _infer_dimension_type(name, expression)
+    )
+    granularity = None
+    if dimension_type == "time":
+        granularity = (
+            annotation.granularity if annotation and annotation.granularity else _infer_time_granularity(expression)
+        )
+
+    return Dimension(
+        name=name,
+        type=dimension_type,
+        sql=None if expression == name else expression,
+        granularity=granularity,
+    )
+
+
+def _collapse_table_block_key_columns(columns: list[str]) -> str | list[str]:
+    if len(columns) == 1:
+        return columns[0]
+    return columns
+
+
+def _expression_references_metric(expression: str, metric_names: set[str]) -> bool:
+    if not metric_names:
+        return False
+
+    try:
+        parsed = sqlglot.parse_one(expression, read="duckdb")
+    except Exception:
+        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expression))
+        return bool(tokens & metric_names)
+
+    return any(column.name in metric_names for column in parsed.find_all(exp.Column))
+
+
+def _expression_references_declared_field(expression: str, field_names: set[str]) -> bool:
+    if not field_names:
+        return False
+
+    try:
+        parsed = sqlglot.parse_one(expression, read="duckdb")
+    except Exception:
+        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expression))
+        return bool(tokens & field_names)
+
+    return any(column.name in field_names for column in parsed.find_all(exp.Column))
+
+
+def _validate_table_block_dimension_expression(
+    model_name: str,
+    field_name: str,
+    expression: str,
+    metric_names: set[str],
+) -> None:
+    referenced_metric_names = _referenced_metric_names(expression, metric_names)
+    if referenced_metric_names:
+        refs = ", ".join(sorted(referenced_metric_names))
+        raise TableBlockParseError(
+            f"Field '{field_name}' in model '{model_name}' references metric(s) {refs} but could not be classified"
+        )
+
+
+def _referenced_metric_names(expression: str, metric_names: set[str]) -> set[str]:
+    if not metric_names:
+        return set()
+
+    try:
+        parsed = sqlglot.parse_one(expression, read="duckdb")
+    except Exception:
+        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expression))
+        return tokens & metric_names
+
+    return {column.name for column in parsed.find_all(exp.Column) if column.name in metric_names}
+
+
+def _infer_dimension_type(name: str, expression: str) -> str:
+    lowered_name = name.lower()
+    lowered_expression = expression.lower()
+
+    if _looks_like_time_expression(lowered_name, lowered_expression):
+        return "time"
+
+    try:
+        parsed = sqlglot.parse_one(expression, read="duckdb")
+    except Exception:
+        return _infer_dimension_type_from_text(lowered_name, lowered_expression)
+
+    if isinstance(parsed, (exp.Predicate, exp.Boolean)):
+        return "boolean"
+
+    if any(isinstance(node, (exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod)) for node in parsed.walk()):
+        return "numeric"
+
+    return _infer_dimension_type_from_text(lowered_name, lowered_expression)
+
+
+def _infer_dimension_type_from_text(name: str, expression: str) -> str:
+    if _looks_like_time_expression(name, expression):
+        return "time"
+    if re.search(r"\s(=|<>|!=|>|<|>=|<=)\s|\bis\s+not\b|\bis\b|\bin\s*\(", expression):
+        return "boolean"
+    if any(operator in expression for operator in (" + ", " - ", " * ", " / ")):
+        return "numeric"
+    return "categorical"
+
+
+def _looks_like_time_expression(name: str, expression: str) -> bool:
+    time_markers = ("date", "time", "timestamp", "_at", "created", "updated")
+    return (
+        "date_trunc" in expression
+        or "::date" in expression
+        or "::timestamp" in expression
+        or any(marker in name for marker in time_markers)
+    )
+
+
+def _infer_time_granularity(expression: str) -> str | None:
+    try:
+        parsed = sqlglot.parse_one(expression, read="duckdb")
+    except Exception:
+        match = re.search(r"date_trunc\s*\(\s*['\"]([A-Za-z_]+)['\"]", expression, flags=re.IGNORECASE)
+        if match and match.group(1).lower() in _TIME_GRAINS:
+            return match.group(1).lower()
+        return None
+
+    for node in parsed.walk():
+        if not node.__class__.__name__.lower().endswith("trunc"):
+            continue
+        unit = node.args.get("unit")
+        if not unit:
+            continue
+
+        if isinstance(unit, (exp.Literal, exp.Var)):
+            grain = str(unit.this).lower()
+        else:
+            grain = unit.sql(dialect="duckdb").strip("'\"").lower()
+
+        if grain in _TIME_GRAINS:
+            return grain
+
+    return None
+
+
 def _parse_sql_statements(
     sql: str,
+) -> tuple[
+    Model | None,
+    list[Dimension],
+    list[Relationship],
+    list[Metric],
+    list[Segment],
+    list[Parameter],
+    list[PreAggregation],
+]:
+    return _parse_statement_defs(parse(sql))
+
+
+def _parse_statement_defs(
+    statements: list[exp.Expression | None],
 ) -> tuple[
     Model | None,
     list[Dimension],
@@ -196,10 +628,12 @@ def _parse_sql_statements(
     parameters: list[Parameter] = []
     pre_aggregations: list[PreAggregation] = []
 
-    statements = parse(sql)
-
     for stmt in statements:
-        if is_model_def(stmt):
+        if stmt is None:
+            continue
+        if is_table_block_model_def(stmt):
+            model_def = _parse_table_block_model_def(stmt)
+        elif is_model_def(stmt):
             model_def = _parse_model_def(stmt)
         elif is_dimension_def(stmt):
             dimension = _parse_dimension_def(stmt)
@@ -225,6 +659,8 @@ def _parse_sql_statements(
             preagg = _parse_pre_aggregation_def(stmt)
             if preagg:
                 pre_aggregations.append(preagg)
+        else:
+            raise ValueError(f"Unsupported SQL definition statement: {stmt.__class__.__name__}")
 
     return model_def, dimensions, relationships, metrics, segments, parameters, pre_aggregations
 
@@ -238,11 +674,7 @@ def parse_sql_definitions(sql: str) -> tuple[list[Metric], list[Segment]]:
     Returns:
         Tuple of (metrics, segments)
     """
-    try:
-        metrics, segments, _ = parse_sql_graph_definitions(sql)
-    except Exception:
-        return [], []
-
+    metrics, segments, _ = parse_sql_graph_definitions(sql)
     return metrics, segments
 
 
@@ -255,18 +687,15 @@ def parse_sql_graph_definitions(sql: str) -> tuple[list[Metric], list[Segment], 
     Returns:
         Tuple of (metrics, segments, parameters)
     """
-    try:
-        _, _, _, metrics, segments, parameters, _ = _parse_sql_statements(sql)
-    except Exception:
-        return [], [], []
-
+    _, _, _, metrics, segments, parameters, _ = _parse_sql_statements(sql)
     return metrics, segments, parameters
 
 
 def parse_sql_model(sql: str) -> Model | None:
     """Parse SQL string containing a complete model definition.
 
-    Expects MODEL(), DIMENSION(), RELATIONSHIP(), METRIC(), and SEGMENT() statements.
+    Supports both compact ``model name from table (...)`` blocks and the legacy
+    MODEL(), DIMENSION(), RELATIONSHIP(), METRIC(), and SEGMENT() statements.
 
     Args:
         sql: SQL string with model definition
@@ -274,27 +703,10 @@ def parse_sql_model(sql: str) -> Model | None:
     Returns:
         Model instance or None
     """
-    try:
-        model_def, dimensions, relationships, metrics, segments, _, pre_aggregations = _parse_sql_statements(sql)
-    except Exception:
+    models = parse_sql_models(sql)
+    if not models:
         return None
-
-    if not model_def:
-        return None
-
-    # Merge parsed definitions with model
-    if dimensions:
-        model_def.dimensions.extend(dimensions)
-    if relationships:
-        model_def.relationships.extend(relationships)
-    if metrics:
-        model_def.metrics.extend(metrics)
-    if segments:
-        model_def.segments.extend(segments)
-    if pre_aggregations:
-        model_def.pre_aggregations.extend(pre_aggregations)
-
-    return model_def
+    return models[0]
 
 
 def parse_sql_file_with_frontmatter_extended(
@@ -323,13 +735,7 @@ def parse_sql_file_with_frontmatter_extended(
             if frontmatter_text:
                 frontmatter = yaml.safe_load(frontmatter_text) or {}
 
-    metrics, segments, parameters = parse_sql_graph_definitions(sql_body)
-
-    pre_aggregations: list[PreAggregation] = []
-    try:
-        _, _, _, _, _, _, pre_aggregations = _parse_sql_statements(sql_body)
-    except Exception:
-        pre_aggregations = []
+    _, _, _, metrics, segments, parameters, pre_aggregations = _parse_sql_statements(sql_body)
 
     return frontmatter, metrics, segments, parameters, pre_aggregations
 
@@ -640,7 +1046,10 @@ def _extract_properties(definition: exp.Expression) -> dict[str, object]:
                 value = value_expr.sql(dialect="duckdb")
 
             if isinstance(value, str):
-                props[key] = _parse_literal(value)
+                parsed_value = _parse_literal(value)
+                if isinstance(parsed_value, str):
+                    parsed_value = _normalize_definition_placeholders(parsed_value)
+                props[key] = parsed_value
             else:
                 props[key] = value
 

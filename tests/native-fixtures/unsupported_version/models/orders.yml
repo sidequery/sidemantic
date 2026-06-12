@@ -1,0 +1,9 @@
+version: 999
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: order_id
+        type: numeric

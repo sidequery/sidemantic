@@ -1,0 +1,41 @@
+models:
+  - name: orders
+    table: orders
+    description: Demo orders for the headless dashboard example.
+    primary_key: id
+    dimensions:
+      - name: created_at
+        sql: created_at
+        type: time
+        granularity: day
+        description: Date the order was created.
+      - name: region
+        sql: region
+        type: categorical
+        description: Sales region.
+      - name: channel
+        sql: channel
+        type: categorical
+        description: Acquisition or sales channel.
+      - name: customer_tier
+        sql: customer_tier
+        type: categorical
+        description: Customer segment.
+      - name: product_line
+        sql: product_line
+        type: categorical
+        description: Product family.
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+        description: Total order revenue.
+      - name: gross_margin
+        agg: sum
+        sql: gross_margin
+        description: Total gross margin.
+      - name: order_count
+        agg: count
+        sql: id
+        description: Number of orders.
+

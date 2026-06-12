@@ -1,7 +1,7 @@
 """PostgreSQL database adapter."""
 
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
@@ -198,7 +198,7 @@ class PostgreSQLAdapter(BaseDatabaseAdapter):
             host=parsed.hostname or "localhost",
             port=parsed.port or 5432,
             database=parsed.path.lstrip("/") if parsed.path else "postgres",
-            user=parsed.username,
-            password=parsed.password,
+            user=unquote(parsed.username) if parsed.username is not None else None,
+            password=unquote(parsed.password) if parsed.password is not None else None,
             **params,
         )

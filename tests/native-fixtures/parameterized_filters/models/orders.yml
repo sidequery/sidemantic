@@ -1,0 +1,21 @@
+version: 1
+parameters:
+  - name: status
+    type: string
+    default_value: paid
+  - name: min_amount
+    type: number
+    default_value: 0
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+      - name: amount
+        type: numeric
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount

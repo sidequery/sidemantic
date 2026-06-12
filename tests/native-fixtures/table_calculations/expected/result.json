@@ -1,0 +1,14 @@
+[
+  {
+    "status": "paid",
+    "total_revenue": 250,
+    "running_revenue": 250,
+    "revenue_pct_of_total": 83.33333333333334
+  },
+  {
+    "status": "refunded",
+    "total_revenue": 50,
+    "running_revenue": 300,
+    "revenue_pct_of_total": 16.666666666666664
+  }
+]

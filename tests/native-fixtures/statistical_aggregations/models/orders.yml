@@ -1,0 +1,19 @@
+version: 1
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    metrics:
+      - name: amount_stddev
+        agg: stddev
+        sql: amount
+      - name: amount_stddev_pop
+        agg: stddev_pop
+        sql: amount
+      - name: amount_variance
+        agg: variance
+        sql: amount
+      - name: amount_variance_pop
+        agg: variance_pop
+        sql: amount

@@ -6,6 +6,7 @@ interoperability between data analytics, AI, and BI tools.
 Spec: https://github.com/open-semantic-interchange/OSI
 """
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +31,19 @@ class OSIAdapter(BaseAdapter):
     - OSI relationships → Relationships
     """
 
+    OSI_VERSION = "0.2.0.dev0"
+
     # OSI dialect preference order for extracting SQL expressions
-    DIALECT_PREFERENCE = ["ANSI_SQL", "SNOWFLAKE", "DATABRICKS"]
+    DIALECT_PREFERENCE = ["ANSI_SQL", "SNOWFLAKE", "DATABRICKS", "MAQL", "TABLEAU", "MDX"]
+
+    # Dialects we can safely emit from SQL expressions. The current OSI schema
+    # also allows MDX/TABLEAU/MAQL, but those are not SQL dialects sqlglot can
+    # transpile from Sidemantic SQL without changing semantics.
+    SUPPORTED_EXPORT_DIALECTS = ["ANSI_SQL", "SNOWFLAKE", "DATABRICKS"]
+    _SQLGLOT_DIALECTS = {
+        "SNOWFLAKE": "snowflake",
+        "DATABRICKS": "databricks",
+    }
 
     def parse(self, source: str | Path) -> SemanticGraph:
         """Parse OSI YAML files into semantic graph.
@@ -78,28 +90,89 @@ class OSIAdapter(BaseAdapter):
         if not data:
             return
 
-        # OSI has top-level "semantic_model" key containing list of semantic models
+        osi_meta = self._ensure_osi_metadata(graph)
+        if data.get("version"):
+            osi_meta["version"] = data["version"]
+        if data.get("ontology"):
+            osi_meta["ontology"] = data["ontology"]
+
+        for sm_def, source, mapping_def in self._iter_semantic_models(data):
+            self._remember_semantic_model_metadata(osi_meta, sm_def, source, mapping_def)
+            self._parse_semantic_model(sm_def, graph)
+
+    def _parse_semantic_model(self, sm_def: dict, graph: SemanticGraph) -> None:
+        """Parse one OSI semantic model object into the graph."""
+        # Parse datasets (equivalent to models)
+        datasets = sm_def.get("datasets") or []
+        for dataset_def in datasets:
+            model = self._parse_dataset(dataset_def)
+            if model:
+                graph.add_model(model)
+
+        # Parse relationships and attach to models
+        relationships = sm_def.get("relationships") or []
+        for rel_def in relationships:
+            self._add_relationship_to_model(rel_def, graph)
+
+        # Parse metrics (graph-level)
+        metrics = sm_def.get("metrics") or []
+        for metric_def in metrics:
+            metric = self._parse_metric(metric_def)
+            if metric:
+                graph.add_metric(metric)
+
+    def _iter_semantic_models(self, data: dict) -> list[tuple[dict, str, dict | None]]:
+        """Return top-level and ontology-mapped semantic model definitions.
+
+        The core OSI schema uses ``semantic_model`` as a top-level list. The new
+        ontology spec embeds a single semantic model under each
+        ``ontology_mappings[].semantic_model``. Those logical models can map
+        cleanly to Sidemantic models, while ontology concepts themselves are
+        preserved as metadata.
+        """
+        result: list[tuple[dict, str, dict | None]] = []
+
         semantic_models = data.get("semantic_model") or []
+        if isinstance(semantic_models, dict):
+            semantic_models = [semantic_models]
 
         for sm_def in semantic_models:
-            # Parse datasets (equivalent to models)
-            datasets = sm_def.get("datasets") or []
-            for dataset_def in datasets:
-                model = self._parse_dataset(dataset_def)
-                if model:
-                    graph.add_model(model)
+            if isinstance(sm_def, dict):
+                result.append((sm_def, "semantic_model", None))
 
-            # Parse relationships and attach to models
-            relationships = sm_def.get("relationships") or []
-            for rel_def in relationships:
-                self._add_relationship_to_model(rel_def, graph)
+        ontology_mappings = data.get("ontology_mappings") or []
+        for index, mapping_def in enumerate(ontology_mappings):
+            if not isinstance(mapping_def, dict):
+                continue
+            sm_def = mapping_def.get("semantic_model")
+            if isinstance(sm_def, dict):
+                result.append((sm_def, f"ontology_mappings[{index}].semantic_model", mapping_def))
 
-            # Parse metrics (graph-level)
-            metrics = sm_def.get("metrics") or []
-            for metric_def in metrics:
-                metric = self._parse_metric(metric_def)
-                if metric:
-                    graph.add_metric(metric)
+        return result
+
+    def _ensure_osi_metadata(self, graph: SemanticGraph) -> dict[str, Any]:
+        """Get/create the graph metadata section used by the OSI adapter."""
+        return graph.metadata.setdefault("osi", {"semantic_models": []})
+
+    def _remember_semantic_model_metadata(
+        self,
+        osi_meta: dict[str, Any],
+        sm_def: dict,
+        source: str,
+        mapping_def: dict | None,
+    ) -> None:
+        """Preserve semantic-model-level OSI fields that do not map to models."""
+        sm_meta: dict[str, Any] = {"source": source}
+        for key in ("name", "description", "ai_context", "custom_extensions"):
+            if key in sm_def:
+                sm_meta[key] = sm_def[key]
+        if mapping_def:
+            mapping_meta = {
+                key: mapping_def[key] for key in ("name", "description", "concept_mappings") if key in mapping_def
+            }
+            if mapping_meta:
+                sm_meta["ontology_mapping"] = mapping_meta
+        osi_meta.setdefault("semantic_models", []).append(sm_meta)
 
     def _parse_dataset(self, dataset_def: dict) -> Model | None:
         """Parse OSI dataset into Sidemantic Model.
@@ -146,12 +219,12 @@ class OSIAdapter(BaseAdapter):
         # Build meta from ai_context and custom_extensions
         meta = None
         ai_context = dataset_def.get("ai_context")
-        custom_extensions = dataset_def.get("custom_extensions")
-        if ai_context or custom_extensions:
+        custom_extensions = self._decode_custom_extensions(dataset_def.get("custom_extensions"))
+        if "ai_context" in dataset_def or custom_extensions is not None:
             meta = {}
-            if ai_context:
+            if "ai_context" in dataset_def:
                 meta["ai_context"] = ai_context
-            if custom_extensions:
+            if custom_extensions is not None:
                 meta["custom_extensions"] = custom_extensions
 
         return Model(
@@ -189,12 +262,12 @@ class OSIAdapter(BaseAdapter):
         # Build meta from ai_context and custom_extensions
         meta = None
         ai_context = field_def.get("ai_context")
-        custom_extensions = field_def.get("custom_extensions")
-        if ai_context or custom_extensions:
+        custom_extensions = self._decode_custom_extensions(field_def.get("custom_extensions"))
+        if "ai_context" in field_def or custom_extensions is not None:
             meta = {}
-            if ai_context:
+            if "ai_context" in field_def:
                 meta["ai_context"] = ai_context
-            if custom_extensions:
+            if custom_extensions is not None:
                 meta["custom_extensions"] = custom_extensions
 
         return Dimension(
@@ -232,12 +305,12 @@ class OSIAdapter(BaseAdapter):
         # Build meta from ai_context and custom_extensions
         meta = None
         ai_context = metric_def.get("ai_context")
-        custom_extensions = metric_def.get("custom_extensions")
-        if ai_context or custom_extensions:
+        custom_extensions = self._decode_custom_extensions(metric_def.get("custom_extensions"))
+        if "ai_context" in metric_def or custom_extensions is not None:
             meta = {}
-            if ai_context:
+            if "ai_context" in metric_def:
                 meta["ai_context"] = ai_context
-            if custom_extensions:
+            if custom_extensions is not None:
                 meta["custom_extensions"] = custom_extensions
 
         # Let the Metric class handle aggregation parsing via its model_validator.
@@ -330,17 +403,24 @@ class OSIAdapter(BaseAdapter):
             primary_key = to_columns
 
         # Create many_to_one relationship (from many -> to one)
+        metadata = {}
+        if rel_def.get("name"):
+            metadata["osi_name"] = rel_def["name"]
+        if "ai_context" in rel_def:
+            metadata["ai_context"] = rel_def.get("ai_context")
+        custom_extensions = self._decode_custom_extensions(rel_def.get("custom_extensions"))
+        if custom_extensions is not None:
+            metadata["custom_extensions"] = custom_extensions
+
         relationship = Relationship(
             name=to_model,
             type="many_to_one",
             foreign_key=foreign_key,
             primary_key=primary_key,
+            metadata=metadata or None,
         )
 
         model.relationships.append(relationship)
-
-    # Supported OSI dialects for export
-    SUPPORTED_EXPORT_DIALECTS = ["ANSI_SQL", "SNOWFLAKE", "DATABRICKS", "BIGQUERY"]
 
     def export(
         self,
@@ -353,14 +433,18 @@ class OSIAdapter(BaseAdapter):
         Args:
             graph: Semantic graph to export
             output_path: Path to output YAML file
-            dialects: List of OSI dialects to generate expressions for.
-                      Default is ["ANSI_SQL"]. Options: ANSI_SQL, SNOWFLAKE, DATABRICKS, BIGQUERY.
+            dialects: List of OSI dialects to generate SQL expressions for.
+                      Default is ["ANSI_SQL"]. Options: ANSI_SQL, SNOWFLAKE, DATABRICKS.
                       When multiple dialects specified, sqlglot is used for transpilation.
         """
         output_path = Path(output_path)
 
-        if dialects is None:
+        if not dialects:
             dialects = ["ANSI_SQL"]
+        unsupported = [dialect for dialect in dialects if dialect not in self.SUPPORTED_EXPORT_DIALECTS]
+        if unsupported:
+            supported = ", ".join(self.SUPPORTED_EXPORT_DIALECTS)
+            raise ValueError(f"Unsupported OSI export dialect(s): {', '.join(unsupported)}. Supported: {supported}")
 
         # Store dialects for use in export methods
         self._export_dialects = dialects
@@ -373,7 +457,7 @@ class OSIAdapter(BaseAdapter):
         # Build OSI semantic model
         semantic_model = self._export_semantic_model(resolved_models, graph)
 
-        data = {"semantic_model": [semantic_model]}
+        data = {"version": self._export_version(graph), "semantic_model": [semantic_model]}
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -399,13 +483,7 @@ class OSIAdapter(BaseAdapter):
                 # Use sqlglot for transpilation
                 import sqlglot
 
-                # Map OSI dialect names to sqlglot dialect names
-                dialect_map = {
-                    "SNOWFLAKE": "snowflake",
-                    "DATABRICKS": "databricks",
-                    "BIGQUERY": "bigquery",
-                }
-                target = dialect_map.get(dialect)
+                target = self._SQLGLOT_DIALECTS.get(dialect)
                 if target:
                     try:
                         transpiled = sqlglot.transpile(sql_expr, read="duckdb", write=target)[0]
@@ -432,6 +510,15 @@ class OSIAdapter(BaseAdapter):
             "name": "semantic_model",
             "description": "Semantic model exported from Sidemantic",
         }
+        osi_meta = (graph.metadata or {}).get("osi", {})
+        semantic_models_meta = osi_meta.get("semantic_models") or []
+        semantic_model_meta = semantic_models_meta[0] if semantic_models_meta else {}
+        for key in ("name", "description", "ai_context"):
+            if semantic_model_meta.get(key) is not None:
+                result[key] = semantic_model_meta[key]
+        custom_extensions = self._normalize_custom_extensions_for_export(semantic_model_meta.get("custom_extensions"))
+        if custom_extensions:
+            result["custom_extensions"] = custom_extensions
 
         # Export datasets
         datasets = []
@@ -507,7 +594,9 @@ class OSIAdapter(BaseAdapter):
             if "ai_context" in model.meta:
                 dataset["ai_context"] = model.meta["ai_context"]
             if "custom_extensions" in model.meta:
-                dataset["custom_extensions"] = model.meta["custom_extensions"]
+                custom_extensions = self._normalize_custom_extensions_for_export(model.meta["custom_extensions"])
+                if custom_extensions:
+                    dataset["custom_extensions"] = custom_extensions
 
         return dataset
 
@@ -541,7 +630,9 @@ class OSIAdapter(BaseAdapter):
             if "ai_context" in dim.meta:
                 field["ai_context"] = dim.meta["ai_context"]
             if "custom_extensions" in dim.meta:
-                field["custom_extensions"] = dim.meta["custom_extensions"]
+                custom_extensions = self._normalize_custom_extensions_for_export(dim.meta["custom_extensions"])
+                if custom_extensions:
+                    field["custom_extensions"] = custom_extensions
 
         return field
 
@@ -568,13 +659,21 @@ class OSIAdapter(BaseAdapter):
         else:
             to_columns = rel.primary_key_columns
 
-        return {
-            "name": f"{from_model}_to_{rel.name}",
+        result: dict[str, Any] = {
+            "name": (rel.metadata or {}).get("osi_name") or f"{from_model}_to_{rel.name}",
             "from": from_model,
             "to": rel.name,
             "from_columns": rel.foreign_key_columns,
             "to_columns": to_columns,
         }
+        if rel.metadata:
+            if "ai_context" in rel.metadata:
+                result["ai_context"] = rel.metadata["ai_context"]
+            if "custom_extensions" in rel.metadata:
+                custom_extensions = self._normalize_custom_extensions_for_export(rel.metadata["custom_extensions"])
+                if custom_extensions:
+                    result["custom_extensions"] = custom_extensions
+        return result
 
     def _export_metric(
         self, metric: Metric, models: dict[str, Model], model_name: str | None = None
@@ -608,9 +707,70 @@ class OSIAdapter(BaseAdapter):
             if "ai_context" in metric.meta:
                 result["ai_context"] = metric.meta["ai_context"]
             if "custom_extensions" in metric.meta:
-                result["custom_extensions"] = metric.meta["custom_extensions"]
+                custom_extensions = self._normalize_custom_extensions_for_export(metric.meta["custom_extensions"])
+                if custom_extensions:
+                    result["custom_extensions"] = custom_extensions
 
         return result
+
+    def _export_version(self, graph: SemanticGraph) -> str:
+        """Return the OSI version to emit."""
+        osi_meta = (graph.metadata or {}).get("osi", {})
+        version = osi_meta.get("version")
+        if version == self.OSI_VERSION:
+            return version
+        return self.OSI_VERSION
+
+    def _normalize_custom_extensions_for_export(self, custom_extensions: Any) -> list[dict[str, str]] | None:
+        """Normalize permissive local extension metadata to the OSI schema shape."""
+        if custom_extensions is None:
+            return None
+
+        if isinstance(custom_extensions, list):
+            normalized = []
+            for item in custom_extensions:
+                if not isinstance(item, dict):
+                    normalized.append({"vendor_name": "SIDEMANTIC", "data": self._extension_data_to_string(item)})
+                    continue
+                vendor_name = item.get("vendor_name") or item.get("vendor") or "SIDEMANTIC"
+                data = item.get("data")
+                if data is None:
+                    data = {key: value for key, value in item.items() if key not in {"vendor_name", "vendor"}}
+                normalized.append({"vendor_name": str(vendor_name), "data": self._extension_data_to_string(data)})
+            return normalized
+
+        if isinstance(custom_extensions, dict) and {"vendor_name", "data"} <= set(custom_extensions):
+            return [
+                {
+                    "vendor_name": str(custom_extensions["vendor_name"]),
+                    "data": self._extension_data_to_string(custom_extensions["data"]),
+                }
+            ]
+
+        return [{"vendor_name": "SIDEMANTIC", "data": self._extension_data_to_string(custom_extensions)}]
+
+    def _decode_custom_extensions(self, custom_extensions: Any) -> Any:
+        """Decode Sidemantic-owned extension wrappers while preserving standard OSI lists."""
+        if (
+            isinstance(custom_extensions, list)
+            and len(custom_extensions) == 1
+            and isinstance(custom_extensions[0], dict)
+            and custom_extensions[0].get("vendor_name") == "SIDEMANTIC"
+        ):
+            data = custom_extensions[0].get("data")
+            if isinstance(data, str):
+                try:
+                    return json.loads(data)
+                except json.JSONDecodeError:
+                    return data
+            return data
+        return custom_extensions
+
+    def _extension_data_to_string(self, data: Any) -> str:
+        """Convert custom extension data to the string required by OSI."""
+        if isinstance(data, str):
+            return data
+        return json.dumps(data, sort_keys=True)
 
     def _build_metric_expression(self, metric: Metric, model_name: str | None) -> str | None:
         """Build full OSI metric expression from Sidemantic metric.

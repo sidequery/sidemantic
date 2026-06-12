@@ -5,10 +5,14 @@ subclasses of compiled classes (Parser, Expression). Uses factory
 functions that return exp.Anonymous/exp.EQ nodes instead.
 """
 
+from __future__ import annotations
+
 import threading
 
+import sqlglot
 from sqlglot import exp, parser, tokens
 from sqlglot.dialects.dialect import Dialect
+from sqlglot.tokens import Token, TokenType
 
 # Property name aliases (SQL syntax -> Python field name)
 # Shared between parser and sql_definitions module
@@ -28,8 +32,22 @@ METRICDEF = "MetricDef"
 SEGMENTDEF = "SegmentDef"
 PARAMETERDEF = "ParameterDef"
 PREAGGREGATIONDEF = "PreAggregationDef"
+TABLEBLOCKMODELDEF = "TableBlockModelDef"
+TABLEBLOCKPRIMARYKEYDEF = "TableBlockPrimaryKeyDef"
+TABLEBLOCKDEFAULTTIMEDEF = "TableBlockDefaultTimeDef"
+TABLEBLOCKSEGMENTDEF = "TableBlockSegmentDef"
+TABLEBLOCKJOINDEF = "TableBlockJoinDef"
+TABLEBLOCKFIELDDEF = "TableBlockFieldDef"
 
 _DEF_TYPES = {MODELDEF, DIMENSIONDEF, RELATIONSHIPDEF, METRICDEF, SEGMENTDEF, PARAMETERDEF, PREAGGREGATIONDEF}
+_TABLE_BLOCK_DEF_TYPES = {
+    TABLEBLOCKMODELDEF,
+    TABLEBLOCKPRIMARYKEYDEF,
+    TABLEBLOCKDEFAULTTIMEDEF,
+    TABLEBLOCKSEGMENTDEF,
+    TABLEBLOCKJOINDEF,
+    TABLEBLOCKFIELDDEF,
+}
 
 _KEYWORD_TO_DEF = {
     "MODEL": MODELDEF,
@@ -41,37 +59,94 @@ _KEYWORD_TO_DEF = {
     "PRE_AGGREGATION": PREAGGREGATIONDEF,
 }
 
+
+def _anonymous_def(def_name: str, *, expressions=None, **kwargs):
+    node = exp.Anonymous(this=def_name, expressions=expressions or [])
+    for key, value in kwargs.items():
+        node.set(key, value)
+    return node
+
+
 # ---------------------------------------------------------------------------
 # Factory functions (same call-site syntax as the old classes)
 # ---------------------------------------------------------------------------
 
 
 def ModelDef(expressions):  # noqa: N802
-    return exp.Anonymous(this=MODELDEF, expressions=expressions)
+    return _anonymous_def(MODELDEF, expressions=expressions)
 
 
 def DimensionDef(expressions):  # noqa: N802
-    return exp.Anonymous(this=DIMENSIONDEF, expressions=expressions)
+    return _anonymous_def(DIMENSIONDEF, expressions=expressions)
 
 
 def RelationshipDef(expressions):  # noqa: N802
-    return exp.Anonymous(this=RELATIONSHIPDEF, expressions=expressions)
+    return _anonymous_def(RELATIONSHIPDEF, expressions=expressions)
 
 
 def MetricDef(expressions):  # noqa: N802
-    return exp.Anonymous(this=METRICDEF, expressions=expressions)
+    return _anonymous_def(METRICDEF, expressions=expressions)
 
 
 def SegmentDef(expressions):  # noqa: N802
-    return exp.Anonymous(this=SEGMENTDEF, expressions=expressions)
+    return _anonymous_def(SEGMENTDEF, expressions=expressions)
 
 
 def ParameterDef(expressions):  # noqa: N802
-    return exp.Anonymous(this=PARAMETERDEF, expressions=expressions)
+    return _anonymous_def(PARAMETERDEF, expressions=expressions)
 
 
 def PreAggregationDef(expressions):  # noqa: N802
-    return exp.Anonymous(this=PREAGGREGATIONDEF, expressions=expressions)
+    return _anonymous_def(PREAGGREGATIONDEF, expressions=expressions)
+
+
+def TableBlockModelDef(this, table=None, source_sql=None, expressions=None):  # noqa: N802
+    node = exp.Anonymous(this=this, expressions=expressions or [])
+    node.set("sidemantic_def_type", TABLEBLOCKMODELDEF)
+    node.set("model_name", this)
+    node.set("table", table)
+    node.set("source_sql", source_sql)
+    return node
+
+
+def TableBlockPrimaryKeyDef(columns):  # noqa: N802
+    return _anonymous_def(TABLEBLOCKPRIMARYKEYDEF, columns=columns)
+
+
+def TableBlockDefaultTimeDef(this, grain=None):  # noqa: N802
+    node = exp.Anonymous(this=this, expressions=[])
+    node.set("sidemantic_def_type", TABLEBLOCKDEFAULTTIMEDEF)
+    node.set("field", this)
+    node.set("grain", grain)
+    return node
+
+
+def TableBlockSegmentDef(this, sql):  # noqa: N802
+    node = exp.Anonymous(this=this, expressions=[])
+    node.set("sidemantic_def_type", TABLEBLOCKSEGMENTDEF)
+    node.set("name", this)
+    node.set("sql", sql)
+    return node
+
+
+def TableBlockJoinDef(this, relationship_type, local_keys, target_keys):  # noqa: N802
+    node = exp.Anonymous(this=this, expressions=[])
+    node.set("sidemantic_def_type", TABLEBLOCKJOINDEF)
+    node.set("target", this)
+    node.set("relationship_type", relationship_type)
+    node.set("local_keys", local_keys)
+    node.set("target_keys", target_keys)
+    return node
+
+
+def TableBlockFieldDef(this, sql, dimension_type=None, granularity=None):  # noqa: N802
+    node = exp.Anonymous(this=this, expressions=[])
+    node.set("sidemantic_def_type", TABLEBLOCKFIELDDEF)
+    node.set("name", this)
+    node.set("sql", sql)
+    node.set("dimension_type", dimension_type)
+    node.set("granularity", granularity)
+    return node
 
 
 def PropertyEQ(this, expression):  # noqa: N802
@@ -80,9 +155,118 @@ def PropertyEQ(this, expression):  # noqa: N802
     return eq
 
 
+_MODELDEF_FACTORY = ModelDef
+_DIMENSIONDEF_FACTORY = DimensionDef
+_RELATIONSHIPDEF_FACTORY = RelationshipDef
+_METRICDEF_FACTORY = MetricDef
+_SEGMENTDEF_FACTORY = SegmentDef
+_PARAMETERDEF_FACTORY = ParameterDef
+_PREAGGREGATIONDEF_FACTORY = PreAggregationDef
+_TABLEBLOCKMODELDEF_FACTORY = TableBlockModelDef
+_TABLEBLOCKPRIMARYKEYDEF_FACTORY = TableBlockPrimaryKeyDef
+_TABLEBLOCKDEFAULTTIMEDEF_FACTORY = TableBlockDefaultTimeDef
+_TABLEBLOCKSEGMENTDEF_FACTORY = TableBlockSegmentDef
+_TABLEBLOCKJOINDEF_FACTORY = TableBlockJoinDef
+_TABLEBLOCKFIELDDEF_FACTORY = TableBlockFieldDef
+_PROPERTYEQ_FACTORY = PropertyEQ
+
+
+class TableBlockParseError(ValueError):
+    """Raised when compact table-block model syntax is invalid."""
+
+
+class _ExpressionFactoryMeta(type):
+    """Callable factory class that also supports isinstance checks."""
+
+    def __call__(cls, *args, **kwargs):
+        return cls._factory(*args, **kwargs)
+
+    def __instancecheck__(cls, instance):
+        def_name = cls._def_name
+        if def_name == "_property_eq":
+            return isinstance(instance, exp.EQ) and instance.args.get("_property_eq", False)
+        return isinstance(instance, exp.Anonymous) and (
+            instance.args.get("sidemantic_def_type") == def_name or instance.name == def_name
+        )
+
+
+class ModelDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = MODELDEF
+    _factory = staticmethod(_MODELDEF_FACTORY)
+
+
+class DimensionDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = DIMENSIONDEF
+    _factory = staticmethod(_DIMENSIONDEF_FACTORY)
+
+
+class RelationshipDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = RELATIONSHIPDEF
+    _factory = staticmethod(_RELATIONSHIPDEF_FACTORY)
+
+
+class MetricDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = METRICDEF
+    _factory = staticmethod(_METRICDEF_FACTORY)
+
+
+class SegmentDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = SEGMENTDEF
+    _factory = staticmethod(_SEGMENTDEF_FACTORY)
+
+
+class ParameterDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = PARAMETERDEF
+    _factory = staticmethod(_PARAMETERDEF_FACTORY)
+
+
+class PreAggregationDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = PREAGGREGATIONDEF
+    _factory = staticmethod(_PREAGGREGATIONDEF_FACTORY)
+
+
+class TableBlockModelDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = TABLEBLOCKMODELDEF
+    _factory = staticmethod(_TABLEBLOCKMODELDEF_FACTORY)
+
+
+class TableBlockPrimaryKeyDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = TABLEBLOCKPRIMARYKEYDEF
+    _factory = staticmethod(_TABLEBLOCKPRIMARYKEYDEF_FACTORY)
+
+
+class TableBlockDefaultTimeDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = TABLEBLOCKDEFAULTTIMEDEF
+    _factory = staticmethod(_TABLEBLOCKDEFAULTTIMEDEF_FACTORY)
+
+
+class TableBlockSegmentDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = TABLEBLOCKSEGMENTDEF
+    _factory = staticmethod(_TABLEBLOCKSEGMENTDEF_FACTORY)
+
+
+class TableBlockJoinDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = TABLEBLOCKJOINDEF
+    _factory = staticmethod(_TABLEBLOCKJOINDEF_FACTORY)
+
+
+class TableBlockFieldDef(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = TABLEBLOCKFIELDDEF
+    _factory = staticmethod(_TABLEBLOCKFIELDDEF_FACTORY)
+
+
+class PropertyEQ(metaclass=_ExpressionFactoryMeta):  # noqa: N801
+    _def_name = "_property_eq"
+    _factory = staticmethod(_PROPERTYEQ_FACTORY)
+
+
 # ---------------------------------------------------------------------------
 # Type-checking helpers (replace isinstance checks)
 # ---------------------------------------------------------------------------
+
+
+def _is_anonymous_named(node, name: str) -> bool:
+    return isinstance(node, exp.Anonymous) and (node.args.get("sidemantic_def_type") == name or node.name == name)
 
 
 def is_definition(node) -> bool:
@@ -91,31 +275,55 @@ def is_definition(node) -> bool:
 
 
 def is_model_def(node) -> bool:
-    return isinstance(node, exp.Anonymous) and node.name == MODELDEF
+    return _is_anonymous_named(node, MODELDEF)
 
 
 def is_dimension_def(node) -> bool:
-    return isinstance(node, exp.Anonymous) and node.name == DIMENSIONDEF
+    return _is_anonymous_named(node, DIMENSIONDEF)
 
 
 def is_relationship_def(node) -> bool:
-    return isinstance(node, exp.Anonymous) and node.name == RELATIONSHIPDEF
+    return _is_anonymous_named(node, RELATIONSHIPDEF)
 
 
 def is_metric_def(node) -> bool:
-    return isinstance(node, exp.Anonymous) and node.name == METRICDEF
+    return _is_anonymous_named(node, METRICDEF)
 
 
 def is_segment_def(node) -> bool:
-    return isinstance(node, exp.Anonymous) and node.name == SEGMENTDEF
+    return _is_anonymous_named(node, SEGMENTDEF)
 
 
 def is_parameter_def(node) -> bool:
-    return isinstance(node, exp.Anonymous) and node.name == PARAMETERDEF
+    return _is_anonymous_named(node, PARAMETERDEF)
 
 
 def is_pre_aggregation_def(node) -> bool:
-    return isinstance(node, exp.Anonymous) and node.name == PREAGGREGATIONDEF
+    return _is_anonymous_named(node, PREAGGREGATIONDEF)
+
+
+def is_table_block_model_def(node) -> bool:
+    return _is_anonymous_named(node, TABLEBLOCKMODELDEF)
+
+
+def is_table_block_primary_key_def(node) -> bool:
+    return _is_anonymous_named(node, TABLEBLOCKPRIMARYKEYDEF)
+
+
+def is_table_block_default_time_def(node) -> bool:
+    return _is_anonymous_named(node, TABLEBLOCKDEFAULTTIMEDEF)
+
+
+def is_table_block_segment_def(node) -> bool:
+    return _is_anonymous_named(node, TABLEBLOCKSEGMENTDEF)
+
+
+def is_table_block_join_def(node) -> bool:
+    return _is_anonymous_named(node, TABLEBLOCKJOINDEF)
+
+
+def is_table_block_field_def(node) -> bool:
+    return _is_anonymous_named(node, TABLEBLOCKFIELDDEF)
 
 
 def is_property_eq(node) -> bool:
@@ -130,10 +338,11 @@ def def_type_name(node) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Monkey-patching infrastructure (thread-safe)
+# Parser monkey-patching infrastructure (thread-safe)
 # ---------------------------------------------------------------------------
 
 _sidemantic_parsing = threading.local()
+_original_parse = None
 _original_parse_statement = None
 _patch_installed = False
 
@@ -155,16 +364,651 @@ def _get_property_names() -> set[str]:
     return names
 
 
-def _parse_property(self) -> exp.Expression | None:
-    """Parse property assignment: name value or name 'value'.
+"""Extended parser with MODEL, DIMENSION, RELATIONSHIP, METRIC, and SEGMENT support."""
+_IDENTIFIER_TOKEN_TYPES = {
+    TokenType.IDENTIFIER,
+    TokenType.SCHEMA,
+    TokenType.TABLE,
+    TokenType.VAR,
+}
+_TIME_GRAINS = {"second", "minute", "hour", "day", "week", "month", "quarter", "year"}
+_DIMENSION_TYPES = {"categorical", "time", "boolean", "numeric"}
+_DIMENSION_TYPE_ALIASES = {
+    "bool": "boolean",
+    "date": "time",
+    "number": "numeric",
+    "string": "categorical",
+}
+_CARDINALITY_ALIASES = {
+    "one": "many_to_one",
+    "many": "one_to_many",
+    "many_to_one": "many_to_one",
+    "one_to_many": "one_to_many",
+    "one_to_one": "one_to_one",
+}
+_STATEMENT_CONTINUATION_TOKEN_TYPES = {
+    TokenType.ALIAS,
+    TokenType.AND,
+    TokenType.ARROW,
+    TokenType.BETWEEN,
+    TokenType.COLON,
+    TokenType.COMMA,
+    TokenType.DARROW,
+    TokenType.DCOLON,
+    TokenType.DASH,
+    TokenType.DOT,
+    TokenType.ELSE,
+    TokenType.EQ,
+    TokenType.ESCAPE,
+    TokenType.GT,
+    TokenType.GTE,
+    TokenType.ILIKE,
+    TokenType.IN,
+    TokenType.IS,
+    TokenType.L_BRACE,
+    TokenType.L_BRACKET,
+    TokenType.L_PAREN,
+    TokenType.LIKE,
+    TokenType.LT,
+    TokenType.LTE,
+    TokenType.MOD,
+    TokenType.NEQ,
+    TokenType.NOT,
+    TokenType.ON,
+    TokenType.OR,
+    TokenType.PERCENT,
+    TokenType.PLUS,
+    TokenType.RLIKE,
+    TokenType.SLASH,
+    TokenType.STAR,
+    TokenType.THEN,
+    TokenType.WHEN,
+}
 
-    Operates on the parser instance (self) passed from the monkey-patched method.
-    """
+
+def _parse_table_block_model(self) -> TableBlockModelDef:
+    model_name = self._parse_table_block_identifier()
+    if not model_name:
+        raise TableBlockParseError("Compact model block requires a model name")
+
+    if not self._match(TokenType.FROM):
+        raise TableBlockParseError(f"Table-block model '{model_name}' must use `model {model_name} from <table> (...)`")
+
+    table = None
+    source_sql = None
+    if self._curr and self._curr.token_type == TokenType.L_PAREN:
+        source_sql = self._parse_table_block_derived_source(model_name)
+    else:
+        table = self._parse_table_block_source_table(model_name)
+
+    if not self._curr or self._curr.token_type != TokenType.L_PAREN:
+        source = "derived SQL source" if source_sql else "table source"
+        raise TableBlockParseError(f"Model '{model_name}' must include a body block after the {source}")
+
+    body_tokens = self._consume_balanced_tokens(model_name, "model block")
+    body_expressions = [
+        self._parse_table_block_body_statement(model_name, statement_tokens)
+        for statement_tokens in self._split_table_block_body_statements(body_tokens)
+    ]
+
+    return TableBlockModelDef(
+        this=exp.to_identifier(model_name),
+        table=table,
+        source_sql=source_sql,
+        expressions=body_expressions,
+    )
+
+
+def _parse_table_block_derived_source(self, model_name: str) -> str:
+    open_token = self._curr
+    source_tokens = self._consume_balanced_tokens(model_name, "derived SQL source")
+    if not source_tokens:
+        raise TableBlockParseError(f"Derived SQL source for model '{model_name}' cannot be empty")
+
+    close_token = self._tokens[self._index - 1]
+    source_sql = self.sql[open_token.end + 1 : close_token.start].strip()
+    if not source_sql:
+        raise TableBlockParseError(f"Derived SQL source for model '{model_name}' cannot be empty")
+    return source_sql
+
+
+def _parse_table_block_source_table(self, model_name: str) -> str:
+    parts = []
+    first = self._parse_table_block_identifier()
+    if not first:
+        raise TableBlockParseError(f"Model '{model_name}' must declare a table or derived SQL source after `from`")
+    parts.append(first)
+
+    while self._match(TokenType.DOT):
+        part = self._parse_table_block_identifier()
+        if not part:
+            raise TableBlockParseError(f"Model '{model_name}' has an invalid table source")
+        parts.append(part)
+
+    return ".".join(parts)
+
+
+def _consume_balanced_tokens(self, model_name: str, label: str) -> list[Token]:
+    if not self._match(TokenType.L_PAREN):
+        raise TableBlockParseError(f"Model '{model_name}' must include a {label}")
+
+    body_tokens = []
+    depth = 1
+    while self._curr:
+        if self._curr.token_type == TokenType.L_PAREN:
+            depth += 1
+        elif self._curr.token_type == TokenType.R_PAREN:
+            depth -= 1
+            if depth == 0:
+                self._advance()
+                return body_tokens
+
+        body_tokens.append(self._curr)
+        self._advance()
+
+    raise TableBlockParseError(f"Unclosed {label} for model '{model_name}'")
+
+
+def _split_table_block_body_statements(self, body_tokens: list[Token]) -> list[list[Token]]:
+    statements = []
+    statement = []
+    depth = 0
+    previous_token = None
+
+    for token in body_tokens:
+        if (
+            previous_token
+            and statement
+            and depth == 0
+            and self._has_statement_separator_between(statement, previous_token, token)
+        ):
+            statements.append(statement)
+            statement = []
+
+        if token.token_type == TokenType.SEMICOLON and depth == 0:
+            if statement:
+                statements.append(statement)
+                statement = []
+            previous_token = token
+            continue
+
+        statement.append(token)
+
+        if token.token_type in (TokenType.L_PAREN, TokenType.L_BRACKET, TokenType.L_BRACE):
+            depth += 1
+        elif token.token_type in (TokenType.R_PAREN, TokenType.R_BRACKET, TokenType.R_BRACE):
+            depth = max(depth - 1, 0)
+
+        previous_token = token
+
+    if statement:
+        statements.append(statement)
+
+    return statements
+
+
+def _has_statement_separator_between(self, statement_tokens: list[Token], left: Token, right: Token) -> bool:
+    gap = self.sql[left.end + 1 : right.start]
+    if ";" in gap:
+        return True
+    if "\n" not in gap:
+        return False
+    return self._table_block_statement_can_end(statement_tokens) and not self._token_continues_statement(right)
+
+
+def _table_block_statement_can_end(self, statement_tokens: list[Token]) -> bool:
+    if not statement_tokens or self._token_continues_statement(statement_tokens[-1]):
+        return False
+
+    first_text = statement_tokens[0].text.lower()
+    first_type = statement_tokens[0].token_type
+
+    if first_type == TokenType.PRIMARY_KEY or first_text == "primary_key":
+        return len(statement_tokens) > 1
+
+    if first_type == TokenType.DEFAULT:
+        return len(statement_tokens) == 3 or len(statement_tokens) == 5
+
+    if first_text == "segment":
+        alias_idx = self._find_top_level_token(statement_tokens, TokenType.ALIAS, start=2)
+        return alias_idx is not None and alias_idx < len(statement_tokens) - 1
+
+    if first_type == TokenType.JOIN:
+        on_idx = self._find_top_level_token(statement_tokens, TokenType.ON, start=1)
+        return on_idx is not None and on_idx < len(statement_tokens) - 1
+
+    colon_idx = self._find_top_level_token(statement_tokens, TokenType.COLON)
+    base_tokens = statement_tokens[:colon_idx] if colon_idx is not None else statement_tokens
+    if not base_tokens:
+        return False
+
+    alias_idx = self._find_top_level_token(base_tokens, TokenType.ALIAS)
+    if alias_idx is not None:
+        name_tokens = base_tokens[alias_idx + 1 :]
+        return alias_idx > 0 and len(name_tokens) == 1 and self._identifier_from_token(name_tokens[0]) is not None
+
+    return len(base_tokens) == 1 and self._identifier_from_token(base_tokens[0]) is not None
+
+
+def _token_continues_statement(self, token: Token) -> bool:
+    return token.token_type in self._STATEMENT_CONTINUATION_TOKEN_TYPES
+
+
+def _parse_table_block_body_statement(self, model_name: str, statement_tokens: list[Token]) -> exp.Expression:
+    first_text = statement_tokens[0].text.lower()
+    first_type = statement_tokens[0].token_type
+
+    if first_type == TokenType.TABLE:
+        raise TableBlockParseError(
+            f"Model '{model_name}' uses table source inside the block; use `model {model_name} from <table> (...)`"
+        )
+    if first_type == TokenType.PRIMARY_KEY or first_text == "primary_key":
+        return self._parse_table_block_primary_key(model_name, statement_tokens)
+    if first_type == TokenType.DEFAULT:
+        return self._parse_table_block_default_time(model_name, statement_tokens)
+    if first_text == "segment":
+        return self._parse_table_block_segment(model_name, statement_tokens)
+    if first_type == TokenType.JOIN:
+        return self._parse_table_block_join(model_name, statement_tokens)
+
+    field = self._parse_table_block_field(model_name, statement_tokens)
+    if field:
+        return field
+
+    raise TableBlockParseError(
+        f"Unrecognized statement in model '{model_name}': {self._statement_sql(statement_tokens)}"
+    )
+
+
+def _parse_table_block_primary_key(
+    self,
+    model_name: str,
+    statement_tokens: list[Token],
+) -> TableBlockPrimaryKeyDef:
+    value_tokens = statement_tokens[1:]
+    if not value_tokens:
+        raise TableBlockParseError("Primary key requires at least one column")
+
+    if value_tokens[0].token_type == TokenType.L_PAREN and value_tokens[-1].token_type == TokenType.R_PAREN:
+        value_tokens = value_tokens[1:-1]
+    if not value_tokens:
+        raise TableBlockParseError("Primary key requires at least one column")
+
+    columns = self._parse_identifier_list(value_tokens)
+    if not columns:
+        raise TableBlockParseError("Primary key requires at least one column")
+
+    return TableBlockPrimaryKeyDef(columns=columns)
+
+
+def _parse_table_block_default_time(
+    self,
+    model_name: str,
+    statement_tokens: list[Token],
+) -> TableBlockDefaultTimeDef:
+    if len(statement_tokens) < 3 or statement_tokens[1].text.lower() != "time":
+        raise TableBlockParseError(
+            f"Invalid default time in model '{model_name}': {self._statement_sql(statement_tokens)}"
+        )
+
+    dimension_name = self._identifier_from_token(statement_tokens[2])
+    if not dimension_name:
+        raise TableBlockParseError(
+            f"Invalid default time in model '{model_name}': {self._statement_sql(statement_tokens)}"
+        )
+
+    grain = None
+    if len(statement_tokens) > 3:
+        if (
+            len(statement_tokens) != 5
+            or statement_tokens[3].text.lower() not in ("grain", "granularity")
+            or not self._identifier_from_token(statement_tokens[4])
+        ):
+            raise TableBlockParseError(
+                f"Invalid default time in model '{model_name}': {self._statement_sql(statement_tokens)}"
+            )
+        grain = statement_tokens[4].text.lower()
+        self._validate_time_grain(model_name, "default time", grain)
+
+    return TableBlockDefaultTimeDef(this=exp.to_identifier(dimension_name), grain=grain)
+
+
+def _parse_table_block_segment(
+    self,
+    model_name: str,
+    statement_tokens: list[Token],
+) -> TableBlockSegmentDef:
+    if len(statement_tokens) < 4:
+        raise TableBlockParseError(f"Invalid segment in model '{model_name}': {self._statement_sql(statement_tokens)}")
+
+    segment_name = self._identifier_from_token(statement_tokens[1])
+    alias_idx = self._find_top_level_token(statement_tokens, TokenType.ALIAS, start=2)
+    if not segment_name or alias_idx is None or alias_idx == len(statement_tokens) - 1:
+        raise TableBlockParseError(f"Invalid segment in model '{model_name}': {self._statement_sql(statement_tokens)}")
+
+    expression_sql = self._statement_sql(statement_tokens[alias_idx + 1 :])
+    if not expression_sql:
+        raise TableBlockParseError(f"Segment '{segment_name}' in model '{model_name}' requires a SQL expression")
+
+    return TableBlockSegmentDef(this=exp.to_identifier(segment_name), sql=expression_sql)
+
+
+def _parse_table_block_join(
+    self,
+    model_name: str,
+    statement_tokens: list[Token],
+) -> TableBlockJoinDef:
+    on_idx = self._find_top_level_token(statement_tokens, TokenType.ON, start=1)
+    if on_idx is None or on_idx <= 1 or on_idx == len(statement_tokens) - 1:
+        raise TableBlockParseError(f"Invalid join in model '{model_name}': {self._statement_sql(statement_tokens)}")
+
+    header_tokens = statement_tokens[1:on_idx]
+    cardinality = None
+    target_idx = 0
+    if header_tokens[0].text.lower() in self._CARDINALITY_ALIASES:
+        cardinality = header_tokens[0].text.lower()
+        target_idx = 1
+
+    if target_idx >= len(header_tokens):
+        raise TableBlockParseError(f"Invalid join in model '{model_name}': {self._statement_sql(statement_tokens)}")
+
+    target_model = self._identifier_from_token(header_tokens[target_idx])
+    if not target_model:
+        raise TableBlockParseError(f"Invalid join in model '{model_name}': {self._statement_sql(statement_tokens)}")
+
+    alias = None
+    alias_tokens = header_tokens[target_idx + 1 :]
+    if alias_tokens:
+        if len(alias_tokens) == 2 and alias_tokens[0].token_type == TokenType.ALIAS:
+            alias = self._identifier_from_token(alias_tokens[1])
+        elif len(alias_tokens) == 1:
+            alias = self._identifier_from_token(alias_tokens[0])
+        if not alias:
+            raise TableBlockParseError(f"Invalid join in model '{model_name}': {self._statement_sql(statement_tokens)}")
+
+    relationship_type = self._CARDINALITY_ALIASES.get(cardinality or "one", "many_to_one")
+    on_expression = self._statement_sql(statement_tokens[on_idx + 1 :])
+    join_keys = self._extract_table_block_join_keys(
+        on_expression=on_expression,
+        current_model_name=model_name,
+        target_model_name=target_model,
+        target_alias=alias,
+    )
+    if not join_keys:
+        raise TableBlockParseError(
+            f"Join in model '{model_name}' must compare model columns: {self._statement_sql(statement_tokens)}"
+        )
+
+    local_keys, target_keys = join_keys
+    return TableBlockJoinDef(
+        this=exp.to_identifier(target_model),
+        relationship_type=relationship_type,
+        local_keys=local_keys,
+        target_keys=target_keys,
+    )
+
+
+def _parse_table_block_field(
+    self,
+    model_name: str,
+    statement_tokens: list[Token],
+) -> TableBlockFieldDef | None:
+    colon_idx = self._find_top_level_token(statement_tokens, TokenType.COLON)
+    base_tokens = statement_tokens[:colon_idx] if colon_idx is not None else statement_tokens
+    annotation_tokens = statement_tokens[colon_idx + 1 :] if colon_idx is not None else []
+    if not base_tokens:
+        return None
+
+    dimension_type, granularity = self._parse_table_block_field_annotation(model_name, base_tokens, annotation_tokens)
+    alias_idx = self._find_top_level_token(base_tokens, TokenType.ALIAS)
+    if alias_idx is not None:
+        if alias_idx == 0 or alias_idx == len(base_tokens) - 1:
+            return None
+        name_tokens = base_tokens[alias_idx + 1 :]
+        if len(name_tokens) != 1:
+            return None
+        name = self._identifier_from_token(name_tokens[0])
+        if not name:
+            return None
+        return TableBlockFieldDef(
+            this=exp.to_identifier(name),
+            sql=self._statement_sql(base_tokens[:alias_idx]),
+            dimension_type=dimension_type,
+            granularity=granularity,
+        )
+
+    if len(base_tokens) == 1:
+        name = self._identifier_from_token(base_tokens[0])
+        if name:
+            return TableBlockFieldDef(
+                this=exp.to_identifier(name),
+                sql=name,
+                dimension_type=dimension_type,
+                granularity=granularity,
+            )
+
+    return None
+
+
+def _parse_table_block_field_annotation(
+    self,
+    model_name: str,
+    base_tokens: list[Token],
+    annotation_tokens: list[Token],
+) -> tuple[str | None, str | None]:
+    if not annotation_tokens:
+        return None, None
+
+    field_name = self._statement_sql(base_tokens)
+    dimension_type = None
+    granularity = None
+    idx = 0
+
+    while idx < len(annotation_tokens):
+        token = annotation_tokens[idx].text.lower()
+        normalized_type = self._DIMENSION_TYPE_ALIASES.get(token, token)
+
+        if normalized_type in self._DIMENSION_TYPES:
+            if dimension_type and dimension_type != normalized_type:
+                raise TableBlockParseError(
+                    f"Field '{field_name}' in model '{model_name}' has conflicting type annotations"
+                )
+            dimension_type = normalized_type
+            idx += 1
+            continue
+
+        if token in ("grain", "granularity"):
+            if idx + 1 >= len(annotation_tokens):
+                raise TableBlockParseError(f"Field '{field_name}' in model '{model_name}' is missing a {token} value")
+            grain = annotation_tokens[idx + 1].text.lower()
+            self._validate_time_grain(model_name, field_name, grain)
+            granularity = grain
+            if not dimension_type:
+                dimension_type = "time"
+            elif dimension_type != "time":
+                raise TableBlockParseError(
+                    f"Field '{field_name}' in model '{model_name}' cannot use grain with type '{dimension_type}'"
+                )
+            idx += 2
+            continue
+
+        raise TableBlockParseError(
+            f"Field '{field_name}' in model '{model_name}' has unknown annotation '{annotation_tokens[idx].text}'"
+        )
+
+    return dimension_type, granularity
+
+
+def _extract_table_block_join_keys(
+    self,
+    on_expression: str,
+    current_model_name: str,
+    target_model_name: str,
+    target_alias: str | None,
+) -> tuple[list[str], list[str]] | None:
+    try:
+        parsed = sqlglot.parse_one(on_expression, read="duckdb")
+    except Exception:
+        return None
+
+    equalities = self._table_block_join_equalities(parsed)
+    if equalities is None:
+        return None
+
+    local_keys = []
+    target_keys = []
+    for equality in equalities:
+        left = equality.left
+        right = equality.right
+        if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
+            return None
+
+        left_side = self._classify_join_column(left, current_model_name, target_model_name, target_alias)
+        right_side = self._classify_join_column(right, current_model_name, target_model_name, target_alias)
+        if left_side == "local" and right_side == "target":
+            local_keys.append(left.name)
+            target_keys.append(right.name)
+            continue
+        if left_side == "target" and right_side == "local":
+            local_keys.append(right.name)
+            target_keys.append(left.name)
+            continue
+        return None
+
+    if not local_keys:
+        return None
+    return local_keys, target_keys
+
+
+def _table_block_join_equalities(self, expression: exp.Expression) -> list[exp.EQ] | None:
+    expression = self._unwrap_table_block_join_expression(expression)
+    if isinstance(expression, exp.EQ):
+        return [expression]
+    if isinstance(expression, exp.And):
+        left = self._table_block_join_equalities(expression.left)
+        right = self._table_block_join_equalities(expression.right)
+        if left is None or right is None:
+            return None
+        return left + right
+    return None
+
+
+def _unwrap_table_block_join_expression(self, expression: exp.Expression) -> exp.Expression:
+    while isinstance(expression, exp.Paren) and isinstance(expression.this, exp.Expression):
+        expression = expression.this
+    return expression
+
+
+def _classify_join_column(
+    self,
+    column: exp.Column,
+    current_model_name: str,
+    target_model_name: str,
+    target_alias: str | None,
+) -> str | None:
+    table = column.table
+    if not table or table == current_model_name:
+        return "local"
+    if table == target_model_name or table == target_alias:
+        return "target"
+    return None
+
+
+def _find_top_level_token(
+    self,
+    statement_tokens: list[Token],
+    token_type: TokenType,
+    start: int = 0,
+) -> int | None:
+    depth = 0
+    for idx, token in enumerate(statement_tokens[start:], start=start):
+        if token.token_type in (TokenType.L_PAREN, TokenType.L_BRACKET, TokenType.L_BRACE):
+            depth += 1
+            continue
+        if token.token_type in (TokenType.R_PAREN, TokenType.R_BRACKET, TokenType.R_BRACE):
+            depth = max(depth - 1, 0)
+            continue
+        if depth == 0 and token.token_type == token_type:
+            return idx
+    return None
+
+
+def _parse_identifier_list(self, value_tokens: list[Token]) -> list[str]:
+    columns = []
+    current = []
+    depth = 0
+
+    for token in value_tokens:
+        if token.token_type == TokenType.COMMA and depth == 0:
+            column = self._identifier_from_tokens(current)
+            if not column:
+                return []
+            columns.append(column)
+            current = []
+            continue
+
+        if token.token_type in (TokenType.L_PAREN, TokenType.L_BRACKET, TokenType.L_BRACE):
+            depth += 1
+        elif token.token_type in (TokenType.R_PAREN, TokenType.R_BRACKET, TokenType.R_BRACE):
+            depth = max(depth - 1, 0)
+        current.append(token)
+
+    column = self._identifier_from_tokens(current)
+    if not column:
+        return []
+    columns.append(column)
+    return columns
+
+
+def _identifier_from_tokens(self, value_tokens: list[Token]) -> str | None:
+    if len(value_tokens) != 1:
+        return None
+    return self._identifier_from_token(value_tokens[0])
+
+
+def _parse_table_block_identifier(self) -> str | None:
+    if not self._curr:
+        return None
+    identifier = self._identifier_from_token(self._curr)
+    if identifier:
+        self._advance()
+    return identifier
+
+
+def _identifier_from_token(self, token: Token) -> str | None:
+    if token.token_type not in self._IDENTIFIER_TOKEN_TYPES:
+        return None
+    return token.text
+
+
+def _statement_sql(self, statement_tokens: list[Token]) -> str:
+    if not statement_tokens:
+        return ""
+    return self.sql[statement_tokens[0].start : statement_tokens[-1].end + 1].strip()
+
+
+def _validate_time_grain(self, model_name: str, field_name: str, grain: str) -> None:
+    if grain not in self._TIME_GRAINS:
+        raise TableBlockParseError(f"Field '{field_name}' in model '{model_name}' uses invalid grain '{grain}'")
+
+
+def _has_table_block_model(raw_tokens: list[Token]) -> bool:
+    for idx, token in enumerate(raw_tokens):
+        if token.text.upper() != "MODEL":
+            continue
+        if idx + 1 >= len(raw_tokens):
+            continue
+        if raw_tokens[idx + 1].token_type != TokenType.L_PAREN:
+            return True
+    return False
+
+
+def _parse_property(self) -> exp.Expression | None:
+    """Parse property assignment: name value or name 'value'."""
     if not self._match_texts(_get_property_names()):
         return None
 
     key = self._prev.text.lower()
-
     depth = 0
     value_parts = []
 
@@ -218,6 +1062,31 @@ def _parse_property(self) -> exp.Expression | None:
     return PropertyEQ(this=exp.Identifier(this=key), expression=exp.Literal.string(value))
 
 
+def _patched_parse(self, raw_tokens: list[Token], sql: str):
+    if not getattr(_sidemantic_parsing, "active", False) or not _has_table_block_model(raw_tokens):
+        return _original_parse(self, raw_tokens, sql)
+
+    self.reset()
+    self.sql = sql or ""
+    self._index = -1
+    self._tokens = raw_tokens
+    self._tokens_size = len(raw_tokens)
+    self._advance()
+
+    expressions = []
+    while self._curr:
+        if self._match(TokenType.SEMICOLON):
+            continue
+        statement = self._parse_statement()
+        if statement:
+            expressions.append(statement)
+            continue
+        self.raise_error("Expected Sidemantic SQL statement")
+
+    self.check_errors()
+    return expressions
+
+
 def _patched_parse_statement(self):
     """Replacement for parser.Parser._parse_statement when Sidemantic parsing is active."""
     if not getattr(_sidemantic_parsing, "active", False):
@@ -225,6 +1094,9 @@ def _patched_parse_statement(self):
 
     if self._match_texts(("MODEL", "DIMENSION", "RELATIONSHIP", "METRIC", "SEGMENT", "PARAMETER", "PRE_AGGREGATION")):
         func_name = self._prev.text.upper()
+        if func_name == "MODEL" and (not self._curr or self._curr.token_type != tokens.TokenType.L_PAREN):
+            return self._parse_table_block_model()
+
         self._match(tokens.TokenType.L_PAREN)
 
         properties = []
@@ -244,12 +1116,56 @@ def _patched_parse_statement(self):
 
 
 def _install_parser_patch():
-    """Install the Sidemantic parser patch on parser.Parser (once)."""
-    global _original_parse_statement, _patch_installed
+    """Install the Sidemantic parser patch on parser.Parser once."""
+    global _original_parse, _original_parse_statement, _patch_installed
     if _patch_installed:
         return
+
+    _original_parse = parser.Parser.parse
     _original_parse_statement = parser.Parser._parse_statement
+    parser.Parser.parse = _patched_parse
     parser.Parser._parse_statement = _patched_parse_statement
+
+    for name in (
+        "_IDENTIFIER_TOKEN_TYPES",
+        "_TIME_GRAINS",
+        "_DIMENSION_TYPES",
+        "_DIMENSION_TYPE_ALIASES",
+        "_CARDINALITY_ALIASES",
+        "_STATEMENT_CONTINUATION_TOKEN_TYPES",
+    ):
+        setattr(parser.Parser, name, globals()[name])
+
+    for name in (
+        "_parse_table_block_model",
+        "_parse_table_block_derived_source",
+        "_parse_table_block_source_table",
+        "_consume_balanced_tokens",
+        "_split_table_block_body_statements",
+        "_has_statement_separator_between",
+        "_table_block_statement_can_end",
+        "_token_continues_statement",
+        "_parse_table_block_body_statement",
+        "_parse_table_block_primary_key",
+        "_parse_table_block_default_time",
+        "_parse_table_block_segment",
+        "_parse_table_block_join",
+        "_parse_table_block_field",
+        "_parse_table_block_field_annotation",
+        "_extract_table_block_join_keys",
+        "_table_block_join_equalities",
+        "_unwrap_table_block_join_expression",
+        "_classify_join_column",
+        "_find_top_level_token",
+        "_parse_identifier_list",
+        "_identifier_from_tokens",
+        "_parse_table_block_identifier",
+        "_identifier_from_token",
+        "_statement_sql",
+        "_validate_time_grain",
+    ):
+        setattr(parser.Parser, name, globals()[name])
+
     _patch_installed = True
 
 
@@ -262,13 +1178,7 @@ _install_parser_patch()
 
 
 class SidemanticDialect(Dialect):
-    """Sidemantic SQL dialect with METRIC and SEGMENT support.
-
-    Activates the Sidemantic parser extensions automatically so that
-    callers using the dialect directly (e.g. ``sqlglot.parse(sql,
-    read=SidemanticDialect)``) get MODEL/METRIC parsing without
-    needing to set the thread-local flag manually.
-    """
+    """Sidemantic SQL dialect with METRIC, SEGMENT, and compact model-block support."""
 
     def parse(self, sql: str, **opts):
         _sidemantic_parsing.active = True
@@ -284,10 +1194,6 @@ class SidemanticDialect(Dialect):
         finally:
             _sidemantic_parsing.active = False
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 # Singleton instance for convenience functions.
 _dialect = SidemanticDialect()

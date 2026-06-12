@@ -6,12 +6,22 @@ from pathlib import Path
 import pytest
 
 from sidemantic.adapters.sidemantic import SidemanticAdapter
+from sidemantic.core.dialect import (
+    MetricDef,
+    TableBlockFieldDef,
+    TableBlockJoinDef,
+    TableBlockModelDef,
+)
+from sidemantic.core.dialect import (
+    parse as parse_sidemantic_sql,
+)
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.core.sql_definitions import (
     parse_sql_definitions,
     parse_sql_file_with_frontmatter,
     parse_sql_graph_definitions,
     parse_sql_model,
+    parse_sql_models,
 )
 
 
@@ -381,6 +391,35 @@ METRIC (
         temp_path.unlink(missing_ok=True)
 
 
+def test_adapter_parse_sql_file_with_root_only_frontmatter():
+    """Root-only native frontmatter should not be parsed as a model."""
+    sql_content = """---
+version: 1
+connection:
+  type: duckdb
+---
+
+METRIC (
+    name total_revenue,
+    sql orders.revenue
+);
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
+        f.write(sql_content)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = SidemanticAdapter()
+        graph = adapter.parse(temp_path)
+
+        assert not graph.models
+        assert "total_revenue" in graph.metrics
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def test_yaml_with_embedded_sql_metrics():
     """Test YAML file with embedded sql_metrics field."""
     yaml_content = """
@@ -630,6 +669,467 @@ SEGMENT (
 
     assert len(model.segments) == 1
     assert model.segments[0].name == "completed"
+
+
+def test_parse_table_block_sql_model():
+    """Test parsing compact SQL-ish model blocks."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  default time order_date grain day
+
+  status
+  date_trunc('day', created_at) as order_date : time grain day
+  status = 'completed' as is_complete : boolean
+  amount - discount as net_amount : numeric
+
+  segment completed as status = 'completed'
+
+  join one customers on customer_id = customers.id
+  join many order_items on order_id = order_items.order_id and store_id = order_items.store_id
+
+  revenue / order_count as average_order_value
+  sum(amount) as revenue
+  count(*) as order_count
+)
+"""
+
+    model = parse_sql_model(sql_content)
+
+    assert model is not None
+    assert model.name == "orders"
+    assert model.table == "orders"
+    assert model.primary_key == "order_id"
+    assert model.default_time_dimension == "order_date"
+    assert model.default_grain == "day"
+
+    dimensions = {dimension.name: dimension for dimension in model.dimensions}
+    assert dimensions["status"].type == "categorical"
+    assert dimensions["status"].sql is None
+    assert dimensions["order_date"].type == "time"
+    assert dimensions["order_date"].sql == "date_trunc('day', created_at)"
+    assert dimensions["order_date"].granularity == "day"
+    assert dimensions["is_complete"].type == "boolean"
+    assert dimensions["is_complete"].sql == "status = 'completed'"
+    assert dimensions["net_amount"].type == "numeric"
+    assert dimensions["net_amount"].sql == "amount - discount"
+
+    assert len(model.relationships) == 2
+    relationships = {relationship.name: relationship for relationship in model.relationships}
+    assert relationships["customers"].type == "many_to_one"
+    assert relationships["customers"].foreign_key == "customer_id"
+    assert relationships["customers"].primary_key == "id"
+    assert relationships["order_items"].type == "one_to_many"
+    assert relationships["order_items"].foreign_key == ["order_id", "store_id"]
+    assert relationships["order_items"].primary_key == ["order_id", "store_id"]
+
+    metrics = {metric.name: metric for metric in model.metrics}
+    assert list(metrics) == ["average_order_value", "revenue", "order_count"]
+    assert metrics["revenue"].agg == "sum"
+    assert metrics["revenue"].sql == "amount"
+    assert metrics["order_count"].agg == "count"
+    assert metrics["order_count"].sql == "*"
+    assert metrics["average_order_value"].type == "derived"
+    assert metrics["average_order_value"].sql == "revenue / order_count"
+
+    assert len(model.segments) == 1
+    assert model.segments[0].name == "completed"
+    assert model.segments[0].sql == "status = 'completed'"
+
+
+def test_dialect_parses_table_block_sql_model():
+    """Test compact model blocks are parsed by the Sidemantic SQL dialect."""
+    statements = parse_sidemantic_sql(
+        """
+model orders from orders (
+  primary key (order_id)
+  status
+  join one customers on customer_id = customers.id
+  sum(amount) as revenue
+)
+"""
+    )
+
+    assert len(statements) == 1
+    model_def = statements[0]
+    assert isinstance(model_def, TableBlockModelDef)
+    assert model_def.this.name == "orders"
+    assert model_def.args["table"] == "orders"
+    assert any(isinstance(expression, TableBlockFieldDef) for expression in model_def.expressions)
+    assert any(isinstance(expression, TableBlockJoinDef) for expression in model_def.expressions)
+
+
+def test_dialect_parses_table_block_with_graph_definition():
+    """Test compact model blocks can be followed by graph-level definitions."""
+    statements = parse_sidemantic_sql(
+        """
+model orders from orders (
+  primary key (order_id)
+  sum(amount) as revenue
+)
+
+METRIC (
+  name total_revenue,
+  sql orders.revenue
+)
+"""
+    )
+
+    assert len(statements) == 2
+    assert isinstance(statements[0], TableBlockModelDef)
+    assert isinstance(statements[1], MetricDef)
+
+
+def test_parse_graph_definitions_after_table_block():
+    """Test graph definitions after compact model blocks are not dropped."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  sum(amount) as revenue
+)
+
+METRIC (
+  name total_revenue,
+  sql orders.revenue
+)
+"""
+
+    metrics, segments, parameters = parse_sql_graph_definitions(sql_content)
+
+    assert len(metrics) == 1
+    assert metrics[0].name == "total_revenue"
+    assert segments == []
+    assert parameters == []
+
+
+def test_parse_graph_definitions_rejects_plain_sql():
+    """Graph definition blocks should not silently ignore unsupported SQL."""
+    with pytest.raises(ValueError, match="Unsupported SQL definition statement: Select"):
+        parse_sql_graph_definitions("SELECT 1;")
+
+
+def test_parse_sql_definitions_propagates_parse_errors():
+    """Malformed embedded definition syntax should surface as a parse failure."""
+    with pytest.raises(Exception):
+        parse_sql_definitions("NOT_A_DEF (name x);")
+
+
+def test_parse_table_block_multiline_field_expression():
+    """Test compact field expressions can span lines before their alias."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  amount
+    - discount as net_amount : numeric
+  sum(amount) as revenue
+)
+"""
+
+    model = parse_sql_model(sql_content)
+
+    assert model is not None
+    dimensions = {dimension.name: dimension for dimension in model.dimensions}
+    assert dimensions["net_amount"].type == "numeric"
+    assert "amount" in dimensions["net_amount"].sql
+    assert "- discount" in dimensions["net_amount"].sql
+
+
+def test_adapter_parse_table_block_sql_file():
+    """Test SidemanticAdapter parsing compact SQL-ish model blocks."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  status
+  join one customers on customer_id = customers.id
+  sum(amount) as revenue
+)
+
+model customers from public.customers (
+  primary key (id)
+  region
+)
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as f:
+        f.write(sql_content)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = SidemanticAdapter()
+        graph = adapter.parse(temp_path)
+
+        assert len(graph.models) == 2
+        assert "orders" in graph.models
+        assert "customers" in graph.models
+        orders = graph.models["orders"]
+        assert orders.primary_key == "order_id"
+        assert orders.dimensions[0].name == "status"
+        assert orders.metrics[0].name == "revenue"
+        assert orders.metrics[0].agg == "sum"
+        assert orders.relationships[0].name == "customers"
+        assert graph.models["customers"].table == "public.customers"
+
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_parse_table_block_sql_models():
+    """Test parsing multiple compact SQL-ish model blocks."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  sum(amount) as revenue
+)
+
+model customers from customers (
+  primary key (id)
+  region
+)
+"""
+
+    models = parse_sql_models(sql_content)
+
+    assert [model.name for model in models] == ["orders", "customers"]
+    assert models[0].metrics[0].name == "revenue"
+    assert models[1].dimensions[0].name == "region"
+
+
+def test_parse_table_block_parenthesized_composite_join():
+    """Test compact composite joins can wrap ON predicates in parentheses."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id, store_id)
+  join many order_items on (order_id = order_items.order_id and store_id = order_items.store_id)
+  sum(amount) as revenue
+)
+"""
+
+    model = parse_sql_model(sql_content)
+
+    assert model is not None
+    assert len(model.relationships) == 1
+    relationship = model.relationships[0]
+    assert relationship.name == "order_items"
+    assert relationship.type == "one_to_many"
+    assert relationship.foreign_key == ["order_id", "store_id"]
+    assert relationship.primary_key == ["order_id", "store_id"]
+
+
+def test_parse_sql_models_mixed_table_block_and_model_statement():
+    """Test compact and MODEL() definitions can coexist in one SQL file."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  sum(amount) as revenue
+)
+
+MODEL (
+  name customers,
+  table customers,
+  primary_key id
+);
+
+DIMENSION (
+  name region,
+  type categorical,
+  sql region
+);
+"""
+
+    models = parse_sql_models(sql_content)
+
+    assert [model.name for model in models] == ["orders", "customers"]
+    assert models[0].metrics[0].name == "revenue"
+    assert models[1].dimensions[0].name == "region"
+
+
+def test_parse_sql_models_multiple_legacy_models():
+    """Test multiple legacy MODEL() blocks retain their own fields."""
+    sql_content = """
+MODEL (
+  name orders,
+  table orders,
+  primary_key order_id
+);
+
+DIMENSION (
+  name status,
+  type categorical,
+  sql status
+);
+
+METRIC (
+  name revenue,
+  agg sum,
+  sql amount
+);
+
+MODEL (
+  name customers,
+  table customers,
+  primary_key id
+);
+
+DIMENSION (
+  name region,
+  type categorical,
+  sql region
+);
+"""
+
+    models = parse_sql_models(sql_content)
+
+    assert [model.name for model in models] == ["orders", "customers"]
+    assert models[0].dimensions[0].name == "status"
+    assert models[0].metrics[0].name == "revenue"
+    assert models[1].dimensions[0].name == "region"
+    assert models[1].metrics == []
+
+
+def test_parse_table_block_derived_sql_source():
+    """Test compact model blocks can use derived SQL sources."""
+    sql_content = """
+model completed_orders from (
+  select *
+  from raw.orders
+  where status = 'completed'
+) (
+  primary key (order_id)
+  created_at as order_date : time grain day
+  sum(amount) as revenue
+)
+"""
+
+    model = parse_sql_model(sql_content)
+
+    assert model is not None
+    assert model.name == "completed_orders"
+    assert model.table is None
+    assert model.sql == "select *\n  from raw.orders\n  where status = 'completed'"
+    assert model.dimensions[0].name == "order_date"
+    assert model.dimensions[0].type == "time"
+    assert model.dimensions[0].granularity == "day"
+    assert model.metrics[0].name == "revenue"
+
+
+def test_table_block_requires_from_source():
+    """Test table-block models require source in the header."""
+    sql_content = """
+model orders (
+  primary key (order_id)
+  sum(amount) as revenue
+)
+"""
+
+    with pytest.raises(ValueError, match="must use `model orders from <table>"):
+        parse_sql_model(sql_content)
+
+
+def test_table_block_rejects_table_statement():
+    """Test table-block model sources are declared with from, not table statements."""
+    sql_content = """
+model orders from orders (
+  table orders
+  primary key (order_id)
+)
+"""
+
+    with pytest.raises(ValueError, match="use `model orders from <table>"):
+        parse_sql_model(sql_content)
+
+
+def test_table_block_rejects_bad_join():
+    """Test table-block joins fail instead of being ignored."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  join one customers on customer_id = 1
+)
+"""
+
+    with pytest.raises(ValueError, match="must compare model columns"):
+        parse_sql_model(sql_content)
+
+
+def test_table_block_rejects_unknown_statement():
+    """Test table-block unknown statements fail instead of being ignored."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  description 'Orders table'
+)
+"""
+
+    with pytest.raises(ValueError, match="Unrecognized statement"):
+        parse_sql_model(sql_content)
+
+
+def test_table_block_rejects_duplicate_field():
+    """Test table-block duplicate fields fail clearly."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  status
+  status = 'completed' as status
+)
+"""
+
+    with pytest.raises(ValueError, match="defines field 'status' more than once"):
+        parse_sql_model(sql_content)
+
+
+def test_table_block_rejects_empty_primary_key():
+    """Test table-block primary key requires at least one column."""
+    sql_content = """
+model orders from orders (
+  primary key ()
+  sum(amount) as revenue
+)
+"""
+
+    with pytest.raises(ValueError, match="Primary key requires at least one column"):
+        parse_sql_model(sql_content)
+
+
+def test_table_block_rejects_invalid_field_annotation():
+    """Test compact field annotations fail clearly."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  amount as net_amount : numeric grain day
+)
+"""
+
+    with pytest.raises(ValueError, match="cannot use grain with type 'numeric'"):
+        parse_sql_model(sql_content)
+
+
+def test_table_block_rejects_default_time_for_non_time_dimension():
+    """Test default time must reference a time dimension."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  default time status
+  status
+)
+"""
+
+    with pytest.raises(ValueError, match="must be a time dimension"):
+        parse_sql_model(sql_content)
+
+
+def test_table_block_rejects_duplicate_segment():
+    """Test duplicate compact segments fail clearly."""
+    sql_content = """
+model orders from orders (
+  primary key (order_id)
+  segment completed as status = 'completed'
+  segment completed as completed_at is not null
+)
+"""
+
+    with pytest.raises(ValueError, match="defines segment 'completed' more than once"):
+        parse_sql_model(sql_content)
 
 
 def test_adapter_parse_pure_sql_file():

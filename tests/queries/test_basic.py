@@ -143,6 +143,60 @@ def test_time_dimension_duckdb_dialect(layer):
     assert "DATE_TRUNC('month'" in sql or "DATE_TRUNC('MONTH'" in sql, f"Expected DuckDB DATE_TRUNC syntax. Got: {sql}"
 
 
+@pytest.mark.parametrize("dialect", ["spark", "databricks"])
+def test_time_dimension_spark_family_dialects_use_date_trunc_for_day(layer, dialect):
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", sql="created_at", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=["orders.created_at"],
+        dialect=dialect,
+    )
+
+    assert "CAST(DATE_TRUNC('DAY', created_at) AS DATE)" in sql, f"Expected Spark DATE_TRUNC syntax. Got: {sql}"
+    assert "TRUNC(created_at, 'DAY')" not in sql, f"Should not use Spark TRUNC for day grain. Got: {sql}"
+
+
+@pytest.mark.parametrize("dialect", ["spark", "databricks"])
+@pytest.mark.parametrize("granularity", ["week", "month", "quarter", "year"])
+def test_time_dimension_spark_family_dialects_keep_trunc_for_supported_date_grains(layer, dialect, granularity):
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[
+            Dimension(name="created_at", type="time", sql="created_at", granularity="day"),
+        ],
+        metrics=[
+            Metric(name="revenue", agg="sum", sql="amount"),
+        ],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(
+        metrics=["orders.revenue"],
+        dimensions=[f"orders.created_at__{granularity}"],
+        dialect=dialect,
+    )
+
+    expected_grain = granularity.upper()
+    assert f"TRUNC(created_at, '{expected_grain}')" in sql, f"Expected Spark TRUNC syntax. Got: {sql}"
+    assert f"DATE_TRUNC('{expected_grain}', created_at)" not in sql, f"Should preserve Spark TRUNC path. Got: {sql}"
+
+
 def test_measure_aggregation():
     """Test measure SQL generation."""
     measure = Metric(name="revenue", agg="sum", sql="order_amount")
@@ -194,6 +248,23 @@ def test_sql_compilation(layer):
     assert "orders_cte" in sql
     assert "SUM" in sql
     assert "GROUP BY" in sql
+
+
+def test_sql_compilation_preserves_zero_limit_and_offset(layer):
+    orders = Model(
+        name="orders",
+        table="public.orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="status", type="categorical")],
+        metrics=[Metric(name="revenue", agg="sum", sql="order_amount")],
+    )
+
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.status"], limit=0, offset=0)
+
+    assert "\nLIMIT 0" in sql
+    assert "\nOFFSET 0" in sql
 
 
 def test_multi_model_query(layer):
@@ -326,6 +397,107 @@ def test_no_prefix_when_no_collision(layer):
     # Should NOT have model prefixes
     assert "AS orders_order_date" not in sql
     assert "AS customers_customer_name" not in sql
+
+
+def test_custom_join_sql_projects_extra_predicate_columns():
+    conn = duckdb.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE orders (
+            order_id INTEGER,
+            customer_id INTEGER,
+            amount INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE customers (
+            customer_id INTEGER,
+            country VARCHAR,
+            valid_to DATE
+        )
+    """)
+    conn.execute("INSERT INTO orders VALUES (1, 100, 50)")
+    conn.execute("""
+        INSERT INTO customers VALUES
+        (100, 'US', NULL),
+        (100, 'Expired', DATE '2024-01-01')
+    """)
+
+    layer = SemanticLayer()
+    layer.conn = conn
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="order_id",
+            relationships=[
+                Relationship(
+                    name="customers",
+                    type="many_to_one",
+                    foreign_key="customer_id",
+                    sql="{from}.customer_id = {to}.customer_id AND {to}.valid_to IS NULL",
+                )
+            ],
+            metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="customer_id",
+            dimensions=[Dimension(name="country", type="categorical")],
+        )
+    )
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["customers.country"], order_by=["customers.country"])
+    assert "valid_to AS valid_to" in sql
+    assert "customers_cte.valid_to IS NULL" in sql
+
+    rows = df_rows(
+        layer.query(metrics=["orders.revenue"], dimensions=["customers.country"], order_by=["customers.country"])
+    )
+    assert rows == [("Expired", None), ("US", 50)]
+
+
+def test_dotted_graph_metric_projects_sql_column_and_orders_by_alias(layer):
+    layer.conn.execute("CREATE TABLE events (event_id INTEGER, status VARCHAR, latency INTEGER)")
+    layer.conn.execute(
+        """
+        INSERT INTO events VALUES
+          (1, 'ok', 100),
+          (2, 'ok', 250),
+          (3, 'slow', 400)
+        """
+    )
+
+    layer.add_model(
+        Model(
+            name="events",
+            table="events",
+            primary_key="event_id",
+            dimensions=[Dimension(name="status", type="categorical")],
+        )
+    )
+    layer.add_metric(Metric(name="events.p95.latency", agg="max", sql="latency"))
+
+    sql = layer.compile(
+        metrics=["events.p95.latency"],
+        dimensions=["events.status"],
+        order_by=["events.p95.latency DESC"],
+    )
+
+    assert "latency AS latency" in sql
+    assert "ORDER BY" in sql
+    assert '"events.p95.latency" DESC' in sql
+
+    rows = df_rows(
+        layer.query(
+            metrics=["events.p95.latency"],
+            dimensions=["events.status"],
+            order_by=["events.p95.latency DESC"],
+        )
+    )
+    assert rows == [("slow", 400), ("ok", 250)]
 
 
 def test_count_distinct_without_sql_uses_primary_key(layer):

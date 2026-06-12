@@ -1,0 +1,6 @@
+{
+  "valid": false,
+  "error_contains": [
+    "Unsupported native Sidemantic format version"
+  ]
+}

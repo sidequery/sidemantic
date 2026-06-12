@@ -37,7 +37,8 @@ models:
 
     host = os.getenv("SPARK_HOST", "localhost")
     port = os.getenv("SPARK_PORT", "10000")
-    password = os.getenv("SPARK_PASSWORD", "spark")
+    password = os.getenv("SPARK_PASSWORD")
+    password_config = f"  password: {password}\n" if password else ""
 
     config_file = tmp_path / "sidemantic.yaml"
     config_file.write_text(
@@ -49,7 +50,7 @@ connection:
   port: {port}
   database: default
   username: default
-  password: {password}
+{password_config.rstrip()}
 """
     )
 

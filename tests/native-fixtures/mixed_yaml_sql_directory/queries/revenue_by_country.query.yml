@@ -1,0 +1,6 @@
+metrics:
+  - orders.total_revenue
+dimensions:
+  - customers.country
+order_by:
+  - customers.country

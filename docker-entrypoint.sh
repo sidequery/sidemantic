@@ -3,80 +3,134 @@ set -e
 
 # SIDEMANTIC_MODE: "serve" (default), "mcp", "api", or "both"
 MODE="${SIDEMANTIC_MODE:-serve}"
-DEMO_ARGS=""
-if [ -n "$SIDEMANTIC_DEMO" ]; then
-    DEMO_ARGS="--demo"
-fi
 
-# Build arg arrays for each command.
-# serve accepts: --connection, --db, --host, --port, --username, --password
-# mcp-serve accepts: --db only
+ENTRYPOINT_ARGS_FILE=$(mktemp)
+trap 'rm -f "$ENTRYPOINT_ARGS_FILE"' EXIT
+printf '%s\n' "$@" > "$ENTRYPOINT_ARGS_FILE"
 
-# Serve args
-SERVE_ARGS="--host 0.0.0.0"
-if [ -n "$SIDEMANTIC_CONNECTION" ]; then
-    SERVE_ARGS="$SERVE_ARGS --connection \"$SIDEMANTIC_CONNECTION\""
-fi
-if [ -n "$SIDEMANTIC_DB" ]; then
-    SERVE_ARGS="$SERVE_ARGS --db \"$SIDEMANTIC_DB\""
-fi
-if [ -n "$SIDEMANTIC_USERNAME" ]; then
-    SERVE_ARGS="$SERVE_ARGS --username \"$SIDEMANTIC_USERNAME\""
-fi
-if [ -n "$SIDEMANTIC_PASSWORD" ]; then
-    SERVE_ARGS="$SERVE_ARGS --password \"$SIDEMANTIC_PASSWORD\""
-fi
-if [ -n "$SIDEMANTIC_PORT" ]; then
-    SERVE_ARGS="$SERVE_ARGS --port \"$SIDEMANTIC_PORT\""
-fi
+run_serve() {
+    set -- sidemantic serve --host 0.0.0.0
+    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
+        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    fi
+    if [ -n "$SIDEMANTIC_DB" ]; then
+        set -- "$@" --db "$SIDEMANTIC_DB"
+    fi
+    if [ -n "$SIDEMANTIC_USERNAME" ]; then
+        set -- "$@" --username "$SIDEMANTIC_USERNAME"
+    fi
+    if [ -n "$SIDEMANTIC_PASSWORD" ]; then
+        set -- "$@" --password "$SIDEMANTIC_PASSWORD"
+    fi
+    if [ -n "$SIDEMANTIC_PORT" ]; then
+        set -- "$@" --port "$SIDEMANTIC_PORT"
+    fi
+    if [ -n "$SIDEMANTIC_DEMO" ]; then
+        set -- "$@" --demo
+    fi
+    while IFS= read -r arg; do
+        set -- "$@" "$arg"
+    done < "$ENTRYPOINT_ARGS_FILE"
+    exec "$@"
+}
 
-# MCP args (only --db is supported)
-MCP_ARGS=""
-if [ -n "$SIDEMANTIC_DB" ]; then
-    MCP_ARGS="$MCP_ARGS --db \"$SIDEMANTIC_DB\""
-fi
+run_mcp() {
+    set -- sidemantic mcp-serve
+    if [ -n "$SIDEMANTIC_DB" ]; then
+        set -- "$@" --db "$SIDEMANTIC_DB"
+    fi
+    if [ -n "$SIDEMANTIC_DEMO" ]; then
+        set -- "$@" --demo
+    fi
+    while IFS= read -r arg; do
+        set -- "$@" "$arg"
+    done < "$ENTRYPOINT_ARGS_FILE"
+    exec "$@"
+}
 
-# HTTP API args
-API_ARGS="--host 0.0.0.0"
-if [ -n "$SIDEMANTIC_CONNECTION" ]; then
-    API_ARGS="$API_ARGS --connection \"$SIDEMANTIC_CONNECTION\""
-fi
-if [ -n "$SIDEMANTIC_DB" ]; then
-    API_ARGS="$API_ARGS --db \"$SIDEMANTIC_DB\""
-fi
-if [ -n "$SIDEMANTIC_API_TOKEN" ]; then
-    API_ARGS="$API_ARGS --auth-token \"$SIDEMANTIC_API_TOKEN\""
-fi
-if [ -n "$SIDEMANTIC_API_PORT" ]; then
-    API_ARGS="$API_ARGS --port \"$SIDEMANTIC_API_PORT\""
-fi
-if [ -n "$SIDEMANTIC_MAX_REQUEST_BODY_BYTES" ]; then
-    API_ARGS="$API_ARGS --max-request-body-bytes \"$SIDEMANTIC_MAX_REQUEST_BODY_BYTES\""
-fi
-if [ -n "$SIDEMANTIC_CORS_ORIGINS" ]; then
-    OLD_IFS="$IFS"
-    IFS=','
-    for ORIGIN in $SIDEMANTIC_CORS_ORIGINS; do
-        API_ARGS="$API_ARGS --cors-origin \"$ORIGIN\""
-    done
-    IFS="$OLD_IFS"
-fi
+run_api() {
+    set -- sidemantic api-serve --host 0.0.0.0
+    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
+        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    fi
+    if [ -n "$SIDEMANTIC_DB" ]; then
+        set -- "$@" --db "$SIDEMANTIC_DB"
+    fi
+    if [ -n "$SIDEMANTIC_API_TOKEN" ]; then
+        set -- "$@" --auth-token "$SIDEMANTIC_API_TOKEN"
+    fi
+    if [ -n "$SIDEMANTIC_API_PORT" ]; then
+        set -- "$@" --port "$SIDEMANTIC_API_PORT"
+    fi
+    if [ -n "$SIDEMANTIC_MAX_REQUEST_BODY_BYTES" ]; then
+        set -- "$@" --max-request-body-bytes "$SIDEMANTIC_MAX_REQUEST_BODY_BYTES"
+    fi
+    if [ -n "$SIDEMANTIC_CORS_ORIGINS" ]; then
+        OLD_IFS=$IFS
+        IFS=','
+        for ORIGIN in $SIDEMANTIC_CORS_ORIGINS; do
+            set -- "$@" --cors-origin "$ORIGIN"
+        done
+        IFS=$OLD_IFS
+    fi
+    if [ -n "$SIDEMANTIC_DEMO" ]; then
+        set -- "$@" --demo
+    fi
+    while IFS= read -r arg; do
+        set -- "$@" "$arg"
+    done < "$ENTRYPOINT_ARGS_FILE"
+    exec "$@"
+}
+
+run_both() {
+    set -- sidemantic serve --host 0.0.0.0
+    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
+        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    fi
+    if [ -n "$SIDEMANTIC_DB" ]; then
+        set -- "$@" --db "$SIDEMANTIC_DB"
+    fi
+    if [ -n "$SIDEMANTIC_USERNAME" ]; then
+        set -- "$@" --username "$SIDEMANTIC_USERNAME"
+    fi
+    if [ -n "$SIDEMANTIC_PASSWORD" ]; then
+        set -- "$@" --password "$SIDEMANTIC_PASSWORD"
+    fi
+    if [ -n "$SIDEMANTIC_PORT" ]; then
+        set -- "$@" --port "$SIDEMANTIC_PORT"
+    fi
+    if [ -n "$SIDEMANTIC_DEMO" ]; then
+        set -- "$@" --demo
+    fi
+    "$@" &
+    SERVE_PID=$!
+    trap 'kill "$SERVE_PID" 2>/dev/null; rm -f "$ENTRYPOINT_ARGS_FILE"' EXIT
+
+    set -- sidemantic mcp-serve
+    if [ -n "$SIDEMANTIC_DB" ]; then
+        set -- "$@" --db "$SIDEMANTIC_DB"
+    fi
+    if [ -n "$SIDEMANTIC_DEMO" ]; then
+        set -- "$@" --demo
+    fi
+    while IFS= read -r arg; do
+        set -- "$@" "$arg"
+    done < "$ENTRYPOINT_ARGS_FILE"
+    exec "$@"
+}
 
 case "$MODE" in
     serve)
-        eval exec sidemantic serve $SERVE_ARGS $DEMO_ARGS "$@"
+        run_serve
         ;;
     mcp)
-        eval exec sidemantic mcp-serve $MCP_ARGS $DEMO_ARGS "$@"
+        run_mcp
         ;;
     api)
-        eval exec sidemantic api-serve $API_ARGS $DEMO_ARGS "$@"
+        run_api
         ;;
     both)
-        eval sidemantic serve $SERVE_ARGS $DEMO_ARGS &
-        SERVE_PID=$!
-        trap "kill $SERVE_PID 2>/dev/null" EXIT
-        eval exec sidemantic mcp-serve $MCP_ARGS $DEMO_ARGS "$@"
+        run_both
         ;;
     *)
         echo "Unknown SIDEMANTIC_MODE: $MODE (use serve, mcp, api, or both)" >&2

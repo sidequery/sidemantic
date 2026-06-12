@@ -1,0 +1,6 @@
+metrics:
+  - shipments.shipment_count
+dimensions:
+  - order_items.item_id
+order_by:
+  - order_items.item_id

@@ -1,0 +1,12 @@
+[
+  {
+    "status": "paid",
+    "net_revenue": 270,
+    "average_order_value": 135.0
+  },
+  {
+    "status": "refunded",
+    "net_revenue": 45,
+    "average_order_value": 45.0
+  }
+]

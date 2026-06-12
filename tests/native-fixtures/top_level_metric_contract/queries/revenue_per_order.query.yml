@@ -1,0 +1,10 @@
+metrics:
+  - finance.revenue_per_order
+dimensions:
+  - orders.status
+filters:
+  - orders.amount >= {{ min_amount }}
+order_by:
+  - orders.status
+parameter_values:
+  min_amount: 10

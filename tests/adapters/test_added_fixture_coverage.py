@@ -25,6 +25,7 @@ from sidemantic.adapters.osi import OSIAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.snowflake import SnowflakeAdapter
 from sidemantic.adapters.superset import SupersetAdapter
+from sidemantic.adapters.tableau import TableauAdapter
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
 from sidemantic.sql.generator import SQLGenerator
 
@@ -139,6 +140,10 @@ ADDED_FIXTURE_CASES = [
     (SupersetAdapter, "tests/fixtures/superset/sales_dashboard.yaml"),
     (SupersetAdapter, "tests/fixtures/superset/usa_birth_names.yaml"),
     (SupersetAdapter, "tests/fixtures/superset/video_game_sales.yaml"),
+    (TableauAdapter, "tests/fixtures/tableau/orders.tds"),
+    (TableauAdapter, "tests/fixtures/tableau/sales_calcs.tds"),
+    (TableauAdapter, "tests/fixtures/tableau/kitchen_sink.tds"),
+    (TableauAdapter, "tests/fixtures/tableau/multi_join.tds"),
     (ThoughtSpotAdapter, "tests/fixtures/thoughtspot/tpch_customer.table.tml"),
     (ThoughtSpotAdapter, "tests/fixtures/thoughtspot/tpch_lineitem.table.tml"),
     (ThoughtSpotAdapter, "tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml"),
@@ -646,7 +651,7 @@ def _pick_execution_query(graph):
                 else:
                     dimension_type = "VARCHAR"
                 for column in dimension_columns or {"id"}:
-                    column_types.setdefault(column, dimension_type)
+                    column_types[column] = dimension_type
                 return {
                     "model_name": model.name,
                     "execution_model_name": execution_model_name,

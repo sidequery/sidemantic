@@ -9,7 +9,7 @@ DuckDB natively supports [Hive-partitioned parquet](https://duckdb.org/docs/data
 uv run python examples/hive_parquet/hive_parquet_example.py
 ```
 
-**Pre-aggregations**: Materialize rollup tables in DuckDB on top of parquet, with automatic query routing.
+**Pre-aggregations**: Materialize rollup tables in DuckDB on top of parquet, with explicit query routing.
 ```bash
 uv run python examples/hive_parquet/hive_parquet_preagg_example.py
 ```
@@ -114,7 +114,7 @@ for preagg in events.pre_aggregations:
     )
 ```
 
-Queries that match a pre-aggregation are automatically routed to the materialized table. The generated SQL includes `used_preagg=true` in the instrumentation comment so you can verify routing is working.
+Queries that match a pre-aggregation route to the materialized table when pre-aggregation routing is enabled. The generated SQL includes `used_preagg=true` in the instrumentation comment so you can verify routing is working.
 
 See `hive_parquet_preagg_example.py` for the full working example.
 

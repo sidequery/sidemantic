@@ -252,7 +252,8 @@ def test_bsl_flights_with_joins():
     rel_names = {r.name for r in flights.relationships}
     assert "carriers" in rel_names
     assert "aircraft" in rel_names
-    assert "airports" in rel_names
+    assert "origin_airport" in rel_names
+    assert "origin_airport" in graph1.models
 
     # Export and re-import
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -267,6 +268,7 @@ def test_bsl_flights_with_joins():
         assert len(flights2.relationships) == 3
         rel_names2 = {r.name for r in flights2.relationships}
         assert "carriers" in rel_names2
+        assert "origin_airport" in rel_names2
         carriers_rel = next(r for r in flights2.relationships if r.name == "carriers")
         assert carriers_rel.type == "many_to_one"
 
@@ -313,7 +315,7 @@ def test_healthcare_roundtrip():
         assert "encounter_class" in emergency.sql
 
         # With: joins preserved
-        patient_rel = next(r for r in encounters2.relationships if r.name == "patients")
+        patient_rel = next(r for r in encounters2.relationships if r.name == "patient")
         assert patient_rel.foreign_key == "patient_id"
 
     finally:

@@ -1,0 +1,35 @@
+version: 1
+
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: customer_id
+        type: numeric
+      - name: status
+        type: categorical
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+        primary_key: customer_id
+
+  - name: customers
+    table: customers
+    primary_key: customer_id
+    dimensions:
+      - name: customer_id
+        type: numeric
+      - name: country
+        type: categorical
+    metrics:
+      - name: customer_count
+        agg: count_distinct
+        sql: customer_id

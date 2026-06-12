@@ -1,0 +1,46 @@
+schema: sidemantic.dashboard.v1
+title: Revenue Performance Explorer
+defaults:
+  renderer: vega-lite
+  query:
+    interaction_preaggregations: true
+  interactions:
+    scope: tab
+tabs:
+  - id: overview
+    label: Overview
+    source_record_count: 50000
+    charts:
+      - id: revenue_explorer
+        title: Revenue Explorer
+        type: line
+        query:
+          metrics:
+            - orders.revenue
+            - orders.gross_margin
+            - orders.order_count
+          dimensions:
+            - orders.created_at__month
+            - orders.region
+            - orders.channel
+            - orders.customer_tier
+            - orders.product_line
+          order_by:
+            - orders.created_at__month
+          interaction_preaggregations: true
+        encoding:
+          x: orders.created_at__month
+          y: orders.revenue
+          color: orders.region
+        interactions:
+          brush:
+            fields:
+              - orders.created_at__month
+            channel: x
+          select:
+            fields:
+              - orders.region
+              - orders.channel
+              - orders.customer_tier
+              - orders.product_line
+

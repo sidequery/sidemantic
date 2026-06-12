@@ -1,0 +1,25 @@
+version: 1
+parameters:
+  - name: min_amount
+    type: number
+    default_value: 0
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: status
+        type: categorical
+      - name: amount
+        type: numeric
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+metrics:
+  - name: finance.revenue_per_order
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.order_count

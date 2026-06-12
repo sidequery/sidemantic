@@ -1,5 +1,5 @@
 -- Sidemantic DuckDB Extension Demo
--- Run with: ./build/release/duckdb < demo.sql
+-- Run with: ./build/release/duckdb -unsigned < demo.sql
 
 -- Load the extension
 LOAD 'build/release/extension/sidemantic/sidemantic.duckdb_extension';

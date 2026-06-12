@@ -1,0 +1,32 @@
+version: 1
+
+models:
+  - name: order_items
+    table: order_items
+    primary_key: [order_id, line_number]
+    dimensions:
+      - name: order_id
+        type: numeric
+      - name: line_number
+        type: numeric
+      - name: item_id
+        type: numeric
+
+  - name: shipments
+    table: shipments
+    primary_key: shipment_id
+    relationships:
+      - name: order_items
+        type: many_to_one
+        foreign_key: [order_id, line_number]
+        primary_key: [order_id, line_number]
+    dimensions:
+      - name: shipment_id
+        type: numeric
+      - name: order_id
+        type: numeric
+      - name: line_number
+        type: numeric
+    metrics:
+      - name: shipment_count
+        agg: count

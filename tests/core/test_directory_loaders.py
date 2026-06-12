@@ -101,3 +101,128 @@ FROM sales;
     assert sales.get_metric("revenue") is not None
     assert getattr(sales, "_source_format", None) == "Yardstick"
     assert getattr(sales, "_source_file", None) == "sales.sql"
+
+
+def test_load_from_directory_finalizes_bsl_join_aliases_across_files(tmp_path):
+    """BSL join aliases should work when the target model is in a separate file."""
+    (tmp_path / "flights.yml").write_text(
+        """
+flights:
+  table: flights
+  dimensions:
+    flight_id:
+      expr: _.flight_id
+      is_entity: true
+    origin: _.origin
+  measures:
+    count: _.count()
+  joins:
+    origin_airport:
+      model: airports
+      type: one
+      left_on: origin
+      right_on: code
+"""
+    )
+    (tmp_path / "airports.yml").write_text(
+        """
+airports:
+  table: airports
+  dimensions:
+    code:
+      expr: _.code
+      is_entity: true
+    name: _.name
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "origin_airport" in layer.graph.models
+    assert layer.graph.find_relationship_path("flights", "origin_airport")
+
+    sql = layer.compile(metrics=["flights.count"], dimensions=["origin_airport.name"])
+    assert "origin_airport_cte" in sql
+    assert "origin_airport_cte.code = flights_cte.origin" in sql
+
+
+def test_load_from_directory_scopes_reused_bsl_join_aliases(tmp_path):
+    """BSL join aliases are local to their source model, even across files."""
+    (tmp_path / "orders.yml").write_text(
+        """
+orders:
+  table: orders
+  dimensions:
+    order_id:
+      expr: _.order_id
+      is_entity: true
+    user_id: _.user_id
+  measures:
+    count: _.count()
+  joins:
+    user:
+      model: customers
+      type: one
+      left_on: user_id
+      right_on: customer_id
+"""
+    )
+    (tmp_path / "events.yml").write_text(
+        """
+events:
+  table: events
+  dimensions:
+    event_id:
+      expr: _.event_id
+      is_entity: true
+    account_id: _.account_id
+  measures:
+    count: _.count()
+  joins:
+    user:
+      model: accounts
+      type: one
+      left_on: account_id
+      right_on: account_id
+"""
+    )
+    (tmp_path / "customers.yml").write_text(
+        """
+customers:
+  table: customers
+  dimensions:
+    customer_id:
+      expr: _.customer_id
+      is_entity: true
+    name: _.name
+"""
+    )
+    (tmp_path / "accounts.yml").write_text(
+        """
+accounts:
+  table: accounts
+  dimensions:
+    account_id:
+      expr: _.account_id
+      is_entity: true
+    name: _.name
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "user" not in layer.graph.models
+    assert layer.graph.models["orders_user"].table == "customers"
+    assert layer.graph.models["events_user"].table == "accounts"
+    assert layer.graph.find_relationship_path("orders", "orders_user")
+    assert layer.graph.find_relationship_path("events", "events_user")
+
+    orders_sql = layer.compile(metrics=["orders.count"], dimensions=["orders_user.name"])
+    assert "orders_user_cte" in orders_sql
+    assert "FROM customers" in orders_sql
+
+    events_sql = layer.compile(metrics=["events.count"], dimensions=["events_user.name"])
+    assert "events_user_cte" in events_sql
+    assert "FROM accounts" in events_sql

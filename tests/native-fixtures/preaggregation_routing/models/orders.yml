@@ -1,0 +1,27 @@
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: day
+      - name: status
+        type: categorical
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+    pre_aggregations:
+      - name: monthly_status
+        type: rollup
+        measures:
+          - total_revenue
+          - order_count
+        dimensions:
+          - status
+        time_dimension: created_at
+        granularity: month

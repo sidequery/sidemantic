@@ -1,9 +1,22 @@
-"""OSI (Open Semantic Interchange) adapter for importing and exporting OSI YAML files.
+"""OSI (Open Semantic Interchange) adapter for importing and exporting OSI files.
 
 OSI is a vendor-agnostic semantic model specification designed to enable
 interoperability between data analytics, AI, and BI tools.
 
+Two profiles are supported:
+
+- The in-development profile (default): the ``0.2.0.dev0`` schema serialized as
+  YAML (``.yml``/``.yaml``).
+- The released interop profile: a ``0.1.x`` document serialized as JSON
+  (``.json``), matching what dbt's OSI consumer (dbt Core 1.12+) ingests from an
+  ``OSI/`` directory at a project root.
+
+Both profiles share the same ``version`` + ``semantic_model`` structure, so a
+single parser/exporter handles them; only the serialization and version string
+differ. Import auto-detects the format from the file extension.
+
 Spec: https://github.com/open-semantic-interchange/OSI
+dbt consumer: https://docs.getdbt.com/docs/build/osi-semantic-models
 """
 
 import json
@@ -32,6 +45,15 @@ class OSIAdapter(BaseAdapter):
     """
 
     OSI_VERSION = "0.2.0.dev0"
+
+    # Released OSI versions accepted by downstream consumers such as dbt's OSI
+    # consumer (dbt Core 1.12+). dbt only ingests released 0.1.x ``.json`` files
+    # placed in an ``OSI/`` directory and raises on any other version string.
+    RELEASED_OSI_VERSION = "0.1.1"
+    RELEASED_OSI_VERSIONS = ("0.1.0", "0.1.1")
+
+    # Output formats supported by export().
+    SUPPORTED_EXPORT_FORMATS = ("yaml", "json")
 
     # OSI dialect preference order for extracting SQL expressions
     DIALECT_PREFERENCE = ["ANSI_SQL", "SNOWFLAKE", "DATABRICKS", "MAQL", "TABLEAU", "MDX"]
@@ -65,10 +87,11 @@ class OSIAdapter(BaseAdapter):
         graph = SemanticGraph()
 
         if source_path.is_dir():
-            for yaml_file in source_path.rglob("*.yml"):
-                self._parse_file(yaml_file, graph)
-            for yaml_file in source_path.rglob("*.yaml"):
-                self._parse_file(yaml_file, graph)
+            # Accept both the in-development YAML profile (.yml/.yaml) and the
+            # released JSON profile (.json) consumed by dbt's OSI consumer.
+            for pattern in ("*.yml", "*.yaml", "*.json"):
+                for osi_file in source_path.rglob(pattern):
+                    self._parse_file(osi_file, graph)
         else:
             self._parse_file(source_path, graph)
 
@@ -85,7 +108,13 @@ class OSIAdapter(BaseAdapter):
             graph: Semantic graph to add models/metrics to
         """
         with open(file_path) as f:
-            data = yaml.safe_load(f)
+            if file_path.suffix.lower() == ".json":
+                # Released-spec OSI profile (dbt consumer) ships as JSON.
+                text = f.read()
+                data = json.loads(text) if text.strip() else None
+            else:
+                # In-development OSI profile ships as YAML (the default).
+                data = yaml.safe_load(f)
 
         if not data:
             return
@@ -427,17 +456,34 @@ class OSIAdapter(BaseAdapter):
         graph: SemanticGraph,
         output_path: str | Path,
         dialects: list[str] | None = None,
+        format: str | None = None,
+        version: str | None = None,
     ) -> None:
-        """Export semantic graph to OSI YAML format.
+        """Export semantic graph to OSI format.
+
+        By default this emits the in-development OSI profile: the
+        ``0.2.0.dev0`` schema as YAML. Passing ``format="json"`` (or a ``.json``
+        output path) emits the released-spec interop profile consumed by dbt's
+        OSI consumer (dbt Core 1.12+): a ``0.1.x`` document written as JSON,
+        suitable for an ``OSI/`` directory at a dbt project root.
 
         Args:
             graph: Semantic graph to export
-            output_path: Path to output YAML file
+            output_path: Path to output file. ``.json`` extensions default the
+                         format to JSON; otherwise YAML is used.
             dialects: List of OSI dialects to generate SQL expressions for.
                       Default is ["ANSI_SQL"]. Options: ANSI_SQL, SNOWFLAKE, DATABRICKS.
                       When multiple dialects specified, sqlglot is used for transpilation.
+            format: Output format, ``"yaml"`` (default) or ``"json"``. When
+                    omitted it is inferred from the output path extension.
+            version: OSI schema version string to emit. Defaults to
+                     ``0.2.0.dev0`` for YAML and the released ``0.1.1`` for JSON.
+                     Released JSON exports must use a ``0.1.x`` version.
         """
         output_path = Path(output_path)
+
+        format = self._resolve_export_format(format, output_path)
+        version = self._resolve_export_version(version, format, graph)
 
         if not dialects:
             dialects = ["ANSI_SQL"]
@@ -457,12 +503,39 @@ class OSIAdapter(BaseAdapter):
         # Build OSI semantic model
         semantic_model = self._export_semantic_model(resolved_models, graph)
 
-        data = {"version": self._export_version(graph), "semantic_model": [semantic_model]}
+        data = {"version": version, "semantic_model": [semantic_model]}
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w") as f:
-            yaml.dump(data, f, sort_keys=False, default_flow_style=False)
+            if format == "json":
+                json.dump(data, f, indent=2, sort_keys=False)
+            else:
+                yaml.dump(data, f, sort_keys=False, default_flow_style=False)
+
+    def _resolve_export_format(self, format: str | None, output_path: Path) -> str:
+        """Determine the export format, inferring from the path extension."""
+        if format is None:
+            format = "json" if output_path.suffix.lower() == ".json" else "yaml"
+        format = format.lower()
+        if format not in self.SUPPORTED_EXPORT_FORMATS:
+            supported = ", ".join(self.SUPPORTED_EXPORT_FORMATS)
+            raise ValueError(f"Unsupported OSI export format: {format}. Supported: {supported}")
+        return format
+
+    def _resolve_export_version(self, version: str | None, format: str, graph: SemanticGraph) -> str:
+        """Determine the OSI version string to emit for a given format."""
+        if version is not None:
+            if format == "json" and version not in self.RELEASED_OSI_VERSIONS:
+                supported = ", ".join(self.RELEASED_OSI_VERSIONS)
+                raise ValueError(
+                    f"Released OSI JSON export requires a released version ({supported}); got {version!r}."
+                )
+            return version
+        if format == "json":
+            # Released-spec JSON: emit the latest released version dbt accepts.
+            return self.RELEASED_OSI_VERSION
+        return self._export_version(graph)
 
     def _generate_dialect_expressions(self, sql_expr: str) -> list[dict[str, str]]:
         """Generate expressions for multiple SQL dialects using sqlglot.

@@ -3,6 +3,19 @@
     "Dimension": {
       "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
       "properties": {
+        "cortex_search_service_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Linked Cortex Search service name (Snowflake Cortex Analyst)",
+          "title": "Cortex Search Service Name"
+        },
         "dax": {
           "anyOf": [
             {
@@ -147,6 +160,22 @@
           "title": "Public",
           "type": "boolean"
         },
+        "sample_values": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Representative sample values for this dimension",
+          "title": "Sample Values"
+        },
         "sql": {
           "anyOf": [
             {
@@ -175,6 +204,22 @@
           "default": null,
           "description": "Supported granularities for time dimensions",
           "title": "Supported Granularities"
+        },
+        "synonyms": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Alternative names for this dimension",
+          "title": "Synonyms"
         },
         "type": {
           "description": "Dimension type",
@@ -811,6 +856,22 @@
           "default": null,
           "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
           "title": "Steps"
+        },
+        "synonyms": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Alternative names for this measure/metric",
+          "title": "Synonyms"
         },
         "time_offset": {
           "anyOf": [
@@ -2013,6 +2074,22 @@
             "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
             "title": "Steps"
           },
+          "synonyms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Alternative names for this measure/metric",
+            "title": "Synonyms"
+          },
           "time_offset": {
             "anyOf": [
               {
@@ -2129,6 +2206,19 @@
           "Dimension": {
             "description": "Dimension (attribute) definition.\n\nDimensions are used for grouping and filtering in queries.",
             "properties": {
+              "cortex_search_service_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Linked Cortex Search service name (Snowflake Cortex Analyst)",
+                "title": "Cortex Search Service Name"
+              },
               "dax": {
                 "anyOf": [
                   {
@@ -2273,6 +2363,22 @@
                 "title": "Public",
                 "type": "boolean"
               },
+              "sample_values": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Representative sample values for this dimension",
+                "title": "Sample Values"
+              },
               "sql": {
                 "anyOf": [
                   {
@@ -2301,6 +2407,22 @@
                 "default": null,
                 "description": "Supported granularities for time dimensions",
                 "title": "Supported Granularities"
+              },
+              "synonyms": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Alternative names for this dimension",
+                "title": "Synonyms"
               },
               "type": {
                 "description": "Dimension type",
@@ -2937,6 +3059,22 @@
                 "default": null,
                 "description": "N-step funnel filter expressions (overrides base_event/conversion_event)",
                 "title": "Steps"
+              },
+              "synonyms": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Alternative names for this measure/metric",
+                "title": "Synonyms"
               },
               "time_offset": {
                 "anyOf": [

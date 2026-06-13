@@ -550,30 +550,126 @@ class LookMLAdapter(BaseAdapter):
             if timeframe == "raw":
                 continue  # Skip raw timeframe
 
-            # Map LookML timeframe to granularity
-            granularity_mapping = {
-                "time": "hour",
-                "date": "day",
-                "week": "week",
-                "month": "month",
-                "quarter": "quarter",
-                "year": "year",
-            }
-
-            granularity = granularity_mapping.get(timeframe, "day")
-
-            dimensions.append(
-                Dimension(
-                    name=f"{group_name}_{timeframe}",
-                    type="time",
-                    sql=base_sql,
-                    granularity=granularity,
-                    label=dim_group_def.get("label"),
-                    description=dim_group_def.get("description"),
-                )
-            )
+            dim = self._build_timeframe_dimension(group_name, timeframe, base_sql, dim_group_def)
+            if dim is not None:
+                dimensions.append(dim)
 
         return dimensions
+
+    # Timeframes that truncate a timestamp to a coarser time grain. These keep
+    # type="time" with a Sidemantic granularity so they behave as time dimensions.
+    _TIME_GRANULARITY_TIMEFRAMES = {
+        "time": "hour",
+        "time_of_day": "hour",
+        "hour": "hour",
+        "minute": "minute",
+        "minute15": "minute",
+        "minute30": "minute",
+        "second": "second",
+        "millisecond": "second",
+        "microsecond": "second",
+        "date": "day",
+        "week": "week",
+        "month": "month",
+        "quarter": "quarter",
+        "year": "year",
+        # Fiscal truncations align to the corresponding calendar grain.
+        "fiscal_quarter": "quarter",
+        "fiscal_year": "year",
+    }
+
+    def _build_timeframe_dimension(
+        self, group_name: str, timeframe: str, base_sql: str | None, dim_group_def: dict
+    ) -> Dimension | None:
+        """Build a single dimension for one dimension_group timeframe.
+
+        Handles both time-truncation timeframes (``date``, ``week``, ``month`` ...)
+        which become ``type=time`` dimensions, and non-standard "extracted part"
+        timeframes (``day_of_week``, ``month_name``, ``month_num``, ``fiscal_quarter`` ...)
+        which become numeric or categorical dimensions with an extraction SQL
+        expression derived from the base timestamp.
+
+        Args:
+            group_name: Name of the dimension_group.
+            timeframe: A single LookML timeframe.
+            base_sql: The base timestamp SQL ({model}-substituted, refs resolved).
+            dim_group_def: The dimension_group definition (for label/description).
+
+        Returns:
+            A Dimension, or None if the timeframe is unrecognized and unusable.
+        """
+        name = f"{group_name}_{timeframe}"
+        label = dim_group_def.get("label")
+        description = dim_group_def.get("description")
+
+        # Time-truncation timeframes -> time dimension with granularity.
+        granularity = self._TIME_GRANULARITY_TIMEFRAMES.get(timeframe)
+        if granularity is not None:
+            return Dimension(
+                name=name,
+                type="time",
+                sql=base_sql,
+                granularity=granularity,
+                label=label,
+                description=description,
+            )
+
+        # Non-standard / fiscal "extracted part" timeframes. These return a
+        # number or a string, not a truncated timestamp, so we emit a
+        # numeric/categorical dimension with an EXTRACT/strftime-style SQL.
+        fiscal_offset = dim_group_def.get("fiscal_month_offset")
+        sql, dim_type = self._timeframe_part_sql(timeframe, base_sql, fiscal_offset)
+        if sql is None:
+            return None
+        return Dimension(
+            name=name,
+            type=dim_type,
+            sql=sql,
+            label=label,
+            description=description,
+        )
+
+    @staticmethod
+    def _timeframe_part_sql(timeframe: str, base_sql: str | None, fiscal_offset=None):
+        """Map a non-truncation LookML timeframe to (sql_expression, dimension_type).
+
+        Uses portable, DuckDB-compatible date functions. ``base_sql`` is the base
+        timestamp expression. Returns (None, type) if the timeframe is unknown.
+        """
+        expr = base_sql if base_sql is not None else "{model}"
+
+        # Numeric extracted parts (integers).
+        numeric_parts = {
+            "hour_of_day": f"EXTRACT(HOUR FROM {expr})",
+            "day_of_month": f"EXTRACT(DAY FROM {expr})",
+            "day_of_year": f"EXTRACT(DOY FROM {expr})",
+            # LookML day_of_week_index: Monday=0 .. Sunday=6
+            "day_of_week_index": f"(EXTRACT(ISODOW FROM {expr}) - 1)",
+            "month_num": f"EXTRACT(MONTH FROM {expr})",
+            "week_of_year": f"EXTRACT(WEEK FROM {expr})",
+            "quarter_of_year": f"EXTRACT(QUARTER FROM {expr})",
+        }
+        if timeframe in numeric_parts:
+            return numeric_parts[timeframe], "numeric"
+
+        # String/categorical extracted parts.
+        if timeframe == "day_of_week":
+            return f"STRFTIME({expr}, '%A')", "categorical"
+        if timeframe == "month_name":
+            return f"STRFTIME({expr}, '%B')", "categorical"
+
+        # Fiscal "month number" honoring fiscal_month_offset (months the fiscal
+        # year starts after the calendar year). Default offset 0 == calendar.
+        try:
+            offset = int(fiscal_offset) if fiscal_offset is not None else 0
+        except (TypeError, ValueError):
+            offset = 0
+        if timeframe == "fiscal_month_num":
+            return f"(((EXTRACT(MONTH FROM {expr}) - 1 - {offset}) % 12) + 1)", "numeric"
+        if timeframe == "fiscal_quarter_of_year":
+            return f"(FLOOR(((EXTRACT(MONTH FROM {expr}) - 1 - {offset}) % 12) / 3) + 1)", "numeric"
+
+        return None, "categorical"
 
     def _convert_explore_source_to_sql(self, derived_table: dict) -> str:
         """Convert a native derived table (explore_source) to a SQL representation.
@@ -789,6 +885,18 @@ class LookMLAdapter(BaseAdapter):
             # No SQL for list measure - skip it (placeholder)
             return None
 
+        # Handle distinct aggregate measure types. These dedup repeated values
+        # (e.g. caused by join fanout) using sql_distinct_key when present.
+        # Looker: sum_distinct, average_distinct, median_distinct, percentile_distinct.
+        if measure_type in ("sum_distinct", "average_distinct", "median_distinct", "percentile_distinct"):
+            return self._parse_distinct_measure(name, measure_type, measure_def, dimension_sql_lookup)
+
+        # Handle post-SQL / table-calculation measure types. These reference
+        # another numeric measure and compute a column-wise calculation.
+        # Looker: running_total, percent_of_total, percent_of_previous.
+        if measure_type in ("running_total", "percent_of_total", "percent_of_previous"):
+            return self._parse_post_sql_measure(name, measure_type, measure_def, dimension_sql_lookup)
+
         # Map LookML measure types to sidemantic aggregation types
         # Only include types supported by Metric.agg: sum, count, count_distinct, avg, min, max, median
         type_mapping = {
@@ -899,6 +1007,162 @@ class LookMLAdapter(BaseAdapter):
             format=measure_def.get("value_format"),
             drill_fields=measure_def.get("drill_fields"),
             meta=meta or None,
+        )
+
+    def _measure_meta(self, measure_def: dict, extra: dict | None = None) -> dict | None:
+        """Build the common measure meta dict (hidden/group_label/tags) plus extras."""
+        meta: dict = {}
+        if measure_def.get("hidden") in ("yes", True):
+            meta["hidden"] = True
+        if measure_def.get("group_label"):
+            meta["group_label"] = measure_def["group_label"]
+        if measure_def.get("tags"):
+            meta["tags"] = measure_def["tags"]
+        if extra:
+            meta.update(extra)
+        return meta or None
+
+    def _parse_distinct_measure(
+        self,
+        name: str,
+        measure_type: str,
+        measure_def: dict,
+        dimension_sql_lookup: dict[str, str],
+    ) -> Metric | None:
+        """Parse a distinct aggregate measure (sum/average/median/percentile_distinct).
+
+        These deduplicate the aggregated field across the unique entities defined
+        by ``sql_distinct_key`` (used to avoid double counting when joins fan out).
+        We emit a derived measure with an explicit DISTINCT aggregation. When a
+        ``sql_distinct_key`` is provided it is preserved in ``meta`` so the exact
+        de-duplication entity is not lost.
+
+        Args:
+            name: Measure name.
+            measure_type: One of sum_distinct/average_distinct/median_distinct/percentile_distinct.
+            measure_def: Raw measure definition.
+            dimension_sql_lookup: Resolved dimension SQL for ${ref} resolution.
+
+        Returns:
+            A derived Metric, or None if required SQL is missing.
+        """
+        sql = measure_def.get("sql")
+        if not sql:
+            # No field to aggregate -> placeholder in an abstract view, skip.
+            return None
+        sql = sql.replace("${TABLE}", "{model}")
+        sql = self._resolve_dimension_references(sql, dimension_sql_lookup)
+
+        sql_distinct_key = measure_def.get("sql_distinct_key")
+        if sql_distinct_key:
+            sql_distinct_key = sql_distinct_key.replace("${TABLE}", "{model}")
+            sql_distinct_key = self._resolve_dimension_references(sql_distinct_key, dimension_sql_lookup)
+
+        if measure_type == "sum_distinct":
+            agg_sql = f"SUM(DISTINCT {sql})"
+        elif measure_type == "average_distinct":
+            agg_sql = f"AVG(DISTINCT {sql})"
+        elif measure_type == "median_distinct":
+            agg_sql = f"MEDIAN(DISTINCT {sql})"
+        else:  # percentile_distinct
+            percentile_value = measure_def.get("percentile", 50)
+            fraction = float(percentile_value) / 100.0
+            agg_sql = f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY DISTINCT {sql})"
+
+        extra = {"distinct": True}
+        if sql_distinct_key:
+            extra["sql_distinct_key"] = sql_distinct_key
+
+        return Metric(
+            name=name,
+            type="derived",
+            sql=agg_sql,
+            description=measure_def.get("description"),
+            label=measure_def.get("label"),
+            value_format_name=measure_def.get("value_format_name"),
+            format=measure_def.get("value_format"),
+            meta=self._measure_meta(measure_def, extra),
+        )
+
+    def _resolve_measure_reference_sql(self, sql: str, dimension_sql_lookup: dict[str, str]) -> str:
+        """Resolve ${ref} in a measure-referencing SQL (e.g. running_total sql).
+
+        ${dimension} references resolve to the dimension's SQL; ${measure}
+        references resolve to the bare measure name (sidemantic resolves the
+        dependency by name).
+        """
+        sql = sql.replace("${TABLE}", "{model}")
+
+        def _resolve(match: re.Match) -> str:
+            ref_name = match.group(1)
+            if ref_name == "TABLE":
+                return match.group(0)
+            if ref_name in dimension_sql_lookup:
+                return f"({dimension_sql_lookup[ref_name]})"
+            return ref_name
+
+        return re.sub(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _resolve, sql)
+
+    def _parse_post_sql_measure(
+        self,
+        name: str,
+        measure_type: str,
+        measure_def: dict,
+        dimension_sql_lookup: dict[str, str],
+    ) -> Metric | None:
+        """Parse a post-SQL / table-calculation measure.
+
+        Looker computes running_total/percent_of_total/percent_of_previous after
+        the database returns rows, over another numeric measure referenced via the
+        ``sql`` parameter. We map:
+          - running_total       -> cumulative metric over the base measure
+          - percent_of_total    -> derived measure: base / SUM(base) OVER ()
+          - percent_of_previous -> derived measure: base / LAG(base) OVER ()
+
+        Args:
+            name: Measure name.
+            measure_type: running_total / percent_of_total / percent_of_previous.
+            measure_def: Raw measure definition.
+            dimension_sql_lookup: Resolved dimension SQL for ${ref} resolution.
+
+        Returns:
+            A Metric, or None if the referenced base measure SQL is missing.
+        """
+        sql = measure_def.get("sql")
+        if not sql:
+            # Looker requires sql for these; without it there is nothing to compute.
+            return None
+        base = self._resolve_measure_reference_sql(sql, dimension_sql_lookup).strip()
+
+        common = {
+            "description": measure_def.get("description"),
+            "label": measure_def.get("label"),
+            "value_format_name": measure_def.get("value_format_name"),
+            "format": measure_def.get("value_format"),
+        }
+
+        if measure_type == "running_total":
+            return Metric(
+                name=name,
+                type="cumulative",
+                sql=base,
+                meta=self._measure_meta(measure_def, {"table_calculation": "running_total"}),
+                **common,
+            )
+
+        if measure_type == "percent_of_total":
+            calc_sql = f"{base} / NULLIF(SUM({base}) OVER (), 0)"
+            table_calc = "percent_of_total"
+        else:  # percent_of_previous
+            calc_sql = f"({base} - LAG({base}) OVER ()) / NULLIF(LAG({base}) OVER (), 0)"
+            table_calc = "percent_of_previous"
+
+        return Metric(
+            name=name,
+            type="derived",
+            sql=calc_sql,
+            meta=self._measure_meta(measure_def, {"table_calculation": table_calc}),
+            **common,
         )
 
     def _parse_explore(self, explore_def: dict, graph: SemanticGraph) -> None:

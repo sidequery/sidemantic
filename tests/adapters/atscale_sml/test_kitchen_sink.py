@@ -343,5 +343,68 @@ class TestAtScaleSMLAdvancedFeatures:
         assert zip_code.parent == "City"
 
 
+class TestAtScaleSMLNewerSpecFeatures:
+    """Tests for newer SML spec features.
+
+    Covers percentile compression/custom_quantiles (v1.5), package object
+    type (external Git-repo references), catalog hidden_models (v1.2) and
+    description (v1.6), and model dataset_properties / overrides.
+    """
+
+    def test_percentile_custom_quantiles_and_compression(self, adapter, fixtures_dir):
+        """Percentile metric with custom_quantiles + compression (SML v1.5)."""
+        graph = adapter.parse(fixtures_dir)
+        order_model = graph.models["order_model"]
+
+        amount_p75 = order_model.get_metric("amount_p75")
+        assert amount_p75 is not None
+        assert amount_p75.type == "derived"
+        # custom_quantiles takes precedence and drives the PERCENTILE_CONT SQL
+        assert amount_p75.sql == "PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY total_amount)"
+        # Both v1.5 fields are preserved in metadata
+        assert amount_p75.metadata is not None
+        assert amount_p75.metadata["custom_quantiles"] == [0.75]
+        assert amount_p75.metadata["compression"] == 10000
+
+    def test_existing_percentile_metrics_still_work(self, adapter, fixtures_dir):
+        """Median and p90 percentile metrics remain unchanged (backward compat)."""
+        graph = adapter.parse(fixtures_dir)
+        order_model = graph.models["order_model"]
+
+        amount_median = order_model.get_metric("amount_median")
+        assert amount_median is not None
+        assert amount_median.agg == "median"
+        assert amount_median.sql == "total_amount"
+
+        amount_p90 = order_model.get_metric("amount_p90")
+        assert amount_p90 is not None
+        assert amount_p90.sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY total_amount)"
+
+    def test_package_object_parsed_without_error(self, adapter, fixtures_dir):
+        """A package object (external Git-repo reference) parses cleanly."""
+        graph = adapter.parse(fixtures_dir)
+        # Packages do not materialize models, but must not break parsing.
+        assert "shared_dimensions" not in graph.models
+        assert "order_model" in graph.models
+
+    def test_catalog_new_fields_parse_without_error(self, adapter, fixtures_dir):
+        """Catalog hidden_models (v1.2), description (v1.6), dataset_properties,
+        and inline packages do not break parsing or hide referenced models."""
+        graph = adapter.parse(fixtures_dir)
+        # hidden_models lists return_model; it is still importable as a model.
+        assert "return_model" in graph.models
+        assert "order_model" in graph.models
+
+    def test_model_dataset_properties_and_overrides_parse(self, adapter, fixtures_dir):
+        """Model-level dataset_properties and overrides parse without error."""
+        graph = adapter.parse(fixtures_dir)
+        order_model = graph.models["order_model"]
+        # Metrics, relationships, and aggregates are unaffected by the new fields.
+        assert order_model.get_metric("total_amount") is not None
+        assert len(order_model.pre_aggregations) == 1
+        rel_names = {rel.name for rel in order_model.relationships}
+        assert "dim_customers" in rel_names
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

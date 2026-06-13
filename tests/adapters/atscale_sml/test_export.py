@@ -88,6 +88,41 @@ class TestAtScaleSMLExport:
         assert "relationships" in model_def
         assert model_def["relationships"][0]["to"]["dimension"] == "customers"
 
+    def test_export_percentile_metadata_roundtrips(self, tmp_path):
+        """Percentile metric metadata (custom_quantiles, compression) exports."""
+        orders = Model(
+            name="orders",
+            table="public.orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="order_id", type="numeric", sql="order_id")],
+            metrics=[
+                Metric(
+                    name="amount_p75",
+                    agg="median",
+                    sql="amount",
+                    metadata={"custom_quantiles": [0.75], "compression": 10000},
+                ),
+                Metric(name="amount_median", agg="median", sql="amount"),
+            ],
+        )
+
+        graph = SemanticGraph()
+        graph.add_model(orders)
+
+        adapter = AtScaleSMLAdapter()
+        adapter.export(graph, tmp_path)
+
+        with open(tmp_path / "metrics" / "amount_p75.yml") as f:
+            metric = yaml.safe_load(f)
+        assert metric["calculation_method"] == "percentile"
+        assert metric["custom_quantiles"] == [0.75]
+        assert metric["compression"] == 10000
+
+        with open(tmp_path / "metrics" / "amount_median.yml") as f:
+            metric = yaml.safe_load(f)
+        assert metric["calculation_method"] == "percentile"
+        assert metric["named_quantiles"] == "median"
+
     def test_export_relationship_level_uses_dimension(self, tmp_path):
         orders = Model(
             name="orders",

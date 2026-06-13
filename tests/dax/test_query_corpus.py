@@ -4,7 +4,8 @@ import re
 from pathlib import Path
 
 import pytest
-import sidemantic_dax
+
+sidemantic_dax = pytest.importorskip("sidemantic_dax")
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = ROOT / "tests" / "dax" / "fixtures" / "query-docs" / "queries.txt"

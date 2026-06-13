@@ -1,32 +1,27 @@
 use dax_parser::{lex, parse_expression, parse_query};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pythonize::pythonize;
-use serde_json::to_value;
 
-fn to_py_object(py: Python<'_>, value: impl serde::Serialize) -> PyResult<PyObject> {
-    let json = to_value(value).map_err(|err| PyValueError::new_err(err.to_string()))?;
-    pythonize(py, &json)
-        .map(|obj| obj.unbind())
-        .map_err(|err| PyValueError::new_err(err.to_string()))
+fn to_json(value: impl serde::Serialize) -> PyResult<String> {
+    serde_json::to_string(&value).map_err(|err| PyValueError::new_err(err.to_string()))
 }
 
 #[pyfunction(name = "parse_expression")]
-fn parse_expression_py(py: Python<'_>, input: &str) -> PyResult<PyObject> {
+fn parse_expression_py(input: &str) -> PyResult<String> {
     let expr = parse_expression(input).map_err(|err| PyValueError::new_err(err.to_string()))?;
-    to_py_object(py, expr)
+    to_json(expr)
 }
 
 #[pyfunction(name = "parse_query")]
-fn parse_query_py(py: Python<'_>, input: &str) -> PyResult<PyObject> {
+fn parse_query_py(input: &str) -> PyResult<String> {
     let query = parse_query(input).map_err(|err| PyValueError::new_err(err.to_string()))?;
-    to_py_object(py, query)
+    to_json(query)
 }
 
 #[pyfunction(name = "lex")]
-fn lex_py(py: Python<'_>, input: &str) -> PyResult<PyObject> {
+fn lex_py(input: &str) -> PyResult<String> {
     let tokens = lex(input).map_err(|err| PyValueError::new_err(err.to_string()))?;
-    to_py_object(py, tokens)
+    to_json(tokens)
 }
 
 #[pymodule]

@@ -89,14 +89,14 @@ use pyo3::exceptions::PyKeyError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::sync::GILOnceCell;
+use pyo3::sync::PyOnceLock;
 #[cfg(feature = "python-adbc")]
 use pyo3::types::{PyBool, PyBytes, PyString};
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 type PyRelationshipPath = Vec<(String, String, Vec<String>, Vec<String>, String)>;
 
-static REGISTRY_CONTEXTVAR: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+static REGISTRY_CONTEXTVAR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 fn registry_contextvar(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     REGISTRY_CONTEXTVAR.get_or_try_init(py, || {
@@ -589,7 +589,7 @@ fn extract_first_row_value(row: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>
         return Ok(None);
     }
 
-    if let Ok(tuple) = row.downcast::<PyTuple>() {
+    if let Ok(tuple) = row.cast::<PyTuple>() {
         if tuple.is_empty() {
             return Ok(None);
         }
@@ -599,7 +599,7 @@ fn extract_first_row_value(row: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>
         } else {
             Ok(Some(item.unbind()))
         }
-    } else if let Ok(list) = row.downcast::<PyList>() {
+    } else if let Ok(list) = row.cast::<PyList>() {
         if list.is_empty() {
             return Ok(None);
         }

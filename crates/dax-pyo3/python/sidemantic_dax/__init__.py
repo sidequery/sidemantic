@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from . import ast as ast
@@ -83,17 +84,17 @@ from .ast import (
 
 def parse_expression_raw(text: str) -> Any:
     native = _native_module()
-    return native.parse_expression(text)
+    return json.loads(native.parse_expression(text))
 
 
 def parse_query_raw(text: str) -> Any:
     native = _native_module()
-    return native.parse_query(text)
+    return json.loads(native.parse_query(text))
 
 
 def lex_raw(text: str) -> Any:
     native = _native_module()
-    return native.lex(text)
+    return json.loads(native.lex(text))
 
 
 def _native_module():

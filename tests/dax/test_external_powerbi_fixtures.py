@@ -4,7 +4,8 @@ import re
 from pathlib import Path
 
 import pytest
-import sidemantic_dax
+
+sidemantic_dax = pytest.importorskip("sidemantic_dax")
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "fixtures" / "external_powerbi" / "marfolger-powerbi-dax" / "business_logic_DAX.txt"

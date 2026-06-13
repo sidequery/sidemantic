@@ -13,16 +13,38 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = ROOT / "fixtures" / "external_powerbi"
 
 TMDL_FIXTURES = [
-    pytest.param("microsoft-analysis-services-sales", 11, 29, 5, 1, {}, id="analysis-services"),
-    pytest.param("microsoft-fabric-samples-bank-customer-churn", 1, 4, 0, 0, {}, id="fabric-samples"),
-    pytest.param("pbi-tools-adventureworks-dw2020", 7, 0, 8, 2, {}, id="adventureworks"),
-    pytest.param("pbip-lineage-explorer-sample", 6, 7, 3, 0, {}, id="pbip-lineage"),
-    pytest.param("ruiromano-pbip-demo-agentic-model01", 4, 15, 4, 1, {}, id="pbip-demo-agentic"),
+    pytest.param("microsoft-analysis-services-sales", 11, 29, 5, 1, {}, 30, id="analysis-services"),
+    pytest.param("microsoft-fabric-samples-bank-customer-churn", 1, 4, 0, 0, {}, 4, id="fabric-samples"),
+    pytest.param("pbi-tools-adventureworks-dw2020", 7, 0, 8, 2, {}, 0, id="adventureworks"),
+    pytest.param("pbip-lineage-explorer-sample", 6, 7, 3, 0, {}, 8, id="pbip-lineage"),
+    pytest.param("ruiromano-pbip-demo-agentic-model01", 4, 15, 4, 1, {}, 15, id="pbip-demo-agentic"),
 ]
 
 
+def _dax_parser_available() -> bool:
+    try:
+        from sidemantic_dax import parse_expression
+    except Exception:
+        return False
+
+    try:
+        parse_expression("SUM(Sales[Amount])")
+    except Exception:
+        return False
+
+    return True
+
+
 @pytest.mark.parametrize(
-    ("fixture_name", "expected_models", "expected_metrics", "expected_relationships", "expected_inactive", "warnings"),
+    (
+        "fixture_name",
+        "expected_models",
+        "expected_metrics",
+        "expected_relationships",
+        "expected_inactive",
+        "warnings",
+        "expected_dax_unavailable_warnings",
+    ),
     TMDL_FIXTURES,
 )
 def test_external_powerbi_tmdl_fixtures_parse(
@@ -32,6 +54,7 @@ def test_external_powerbi_tmdl_fixtures_parse(
     expected_relationships: int,
     expected_inactive: int,
     warnings: dict[str, int],
+    expected_dax_unavailable_warnings: int,
 ):
     graph = TMDLAdapter().parse(FIXTURE_ROOT / fixture_name)
 
@@ -41,7 +64,10 @@ def test_external_powerbi_tmdl_fixtures_parse(
     assert (
         sum(1 for model in graph.models.values() for rel in model.relationships if not rel.active) == expected_inactive
     )
-    assert Counter(warning["code"] for warning in getattr(graph, "import_warnings", [])) == warnings
+    expected_warnings = Counter(warnings)
+    if expected_dax_unavailable_warnings and not _dax_parser_available():
+        expected_warnings["dax_parser_unavailable"] = expected_dax_unavailable_warnings
+    assert Counter(warning["code"] for warning in getattr(graph, "import_warnings", [])) == expected_warnings
 
     description = describe_graph(graph)
     json.dumps(description)

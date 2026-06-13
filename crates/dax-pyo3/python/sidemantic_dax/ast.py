@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -522,17 +523,17 @@ def from_raw_tokens(raw: Any) -> list[Token]:
 
 def _native_parse_expression(text: str) -> Any:
     native = _native_module()
-    return native.parse_expression(text)
+    return json.loads(native.parse_expression(text))
 
 
 def _native_parse_query(text: str) -> Any:
     native = _native_module()
-    return native.parse_query(text)
+    return json.loads(native.parse_query(text))
 
 
 def _native_lex(text: str) -> Any:
     native = _native_module()
-    return native.lex(text)
+    return json.loads(native.lex(text))
 
 
 def _native_module():

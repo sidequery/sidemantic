@@ -20,6 +20,16 @@ class SupersetAdapter(BaseAdapter):
     - Columns → Dimensions
     - Metrics → Metrics
     - main_dttm_col → Time dimension
+
+    Superset metadata that has no first-class Sidemantic equivalent is preserved
+    under the ``meta`` payload (namespaced under ``superset``) so it survives a
+    Superset → Sidemantic → Superset roundtrip:
+
+    - Dataset: ``catalog`` (multi-catalog qualifier), ``currency_code_column``,
+      ``folders`` (column/metric folder organization).
+    - Column: ``advanced_data_type``, ``python_date_format``, ``datetime_format``.
+    - Metric: ``currency`` (``{symbol, symbolPosition}``), ``d3format`` (also
+      mapped to ``Metric.format``), ``warning_text``.
     """
 
     def parse(self, source: str | Path) -> SemanticGraph:
@@ -68,9 +78,12 @@ class SupersetAdapter(BaseAdapter):
         if not table_name:
             return None
 
-        # Get table reference
+        # Get table reference, qualified by optional catalog and schema.
+        # Superset supports multi-catalog datasets via a top-level `catalog` key.
+        catalog = dataset.get("catalog")
         schema = dataset.get("schema")
-        table = f"{schema}.{table_name}" if schema else table_name
+        table_parts = [part for part in (catalog, schema, table_name) if part]
+        table = ".".join(table_parts)
 
         # Get SQL for virtual datasets
         sql = dataset.get("sql")
@@ -96,6 +109,18 @@ class SupersetAdapter(BaseAdapter):
             if metric:
                 metrics.append(metric)
 
+        # Preserve dataset-level Superset metadata that has no first-class
+        # Sidemantic equivalent so it survives a roundtrip.
+        superset_meta: dict[str, Any] = {}
+        if catalog is not None:
+            superset_meta["catalog"] = catalog
+        if dataset.get("currency_code_column") is not None:
+            superset_meta["currency_code_column"] = dataset.get("currency_code_column")
+        if dataset.get("folders") is not None:
+            superset_meta["folders"] = dataset.get("folders")
+
+        meta = {"superset": superset_meta} if superset_meta else None
+
         return Model(
             name=table_name,
             table=table if not sql else None,
@@ -104,6 +129,7 @@ class SupersetAdapter(BaseAdapter):
             primary_key=primary_key,
             dimensions=dimensions,
             metrics=metrics,
+            meta=meta,
         )
 
     def _parse_column(self, col_def: dict[str, Any], main_dttm_col: str | None) -> Dimension | None:
@@ -145,6 +171,15 @@ class SupersetAdapter(BaseAdapter):
         # Get label from verbose_name
         label = col_def.get("verbose_name")
 
+        # Preserve column-level Superset metadata that has no first-class
+        # Sidemantic equivalent so it survives a roundtrip.
+        superset_meta: dict[str, Any] = {}
+        for key in ("advanced_data_type", "python_date_format", "datetime_format"):
+            if col_def.get(key) is not None:
+                superset_meta[key] = col_def.get(key)
+
+        meta = {"superset": superset_meta} if superset_meta else None
+
         return Dimension(
             name=column_name,
             type=dim_type,
@@ -152,6 +187,7 @@ class SupersetAdapter(BaseAdapter):
             label=label,
             granularity=granularity,
             description=col_def.get("description"),
+            meta=meta,
         )
 
     def _parse_metric(self, metric_def: dict[str, Any]) -> Metric | None:
@@ -205,6 +241,21 @@ class SupersetAdapter(BaseAdapter):
         # Get label from verbose_name
         label = metric_def.get("verbose_name")
 
+        # d3format is Superset's display format string (D3 number format).
+        # Map it to the Sidemantic `format` field and also preserve it (along
+        # with currency/warning_text) under meta so it survives a roundtrip.
+        d3format = metric_def.get("d3format")
+
+        superset_meta: dict[str, Any] = {}
+        if d3format is not None:
+            superset_meta["d3format"] = d3format
+        if metric_def.get("currency") is not None:
+            superset_meta["currency"] = metric_def.get("currency")
+        if metric_def.get("warning_text") is not None:
+            superset_meta["warning_text"] = metric_def.get("warning_text")
+
+        meta = {"superset": superset_meta} if superset_meta else None
+
         return Metric(
             name=metric_name,
             type=metric_type,
@@ -212,6 +263,8 @@ class SupersetAdapter(BaseAdapter):
             sql=sql if sql else None,
             label=label,
             description=metric_def.get("description"),
+            format=d3format,
+            meta=meta,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -254,6 +307,8 @@ class SupersetAdapter(BaseAdapter):
         Returns:
             Dataset definition dictionary
         """
+        superset_meta = (model.meta or {}).get("superset", {})
+
         dataset: dict[str, Any] = {
             "table_name": model.name,
             "description": model.description,
@@ -261,13 +316,30 @@ class SupersetAdapter(BaseAdapter):
             "sql": model.sql,
         }
 
-        # Extract schema from table name if present
+        # Extract catalog/schema from the (catalog.)?(schema.)?table reference.
+        # Superset supports a top-level `catalog` qualifier for multi-catalog
+        # datasets, so a 3-part name maps to catalog.schema.table.
         if model.table and "." in model.table:
             parts = model.table.split(".")
-            dataset["schema"] = parts[0]
-            dataset["table_name"] = parts[1]
+            if len(parts) >= 3:
+                dataset["catalog"] = parts[-3]
+                dataset["schema"] = parts[-2]
+                dataset["table_name"] = parts[-1]
+            else:
+                dataset["schema"] = parts[-2]
+                dataset["table_name"] = parts[-1]
         elif model.table:
             dataset["schema"] = None
+
+        # Restore preserved catalog if not derivable from the table reference.
+        if "catalog" not in dataset and superset_meta.get("catalog") is not None:
+            dataset["catalog"] = superset_meta["catalog"]
+
+        # Dataset-level currency formatting metadata and folder organization.
+        if superset_meta.get("currency_code_column") is not None:
+            dataset["currency_code_column"] = superset_meta["currency_code_column"]
+        if superset_meta.get("folders") is not None:
+            dataset["folders"] = superset_meta["folders"]
 
         # Find main datetime column
         main_dttm_col = None
@@ -312,6 +384,12 @@ class SupersetAdapter(BaseAdapter):
             if dim.description:
                 col_def["description"] = dim.description
 
+            # Restore preserved column-level Superset metadata.
+            dim_meta = (dim.meta or {}).get("superset", {})
+            for key in ("advanced_data_type", "python_date_format", "datetime_format"):
+                if dim_meta.get(key) is not None:
+                    col_def[key] = dim_meta[key]
+
             columns.append(col_def)
 
         if columns:
@@ -351,6 +429,17 @@ class SupersetAdapter(BaseAdapter):
 
             if metric.description:
                 metric_def["description"] = metric.description
+
+            # Restore preserved metric-level Superset metadata. d3format prefers
+            # the preserved raw value, falling back to the mapped `format`.
+            metric_meta = (metric.meta or {}).get("superset", {})
+            d3format = metric_meta.get("d3format", metric.format)
+            if d3format is not None:
+                metric_def["d3format"] = d3format
+            if metric_meta.get("currency") is not None:
+                metric_def["currency"] = metric_meta["currency"]
+            if metric_meta.get("warning_text") is not None:
+                metric_def["warning_text"] = metric_meta["warning_text"]
 
             metrics.append(metric_def)
 

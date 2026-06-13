@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='pivoted_sales' inline='true' version='18.1'>
+  <connection class='excel-direct' filename='sales.xlsx'>
+    <relation name='Pivoted' type='pivot'>
+      <relation name='sales_wide' type='table' table='[sales_wide$]' />
+      <pivot-column name='[Pivot Field Names]' />
+      <pivot-column name='[Pivot Field Values]' />
+    </relation>
+    <metadata-records>
+      <metadata-record class='column'>
+        <local-name>[Pivot Field Names]</local-name>
+        <parent-name>[Pivoted]</parent-name>
+        <remote-alias>Pivot Field Names</remote-alias>
+        <local-type>string</local-type>
+      </metadata-record>
+      <metadata-record class='column'>
+        <local-name>[Pivot Field Values]</local-name>
+        <parent-name>[Pivoted]</parent-name>
+        <remote-alias>Pivot Field Values</remote-alias>
+        <local-type>real</local-type>
+        <aggregation>Sum</aggregation>
+      </metadata-record>
+    </metadata-records>
+  </connection>
+  <column caption='Pivot Field Names' datatype='string' name='[Pivot Field Names]' role='dimension' type='nominal' />
+  <column caption='Pivot Field Values' datatype='real' name='[Pivot Field Values]' role='measure' type='quantitative' />
+</datasource>

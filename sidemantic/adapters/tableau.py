@@ -23,6 +23,9 @@ _DATATYPE_MAP: dict[str, str] = {
     "date": "time",
     "datetime": "time",
     "boolean": "boolean",
+    # Geospatial columns (Tableau's TABLEAU.TABGEOGRAPHY); treated as
+    # categorical since they group/filter rather than aggregate numerically.
+    "spatial": "categorical",
 }
 
 _DATATYPE_GRANULARITY: dict[str, str] = {
@@ -583,12 +586,33 @@ def _normalize_column_name(name: str) -> str:
     return stripped
 
 
+# --- Relation type groupings ---
+# Physical-layer set operations: members are stacked vertically (UNION ALL).
+# "union" is an explicit multi-table union; "batch-union" is a wildcard/pattern
+# union over many same-shaped tables. Both expose the same nested-relation shape.
+_SET_OPERATION_RELATIONS: set[str] = {"union", "batch-union"}
+
+# Derived/wrapper relations that transform or wrap a single child relation
+# (or raw SQL) rather than referencing a base table directly:
+#   - pivot:           reshapes columns of its child relation
+#   - subquery:        wraps SQL as a derived subquery (like "text")
+#   - stored-proc:     references a stored procedure as a relation
+#   - project:         column projection over a child relation
+#   - text-transform:  applies a text/parse transform over a child relation
+_WRAPPER_RELATIONS: set[str] = {"pivot", "subquery", "stored-proc", "project", "text-transform"}
+
+
 def _extract_table_name(relation_elem: ET.Element) -> str | None:
     """Extract qualified table name from a <relation type="table"> element."""
     table_attr = relation_elem.get("table")
     if table_attr:
         return _strip_brackets(table_attr)
     return None
+
+
+def _iter_child_relations(relation_elem: ET.Element) -> list[ET.Element]:
+    """Return direct child <relation> elements, tolerating namespaced tags."""
+    return [child for child in relation_elem if _is_relation_tag(child.tag)]
 
 
 # Namespace prefixes commonly used in Tableau XML files
@@ -645,6 +669,27 @@ def _is_object_graph_tag(tag: str) -> bool:
     if tag.endswith("}object-graph"):
         return True
     return tag.endswith("object-graph") and ("." in tag or ":" in tag)
+
+
+def _get_attr_local(elem: ET.Element, local_name: str) -> str | None:
+    """Read an attribute by its local name, tolerating namespace prefixes.
+
+    Tableau Semantics attributes (semantic-layer, is-legacy) may appear plain or
+    with a namespace prefix that _parse_tableau_xml rewrites to an underscored
+    form (e.g. "ns_is-legacy"). Match the plain name first, then any attribute
+    whose local part (after '}', ':' or '_') equals ``local_name``.
+    """
+    value = elem.get(local_name)
+    if value is not None:
+        return value
+    for key, val in elem.attrib.items():
+        candidate = key
+        for sep in ("}", ":"):
+            if sep in candidate:
+                candidate = candidate.rsplit(sep, 1)[-1]
+        if candidate == local_name or candidate.endswith("_" + local_name):
+            return val
+    return None
 
 
 def _find_relation_element(connection: ET.Element) -> ET.Element | None:
@@ -752,6 +797,12 @@ class _ObjectGraphInfo:
 
     relationships: list[Relationship]
     joins: list[_ObjectGraphJoin]
+    # Tableau Semantics-layer attributes read from the <object-graph> element:
+    #   semantic_layer -> value of the "semantic-layer" attribute (e.g. "true")
+    #   is_legacy      -> value of the "is-legacy" attribute (e.g. "false")
+    # None when the attribute is absent (older / non-semantic datasources).
+    semantic_layer: str | None = None
+    is_legacy: str | None = None
 
 
 def _quote_sql_identifier(identifier: str) -> str:
@@ -900,6 +951,26 @@ class TableauAdapter(BaseAdapter):
                 elif rel_type == "collection":
                     collection_info = self._parse_collection(relation)
                     table = collection_info.base_table_qualified
+                elif rel_type in _SET_OPERATION_RELATIONS:
+                    # union / batch-union: stack member relations with UNION ALL
+                    union_sql = self._build_union_sql(relation)
+                    if union_sql and "UNION ALL" in union_sql:
+                        sql = union_sql
+                    elif union_sql:
+                        # Single member resolved to a bare table reference.
+                        table = union_sql
+                elif rel_type in _WRAPPER_RELATIONS:
+                    # pivot / subquery / stored-proc / project / text-transform:
+                    # derived relations that wrap a child relation or raw SQL.
+                    base_table, joins = self._parse_relation_tree(relation)
+                    if joins:
+                        sql = self._build_join_sql(base_table, joins)
+                        relationships = self._extract_relationships(joins)
+                    elif base_table is not None and (base_table.startswith("(") or " " in base_table):
+                        # Returned a subquery/derived expression -> use as SQL.
+                        sql = base_table
+                    else:
+                        table = base_table
 
         # Build metadata lookup from <metadata-records> before object-graph parsing so
         # collection sources can build a projected joined SQL model.
@@ -951,6 +1022,17 @@ class TableauAdapter(BaseAdapter):
             )
             primary_key = "__tableau_pk"
 
+        # Surface Tableau Semantics-layer attributes (semantic-layer / is-legacy)
+        # from the object-graph as model metadata so downstream consumers can
+        # distinguish modern semantic models from legacy object models.
+        model_metadata: dict | None = None
+        if object_graph.semantic_layer is not None or object_graph.is_legacy is not None:
+            model_metadata = {}
+            if object_graph.semantic_layer is not None:
+                model_metadata["tableau_semantic_layer"] = object_graph.semantic_layer
+            if object_graph.is_legacy is not None:
+                model_metadata["tableau_is_legacy"] = object_graph.is_legacy
+
         model = Model(
             name=name,
             table=table,
@@ -960,6 +1042,7 @@ class TableauAdapter(BaseAdapter):
             metrics=metrics,
             relationships=relationships,
             segments=segments,
+            metadata=model_metadata,
         )
 
         return model
@@ -1252,6 +1335,12 @@ class TableauAdapter(BaseAdapter):
         if og_elem is None:
             return _ObjectGraphInfo(relationships=[], joins=[])
 
+        # Read Tableau Semantics-layer attributes from the <object-graph> element.
+        # Newer "Tableau Semantics" datasources tag the object-graph with
+        # semantic-layer / is-legacy attributes describing the modeling layer.
+        semantic_layer = _get_attr_local(og_elem, "semantic-layer")
+        is_legacy = _get_attr_local(og_elem, "is-legacy")
+
         # Build object-id -> table-name map from <objects>
         obj_map: dict[str, str] = {}
         objects_elem = og_elem.find("objects")
@@ -1267,7 +1356,12 @@ class TableauAdapter(BaseAdapter):
         joins: list[_ObjectGraphJoin] = []
         rels_elem = og_elem.find("relationships")
         if rels_elem is None:
-            return _ObjectGraphInfo(relationships=[], joins=[])
+            return _ObjectGraphInfo(
+                relationships=[],
+                joins=[],
+                semantic_layer=semantic_layer,
+                is_legacy=is_legacy,
+            )
 
         for rel in rels_elem.findall("relationship"):
             # Extract join columns from expression
@@ -1308,7 +1402,12 @@ class TableauAdapter(BaseAdapter):
                     )
                 )
 
-        return _ObjectGraphInfo(relationships=relationships, joins=joins)
+        return _ObjectGraphInfo(
+            relationships=relationships,
+            joins=joins,
+            semantic_layer=semantic_layer,
+            is_legacy=is_legacy,
+        )
 
     def _build_collection_field_sources(self, metadata_lookup: dict[str, dict]) -> dict[str, tuple[str, str]]:
         """Map semantic field names to logical table + physical column sources."""
@@ -1521,14 +1620,43 @@ class TableauAdapter(BaseAdapter):
             table_name = _extract_table_name(relation_elem)
             return (table_name, [])
 
-        if rel_type == "text":
-            # Custom SQL: wrap as subquery with quoted alias
+        if rel_type in ("text", "subquery"):
+            # Custom SQL / subquery: wrap as a derived subquery with quoted alias.
             name = relation_elem.get("name", "")
             sql_body = (relation_elem.text or "").strip()
             if sql_body and name:
                 quoted_name = f'"{name}"' if " " in name or "(" in name else name
                 return (f"({sql_body}) AS {quoted_name}", [])
             return (name or sql_body, [])
+
+        if rel_type == "stored-proc":
+            # Stored procedure: cannot be joined/unioned. Reference its actual
+            # name when available, otherwise fall back to the relation name.
+            sp_name = relation_elem.get("stored-proc") or relation_elem.get("name")
+            actual = relation_elem.find("actual-name")
+            if actual is not None and actual.text:
+                sp_name = actual.text
+            return (_strip_brackets(sp_name) if sp_name else None, [])
+
+        if rel_type in _SET_OPERATION_RELATIONS:
+            # union / batch-union nested in a relation tree: build a subquery.
+            union_sql = self._build_union_sql(relation_elem)
+            if union_sql:
+                name = relation_elem.get("name", "")
+                quoted_name = f'"{name}"' if name and (" " in name or "(" in name) else name
+                alias = f" AS {quoted_name}" if quoted_name else ""
+                return (f"({union_sql}){alias}", [])
+            return (None, [])
+
+        if rel_type in _WRAPPER_RELATIONS:
+            # pivot / project / text-transform wrap a single child relation.
+            # The transform reshapes columns but keeps a single table grain, so
+            # resolve to the wrapped child's base table/SQL.
+            children = _iter_child_relations(relation_elem)
+            if children:
+                return self._parse_relation_tree(children[0])
+            # No nested relation: fall back to a referenced table if present.
+            return (_extract_table_name(relation_elem), [])
 
         if rel_type != "join":
             return (None, [])
@@ -1595,6 +1723,30 @@ class TableauAdapter(BaseAdapter):
             parts.append(f"ON {' AND '.join(on_clauses)}")
 
         return "\n".join(parts)
+
+    def _build_union_sql(self, relation_elem: ET.Element) -> str | None:
+        """Build UNION ALL SQL for a <relation type="union"/"batch-union"> element.
+
+        Tableau unions stack same-shaped member relations vertically. Each member
+        is a nested <relation> (typically type="table", but possibly custom SQL or
+        another derived relation). We resolve each member to a FROM source and
+        combine them with UNION ALL (Tableau unions keep duplicate rows).
+        """
+        members = _iter_child_relations(relation_elem)
+        selects: list[str] = []
+        for member in members:
+            source, joins = self._parse_relation_tree(member)
+            # Only flat sources (no nested joins) are valid union members.
+            if not source or joins:
+                continue
+            selects.append(f"SELECT * FROM {source}")
+
+        if len(selects) < 2:
+            # A union needs at least two members to be meaningful; otherwise let
+            # the caller fall back to treating it as a single table.
+            return selects[0] if selects else None
+
+        return "\nUNION ALL\n".join(selects)
 
     def _extract_relationships(self, joins: list[_JoinInfo]) -> list[Relationship]:
         """Extract Relationship objects from parsed joins."""

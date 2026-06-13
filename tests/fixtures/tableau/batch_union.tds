@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='monthly_logs' inline='true' version='18.1'>
+  <connection class='textscan' directory='/data/logs'>
+    <relation name='Union of Logs' type='batch-union'>
+      <relation name='jan' type='table' table='[jan.csv]' />
+      <relation name='feb' type='table' table='[feb.csv]' />
+      <relation name='mar' type='table' table='[mar.csv]' />
+    </relation>
+    <metadata-records>
+      <metadata-record class='column'>
+        <local-name>[Event]</local-name>
+        <parent-name>[Union of Logs]</parent-name>
+        <remote-alias>event</remote-alias>
+        <local-type>string</local-type>
+      </metadata-record>
+    </metadata-records>
+  </connection>
+  <column caption='Event' datatype='string' name='[event]' role='dimension' type='nominal' />
+</datasource>

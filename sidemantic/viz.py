@@ -1425,20 +1425,24 @@ class CrossfilterPlanner:
                 limit=self.chart.limit,
             )
         mark("trend")
-        scatter = self._query_chart(
-            self.chart.dimensions,
-            self._filter_expressions(selection, ignore="metricRange", preagg=preagg),
-            preagg=preagg,
-            limit=self.chart.limit,
-        )
+        if self._selection_has(selection, "metricRange"):
+            scatter = self._query_chart(
+                self.chart.dimensions,
+                self._filter_expressions(selection, ignore="metricRange", preagg=preagg),
+                preagg=preagg,
+                limit=self.chart.limit,
+            )
+        else:
+            # Without a metric-range brush the scatter view is the current grid.
+            scatter = current
         mark("scatter")
         if preagg is not None:
-            kpis = self._aggregate_interaction_preagg(
-                [],
-                self._filter_expressions(selection, preagg=preagg),
-                metric_aliases,
-                preagg,
-            )
+            # Interaction preaggs guarantee additive metrics, so KPI totals are a
+            # rollup of the current grid we already fetched—derive, don't rescan.
+            kpis = {
+                "rows": [self._aggregate_rows(current["rows"], metric_aliases)] if current["rows"] else [],
+                "sql": current["sql"],
+            }
         else:
             kpis = self._query_chart(
                 [],
@@ -1654,6 +1658,26 @@ class CrossfilterPlanner:
         if preagg is not None:
             return selection.table_expressions(self.context, ignore=ignore)
         return selection.expressions(self.context, ignore=ignore)
+
+    def _selection_has(self, selection: CrossfilterSelection, ignore_key: str) -> bool:
+        """Whether any active filter would be dropped by ``ignore=ignore_key``."""
+        return any(_filter_ignore_key(filter_def, self.context) == ignore_key for filter_def in selection.filters)
+
+    def _aggregate_rows(self, rows: list[dict[str, Any]], metric_aliases: list[str]) -> dict[str, Any]:
+        """Roll up already-fetched grid rows to a single total per additive metric."""
+        result: dict[str, Any] = {}
+        for metric in metric_aliases:
+            agg = self.metric_aggs.get(metric)
+            values = [row[metric] for row in rows if row.get(metric) is not None]
+            if not values:
+                result[metric] = None
+            elif agg == "min":
+                result[metric] = min(values)
+            elif agg == "max":
+                result[metric] = max(values)
+            else:
+                result[metric] = sum(values)
+        return result
 
     def _query_chart(
         self,

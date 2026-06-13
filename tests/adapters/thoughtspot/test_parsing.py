@@ -674,3 +674,181 @@ def test_import_tpch_liveboard_skipped():
     adapter = ThoughtSpotAdapter()
     graph = adapter.parse("tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml")
     assert len(graph.models) == 0
+
+
+# =============================================================================
+# TML MODEL OBJECT (export_schema_version v2)
+# =============================================================================
+
+
+def test_import_thoughtspot_model():
+    """Parse a first-class TML Model object (model_tables + columns + nested joins)."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/sales.model.tml")
+
+    assert "sales_model" in graph.models
+    model = graph.models["sales_model"]
+
+    # Nested model_tables joins produce a joined SQL and relationships.
+    assert model.sql is not None
+    assert "JOIN customers" in model.sql
+    assert "JOIN regions" in model.sql
+    # Composite ON predicate from the regions join is preserved.
+    assert "country_code" in model.sql
+
+    relationships = {rel.name: rel for rel in model.relationships}
+    # cardinality: MANY_TO_ONE
+    assert relationships["customers"].type == "many_to_one"
+    assert relationships["customers"].foreign_key == "customer_id"
+    assert relationships["customers"].primary_key == "id"
+    # cardinality: ONE_TO_ONE
+    assert relationships["regions"].type == "one_to_one"
+    assert relationships["regions"].foreign_key == "region_id"
+    assert relationships["regions"].primary_key == "id"
+
+    # Dimensions: column_id <table>::<column> resolves to table.column.
+    order_id = model.get_dimension("order_id")
+    assert order_id is not None
+    assert order_id.sql == "sales.id"
+    assert order_id.description == "Order identifier"
+
+    order_date = model.get_dimension("order_date")
+    assert order_date is not None
+    assert order_date.type == "time"
+    assert order_date.granularity == "day"
+    assert order_date.label == "Order Date"
+
+    is_active = model.get_dimension("is_active")
+    assert is_active is not None
+    assert is_active.type == "boolean"
+
+    # Column from a joined table resolves to that table's name.
+    customer_name = model.get_dimension("customer_name")
+    assert customer_name is not None
+    assert customer_name.sql == "customers.name"
+    assert customer_name.label == "Customer"
+
+    region_name = model.get_dimension("region_name")
+    assert region_name is not None
+    assert region_name.sql == "regions.name"
+
+    # Simple aggregated measure.
+    gross_revenue = model.get_metric("gross_revenue")
+    assert gross_revenue is not None
+    assert gross_revenue.agg == "sum"
+    assert gross_revenue.format == "$#,##0.00"
+    assert gross_revenue.sql == "sales.gross_revenue"
+
+    # Formula-backed measures.
+    net_revenue = model.get_metric("net_revenue")
+    assert net_revenue is not None
+    assert net_revenue.agg == "sum"
+    assert "gross_revenue" in (net_revenue.sql or "")
+
+    avg_order_value = model.get_metric("avg_order_value")
+    assert avg_order_value is not None
+    assert avg_order_value.agg == "avg"
+    assert "/" in (avg_order_value.sql or "")
+
+    # Aggregation coverage.
+    assert model.get_metric("distinct_customers").agg == "count_distinct"
+    assert model.get_metric("order_count").agg == "count"
+    assert model.get_metric("min_order_value").agg == "min"
+    assert model.get_metric("max_order_value").agg == "max"
+    assert model.get_metric("median_order_value").agg == "median"
+
+    # Unsupported aggregation falls back to a derived metric.
+    revenue_stddev = model.get_metric("revenue_stddev")
+    assert revenue_stddev is not None
+    assert revenue_stddev.type == "derived"
+    assert "STDDEV" in (revenue_stddev.sql or "")
+
+
+def test_import_thoughtspot_model_alias():
+    """Parse a TML Model with id-based tables and an aliased (role-playing) join."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_alias.model.tml")
+
+    assert "orders_model" in graph.models
+    model = graph.models["orders_model"]
+
+    # The alias `ship_country` in column_id / join `with` resolves to `countries`.
+    assert model.sql is not None
+    assert "JOIN countries" in model.sql
+
+    relationships = {rel.name: rel for rel in model.relationships}
+    assert "countries" in relationships
+    assert relationships["countries"].type == "many_to_one"
+    assert relationships["countries"].foreign_key == "ship_country_id"
+    assert relationships["countries"].primary_key == "id"
+
+    ship_country = model.get_dimension("ship_country_name")
+    assert ship_country is not None
+    assert ship_country.sql == "countries.name"
+
+    amount = model.get_metric("amount")
+    assert amount is not None
+    assert amount.agg == "sum"
+
+
+def test_thoughtspot_model_auto_detect_loader():
+    """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tml_file = Path(tmpdir) / "sales.model.yaml"
+        tml_file.write_text(
+            """
+model:
+  name: sales_model
+  description: Sales model
+  model_tables:
+    - name: sales
+      fqn: ANALYTICS.PUBLIC.sales
+  columns:
+    - name: order_id
+      column_id: sales::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      column_id: sales::amount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+"""
+        )
+
+        layer = SemanticLayer()
+        load_from_directory(layer, tmpdir)
+
+        assert "sales_model" in layer.graph.models
+        model = layer.graph.models["sales_model"]
+        assert model.get_metric("amount").agg == "sum"
+
+
+def test_thoughtspot_legacy_model_key_still_worksheet():
+    """Legacy worksheet content nested under `model:` still parses as a worksheet."""
+    adapter = ThoughtSpotAdapter()
+    tml_def = {
+        "model": {
+            "name": "legacy_sheet",
+            "tables": [{"name": "orders"}],
+            "worksheet_columns": [
+                {
+                    "name": "amount",
+                    "column_id": "orders::amount",
+                    "properties": {"column_type": "MEASURE", "aggregation": "SUM"},
+                },
+            ],
+        }
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tml", delete=False) as f:
+        yaml.safe_dump(tml_def, f, sort_keys=False)
+        temp_path = Path(f.name)
+
+    try:
+        graph = adapter.parse(temp_path)
+        assert "legacy_sheet" in graph.models
+        model = graph.models["legacy_sheet"]
+        assert model.get_metric("amount").agg == "sum"
+    finally:
+        temp_path.unlink(missing_ok=True)

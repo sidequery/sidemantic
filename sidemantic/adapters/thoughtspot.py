@@ -28,6 +28,13 @@ _NUMERIC_TYPES = {"DOUBLE", "FLOAT", "INT32", "INT64", "DECIMAL", "NUMBER"}
 _TIME_TYPES = {"DATE", "TIME", "DATETIME", "TIMESTAMP"}
 _BOOL_TYPES = {"BOOL", "BOOLEAN"}
 
+_CARDINALITY_MAP = {
+    "MANY_TO_ONE": "many_to_one",
+    "ONE_TO_ONE": "one_to_one",
+    "ONE_TO_MANY": "one_to_many",
+    "MANY_TO_MANY": "many_to_many",
+}
+
 _AGGREGATION_MAP = {
     "SUM": "sum",
     "COUNT": "count",
@@ -217,7 +224,14 @@ class ThoughtSpotAdapter(BaseAdapter):
         if "worksheet" in data:
             return self._parse_worksheet(data.get("worksheet"), data)
         if "model" in data:
-            return self._parse_worksheet(data.get("model"), data)
+            model_def = data.get("model")
+            # TML Model objects (export_schema_version v2) use `model_tables:` and
+            # model-level `columns:`. Legacy Worksheet content nested under `model:`
+            # still uses `tables:`/`worksheet_columns:`, so fall back to the
+            # worksheet parser for back-compat.
+            if isinstance(model_def, dict) and ("model_tables" in model_def or "columns" in model_def):
+                return self._parse_model(model_def, data)
+            return self._parse_worksheet(model_def, data)
 
         return None
 
@@ -454,6 +468,248 @@ class ThoughtSpotAdapter(BaseAdapter):
         setattr(model, "_source_tml_type", "worksheet")
 
         return model
+
+    def _parse_model(self, model_def: dict[str, Any] | None, full_def: dict[str, Any]) -> Model | None:
+        """Parse a TML Model object (export_schema_version v2).
+
+        Model TML differs from the legacy Worksheet TML:
+        - tables live under `model_tables:` (vs worksheet `tables:`)
+        - joins are nested inside each `model_tables` entry under `joins:`,
+          using `with:`/`on:`/`type:`/`cardinality:` (vs top-level worksheet
+          `joins:` with `source`/`destination`/`is_one_to_one`)
+        - fields live under model-level `columns:` (vs `worksheet_columns:`)
+        """
+        if not model_def:
+            return None
+
+        name = model_def.get("name")
+        if not name:
+            return None
+
+        description = model_def.get("description")
+        model_tables = model_def.get("model_tables") or []
+
+        table_name_lookup = self._table_name_lookup(model_tables)
+
+        # Each model_tables entry may carry an `alias` used in column_id paths
+        # and join expressions; map alias -> table name so refs resolve.
+        alias_lookup: dict[str, str] = {}
+        for table in model_tables:
+            table_name = table.get("name") or table.get("id")
+            alias = table.get("alias")
+            if alias and table_name:
+                alias_lookup[alias] = table_name
+        # Build the path lookup used to resolve column_id/expression table refs.
+        path_lookup: dict[str, str] = dict(table_name_lookup)
+        path_lookup.update(alias_lookup)
+
+        # Flatten nested joins (one per model_tables entry) into the same shape
+        # the worksheet join helpers consume.
+        flat_joins: list[dict[str, Any]] = []
+        for table in model_tables:
+            source = table.get("name") or table.get("id")
+            for join_def in table.get("joins") or []:
+                destination = join_def.get("with")
+                if not source or not destination:
+                    continue
+                resolved_dest = alias_lookup.get(destination, table_name_lookup.get(destination, destination))
+                # PyYAML (YAML 1.1) parses the bare `on:` key as the boolean True.
+                on_value = join_def.get("on")
+                if on_value is None and True in join_def:
+                    on_value = join_def.get(True)
+                flat_joins.append(
+                    {
+                        "source": source,
+                        "destination": resolved_dest,
+                        "type": join_def.get("type"),
+                        "on": on_value,
+                        "cardinality": join_def.get("cardinality"),
+                    }
+                )
+
+        sql, base_table = self._build_join_sql(model_tables, flat_joins, path_lookup, table_name_lookup)
+        relationships = self._parse_model_relationships(flat_joins, path_lookup, table_name_lookup)
+
+        formulas = model_def.get("formulas") or []
+        formula_by_id = {f.get("id"): f for f in formulas if f.get("id")}
+        formula_by_name = {f.get("name"): f for f in formulas if f.get("name")}
+
+        dimensions: list[Dimension] = []
+        metrics: list[Metric] = []
+
+        for col_def in model_def.get("columns") or []:
+            col_name = col_def.get("name")
+            column_id = col_def.get("column_id")
+            formula_id = col_def.get("formula_id")
+            if not col_name:
+                if formula_id and formula_id in formula_by_id:
+                    col_name = formula_by_id[formula_id].get("name")
+                elif column_id:
+                    col_name = column_id.split("::")[-1]
+
+            if not col_name:
+                continue
+
+            properties = col_def.get("properties") or {}
+            column_type = _normalize(properties.get("column_type")) or "ATTRIBUTE"
+            bucket = _map_bucket(properties.get("default_date_bucket"))
+            label = col_def.get("custom_name") or col_def.get("display_name")
+            col_description = col_def.get("description")
+            format_pattern = properties.get("format_pattern")
+
+            sql_expr = None
+            if formula_id and formula_id in formula_by_id:
+                sql_expr = formula_by_id[formula_id].get("expr")
+            elif formula_id and formula_id in formula_by_name:
+                sql_expr = formula_by_name[formula_id].get("expr")
+            elif col_name in formula_by_name:
+                sql_expr = formula_by_name[col_name].get("expr")
+
+            if not sql_expr and column_id:
+                if "::" in column_id:
+                    path_id, col_ref = column_id.split("::", 1)
+                    table_name = path_lookup.get(path_id)
+                    if table_name:
+                        sql_expr = f"{table_name}.{col_ref}"
+                    else:
+                        sql_expr = col_ref
+                else:
+                    sql_expr = column_id
+
+            sql_expr = _convert_tml_expr(sql_expr, path_lookup)
+
+            if column_type == "MEASURE":
+                agg, unsupported_func = _map_aggregation(properties.get("aggregation"))
+                metric_sql = sql_expr
+                if agg:
+                    metric = Metric(
+                        name=col_name,
+                        agg=agg,
+                        sql=metric_sql,
+                        label=label,
+                        description=col_description,
+                        format=format_pattern,
+                    )
+                else:
+                    if unsupported_func:
+                        metric_sql = f"{unsupported_func}({metric_sql})" if metric_sql else unsupported_func
+                    metric = Metric(
+                        name=col_name,
+                        type="derived",
+                        sql=metric_sql,
+                        label=label,
+                        description=col_description,
+                        format=format_pattern,
+                    )
+                metrics.append(metric)
+            else:
+                data_type = col_def.get("data_type") or (col_def.get("db_column_properties") or {}).get("data_type")
+                dim_type, granularity = _map_dimension_type(data_type, bucket)
+                dim = Dimension(
+                    name=col_name,
+                    type=dim_type,
+                    sql=sql_expr,
+                    granularity=granularity,
+                    label=label,
+                    description=col_description,
+                    format=format_pattern,
+                )
+                dimensions.append(dim)
+
+        default_time_dimension = None
+        default_grain = None
+        for dim in dimensions:
+            if dim.type == "time":
+                default_time_dimension = dim.name
+                default_grain = dim.granularity
+                break
+
+        primary_key = "id"
+        if any(d.name.lower() == "id" for d in dimensions):
+            primary_key = next(d.name for d in dimensions if d.name.lower() == "id")
+
+        model = Model(
+            name=name,
+            table=base_table if not sql else None,
+            sql=sql,
+            description=description,
+            primary_key=primary_key,
+            dimensions=dimensions,
+            metrics=metrics,
+            relationships=relationships,
+            default_time_dimension=default_time_dimension,
+            default_grain=default_grain,
+        )
+
+        if base_table:
+            setattr(model, "_worksheet_base_table", base_table)
+        setattr(model, "_source_tml_type", "model")
+
+        return model
+
+    def _parse_model_relationships(
+        self,
+        joins: list[dict[str, Any]],
+        table_path_lookup: dict[str, str] | None = None,
+        table_name_lookup: dict[str, str] | None = None,
+    ) -> list[Relationship]:
+        """Build relationships from flattened model_tables joins.
+
+        Model joins carry `cardinality:` directly (MANY_TO_ONE/ONE_TO_ONE/
+        ONE_TO_MANY/MANY_TO_MANY), unlike worksheet joins which only flag
+        `is_one_to_one`.
+        """
+        relationships: list[Relationship] = []
+
+        for join_def in joins:
+            source = join_def.get("source")
+            destination = join_def.get("destination")
+            if not source or not destination:
+                continue
+
+            join_type = _normalize(join_def.get("type")) or "INNER"
+            on_value = join_def.get("on")
+            lookup = table_path_lookup or table_name_lookup
+            left, right = _extract_join_refs(on_value, lookup)
+
+            if table_name_lookup:
+                source = table_name_lookup.get(source, source)
+                destination = table_name_lookup.get(destination, destination)
+
+            foreign_key = None
+            primary_key = None
+
+            if left and right:
+                left_table, left_col = left
+                right_table, right_col = right
+
+                if left_table == source and right_table == destination:
+                    foreign_key = left_col
+                    primary_key = right_col
+                elif left_table == destination and right_table == source:
+                    foreign_key = right_col
+                    primary_key = left_col
+                else:
+                    if left_table == source:
+                        foreign_key = left_col
+                    if right_table == destination:
+                        primary_key = right_col
+
+            cardinality = _normalize(join_def.get("cardinality"))
+            rel_type = _CARDINALITY_MAP.get(cardinality or "", "many_to_one")
+            if join_type in {"RIGHT_OUTER", "FULL_OUTER", "OUTER"} and cardinality not in _CARDINALITY_MAP:
+                rel_type = "many_to_many"
+
+            relationships.append(
+                Relationship(
+                    name=destination,
+                    type=rel_type,
+                    foreign_key=foreign_key,
+                    primary_key=primary_key,
+                )
+            )
+
+        return relationships
 
     def _build_join_sql(
         self,

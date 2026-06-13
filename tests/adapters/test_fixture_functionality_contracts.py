@@ -130,6 +130,8 @@ EXPECTED_LOW_SIGNAL_FIXTURES = {
     "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
     "tests/fixtures/omni/estore/topics/Events.topic.yaml",
     "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
+    # Rill derived (parent) metrics view: selects fields from a parent, defines none itself.
+    "tests/fixtures/rill/derived_metrics.yaml",
     "tests/fixtures/tableau/real_world/document_api_tableau10.tds",
     "tests/fixtures/tableau/real_world/document_api_tableau93.tds",
 }
@@ -151,6 +153,7 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
         "LookMLAdapter",
         "MalloyAdapter",
         "OmniAdapter",
+        "RillAdapter",
         "TableauAdapter",
     },
     "complex_or_nonportable_sql_fields": {"LookMLAdapter"},

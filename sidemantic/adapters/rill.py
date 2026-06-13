@@ -69,10 +69,15 @@ class RillAdapter:
             return None
 
         model_name = data.get("name") or file_path.stem
-        data.get("display_name")
         description = data.get("description")
 
-        # Get the source table or model
+        # Parent / derived metrics views: a metrics view can inherit from a parent
+        # (parent + parent_dimensions/parent_measures). The parent's fields aren't
+        # available here (separate file), so we record the linkage in metadata and
+        # parse any explicit selectors so the model still validates and round-trips.
+        parent = data.get("parent")
+
+        # Get the source table or model. Derived views have no own data source.
         table = data.get("table") or data.get("model")
 
         # Parse dimensions
@@ -80,8 +85,8 @@ class RillAdapter:
         timeseries_column = data.get("timeseries")
         smallest_time_grain = data.get("smallest_time_grain")
 
-        for dim_def in data.get("dimensions") or []:
-            dimension = self._parse_dimension(dim_def, timeseries_column, smallest_time_grain)
+        for i, dim_def in enumerate(data.get("dimensions") or []):
+            dimension = self._parse_dimension(dim_def, i, timeseries_column, smallest_time_grain)
             if dimension:
                 dimensions.append(dimension)
 
@@ -99,8 +104,8 @@ class RillAdapter:
 
         # Parse measures
         metrics: list[Metric] = []
-        for measure_def in data.get("measures") or []:
-            metric = self._parse_measure(measure_def)
+        for i, measure_def in enumerate(data.get("measures") or []):
+            metric = self._parse_measure(measure_def, i)
             if metric:
                 metrics.append(metric)
 
@@ -111,6 +116,16 @@ class RillAdapter:
             default_time_dimension = timeseries_column
             default_grain = self._map_time_grain(smallest_time_grain)
 
+        # Preserve parent/derived-view linkage and selectors in metadata so the
+        # relationship survives import (Rill resolves the parent at a separate layer).
+        meta: dict[str, Any] | None = None
+        if parent:
+            meta = {"rill_parent": parent}
+            if data.get("parent_dimensions") is not None:
+                meta["rill_parent_dimensions"] = data.get("parent_dimensions")
+            if data.get("parent_measures") is not None:
+                meta["rill_parent_measures"] = data.get("parent_measures")
+
         return Model(
             name=model_name,
             description=description,
@@ -119,37 +134,79 @@ class RillAdapter:
             metrics=metrics,
             default_time_dimension=default_time_dimension,
             default_grain=default_grain,
+            meta=meta,
         )
 
     def _parse_dimension(
         self,
         dim_def: dict[str, Any],
+        index: int,
         timeseries_column: str | None,
         smallest_time_grain: str | None,
     ) -> Dimension | None:
         """Parse a Rill dimension into a Sidemantic Dimension.
 
+        Mirrors Rill's own backwards-compatibility handling
+        (runtime/parser/parse_metrics_view.go):
+        - `property:` is a deprecated shorthand alias for `column:`.
+        - When `name` is missing, derive it from `column`, otherwise fall back
+          to `dimension_<i>` (matching Rill's `fmt.Sprintf("dimension_%d", i)`).
+        - `label:` is a deprecated alias for `display_name:`.
+        - `lookup_table` dimensions resolve their value via a lookup table; we
+          keep the keyed column as the SQL expression and record lookup config in
+          metadata so the dimension is preserved rather than dropped.
+
         Args:
             dim_def: Dimension definition from Rill YAML
+            index: Position of the dimension in the dimensions list (for name fallback)
             timeseries_column: Name of the timeseries column
             smallest_time_grain: Smallest time grain for time dimensions
 
         Returns:
             Dimension or None if parsing fails
         """
-        name = dim_def.get("name")
-        if not name:
+        # Rill ignores dimensions explicitly marked with `ignore: true`.
+        if dim_def.get("ignore"):
             return None
 
-        label = dim_def.get("display_name")  # Rill uses display_name, Sidemantic uses label
+        # `property:` is a deprecated shorthand alias for `column:`.
+        column = dim_def.get("column")
+        if not column and dim_def.get("property"):
+            column = dim_def.get("property")
+
+        expression = dim_def.get("expression")
+
+        # Lookup dimensions resolve a value from a lookup table keyed off a column.
+        lookup_table = dim_def.get("lookup_table")
+        lookup_key_column = dim_def.get("lookup_key_column")
+
+        # Derive name following Rill's rules: name -> column -> dimension_<i>.
+        name = dim_def.get("name")
+        if not name:
+            name = column or lookup_key_column or f"dimension_{index}"
+
+        # `label` is the deprecated alias for `display_name`.
+        label = dim_def.get("display_name") or dim_def.get("label")
         description = dim_def.get("description")
-        sql = dim_def.get("expression") or dim_def.get("column")
+
+        # SQL expression: prefer expression, then column, then the lookup key column.
+        sql = expression or column or lookup_key_column
 
         if not sql:
             return None
 
         # Determine if this is the timeseries dimension
         is_timeseries = timeseries_column and (sql == timeseries_column or name == timeseries_column)
+
+        meta = None
+        if lookup_table:
+            meta = {
+                "rill_lookup_table": lookup_table,
+                "rill_lookup_key_column": lookup_key_column,
+                "rill_lookup_value_column": dim_def.get("lookup_value_column"),
+            }
+            if dim_def.get("lookup_default_expression") is not None:
+                meta["rill_lookup_default_expression"] = dim_def.get("lookup_default_expression")
 
         return Dimension(
             name=name,
@@ -158,26 +215,44 @@ class RillAdapter:
             sql=sql,
             type="time" if is_timeseries else "categorical",
             granularity=self._map_time_grain(smallest_time_grain) if is_timeseries else None,
+            meta=meta,
         )
 
-    def _parse_measure(self, measure_def: dict[str, Any]) -> Metric | None:
+    def _parse_measure(self, measure_def: dict[str, Any], index: int) -> Metric | None:
         """Parse a Rill measure into a Sidemantic Metric.
+
+        Mirrors Rill's own backwards-compatibility handling
+        (runtime/parser/parse_metrics_view.go):
+        - When `name` is missing, fall back to `measure_<i>` (matching Rill's
+          `fmt.Sprintf("measure_%d", i)`).
+        - `label:` is a deprecated alias for `display_name:`.
+        - `type:` accepts simple / derived / time_comparison. An empty type with
+          `requires:` or `per:` is treated as derived (Rill's default promotion).
 
         Args:
             measure_def: Measure definition from Rill YAML
+            index: Position of the measure in the measures list (for name fallback)
 
         Returns:
             Metric or None if parsing fails
         """
-        name = measure_def.get("name")
-        expression = measure_def.get("expression")
-
-        if not name or not expression:
+        # Rill ignores measures explicitly marked with `ignore: true`.
+        if measure_def.get("ignore"):
             return None
 
-        label = measure_def.get("display_name")  # Rill uses display_name, Sidemantic uses label
+        expression = measure_def.get("expression")
+        if not expression:
+            return None
+
+        # Derive name following Rill's rule: name -> measure_<i>.
+        name = measure_def.get("name") or f"measure_{index}"
+
+        # `label` is the deprecated alias for `display_name`.
+        label = measure_def.get("display_name") or measure_def.get("label")
         description = measure_def.get("description")
-        measure_type = measure_def.get("type", "simple")
+        measure_type = (measure_def.get("type") or "").lower()
+        requires = measure_def.get("requires")
+        per = measure_def.get("per")
 
         # Parse formatting - prefer format_d3 over format_preset
         format_d3 = measure_def.get("format_d3")
@@ -190,6 +265,7 @@ class RillAdapter:
         window_order = None
         window_frame = None
         metric_type = None
+        meta: dict[str, Any] | None = None
 
         if window_def:
             # Rill window syntax:
@@ -200,10 +276,23 @@ class RillAdapter:
             if isinstance(window_def, dict):
                 window_order = window_def.get("order")
                 window_frame = window_def.get("frame")
-        elif measure_type == "derived" or measure_def.get("requires"):
-            # Determine metric type based on Rill's type
-            # "simple" = basic aggregation (None type), "derived" = calculation using other measures
+        elif measure_type == "time_comparison":
+            # Rill time_comparison measures compute period-over-period values from a
+            # base measure expression. Sidemantic's native time_comparison type
+            # requires explicit base_metric/comparison wiring that Rill does not
+            # express here, so we keep the expression as a derived calculation and
+            # record the original Rill type in metadata for fidelity/round-trip.
             metric_type = "derived"
+            meta = {"rill_type": "time_comparison"}
+        elif measure_type == "derived" or requires or per:
+            # "simple" = basic aggregation (None type), "derived" = calculation
+            # referencing other measures. An empty type with requires/per is also
+            # promoted to derived, matching Rill's parser.
+            metric_type = "derived"
+
+        if per is not None:
+            meta = meta or {}
+            meta["rill_per"] = per
 
         # Let the Metric class handle aggregation parsing via its model_validator.
         # This properly handles complex expressions like SUM(x) / SUM(y) and
@@ -218,6 +307,7 @@ class RillAdapter:
             value_format_name=value_format_name,
             window_order=window_order,
             window_frame=window_frame,
+            meta=meta,
         )
 
     def _map_time_grain(self, grain: str | None) -> str:

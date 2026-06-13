@@ -592,7 +592,7 @@ class OmniAdapter(BaseAdapter):
             rel_type = type_mapping.get(rel_type_str, "many_to_one")
 
             # Extract foreign/primary keys from on_sql: ${from.col} = ${to.col}
-            foreign_key, primary_key = self._keys_from_on_sql(rel_def.get("on_sql", ""), from_view, to_view)
+            foreign_key, primary_key = self._keys_from_on_sql(rel_def.get("on_sql", ""), from_view, to_view, rel_type)
 
             # Preserve Omni join metadata with no first-class field.
             metadata: dict[str, Any] = {}
@@ -614,20 +614,39 @@ class OmniAdapter(BaseAdapter):
                 graph.models[from_view].relationships.append(relationship)
 
     @staticmethod
-    def _keys_from_on_sql(on_sql: str, from_view: str, to_view: str) -> tuple[str | None, str | None]:
-        """Extract foreign key (from_view side) and primary key (to_view side)."""
-        foreign_key = None
-        primary_key = None
+    def _keys_from_on_sql(
+        on_sql: str, from_view: str, to_view: str, rel_type: str = "many_to_one"
+    ) -> tuple[str | None, str | None]:
+        """Extract ``(foreign_key, primary_key)`` from an Omni ``on_sql`` join.
+
+        The relationship is always attached to ``from_view`` with ``name=to_view``,
+        but Sidemantic's interpretation of ``foreign_key``/``primary_key`` depends on
+        the cardinality (see ``Relationship``):
+
+        - ``many_to_one`` (from_view holds the FK): ``foreign_key`` is the from_view
+          column and ``primary_key`` is the to_view column.
+        - ``one_to_many`` / ``one_to_one`` (to_view holds the FK): ``foreign_key`` is
+          the to_view column (the FK in the related model) and ``primary_key`` is the
+          from_view column (the local key). Assigning these the other way around
+          reverses the join and produces invalid SQL.
+        """
+        from_column = None
+        to_column = None
         if on_sql:
             import re
 
             matches = re.findall(r"\$\{([^.]+)\.([^}]+)\}", on_sql)
             for view, column in matches:
-                if view == from_view and foreign_key is None:
-                    foreign_key = column
-                elif view == to_view and primary_key is None:
-                    primary_key = column
-        return foreign_key, primary_key
+                if view == from_view and from_column is None:
+                    from_column = column
+                elif view == to_view and to_column is None:
+                    to_column = column
+
+        if rel_type in ("one_to_many", "one_to_one"):
+            # to_view (related model) holds the foreign key; from_view contributes its key.
+            return to_column, from_column
+        # many_to_one (and default): from_view holds the foreign key.
+        return from_column, to_column
 
     def _parse_topic(self, topic_file: Path, graph: SemanticGraph) -> None:
         """Parse an Omni topic file (base view + nested joins).
@@ -929,9 +948,16 @@ class OmniAdapter(BaseAdapter):
                 }
                 rel_def["relationship_type"] = type_mapping.get(rel.type, "many_to_one")
 
-                # Build on_sql
-                from_key = rel.foreign_key or f"{rel.name}_id"
-                to_key = rel.primary_key or "id"
+                # Build on_sql. Which side holds the foreign vs. primary key
+                # depends on cardinality (see Relationship): for many_to_one the
+                # from_view holds the FK; for one_to_many / one_to_one the to_view
+                # (related model) holds the FK and the from_view contributes its key.
+                if rel.type in ("one_to_many", "one_to_one"):
+                    from_key = rel.primary_key or "id"
+                    to_key = rel.foreign_key or f"{model.name}_id"
+                else:
+                    from_key = rel.foreign_key or f"{rel.name}_id"
+                    to_key = rel.primary_key or "id"
                 rel_def["on_sql"] = f"${{{model.name}.{from_key}}} = ${{{rel.name}.{to_key}}}"
 
                 relationships.append(rel_def)

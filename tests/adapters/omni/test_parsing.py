@@ -216,6 +216,152 @@ def test_omni_time_comparison_export():
 
 
 # =============================================================================
+# RELATIONSHIP KEY DIRECTION TESTS
+# =============================================================================
+
+
+def _write_one_to_many_fixture(tmpdir_path: Path) -> None:
+    """Write a customers --one_to_many--> orders fixture with distinct key names.
+
+    The join key on each side has a different column name (``customers.id`` vs
+    ``orders.customer_id``) so that key-direction bugs surface (when the names
+    match the direction is masked).
+    """
+    views_dir = tmpdir_path / "views"
+    views_dir.mkdir()
+
+    with open(views_dir / "customers.yaml", "w") as f:
+        yaml.dump(
+            {
+                "name": "customers",
+                "table_name": "customers",
+                "dimensions": {
+                    "id": {"type": "number", "sql": "${TABLE}.id", "primary_key": True},
+                    "name": {"type": "string", "sql": "${TABLE}.name"},
+                },
+                "measures": {"count": {"aggregate_type": "count"}},
+            },
+            f,
+        )
+
+    with open(views_dir / "orders.yaml", "w") as f:
+        yaml.dump(
+            {
+                "name": "orders",
+                "table_name": "orders",
+                "dimensions": {
+                    "id": {"type": "number", "sql": "${TABLE}.id", "primary_key": True},
+                    "customer_id": {"type": "number", "sql": "${TABLE}.customer_id"},
+                    "amount": {"type": "number", "sql": "${TABLE}.amount"},
+                },
+                "measures": {"total": {"aggregate_type": "sum", "sql": "${orders.amount}"}},
+            },
+            f,
+        )
+
+    with open(tmpdir_path / "relationships.yaml", "w") as f:
+        yaml.dump(
+            [
+                {
+                    "join_from_view": "customers",
+                    "join_to_view": "orders",
+                    "relationship_type": "one_to_many",
+                    "on_sql": "${customers.id} = ${orders.customer_id}",
+                }
+            ],
+            f,
+        )
+
+
+def test_omni_one_to_many_key_direction(tmp_path):
+    """one_to_many keys must keep the local/related sides straight.
+
+    For ``customers one_to_many orders`` joined on
+    ``${customers.id} = ${orders.customer_id}``, Sidemantic interprets
+    ``primary_key`` as the local (customers) key and ``foreign_key`` as the
+    related (orders) key. Assigning the on_sql sides naively (from->foreign,
+    to->primary) reverses the join and produces invalid SQL.
+    """
+    _write_one_to_many_fixture(tmp_path)
+
+    adapter = OmniAdapter()
+    graph = adapter.parse(tmp_path)
+
+    rel = next(r for r in graph.models["customers"].relationships if r.name == "orders")
+    assert rel.type == "one_to_many"
+    # Local (customers) key carried as primary_key; related (orders) FK as foreign_key.
+    assert rel.primary_key == "id"
+    assert rel.foreign_key == "customer_id"
+
+
+def test_omni_one_to_many_join_sql_not_reversed(tmp_path):
+    """The compiled join condition must be customers.id = orders.customer_id."""
+    from sidemantic import SemanticLayer
+
+    _write_one_to_many_fixture(tmp_path)
+
+    adapter = OmniAdapter()
+    graph = adapter.parse(tmp_path)
+
+    layer = SemanticLayer()
+    for model in graph.models.values():
+        layer.add_model(model)
+
+    sql = layer.compile(metrics=["orders.total"], dimensions=["customers.name"]).lower()
+
+    # Normalize whitespace so we can match the join condition regardless of layout.
+    flat = " ".join(sql.split())
+
+    # Correct join pairs customers.id with orders.customer_id.
+    assert "customers_cte.id = orders_cte.customer_id" in flat
+    # The reversed (buggy) pairing joins the customers FK to the orders PK, and
+    # even references a customer_id column that customers does not have.
+    assert "customers_cte.customer_id = orders_cte.id" not in flat
+    assert "customers_cte.customer_id" not in flat
+
+
+def test_omni_one_to_many_export_round_trip(tmp_path):
+    """Exporting a one_to_many relationship preserves key direction on re-import."""
+    from sidemantic.core.relationship import Relationship
+
+    customers = Model(
+        name="customers",
+        table="customers",
+        primary_key="id",
+        dimensions=[Dimension(name="id", sql="id", type="numeric")],
+        relationships=[Relationship(name="orders", type="one_to_many", primary_key="id", foreign_key="customer_id")],
+    )
+    orders = Model(
+        name="orders",
+        table="orders",
+        primary_key="id",
+        dimensions=[
+            Dimension(name="id", sql="id", type="numeric"),
+            Dimension(name="customer_id", sql="customer_id", type="numeric"),
+        ],
+    )
+
+    graph = SemanticGraph()
+    graph.add_model(customers)
+    graph.add_model(orders)
+
+    adapter = OmniAdapter()
+    adapter.export(graph, tmp_path)
+
+    # The exported on_sql must place the local key on the customers side and the
+    # related FK on the orders side: ${customers.id} = ${orders.customer_id}.
+    model_def = yaml.safe_load((tmp_path / "model.yaml").read_text())
+    on_sql = model_def["relationships"][0]["on_sql"]
+    assert on_sql == "${customers.id} = ${orders.customer_id}"
+
+    reimported = adapter.parse(tmp_path)
+    rel = next(r for r in reimported.models["customers"].relationships if r.name == "orders")
+    assert rel.type == "one_to_many"
+    assert rel.primary_key == "id"
+    assert rel.foreign_key == "customer_id"
+
+
+# =============================================================================
 # DIMENSION TYPE MAPPING TESTS
 # =============================================================================
 

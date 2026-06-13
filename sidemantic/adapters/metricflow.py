@@ -50,6 +50,10 @@ class MetricFlowAdapter(BaseAdapter):
         graph = SemanticGraph()
         source_path = Path(source)
 
+        # Reset per-parse state so reusing the adapter does not leak saved
+        # queries from a previously parsed source into this graph's metadata.
+        self.saved_queries = {}
+
         if source_path.is_dir():
             # Parse all YAML files in directory
             for yaml_file in source_path.rglob("*.yml"):
@@ -95,11 +99,27 @@ class MetricFlowAdapter(BaseAdapter):
             model = self._parse_model_spec(model_def)
             if model:
                 graph.add_model(model)
-            # Inline metrics on a latest-spec model
+            # Inline metrics on a latest-spec model. A ``type: simple`` metric
+            # folds a model measure (``agg`` + ``expr``); its expression refers
+            # to columns on the owning model. Qualify the SQL with the model name
+            # so a query selecting only that metric can infer its model. Without
+            # this the metric carries unqualified SQL (e.g. ``amount``) or no SQL
+            # at all (a bare ``count``), and the planner raises
+            # ``No models found for query``.
             for metric_def in model_def.get("metrics") or []:
                 metric = self._parse_metric(metric_def)
-                if metric:
-                    self._add_metric(graph, metric)
+                if not metric:
+                    continue
+                if model and metric_def.get("type", "simple") == "simple" and metric.agg is not None:
+                    if metric.sql is not None:
+                        metric.sql = self._qualify_measure_sql(metric.sql, model.name)
+                    else:
+                        # Bare aggregation (e.g. ``count`` with no ``expr``):
+                        # anchor it to the model via its primary key so the
+                        # planner can resolve the model. COUNT over a non-null
+                        # primary key is equivalent to COUNT(*).
+                        metric.sql = f"{model.name}.{model.primary_key}"
+                self._add_metric(graph, metric)
 
         # Legacy spec: top-level ``semantic_models:``.
         for model_def in data.get("semantic_models") or []:
@@ -116,6 +136,29 @@ class MetricFlowAdapter(BaseAdapter):
         # Parse saved queries (top-level, both specs). These have no direct
         # Sidemantic equivalent, so retain them for downstream consumers.
         self._parse_saved_queries(data.get("saved_queries"))
+
+    @staticmethod
+    def _qualify_measure_sql(sql: str, model_name: str) -> str:
+        """Qualify unqualified column references in a folded measure's SQL.
+
+        A latest-spec ``type: simple`` metric folds a model measure, so its
+        ``expr`` refers to columns on the owning model. The resulting graph-level
+        metric needs at least one model-qualified column (e.g. ``orders.amount``)
+        so the query planner can infer the model when the metric is selected on
+        its own. Already-qualified references are left untouched.
+        """
+        import sqlglot
+        from sqlglot import exp
+
+        try:
+            parsed = sqlglot.parse_one(sql)
+        except Exception:
+            return sql
+
+        for column in parsed.find_all(exp.Column):
+            if not column.table:
+                column.set("table", exp.to_identifier(model_name))
+        return parsed.sql()
 
     @staticmethod
     def _add_metric(graph: SemanticGraph, metric: Metric) -> None:

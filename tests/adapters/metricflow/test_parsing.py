@@ -901,16 +901,20 @@ def test_metricflow_latest_spec_models():
     # expr falls back to the column name
     assert status.sql == "order_status"
 
-    # Measures folded into inline simple metrics
+    # Measures folded into inline simple metrics. The expression is qualified
+    # with the owning model so a query selecting only the metric can infer its
+    # model.
     order_total = graph.get_metric("order_total")
     assert order_total is not None
     assert order_total.type is None
     assert order_total.agg == "sum"
-    assert order_total.sql == "amount"
+    assert order_total.sql == "orders.amount"
 
     order_count = graph.get_metric("order_count")
     assert order_count is not None
     assert order_count.agg == "count"
+    # A bare ``count`` (no expr) is anchored to the model via its primary key.
+    assert order_count.sql == "orders.order_id"
 
     # Ratio with promoted numerator/denominator (no type_params)
     rpo = graph.get_metric("revenue_per_order")
@@ -946,6 +950,45 @@ def test_metricflow_latest_spec_models():
     assert conv.conversion_event == "order_count"
     assert conv.metadata["calculation"] == "conversion_rate"
     assert conv.metadata["constant_properties"] == [{"base_property": "region", "conversion_property": "region"}]
+
+
+def test_metricflow_latest_spec_inline_metric_queryable_alone():
+    """Inline simple metrics carry model context so they can be queried alone.
+
+    A latest-spec ``type: simple`` metric folds a model measure. Its SQL must be
+    qualified with the owning model, otherwise selecting only that metric raises
+    ``No models found for query``.
+    """
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("tests/fixtures/metricflow/latest_spec_models.yml"))
+    generator = SQLGenerator(graph)
+
+    # A measure-backed simple metric (sum with expr)
+    sql = generator.generate(metrics=["order_total"])
+    assert "orders" in sql.lower()
+    assert "sum" in sql.lower()
+
+    # A bare count measure (no expr) is anchored via the primary key
+    sql = generator.generate(metrics=["order_count"])
+    assert "orders" in sql.lower()
+    assert "count" in sql.lower()
+
+    # A ratio referencing the inline measures by bare name still resolves
+    sql = generator.generate(metrics=["revenue_per_order"])
+    assert "orders" in sql.lower()
+
+
+def test_metricflow_saved_queries_not_leaked_on_reuse():
+    """Reusing an adapter must not leak saved queries into a later graph."""
+    adapter = MetricFlowAdapter()
+
+    with_sq = adapter.parse(Path("tests/fixtures/metricflow/saved_queries_example.yml"))
+    assert "saved_queries" in with_sq.metadata
+
+    # Parsing a source without saved queries on the same adapter must not retain
+    # the previous file's entries.
+    without_sq = adapter.parse(Path("tests/fixtures/metricflow/latest_spec_models.yml"))
+    assert "saved_queries" not in without_sq.metadata
 
 
 def test_metricflow_period_agg_and_offset_metadata():

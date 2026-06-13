@@ -1436,15 +1436,24 @@ class CrossfilterPlanner:
             # Without a metric-range brush the scatter view is the current grid.
             scatter = current
         mark("scatter")
-        if preagg is not None:
+        if preagg is not None and self.chart.limit is None:
             # Interaction preaggs guarantee additive metrics, so KPI totals are a
             # rollup of the current grid we already fetched—derive, don't rescan.
             # Always emit one KPI row (NULL metrics when empty), matching the
             # aggregate-query path so the dashboard keeps stable KPI fields.
+            # Only valid when current is the full grid; a LIMIT pages it, so the
+            # derived totals would undercount—fall back to the aggregate query.
             kpis = {
                 "rows": [self._aggregate_rows(current["rows"], metric_aliases)],
                 "sql": current["sql"],
             }
+        elif preagg is not None:
+            kpis = self._aggregate_interaction_preagg(
+                [],
+                self._filter_expressions(selection, preagg=preagg),
+                metric_aliases,
+                preagg,
+            )
         else:
             kpis = self._query_chart(
                 [],

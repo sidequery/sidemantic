@@ -1234,6 +1234,25 @@ def test_crossfilter_preagg_empty_selection_keeps_kpi_fields():
     assert kpis["order_count"] is None
 
 
+def test_crossfilter_preagg_kpis_total_full_grid_despite_limit():
+    layer = _build_layer()
+    metrics = ["orders.revenue", "orders.order_count"]
+    by = ["orders.created_at__month", "orders.region"]
+    limited = layer.chart(metrics, by=by, limit=1).crossfilter(interaction_preaggregations=True)
+    unlimited = layer.chart(metrics, by=by).crossfilter(interaction_preaggregations=True)
+
+    # North spans two month groups; a filter + event makes the session build the preagg.
+    selection = [DimensionEquals("region", "North")]
+    limited_resp = limited.query(selection, event="limit-test")
+    unlimited_resp = unlimited.query(selection, event="limit-test")
+
+    assert limited_resp["diagnostics"]["used_interaction_preagg"] is True
+    # LIMIT pages `current` to one group, but KPI totals must still reflect the
+    # full filtered grid, not the single returned page.
+    assert len(limited_resp["views"]["table"]) == 1
+    assert limited_resp["views"]["kpis"]["order_count"] == unlimited_resp["views"]["kpis"]["order_count"] == 2
+
+
 def test_crossfilter_example_supports_extreme_semantic_model():
     layer = build_layer(large_records=1_000, extreme_records=4_000)
     chart = _build_chart(layer, "orders_100m", "Revenue Performance Explorer")

@@ -810,6 +810,30 @@ class TestTesseractFeatures:
             assert m.meta.get("cube_type") == ctype
             assert m.sql is not None
 
+    def test_aggregate_expression_measures_preserved_verbatim(self, graph):
+        """Measures whose sql is itself a top-level aggregate must not be re-parsed.
+
+        Without sql_is_complete, Metric.handle_expr_and_parse_agg would extract the
+        aggregation (agg=max) and rewrite the sql, corrupting the {model} placeholder
+        (e.g. into "{'model': model}.created_at"). The import must stay lossless.
+        """
+        orders = graph.get_model("orders")
+
+        latest = orders.get_metric("latest_order_at")
+        assert latest is not None
+        assert latest.agg is None
+        assert latest.type is None
+        assert latest.meta.get("cube_type") == "time"
+        # sql preserved verbatim with the {model} placeholder intact
+        assert latest.sql == "MAX({model}.created_at)"
+
+        total_agg = orders.get_metric("amount_total_agg")
+        assert total_agg is not None
+        assert total_agg.agg is None
+        assert total_agg.type is None
+        assert total_agg.meta.get("cube_type") == "number_agg"
+        assert total_agg.sql == "SUM({model}.amount)"
+
     def test_measure_mask_and_currency(self, graph):
         orders = graph.get_model("orders")
         total = orders.get_metric("total_amount")

@@ -462,6 +462,9 @@ class CubeAdapter(BaseAdapter):
 
         agg_type = type_mapping.get(measure_type)
         metric_type = None
+        # When True, the sql holds a complete expression that must be preserved
+        # verbatim (no auto-extraction of aggregations into agg=).
+        sql_is_complete = False
 
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
@@ -478,13 +481,16 @@ class CubeAdapter(BaseAdapter):
                 # the complete aggregate expression, so leave agg=None and preserve
                 # the SQL verbatim. Record the original Cube type for consumers.
                 agg_type = None
+                sql_is_complete = True
                 meta = meta.copy() if meta else {}
                 meta["cube_type"] = "number_agg"
             elif measure_type in ("string", "time", "boolean"):
-                # Non-numeric measure types (Tesseract). The sql field is a plain
-                # column/expression with no aggregation; preserve it as-is and
+                # Non-numeric measure types (Tesseract). The sql is a complete
+                # expression (often itself an aggregate, e.g. type: time with
+                # MAX({CUBE}.created_at)). Preserve it verbatim with agg=None and
                 # record the original Cube type rather than forcing a count.
                 agg_type = None
+                sql_is_complete = True
                 meta = meta.copy() if meta else {}
                 meta["cube_type"] = measure_type
             else:
@@ -613,6 +619,7 @@ class CubeAdapter(BaseAdapter):
             type=metric_type,
             agg=agg_type,
             sql=measure_sql,
+            sql_is_complete=sql_is_complete,
             numerator=numerator,
             denominator=denominator,
             window=window,

@@ -69,6 +69,19 @@ cubes:
         sql: "BOOL_OR({CUBE}.status = 'completed')"
         type: boolean
 
+      # time measure whose sql is itself a top-level aggregate expression
+      # (common Tesseract pattern). Must be preserved verbatim with agg=None,
+      # not auto-extracted into agg=max with a mangled placeholder.
+      - name: latest_order_at
+        sql: "MAX({CUBE}.created_at)"
+        type: time
+
+      # number_agg whose sql is a standard top-level aggregate. Same constraint:
+      # preserve the full expression, keep agg=None.
+      - name: amount_total_agg
+        sql: "SUM({CUBE}.amount)"
+        type: number_agg
+
       # mask + currency params on a measure
       - name: total_amount
         sql: amount

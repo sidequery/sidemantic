@@ -786,9 +786,16 @@ def test_import_thoughtspot_model_alias():
     assert ship_country is not None
     assert ship_country.sql == "countries.name"
 
+    # `column_id` paths that use the table `name` (even when an `id` exists)
+    # keep their table qualifier instead of collapsing to a bare column.
+    order_id = model.get_dimension("order_id")
+    assert order_id is not None
+    assert order_id.sql == "orders.id"
+
     amount = model.get_metric("amount")
     assert amount is not None
     assert amount.agg == "sum"
+    assert amount.sql == "orders.amount"
 
 
 def test_thoughtspot_model_auto_detect_loader():

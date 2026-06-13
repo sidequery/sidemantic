@@ -884,6 +884,15 @@ class ThoughtSpotAdapter(BaseAdapter):
             table_name = table.get("name") or table.get("id")
             if table_id and table_name:
                 lookup[table_id] = table_name
+        # Model `column_id`s reference a table by its `name` even when an `id`
+        # is present (e.g. `column_id: orders::amount` for a table with
+        # `id: orders_tbl`). Map `name -> name` too so those qualifiers resolve
+        # instead of being dropped, which would emit ambiguous unqualified
+        # columns in joined models. `id -> name` mappings take precedence.
+        for table in tables:
+            table_name = table.get("name")
+            if table_name and table_name not in lookup:
+                lookup[table_name] = table_name
         return lookup
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:

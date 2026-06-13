@@ -357,6 +357,195 @@ def test_omni_measure_aggregation_types():
         temp_path.unlink()
 
 
+def test_omni_extended_aggregate_types():
+    """Test extended Omni aggregate types map to closest Sidemantic aggregation."""
+    view_def = {
+        "name": "test",
+        "table_name": "test_table",
+        "measures": {
+            "med": {"aggregate_type": "median", "sql": "${test.amount}"},
+            "med_distinct": {
+                "aggregate_type": "median_distinct_on",
+                "sql": "${test.amount}",
+                "custom_primary_key_sql": "${test.id}",
+            },
+            "sum_distinct": {"aggregate_type": "sum_distinct_on", "sql": "${test.amount}"},
+            "avg_distinct": {"aggregate_type": "average_distinct_on", "sql": "${test.amount}"},
+            "p95": {"aggregate_type": "percentile", "sql": "${test.amount}", "percentile": 95},
+            "names": {"aggregate_type": "list", "sql": "${test.name}"},
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(view_def, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = OmniAdapter()
+        graph = adapter.parse(temp_path)
+        model = graph.models["test"]
+
+        # median variants map to median
+        assert model.get_metric("med").agg == "median"
+        assert model.get_metric("med_distinct").agg == "median"
+        # sum/average distinct_on map to sum/avg
+        assert model.get_metric("sum_distinct").agg == "sum"
+        assert model.get_metric("avg_distinct").agg == "avg"
+        # percentile and list have no native agg -> parsed as custom SQL (derived)
+        assert model.get_metric("p95").agg is None
+        assert model.get_metric("p95").metadata["aggregate_type"] == "percentile"
+        assert model.get_metric("p95").metadata["percentile"] == 95
+        assert model.get_metric("names").agg is None
+        assert model.get_metric("names").metadata["aggregate_type"] == "list"
+        # original aggregate_type always preserved in metadata
+        assert model.get_metric("med_distinct").metadata["aggregate_type"] == "median_distinct_on"
+        # custom_primary_key_sql is preserved verbatim (Omni reference form retained)
+        assert model.get_metric("med_distinct").metadata["custom_primary_key_sql"] == "${test.id}"
+    finally:
+        temp_path.unlink()
+
+
+def test_omni_filter_operators():
+    """Test the documented Omni filter operators render to SQL."""
+    view_def = {
+        "name": "test",
+        "table_name": "test_table",
+        "measures": {
+            "m_is": {"aggregate_type": "count", "filters": {"status": {"is": "open"}}},
+            "m_not": {"aggregate_type": "count", "filters": {"status": {"not": "closed"}}},
+            "m_gt": {"aggregate_type": "count", "filters": {"amount": {"greater_than": 100}}},
+            "m_lt": {"aggregate_type": "count", "filters": {"amount": {"less_than": 10}}},
+            "m_lte": {"aggregate_type": "count", "filters": {"amount": {"less_than_or_equal_to": 5}}},
+            "m_contains": {"aggregate_type": "count", "filters": {"name": {"contains": "abc"}}},
+            "m_starts": {"aggregate_type": "count", "filters": {"name": {"starts_with": "a"}}},
+            "m_ends": {"aggregate_type": "count", "filters": {"name": {"ends_with": "z"}}},
+            "m_between": {"aggregate_type": "count", "filters": {"amount": {"between": [1, 10]}}},
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(view_def, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = OmniAdapter()
+        model = adapter.parse(temp_path).models["test"]
+
+        assert model.get_metric("m_is").filters == ["status = 'open'"]
+        assert model.get_metric("m_not").filters == ["status != 'closed'"]
+        assert model.get_metric("m_gt").filters == ["amount > 100"]
+        assert model.get_metric("m_lt").filters == ["amount < 10"]
+        assert model.get_metric("m_lte").filters == ["amount <= 5"]
+        assert model.get_metric("m_contains").filters == ["name LIKE '%abc%'"]
+        assert model.get_metric("m_starts").filters == ["name LIKE 'a%'"]
+        assert model.get_metric("m_ends").filters == ["name LIKE '%z'"]
+        assert model.get_metric("m_between").filters == ["amount BETWEEN 1 AND 10"]
+    finally:
+        temp_path.unlink()
+
+
+def test_omni_multiple_timeframes():
+    """Test multiple timeframes set base granularity and supported_granularities."""
+    view_def = {
+        "name": "test",
+        "table_name": "test_table",
+        "dimensions": {
+            "created_at": {
+                "type": "timestamp",
+                "sql": "${TABLE}.created_at",
+                "timeframes": ["date", "week", "month", "year"],
+            },
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(view_def, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = OmniAdapter()
+        created_at = adapter.parse(temp_path).models["test"].get_dimension("created_at")
+        assert created_at.granularity == "day"  # first timeframe "date" -> day
+        assert created_at.supported_granularities == ["day", "week", "month", "year"]
+        assert created_at.metadata["timeframes"] == ["date", "week", "month", "year"]
+    finally:
+        temp_path.unlink()
+
+
+def test_omni_global_relationships_file():
+    """Test a bare top-level relationships.yaml list (current Omni format)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        views_dir = tmpdir_path / "views"
+        views_dir.mkdir()
+
+        with open(views_dir / "orders.yaml", "w") as f:
+            yaml.dump({"name": "orders", "table_name": "orders"}, f)
+        with open(views_dir / "customers.yaml", "w") as f:
+            yaml.dump({"name": "customers", "table_name": "customers"}, f)
+
+        # Bare top-level list of joins, including an assumed_many_to_one.
+        relationships = [
+            {
+                "join_from_view": "orders",
+                "join_to_view": "customers",
+                "join_type": "always_left",
+                "on_sql": "${orders.customer_id} = ${customers.id}",
+                "relationship_type": "assumed_many_to_one",
+                "reversible": False,
+            }
+        ]
+        with open(tmpdir_path / "relationships.yaml", "w") as f:
+            yaml.dump(relationships, f)
+
+        adapter = OmniAdapter()
+        graph = adapter.parse(tmpdir_path)
+
+        orders = graph.models["orders"]
+        rel = next(r for r in orders.relationships if r.name == "customers")
+        # assumed_many_to_one collapses to many_to_one but is flagged in metadata.
+        assert rel.type == "many_to_one"
+        assert rel.foreign_key == "customer_id"
+        assert rel.primary_key == "id"
+        assert rel.metadata["assumed"] is True
+
+
+def test_omni_topic_realizes_relationships():
+    """Test that a topic file's joins are realized as relationships."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        views_dir = tmpdir_path / "views"
+        views_dir.mkdir()
+        topics_dir = tmpdir_path / "topics"
+        topics_dir.mkdir()
+
+        for view in ("orders", "customers", "addresses"):
+            with open(views_dir / f"{view}.yaml", "w") as f:
+                yaml.dump({"name": view, "table_name": view}, f)
+
+        topic = {
+            "base_view": "orders",
+            "label": "Orders",
+            "joins": {"customers": {"addresses": {}}},
+        }
+        with open(topics_dir / "orders.topic.yaml", "w") as f:
+            yaml.dump(topic, f)
+
+        adapter = OmniAdapter()
+        graph = adapter.parse(tmpdir_path)
+
+        topics = {t["name"]: t for t in graph.topics}
+        assert "orders" in topics
+        assert topics["orders"]["base_view"] == "orders"
+        assert set(topics["orders"]["joined_views"]) == {"customers", "addresses"}
+
+        # orders -> customers and customers -> addresses become relationships.
+        orders_rels = {r.name for r in graph.models["orders"].relationships}
+        assert "customers" in orders_rels
+        customers_rels = {r.name for r in graph.models["customers"].relationships}
+        assert "addresses" in customers_rels
+
+
 def test_omni_measure_sql_reference_cleanup():
     """Test that ${view.field} SQL references are cleaned up during parse."""
     view_def = {

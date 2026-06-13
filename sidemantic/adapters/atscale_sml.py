@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,6 +150,22 @@ def _parse_custom_quantiles(value: Any) -> list[float]:
         if 0 < numeric < 1:
             quantiles.append(numeric)
     return quantiles
+
+
+_PERCENTILE_CONT_RE = re.compile(
+    r"PERCENTILE_CONT\s*\(.*?\)\s*WITHIN\s+GROUP\s*\(\s*ORDER\s+BY\s+(?P<column>.+?)\s*\)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _percentile_column_from_sql(sql: str | None) -> str | None:
+    """Extract the ordered column from a PERCENTILE_CONT(...) WITHIN GROUP (ORDER BY col) expression."""
+    if not sql:
+        return None
+    match = _PERCENTILE_CONT_RE.search(sql.strip())
+    if not match:
+        return None
+    return match.group("column").strip() or None
 
 
 def _data_type_to_granularity(data_type: str | None) -> str | None:
@@ -1247,6 +1264,13 @@ class AtScaleSMLAdapter(BaseAdapter):
         if metric.type and metric.type != "derived":
             return self._export_metric_calc(metric)
 
+        # Imported custom-quantile percentiles (SML v1.5) arrive as derived metrics with
+        # agg=None and a PERCENTILE_CONT(...) expression. Export them as percentile metrics
+        # so custom_quantiles/compression round-trip instead of degrading to a metric_calc.
+        percentile_def = self._export_percentile_metric(metric, model)
+        if percentile_def is not None:
+            return percentile_def
+
         if metric.agg is None:
             return self._export_metric_calc(metric)
 
@@ -1283,6 +1307,43 @@ class AtScaleSMLAdapter(BaseAdapter):
             if metadata.get("compression") is not None:
                 metric_def["compression"] = metadata["compression"]
 
+        if metric.description:
+            metric_def["description"] = metric.description
+        if metric.format:
+            metric_def["format"] = metric.format
+
+        return metric_def
+
+    def _export_percentile_metric(self, metric: Metric, model: Model) -> dict[str, Any] | None:
+        """Export an imported custom-quantile percentile metric as a percentile metric definition.
+
+        Imported SML v1.5 percentiles (e.g. ``custom_quantiles: [0.75]``) parse to derived metrics
+        with ``agg=None`` and a ``PERCENTILE_CONT(...) WITHIN GROUP (ORDER BY col)`` expression. Without
+        this, ``_export_metric`` would emit a ``metric_calc`` and drop ``custom_quantiles``/``compression``.
+        """
+        if metric.agg is not None:
+            return None
+
+        metadata = metric.metadata or {}
+        custom_quantiles = _parse_custom_quantiles(metadata.get("custom_quantiles"))
+        if not custom_quantiles:
+            return None
+
+        column = _percentile_column_from_sql(metric.sql)
+        if column is None:
+            return None
+
+        metric_def: dict[str, Any] = {
+            "unique_name": metric.name,
+            "object_type": "metric",
+            "label": metric.label or metric.name,
+            "calculation_method": "percentile",
+            "dataset": model.name,
+            "column": column,
+            "custom_quantiles": list(custom_quantiles),
+        }
+        if metadata.get("compression") is not None:
+            metric_def["compression"] = metadata["compression"]
         if metric.description:
             metric_def["description"] = metric.description
         if metric.format:

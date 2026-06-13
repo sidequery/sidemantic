@@ -69,7 +69,16 @@ def validate_model(model: "Model") -> list[str]:
         errors.append(f"Model '{model.name}' must have a primary_key defined")
 
     # Check for a physical, SQL, DAX, or externally sourced model definition.
-    if not model.table and not model.sql and not getattr(model, "source_uri", None) and not getattr(model, "dax", None):
+    # Hex ``view`` resources are presentation layers over a base model and are
+    # intentionally table-less, so they are exempt from this requirement.
+    is_hex_view = bool((getattr(model, "meta", None) or {}).get("hex_resource_type") == "view")
+    if (
+        not is_hex_view
+        and not model.table
+        and not model.sql
+        and not getattr(model, "source_uri", None)
+        and not getattr(model, "dax", None)
+    ):
         errors.append(f"Model '{model.name}' must have one of 'table', 'sql', 'dax', or 'source_uri' defined")
 
     for label, items in [

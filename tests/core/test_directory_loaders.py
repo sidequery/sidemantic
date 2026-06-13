@@ -226,3 +226,80 @@ accounts:
     events_sql = layer.compile(metrics=["events.count"], dimensions=["events_user.name"])
     assert "events_user_cte" in events_sql
     assert "FROM accounts" in events_sql
+
+
+def test_load_from_directory_detects_multi_document_hex(tmp_path):
+    """Multi-document (``---``-separated) typed Hex files load via auto-discovery.
+
+    ``yaml.safe_load`` rejects multi-document files, so without explicit Hex
+    detection the documented CLI workflow could not load current Hex projects.
+    """
+    hex_file = tmp_path / "subscriptions_project.yml"
+    hex_file.write_text(
+        """
+id: subscriptions
+type: model
+base_sql_table: analytics.subscriptions
+dimensions:
+  - id: customer_id
+    type: string
+    unique: true
+  - id: snapshot_date
+    type: date
+measures:
+  - id: total_mrr
+    func: sum
+    of: mrr
+  - id: current_mrr
+    func: sum
+    of: mrr
+    semi_additive:
+      over:
+        - dimension: snapshot_date
+          pick: max
+---
+id: revenue_overview
+type: view
+base: subscriptions
+contents:
+  - name: Revenue
+    measures:
+      - total_mrr
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    # Both the model and the table-less view resource are registered.
+    assert "subscriptions" in layer.graph.models
+    assert "revenue_overview" in layer.graph.models
+
+    view = layer.graph.models["revenue_overview"]
+    assert view.meta.get("hex_resource_type") == "view"
+    assert view.table is None
+
+    # The typed model's semi-additive config survives through the CLI load path.
+    assert layer.graph.models["subscriptions"].get_metric("current_mrr").non_additive_dimension == "snapshot_date"
+
+
+def test_load_from_directory_detects_exported_hex_view(tmp_path):
+    """A standalone exported ``type: view`` Hex file is detected by auto-discovery."""
+    view_file = tmp_path / "revenue_overview.yml"
+    view_file.write_text(
+        """
+id: revenue_overview
+type: view
+base: subscriptions
+contents:
+  - name: Revenue
+    measures:
+      - total_mrr
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "revenue_overview" in layer.graph.models
+    assert layer.graph.models["revenue_overview"].meta.get("hex_resource_type") == "view"

@@ -226,3 +226,49 @@ accounts:
     events_sql = layer.compile(metrics=["events.count"], dimensions=["events_user.name"])
     assert "events_user_cte" in events_sql
     assert "FROM accounts" in events_sql
+
+
+def test_load_from_directory_detects_released_osi_json(tmp_path):
+    """Released-spec OSI .json (dbt OSI consumer) is routed to the OSI adapter."""
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(
+        """
+{
+  "version": "0.1.1",
+  "semantic_model": [
+    {
+      "name": "released_analytics",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "db.schema.fct_orders",
+          "primary_key": ["order_id"],
+          "fields": [
+            {
+              "name": "order_id",
+              "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]}
+            }
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "name": "order_count",
+          "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "COUNT(*)"}]}
+        }
+      ]
+    }
+  ]
+}
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    orders = layer.graph.models["orders"]
+    assert orders.table.endswith("fct_orders")
+    assert getattr(orders, "_source_format", None) == "OSI"
+    assert "order_count" in layer.graph.metrics

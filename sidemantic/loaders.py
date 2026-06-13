@@ -136,6 +136,10 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 adapter = GoodDataAdapter()
             elif '"datasets"' in content and ('"dataSourceTableId"' in content or '"data_source_table_id"' in content):
                 adapter = GoodDataAdapter()
+            elif '"semantic_model"' in content and '"datasets"' in content and _looks_like_osi_json(content):
+                # Released-spec OSI profile (dbt OSI consumer) ships as JSON in an
+                # OSI/ directory. Mirror the YAML detection (semantic_model + datasets).
+                adapter = OSIAdapter()
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
 
@@ -377,6 +381,29 @@ def _load_yaml_mapping(content: str) -> dict:
     """Parse YAML content and return a mapping, or an empty mapping for scalar/list YAML."""
     data = yaml.safe_load(content)
     return data if isinstance(data, dict) else {}
+
+
+def _looks_like_osi_json(content: str) -> bool:
+    """Return True for a released-spec OSI JSON document (dbt OSI consumer).
+
+    Released OSI ships as JSON with a top-level ``semantic_model`` list whose
+    entries contain ``datasets``. This mirrors the YAML OSI detection and avoids
+    routing unrelated JSON (e.g. GoodData) to the OSI adapter.
+    """
+    import json
+
+    try:
+        data = json.loads(content)
+    except Exception:
+        return False
+    if not isinstance(data, dict) or "semantic_model" not in data:
+        return False
+    models = data.get("semantic_model")
+    if isinstance(models, dict):
+        models = [models]
+    if not isinstance(models, list):
+        return False
+    return any(isinstance(model, dict) and "datasets" in model for model in models)
 
 
 def _looks_like_semantic_yaml_text(content: str) -> bool:

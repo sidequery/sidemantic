@@ -111,12 +111,19 @@ class SnowflakeAdapter(BaseAdapter):
     - tables -> Models
     - dimensions -> Dimensions (categorical)
     - time_dimensions -> Dimensions (time)
-    - facts -> Metrics (with default_aggregation)
+    - facts (a.k.a. legacy `measures`) -> Metrics (with default_aggregation)
     - metrics -> Metrics (derived, table-scoped aggregations)
     - relationships -> Relationships
     - filters -> Segments
 
-    Reference: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-analyst/semantic-model-spec
+    Also imports newer Cortex Analyst spec features:
+    - `synonyms` on dimensions/facts/measures/metrics
+    - `sample_values` and `cortex_search_service` / `cortex_search_service_name` on dimensions
+    - top-level `verified_queries`, `custom_instructions`, `module_custom_instructions`
+    - per-field keys preserved in metadata: access_modifier, is_enum, unique, labels,
+      tags, non_additive_dimensions, using_relationships
+
+    Reference: https://docs.snowflake.com/en/user-guide/views-semantic/semantic-view-yaml-spec
     """
 
     def parse(self, source: str | Path) -> SemanticGraph:
@@ -169,6 +176,20 @@ class SnowflakeAdapter(BaseAdapter):
         relationships_def = data.get("relationships") or []
         self._apply_relationships(relationships_def, graph)
 
+        # Parse top-level metrics (semantic-model-scoped metrics referencing tables)
+        for metric_def in data.get("metrics") or []:
+            metric = self._parse_metric(metric_def)
+            if metric is None:
+                continue
+            table_name = metric_def.get("table")
+            if table_name and table_name in graph.models:
+                graph.models[table_name].metrics.append(metric)
+            else:
+                graph.metrics[metric.name] = metric
+
+        # Parse top-level Cortex Analyst sections onto the graph.
+        self._apply_top_level_sections(data, graph)
+
     def _parse_table(self, table_def: dict) -> Model | None:
         """Parse Snowflake table definition into Model.
 
@@ -212,9 +233,11 @@ class SnowflakeAdapter(BaseAdapter):
             if dim:
                 dimensions.append(dim)
 
-        # Parse facts (row-level measures with default aggregation)
+        # Parse facts (row-level measures with default aggregation).
+        # Cortex Analyst's table-level `measures:` key is a legacy alias of `facts:`;
+        # accept both so current Cortex Analyst files import without silent data loss.
         metrics = []
-        for fact_def in table_def.get("facts") or []:
+        for fact_def in (table_def.get("facts") or []) + (table_def.get("measures") or []):
             metric = self._parse_fact(fact_def)
             if metric:
                 metrics.append(metric)
@@ -270,6 +293,10 @@ class SnowflakeAdapter(BaseAdapter):
             type=dim_type,
             sql=dim_def.get("expr"),
             description=dim_def.get("description"),
+            synonyms=dim_def.get("synonyms"),
+            sample_values=dim_def.get("sample_values"),
+            cortex_search_service_name=self._cortex_search_service_name(dim_def),
+            metadata=self._dimension_metadata(dim_def),
         )
 
     def _parse_time_dimension(self, dim_def: dict) -> Dimension | None:
@@ -291,6 +318,10 @@ class SnowflakeAdapter(BaseAdapter):
             sql=dim_def.get("expr"),
             description=dim_def.get("description"),
             granularity="day",  # Default granularity
+            synonyms=dim_def.get("synonyms"),
+            sample_values=dim_def.get("sample_values"),
+            cortex_search_service_name=self._cortex_search_service_name(dim_def),
+            metadata=self._dimension_metadata(dim_def),
         )
 
     def _parse_fact(self, fact_def: dict) -> Metric | None:
@@ -309,7 +340,7 @@ class SnowflakeAdapter(BaseAdapter):
             return None
 
         # Map Snowflake default_aggregation to Sidemantic agg
-        default_agg = fact_def.get("default_aggregation", "sum").lower()
+        default_agg = (fact_def.get("default_aggregation") or "sum").lower()
         agg_mapping = {
             "sum": "sum",
             "avg": "avg",
@@ -327,6 +358,8 @@ class SnowflakeAdapter(BaseAdapter):
             agg=agg,
             sql=fact_def.get("expr"),
             description=fact_def.get("description"),
+            synonyms=fact_def.get("synonyms"),
+            metadata=self._measure_metadata(fact_def),
         )
 
     def _parse_metric(self, metric_def: dict) -> Metric | None:
@@ -375,6 +408,8 @@ class SnowflakeAdapter(BaseAdapter):
                     agg=agg_func,
                     sql=inner_expr,
                     description=metric_def.get("description"),
+                    synonyms=metric_def.get("synonyms"),
+                    metadata=self._metric_metadata(metric_def),
                 )
 
         # Complex expression (multiple aggregations or couldn't parse simple one)
@@ -385,7 +420,88 @@ class SnowflakeAdapter(BaseAdapter):
             type="derived",
             sql=qualified_expr,
             description=metric_def.get("description"),
+            synonyms=metric_def.get("synonyms"),
+            metadata=self._metric_metadata(metric_def),
         )
+
+    @staticmethod
+    def _cortex_search_service_name(dim_def: dict) -> str | None:
+        """Resolve the linked Cortex Search service name for a dimension.
+
+        Supports both the legacy flat ``cortex_search_service_name`` string and
+        the newer nested ``cortex_search_service`` object (``{service, ...}``).
+        """
+        flat = dim_def.get("cortex_search_service_name")
+        if flat:
+            return flat
+        nested = dim_def.get("cortex_search_service")
+        if isinstance(nested, dict):
+            return nested.get("service")
+        if isinstance(nested, str):
+            return nested
+        return None
+
+    @staticmethod
+    def _collect_metadata(definition: dict, keys: tuple[str, ...]) -> dict | None:
+        """Preserve newer Cortex Analyst per-field keys under a snowflake namespace."""
+        extra = {key: definition[key] for key in keys if definition.get(key) is not None}
+        if not extra:
+            return None
+        return {"snowflake": extra}
+
+    def _dimension_metadata(self, dim_def: dict) -> dict | None:
+        return self._collect_metadata(
+            dim_def,
+            ("unique", "is_enum", "access_modifier", "labels", "tags", "cortex_search_service"),
+        )
+
+    def _measure_metadata(self, measure_def: dict) -> dict | None:
+        return self._collect_metadata(
+            measure_def,
+            ("access_modifier", "is_enum", "labels", "tags", "non_additive_dimensions"),
+        )
+
+    def _metric_metadata(self, metric_def: dict) -> dict | None:
+        return self._collect_metadata(
+            metric_def,
+            ("access_modifier", "labels", "tags", "non_additive_dimensions", "using_relationships"),
+        )
+
+    @staticmethod
+    def _apply_top_level_sections(data: dict, graph: SemanticGraph) -> None:
+        """Attach top-level Cortex Analyst sections to the graph.
+
+        Cortex Analyst defines several semantic-model-level sections that have no
+        direct Sidemantic equivalent. We expose them both as direct attributes on
+        the graph (for ergonomic access) and inside ``graph.metadata`` so they
+        survive serialization.
+        """
+        verified_queries = data.get("verified_queries") or []
+        custom_instructions = data.get("custom_instructions")
+        module_custom_instructions = data.get("module_custom_instructions")
+
+        # Accumulate verified queries across files in a directory parse.
+        existing = list(getattr(graph, "verified_queries", []) or [])
+        existing.extend(verified_queries)
+        graph.verified_queries = existing
+
+        if custom_instructions is not None:
+            graph.custom_instructions = custom_instructions
+        elif not hasattr(graph, "custom_instructions"):
+            graph.custom_instructions = None
+
+        if module_custom_instructions is not None:
+            graph.module_custom_instructions = module_custom_instructions
+        elif not hasattr(graph, "module_custom_instructions"):
+            graph.module_custom_instructions = None
+
+        snowflake_meta = graph.metadata.setdefault("snowflake", {})
+        if existing:
+            snowflake_meta["verified_queries"] = existing
+        if graph.custom_instructions is not None:
+            snowflake_meta["custom_instructions"] = graph.custom_instructions
+        if graph.module_custom_instructions is not None:
+            snowflake_meta["module_custom_instructions"] = graph.module_custom_instructions
 
     def _parse_filter(self, filter_def: dict) -> Segment | None:
         """Parse Snowflake filter into Sidemantic segment.
@@ -492,6 +608,17 @@ class SnowflakeAdapter(BaseAdapter):
         # Remove empty relationships list
         if not semantic_model["relationships"]:
             del semantic_model["relationships"]
+
+        # Export top-level Cortex Analyst sections if present on the graph.
+        verified_queries = getattr(graph, "verified_queries", None)
+        if verified_queries:
+            semantic_model["verified_queries"] = verified_queries
+        custom_instructions = getattr(graph, "custom_instructions", None)
+        if custom_instructions:
+            semantic_model["custom_instructions"] = custom_instructions
+        module_custom_instructions = getattr(graph, "module_custom_instructions", None)
+        if module_custom_instructions:
+            semantic_model["module_custom_instructions"] = module_custom_instructions
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -603,6 +730,8 @@ class SnowflakeAdapter(BaseAdapter):
         }
         dim_def["data_type"] = type_mapping.get(dim.type, "TEXT")
 
+        self._export_dimension_extras(dim, dim_def)
+
         return dim_def
 
     def _export_time_dimension(self, dim: Dimension) -> dict:
@@ -624,7 +753,22 @@ class SnowflakeAdapter(BaseAdapter):
 
         dim_def["data_type"] = "TIMESTAMP"
 
+        self._export_dimension_extras(dim, dim_def)
+
         return dim_def
+
+    @staticmethod
+    def _export_dimension_extras(dim: Dimension, dim_def: dict) -> None:
+        """Attach Cortex Analyst enrichment keys to an exported dimension."""
+        if dim.synonyms:
+            dim_def["synonyms"] = dim.synonyms
+        if dim.sample_values:
+            dim_def["sample_values"] = dim.sample_values
+        if dim.cortex_search_service_name:
+            dim_def["cortex_search_service_name"] = dim.cortex_search_service_name
+        snowflake_meta = (dim.metadata or {}).get("snowflake", {})
+        for key, value in snowflake_meta.items():
+            dim_def.setdefault(key, value)
 
     def _export_fact(self, metric: Metric) -> dict:
         """Export metric as Snowflake fact.
@@ -656,6 +800,12 @@ class SnowflakeAdapter(BaseAdapter):
         fact["default_aggregation"] = agg_mapping.get(metric.agg, "sum")
 
         fact["data_type"] = "NUMBER"
+
+        if metric.synonyms:
+            fact["synonyms"] = metric.synonyms
+        snowflake_meta = (metric.metadata or {}).get("snowflake", {})
+        for key, value in snowflake_meta.items():
+            fact.setdefault(key, value)
 
         return fact
 
@@ -690,6 +840,12 @@ class SnowflakeAdapter(BaseAdapter):
                 metric_def["expr"] = f"{agg_func}({metric.sql})"
         elif metric.sql:
             metric_def["expr"] = metric.sql
+
+        if metric.synonyms:
+            metric_def["synonyms"] = metric.synonyms
+        snowflake_meta = (metric.metadata or {}).get("snowflake", {})
+        for key, value in snowflake_meta.items():
+            metric_def.setdefault(key, value)
 
         return metric_def
 

@@ -1,0 +1,79 @@
+name: cortex_features
+description: Cortex Analyst model exercising newer spec keys.
+tables:
+  - name: orders
+    description: Orders fact table.
+    base_table:
+      database: analytics
+      schema: sales
+      table: orders
+    primary_key:
+      columns:
+        - order_id
+    time_dimensions:
+      - name: order_date
+        expr: order_date
+        data_type: timestamp
+        unique: false
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+      - name: status
+        expr: status
+        data_type: varchar
+        synonyms:
+          - state
+        is_enum: true
+        sample_values:
+          - delivered
+          - shipped
+        access_modifier: public_access
+        labels:
+          - Order Status
+        tags:
+          - core
+      - name: customer_name
+        expr: customer_name
+        data_type: varchar
+        cortex_search_service:
+          service: customer_name_search
+          literal_column: customer_name
+          database: analytics
+          schema: sales
+    measures:
+      - name: order_total
+        expr: total
+        data_type: number
+        default_aggregation: sum
+        synonyms:
+          - revenue
+        access_modifier: public_access
+        non_additive_dimensions:
+          - table: orders
+            dimension: order_date
+        labels:
+          - Order Total
+        tags:
+          - finance
+    metrics:
+      - name: distinct_orders
+        expr: COUNT(DISTINCT order_id)
+        synonyms:
+          - order count
+        access_modifier: public_access
+        using_relationships:
+          - orders_to_customers
+
+verified_queries:
+  - name: total revenue
+    question: what is the total revenue
+    sql: "SELECT SUM(total) FROM orders"
+    verified_at: 1700000000
+    verified_by: analyst
+
+custom_instructions: Always prefer revenue over total when answering.
+
+module_custom_instructions:
+  sql_generation: Prefer explicit column references.
+  question_categorization: Treat revenue questions as financial.

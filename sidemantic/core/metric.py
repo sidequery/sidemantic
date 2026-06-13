@@ -331,6 +331,9 @@ class Metric(BaseModel):
     label: str | None = Field(None, description="Display label")
     metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
+    # Synonyms (e.g. Snowflake Cortex Analyst measures/metrics, Cube)
+    synonyms: list[str] | None = Field(None, description="Alternative names for this measure/metric")
+
     # Display formatting
     format: str | None = Field(None, description="Display format string (e.g., '$#,##0.00', '0.00%')")
     value_format_name: str | None = Field(None, description="Named format (e.g., 'usd', 'percent', 'decimal_2')")

@@ -174,25 +174,21 @@ class TestRevenueTimeseriesDimensions:
 class TestRevenueTimeseriesMeasures:
     """Verify measures parsing.
 
-    The Cortex Analyst format uses `measures` (not `facts`). The adapter
-    currently only looks for `facts` and `metrics`, so measures from the
-    Cortex Analyst format are not imported. These tests are marked xfail
-    to document the gap.
+    The Cortex Analyst format uses the table-level `measures` key as a legacy
+    alias of `facts`. The adapter reads both, so measures from the tutorial
+    fixture are imported as Sidemantic metrics.
     """
 
-    @pytest.mark.xfail(reason="Adapter parses 'facts' key, not 'measures' (Cortex Analyst format)")
     def test_daily_revenue_has_measures(self, graph):
         model = graph.models["daily_revenue"]
         metric_names = {m.name for m in model.metrics}
         assert "daily_revenue" in metric_names
 
-    @pytest.mark.xfail(reason="Adapter parses 'facts' key, not 'measures' (Cortex Analyst format)")
     def test_daily_revenue_measure_count(self, graph):
         """daily_revenue table defines 5 measures."""
         model = graph.models["daily_revenue"]
         assert len(model.metrics) == 5
 
-    @pytest.mark.xfail(reason="Adapter parses 'facts' key, not 'measures' (Cortex Analyst format)")
     def test_daily_cogs_measure(self, graph):
         model = graph.models["daily_revenue"]
         cogs = model.get_metric("daily_cogs")
@@ -200,14 +196,12 @@ class TestRevenueTimeseriesMeasures:
         assert cogs.agg == "sum"
         assert cogs.sql == "cogs"
 
-    @pytest.mark.xfail(reason="Adapter parses 'facts' key, not 'measures' (Cortex Analyst format)")
     def test_daily_profit_computed_measure(self, graph):
         """daily_profit has expr 'revenue - cogs' and no default_aggregation."""
         model = graph.models["daily_revenue"]
         profit = model.get_metric("daily_profit")
         assert profit is not None
 
-    @pytest.mark.xfail(reason="Adapter parses 'facts' key, not 'measures' (Cortex Analyst format)")
     def test_forecast_error_avg_aggregation(self, graph):
         """daily_forecast_abs_error has default_aggregation: avg."""
         model = graph.models["daily_revenue"]
@@ -255,21 +249,14 @@ class TestRevenueTimeseriesRelationships:
         assert region_rel.primary_key == "region_id"
 
 
-class TestRevenueTimeseriesUnsupportedFeatures:
-    """Test features present in the fixture that the adapter does not yet handle.
+class TestRevenueTimeseriesCortexFeatures:
+    """Test newer Cortex Analyst features the adapter now imports."""
 
-    These are marked xfail to document what a Cortex Analyst model can contain
-    that sidemantic does not yet import.
-    """
-
-    @pytest.mark.xfail(reason="verified_queries not imported by adapter")
     def test_verified_queries_imported(self, graph):
         """The fixture has 2 verified_queries; adapter should expose them."""
-        # SemanticGraph has no verified_queries attribute yet
         assert hasattr(graph, "verified_queries")
         assert len(graph.verified_queries) == 2
 
-    @pytest.mark.xfail(reason="synonyms on measures not imported by adapter")
     def test_measure_synonyms(self, graph):
         """daily_revenue measure has synonyms ['sales', 'income']."""
         model = graph.models["daily_revenue"]
@@ -277,7 +264,6 @@ class TestRevenueTimeseriesUnsupportedFeatures:
         assert hasattr(rev, "synonyms")
         assert "sales" in rev.synonyms
 
-    @pytest.mark.xfail(reason="sample_values on dimensions not imported by adapter")
     def test_dimension_sample_values(self, graph):
         """product_line dimension has sample_values."""
         model = graph.models["product"]
@@ -285,7 +271,6 @@ class TestRevenueTimeseriesUnsupportedFeatures:
         assert hasattr(pl, "sample_values")
         assert "Electronics" in pl.sample_values
 
-    @pytest.mark.xfail(reason="cortex_search_service_name not imported by adapter")
     def test_cortex_search_service_name(self, graph):
         """product_dimension table has cortex_search_service_name on product_line."""
         model = graph.models["product_dimension"]

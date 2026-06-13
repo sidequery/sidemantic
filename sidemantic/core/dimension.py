@@ -26,6 +26,13 @@ class Dimension(BaseModel):
     label: str | None = Field(None, description="Display label")
     metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
 
+    # Synonyms / sample values (e.g. Snowflake Cortex Analyst, Cube)
+    synonyms: list[str] | None = Field(None, description="Alternative names for this dimension")
+    sample_values: list[str] | None = Field(None, description="Representative sample values for this dimension")
+    cortex_search_service_name: str | None = Field(
+        None, description="Linked Cortex Search service name (Snowflake Cortex Analyst)"
+    )
+
     # Display formatting
     format: str | None = Field(None, description="Display format string (e.g., '$#,##0.00', '0.00%')")
     value_format_name: str | None = Field(None, description="Named format (e.g., 'usd', 'percent', 'decimal_2')")

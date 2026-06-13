@@ -432,3 +432,113 @@ def test_empty_datasource(adapter, tmp_path):
     empty_tds.write_text("<?xml version='1.0' encoding='utf-8' ?>\n<datasource version='18.1' />\n")
     graph = adapter.parse(empty_tds)
     assert len(graph.models) == 0
+
+
+# =============================================================================
+# DERIVED RELATION SOURCES (union / subquery)
+# =============================================================================
+
+_MEASURE_COL = (
+    '<column caption="Amount" name="[amount]" datatype="real" role="measure" type="quantitative" aggregation="Sum" />'
+)
+
+
+def _compiles_to_valid_duckdb_sql(model) -> str:
+    """Compile a single measure for the model and assert DuckDB accepts the SQL."""
+    import duckdb
+
+    sl = SemanticLayer()
+    sl.add_model(model)
+    measure = model.metrics[0].name
+    sql = sl.compile(metrics=[f"{model.name}.{measure}"])
+
+    con = duckdb.connect()
+    try:
+        con.execute("EXPLAIN " + sql)
+    except duckdb.Error as exc:  # pragma: no cover - failure path
+        message = str(exc).splitlines()[0]
+        # A missing table is fine (fixtures reference uncreated tables); only a
+        # syntax/parser error means we generated invalid FROM-clause SQL.
+        if "does not exist" not in message and "Catalog Error" not in message:
+            raise AssertionError(f"DuckDB rejected generated SQL:\n{sql}\n--> {message}") from exc
+    return sql
+
+
+def test_single_member_union_is_derived_sql(adapter, tmp_path):
+    """A union with a single usable member must produce derived SQL, not a bare
+    "SELECT * FROM <source>" stored on model.table (which would emit
+    "FROM SELECT * FROM ...")."""
+    tds = tmp_path / "single_union.tds"
+    tds.write_text(
+        f"""<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='single_union' inline='true' version='18.1'>
+  <connection class='federated'>
+    <relation type='union' name='MyUnion'>
+      <relation type='table' name='t1' table='[public].[orders]' />
+    </relation>
+  </connection>
+  {_MEASURE_COL}
+</datasource>"""
+    )
+
+    graph = adapter.parse(tds)
+    model = graph.models["single_union"]
+
+    # Must be stored as derived SQL, never as a bare-SELECT "table".
+    assert model.table is None
+    assert model.sql == "SELECT * FROM public.orders"
+
+    sql = _compiles_to_valid_duckdb_sql(model)
+    assert "FROM (SELECT * FROM public.orders) AS t" in sql
+
+
+def test_multi_member_union_builds_union_all(adapter, tmp_path):
+    """A union with multiple members stacks them with UNION ALL as derived SQL."""
+    tds = tmp_path / "multi_union.tds"
+    tds.write_text(
+        f"""<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='multi_union' inline='true' version='18.1'>
+  <connection class='federated'>
+    <relation type='union' name='MyUnion'>
+      <relation type='table' name='t1' table='[public].[orders_2020]' />
+      <relation type='table' name='t2' table='[public].[orders_2021]' />
+    </relation>
+  </connection>
+  {_MEASURE_COL}
+</datasource>"""
+    )
+
+    graph = adapter.parse(tds)
+    model = graph.models["multi_union"]
+
+    assert model.table is None
+    assert model.sql is not None
+    assert "UNION ALL" in model.sql
+
+    _compiles_to_valid_duckdb_sql(model)
+
+
+def test_top_level_subquery_relation_not_double_aliased(adapter, tmp_path):
+    """A top-level type='subquery' relation stores raw SELECT SQL; the generator's
+    own "(<sql>) AS t" wrapping must not produce a double-aliased derived table."""
+    tds = tmp_path / "subquery.tds"
+    tds.write_text(
+        f"""<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='subquery_ds' inline='true' version='18.1'>
+  <connection class='federated'>
+    <relation type='subquery' name='Active Users'>SELECT * FROM users WHERE active = 1</relation>
+  </connection>
+  {_MEASURE_COL}
+</datasource>"""
+    )
+
+    graph = adapter.parse(tds)
+    model = graph.models["subquery_ds"]
+
+    assert model.table is None
+    assert model.sql is not None
+    # Outer "AS <alias>" must have been stripped so the generator can add "AS t".
+    assert not model.sql.rstrip().endswith('AS "Active Users"')
+
+    sql = _compiles_to_valid_duckdb_sql(model)
+    assert 'AS "Active Users"' not in sql

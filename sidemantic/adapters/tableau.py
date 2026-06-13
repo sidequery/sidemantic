@@ -615,6 +615,41 @@ def _iter_child_relations(relation_elem: ET.Element) -> list[ET.Element]:
     return [child for child in relation_elem if _is_relation_tag(child.tag)]
 
 
+def _strip_derived_alias(expr: str) -> str:
+    """Strip a trailing "AS <alias>" from a parenthesized derived-table expression.
+
+    ``_parse_relation_tree`` returns subquery/custom-SQL/union sources wrapped as
+    ``(<select>) AS <alias>``. When such an expression is stored on ``model.sql``,
+    the SQL generator re-wraps it as ``(<model.sql>) AS t``, which would produce an
+    invalid double-aliased derived table like ``((<select>) AS x) AS t``. Strip the
+    outer alias so the generator supplies the single alias it expects.
+
+    Only the outer ``(<body>) AS <alias>`` shape is unwrapped; any other expression
+    is returned unchanged.
+    """
+    text = expr.strip()
+    if not text.startswith("("):
+        return expr
+    # Find the parenthesis that closes the leading "(".
+    depth = 0
+    close_idx = -1
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                close_idx = i
+                break
+    if close_idx == -1:
+        return expr
+    remainder = text[close_idx + 1 :].lstrip()
+    if remainder[:3].upper() == "AS " or remainder.upper() == "AS":
+        # "(<body>) AS <alias>" -> "(<body>)"; generator adds its own alias.
+        return text[: close_idx + 1]
+    return expr
+
+
 # Namespace prefixes commonly used in Tableau XML files
 _TABLEAU_NS_PREFIXES = [
     "user",
@@ -954,11 +989,12 @@ class TableauAdapter(BaseAdapter):
                 elif rel_type in _SET_OPERATION_RELATIONS:
                     # union / batch-union: stack member relations with UNION ALL
                     union_sql = self._build_union_sql(relation)
-                    if union_sql and "UNION ALL" in union_sql:
+                    if union_sql:
+                        # Either a multi-member UNION ALL or a single member that
+                        # resolved to a "SELECT * FROM <source>" select. Both are
+                        # derived SQL, not a bare table reference, so store them as
+                        # model.sql; the generator wraps model.sql as "(<sql>) AS t".
                         sql = union_sql
-                    elif union_sql:
-                        # Single member resolved to a bare table reference.
-                        table = union_sql
                 elif rel_type in _WRAPPER_RELATIONS:
                     # pivot / subquery / stored-proc / project / text-transform:
                     # derived relations that wrap a child relation or raw SQL.
@@ -968,7 +1004,9 @@ class TableauAdapter(BaseAdapter):
                         relationships = self._extract_relationships(joins)
                     elif base_table is not None and (base_table.startswith("(") or " " in base_table):
                         # Returned a subquery/derived expression -> use as SQL.
-                        sql = base_table
+                        # Strip any outer "AS <alias>" so the generator's own
+                        # "(<sql>) AS t" wrapping does not double-alias it.
+                        sql = _strip_derived_alias(base_table)
                     else:
                         table = base_table
 

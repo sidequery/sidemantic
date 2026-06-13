@@ -99,6 +99,7 @@ ADDED_FIXTURE_CASES = [
     (MetricFlowAdapter, "tests/fixtures/metricflow/ambiguous_resolution_manifest.yaml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/cyclic_join_manifest.yaml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/extended_date_manifest.yaml"),
+    (MetricFlowAdapter, "tests/fixtures/metricflow/latest_spec_models.yml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/name_edge_case_manifest.yaml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/scd_listings.yaml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/scd_metrics.yaml"),

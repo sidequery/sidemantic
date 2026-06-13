@@ -650,14 +650,34 @@ def test_metricflow_conversion_metrics():
     buys = events.get_metric("buys")
     assert buys is not None
 
-    # Check conversion metrics - NOTE: conversion type not yet supported in adapter
-    # Conversion metrics are skipped during parsing (return None) for unsupported types
-    # Verify they're not in the graph
-    assert "visit_to_buy_conversion_rate" not in graph.metrics
-    assert "visit_to_buy_conversions_1_week" not in graph.metrics
-    assert "view_to_purchase_same_product" not in graph.metrics
+    # Conversion metrics are now parsed from type_params.conversion_type_params.
+    assert "visit_to_buy_conversion_rate" in graph.metrics
+    assert "visit_to_buy_conversions_1_week" in graph.metrics
+    assert "view_to_purchase_same_product" in graph.metrics
 
-    # Test that parsing doesn't fail even with unsupported conversion type
+    conv = graph.get_metric("visit_to_buy_conversion_rate")
+    assert conv.type == "conversion"
+    assert conv.entity == "user"
+    assert conv.base_event == "visits"
+    assert conv.conversion_event == "buys"
+    assert conv.conversion_window == "7 days"
+    assert conv.metadata["calculation"] == "conversion_rate"
+
+    # Conversion with calculation: conversions (count flavor)
+    conversions = graph.get_metric("visit_to_buy_conversions_1_week")
+    assert conversions.type == "conversion"
+    assert conversions.conversion_window == "1 week"
+    assert conversions.metadata["calculation"] == "conversions"
+
+    # Conversion with constant_properties
+    same_product = graph.get_metric("view_to_purchase_same_product")
+    assert same_product.type == "conversion"
+    assert same_product.base_event == "view_item_detail"
+    assert same_product.metadata["constant_properties"] == [
+        {"base_property": "product", "conversion_property": "product"}
+    ]
+
+    # Test that parsing doesn't fail
     assert graph is not None
     assert len(graph.models) > 0
 
@@ -787,6 +807,16 @@ def test_metricflow_saved_queries():
     transactions = graph.get_metric("sales_transactions")
     assert transactions.sql == "sales_count"
 
+    # Saved queries are parsed into graph metadata (not into graph.metrics).
+    saved = graph.metadata.get("saved_queries")
+    assert saved is not None
+    assert "monthly_sales_by_region" in saved
+    sq = saved["monthly_sales_by_region"]
+    assert sq["metrics"] == ["total_sales", "sales_transactions"]
+    assert sq["group_by"] == ["TimeDimension('sale_date', 'month')", "Dimension('region')"]
+    assert sq["exports"][0]["name"] == "monthly_sales_export"
+    assert sq["exports"][0]["config"]["export_as"] == "table"
+
 
 def test_import_real_metricflow_example():
     """Test importing a real dbt MetricFlow schema file."""
@@ -833,6 +863,109 @@ def test_import_real_metricflow_example():
     assert avg_order.type == "ratio"
     assert avg_order.numerator == "revenue"
     assert avg_order.denominator == "order_count"
+
+
+def test_metricflow_latest_spec_models():
+    """Test the latest spec (dbt Core 1.12 / Fusion): models: with nested semantic_model:."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("tests/fixtures/metricflow/latest_spec_models.yml"))
+
+    # Semantic models embedded under models: are imported
+    assert "orders" in graph.models
+    assert "customers" in graph.models
+
+    orders = graph.get_model("orders")
+    # Primary entity column becomes the primary key
+    assert orders.primary_key == "order_id"
+    # The underlying table is the dbt model name
+    assert orders.table == "orders"
+    # agg_time_dimension promoted to top level
+    assert orders.default_time_dimension == "ordered_at"
+
+    # Column-based foreign entity becomes a relationship (resolved to model name)
+    rel_names = {r.name for r in orders.relationships}
+    assert "customers" in rel_names
+    customer_rel = next(r for r in orders.relationships if r.name == "customers")
+    assert customer_rel.type == "many_to_one"
+    assert customer_rel.foreign_key == "customer_id"
+
+    # Column-based dimensions (time + categorical)
+    ordered_at = orders.get_dimension("ordered_at")
+    assert ordered_at is not None
+    assert ordered_at.type == "time"
+    assert ordered_at.granularity == "day"
+
+    status = orders.get_dimension("status")
+    assert status is not None
+    assert status.type == "categorical"
+    # expr falls back to the column name
+    assert status.sql == "order_status"
+
+    # Measures folded into inline simple metrics
+    order_total = graph.get_metric("order_total")
+    assert order_total is not None
+    assert order_total.type is None
+    assert order_total.agg == "sum"
+    assert order_total.sql == "amount"
+
+    order_count = graph.get_metric("order_count")
+    assert order_count is not None
+    assert order_count.agg == "count"
+
+    # Ratio with promoted numerator/denominator (no type_params)
+    rpo = graph.get_metric("revenue_per_order")
+    assert rpo.type == "ratio"
+    assert rpo.numerator == "order_total"
+    assert rpo.denominator == "order_count"
+
+    # Derived with promoted expr + input_metrics offset modifiers
+    growth = graph.get_metric("order_total_growth")
+    assert growth.type == "derived"
+    assert growth.sql == "current_total - total_7_days_ago"
+    inputs = growth.metadata["input_metrics"]
+    offset_input = next(i for i in inputs if i.get("alias") == "total_7_days_ago")
+    assert offset_input["offset_window"] == "7 days"
+
+    # Cumulative with promoted input_metric + window + period_agg
+    rolling = graph.get_metric("rolling_30d_revenue")
+    assert rolling.type == "cumulative"
+    assert rolling.sql == "order_total"
+    assert rolling.window == "30 days"
+    assert rolling.metadata["period_agg"] == "sum"
+
+    # Cumulative with promoted grain_to_date
+    mtd = graph.get_metric("revenue_mtd")
+    assert mtd.type == "cumulative"
+    assert mtd.grain_to_date == "month"
+
+    # Conversion with promoted base_metric/conversion_metric/entity
+    conv = graph.get_metric("order_to_repeat_conversion")
+    assert conv.type == "conversion"
+    assert conv.entity == "customer"
+    assert conv.base_event == "order_count"
+    assert conv.conversion_event == "order_count"
+    assert conv.metadata["calculation"] == "conversion_rate"
+    assert conv.metadata["constant_properties"] == [{"base_property": "region", "conversion_property": "region"}]
+
+
+def test_metricflow_period_agg_and_offset_metadata():
+    """period_agg and per-input offset modifiers are retained in metric metadata."""
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("tests/fixtures/metricflow/simple_manifest_metrics.yaml"))
+
+    # Cumulative period_agg (legacy cumulative_type_params shape)
+    t2mr = graph.get_metric("trailing_2_months_revenue")
+    assert t2mr.metadata is not None
+    assert t2mr.metadata["period_agg"] == "average"
+
+    all_time = graph.get_metric("revenue_all_time")
+    assert all_time.metadata["period_agg"] == "last"
+
+    # Derived per-input offset_window (legacy type_params.metrics shape)
+    offset_metric = graph.get_metric("booking_fees_last_week_per_booker_this_week")
+    assert offset_metric.type == "derived"
+    inputs = offset_metric.metadata["input_metrics"]
+    assert any(i.get("offset_window") == "1 week" for i in inputs)
 
 
 if __name__ == "__main__":

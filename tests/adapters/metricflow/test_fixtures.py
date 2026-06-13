@@ -850,16 +850,36 @@ class TestSimpleManifestMetrics:
         assert ratio.type == "ratio"
         assert ratio.filters is not None
 
-    def test_conversion_metrics_skipped(self, graph):
-        """Conversion metrics are skipped (unsupported type)."""
-        assert "visit_buy_conversion_rate_7days" not in graph.metrics
-        assert "visit_buy_conversion_rate" not in graph.metrics
-        assert "visit_buy_conversions" not in graph.metrics
-        assert "visit_buy_conversion_rate_by_session" not in graph.metrics
+    def test_conversion_metrics_parsed(self, graph):
+        """Conversion metrics are parsed from type_params.conversion_type_params."""
+        assert "visit_buy_conversion_rate_7days" in graph.metrics
+        assert "visit_buy_conversion_rate" in graph.metrics
+        assert "visit_buy_conversions" in graph.metrics
+        assert "visit_buy_conversion_rate_by_session" in graph.metrics
+
+        rate_7d = graph.get_metric("visit_buy_conversion_rate_7days")
+        assert rate_7d.type == "conversion"
+        assert rate_7d.entity == "user"
+        assert rate_7d.base_event == "visits"
+        assert rate_7d.conversion_event == "buys"
+        assert rate_7d.conversion_window == "7 days"
+        assert rate_7d.metadata["calculation"] == "conversion_rate"
+
+        # conversions count flavor with a dict conversion_measure (fill_nulls_with)
+        conversions = graph.get_metric("visit_buy_conversions")
+        assert conversions.type == "conversion"
+        assert conversions.conversion_event == "buys"
+        assert conversions.metadata["calculation"] == "conversions"
+
+        # constant_properties retained in metadata
+        by_session = graph.get_metric("visit_buy_conversion_rate_by_session")
+        assert by_session.type == "conversion"
+        assert by_session.metadata["constant_properties"] == [
+            {"base_property": "session", "conversion_property": "session_id"}
+        ]
 
     def test_total_metric_count(self, graph):
-        """Verify total number of parsed metrics (simple + cumulative + derived + ratio, excluding conversion)."""
-        # Conversion metrics are skipped, so we count only supported types
+        """Verify total number of parsed metrics (simple + cumulative + derived + ratio + conversion)."""
         assert len(graph.metrics) >= 50
 
 
@@ -942,7 +962,7 @@ class TestSimpleManifestSavedQueries:
         return adapter.parse(FIXTURES / "simple_manifest_saved_queries.yaml")
 
     def test_parse_succeeds(self, graph):
-        """Fixture parses without errors (saved_queries key is ignored gracefully)."""
+        """Fixture parses without errors."""
         assert graph is not None
 
     def test_model_exists(self, graph):
@@ -950,9 +970,32 @@ class TestSimpleManifestSavedQueries:
         assert "sales_for_saved_queries" in graph.models
 
     def test_saved_queries_not_in_metrics(self, graph):
-        """saved_queries are not parsed into graph.metrics (not yet supported)."""
+        """saved_queries are kept separate from graph.metrics."""
         assert "p0_booking" not in graph.metrics
         assert "p0_booking_with_order_by_and_limit" not in graph.metrics
+
+    def test_saved_queries_captured_in_metadata(self, graph):
+        """saved_queries are parsed into graph.metadata['saved_queries']."""
+        saved = graph.metadata.get("saved_queries")
+        assert saved is not None
+        assert "p0_booking" in saved
+        assert "p0_booking_with_order_by_and_limit" in saved
+        assert "dimensions_only" in saved
+
+        p0 = saved["p0_booking"]
+        assert p0["metrics"] == ["bookings", "instant_bookings"]
+        assert p0["group_by"] == [
+            "TimeDimension('metric_time', 'day')",
+            "Dimension('listing__capacity_latest')",
+        ]
+        assert p0["where"] == ["{{ Dimension('listing__capacity_latest') }} > 3"]
+
+    def test_saved_query_order_by_and_limit(self, graph):
+        """order_by and limit are retained on the saved query."""
+        saved = graph.metadata["saved_queries"]
+        ordered = saved["p0_booking_with_order_by_and_limit"]
+        assert ordered["limit"] == 10
+        assert ordered["order_by"] is not None
 
 
 # =============================================================================

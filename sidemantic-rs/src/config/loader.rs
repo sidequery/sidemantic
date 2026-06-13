@@ -7,23 +7,31 @@ use std::path::Path;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::{Adapter, CubeAdapter, OsiAdapter};
 use crate::core::{
     extract_dependencies, resolve_model_inheritance, Metric, Model, Parameter, Relationship,
     RelationshipType, SemanticGraph,
 };
 use crate::error::{Result, SidemanticError};
 
-use super::schema::{CubeConfig, SidemanticConfig, NATIVE_FORMAT_VERSION};
+use super::schema::{SidemanticConfig, NATIVE_FORMAT_VERSION};
 use super::sql_parser::{
     parse_sql_definitions, parse_sql_graph_definitions_extended, parse_sql_models,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct ParsedConfig {
     models: Vec<Model>,
     extends_map: HashMap<String, String>,
+    /// Top-level metrics assigned to an owning model (native format).
     top_level_metrics: Vec<Metric>,
     top_level_parameters: Vec<Parameter>,
+    /// Graph-level metrics added directly to the graph (OSI), never reassigned.
+    graph_metrics: Vec<Metric>,
+    /// Graph-level metadata payload (OSI import state).
+    graph_metadata: Option<serde_json::Value>,
+    /// When true, relationships are declared explicitly; skip FK inference.
+    explicit_relationships: bool,
 }
 
 #[derive(Debug)]
@@ -48,6 +56,18 @@ pub enum ConfigFormat {
     Sidemantic,
     /// Cube.js format (cubes: key)
     Cube,
+    /// OSI (Open Semantic Interchange) format (semantic_model: / ontology_mappings: key)
+    Osi,
+}
+
+impl ConfigFormat {
+    fn source_label(self) -> &'static str {
+        match self {
+            ConfigFormat::Sidemantic => "Sidemantic",
+            ConfigFormat::Cube => "Cube",
+            ConfigFormat::Osi => "OSI",
+        }
+    }
 }
 
 /// Load a semantic graph from a single YAML file
@@ -89,6 +109,9 @@ pub fn load_from_string_with_metadata(content: &str) -> Result<LoadedGraphMetada
         extends_map,
         top_level_metrics,
         top_level_parameters,
+        graph_metrics,
+        graph_metadata,
+        ..
     } = parsed;
     let model_order: Vec<String> = models.iter().map(|model| model.name.clone()).collect();
     let original_model_metrics: HashMap<String, Vec<String>> = models
@@ -119,9 +142,20 @@ pub fn load_from_string_with_metadata(content: &str) -> Result<LoadedGraphMetada
             graph.add_metric(metric)?;
         }
     }
+    for metric in graph_metrics.iter().cloned() {
+        if graph.get_metric(&metric.name).is_none() {
+            graph.add_metric(metric)?;
+        }
+    }
     for parameter in top_level_parameters {
         graph.add_parameter(parameter)?;
     }
+    if let Some(metadata) = graph_metadata {
+        graph.set_metadata(metadata);
+    }
+
+    let mut reported_metrics = top_level_metrics;
+    reported_metrics.extend(graph_metrics);
 
     let model_sources = model_order
         .iter()
@@ -129,10 +163,7 @@ pub fn load_from_string_with_metadata(content: &str) -> Result<LoadedGraphMetada
             (
                 model_name.clone(),
                 LoadedModelSource {
-                    source_format: match format {
-                        ConfigFormat::Sidemantic => "Sidemantic".to_string(),
-                        ConfigFormat::Cube => "Cube".to_string(),
-                    },
+                    source_format: format.source_label().to_string(),
                     source_file: None,
                 },
             )
@@ -142,7 +173,7 @@ pub fn load_from_string_with_metadata(content: &str) -> Result<LoadedGraphMetada
     Ok(LoadedGraphMetadata {
         graph,
         model_order,
-        top_level_metrics,
+        top_level_metrics: reported_metrics,
         original_model_metrics,
         model_sources,
     })
@@ -305,6 +336,7 @@ fn parse_sql_content(content: &str) -> Result<ParsedConfig> {
         extends_map: HashMap::new(),
         top_level_metrics,
         top_level_parameters,
+        ..Default::default()
     })
 }
 
@@ -316,6 +348,7 @@ pub fn load_from_sql_string_with_metadata(content: &str) -> Result<LoadedGraphMe
         extends_map,
         top_level_metrics,
         top_level_parameters,
+        ..
     } = parsed;
     let model_order: Vec<String> = models.iter().map(|model| model.name.clone()).collect();
     let original_model_metrics: HashMap<String, Vec<String>> = models
@@ -402,8 +435,13 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
     let mut all_extends_map: HashMap<String, String> = HashMap::new();
     let mut all_top_level_metrics: Vec<Metric> = Vec::new();
     let mut all_top_level_parameters: Vec<Parameter> = Vec::new();
+    let mut all_graph_metrics: Vec<Metric> = Vec::new();
     let mut model_order: Vec<String> = Vec::new();
     let mut model_sources: HashMap<String, LoadedModelSource> = HashMap::new();
+    // Models whose format declares relationships explicitly (e.g. OSI); these
+    // are excluded from foreign-key relationship inference.
+    let mut explicit_rel_models: HashSet<String> = HashSet::new();
+    let mut merged_graph_metadata: Option<serde_json::Value> = None;
 
     // Recursively find and parse model files.
     for entry in walkdir(dir)? {
@@ -421,10 +459,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
 
                 let format = detect_format(&content);
                 let parsed = parse_content(&content, format)?;
-                let source_format = match format {
-                    ConfigFormat::Sidemantic => "Sidemantic",
-                    ConfigFormat::Cube => "Cube",
-                };
+                let source_format = format.source_label();
                 let source_file = path
                     .strip_prefix(dir)
                     .ok()
@@ -434,6 +469,9 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                     extends_map,
                     top_level_metrics,
                     top_level_parameters,
+                    graph_metrics,
+                    graph_metadata,
+                    explicit_relationships,
                 } = parsed;
 
                 for model in models {
@@ -442,6 +480,9 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                             "Duplicate model '{}' found while loading directory",
                             model.name
                         )));
+                    }
+                    if explicit_relationships {
+                        explicit_rel_models.insert(model.name.clone());
                     }
                     model_order.push(model.name.clone());
                     model_sources.insert(
@@ -456,6 +497,8 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                 all_extends_map.extend(extends_map);
                 all_top_level_metrics.extend(top_level_metrics);
                 all_top_level_parameters.extend(top_level_parameters);
+                all_graph_metrics.extend(graph_metrics);
+                merge_osi_metadata(&mut merged_graph_metadata, graph_metadata);
             }
             Some("sql") => {
                 let content = fs::read_to_string(&path).map_err(|e| {
@@ -471,6 +514,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                     extends_map,
                     top_level_metrics,
                     top_level_parameters,
+                    ..
                 } = parsed;
 
                 for model in models {
@@ -512,8 +556,9 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
         })
         .collect();
 
-    // Infer relationships from FK naming conventions
-    infer_relationships(&mut all_models);
+    // Infer relationships from FK naming conventions (skip formats that
+    // declare relationships explicitly, e.g. OSI).
+    infer_relationships(&mut all_models, &explicit_rel_models);
     let mut resolved_models = resolve_model_inheritance(all_models, &all_extends_map)?;
     if !resolved_models.is_empty() && !all_top_level_metrics.is_empty() {
         assign_top_level_metrics(&mut resolved_models, all_top_level_metrics.clone())?;
@@ -527,17 +572,66 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
             graph.add_metric(metric)?;
         }
     }
+    for metric in all_graph_metrics.iter().cloned() {
+        if graph.get_metric(&metric.name).is_none() {
+            graph.add_metric(metric)?;
+        }
+    }
     for parameter in all_top_level_parameters {
         graph.add_parameter(parameter)?;
     }
+    if let Some(metadata) = merged_graph_metadata {
+        graph.set_metadata(metadata);
+    }
+
+    let mut reported_metrics = all_top_level_metrics;
+    reported_metrics.extend(all_graph_metrics);
 
     Ok(LoadedGraphMetadata {
         graph,
         model_order,
-        top_level_metrics: all_top_level_metrics,
+        top_level_metrics: reported_metrics,
         original_model_metrics,
         model_sources,
     })
+}
+
+/// Merge an OSI `{ "osi": { ... } }` metadata payload into the accumulator,
+/// concatenating `semantic_models` and keeping the first `version`/`ontology`.
+fn merge_osi_metadata(acc: &mut Option<serde_json::Value>, incoming: Option<serde_json::Value>) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    let Some(incoming_osi) = incoming.get("osi").and_then(|v| v.as_object()).cloned() else {
+        return;
+    };
+
+    let acc_value =
+        acc.get_or_insert_with(|| serde_json::json!({ "osi": { "semantic_models": [] } }));
+    let Some(acc_osi) = acc_value
+        .as_object_mut()
+        .and_then(|m| m.get_mut("osi"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+
+    if let Some(serde_json::Value::Array(incoming_models)) = incoming_osi.get("semantic_models") {
+        let entry = acc_osi
+            .entry("semantic_models")
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if let serde_json::Value::Array(acc_models) = entry {
+            acc_models.extend(incoming_models.iter().cloned());
+        }
+    }
+
+    for key in ["version", "ontology"] {
+        if !acc_osi.contains_key(key) {
+            if let Some(value) = incoming_osi.get(key) {
+                acc_osi.insert(key.to_string(), value.clone());
+            }
+        }
+    }
 }
 
 /// Detect the config format from content
@@ -545,6 +639,11 @@ fn detect_format(content: &str) -> ConfigFormat {
     // Check for Cube.js format markers
     if content.contains("cubes:") {
         return ConfigFormat::Cube;
+    }
+
+    // Check for OSI format markers
+    if content.contains("semantic_model:") || content.contains("ontology_mappings:") {
+        return ConfigFormat::Osi;
     }
 
     // Default to Sidemantic format
@@ -670,6 +769,7 @@ fn parse_content_with_extends(content: &str, format: ConfigFormat) -> Result<Par
                 .iter()
                 .filter_map(|m| m.extends.as_ref().map(|e| (m.name.clone(), e.clone())))
                 .collect();
+            let graph_metadata = config.metadata.clone();
             let (mut models, mut top_level_metrics, top_level_parameters) = config.into_parts()?;
             apply_embedded_sql_definitions(&content, &mut models, &mut top_level_metrics)?;
 
@@ -678,17 +778,26 @@ fn parse_content_with_extends(content: &str, format: ConfigFormat) -> Result<Par
                 extends_map,
                 top_level_metrics,
                 top_level_parameters,
+                graph_metadata,
+                ..Default::default()
             })
         }
         ConfigFormat::Cube => {
-            let config: CubeConfig = serde_yaml::from_str(&content)
-                .map_err(|e| SidemanticError::Validation(format!("YAML parse error: {e}")))?;
             // Cube.js doesn't support extends in the same way
             Ok(ParsedConfig {
-                models: config.into_models(),
-                extends_map: HashMap::new(),
-                top_level_metrics: Vec::new(),
-                top_level_parameters: Vec::new(),
+                models: CubeAdapter::new().parse_models(&content)?,
+                ..Default::default()
+            })
+        }
+        ConfigFormat::Osi => {
+            let doc = OsiAdapter::new().parse_document(&content)?;
+            Ok(ParsedConfig {
+                models: doc.models,
+                top_level_parameters: doc.parameters,
+                graph_metrics: doc.graph_metrics,
+                graph_metadata: doc.metadata,
+                explicit_relationships: doc.explicit_relationships,
+                ..Default::default()
             })
         }
     }
@@ -968,7 +1077,7 @@ fn assign_top_level_metrics(
 ///
 /// Looks for columns ending with `_id` and tries to match them to existing models.
 /// For example: `customer_id` -> `customer` or `customers` model
-fn infer_relationships(models: &mut HashMap<String, Model>) {
+fn infer_relationships(models: &mut HashMap<String, Model>, skip: &HashSet<String>) {
     // Collect model names for lookup
     let mut model_names: Vec<String> = models.keys().cloned().collect();
     model_names.sort();
@@ -977,6 +1086,10 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
     let mut relationships_to_add: Vec<(String, Relationship)> = Vec::new();
 
     for model_name in &model_names {
+        // Skip models whose format declares relationships explicitly.
+        if skip.contains(model_name) {
+            continue;
+        }
         let Some(model) = models.get(model_name) else {
             continue;
         };
@@ -1019,6 +1132,10 @@ fn infer_relationships(models: &mut HashMap<String, Model>) {
                         .find(|n| n.to_lowercase() == target)
                         .unwrap()
                         .clone();
+                    // Don't infer relationships into models that declare them explicitly.
+                    if skip.contains(&actual_target) {
+                        continue;
+                    }
                     let target_primary_keys = models
                         .get(&actual_target)
                         .map(Model::primary_keys)
@@ -1129,6 +1246,74 @@ mod tests {
     fn test_detect_format_cube() {
         let content = "cubes:\n  - name: orders";
         assert_eq!(detect_format(content), ConfigFormat::Cube);
+    }
+
+    #[test]
+    fn test_detect_format_osi() {
+        assert_eq!(
+            detect_format("semantic_model:\n  - name: m"),
+            ConfigFormat::Osi
+        );
+        assert_eq!(
+            detect_format("ontology_mappings:\n  - name: m"),
+            ConfigFormat::Osi
+        );
+    }
+
+    #[test]
+    fn test_load_from_string_auto_detects_osi() {
+        let yaml = r#"
+semantic_model:
+  - name: shop
+    datasets:
+      - name: orders
+        source: public.orders
+        primary_key: [order_id]
+        fields:
+          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+      - name: customers
+        source: public.customers
+        primary_key: [customer_id]
+        fields:
+          - name: customer_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_id
+    relationships:
+      - name: orders_to_customers
+        from: orders
+        to: customers
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.amount)
+"#;
+
+        let loaded = load_from_string_with_metadata(yaml).unwrap();
+        let graph = &loaded.graph;
+        assert!(graph.get_model("orders").is_some());
+        assert!(graph.get_model("customers").is_some());
+        // OSI relationship is explicit; FK inference must not add a reverse edge.
+        let orders = graph.get_model("orders").unwrap();
+        assert_eq!(orders.relationships.len(), 1);
+        let customers = graph.get_model("customers").unwrap();
+        assert!(customers.get_relationship("orders").is_none());
+        // Graph-level metric and metadata preserved.
+        assert!(graph.get_metric("total_revenue").is_some());
+        assert!(graph.metadata().is_some());
+        assert_eq!(
+            loaded.model_sources["orders"].source_format,
+            "OSI".to_string()
+        );
     }
 
     #[test]
@@ -1694,7 +1879,7 @@ sql_metrics: |
         models.insert("orders".to_string(), orders);
         models.insert("customers".to_string(), customers);
 
-        infer_relationships(&mut models);
+        infer_relationships(&mut models, &HashSet::new());
 
         // Check orders now has relationship to customers
         let orders = models.get("orders").unwrap();
@@ -1720,7 +1905,7 @@ sql_metrics: |
         models.insert("orders".to_string(), orders);
         models.insert("customers".to_string(), customers);
 
-        infer_relationships(&mut models);
+        infer_relationships(&mut models, &HashSet::new());
 
         let orders = models.get("orders").unwrap();
         assert_eq!(orders.relationships.len(), 1);
@@ -1744,7 +1929,7 @@ sql_metrics: |
         models.insert("orders".to_string(), orders);
         models.insert("customers".to_string(), customers);
 
-        infer_relationships(&mut models);
+        infer_relationships(&mut models, &HashSet::new());
 
         let orders = models.get("orders").unwrap();
         let relationship = orders.get_relationship("customers").unwrap();

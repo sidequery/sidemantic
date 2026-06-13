@@ -87,6 +87,8 @@ pub struct SemanticGraph {
     parameters: HashMap<String, Parameter>,
     /// Adjacency list: model -> edges
     adjacency: HashMap<String, Vec<AdjacencyEdge>>,
+    /// Graph-level metadata payload (e.g. format-specific import/export state).
+    metadata: Option<serde_json::Value>,
 }
 
 impl SemanticGraph {
@@ -456,6 +458,21 @@ impl SemanticGraph {
     /// Get all parameters
     pub fn parameters(&self) -> impl Iterator<Item = &Parameter> {
         self.parameters.values()
+    }
+
+    /// Get the graph-level metadata payload, if any.
+    pub fn metadata(&self) -> Option<&serde_json::Value> {
+        self.metadata.as_ref()
+    }
+
+    /// Replace the graph-level metadata payload.
+    pub fn set_metadata(&mut self, metadata: serde_json::Value) {
+        self.metadata = Some(metadata);
+    }
+
+    /// Mutable access to the graph-level metadata payload.
+    pub fn metadata_mut(&mut self) -> &mut Option<serde_json::Value> {
+        &mut self.metadata
     }
 
     /// Rebuild the adjacency list from model relationships

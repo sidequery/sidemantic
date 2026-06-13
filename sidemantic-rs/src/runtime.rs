@@ -91,6 +91,9 @@ pub struct LoadedGraphPayload {
     pub model_order: Vec<String>,
     pub original_model_metrics: HashMap<String, Vec<String>>,
     pub model_sources: HashMap<String, LoadedModelSource>,
+    /// Graph-level metadata payload (e.g. OSI import state). Omitted when empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// Tuple shape returned to Python bridge for graph path steps.
@@ -1093,6 +1096,34 @@ pub fn load_graph_from_directory(path: &str) -> Result<String> {
     })?;
     serde_json::to_string(&runtime.loaded_graph_payload())
         .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
+}
+
+/// Export a graph to OSI YAML using the requested dialects.
+///
+/// `models_yaml` is native Sidemantic YAML (models + their owned metrics +
+/// optional top-level `metadata`). `graph_metrics_yaml` is an optional YAML list
+/// of metric configs that stay graph-level (not assigned to an owning model),
+/// matching how OSI represents metrics.
+pub fn export_osi_yaml(
+    models_yaml: &str,
+    graph_metrics_yaml: &str,
+    dialects: Vec<String>,
+) -> Result<String> {
+    use crate::adapters::Adapter;
+    let runtime = SidemanticRuntime::from_yaml(models_yaml)
+        .map_err(|e| SidemanticError::Validation(format!("failed to load YAML models: {e}")))?;
+    let mut graph = runtime.graph().clone();
+
+    if !graph_metrics_yaml.trim().is_empty() {
+        for metric in crate::config::schema::metrics_from_config_yaml(graph_metrics_yaml)? {
+            if graph.get_metric(&metric.name).is_none() {
+                graph.add_metric(metric)?;
+            }
+        }
+    }
+
+    let adapter = crate::adapters::OsiAdapter::new().with_dialects(dialects);
+    adapter.export_string(&graph)
 }
 
 fn build_runtime_with_metadata(
@@ -4930,6 +4961,7 @@ impl SidemanticRuntime {
             model_order: self.model_order.clone(),
             original_model_metrics: self.original_model_metrics.clone(),
             model_sources: self.model_sources.clone(),
+            metadata: self.graph.metadata().cloned(),
         }
     }
 

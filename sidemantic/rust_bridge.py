@@ -27,11 +27,13 @@ def get_rust_module() -> object:
 def graph_to_rust_yaml(graph: SemanticGraph) -> str:
     """Serialize semantic graph to sidemantic-rs YAML schema."""
     extra_metrics_by_model, remaining_top_level_metrics = _assign_top_level_metrics_for_rust(graph)
+    graph_metadata = dict(graph.metadata) if getattr(graph, "metadata", None) else None
     return models_to_rust_yaml(
         list(graph.models.values()),
         extra_metrics_by_model=extra_metrics_by_model,
         top_level_metrics=remaining_top_level_metrics,
         top_level_parameters=list(graph.parameters.values()),
+        graph_metadata=graph_metadata,
     )
 
 
@@ -214,6 +216,32 @@ def load_graph_from_directory_with_rust(directory: str | Path) -> SemanticGraph:
     return _graph_from_loaded_payload(payload)
 
 
+def _restore_composite_keys(model_data: dict) -> None:
+    """Restore list-valued composite keys that sidemantic-rs collapses to a string.
+
+    Rust stores a single ``primary_key``/``foreign_key`` string plus the full
+    ``*_columns`` list. Python represents composite keys as the list itself, so
+    promote the list back when there is more than one column.
+    """
+    pk_cols = model_data.get("primary_key_columns")
+    if isinstance(pk_cols, list) and len(pk_cols) > 1:
+        model_data["primary_key"] = list(pk_cols)
+
+    relationships = model_data.get("relationships")
+    if isinstance(relationships, list):
+        restored = []
+        for relationship in relationships:
+            relationship = dict(relationship)
+            fk_cols = relationship.get("foreign_key_columns")
+            if isinstance(fk_cols, list) and len(fk_cols) > 1:
+                relationship["foreign_key"] = list(fk_cols)
+            rel_pk_cols = relationship.get("primary_key_columns")
+            if isinstance(rel_pk_cols, list) and len(rel_pk_cols) > 1:
+                relationship["primary_key"] = list(rel_pk_cols)
+            restored.append(relationship)
+        model_data["relationships"] = restored
+
+
 def _graph_from_loaded_payload(payload: dict) -> SemanticGraph:
     """Build a Python graph from sidemantic-rs loaded graph payload JSON."""
 
@@ -228,6 +256,7 @@ def _graph_from_loaded_payload(payload: dict) -> SemanticGraph:
 
     for model_data in payload.get("models") or []:
         normalized_model = dict(model_data)
+        _restore_composite_keys(normalized_model)
         original_metric_names = set(original_model_metrics.get(normalized_model.get("name"), []))
         normalized_metrics = []
         for metric_data in normalized_model.get("metrics") or []:
@@ -255,7 +284,50 @@ def _graph_from_loaded_payload(payload: dict) -> SemanticGraph:
         parameter = Parameter(**parameter_data)
         graph.add_parameter(parameter)
 
+    metadata = payload.get("metadata")
+    if metadata:
+        graph.metadata = metadata
+
     return graph
+
+
+def load_osi_graph_with_rust(source: str | Path) -> SemanticGraph:
+    """Parse OSI YAML (file or directory) via sidemantic-rs into a Python graph."""
+    rust_module = get_rust_module()
+    path = Path(source)
+    if path.is_dir():
+        payload = json.loads(rust_module.load_graph_from_directory(str(path)))
+    else:
+        payload = json.loads(rust_module.load_graph_with_yaml(path.read_text()))
+    return _graph_from_loaded_payload(payload)
+
+
+def export_osi_with_rust(graph: SemanticGraph, dialects: list[str] | None = None) -> str:
+    """Export a Python graph to OSI YAML via sidemantic-rs.
+
+    Model-owned metrics travel with the models; graph-level metrics are sent
+    separately so they stay graph-level (OSI has no single-owner requirement).
+    """
+    rust_module = get_rust_module()
+    graph_metadata = dict(graph.metadata) if getattr(graph, "metadata", None) else None
+    models_yaml = models_to_rust_yaml(
+        list(graph.models.values()),
+        top_level_parameters=list(graph.parameters.values()),
+        graph_metadata=graph_metadata,
+    )
+    graph_metrics = list(graph.metrics.values())
+    if graph_metrics:
+        graph_metrics_yaml = yaml.safe_dump(
+            [_serialize_metric(metric, primary_key_columns=None) for metric in graph_metrics],
+            sort_keys=False,
+        )
+    else:
+        graph_metrics_yaml = ""
+    return rust_module.export_osi(
+        models_yaml,
+        graph_metrics_yaml,
+        list(dialects) if dialects else ["ANSI_SQL"],
+    )
 
 
 def parse_sql_definitions_with_rust(sql: str) -> tuple[list, list]:
@@ -343,6 +415,7 @@ def models_to_rust_yaml(
     top_level_metrics: list | None = None,
     top_level_parameters: list | None = None,
     include_extends: bool = False,
+    graph_metadata: dict | None = None,
 ) -> str:
     """Serialize model list to sidemantic-rs YAML schema."""
     serialized_models = []
@@ -431,6 +504,8 @@ def models_to_rust_yaml(
         payload["metrics"] = [_serialize_metric(metric, primary_key_columns=None) for metric in top_level_metrics]
     if top_level_parameters:
         payload["parameters"] = [_serialize_parameter(parameter) for parameter in top_level_parameters]
+    if graph_metadata:
+        payload["metadata"] = graph_metadata
 
     return yaml.safe_dump(payload, sort_keys=False)
 

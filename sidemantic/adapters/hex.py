@@ -323,12 +323,27 @@ class HexAdapter(BaseAdapter):
                 filters.append(filter_def)
 
         # Semi-additive measures: non-additive across the given dimension(s).
-        non_additive_dimension = self._parse_semi_additive(measure_def.get("semi_additive"))
+        semi_additive = measure_def.get("semi_additive")
+        non_additive_dimension = self._parse_semi_additive(semi_additive)
+
+        # Build metadata payload.
+        meta = {}
 
         # Visibility: public/internal/private. Only "public" stays visible.
         visibility = measure_def.get("visibility")
-        meta = {"visibility": visibility} if visibility is not None else None
+        if visibility is not None:
+            meta["visibility"] = visibility
         public = visibility is None or visibility == "public"
+
+        # Preserve the full object-form ``semi_additive`` config so that
+        # ``pick``/``groupings`` survive a round-trip. Sidemantic only models a
+        # single ``non_additive_dimension``; without stashing the original, an
+        # export would drop ``pick`` and the Hex spec would default it to ``max``,
+        # silently corrupting opening-balance (``pick: min``) snapshots.
+        if isinstance(semi_additive, dict):
+            meta["hex_semi_additive"] = semi_additive
+
+        meta = meta or None
 
         return Metric(
             name=measure_id,
@@ -585,8 +600,13 @@ class HexAdapter(BaseAdapter):
             if metric.description:
                 measure_def["description"] = metric.description
 
-            # Semi-additive: export as the current Hex object form.
-            if metric.non_additive_dimension:
+            # Semi-additive: prefer the preserved object-form config (keeps
+            # ``pick``/``groupings`` intact on round-trip), otherwise emit the
+            # minimal form derived from ``non_additive_dimension``.
+            preserved_semi_additive = (metric.meta or {}).get("hex_semi_additive")
+            if preserved_semi_additive:
+                measure_def["semi_additive"] = preserved_semi_additive
+            elif metric.non_additive_dimension:
                 measure_def["semi_additive"] = {"over": [{"dimension": metric.non_additive_dimension}]}
 
             # Visibility: prefer recorded value, otherwise derive from public flag.

@@ -233,5 +233,86 @@ def test_export_view_emits_type_view(tmp_path):
     assert data["contents"][0]["measures"] == ["total_mrr", "current_mrr"]
 
 
+def test_semi_additive_pick_and_groupings_preserved_in_meta():
+    """The full object-form `semi_additive` config is stashed in measure meta."""
+    doc = {
+        "type": "model",
+        "id": "balances",
+        "sql_table": "analytics.balances",
+        "measures": [
+            {
+                "id": "opening_balance",
+                "func": "sum",
+                "of": "amount",
+                "semi_additive": {
+                    "over": [{"dimension": "snapshot_date", "pick": "min"}],
+                    "groupings": ["account_id"],
+                },
+            }
+        ],
+    }
+    adapter = HexAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        Path(f.name).write_text(yaml.safe_dump(doc))
+        in_path = Path(f.name)
+    try:
+        graph = adapter.parse(in_path)
+        metric = graph.models["balances"].get_metric("opening_balance")
+        # The single non-additive dimension still maps through.
+        assert metric.non_additive_dimension == "snapshot_date"
+        # The full config (including the non-default `pick: min` and `groupings`)
+        # is retained so it can be re-emitted on export.
+        preserved = metric.meta["hex_semi_additive"]
+        assert preserved["over"][0]["pick"] == "min"
+        assert preserved["groupings"] == ["account_id"]
+    finally:
+        in_path.unlink(missing_ok=True)
+
+
+def test_semi_additive_pick_min_survives_roundtrip(tmp_path):
+    """`pick: min`/`groupings` survive parse -> export -> parse without corruption.
+
+    Without preservation the export would default `pick` to `max` per the Hex
+    spec, silently changing an opening-balance snapshot's semantics.
+    """
+    doc = {
+        "type": "model",
+        "id": "balances",
+        "sql_table": "analytics.balances",
+        "measures": [
+            {
+                "id": "opening_balance",
+                "func": "sum",
+                "of": "amount",
+                "semi_additive": {
+                    "over": [{"dimension": "snapshot_date", "pick": "min"}],
+                    "groupings": ["account_id"],
+                },
+            }
+        ],
+    }
+    adapter = HexAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        Path(f.name).write_text(yaml.safe_dump(doc))
+        in_path = Path(f.name)
+    out_dir = tmp_path / "hex_out"
+    try:
+        graph1 = adapter.parse(in_path)
+        adapter.export(graph1, out_dir)
+
+        with open(out_dir / "balances.yml") as fh:
+            exported = yaml.safe_load(fh)
+        measure = exported["measures"][0]
+        assert measure["semi_additive"]["over"][0]["pick"] == "min"
+        assert measure["semi_additive"]["groupings"] == ["account_id"]
+
+        # And it re-imports identically.
+        graph2 = adapter.parse(out_dir)
+        metric = graph2.models["balances"].get_metric("opening_balance")
+        assert metric.meta["hex_semi_additive"]["over"][0]["pick"] == "min"
+    finally:
+        in_path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

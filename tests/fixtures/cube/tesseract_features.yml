@@ -1,0 +1,125 @@
+# Source: https://docs.cube.dev/reference/data-modeling/measures
+#         https://docs.cube.dev/reference/data-modeling/dimensions
+#         https://docs.cube.dev/reference/data-modeling/view
+# License: Apache 2.0 / MIT (cube-js/cube)
+#
+# Features tested (newer Cube / Tesseract data-model params):
+#   - measure type: number_agg (custom SQL aggregate, e.g. PERCENTILE_CONT)
+#   - measure type: string / time / boolean (non-numeric measures)
+#   - mask and currency params on measures and dimensions
+#   - dimension type: switch with a values list
+#   - view folders, view-level extends, default_filters, meta.default_ui_filters
+#   - top-level view_groups block
+
+cubes:
+  - name: orders
+    sql_table: public.orders
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+
+      - name: status
+        sql: status
+        type: string
+
+      - name: currency
+        type: switch
+        values:
+          - USD
+          - EUR
+          - GBP
+
+      - name: ssn
+        sql: ssn
+        type: string
+        mask: "REPEAT('*', LENGTH({CUBE}.ssn))"
+
+      - name: amount
+        sql: amount
+        type: number
+        format: currency
+        currency: USD
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      # Custom SQL aggregate not covered by built-in types (Tesseract)
+      - name: amount_p95
+        sql: "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {CUBE}.amount)"
+        type: number_agg
+
+      # Non-numeric measure types
+      - name: last_status
+        sql: status
+        type: string
+
+      - name: last_order_time
+        sql: created_at
+        type: time
+
+      - name: any_completed
+        sql: "BOOL_OR({CUBE}.status = 'completed')"
+        type: boolean
+
+      # mask + currency params on a measure
+      - name: total_amount
+        sql: amount
+        type: sum
+        format: currency
+        currency: USD
+        mask: 0
+
+      - name: revenue
+        sql: amount
+        type: sum
+        format: currency
+
+views:
+  - name: orders_view
+    cubes:
+      - join_path: orders
+        includes: "*"
+    folders:
+      - name: Identifiers
+        includes:
+          - id
+          - status
+      - name: Financials
+        includes:
+          - revenue
+          - total_amount
+          - name: Nested
+            includes:
+              - amount_p95
+    default_filters:
+      - member: status
+        operator: equals
+        values:
+          - completed
+    meta:
+      default_ui_filters:
+        - member: status
+          operator: equals
+          values:
+            - completed
+
+  - name: orders_view_extended
+    extends: orders_view
+    folders:
+      - name: Extra
+        includes:
+          - created_at
+
+view_groups:
+  - name: Sales
+    views:
+      - orders_view
+      - orders_view_extended

@@ -476,6 +476,21 @@ class TestMultiStageTimeShift:
         assert currency is not None
         assert currency.type == "categorical"
 
+    def test_switch_dimension_values_stored(self, graph):
+        """The switch dimension's values list is preserved in meta."""
+        switch_model = graph.get_model("orders_with_switch")
+        currency = switch_model.get_dimension("currency")
+        assert currency.meta is not None
+        assert currency.meta.get("switch_values") == ["USD", "EUR", "GBP"]
+
+    def test_multi_stage_group_by_stored(self, graph):
+        """Multi-stage group_by (percent-of-total) is preserved in meta."""
+        pot = graph.get_model("percent_of_total")
+        country_rev = pot.get_metric("country_revenue")
+        assert country_rev is not None
+        assert country_rev.meta is not None
+        assert country_rev.meta.get("group_by") == ["country"]
+
     def test_switch_model_measures(self, graph):
         switch_model = graph.get_model("orders_with_switch")
         assert len(switch_model.metrics) >= 4
@@ -666,3 +681,182 @@ class TestCaseSwitchDimensions:
         assert "users_to_orders" in graph.models
         view = graph.get_model("users_to_orders")
         assert view.meta == {"cube_type": "view"}
+
+
+# ---------------------------------------------------------------------------
+# Switch Dimension (standalone fixture)
+# ---------------------------------------------------------------------------
+
+
+class TestSwitchDimension:
+    """type: switch dimension with a values list (enum-like)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = CubeAdapter()
+        return adapter.parse(FIXTURES_DIR / "switch_dimension.yml")
+
+    def test_parses_without_error(self, graph):
+        assert graph is not None
+        assert "orders" in graph.models
+
+    def test_switch_dimension_is_categorical(self, graph):
+        orders = graph.get_model("orders")
+        currency = orders.get_dimension("currency")
+        assert currency is not None
+        assert currency.type == "categorical"
+
+    def test_switch_values_preserved(self, graph):
+        orders = graph.get_model("orders")
+        currency = orders.get_dimension("currency")
+        assert currency.meta is not None
+        assert currency.meta.get("switch_values") == ["USD", "EUR", "GBP"]
+
+    def test_non_switch_dimensions_have_no_switch_values(self, graph):
+        orders = graph.get_model("orders")
+        status = orders.get_dimension("status")
+        assert status is not None
+        # status is a plain string dimension; no switch metadata added
+        assert not (status.meta and "switch_values" in status.meta)
+
+
+# ---------------------------------------------------------------------------
+# Folders, View Extends (standalone fixture)
+# ---------------------------------------------------------------------------
+
+
+class TestViewFoldersAndExtends:
+    """View folders (nested member grouping) and view-level extends."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = CubeAdapter()
+        return adapter.parse(FIXTURES_DIR / "folders.yml")
+
+    def test_all_views_imported(self, graph):
+        for view_name in ("test_view", "test_view2", "test_view3", "test_view4"):
+            assert view_name in graph.models, f"missing {view_name}"
+            assert graph.get_model(view_name).meta.get("cube_type") == "view"
+
+    def test_view_folders_stored(self, graph):
+        view = graph.get_model("test_view")
+        folders = view.meta.get("folders")
+        assert folders is not None
+        names = [f.get("name") for f in folders]
+        assert names == ["folder1", "folder2"]
+
+    def test_nested_folder_structure_preserved(self, graph):
+        """Nested folders (folder containing sub-folders) parse verbatim."""
+        view = graph.get_model("test_view4")
+        folders = view.meta.get("folders")
+        folder3 = next(f for f in folders if f.get("name") == "folder3")
+        # folder3 has nested folder dicts inside its includes
+        nested = [inc for inc in folder3["includes"] if isinstance(inc, dict)]
+        nested_names = {inc["name"] for inc in nested}
+        assert {"inner folder 4", "inner folder 5"} <= nested_names
+
+    def test_view_extends_inherits_members(self, graph):
+        """A view extending another inherits its projected members."""
+        parent = graph.get_model("test_view3")
+        child = graph.get_model("test_view4")
+        # test_view4 only adds a folder; all members come from test_view3
+        parent_dim_names = {d.name for d in parent.dimensions}
+        child_dim_names = {d.name for d in child.dimensions}
+        assert parent_dim_names <= child_dim_names
+
+    def test_view_extends_inherits_folders(self, graph):
+        """Extending a view also inherits its folders (parent first)."""
+        child = graph.get_model("test_view4")
+        folder_names = [f.get("name") for f in child.meta.get("folders")]
+        # folder1 from test_view2, folder2 from test_view3, folder3 from test_view4
+        assert folder_names == ["folder1", "folder2", "folder3"]
+
+
+# ---------------------------------------------------------------------------
+# Tesseract-era measure/dimension params and view metadata
+# ---------------------------------------------------------------------------
+
+
+class TestTesseractFeatures:
+    """number_agg / non-numeric measures, mask, currency, view_groups, default filters."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = CubeAdapter()
+        return adapter.parse(FIXTURES_DIR / "tesseract_features.yml")
+
+    def test_parses_without_error(self, graph):
+        assert graph is not None
+        assert "orders" in graph.models
+
+    def test_number_agg_measure(self, graph):
+        """number_agg measures keep the full SQL aggregate; agg stays None."""
+        orders = graph.get_model("orders")
+        p95 = orders.get_metric("amount_p95")
+        assert p95 is not None
+        assert p95.agg is None
+        assert p95.type is None
+        assert p95.sql is not None
+        assert "PERCENTILE_CONT" in p95.sql
+        assert p95.meta.get("cube_type") == "number_agg"
+
+    def test_non_numeric_measure_types(self, graph):
+        """string / time / boolean measures preserve sql and record cube_type."""
+        orders = graph.get_model("orders")
+        for mname, ctype in (("last_status", "string"), ("last_order_time", "time"), ("any_completed", "boolean")):
+            m = orders.get_metric(mname)
+            assert m is not None, mname
+            assert m.agg is None, mname
+            assert m.meta.get("cube_type") == ctype
+            assert m.sql is not None
+
+    def test_measure_mask_and_currency(self, graph):
+        orders = graph.get_model("orders")
+        total = orders.get_metric("total_amount")
+        assert total is not None
+        assert total.agg == "sum"
+        assert total.meta.get("mask") == 0
+        assert total.meta.get("currency") == "USD"
+
+    def test_dimension_mask(self, graph):
+        orders = graph.get_model("orders")
+        ssn = orders.get_dimension("ssn")
+        assert ssn is not None
+        assert ssn.meta is not None
+        assert "mask" in ssn.meta
+
+    def test_dimension_currency(self, graph):
+        orders = graph.get_model("orders")
+        amount = orders.get_dimension("amount")
+        assert amount is not None
+        assert amount.meta.get("currency") == "USD"
+
+    def test_view_folders(self, graph):
+        view = graph.get_model("orders_view")
+        names = [f.get("name") for f in view.meta.get("folders")]
+        assert names == ["Identifiers", "Financials"]
+
+    def test_view_default_filters(self, graph):
+        view = graph.get_model("orders_view")
+        df = view.meta.get("default_filters")
+        assert df is not None
+        assert df[0]["member"] == "status"
+        assert df[0]["operator"] == "equals"
+
+    def test_view_default_ui_filters(self, graph):
+        view = graph.get_model("orders_view")
+        duf = view.meta.get("default_ui_filters")
+        assert duf is not None
+        assert duf[0]["member"] == "status"
+
+    def test_view_extends_appends_folders(self, graph):
+        view = graph.get_model("orders_view_extended")
+        names = [f.get("name") for f in view.meta.get("folders")]
+        # inherited Identifiers/Financials plus own Extra
+        assert names == ["Identifiers", "Financials", "Extra"]
+
+    def test_view_groups_preserved(self, graph):
+        groups = graph.metadata.get("cube_view_groups")
+        assert groups is not None
+        assert groups[0]["name"] == "Sales"
+        assert "orders_view" in groups[0]["views"]

@@ -325,6 +325,11 @@ class SupersetAdapter(BaseAdapter):
                 dataset["catalog"] = parts[-3]
                 dataset["schema"] = parts[-2]
                 dataset["table_name"] = parts[-1]
+            elif superset_meta.get("catalog") is not None:
+                # A preserved catalog with a two-part reference means the schema
+                # was originally null, so the qualifier is catalog.table, not
+                # schema.table. Keep schema null and restore the catalog below.
+                dataset["table_name"] = parts[-1]
             else:
                 dataset["schema"] = parts[-2]
                 dataset["table_name"] = parts[-1]

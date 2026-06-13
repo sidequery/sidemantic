@@ -250,6 +250,18 @@ class HolisticsAdapter(BaseAdapter):
         for model in resolved_models.values():
             graph.add_model(model)
 
+        # Dataset-level dimensions/metrics, standalone Metric blocks, and
+        # PartialDataset blocks composed via .extend(). Datasets surface as
+        # models so their cross-model dimensions/metrics are not dropped, and
+        # standalone metrics register as graph-level metrics.
+        dataset_models, standalone_metrics = _resolve_dataset_artifacts(documents, constants, resolved_models)
+        for model in dataset_models.values():
+            if model.name not in graph.models:
+                graph.add_model(model)
+        for metric in standalone_metrics.values():
+            if metric.name not in graph.metrics:
+                graph.add_metric(metric)
+
         pending_relationships: list[_AmlRelationship] = []
         pending_relationship_refs: list[_RelationshipRef] = []
         relationships_by_name: dict[str, _AmlRelationship] = {}
@@ -1136,6 +1148,168 @@ def _parse_measure_block(block: AmlBlock, constants: dict[str, AmlValue], contex
     )
 
 
+def _collect_dataset_definitions(
+    documents: Iterable[_AmlDocument],
+) -> tuple[
+    dict[str, tuple[AmlBlock, _FileContext]],
+    dict[str, tuple[AmlBlock, _FileContext]],
+    dict[str, tuple[AmlBlock, _FileContext]],
+    dict[str, tuple[ObjectAssignment, _FileContext]],
+]:
+    """Collect Dataset / PartialDataset / standalone Metric blocks and Dataset assignments.
+
+    Returns (dataset_blocks, partial_dataset_blocks, metric_blocks, dataset_assignments).
+    """
+    dataset_blocks: dict[str, tuple[AmlBlock, _FileContext]] = {}
+    partial_dataset_blocks: dict[str, tuple[AmlBlock, _FileContext]] = {}
+    metric_blocks: dict[str, tuple[AmlBlock, _FileContext]] = {}
+    dataset_assignments: dict[str, tuple[ObjectAssignment, _FileContext]] = {}
+
+    for document in documents:
+        context = document.context
+        for item in document.items:
+            if isinstance(item, AmlBlock) and item.name:
+                if item.kind == "Dataset":
+                    name = _qualify_declared_name(item.name, context.module_prefix)
+                    dataset_blocks[name] = (AmlBlock(kind="Dataset", name=name, items=item.items), context)
+                elif item.kind == "PartialDataset":
+                    name = _qualify_declared_name(item.name, context.module_prefix)
+                    partial_dataset_blocks[name] = (
+                        AmlBlock(kind="PartialDataset", name=name, items=item.items),
+                        context,
+                    )
+                elif item.kind == "Metric":
+                    name = _qualify_declared_name(item.name, context.module_prefix)
+                    metric_blocks[name] = (AmlBlock(kind="Metric", name=name, items=item.items), context)
+                continue
+            if isinstance(item, ObjectAssignment) and item.kind == "Dataset":
+                name = _qualify_declared_name(item.name, context.module_prefix)
+                dataset_assignments[name] = (item, context)
+
+    return dataset_blocks, partial_dataset_blocks, metric_blocks, dataset_assignments
+
+
+def _resolve_dataset_artifacts(
+    documents: Iterable[_AmlDocument],
+    constants: dict[str, AmlValue],
+    existing_models: dict[str, Model],
+) -> tuple[dict[str, Model], dict[str, Metric]]:
+    """Resolve dataset-level fields and standalone metrics into models / graph metrics."""
+    documents = list(documents)
+    dataset_blocks, partial_dataset_blocks, metric_blocks, dataset_assignments = _collect_dataset_definitions(documents)
+
+    # PartialDataset blocks resolve like partial models for .extend() composition.
+    resolved_blocks: dict[str, AmlBlock] = {}
+    resolving: set[str] = set()
+
+    def resolve_named_block(name: str) -> AmlBlock | None:
+        if name in resolved_blocks:
+            return resolved_blocks[name]
+        if name in resolving:
+            return None
+        if name in dataset_blocks:
+            block, _ = dataset_blocks[name]
+            resolved_blocks[name] = block
+            return block
+        if name in partial_dataset_blocks:
+            block, _ = partial_dataset_blocks[name]
+            return block
+        assignment_entry = dataset_assignments.get(name)
+        if assignment_entry:
+            assignment, ctx = assignment_entry
+            resolving.add(name)
+            resolved_value = _resolve_block_from_value(assignment.value, ctx, resolve_named_block)
+            resolving.remove(name)
+            if resolved_value:
+                resolved_blocks[name] = AmlBlock(kind="Dataset", name=name, items=resolved_value.items)
+                return resolved_blocks[name]
+        return None
+
+    dataset_models: dict[str, Model] = {}
+
+    for name, (block, context) in dataset_blocks.items():
+        model = _parse_dataset_block(block, constants, context)
+        if model and model.name not in existing_models:
+            dataset_models[model.name] = model
+
+    for name, (assignment, context) in dataset_assignments.items():
+        block = resolve_named_block(name)
+        if not block:
+            continue
+        block_with_name = AmlBlock(kind="Dataset", name=name, items=block.items)
+        model = _parse_dataset_block(block_with_name, constants, context)
+        if model and model.name not in existing_models:
+            dataset_models[model.name] = model
+
+    # Standalone Metric blocks become graph-level metrics.
+    standalone_metrics: dict[str, Metric] = {}
+    for name, (block, context) in metric_blocks.items():
+        metric_block = AmlBlock(kind="metric", name=block.name, items=block.items)
+        metric = _parse_measure_block(metric_block, constants, context)
+        if metric:
+            metric.name = name
+            standalone_metrics[name] = metric
+
+    return dataset_models, standalone_metrics
+
+
+def _parse_dataset_block(block: AmlBlock, constants: dict[str, AmlValue], context: _FileContext) -> Model | None:
+    """Parse a Dataset block's dataset-level dimension/metric blocks into a Model.
+
+    Dataset dimensions and metrics use cross-model AQL definitions (the only
+    style Holistics allows in datasets). They are surfaced on a synthetic model
+    named after the dataset so they are not silently dropped.
+    """
+    if not block.name:
+        return None
+
+    properties = _properties_from_items(block.items)
+    label = _value_as_string(properties.get("label"), constants, context)
+    description = _value_as_string(properties.get("description"), constants, context)
+
+    dimensions: list[Dimension] = []
+    metrics: list[Metric] = []
+
+    for item in block.items:
+        if not isinstance(item, AmlBlock):
+            continue
+        if item.kind == "dimension":
+            dimension, _ = _parse_dimension_block(item, constants, context)
+            if not dimension:
+                continue
+            # Dataset dimensions usually combine fields across models, but some
+            # are authored with an aggregate AQL (e.g. count(...)). An aggregate
+            # cannot be a groupable dimension, so surface it as a derived metric.
+            if _sql_is_aggregate(dimension.sql):
+                metrics.append(
+                    Metric(
+                        name=dimension.name,
+                        type="derived",
+                        sql=dimension.sql,
+                        label=dimension.label,
+                        description=dimension.description,
+                        format=dimension.format,
+                    )
+                )
+            else:
+                dimensions.append(dimension)
+        elif item.kind in {"measure", "metric"}:
+            metric = _parse_measure_block(item, constants, context)
+            if metric:
+                metrics.append(metric)
+
+    if not dimensions and not metrics:
+        return None
+
+    return Model(
+        name=block.name,
+        description=description or label,
+        primary_key="id",
+        dimensions=dimensions,
+        metrics=metrics,
+    )
+
+
 def _parse_relationship_definition(block: AmlBlock, context: _FileContext) -> _AmlRelationship | None:
     rel = _parse_relationship_block(block, context)
     if not rel:
@@ -1482,7 +1656,9 @@ def _translate_aql_to_sql(expr: str) -> str:
     if len(segments) == 1:
         return _translate_aql_inline(base)
 
-    current = _replace_aql_macros(base)
+    # Translate the base segment too: it may itself be a function call
+    # (e.g. count(orders.id) | of_all(...)), not just a bare field reference.
+    current = _translate_aql_inline(base)
     for segment in segments[1:]:
         current = _apply_aql_pipe(current, segment.strip())
     return current
@@ -1610,28 +1786,64 @@ def _find_matching_paren(expr: str, start: int) -> int | None:
     return None
 
 
+# Aggregation functions: map directly to SQL aggregates.
+_AQL_AGG_SQL = {
+    "count": "COUNT",
+    "count_all": "COUNT",
+    "sum": "SUM",
+    "avg": "AVG",
+    "average": "AVG",
+    "min": "MIN",
+    "max": "MAX",
+    "median": "MEDIAN",
+}
+
+# Table-shaping functions (filter/group/select rows of a table). At the
+# SQL-fragment level the surrounding aggregation produces the value, so these
+# are best-effort passed through (the base flows to the next pipe stage).
+_AQL_TABLE_FUNCS = {"filter", "group", "select", "where"}
+
+# Metric-modifier functions that change a metric's grouping/period scope.
+# We cannot express their windowing at the fragment level, so we preserve the
+# inner metric expression rather than dropping it.
+_AQL_METRIC_MODIFIERS = {"of_all", "exclude", "keep_grains", "relative_period", "period_to_date", "running_total"}
+
+
 def _apply_aql_function(name: str, args: list[str], base: str | None) -> str:
     normalized = name.strip().lower()
     cleaned_args = [_replace_aql_macros(arg.strip()) for arg in args if arg.strip()]
     target = cleaned_args[0] if cleaned_args else base or "*"
 
-    if normalized in {"count", "count_all"}:
-        return f"COUNT({target})"
+    if normalized in _AQL_AGG_SQL:
+        sql_func = _AQL_AGG_SQL[normalized]
+        # Two-arg aggregation form: sum(table, expr) aggregates expr over table.
+        if base is None and len(cleaned_args) >= 2:
+            return f"{sql_func}({cleaned_args[1]})"
+        return f"{sql_func}({target})"
     if normalized in {"count_distinct", "countdistinct"}:
+        if base is None and len(cleaned_args) >= 2:
+            return f"COUNT(DISTINCT {cleaned_args[1]})"
         return f"COUNT(DISTINCT {target})"
-    if normalized in {"sum"}:
-        return f"SUM({target})"
-    if normalized in {"avg", "average"}:
-        return f"AVG({target})"
-    if normalized in {"min"}:
-        return f"MIN({target})"
-    if normalized in {"max"}:
-        return f"MAX({target})"
     if normalized in {"count_if", "countif"}:
         condition = cleaned_args[0] if cleaned_args else (base or "")
         if not condition:
             return "COUNT(*)"
         return f"SUM(CASE WHEN {condition} THEN 1 ELSE 0 END)"
+
+    if normalized in _AQL_TABLE_FUNCS:
+        # Best-effort: keep the upstream table expression flowing through the
+        # pipeline; the aggregation that follows still produces the value.
+        if base is not None:
+            return base
+        if cleaned_args:
+            return cleaned_args[0]
+        return "*"
+
+    if normalized in _AQL_METRIC_MODIFIERS:
+        # Preserve the metric being modified so it is not lost. The scope change
+        # (ignore grouping / shift period) cannot be expressed in a fragment.
+        inner = base if base is not None else (cleaned_args[0] if cleaned_args else "")
+        return inner
 
     if base:
         combined_args = [base] + cleaned_args if cleaned_args else [base]
@@ -1747,6 +1959,19 @@ def _detect_ratio(expr: str) -> tuple[str, str] | None:
         return match.group(1), match.group(2)
 
     return None
+
+
+_AGGREGATE_FUNC_RE = re.compile(
+    r"\b(COUNT|SUM|AVG|MIN|MAX|MEDIAN|STDDEV|STDDEV_SAMP|STDDEV_POP|VAR_SAMP|VAR_POP|VARIANCE)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _sql_is_aggregate(sql: str | None) -> bool:
+    """Return True if the SQL fragment contains a SQL aggregate function call."""
+    if not sql:
+        return False
+    return bool(_AGGREGATE_FUNC_RE.search(sql))
 
 
 def _map_dimension_type(dim_type: str | None) -> tuple[str, str | None]:

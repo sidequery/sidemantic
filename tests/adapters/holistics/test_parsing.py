@@ -308,6 +308,33 @@ Model test_model {
         temp_path.unlink()
 
 
+def test_holistics_aql_table_and_metric_functions():
+    """Richer AQL functions (where/filter/group/of_all/exclude/relative_period)
+    are handled best-effort without losing the underlying aggregation."""
+    from sidemantic.adapters.holistics import _translate_aql_to_sql
+
+    # Table functions in a pipe pass through; the aggregation still applies.
+    assert _translate_aql_to_sql("orders | filter(orders.amount > 100) | count(orders.id)") == "COUNT(orders.id)"
+    assert _translate_aql_to_sql("orders | group(orders.status) | sum(orders.amount)") == "SUM(orders.amount)"
+    assert _translate_aql_to_sql("orders | where(orders.status == 'x') | count(orders.id)") == "COUNT(orders.id)"
+
+    # Metric modifiers preserve the inner metric expression.
+    assert _translate_aql_to_sql("count(orders.id) | of_all(products)") == "COUNT(orders.id)"
+    assert _translate_aql_to_sql("sum(orders.amount) | exclude(orders.status)") == "SUM(orders.amount)"
+    assert (
+        _translate_aql_to_sql("sum(orders.amount) | relative_period(orders.created_at, interval(-1 month))")
+        == "SUM(orders.amount)"
+    )
+
+    # Two-argument aggregation form: sum(table, expr) aggregates expr.
+    assert _translate_aql_to_sql("sum(order_items, order_items.quantity * products.price)") == (
+        "SUM(order_items.quantity * products.price)"
+    )
+
+    # Nested aggregation in a ratio still translates each side.
+    assert _translate_aql_to_sql("sum(orders.amount) / count(orders.id)") == "SUM(orders.amount) / COUNT(orders.id)"
+
+
 # =============================================================================
 # RELATIONSHIP PARSING TESTS
 # =============================================================================

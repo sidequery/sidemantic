@@ -183,7 +183,6 @@ ADDED_EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/atscale_sml_kitchen_sink/model_internet_sales.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/row_security_country.yml",
     "tests/fixtures/cube/rbac_views.yaml",
-    "tests/fixtures/holistics_kitchen_sink/transactions.dataset.aml",
     "tests/fixtures/lookml/lkml_model_all_fields.model.lkml",
     "tests/fixtures/lookml/lkml_parameter_join.model.lkml",
     "tests/fixtures/lookml/pylookml_aggregate_tables.model.lkml",

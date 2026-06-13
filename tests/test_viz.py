@@ -1219,6 +1219,21 @@ def test_crossfilter_example_supports_massive_semantic_model():
     assert response["views"]["kpis"]["order_count"] > 0
 
 
+def test_crossfilter_preagg_empty_selection_keeps_kpi_fields():
+    layer = build_layer(large_records=1_000, massive_records=3_000)
+    chart = _build_chart(layer, "orders_20m", "Revenue Performance Explorer")
+    session = chart.crossfilter(interaction_preaggregations=True)
+
+    response = session.query([DimensionEquals("region", "__no_such_region__")], event="empty-test")
+
+    assert response["diagnostics"]["used_interaction_preagg"] is True
+    kpis = response["views"]["kpis"]
+    # Deriving KPIs from an empty grid must still emit every metric field (NULL),
+    # matching the aggregate-query path so the dashboard keeps stable KPI tiles.
+    assert "order_count" in kpis
+    assert kpis["order_count"] is None
+
+
 def test_crossfilter_example_supports_extreme_semantic_model():
     layer = build_layer(large_records=1_000, extreme_records=4_000)
     chart = _build_chart(layer, "orders_100m", "Revenue Performance Explorer")

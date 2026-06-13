@@ -1439,8 +1439,10 @@ class CrossfilterPlanner:
         if preagg is not None:
             # Interaction preaggs guarantee additive metrics, so KPI totals are a
             # rollup of the current grid we already fetched—derive, don't rescan.
+            # Always emit one KPI row (NULL metrics when empty), matching the
+            # aggregate-query path so the dashboard keeps stable KPI fields.
             kpis = {
-                "rows": [self._aggregate_rows(current["rows"], metric_aliases)] if current["rows"] else [],
+                "rows": [self._aggregate_rows(current["rows"], metric_aliases)],
                 "sql": current["sql"],
             }
         else:

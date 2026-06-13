@@ -1610,6 +1610,7 @@ class MalloyAdapter(BaseAdapter):
                         metrics=model.metrics,
                         segments=model.segments,
                         pre_aggregations=model.pre_aggregations,
+                        metadata=model.metadata,
                     )
 
             # Add to graph if not already present

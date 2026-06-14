@@ -154,6 +154,11 @@ class AmlBlock:
     kind: str
     name: str | None
     items: list[AmlItem]
+    # Originating file context for this block's definition. Set when a block is
+    # composed across modules (e.g. a Dataset extending a PartialDataset declared
+    # in another file) so its child fields resolve constants/`use` aliases against
+    # the file that defined them rather than the consuming file.
+    context: _FileContext | None = None
 
 
 AmlItem = (
@@ -560,12 +565,13 @@ def _resolve_models(
         if name in resolving:
             return None
         if name in model_blocks:
-            block, _ = model_blocks[name]
-            resolved_blocks[name] = block
-            return block
+            block, block_ctx = model_blocks[name]
+            stamped = _stamp_block_context(block, block_ctx)
+            resolved_blocks[name] = stamped
+            return stamped
         if name in partial_blocks:
-            block, _ = partial_blocks[name]
-            return block
+            block, block_ctx = partial_blocks[name]
+            return _stamp_block_context(block, block_ctx)
         assignment_entry = assignments.get(name)
         if assignment_entry:
             assignment, context = assignment_entry
@@ -617,10 +623,13 @@ def _resolve_block_from_value(
         return merged
 
     if isinstance(value, TypedBlock) and value.type_name in {"Model", "PartialModel", "Dataset", "PartialDataset"}:
-        return AmlBlock(kind=value.type_name, name=None, items=value.items)
+        # Inlined block body was authored in `context`'s file; stamp child fields
+        # so they resolve constants/`use` aliases against that file when this block
+        # is merged into a dataset/model defined elsewhere.
+        return _stamp_block_context(AmlBlock(kind=value.type_name, name=None, items=value.items), context)
 
     if isinstance(value, InlineBlock):
-        return AmlBlock(kind="Model", name=None, items=value.items)
+        return _stamp_block_context(AmlBlock(kind="Model", name=None, items=value.items), context)
 
     if isinstance(value, Identifier):
         qualified_name = _qualify_name(value.name, context)
@@ -636,7 +645,25 @@ def _resolve_block_from_value(
 def _as_model_block(block: AmlBlock) -> AmlBlock:
     if block.kind == "Model":
         return block
-    return AmlBlock(kind="Model", name=block.name, items=block.items)
+    return AmlBlock(kind="Model", name=block.name, items=block.items, context=block.context)
+
+
+def _stamp_block_context(block: AmlBlock, context: _FileContext) -> AmlBlock:
+    """Tag a block's child field blocks with their defining context.
+
+    Used when a block is pulled into a cross-module composition (e.g. a Dataset
+    extending a PartialDataset from another file). Each child field (dimension /
+    measure / metric) records the file it was authored in so its constants and
+    `use` aliases resolve against that file, not the consuming dataset's file.
+    Child blocks that already carry a context keep it (the closest origin wins).
+    """
+    stamped_items: list[AmlItem] = []
+    for item in block.items:
+        if isinstance(item, AmlBlock):
+            stamped_items.append(_stamp_block_context(item, context) if item.context is None else item)
+        else:
+            stamped_items.append(item)
+    return AmlBlock(kind=block.kind, name=block.name, items=stamped_items, context=block.context or context)
 
 
 def _merge_blocks(base: AmlBlock, extension: AmlBlock) -> AmlBlock:
@@ -1028,13 +1055,17 @@ def _parse_model_block(block: AmlBlock, constants: dict[str, AmlValue], context:
 
     for item in block.items:
         if isinstance(item, AmlBlock) and item.kind == "dimension":
-            dimension, is_primary = _parse_dimension_block(item, constants, context)
+            # Fields composed from a PartialModel in another file keep their own
+            # defining context so their constants/`use` aliases resolve correctly.
+            item_context = item.context or context
+            dimension, is_primary = _parse_dimension_block(item, constants, item_context)
             if dimension:
                 dimensions.append(dimension)
                 if is_primary and primary_key is None:
                     primary_key = dimension.name
         elif isinstance(item, AmlBlock) and item.kind in {"measure", "metric"}:
-            metric = _parse_measure_block(item, constants, context)
+            item_context = item.context or context
+            metric = _parse_measure_block(item, constants, item_context)
             if metric:
                 metrics.append(metric)
 
@@ -1235,12 +1266,13 @@ def _resolve_dataset_artifacts(
         if name in resolving:
             return None
         if name in dataset_blocks:
-            block, _ = dataset_blocks[name]
-            resolved_blocks[name] = block
-            return block
+            block, block_ctx = dataset_blocks[name]
+            stamped = _stamp_block_context(block, block_ctx)
+            resolved_blocks[name] = stamped
+            return stamped
         if name in partial_dataset_blocks:
-            block, _ = partial_dataset_blocks[name]
-            return block
+            block, block_ctx = partial_dataset_blocks[name]
+            return _stamp_block_context(block, block_ctx)
         assignment_entry = dataset_assignments.get(name)
         if assignment_entry:
             assignment, ctx = assignment_entry
@@ -1310,8 +1342,12 @@ def _parse_dataset_block(block: AmlBlock, constants: dict[str, AmlValue], contex
     for item in block.items:
         if not isinstance(item, AmlBlock):
             continue
+        # A child field carries its own defining context when the dataset was
+        # composed across modules (Dataset extending a PartialDataset from another
+        # file); resolve its constants/`use` aliases against that file.
+        item_context = item.context or context
         if item.kind == "dimension":
-            dimension, _ = _parse_dimension_block(item, constants, context)
+            dimension, _ = _parse_dimension_block(item, constants, item_context)
             if not dimension:
                 continue
             # Dataset dimensions usually combine fields across models, but some
@@ -1331,7 +1367,7 @@ def _parse_dataset_block(block: AmlBlock, constants: dict[str, AmlValue], contex
             else:
                 dimensions.append(dimension)
         elif item.kind in {"measure", "metric"}:
-            metric = _parse_measure_block(item, constants, context)
+            metric = _parse_measure_block(item, constants, item_context)
             if metric:
                 metrics.append(metric)
 

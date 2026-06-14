@@ -417,6 +417,60 @@ Dataset combined = base_ds.extend(reusable)
         temp_path.unlink()
 
 
+def test_holistics_extend_partial_preserves_defining_context(tmp_path):
+    """A Dataset that extends a PartialDataset declared in another module must
+    resolve the partial's field definitions against the partial's own file. A
+    metric whose definition references a const from the partial's module should
+    import as that const's AQL, not the literal const identifier."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # The partial and the const it references live in the `finance` module.
+    (finance_dir / "rev.aml").write_text(
+        """
+const rev_def = @aql sum(base_orders.amount);;
+
+PartialDataset reusable = PartialDataset {
+  metric reusable_rev {
+    label: 'Reusable Rev'
+    type: 'number'
+    definition: rev_def
+  }
+}
+"""
+    )
+
+    # The extending dataset lives at the project root (no module prefix) and pulls
+    # the partial in via a `use` alias.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { reusable }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset combined = base_ds.extend(reusable)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "combined" in graph.models
+    assert "reusable_rev" in graph.metrics
+    # The const from the partial's module is resolved, not dropped as a literal.
+    assert graph.metrics["reusable_rev"].sql == "SUM(base_orders.amount)"
+    assert graph.models["combined"].get_metric("reusable_rev").sql == "SUM(base_orders.amount)"
+
+
 def test_holistics_inline_metric_assignment():
     """A standalone metric written in inline assignment form (Metric x = Metric {...})
     registers as a graph-level metric, matching block-form standalone metrics."""

@@ -1034,6 +1034,59 @@ def test_metricflow_inline_constant_count_anchored_to_model():
         path.unlink(missing_ok=True)
 
 
+def test_metricflow_inline_exprless_non_count_uses_metric_column():
+    """An expr-less non-count inline measure aggregates its own column, not the PK.
+
+    In MetricFlow an expr-less measure aggregates the column named after the
+    measure. Only count-style measures may be anchored to the primary key;
+    anchoring a ``sum``/``max``/etc. there would silently aggregate the wrong
+    column (e.g. ``SUM(customers.customer_id)``).
+    """
+    import tempfile
+    import textwrap
+
+    yml = textwrap.dedent("""
+        models:
+          - name: customers
+            semantic_model:
+              enabled: true
+              name: customers
+            columns:
+              - name: customer_id
+                entity:
+                  type: primary
+                  name: customer
+            metrics:
+              - name: lifetime_spend_pretax
+                type: simple
+                agg: sum
+              - name: max_spend
+                type: simple
+                agg: max
+              - name: customer_count
+                type: simple
+                agg: count
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(yml)
+        path = Path(f.name)
+
+    try:
+        adapter = MetricFlowAdapter()
+        graph = adapter.parse(path)
+        # Expr-less non-count aggregates use the metric's own column.
+        assert graph.get_metric("lifetime_spend_pretax").sql == "customers.lifetime_spend_pretax"
+        assert graph.get_metric("max_spend").sql == "customers.max_spend"
+        # Expr-less count is still anchored to the primary key.
+        assert graph.get_metric("customer_count").sql == "customers.customer_id"
+
+        sql = SQLGenerator(graph).generate(metrics=["lifetime_spend_pretax"])
+        assert "sum(customers_cte.lifetime_spend_pretax)" in sql.lower()
+        assert "customer_id" not in sql.lower()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_metricflow_derived_non_offset_aliases_queryable():
     """Derived metrics whose inputs are all non-offset aliases are queryable.
 

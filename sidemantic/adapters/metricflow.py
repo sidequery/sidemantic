@@ -138,11 +138,19 @@ class MetricFlowAdapter(BaseAdapter):
                             metric.sql = primary_key_ref
                         else:
                             metric.sql = qualified
-                    else:
-                        # Bare aggregation (e.g. ``count`` with no ``expr``):
-                        # anchor it to the model via its primary key so the
-                        # planner can resolve the model.
+                    elif metric.agg == "count":
+                        # Bare ``count`` with no ``expr``: anchor it to the model
+                        # via its primary key so the planner can resolve the model.
+                        # COUNT over a non-null primary key is equivalent to COUNT(*).
                         metric.sql = primary_key_ref
+                    else:
+                        # Any other expr-less aggregation (sum/avg/min/max/...): in
+                        # MetricFlow an expr-less measure aggregates the column named
+                        # after the measure, so default the SQL to the metric's own
+                        # column, qualified with the model. Anchoring to the primary
+                        # key here would silently aggregate the wrong column (e.g.
+                        # ``SUM(orders.order_id)`` instead of ``SUM(orders.amount)``).
+                        metric.sql = f"{model.name}.{metric.name}"
                 self._add_metric(graph, metric)
 
         # Legacy spec: top-level ``semantic_models:``.

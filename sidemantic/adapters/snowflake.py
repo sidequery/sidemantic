@@ -661,14 +661,20 @@ class SnowflakeAdapter(BaseAdapter):
         if top_level_metrics:
             semantic_model["metrics"] = top_level_metrics
 
-        # Export top-level Cortex Analyst sections if present on the graph.
-        verified_queries = getattr(graph, "verified_queries", None)
+        # Export top-level Cortex Analyst sections if present on the graph. These
+        # live as dynamic attributes when parsed directly, but only survive a
+        # native (SidemanticAdapter) round-trip via ``graph.metadata["snowflake"]``,
+        # so fall back to that when the attributes are absent.
+        snowflake_meta = graph.metadata.get("snowflake") or {}
+        verified_queries = getattr(graph, "verified_queries", None) or snowflake_meta.get("verified_queries")
         if verified_queries:
             semantic_model["verified_queries"] = verified_queries
-        custom_instructions = getattr(graph, "custom_instructions", None)
+        custom_instructions = getattr(graph, "custom_instructions", None) or snowflake_meta.get("custom_instructions")
         if custom_instructions:
             semantic_model["custom_instructions"] = custom_instructions
-        module_custom_instructions = getattr(graph, "module_custom_instructions", None)
+        module_custom_instructions = getattr(graph, "module_custom_instructions", None) or snowflake_meta.get(
+            "module_custom_instructions"
+        )
         if module_custom_instructions:
             semantic_model["module_custom_instructions"] = module_custom_instructions
 

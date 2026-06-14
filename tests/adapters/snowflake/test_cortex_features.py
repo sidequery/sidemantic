@@ -153,3 +153,27 @@ class TestRoundtrip:
         assert order_total.synonyms == ["revenue"]
 
         assert len(graph2.verified_queries) == 1
+
+    def test_top_level_sections_survive_native_roundtrip(self, adapter, graph, tmp_path):
+        """Snowflake -> native (export-native) -> Snowflake preserves top-level sections."""
+        from sidemantic.adapters.sidemantic import SidemanticAdapter
+
+        native = SidemanticAdapter()
+        native_path = tmp_path / "native.yml"
+        native.export(graph, native_path)
+
+        native_data = yaml.safe_load(native_path.read_text())
+        assert native_data["metadata"]["snowflake"]["verified_queries"]
+
+        # Re-parse native YAML into a fresh graph (no dynamic Snowflake attributes).
+        graph2 = native.parse(native_path)
+        assert not hasattr(graph2, "verified_queries")
+        assert graph2.metadata["snowflake"]["verified_queries"]
+
+        # Re-export to Snowflake; top-level sections come back from graph.metadata.
+        sf_out = tmp_path / "out_snowflake.yaml"
+        adapter.export(graph2, sf_out)
+        sf_data = yaml.safe_load(sf_out.read_text())
+        assert len(sf_data["verified_queries"]) == 1
+        assert sf_data["custom_instructions"] == "Always prefer revenue over total when answering."
+        assert "module_custom_instructions" in sf_data

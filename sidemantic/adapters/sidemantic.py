@@ -29,6 +29,7 @@ ROOT_FIELDS = {
     "models",
     "metrics",
     "parameters",
+    "metadata",
     "sql_metrics",
     "sql_segments",
 }
@@ -391,6 +392,11 @@ class SidemanticAdapter(BaseAdapter):
         validate_native_format_version(data)
         reject_unknown_fields(data, ROOT_FIELDS, "root", source_path=source_path)
 
+        # Preserve graph-level metadata (e.g. Snowflake Cortex top-level sections).
+        graph_metadata = data.get("metadata")
+        if isinstance(graph_metadata, dict):
+            graph.metadata.update(graph_metadata)
+
         # Parse models
         for model_def in data.get("models") or []:
             model = self._parse_model(model_def, source_path=source_path)
@@ -487,6 +493,9 @@ class SidemanticAdapter(BaseAdapter):
 
         if graph.parameters:
             data["parameters"] = [self._export_parameter(parameter) for parameter in graph.parameters.values()]
+
+        if graph.metadata:
+            data["metadata"] = graph.metadata
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 

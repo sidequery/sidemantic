@@ -213,7 +213,10 @@ def _extract_all_join_refs(
 
     def _bare_ref(side: str) -> tuple[str | None, str] | None:
         """Parse ``side`` only if it is exactly one bare ref, not a wrapped expr."""
-        side = side.strip()
+        # Harmless surrounding parentheses/whitespace (e.g. `([a::x] = [b::y])`
+        # splits into `([a::x]` / `[b::y])`) are stripped; a bare ref never
+        # contains parentheses, so this does not admit function-wrapped exprs.
+        side = side.strip().strip("()").strip()
         bracketed = _TML_REF.fullmatch(side)
         if bracketed:
             return _parse_ref_token(bracketed.group(1))

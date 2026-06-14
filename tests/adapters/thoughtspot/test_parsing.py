@@ -1654,6 +1654,24 @@ def test_thoughtspot_wrapped_equality_is_not_a_relationship_key():
     assert rows == [("Acme", 125.0)]
 
 
+def test_thoughtspot_parenthesized_equality_is_a_relationship_key():
+    """An equality wrapped in harmless parentheses still becomes a join key.
+
+    Regression: requiring each equality side to be a bare ref dropped valid keys
+    when the predicate was parenthesized (e.g. `([sales::customer_id] =
+    [customers::id])`), since the sides reached the matcher as `([sales::...]` /
+    `[customers::id])`. Surrounding parentheses must be stripped first.
+    """
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_parenthesized_join.model.tml")
+    model = graph.models["sales_model"]
+
+    rel = {r.name: r for r in model.relationships}["customers"]
+    assert rel.type == "many_to_one"
+    assert rel.foreign_key == "customer_id"
+    assert rel.primary_key == "id"
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

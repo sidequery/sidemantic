@@ -388,8 +388,20 @@ class HexAdapter(BaseAdapter):
         if isinstance(semi_additive, dict):
             over = semi_additive.get("over") or []
             for entry in over:
-                if isinstance(entry, dict) and entry.get("dimension"):
-                    return entry["dimension"]
+                if isinstance(entry, dict) and entry.get("dimension") is not None:
+                    dimension = entry["dimension"]
+                    # The Hex spec allows ``dimension`` to be either a bare
+                    # dimension id or an inline Dimension object (``{id: ...}``).
+                    # Sidemantic's ``non_additive_dimension`` is a plain string,
+                    # so extract the id from the object form.
+                    if isinstance(dimension, dict):
+                        dimension_id = dimension.get("id")
+                        if isinstance(dimension_id, str):
+                            return dimension_id
+                        continue
+                    if isinstance(dimension, str):
+                        return dimension
+                    continue
                 if isinstance(entry, str):
                     return entry
         return None

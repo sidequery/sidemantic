@@ -344,3 +344,87 @@ measures:
     assert model.sql is not None
     assert model.table is None
     assert model.get_metric("ticket_count") is not None
+
+
+_HEX_VIEW_BASE_MODEL = """
+id: subscriptions
+type: model
+base_sql_table: analytics.subscriptions
+dimensions:
+  - id: id
+    type: number
+    unique: true
+measures:
+  - id: total
+    func: count
+---
+"""
+
+
+def test_validate_directory_flags_missing_hex_view_base(tmp_path):
+    """A Hex view without a `base` reference is reported as an error, not a pass.
+
+    Views are exempt from the physical-source check, so an omitted base would
+    otherwise let `sidemantic validate` report Validation Passed for an
+    unresolvable view.
+    """
+    from sidemantic.validation_runner import validate_directory
+
+    (tmp_path / "project.yml").write_text(
+        _HEX_VIEW_BASE_MODEL
+        + """
+id: revenue_overview
+type: view
+contents:
+  - name: Revenue
+    measures:
+      - total
+"""
+    )
+
+    report = validate_directory(tmp_path)
+    assert not report.passed
+    assert any("must have a 'base'" in err and "revenue_overview" in err for err in report.errors)
+
+
+def test_validate_directory_flags_unknown_hex_view_base(tmp_path):
+    """A Hex view whose `base` names no loaded model is reported as an error."""
+    from sidemantic.validation_runner import validate_directory
+
+    (tmp_path / "project.yml").write_text(
+        _HEX_VIEW_BASE_MODEL
+        + """
+id: revenue_overview
+type: view
+base: subscriptionz
+contents:
+  - name: Revenue
+    measures:
+      - total
+"""
+    )
+
+    report = validate_directory(tmp_path)
+    assert not report.passed
+    assert any("subscriptionz" in err and "doesn't exist" in err for err in report.errors)
+
+
+def test_validate_directory_accepts_valid_hex_view_base(tmp_path):
+    """A Hex view with a `base` naming a loaded model emits no view errors."""
+    from sidemantic.validation_runner import validate_directory
+
+    (tmp_path / "project.yml").write_text(
+        _HEX_VIEW_BASE_MODEL
+        + """
+id: revenue_overview
+type: view
+base: subscriptions
+contents:
+  - name: Revenue
+    measures:
+      - total
+"""
+    )
+
+    report = validate_directory(tmp_path)
+    assert not any("view" in err.lower() for err in report.errors)

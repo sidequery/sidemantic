@@ -314,5 +314,57 @@ def test_semi_additive_pick_min_survives_roundtrip(tmp_path):
         in_path.unlink(missing_ok=True)
 
 
+def test_semi_additive_inline_dimension_object(tmp_path):
+    """`semi_additive.over[].dimension` as an inline Dimension object parses.
+
+    The Hex spec allows the `over` dimension to be either a bare dimension id or
+    an inline Dimension object (`{id: ..., type: ...}`). Sidemantic's
+    `non_additive_dimension` is a plain string, so the inline object form must be
+    reduced to its id; passing the dict through fails Pydantic validation and
+    breaks the CLI load path for otherwise-valid snapshot measures.
+    """
+    doc = {
+        "type": "model",
+        "id": "balances",
+        "sql_table": "analytics.balances",
+        "measures": [
+            {
+                "id": "ending_balance",
+                "func": "sum",
+                "of": "amount",
+                "semi_additive": {
+                    "over": [
+                        {
+                            "dimension": {"id": "snapshot_date", "type": "date"},
+                            "pick": "last",
+                        }
+                    ],
+                    "groupings": ["account_id"],
+                },
+            }
+        ],
+    }
+    adapter = HexAdapter()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        Path(f.name).write_text(yaml.safe_dump(doc))
+        in_path = Path(f.name)
+    out_dir = tmp_path / "hex_out"
+    try:
+        graph = adapter.parse(in_path)
+        metric = graph.models["balances"].get_metric("ending_balance")
+        # The inline dimension object is reduced to its id.
+        assert metric.non_additive_dimension == "snapshot_date"
+        # The full inline config still round-trips through preserved meta.
+        adapter.export(graph, out_dir)
+        with open(out_dir / "balances.yml") as fh:
+            exported = yaml.safe_load(fh)
+        measure = exported["measures"][0]
+        assert measure["semi_additive"]["over"][0]["dimension"] == {"id": "snapshot_date", "type": "date"}
+        assert measure["semi_additive"]["over"][0]["pick"] == "last"
+        assert measure["semi_additive"]["groupings"] == ["account_id"]
+    finally:
+        in_path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

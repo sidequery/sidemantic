@@ -258,6 +258,12 @@ class HolisticsAdapter(BaseAdapter):
         for model in dataset_models.values():
             if model.name not in graph.models:
                 graph.add_model(model)
+                # Dataset metrics are first-class graph metrics. add_model() only
+                # auto-registers time_comparison/conversion types, so surface the
+                # rest (derived/simple) at graph scope too for unqualified access.
+                for metric in model.metrics:
+                    if metric.name not in graph.metrics:
+                        graph.add_metric(metric)
         for metric in standalone_metrics.values():
             if metric.name not in graph.metrics:
                 graph.add_metric(metric)

@@ -154,6 +154,20 @@ class TestKitchenSinkParsing:
         assert revenue_per_customer is not None
         assert "SUM(kitchen_orders.amount)" in revenue_per_customer.sql
 
+    def test_dataset_metrics_registered_at_graph_scope(self, kitchen_sink_layer):
+        """Dataset metrics are first-class graph metrics, reachable without a
+        model prefix via graph.metrics, list_metrics(), and get_metric()."""
+        layer = kitchen_sink_layer
+        graph = layer.graph
+
+        for name in ("avg_order_amount", "buyer_event_ratio", "total_buyer_orders"):
+            assert name in graph.metrics, f"{name} should be registered at graph scope"
+            assert name in layer.list_metrics()
+            assert layer.get_metric(name).name == name
+
+        # Dataset metric from a different dataset is also surfaced.
+        assert "revenue_per_customer" in graph.metrics
+
     def test_standalone_metric_and_partial_dataset(self, kitchen_sink_layer):
         """Standalone Metric blocks register as graph metrics; PartialDataset
         metrics compose into a Dataset via .extend()."""

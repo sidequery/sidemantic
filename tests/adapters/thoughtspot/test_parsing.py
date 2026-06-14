@@ -706,10 +706,18 @@ def test_import_thoughtspot_model():
     assert relationships["regions"].foreign_key == "region_id"
     assert relationships["regions"].primary_key == "id"
 
-    # Dimensions: column_id <table>::<column> resolves to table.column.
+    # A joined model becomes a derived table. Its `SELECT *` is rewritten into an
+    # explicit projection that aliases each inner `table.column` to a stable,
+    # unqualified output name so the columns stay in scope when queried.
+    assert "SELECT *" not in model.sql
+    assert "sales.id AS sales__id" in model.sql
+    assert "customers.name AS customers__name" in model.sql
+
+    # Dimensions reference the unqualified aliased output names, not inner
+    # `table.column` qualifiers that are out of scope in the derived subquery.
     order_id = model.get_dimension("order_id")
     assert order_id is not None
-    assert order_id.sql == "sales.id"
+    assert order_id.sql == "sales__id"
     assert order_id.description == "Order identifier"
 
     order_date = model.get_dimension("order_date")
@@ -722,22 +730,22 @@ def test_import_thoughtspot_model():
     assert is_active is not None
     assert is_active.type == "boolean"
 
-    # Column from a joined table resolves to that table's name.
+    # Column from a joined table resolves to that table's aliased output name.
     customer_name = model.get_dimension("customer_name")
     assert customer_name is not None
-    assert customer_name.sql == "customers.name"
+    assert customer_name.sql == "customers__name"
     assert customer_name.label == "Customer"
 
     region_name = model.get_dimension("region_name")
     assert region_name is not None
-    assert region_name.sql == "regions.name"
+    assert region_name.sql == "regions__name"
 
     # Simple aggregated measure.
     gross_revenue = model.get_metric("gross_revenue")
     assert gross_revenue is not None
     assert gross_revenue.agg == "sum"
     assert gross_revenue.format == "$#,##0.00"
-    assert gross_revenue.sql == "sales.gross_revenue"
+    assert gross_revenue.sql == "sales__gross_revenue"
 
     # Formula-backed measures.
     net_revenue = model.get_metric("net_revenue")
@@ -772,30 +780,112 @@ def test_import_thoughtspot_model_alias():
     assert "orders_model" in graph.models
     model = graph.models["orders_model"]
 
-    # The alias `ship_country` in column_id / join `with` resolves to `countries`.
+    # The alias `ship_country` is the role identifier and is preserved as the
+    # join relation (`countries AS ship_country`) and relationship name, instead
+    # of being resolved away to the backing `countries` table.
     assert model.sql is not None
-    assert "JOIN countries" in model.sql
+    assert "JOIN countries AS ship_country" in model.sql
 
     relationships = {rel.name: rel for rel in model.relationships}
-    assert "countries" in relationships
-    assert relationships["countries"].type == "many_to_one"
-    assert relationships["countries"].foreign_key == "ship_country_id"
-    assert relationships["countries"].primary_key == "id"
+    assert "ship_country" in relationships
+    assert relationships["ship_country"].type == "many_to_one"
+    assert relationships["ship_country"].foreign_key == "ship_country_id"
+    assert relationships["ship_country"].primary_key == "id"
 
     ship_country = model.get_dimension("ship_country_name")
     assert ship_country is not None
-    assert ship_country.sql == "countries.name"
+    assert ship_country.sql == "ship_country__name"
 
     # `column_id` paths that use the table `name` (even when an `id` exists)
-    # keep their table qualifier instead of collapsing to a bare column.
+    # keep their table qualifier instead of collapsing to a bare column; the
+    # qualifier is carried through to the aliased output name.
     order_id = model.get_dimension("order_id")
     assert order_id is not None
-    assert order_id.sql == "orders.id"
+    assert order_id.sql == "orders__id"
 
     amount = model.get_metric("amount")
     assert amount is not None
     assert amount.agg == "sum"
-    assert amount.sql == "orders.amount"
+    assert amount.sql == "orders__amount"
+
+
+def test_thoughtspot_joined_model_is_queryable():
+    """A joined Model TML compiles to SQL that executes (columns stay in scope).
+
+    Regression: joined models were exported as `FROM (SELECT * FROM sales JOIN ...) AS t`
+    while dimensions/metrics kept inner qualifiers like `sales.gross_revenue`, so a
+    normal query produced `SELECT sales.gross_revenue FROM (...) AS t` and failed with
+    "table sales not found".
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/sales.model.tml")
+
+    layer = SemanticLayer()
+    for model in graph.models.values():
+        layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE sales (id INT, order_date DATE, is_active BOOL, gross_revenue DOUBLE, "
+        "discount DOUBLE, order_count INT, customer_id INT, region_id INT, country_code VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO sales VALUES (1, DATE '2024-01-01', true, 100.0, 10.0, 2, 5, 7, 'US'), "
+        "(2, DATE '2024-01-01', true, 50.0, 5.0, 1, 5, 7, 'US')"
+    )
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+    con.execute("CREATE TABLE regions (id INT, country_code VARCHAR, name VARCHAR)")
+    con.execute("INSERT INTO regions VALUES (7, 'US', 'West')")
+
+    sql = layer.compile(
+        metrics=["sales_model.gross_revenue", "sales_model.net_revenue", "sales_model.order_count"],
+        dimensions=["sales_model.order_date", "sales_model.customer_name", "sales_model.region_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [(__import__("datetime").date(2024, 1, 1), "Acme", "West", 150.0, 135.0, 2)]
+
+
+def test_thoughtspot_role_playing_joins_stay_distinct():
+    """Two aliases backed by the same table become distinct role-playing joins.
+
+    Regression: resolving `with:` aliases to the backing table name collapsed
+    `ship_country` and `bill_country` (both backed by `countries`) into a single
+    ambiguous `countries` join/relationship.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/role_playing.model.tml")
+    model = graph.models["shipments_model"]
+
+    # Both aliases survive as distinct, aliased joins and relationships.
+    assert "JOIN countries AS ship_country" in model.sql
+    assert "JOIN countries AS bill_country" in model.sql
+    rel_names = {rel.name for rel in model.relationships}
+    assert {"ship_country", "bill_country"} <= rel_names
+    assert model.get_dimension("ship_country_name").sql == "ship_country__name"
+    assert model.get_dimension("bill_country_name").sql == "bill_country__name"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE, ship_country_id INT, bill_country_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 7, 8)")
+    con.execute("CREATE TABLE countries (id INT, name VARCHAR)")
+    con.execute("INSERT INTO countries VALUES (7, 'US'), (8, 'CA')")
+
+    sql = layer.compile(
+        metrics=["shipments_model.amount"],
+        dimensions=["shipments_model.ship_country_name", "shipments_model.bill_country_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    # The two roles resolve to different countries (US shipped, CA billed).
+    assert rows == [("US", "CA", 100.0)]
 
 
 def test_thoughtspot_model_auto_detect_loader():

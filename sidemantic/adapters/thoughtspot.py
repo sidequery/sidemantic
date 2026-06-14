@@ -187,6 +187,82 @@ def _simple_column(sql: str | None, fallback: str | None) -> str | None:
     return fallback
 
 
+def _expose_joined_columns(
+    sql: str | None,
+    tables: set[str],
+    dimensions: list[Dimension],
+    metrics: list[Metric],
+    base_table: str | None = None,
+    primary_key: str | None = None,
+) -> str | None:
+    """Rewrite a joined model's derived SQL so its columns are queryable.
+
+    A joined Model TML becomes a derived table (``FROM (<sql>) AS t``) whose
+    column expressions still carry inner table qualifiers like ``sales.amount``.
+    Those qualifiers are out of scope once the join is wrapped in a subquery, so
+    a normal query (e.g. ``SELECT sales.amount FROM (...) AS t``) fails with
+    "table sales not found". This replaces the ``SELECT *`` projection with an
+    explicit list that aliases each referenced ``table.column`` to a stable,
+    unqualified output name, then rewrites the dimension/metric SQL to use those
+    aliases so the outer query stays in scope.
+
+    The model's ``primary_key`` is also passed through by the SQL generator as a
+    bare column, so the base table's primary key is exposed under that name when
+    no model column already projects it.
+    """
+    if not sql or "SELECT * FROM " not in sql:
+        return sql
+
+    # Collect every distinct `table.column` referenced by the model's columns
+    # where `table` is one of the joined tables. Preserve first-seen order so
+    # the generated projection is deterministic.
+    projection: dict[tuple[str, str], str] = {}
+
+    def _collect(expr: str | None) -> None:
+        if not expr:
+            return
+        for table, column in _TML_DOT_REF.findall(expr):
+            if table in tables:
+                projection.setdefault((table, column), f"{table}__{column}")
+
+    for dim in dimensions:
+        _collect(dim.sql)
+    for metric in metrics:
+        _collect(metric.sql)
+
+    if not projection:
+        return sql
+
+    def _rewrite(expr: str | None) -> str | None:
+        if not expr:
+            return expr
+
+        def _replace(match: re.Match[str]) -> str:
+            table = match.group(1)
+            column = match.group(2)
+            alias = projection.get((table, column))
+            return alias if alias else match.group(0)
+
+        return _TML_DOT_REF.sub(_replace, expr)
+
+    for dim in dimensions:
+        dim.sql = _rewrite(dim.sql)
+    for metric in metrics:
+        metric.sql = _rewrite(metric.sql)
+
+    select_parts = [f"{table}.{column} AS {alias}" for (table, column), alias in projection.items()]
+
+    # The SQL generator passes through `model.primary_key` as a bare column when
+    # querying derived models. Expose `<base_table>.<primary_key>` under that
+    # name so the key resolves instead of referencing an out-of-scope column.
+    aliases = set(projection.values())
+    if base_table and primary_key and primary_key not in aliases:
+        select_parts.append(f"{base_table}.{primary_key} AS {primary_key}")
+
+    select_list = ", ".join(select_parts)
+    return sql.replace("SELECT * FROM ", f"SELECT {select_list} FROM ", 1)
+
+
 class ThoughtSpotAdapter(BaseAdapter):
     """Adapter for ThoughtSpot TML (YAML) tables and worksheets."""
 
@@ -492,16 +568,23 @@ class ThoughtSpotAdapter(BaseAdapter):
         table_name_lookup = self._table_name_lookup(model_tables)
 
         # Each model_tables entry may carry an `alias` used in column_id paths
-        # and join expressions; map alias -> table name so refs resolve.
-        alias_lookup: dict[str, str] = {}
+        # and join expressions. The alias is the role identifier (e.g.
+        # `ship_country`/`bill_country` both backed by `countries`), so keep the
+        # alias as the join/relationship/qualifier name and only track the
+        # underlying table for emitting `JOIN <table> AS <alias>`. Resolving the
+        # alias away here would collapse distinct role-playing joins into a
+        # single ambiguous `countries` relation.
+        alias_to_table: dict[str, str] = {}
         for table in model_tables:
             table_name = table.get("name") or table.get("id")
             alias = table.get("alias")
             if alias and table_name:
-                alias_lookup[alias] = table_name
+                alias_to_table[alias] = table_name
         # Build the path lookup used to resolve column_id/expression table refs.
+        # Aliases resolve to themselves so qualifiers stay role-scoped.
         path_lookup: dict[str, str] = dict(table_name_lookup)
-        path_lookup.update(alias_lookup)
+        for alias in alias_to_table:
+            path_lookup[alias] = alias
 
         # Flatten nested joins (one per model_tables entry) into the same shape
         # the worksheet join helpers consume.
@@ -512,7 +595,12 @@ class ThoughtSpotAdapter(BaseAdapter):
                 destination = join_def.get("with")
                 if not source or not destination:
                     continue
-                resolved_dest = alias_lookup.get(destination, table_name_lookup.get(destination, destination))
+                # Keep an aliased destination as-is (the role name); only resolve
+                # non-aliased ids to their table name.
+                if destination in alias_to_table:
+                    resolved_dest = destination
+                else:
+                    resolved_dest = table_name_lookup.get(destination, destination)
                 # PyYAML (YAML 1.1) parses the bare `on:` key as the boolean True.
                 on_value = join_def.get("on")
                 if on_value is None and True in join_def:
@@ -527,7 +615,7 @@ class ThoughtSpotAdapter(BaseAdapter):
                     }
                 )
 
-        sql, base_table = self._build_join_sql(model_tables, flat_joins, path_lookup, table_name_lookup)
+        sql, base_table = self._build_join_sql(model_tables, flat_joins, path_lookup, table_name_lookup, alias_to_table)
         relationships = self._parse_model_relationships(flat_joins, path_lookup, table_name_lookup)
 
         formulas = model_def.get("formulas") or []
@@ -616,6 +704,21 @@ class ThoughtSpotAdapter(BaseAdapter):
                 )
                 dimensions.append(dim)
 
+        primary_key = "id"
+        if any(d.name.lower() == "id" for d in dimensions):
+            primary_key = next(d.name for d in dimensions if d.name.lower() == "id")
+
+        # A joined model is exported as derived SQL (FROM (<sql>) AS t); rewrite
+        # its `SELECT *` into explicit aliased columns and update the dimension/
+        # metric SQL so the inner table qualifiers stay in scope when queried.
+        if sql:
+            known_tables = set(table_name_lookup.values())
+            for join_def in flat_joins:
+                known_tables.add(join_def.get("source"))
+                known_tables.add(join_def.get("destination"))
+            known_tables.discard(None)
+            sql = _expose_joined_columns(sql, known_tables, dimensions, metrics, base_table, primary_key)
+
         default_time_dimension = None
         default_grain = None
         for dim in dimensions:
@@ -623,10 +726,6 @@ class ThoughtSpotAdapter(BaseAdapter):
                 default_time_dimension = dim.name
                 default_grain = dim.granularity
                 break
-
-        primary_key = "id"
-        if any(d.name.lower() == "id" for d in dimensions):
-            primary_key = next(d.name for d in dimensions if d.name.lower() == "id")
 
         model = Model(
             name=name,
@@ -717,6 +816,7 @@ class ThoughtSpotAdapter(BaseAdapter):
         joins: list[dict[str, Any]],
         table_path_lookup: dict[str, str] | None = None,
         table_name_lookup: dict[str, str] | None = None,
+        alias_to_table: dict[str, str] | None = None,
     ) -> tuple[str | None, str | None]:
         base_table = None
         if tables:
@@ -766,7 +866,12 @@ class ThoughtSpotAdapter(BaseAdapter):
                 "INNER": "INNER",
             }.get(join_type, "INNER")
 
-            clauses.append(f"{join_keyword} JOIN {right} ON {on_expr}")
+            # Role-playing joins keep the alias as the relation name; emit
+            # `<table> AS <alias>` so two roles backed by the same table do not
+            # produce an ambiguous, duplicated join.
+            backing = alias_to_table.get(right) if alias_to_table else None
+            right_clause = f"{backing} AS {right}" if backing and backing != right else right
+            clauses.append(f"{join_keyword} JOIN {right_clause} ON {on_expr}")
             joined.add(right)
 
         if not clauses:

@@ -29,6 +29,9 @@ pub struct SidemanticConfig {
     pub metrics: Vec<MetricConfig>,
     #[serde(default)]
     pub parameters: Vec<ParameterConfig>,
+    /// Graph-level adapter metadata (e.g. Snowflake Cortex top-level sections).
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub sql_metrics: Option<String>,
     #[serde(default)]
@@ -129,6 +132,15 @@ pub struct DimensionConfig {
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
+    /// Alternative names (e.g. Snowflake Cortex Analyst, Cube).
+    #[serde(default)]
+    pub synonyms: Option<Vec<String>>,
+    /// Representative sample values for this dimension.
+    #[serde(default)]
+    pub sample_values: Option<Vec<String>>,
+    /// Linked Cortex Search service name (Snowflake Cortex Analyst).
+    #[serde(default)]
+    pub cortex_search_service_name: Option<String>,
     pub format: Option<String>,
     pub value_format_name: Option<String>,
     pub parent: Option<String>,
@@ -187,6 +199,9 @@ pub struct MetricConfig {
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
+    /// Alternative names (e.g. Snowflake Cortex Analyst, Cube).
+    #[serde(default)]
+    pub synonyms: Option<Vec<String>>,
     #[serde(default = "default_public")]
     pub public: bool,
 }
@@ -1685,6 +1700,61 @@ models:
             orders.pre_aggregations[0].meta.as_ref().unwrap()["owner"],
             "analytics"
         );
+    }
+
+    #[test]
+    fn test_native_contract_accepts_snowflake_enrichment_fields() {
+        // Native YAML produced by Python `export-native` after a Snowflake import
+        // carries root `metadata`, dimension synonyms/sample_values/cortex search,
+        // and metric synonyms. The Rust native loader must accept (not reject) it.
+        let yaml = r#"
+metadata:
+  snowflake:
+    verified_queries:
+      - name: total revenue
+    custom_instructions: Prefer revenue.
+models:
+  - name: orders
+    table: orders
+    dimensions:
+      - name: status
+        type: categorical
+        synonyms: [state]
+        sample_values: ["1001", "1002"]
+        cortex_search_service_name: status_search
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+        synonyms: [total revenue]
+"#;
+
+        let config: SidemanticConfig = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(
+            config.metadata.as_ref().unwrap()["snowflake"]["custom_instructions"],
+            "Prefer revenue."
+        );
+
+        let dim = &config.models[0].dimensions[0];
+        assert_eq!(dim.synonyms.as_deref(), Some(&["state".to_string()][..]));
+        assert_eq!(
+            dim.sample_values.as_deref(),
+            Some(&["1001".to_string(), "1002".to_string()][..])
+        );
+        assert_eq!(
+            dim.cortex_search_service_name.as_deref(),
+            Some("status_search")
+        );
+
+        let metric = &config.models[0].metrics[0];
+        assert_eq!(
+            metric.synonyms.as_deref(),
+            Some(&["total revenue".to_string()][..])
+        );
+
+        // The config must still convert into the internal model without error.
+        config.into_parts().unwrap();
     }
 
     #[test]

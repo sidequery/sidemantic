@@ -54,6 +54,9 @@ _UNSUPPORTED_AGG_FUNCS = {
 _SIMPLE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _TML_REF = re.compile(r"\[([^\]]+)\]")
 _TML_DOT_REF = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
+# A bare identifier that is NOT part of a `table.column` qualifier and is NOT a
+# function call: not preceded by `.`/word char, not followed by `.` or `(`.
+_BARE_IDENTIFIER = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)(?![\w.])(?!\s*\()")
 
 
 def _normalize(value: Any) -> str | None:
@@ -233,6 +236,21 @@ def _expose_joined_columns(
     if not projection:
         return sql
 
+    # ThoughtSpot formulas also use unqualified references (e.g.
+    # `[gross_revenue] - [sales::discount]`), which convert to bare identifiers
+    # like `gross_revenue`. Map each such column name to its projected alias when
+    # exactly one joined table projects that column, so the rewritten expression
+    # uses the in-scope output alias instead of an out-of-scope bare column.
+    bare_to_alias: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for (_table, column), alias in projection.items():
+        if column in bare_to_alias and bare_to_alias[column] != alias:
+            ambiguous.add(column)
+        else:
+            bare_to_alias[column] = alias
+    for column in ambiguous:
+        bare_to_alias.pop(column, None)
+
     def _rewrite(expr: str | None) -> str | None:
         if not expr:
             return expr
@@ -243,7 +261,12 @@ def _expose_joined_columns(
             alias = projection.get((table, column))
             return alias if alias else match.group(0)
 
-        return _TML_DOT_REF.sub(_replace, expr)
+        rewritten = _TML_DOT_REF.sub(_replace, expr)
+
+        def _replace_bare(match: re.Match[str]) -> str:
+            return bare_to_alias.get(match.group(1), match.group(0))
+
+        return _BARE_IDENTIFIER.sub(_replace_bare, rewritten)
 
     for dim in dimensions:
         dim.sql = _rewrite(dim.sql)
@@ -587,10 +610,13 @@ class ThoughtSpotAdapter(BaseAdapter):
             path_lookup[alias] = alias
 
         # Flatten nested joins (one per model_tables entry) into the same shape
-        # the worksheet join helpers consume.
+        # the worksheet join helpers consume. When a table carries an `alias`,
+        # its `column_id`/`on` qualifiers use the alias (e.g. `o::id`), so the
+        # join `source` must be the alias too (not the backing table name) for
+        # the join-direction logic and SQL relation name to stay consistent.
         flat_joins: list[dict[str, Any]] = []
         for table in model_tables:
-            source = table.get("name") or table.get("id")
+            source = table.get("alias") or table.get("name") or table.get("id")
             for join_def in table.get("joins") or []:
                 destination = join_def.get("with")
                 if not source or not destination:
@@ -713,6 +739,10 @@ class ThoughtSpotAdapter(BaseAdapter):
         # metric SQL so the inner table qualifiers stay in scope when queried.
         if sql:
             known_tables = set(table_name_lookup.values())
+            # Aliases (role-playing or a base-table alias) are the in-scope
+            # relation names that qualify columns like `o.id`/`ship_country.name`,
+            # so they must be recognized when projecting the derived columns.
+            known_tables.update(alias_to_table.keys())
             for join_def in flat_joins:
                 known_tables.add(join_def.get("source"))
                 known_tables.add(join_def.get("destination"))
@@ -819,16 +849,24 @@ class ThoughtSpotAdapter(BaseAdapter):
         alias_to_table: dict[str, str] | None = None,
     ) -> tuple[str | None, str | None]:
         base_table = None
+        base_alias = None
         if tables:
             base_table = tables[0].get("name") or tables[0].get("id")
+            base_alias = tables[0].get("alias")
+
+        # When the base table is aliased, its `column_id`/`on` qualifiers use the
+        # alias (e.g. `o::id`), so the relation in scope is the alias. Emit
+        # `FROM <table> AS <alias>` and key the join tracking on the alias so the
+        # alias resolves instead of failing with "table o not found".
+        base_relation = base_alias if (base_alias and base_alias != base_table) else base_table
 
         joined: set[str] = set()
-        if base_table:
-            joined.add(base_table)
+        if base_relation:
+            joined.add(base_relation)
 
         clauses: list[str] = []
-        if base_table:
-            clauses.append(base_table)
+        if base_relation:
+            clauses.append(f"{base_table} AS {base_alias}" if base_relation != base_table else base_table)
 
         for join_def in joins:
             source = join_def.get("source")
@@ -846,10 +884,11 @@ class ThoughtSpotAdapter(BaseAdapter):
                 source = table_name_lookup.get(source, source)
                 destination = table_name_lookup.get(destination, destination)
 
-            if not base_table:
+            if not base_relation:
                 base_table = source
-                clauses.append(base_table)
-                joined.add(base_table)
+                base_relation = source
+                clauses.append(base_relation)
+                joined.add(base_relation)
 
             if source in joined and destination not in joined:
                 right = destination
@@ -878,13 +917,15 @@ class ThoughtSpotAdapter(BaseAdapter):
             return None, None
 
         if len(clauses) == 1:
-            return None, clauses[0]
+            # Single base table, no joins: `model.table` is the real table name,
+            # not an alias (no subquery wraps it, so there is nothing to alias).
+            return None, base_table
 
         sql = "SELECT * FROM " + clauses[0]
         for clause in clauses[1:]:
             sql += f"\n{clause}"
 
-        return sql, base_table
+        return sql, base_relation
 
     def _parse_join_relationships(
         self,

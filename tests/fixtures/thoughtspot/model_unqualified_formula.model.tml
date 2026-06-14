@@ -1,0 +1,38 @@
+guid: "model-unqualified-formula"
+export_schema_version: "2"
+model:
+  name: sales_model
+  description: Joined model whose formula uses an unqualified column reference
+  model_tables:
+    - name: sales
+      fqn: ANALYTICS.PUBLIC.sales
+      joins:
+        - with: customers
+          on: "[sales::customer_id] = [customers::id]"
+          type: LEFT_OUTER
+          cardinality: MANY_TO_ONE
+    - name: customers
+      fqn: ANALYTICS.PUBLIC.customers
+  formulas:
+    - name: net_revenue
+      expr: "[gross_revenue] - [sales::discount]"
+      id: net_rev
+  columns:
+    - name: order_id
+      column_id: sales::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: customer_name
+      column_id: customers::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: gross_revenue
+      column_id: sales::gross_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+    - name: net_revenue
+      formula_id: net_rev
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

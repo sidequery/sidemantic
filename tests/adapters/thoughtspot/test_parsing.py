@@ -888,6 +888,86 @@ def test_thoughtspot_role_playing_joins_stay_distinct():
     assert rows == [("US", "CA", 100.0)]
 
 
+def test_thoughtspot_unqualified_formula_ref_is_queryable():
+    """A joined-model formula using an unqualified column ref stays queryable.
+
+    Regression: ThoughtSpot formulas often use the unqualified reference form,
+    e.g. `[gross_revenue] - [sales::discount]`. The derived projection exposed
+    `sales.gross_revenue AS sales__gross_revenue`, but the metric SQL kept the
+    bare `gross_revenue`, so a normal query failed with
+    `Referenced column "gross_revenue" not found`. The bare ref must resolve to
+    the projected output alias.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_unqualified_formula.model.tml")
+    model = graph.models["sales_model"]
+
+    # The unqualified `gross_revenue` ref resolves to the projected output alias,
+    # and the qualified `sales::discount` ref to its alias.
+    net_revenue = model.get_metric("net_revenue")
+    assert net_revenue is not None
+    assert net_revenue.sql == "sales__gross_revenue - sales__discount"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, gross_revenue DOUBLE, discount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0, 5), (2, 50.0, 5.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(
+        metrics=["sales_model.gross_revenue", "sales_model.net_revenue"],
+        dimensions=["sales_model.customer_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    # gross_revenue = 150, net_revenue = (100-10) + (50-5) = 135
+    assert rows == [("Acme", 150.0, 135.0)]
+
+
+def test_thoughtspot_aliased_base_table_is_queryable():
+    """A joined model whose base/source table is aliased stays queryable.
+
+    Regression: aliases were applied only to the joined `right` relation, so a
+    base table declared as `name: orders, alias: o` (with `column_id: o::amount`
+    and an `on` clause using `[o::id]`) emitted `FROM orders` while the columns
+    referenced `o.*`, failing with `Referenced table "o" not found`.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_base_alias.model.tml")
+    model = graph.models["orders_model"]
+
+    # The base table is aliased in the FROM clause so the `o` qualifier resolves.
+    assert model.sql is not None
+    assert "FROM orders AS o" in model.sql
+    # Base-table columns are projected under stable aliases keyed on the alias.
+    assert model.get_dimension("order_id").sql == "o__id"
+    assert model.get_metric("amount").sql == "o__amount"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(
+        metrics=["orders_model.amount"],
+        dimensions=["orders_model.customer_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

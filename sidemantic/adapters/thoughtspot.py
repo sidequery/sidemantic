@@ -991,15 +991,20 @@ class ThoughtSpotAdapter(BaseAdapter):
 
         Prefer a dimension named ``id`` but resolve it to its backing physical
         column (a column named ``id`` may map to a differently named DB column,
-        e.g. ``column_id: orders::order_key``). Otherwise, if the base table is
-        known, keep ``id`` when a base-table column actually resolves to ``id``;
-        failing that, use the first base-table column so the key references a real
-        column. Fall back to ``id`` only when no better candidate exists.
+        e.g. ``column_id: orders::order_key``). Only accept it when its SQL is
+        unqualified or belongs to the base table; a joined-table ``id`` (e.g.
+        ``customers::id``) is not the base model's key. Otherwise, if the base
+        table is known, keep ``id`` when a base-table column actually resolves to
+        ``id``; failing that, use the first base-table column so the key
+        references a real column. Fall back to ``id`` only when no better
+        candidate exists.
         """
         for dim in dimensions:
             if dim.name.lower() == "id":
-                _table, column = _split_sql_identifier(dim.sql)
-                return column or dim.name
+                table, column = _split_sql_identifier(dim.sql)
+                if table is None or base_table is None or table == base_table:
+                    return column or dim.name
+                break
 
         if base_table:
             base_columns: list[str] = []

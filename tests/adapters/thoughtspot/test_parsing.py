@@ -1401,6 +1401,40 @@ def test_thoughtspot_renamed_id_key_uses_backing_column():
     assert rows == [("Acme", 125.0)]
 
 
+def test_thoughtspot_joined_id_dimension_is_not_used_as_primary_key():
+    """A joined-table column named `id` is not treated as the base model's key.
+
+    Regression: `_infer_model_primary_key` returned the backing column of the
+    first dimension named `id` even when it came from a joined table
+    (`customers::id`). The derived projection then emitted `orders.id AS id`,
+    failing because the base `orders` table has no `id` (its key is `order_key`).
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_joined_id_key.model.tml")
+    model = graph.models["orders_model"]
+
+    # The joined-table id is skipped; the base-table column is used as the key.
+    assert model.primary_key == "order_key"
+    assert model.sql is not None
+    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.id AS id" not in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (order_key INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT)")
+    con.execute("INSERT INTO customers VALUES (5)")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.order_key"])
+    rows = sorted(con.execute(sql).fetchall())
+    assert rows == [(1, 100.0), (2, 25.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

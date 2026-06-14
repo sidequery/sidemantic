@@ -142,11 +142,7 @@ pub fn load_from_string_with_metadata(content: &str) -> Result<LoadedGraphMetada
             graph.add_metric(metric)?;
         }
     }
-    for metric in graph_metrics.iter().cloned() {
-        if graph.get_metric(&metric.name).is_none() {
-            graph.add_metric(metric)?;
-        }
-    }
+    register_graph_metrics(&mut graph, &graph_metrics)?;
     for parameter in top_level_parameters {
         graph.add_parameter(parameter)?;
     }
@@ -572,11 +568,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
             graph.add_metric(metric)?;
         }
     }
-    for metric in all_graph_metrics.iter().cloned() {
-        if graph.get_metric(&metric.name).is_none() {
-            graph.add_metric(metric)?;
-        }
-    }
+    register_graph_metrics(&mut graph, &all_graph_metrics)?;
     for parameter in all_top_level_parameters {
         graph.add_parameter(parameter)?;
     }
@@ -801,6 +793,23 @@ fn parse_content_with_extends(content: &str, format: ConfigFormat) -> Result<Par
             })
         }
     }
+}
+
+/// Register graph-level metrics, then validate dependencies once all are present.
+///
+/// OSI documents may declare a derived/ratio metric before the graph metrics it
+/// references; registering before validating keeps loading order-independent
+/// while still rejecting genuinely missing references.
+fn register_graph_metrics(graph: &mut SemanticGraph, metrics: &[Metric]) -> Result<()> {
+    for metric in metrics.iter().cloned() {
+        if graph.get_metric(&metric.name).is_none() {
+            graph.add_metric_unvalidated(metric)?;
+        }
+    }
+    for metric in metrics {
+        graph.validate_metric_dependencies(metric)?;
+    }
+    Ok(())
 }
 
 fn collect_unique_models(models: Vec<Model>) -> Result<HashMap<String, Model>> {
@@ -1310,6 +1319,47 @@ semantic_model:
             loaded.model_sources["orders"].source_format,
             "OSI".to_string()
         );
+    }
+
+    #[test]
+    fn test_load_osi_graph_metrics_independent_of_declaration_order() {
+        // `revenue_per_order` references `total_revenue`/`order_count` but is
+        // declared before them; loading must not fail on declaration order.
+        let yaml = r#"
+semantic_model:
+  - name: m
+    datasets:
+      - name: orders
+        source: public.orders
+        primary_key: [order_id]
+        fields:
+          - name: amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: amount
+    metrics:
+      - name: revenue_per_order
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: total_revenue / order_count
+      - name: total_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(amount)
+      - name: order_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(*)
+"#;
+
+        let graph = load_from_string(yaml).unwrap();
+        assert!(graph.get_metric("revenue_per_order").is_some());
+        assert!(graph.get_metric("total_revenue").is_some());
+        assert!(graph.get_metric("order_count").is_some());
     }
 
     #[test]

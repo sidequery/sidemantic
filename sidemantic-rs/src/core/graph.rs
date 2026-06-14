@@ -313,7 +313,12 @@ impl SemanticGraph {
         Ok(())
     }
 
-    fn validate_metric_dependencies(&self, metric: &Metric) -> Result<()> {
+    /// Validate that a metric's dependencies resolve against the current graph.
+    ///
+    /// Exposed so callers that register a batch of interdependent metrics out of
+    /// dependency order (e.g. OSI import) can insert them all first, then
+    /// validate once everything is present.
+    pub fn validate_metric_dependencies(&self, metric: &Metric) -> Result<()> {
         for dependency in extract_dependencies(metric, Some(self)) {
             let dependency_name = dependency
                 .rsplit_once('.')

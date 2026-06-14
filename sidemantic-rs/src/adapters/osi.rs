@@ -80,10 +80,15 @@ impl OsiAdapter {
         for model in doc.models {
             graph.add_model(model)?;
         }
-        for metric in doc.graph_metrics {
+        // Register all graph-level metrics before validating, so a derived/ratio
+        // metric declared before the metrics it references still loads.
+        for metric in &doc.graph_metrics {
             if graph.get_metric(&metric.name).is_none() {
-                graph.add_metric(metric)?;
+                graph.add_metric_unvalidated(metric.clone())?;
             }
+        }
+        for metric in &doc.graph_metrics {
+            graph.validate_metric_dependencies(metric)?;
         }
         if let Some(metadata) = doc.metadata {
             graph.set_metadata(metadata);

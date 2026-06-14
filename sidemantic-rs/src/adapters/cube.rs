@@ -1,9 +1,11 @@
 //! Cube.js adapter: imports Cube YAML (`cubes:`) into the semantic graph.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Aggregation, Dimension, DimensionType, Metric, MetricType, Model, Relationship, Segment,
+    Aggregation, Dimension, DimensionType, Metric, MetricType, Model, Relationship,
+    RelationshipType, Segment,
 };
 use crate::error::{Result, SidemanticError};
 
@@ -58,6 +60,15 @@ pub struct CubeDefinition {
     pub measures: Vec<CubeMeasure>,
     #[serde(default)]
     pub segments: Vec<CubeSegment>,
+    #[serde(default)]
+    pub joins: Vec<CubeJoin>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CubeJoin {
+    pub name: String,
+    pub sql: Option<String>,
+    pub relationship: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +121,13 @@ impl CubeDefinition {
         // Infer primary key from name (cube_name -> cube_name_id or id)
         let primary_key = "id".to_string();
 
+        let self_name = self.name.clone();
+        let relationships = self
+            .joins
+            .into_iter()
+            .filter_map(|join| relationship_from_cube_join(&self_name, join))
+            .collect();
+
         Model {
             name: self.name,
             table: self.sql_table,
@@ -125,7 +143,7 @@ impl CubeDefinition {
                 .map(|d| d.into_dimension())
                 .collect(),
             metrics: self.measures.into_iter().map(|m| m.into_metric()).collect(),
-            relationships: Vec::<Relationship>::new(), // Cube.js uses joins differently
+            relationships,
             segments: self
                 .segments
                 .into_iter()
@@ -267,6 +285,154 @@ fn strip_cube_placeholder(sql: &str) -> String {
     sql.replace("${CUBE}.", "").replace("${CUBE}", "")
 }
 
+/// Split a Cube member reference into `(cube_name, column)`.
+///
+/// Handles both `${cube.col}` / `{cube.col}` (column inside the braces) and
+/// `${cube}.col` / `${CUBE}.col` (column trailing the braces).
+fn split_cube_ref(inner: &str, trailing: Option<&str>) -> (String, Option<String>) {
+    if let Some(col) = trailing {
+        return (inner.to_string(), Some(col.to_string()));
+    }
+    if let Some((head, col)) = inner.split_once('.') {
+        return (head.to_string(), Some(col.to_string()));
+    }
+    (inner.to_string(), None)
+}
+
+/// Convert a Cube join condition into Sidemantic form.
+///
+/// Cube expresses joins as a SQL equality referencing members with `${CUBE}.col`
+/// (this cube), `${target.col}` (the joined cube), and the single-brace
+/// `{cube.col}` variants. Sidemantic uses `{from}` / `{to}` placeholders.
+///
+/// Returns `(native_sql, from_col, to_col)` where `native_sql` is the condition
+/// rewritten with `{from}` / `{to}`, or `None` if it references a third cube and
+/// cannot be represented faithfully. `from_col` / `to_col` are populated only when
+/// the condition is a plain `a = b` equality.
+fn convert_cube_join(
+    join_sql: &str,
+    self_name: &str,
+    join_name: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let re = Regex::new(r"\$?\{([^}]+)\}(?:\.(\w+))?").expect("valid cube member regex");
+
+    let mut untranslatable = false;
+    let mut refs: Vec<(&'static str, Option<String>)> = Vec::new();
+
+    let native = re
+        .replace_all(join_sql, |caps: &regex::Captures| {
+            let inner = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let trailing = caps.get(2).map(|m| m.as_str());
+            let (head, col) = split_cube_ref(inner, trailing);
+            let side = if head == "CUBE" || head == self_name {
+                "from"
+            } else if head == join_name {
+                "to"
+            } else {
+                // References a third cube: cannot be expressed with {from}/{to}.
+                untranslatable = true;
+                return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
+            };
+            refs.push((side, col.clone()));
+            match col {
+                Some(c) => format!("{{{side}}}.{c}"),
+                None => format!("{{{side}}}"),
+            }
+        })
+        .to_string();
+
+    if untranslatable || refs.is_empty() {
+        return (None, None, None);
+    }
+
+    // Detect a plain single-column equality: exactly two members (one per side)
+    // joined by a single '=' with nothing else around them.
+    let residual: String = re
+        .replace_all(join_sql, "@")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let has_from = refs.iter().any(|(side, _)| *side == "from");
+    let has_to = refs.iter().any(|(side, _)| *side == "to");
+    let is_simple = residual == "@=@"
+        && refs.len() == 2
+        && has_from
+        && has_to
+        && refs.iter().all(|(_, col)| col.is_some());
+
+    if is_simple {
+        let from_col = refs
+            .iter()
+            .find(|(side, _)| *side == "from")
+            .and_then(|(_, col)| col.clone());
+        let to_col = refs
+            .iter()
+            .find(|(side, _)| *side == "to")
+            .and_then(|(_, col)| col.clone());
+        return (Some(native), from_col, to_col);
+    }
+
+    (Some(native), None, None)
+}
+
+/// Build a [`Relationship`] from a Cube `joins` entry.
+fn relationship_from_cube_join(self_name: &str, join: CubeJoin) -> Option<Relationship> {
+    let join_name = join.name;
+    if join_name.is_empty() {
+        return None;
+    }
+
+    let rel_type = match join
+        .relationship
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("one_to_one" | "onetoone") => RelationshipType::OneToOne,
+        Some("one_to_many" | "onetomany") => RelationshipType::OneToMany,
+        Some("many_to_many" | "manytomany") => RelationshipType::ManyToMany,
+        _ => RelationshipType::ManyToOne,
+    };
+
+    let join_sql = join.sql.unwrap_or_default();
+    let (native_sql, from_col, to_col) = convert_cube_join(&join_sql, self_name, &join_name);
+
+    let mut rel = Relationship::new(join_name.clone());
+    rel.r#type = rel_type.clone();
+
+    // Plain single-column equality on many_to_one / one_to_many -> structured keys.
+    // Both engines agree on the join direction for these, so structured keys round-trip
+    // cleanly. one_to_one is deliberately excluded: the engines interpret its FK/PK
+    // direction differently, so the explicit condition is preserved instead.
+    if let (Some(from_col), Some(to_col)) = (from_col, to_col) {
+        match rel_type {
+            RelationshipType::ManyToOne => {
+                return Some(rel.with_keys(from_col, to_col));
+            }
+            RelationshipType::OneToMany => {
+                // FK lives on the related model, local key on this one.
+                return Some(rel.with_keys(to_col, from_col));
+            }
+            _ => {}
+        }
+    }
+
+    // Composite / non-equality / one_to_one condition -> preserve the full predicate.
+    if let Some(sql) = native_sql {
+        return Some(rel.with_condition(sql));
+    }
+
+    // Unparseable (references another cube, or no recognizable members): fall back to
+    // Cube's naming convention, but warn instead of silently faking a join.
+    eprintln!(
+        "warning: could not parse Cube join '{self_name}' -> '{join_name}' from SQL {join_sql:?}; \
+         falling back to foreign key '{join_name}_id'."
+    );
+    rel.foreign_key = Some(format!("{join_name}_id"));
+    rel.foreign_key_columns = Some(vec![format!("{join_name}_id")]);
+    Some(rel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +506,122 @@ cubes:
         assert_eq!(parsed.models[0].name, "orders");
         assert!(parsed.graph_metrics.is_empty());
         assert!(!parsed.explicit_relationships);
+    }
+
+    #[test]
+    fn test_cube_simple_many_to_one_join() {
+        let yaml = r#"
+cubes:
+  - name: orders
+    sql_table: orders
+    joins:
+      - name: customers
+        sql: "${CUBE}.customer_id = ${customers.id}"
+        relationship: many_to_one
+  - name: customers
+    sql_table: customers
+"#;
+        let config: CubeConfig = serde_yaml::from_str(yaml).unwrap();
+        let models = config.into_models();
+        let orders = models.iter().find(|m| m.name == "orders").unwrap();
+        assert_eq!(orders.relationships.len(), 1);
+        let rel = &orders.relationships[0];
+        assert_eq!(rel.name, "customers");
+        assert_eq!(rel.r#type, RelationshipType::ManyToOne);
+        assert_eq!(rel.foreign_key.as_deref(), Some("customer_id"));
+        assert_eq!(rel.primary_key.as_deref(), Some("id"));
+        assert!(rel.sql.is_none());
+    }
+
+    #[test]
+    fn test_cube_simple_one_to_many_join() {
+        let yaml = r#"
+cubes:
+  - name: orders
+    sql_table: orders
+    joins:
+      - name: line_items
+        sql: "${CUBE}.id = ${line_items.order_id}"
+        relationship: one_to_many
+  - name: line_items
+    sql_table: line_items
+"#;
+        let config: CubeConfig = serde_yaml::from_str(yaml).unwrap();
+        let models = config.into_models();
+        let orders = models.iter().find(|m| m.name == "orders").unwrap();
+        let rel = &orders.relationships[0];
+        assert_eq!(rel.r#type, RelationshipType::OneToMany);
+        // FK lives on the related model, local key on this one.
+        assert_eq!(rel.foreign_key.as_deref(), Some("order_id"));
+        assert_eq!(rel.primary_key.as_deref(), Some("id"));
+        assert!(rel.sql.is_none());
+    }
+
+    #[test]
+    fn test_cube_composite_join_preserves_condition() {
+        let yaml = r#"
+cubes:
+  - name: line_items
+    sql_table: line_items
+    joins:
+      - name: orders
+        sql: "${CUBE}.order_id = ${orders.id} AND ${CUBE}.tenant_id = ${orders.tenant_id}"
+        relationship: many_to_one
+  - name: orders
+    sql_table: orders
+"#;
+        let config: CubeConfig = serde_yaml::from_str(yaml).unwrap();
+        let models = config.into_models();
+        let line_items = models.iter().find(|m| m.name == "line_items").unwrap();
+        let rel = &line_items.relationships[0];
+        assert_eq!(rel.r#type, RelationshipType::ManyToOne);
+        assert_eq!(
+            rel.sql.as_deref(),
+            Some("{from}.order_id = {to}.id AND {from}.tenant_id = {to}.tenant_id")
+        );
+    }
+
+    #[test]
+    fn test_cube_one_to_one_single_brace_uses_condition() {
+        // Diamond-style single-brace references with the local cube named explicitly.
+        let yaml = r#"
+cubes:
+  - name: a
+    sql_table: a
+    joins:
+      - name: b
+        sql: "{a.id} = {b.id}"
+        relationship: one_to_one
+  - name: b
+    sql_table: b
+"#;
+        let config: CubeConfig = serde_yaml::from_str(yaml).unwrap();
+        let models = config.into_models();
+        let a = models.iter().find(|m| m.name == "a").unwrap();
+        let rel = &a.relationships[0];
+        assert_eq!(rel.r#type, RelationshipType::OneToOne);
+        // one_to_one is preserved as an explicit condition (engines diverge on FK/PK).
+        assert_eq!(rel.sql.as_deref(), Some("{from}.id = {to}.id"));
+    }
+
+    #[test]
+    fn test_cube_unparseable_join_falls_back_to_convention() {
+        let yaml = r#"
+cubes:
+  - name: x
+    sql_table: x
+    joins:
+      - name: y
+        sql: "${z.a} = ${w.b}"
+        relationship: many_to_one
+  - name: y
+    sql_table: y
+"#;
+        let config: CubeConfig = serde_yaml::from_str(yaml).unwrap();
+        let models = config.into_models();
+        let x = models.iter().find(|m| m.name == "x").unwrap();
+        let rel = &x.relationships[0];
+        assert_eq!(rel.foreign_key.as_deref(), Some("y_id"));
+        assert!(rel.sql.is_none());
     }
 }

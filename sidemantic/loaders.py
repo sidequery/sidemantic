@@ -140,13 +140,21 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 '"semantic_model"' in content
                 and '"datasets"' in content
                 and not _is_generated_artifact(file_path, directory)
-                and _looks_like_osi_json(content)
             ):
                 # Released-spec OSI profile (dbt OSI consumer) ships as JSON in an
                 # OSI/ directory. Mirror the YAML detection (semantic_model + datasets).
                 # Skip dbt-generated copies (e.g. target/osi_document.json) so a
                 # `dbt compile` artifact never shadows the real OSI/ sources.
-                adapter = OSIAdapter()
+                try:
+                    is_osi = _looks_like_osi_json(content)
+                except ValueError as e:
+                    # The file textually looks like OSI (semantic_model + datasets)
+                    # but is malformed JSON. Surface it as a parse error instead of
+                    # silently skipping, mirroring the malformed-YAML handling above.
+                    _handle_parse_error(file_path, e, strict=strict)
+                    continue
+                if is_osi:
+                    adapter = OSIAdapter()
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
 
@@ -396,13 +404,17 @@ def _looks_like_osi_json(content: str) -> bool:
     Released OSI ships as JSON with a top-level ``semantic_model`` list whose
     entries contain ``datasets``. This mirrors the YAML OSI detection and avoids
     routing unrelated JSON (e.g. GoodData) to the OSI adapter.
+
+    Raises ``ValueError`` when ``content`` is not valid JSON so callers that have
+    already confirmed the OSI text markers can surface a parse error instead of
+    silently skipping a malformed OSI document.
     """
     import json
 
     try:
         data = json.loads(content)
-    except Exception:
-        return False
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}") from e
     if not isinstance(data, dict) or "semantic_model" not in data:
         return False
     models = data.get("semantic_model")

@@ -316,3 +316,36 @@ def test_load_from_directory_skips_generated_osi_json(tmp_path):
 
     assert "orders" in layer.graph.models
     assert "stale_orders" not in layer.graph.models
+
+
+def test_load_from_directory_surfaces_malformed_osi_json(tmp_path):
+    """Malformed OSI JSON is reported as a parse error, not silently skipped."""
+    import pytest
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    # OSI text markers (semantic_model + datasets) present, but the JSON is
+    # truncated/malformed (trailing comma, missing closing braces).
+    (osi_dir / "model.json").write_text(
+        """
+{
+  "version": "0.1.1",
+  "semantic_model": [
+    {
+      "name": "broken",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "db.schema.fct_orders",
+        }
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="model.json"):
+        load_from_directory(layer, tmp_path, strict=True)
+
+    # Non-strict mode must not raise and must not load anything from the bad file.
+    non_strict_layer = SemanticLayer()
+    load_from_directory(non_strict_layer, tmp_path, strict=False)
+    assert "orders" not in non_strict_layer.graph.models

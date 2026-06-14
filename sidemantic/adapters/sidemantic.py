@@ -1105,6 +1105,8 @@ class SidemanticAdapter(BaseAdapter):
             result["metadata"] = measure.metadata
         if measure.meta:
             result["meta"] = measure.meta
+        if measure.synonyms:
+            result["synonyms"] = measure.synonyms
         if not measure.public:
             result["public"] = measure.public
 

@@ -84,6 +84,18 @@ class TestDimensionEnrichment:
         assert sf["labels"] == ["Order Status"]
         assert sf["tags"] == ["core"]
 
+    def test_non_string_sample_values_coerced(self, adapter):
+        """Numeric/time sample_values (valid per the Cortex spec) are coerced to str."""
+        dim = adapter._parse_dimension(
+            {"name": "order_id", "data_type": "NUMBER", "expr": "order_id", "sample_values": [1001, 1002]}
+        )
+        assert dim.sample_values == ["1001", "1002"]
+
+        time_dim = adapter._parse_time_dimension(
+            {"name": "order_ts", "expr": "order_ts", "sample_values": [1700000000, 1700000001]}
+        )
+        assert time_dim.sample_values == ["1700000000", "1700000001"]
+
 
 class TestMeasureMetricMetadata:
     def test_non_additive_dimensions_preserved(self, graph):

@@ -302,7 +302,7 @@ class SnowflakeAdapter(BaseAdapter):
             sql=dim_def.get("expr"),
             description=dim_def.get("description"),
             synonyms=dim_def.get("synonyms"),
-            sample_values=dim_def.get("sample_values"),
+            sample_values=self._sample_values(dim_def),
             cortex_search_service_name=self._cortex_search_service_name(dim_def),
             metadata=self._dimension_metadata(dim_def),
         )
@@ -327,7 +327,7 @@ class SnowflakeAdapter(BaseAdapter):
             description=dim_def.get("description"),
             granularity="day",  # Default granularity
             synonyms=dim_def.get("synonyms"),
-            sample_values=dim_def.get("sample_values"),
+            sample_values=self._sample_values(dim_def),
             cortex_search_service_name=self._cortex_search_service_name(dim_def),
             metadata=self._dimension_metadata(dim_def),
         )
@@ -455,6 +455,21 @@ class SnowflakeAdapter(BaseAdapter):
         if isinstance(nested, str):
             return nested
         return None
+
+    @staticmethod
+    def _sample_values(dim_def: dict) -> list[str] | None:
+        """Coerce Snowflake ``sample_values`` to strings.
+
+        Snowflake documents ``sample_values`` as raw column values, so numeric or
+        time dimensions can legally contain unquoted YAML scalars (e.g.
+        ``sample_values: [1001, 1002]``). ``Dimension.sample_values`` is typed as
+        ``list[str]``, so coerce any scalar to ``str`` to avoid rejecting valid
+        Cortex files.
+        """
+        values = dim_def.get("sample_values")
+        if values is None:
+            return None
+        return [str(value) for value in values]
 
     @staticmethod
     def _collect_metadata(definition: dict, keys: tuple[str, ...]) -> dict | None:

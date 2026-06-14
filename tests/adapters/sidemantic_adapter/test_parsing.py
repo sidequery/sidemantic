@@ -410,6 +410,42 @@ metrics:
     assert graph2.metrics["revenue_per_order"].public is False
 
 
+def test_parse_export_preserves_graph_level_metric_synonyms(tmp_path):
+    """Top-level derived metrics must keep `synonyms` through export round-trips."""
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    metrics:
+      - name: total_revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+metrics:
+  - name: revenue_per_order
+    type: derived
+    sql: orders.total_revenue / orders.order_count
+    synonyms: [aov, average order value]
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+    assert graph.metrics["revenue_per_order"].synonyms == ["aov", "average order value"]
+
+    export_path = tmp_path / "exported.yml"
+    adapter.export(graph, export_path)
+    exported = yaml.safe_load(export_path.read_text())
+    assert exported["metrics"][0]["synonyms"] == ["aov", "average order value"]
+
+    graph2 = adapter.parse(export_path)
+    assert graph2.metrics["revenue_per_order"].synonyms == ["aov", "average order value"]
+
+
 def test_parse_export_preserves_top_level_parameters(tmp_path):
     adapter = SidemanticAdapter()
     yaml_path = tmp_path / "orders.yml"

@@ -57,6 +57,25 @@ _TML_DOT_REF = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)
 # A bare identifier that is NOT part of a `table.column` qualifier and is NOT a
 # function call: not preceded by `.`/word char, not followed by `.` or `(`.
 _BARE_IDENTIFIER = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)(?![\w.])(?!\s*\()")
+# A quoted string literal (single or double quoted, with doubled-quote escapes).
+_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+
+
+def _sub_outside_strings(pattern: re.Pattern[str], repl: Any, text: str) -> str:
+    """Apply ``pattern.sub(repl, ...)`` only to regions outside quoted literals.
+
+    Column-reference rewriting must not touch string literals, otherwise a
+    formula like ``[status] = 'status'`` would rewrite the literal too and change
+    the predicate's meaning.
+    """
+    result: list[str] = []
+    last = 0
+    for m in _STRING_LITERAL.finditer(text):
+        result.append(pattern.sub(repl, text[last : m.start()]))
+        result.append(m.group(0))
+        last = m.end()
+    result.append(pattern.sub(repl, text[last:]))
+    return "".join(result)
 
 
 def _normalize(value: Any) -> str | None:
@@ -261,12 +280,13 @@ def _expose_joined_columns(
             alias = projection.get((table, column))
             return alias if alias else match.group(0)
 
-        rewritten = _TML_DOT_REF.sub(_replace, expr)
-
         def _replace_bare(match: re.Match[str]) -> str:
             return bare_to_alias.get(match.group(1), match.group(0))
 
-        return _BARE_IDENTIFIER.sub(_replace_bare, rewritten)
+        # Rewrite column references only outside quoted string literals so a
+        # literal that happens to match a column name is left untouched.
+        rewritten = _sub_outside_strings(_TML_DOT_REF, _replace, expr)
+        return _sub_outside_strings(_BARE_IDENTIFIER, _replace_bare, rewritten)
 
     for dim in dimensions:
         dim.sql = _rewrite(dim.sql)
@@ -917,8 +937,14 @@ class ThoughtSpotAdapter(BaseAdapter):
             return None, None
 
         if len(clauses) == 1:
-            # Single base table, no joins: `model.table` is the real table name,
-            # not an alias (no subquery wraps it, so there is nothing to alias).
+            if base_relation != base_table:
+                # Single but aliased base table (e.g. `name: orders, alias: o`
+                # with `column_id: o::amount`): the fields reference `o.*`, so the
+                # alias must be in scope. Emit `SELECT * FROM orders AS o`, which
+                # `_expose_joined_columns` rewrites into queryable output aliases.
+                return f"SELECT * FROM {clauses[0]}", base_relation
+            # Single, unaliased base table: `model.table` is the real table name
+            # (no subquery wraps it, so there is nothing to alias).
             return None, base_table
 
         sql = "SELECT * FROM " + clauses[0]

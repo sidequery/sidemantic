@@ -910,13 +910,19 @@ def test_thoughtspot_unqualified_formula_ref_is_queryable():
     assert net_revenue is not None
     assert net_revenue.sql == "sales__gross_revenue - sales__discount"
 
+    # A string literal that matches a column name (`'status'`) must NOT be
+    # rewritten; only the bare column reference `status` is qualified.
+    is_open = model.get_dimension("is_open")
+    assert is_open is not None
+    assert is_open.sql == "sales__status = 'status'"
+
     layer = SemanticLayer()
     for m in graph.models.values():
         layer.add_model(m)
 
     con = duckdb.connect()
-    con.execute("CREATE TABLE sales (id INT, gross_revenue DOUBLE, discount DOUBLE, customer_id INT)")
-    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0, 5), (2, 50.0, 5.0, 5)")
+    con.execute("CREATE TABLE sales (id INT, gross_revenue DOUBLE, discount DOUBLE, customer_id INT, status VARCHAR)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0, 5, 'status'), (2, 50.0, 5.0, 5, 'closed')")
     con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
     con.execute("INSERT INTO customers VALUES (5, 'Acme')")
 
@@ -966,6 +972,38 @@ def test_thoughtspot_aliased_base_table_is_queryable():
     )
     rows = con.execute(sql).fetchall()
     assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_single_aliased_table_is_queryable():
+    """A single (join-less) aliased table stays queryable.
+
+    Regression: `model_tables` with one entry `name: orders, alias: o` and
+    columns like `o::amount` converted fields to `o.amount` but emitted
+    `table=orders` with no SQL, so the compiled query selected `o.amount` from
+    `orders` with no `o` alias in scope. The base table must be aliased.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_single_table_alias.model.tml")
+    model = graph.models["orders_model"]
+
+    # The alias is in scope: SQL wraps the single table as `orders AS o`.
+    assert model.sql is not None
+    assert "FROM orders AS o" in model.sql
+    assert model.get_metric("amount").sql == "o__amount"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0), (2, 25.0)")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.order_id"])
+    rows = sorted(con.execute(sql).fetchall())
+    assert rows == [(1, 100.0), (2, 25.0)]
 
 
 def test_thoughtspot_model_auto_detect_loader():

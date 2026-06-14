@@ -1585,6 +1585,75 @@ def test_thoughtspot_measure_key_column_is_inferred_as_primary_key():
     assert rows == [("Acme", 125.0)]
 
 
+def test_thoughtspot_range_only_join_emits_no_relationship():
+    """A join with only a range predicate emits no cross-model relationship.
+
+    Regression: a join with no equality key (e.g. `[sales::date] BETWEEN
+    [calendar::start_date] AND [calendar::end_date]`) still appended a relationship
+    with unset keys, which Sidemantic defaults to `calendar_id`/`id` (non-existent
+    columns). No relationship should be emitted; the predicate stays in the join.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_range_only_join.model.tml")
+    model = graph.models["sales_model"]
+
+    # No relationship is created from a key-less range join.
+    assert model.relationships == []
+    # The range predicate is preserved in the derived join SQL.
+    assert model.sql is not None
+    assert "BETWEEN calendar.start_date AND calendar.end_date" in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, date DATE)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, DATE '2024-06-15'), (2, 25.0, DATE '2024-06-20')")
+    con.execute("CREATE TABLE calendar (period_name VARCHAR, start_date DATE, end_date DATE)")
+    con.execute("INSERT INTO calendar VALUES ('June', DATE '2024-06-01', DATE '2024-06-30')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["sales_model.period_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("June", 125.0)]
+
+
+def test_thoughtspot_wrapped_equality_is_not_a_relationship_key():
+    """A function-wrapped equality (e.g. LOWER()) is not stored as a join key.
+
+    Regression: `LOWER([users::email]) = LOWER([contacts::email])` matched the
+    "two refs, one `=`" heuristic and stored a plain `email -> email` key. A
+    cross-model query would then use a case-sensitive `email = email` join that
+    differs from the `LOWER()` predicate. Only bare-ref equalities are keys.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_wrapped_join_key.model.tml")
+    model = graph.models["users_model"]
+
+    # The wrapped equality does not become a relationship key.
+    assert model.relationships == []
+    # The LOWER() predicate is preserved in the derived join SQL.
+    assert model.sql is not None
+    assert "LOWER(users.email) = LOWER(contacts.email)" in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE users (id INT, amount DOUBLE, email VARCHAR)")
+    con.execute("INSERT INTO users VALUES (1, 100.0, 'A@X.COM'), (2, 25.0, 'A@X.COM')")
+    con.execute("CREATE TABLE contacts (name VARCHAR, email VARCHAR)")
+    con.execute("INSERT INTO contacts VALUES ('Acme', 'a@x.com')")
+
+    sql = layer.compile(metrics=["users_model.amount"], dimensions=["users_model.contact_name"])
+    rows = con.execute(sql).fetchall()
+    # The case-insensitive join still matches via the preserved LOWER() predicate.
+    assert rows == [("Acme", 125.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

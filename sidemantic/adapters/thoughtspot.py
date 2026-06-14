@@ -202,28 +202,37 @@ def _extract_all_join_refs(
 
     A composite ON clause like ``[a::x] = [b::y] AND [a::p] = [b::q]`` yields all
     equality pairs, so composite-key relationships keep both columns instead of
-    silently dropping all but the first pair. Only pure equality conjuncts are
-    treated as key pairs; range/non-equi predicates (e.g.
-    ``[a::date] BETWEEN [b::start] AND [b::end]``) are skipped so they are not
-    mistaken for additional equality keys.
+    silently dropping all but the first pair. Only a plain equality between two
+    bare column references is a key pair; range/non-equi predicates (e.g.
+    ``[a::date] BETWEEN [b::start] AND [b::end]``) and wrapped expressions (e.g.
+    ``LOWER([a::email]) = LOWER([b::email])``) are skipped so they are not
+    mistaken for equality keys.
     """
     if not expr:
         return []
 
+    def _bare_ref(side: str) -> tuple[str | None, str] | None:
+        """Parse ``side`` only if it is exactly one bare ref, not a wrapped expr."""
+        side = side.strip()
+        bracketed = _TML_REF.fullmatch(side)
+        if bracketed:
+            return _parse_ref_token(bracketed.group(1))
+        if _TML_DOT_REF.fullmatch(side) or _SIMPLE_IDENTIFIER.match(side):
+            return _parse_ref_token(side)
+        return None
+
     pairs: list[tuple[tuple[str | None, str], tuple[str | None, str]]] = []
     for conjunct in _AND_SPLIT.split(expr):
-        tokens = _TML_REF.findall(conjunct)
-        if len(tokens) < 2:
-            tokens = [f"{t[0]}.{t[1]}" for t in _TML_DOT_REF.findall(conjunct)]
-
-        # Only an equality between exactly two refs is a join key pair. A `=` that
-        # is part of `<=`/`>=`/`!=` is not a plain equality.
+        # A plain equality has exactly one `=` (not part of `<=`/`>=`/`!=`).
         equalities = _EQUALITY_OP.findall(conjunct)
-        if len(tokens) != 2 or len(equalities) != 1:
+        if len(equalities) != 1:
+            continue
+        left_side, right_side = _EQUALITY_OP.split(conjunct, maxsplit=1)
+        left = _bare_ref(left_side)
+        right = _bare_ref(right_side)
+        if not left or not right:
             continue
 
-        left = _parse_ref_token(tokens[0])
-        right = _parse_ref_token(tokens[1])
         if table_path_lookup:
             if left[0] in table_path_lookup:
                 left = (table_path_lookup[left[0]], left[1])
@@ -1081,6 +1090,13 @@ class ThoughtSpotAdapter(BaseAdapter):
             # Composite predicates carry more than one key pair; keep all of them
             # so cross-model joins do not silently drop part of the key.
             ref_pairs = _extract_all_join_refs(on_value, lookup)
+
+            # A join with no equality keys (e.g. a pure range predicate) has no
+            # usable cross-model relationship key. Emitting a relationship with
+            # unset keys makes Sidemantic default to `<name>_id`/`id`, which do not
+            # exist; skip it. The predicate stays in the derived join SQL.
+            if not ref_pairs:
+                continue
 
             if table_name_lookup:
                 source = table_name_lookup.get(source, source)

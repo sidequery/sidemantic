@@ -52,6 +52,15 @@ class OSIAdapter(BaseAdapter):
     RELEASED_OSI_VERSION = "0.1.1"
     RELEASED_OSI_VERSIONS = ("0.1.0", "0.1.1")
 
+    # The released 0.1.x JSON Schema constrains custom_extensions[].vendor_name to
+    # this enum (core-spec/osi-schema.json $defs/Vendor). dbt's OSI consumer
+    # validates against it, so a released JSON export must not emit any other
+    # vendor (e.g. the local "SIDEMANTIC" wrapper) or the document fails parsing.
+    RELEASED_OSI_VENDORS = ("COMMON", "SNOWFLAKE", "SALESFORCE", "DBT", "DATABRICKS", "GOODDATA")
+    # Vendor used to carry Sidemantic-owned / unknown-vendor extension payloads in
+    # released JSON. COMMON is the OSI-blessed cross-vendor bucket.
+    RELEASED_OSI_FALLBACK_VENDOR = "COMMON"
+
     # Output formats supported by export().
     SUPPORTED_EXPORT_FORMATS = ("yaml", "json")
 
@@ -494,6 +503,9 @@ class OSIAdapter(BaseAdapter):
 
         # Store dialects for use in export methods
         self._export_dialects = dialects
+        # Released JSON validates against the 0.1.x enum-constrained schema; flag
+        # it so extension export can coerce non-enum vendors to a released vendor.
+        self._export_released_json = format == "json"
 
         # Resolve inheritance first
         from sidemantic.core.inheritance import resolve_model_inheritance
@@ -810,17 +822,49 @@ class OSIAdapter(BaseAdapter):
                 if data is None:
                     data = {key: value for key, value in item.items() if key not in {"vendor_name", "vendor"}}
                 normalized.append({"vendor_name": str(vendor_name), "data": self._extension_data_to_string(data)})
-            return normalized
+            return self._coerce_extension_vendors_for_export(normalized)
 
         if isinstance(custom_extensions, dict) and {"vendor_name", "data"} <= set(custom_extensions):
-            return [
-                {
-                    "vendor_name": str(custom_extensions["vendor_name"]),
-                    "data": self._extension_data_to_string(custom_extensions["data"]),
-                }
-            ]
+            return self._coerce_extension_vendors_for_export(
+                [
+                    {
+                        "vendor_name": str(custom_extensions["vendor_name"]),
+                        "data": self._extension_data_to_string(custom_extensions["data"]),
+                    }
+                ]
+            )
 
-        return [{"vendor_name": "SIDEMANTIC", "data": self._extension_data_to_string(custom_extensions)}]
+        return self._coerce_extension_vendors_for_export(
+            [{"vendor_name": "SIDEMANTIC", "data": self._extension_data_to_string(custom_extensions)}]
+        )
+
+    def _coerce_extension_vendors_for_export(self, extensions: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Map non-enum vendors to a released vendor when emitting released JSON.
+
+        The released 0.1.x JSON Schema constrains ``vendor_name`` to
+        :attr:`RELEASED_OSI_VENDORS`, so dbt's OSI consumer rejects any other
+        vendor (notably the local ``SIDEMANTIC`` wrapper). For released JSON we
+        relabel unsupported vendors to the cross-vendor ``COMMON`` bucket while
+        preserving the original vendor inside ``data`` so a round-trip can
+        restore it. The in-development YAML profile is left untouched.
+        """
+        if not getattr(self, "_export_released_json", False):
+            return extensions
+
+        coerced = []
+        for ext in extensions:
+            vendor = ext.get("vendor_name")
+            if vendor in self.RELEASED_OSI_VENDORS:
+                coerced.append(ext)
+                continue
+            payload = {"original_vendor_name": vendor, "data": ext.get("data")}
+            coerced.append(
+                {
+                    "vendor_name": self.RELEASED_OSI_FALLBACK_VENDOR,
+                    "data": self._extension_data_to_string(payload),
+                }
+            )
+        return coerced
 
     def _decode_custom_extensions(self, custom_extensions: Any) -> Any:
         """Decode Sidemantic-owned extension wrappers while preserving standard OSI lists."""

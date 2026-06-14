@@ -136,9 +136,16 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 adapter = GoodDataAdapter()
             elif '"datasets"' in content and ('"dataSourceTableId"' in content or '"data_source_table_id"' in content):
                 adapter = GoodDataAdapter()
-            elif '"semantic_model"' in content and '"datasets"' in content and _looks_like_osi_json(content):
+            elif (
+                '"semantic_model"' in content
+                and '"datasets"' in content
+                and not _is_generated_artifact(file_path, directory)
+                and _looks_like_osi_json(content)
+            ):
                 # Released-spec OSI profile (dbt OSI consumer) ships as JSON in an
                 # OSI/ directory. Mirror the YAML detection (semantic_model + datasets).
+                # Skip dbt-generated copies (e.g. target/osi_document.json) so a
+                # `dbt compile` artifact never shadows the real OSI/ sources.
                 adapter = OSIAdapter()
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
@@ -404,6 +411,25 @@ def _looks_like_osi_json(content: str) -> bool:
     if not isinstance(models, list):
         return False
     return any(isinstance(model, dict) and "datasets" in model for model in models)
+
+
+# Directories that hold generated/compiled artifacts rather than source models.
+# dbt writes a copy of the OSI document to ``target/`` on ``dbt compile``; routing
+# those to the OSI adapter would resurrect deleted or stale models, so skip them.
+_GENERATED_ARTIFACT_DIRS = frozenset({"target", "dbt_packages"})
+
+
+def _is_generated_artifact(file_path: "Path", directory: "Path") -> bool:
+    """Return True when ``file_path`` lives under a generated-artifact directory.
+
+    Only path components *below* ``directory`` are considered so that loading a
+    directory literally named ``target`` still works.
+    """
+    try:
+        relative_parts = file_path.relative_to(directory).parts
+    except ValueError:
+        relative_parts = file_path.parts
+    return any(part in _GENERATED_ARTIFACT_DIRS for part in relative_parts[:-1])
 
 
 def _looks_like_semantic_yaml_text(content: str) -> bool:

@@ -272,3 +272,47 @@ def test_load_from_directory_detects_released_osi_json(tmp_path):
     assert orders.table.endswith("fct_orders")
     assert getattr(orders, "_source_format", None) == "OSI"
     assert "order_count" in layer.graph.metrics
+
+
+def test_load_from_directory_skips_generated_osi_json(tmp_path):
+    """A dbt-generated target/ OSI document must not be loaded as a source model."""
+
+    def _osi_json(dataset_name: str, source: str) -> str:
+        return f"""
+{{
+  "version": "0.1.1",
+  "semantic_model": [
+    {{
+      "name": "analytics",
+      "datasets": [
+        {{
+          "name": "{dataset_name}",
+          "source": "{source}",
+          "primary_key": ["id"],
+          "fields": [
+            {{
+              "name": "id",
+              "expression": {{"dialects": [{{"dialect": "ANSI_SQL", "expression": "id"}}]}}
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(_osi_json("orders", "db.schema.fct_orders"))
+
+    # Simulate a stale `dbt compile` artifact containing a deleted/old model.
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    (target_dir / "osi_document.json").write_text(_osi_json("stale_orders", "db.schema.old_orders"))
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    assert "stale_orders" not in layer.graph.models

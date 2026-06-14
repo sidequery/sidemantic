@@ -1781,6 +1781,93 @@ def test_export_json_rejects_dev_version():
         temp_path.unlink()
 
 
+def test_export_released_json_coerces_unsupported_extension_vendor():
+    """Released JSON must only emit enum-allowed custom_extension vendors.
+
+    The released 0.1.x JSON Schema constrains vendor_name to an enum
+    (COMMON/SNOWFLAKE/SALESFORCE/DBT/DATABRICKS/GOODDATA), so dbt's OSI consumer
+    rejects any other vendor. Sidemantic's own SIDEMANTIC wrapper (and any other
+    non-enum vendor) must be relabeled to COMMON on the released JSON path.
+    """
+    model = Model(
+        name="orders",
+        table="db.schema.fct_orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_id", type="categorical", sql="order_id")],
+        meta={"custom_extensions": {"vendor_id": "acme123"}},
+    )
+    graph = SemanticGraph()
+    graph.add_model(model)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        OSIAdapter().export(graph, temp_path, format="json")
+        data = json.loads(temp_path.read_text())
+        dataset = data["semantic_model"][0]["datasets"][0]
+        exts = dataset["custom_extensions"]
+        assert exts, "expected custom_extensions to be emitted"
+        # Every emitted vendor must be in the released enum.
+        for ext in exts:
+            assert ext["vendor_name"] in OSIAdapter.RELEASED_OSI_VENDORS
+        # The SIDEMANTIC wrapper is relabeled to COMMON, preserving the original.
+        assert exts[0]["vendor_name"] == "COMMON"
+        assert "SIDEMANTIC" in exts[0]["data"]
+    finally:
+        temp_path.unlink()
+
+
+def test_export_released_json_preserves_dbt_extension_vendor():
+    """An already-allowed vendor (e.g. DBT) is passed through unchanged in JSON."""
+    model = Model(
+        name="orders",
+        table="db.schema.fct_orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_id", type="categorical", sql="order_id")],
+        meta={"custom_extensions": [{"vendor_name": "DBT", "data": '{"project_name": "analytics"}'}]},
+    )
+    graph = SemanticGraph()
+    graph.add_model(model)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        OSIAdapter().export(graph, temp_path, format="json")
+        data = json.loads(temp_path.read_text())
+        dataset = data["semantic_model"][0]["datasets"][0]
+        ext = dataset["custom_extensions"][0]
+        assert ext["vendor_name"] == "DBT"
+        assert ext["data"] == '{"project_name": "analytics"}'
+    finally:
+        temp_path.unlink()
+
+
+def test_export_yaml_preserves_unsupported_extension_vendor():
+    """The in-development YAML profile keeps non-enum vendors (no coercion)."""
+    model = Model(
+        name="orders",
+        table="db.schema.fct_orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_id", type="categorical", sql="order_id")],
+        meta={"custom_extensions": {"vendor_id": "acme123"}},
+    )
+    graph = SemanticGraph()
+    graph.add_model(model)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        OSIAdapter().export(graph, temp_path, format="yaml")
+        data = yaml.safe_load(temp_path.read_text())
+        dataset = data["semantic_model"][0]["datasets"][0]
+        assert dataset["custom_extensions"][0]["vendor_name"] == "SIDEMANTIC"
+    finally:
+        temp_path.unlink()
+
+
 def test_export_yaml_still_default():
     """Default export remains the 0.2.0.dev0 YAML profile (backward compatible)."""
     model = Model(

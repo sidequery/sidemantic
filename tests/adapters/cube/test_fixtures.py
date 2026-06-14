@@ -909,6 +909,101 @@ class TestTesseractFeatures:
         sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.status"]).split("-- sidemantic")[0]
         con.execute(sql).fetchall()
 
+    def test_complete_measure_preserves_raw_timestamp(self, graph):
+        """Complete-sql time measures return the raw timestamp, not a truncated date.
+
+        Regression: ``created_at`` is also a time dimension, so the CTE projected
+        ``DATE_TRUNC('DAY', created_at)`` and the measure aggregated/selected the
+        truncated value, returning dates instead of timestamps. The measure must
+        reference a dedicated raw column.
+        """
+        import duckdb
+
+        from sidemantic.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',100.0,TIMESTAMP '2024-01-01 10:30:00'),"
+            "(2,'pending',50.0,TIMESTAMP '2024-03-01 09:15:00')) "
+            "t(id,status,amount,created_at)"
+        )
+
+        # plain-column time measure (ungrouped) keeps the time-of-day
+        sql = gen.generate(metrics=["orders.last_order_time"], ungrouped=True).split("-- sidemantic")[0]
+        rows = sorted(con.execute(sql).fetchall())
+        assert rows[0][0].hour == 10 and rows[0][0].minute == 30
+        assert rows[1][0].hour == 9 and rows[1][0].minute == 15
+
+        # aggregate time measure (MAX) returns the full raw timestamp
+        sql = gen.generate(metrics=["orders.latest_order_at"]).split("-- sidemantic")[0]
+        (latest,) = con.execute(sql).fetchone()
+        assert latest.hour == 9 and latest.minute == 15
+
+    def test_complete_measure_applies_filters(self, graph):
+        """A complete-sql measure with filters restricts the aggregate to matching rows.
+
+        Regression: the opaque early-return bypassed the CASE WHEN measure-filter
+        wrapping, so a filtered aggregate ran over all rows and returned the
+        unfiltered total.
+        """
+        import duckdb
+
+        from sidemantic.core.metric import Metric
+        from sidemantic.sql.generator import SQLGenerator
+
+        orders = graph.get_model("orders")
+        orders.metrics.append(
+            Metric(
+                name="completed_total",
+                agg=None,
+                sql="SUM({model}.amount)",
+                sql_is_complete=True,
+                filters=["{model}.status = 'completed'"],
+            )
+        )
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',100.0,TIMESTAMP '2024-01-01'),"
+            "(2,'pending',50.0,TIMESTAMP '2024-02-01'),"
+            "(3,'completed',200.0,TIMESTAMP '2024-03-01')) "
+            "t(id,status,amount,created_at)"
+        )
+
+        sql = gen.generate(metrics=["orders.completed_total"]).split("-- sidemantic")[0]
+        (total,) = con.execute(sql).fetchone()
+        assert float(total) == 300.0  # 100 + 200, not 350
+
+    def test_plain_complete_measure_grouped_by_other_dimension(self, graph):
+        """Plain-column complete measures stay valid when grouped by another dimension.
+
+        Regression: ``metrics=[orders.last_status], dimensions=[orders.id]`` emitted a
+        bare ``status`` column that was neither grouped nor aggregated, which DuckDB/
+        Postgres reject. The plain measure must be wrapped (ANY_VALUE) under GROUP BY.
+        """
+        import duckdb
+
+        from sidemantic.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',TIMESTAMP '2024-01-01'),"
+            "(2,'pending',TIMESTAMP '2024-02-01')) t(id,status,created_at)"
+        )
+
+        sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.id"]).split("-- sidemantic")[0]
+        rows = sorted(con.execute(sql).fetchall())
+        assert rows == [(1, "completed"), (2, "pending")]
+
     def test_measure_mask_and_currency(self, graph):
         orders = graph.get_model("orders")
         total = orders.get_metric("total_amount")

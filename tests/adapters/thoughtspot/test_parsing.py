@@ -1435,6 +1435,49 @@ def test_thoughtspot_joined_id_dimension_is_not_used_as_primary_key():
     assert rows == [(1, 100.0), (2, 25.0)]
 
 
+def test_thoughtspot_non_equi_join_predicate_is_not_a_relationship_key():
+    """A range predicate in a join ON clause is not mistaken for an equality key.
+
+    Regression: the composite-key extractor paired every two consecutive refs, so
+    `[sales::region_id] = [regions::id] AND [sales::date] BETWEEN
+    [regions::start_date] AND [regions::end_date]` produced bogus extra keys
+    (`date -> start_date`). Only the real equality conjunct should become the
+    relationship key; the range predicate stays in the join SQL but is ignored as
+    a key.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_non_equi_join.model.tml")
+    model = graph.models["sales_model"]
+
+    rel = {r.name: r for r in model.relationships}["regions"]
+    # Only the equality key pair is captured; the BETWEEN refs are not keys.
+    assert rel.foreign_key == "region_id"
+    assert rel.primary_key == "id"
+
+    # The range predicate is preserved in the join SQL, but its columns are not
+    # projected as spurious key columns.
+    assert model.sql is not None
+    assert "BETWEEN regions.start_date AND regions.end_date" in model.sql
+    assert "AS start_date" not in model.sql
+    assert "AS date" not in model.sql
+
+    # The model still compiles and runs.
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, region_id INT, date DATE)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 7, DATE '2024-06-15'), (2, 25.0, 7, DATE '2024-06-20')")
+    con.execute("CREATE TABLE regions (id INT, name VARCHAR, start_date DATE, end_date DATE)")
+    con.execute("INSERT INTO regions VALUES (7, 'West', DATE '2024-06-01', DATE '2024-06-30')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["sales_model.region_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("West", 125.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

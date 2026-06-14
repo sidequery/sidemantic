@@ -59,6 +59,10 @@ _TML_DOT_REF = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)
 _BARE_IDENTIFIER = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)(?![\w.])(?!\s*\()")
 # A quoted string literal (single or double quoted, with doubled-quote escapes).
 _STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+# Split a join predicate into conjuncts on a word-boundary `AND` (case-insensitive).
+_AND_SPLIT = re.compile(r"\bAND\b", re.IGNORECASE)
+# A plain `=` equality operator (not part of `<=`, `>=`, `!=`, `<>`, or `==`).
+_EQUALITY_OP = re.compile(r"(?<![<>=!])=(?![=])")
 
 
 def _sub_outside_strings(pattern: re.Pattern[str], repl: Any, text: str) -> str:
@@ -197,20 +201,29 @@ def _extract_all_join_refs(
     """Extract every ``left = right`` key pair from a (possibly composite) join.
 
     A composite ON clause like ``[a::x] = [b::y] AND [a::p] = [b::q]`` yields all
-    consecutive ref pairs, so composite-key relationships keep both columns
-    instead of silently dropping all but the first pair.
+    equality pairs, so composite-key relationships keep both columns instead of
+    silently dropping all but the first pair. Only pure equality conjuncts are
+    treated as key pairs; range/non-equi predicates (e.g.
+    ``[a::date] BETWEEN [b::start] AND [b::end]``) are skipped so they are not
+    mistaken for additional equality keys.
     """
     if not expr:
         return []
 
-    tokens = _TML_REF.findall(expr)
-    if len(tokens) < 2:
-        tokens = [f"{t[0]}.{t[1]}" for t in _TML_DOT_REF.findall(expr)]
-
     pairs: list[tuple[tuple[str | None, str], tuple[str | None, str]]] = []
-    for i in range(0, len(tokens) - 1, 2):
-        left = _parse_ref_token(tokens[i])
-        right = _parse_ref_token(tokens[i + 1])
+    for conjunct in _AND_SPLIT.split(expr):
+        tokens = _TML_REF.findall(conjunct)
+        if len(tokens) < 2:
+            tokens = [f"{t[0]}.{t[1]}" for t in _TML_DOT_REF.findall(conjunct)]
+
+        # Only an equality between exactly two refs is a join key pair. A `=` that
+        # is part of `<=`/`>=`/`!=` is not a plain equality.
+        equalities = _EQUALITY_OP.findall(conjunct)
+        if len(tokens) != 2 or len(equalities) != 1:
+            continue
+
+        left = _parse_ref_token(tokens[0])
+        right = _parse_ref_token(tokens[1])
         if table_path_lookup:
             if left[0] in table_path_lookup:
                 left = (table_path_lookup[left[0]], left[1])

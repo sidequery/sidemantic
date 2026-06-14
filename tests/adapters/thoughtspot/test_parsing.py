@@ -701,10 +701,12 @@ def test_import_thoughtspot_model():
     assert relationships["customers"].type == "many_to_one"
     assert relationships["customers"].foreign_key == "customer_id"
     assert relationships["customers"].primary_key == "id"
-    # cardinality: ONE_TO_ONE
+    # cardinality: ONE_TO_ONE. Sidemantic treats one_to_one (like one_to_many) as
+    # an edge where the related model owns the foreign key and the local model
+    # owns the primary key, so the parsed source-side FK/PK are stored swapped.
     assert relationships["regions"].type == "one_to_one"
-    assert relationships["regions"].foreign_key == "region_id"
-    assert relationships["regions"].primary_key == "id"
+    assert relationships["regions"].foreign_key == "id"
+    assert relationships["regions"].primary_key == "region_id"
 
     # A joined model becomes a derived table. Its `SELECT *` is rewritten into an
     # explicit projection that aliases each inner `table.column` to a stable,
@@ -1169,6 +1171,54 @@ def test_thoughtspot_one_to_many_join_keys_match_direction():
     )
     rows = con.execute(sql).fetchall()
     assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_one_to_one_join_keys_match_direction():
+    """A `one_to_one` join with a source-side FK joins correctly cross-model.
+
+    Regression: `one_to_one` keys were stored in the `many_to_one` positions
+    (FK on the source/local side). Sidemantic reads `one_to_one` like a has-one
+    edge where the related model owns the foreign key, so a cross-model query with
+    a separately loaded `regions` model joined `regions.region_id` to
+    `sales_model.id` and failed instead of joining `regions.id` to
+    `sales_model.region_id`.
+    """
+    import duckdb
+
+    from sidemantic.core.dimension import Dimension
+    from sidemantic.core.model import Model
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_one_to_one.model.tml")
+    sales_model = graph.models["sales_model"]
+
+    rel = {r.name: r for r in sales_model.relationships}["regions"]
+    assert rel.type == "one_to_one"
+    # Related model owns the FK (regions.id), local model owns the PK (region_id).
+    assert rel.foreign_key == "id"
+    assert rel.primary_key == "region_id"
+
+    # A separately loaded `regions` model joined via the parsed relationship.
+    regions = Model(
+        name="regions",
+        table="regions",
+        primary_key="id",
+        dimensions=[Dimension(name="zone", type="categorical", sql="zone")],
+    )
+
+    layer = SemanticLayer()
+    layer.add_model(sales_model)
+    layer.add_model(regions)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, region_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 7), (2, 25.0, 7)")
+    con.execute("CREATE TABLE regions (id INT, name VARCHAR, zone VARCHAR)")
+    con.execute("INSERT INTO regions VALUES (7, 'West', 'PACIFIC')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["regions.zone"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("PACIFIC", 125.0)]
 
 
 def test_thoughtspot_model_auto_detect_loader():

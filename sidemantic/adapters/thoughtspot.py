@@ -850,15 +850,23 @@ class ThoughtSpotAdapter(BaseAdapter):
                 known_tables.add(join_def.get("destination"))
             known_tables.discard(None)
 
-            # Resolve each relationship's foreign key to the `(table, column)` it
-            # comes from in the join `on` clauses, so the derived projection can
-            # expose those join keys for cross-model queries.
+            # Resolve each relationship's join keys to the `(table, column)` they
+            # come from in the join `on` clauses, so the derived projection can
+            # expose them for cross-model queries. The SQL generator passes through
+            # the foreign key (many_to_one) or the local primary key (one_to_one/
+            # one_to_many) as bare columns from this derived subquery, so cover
+            # both sides.
             fk_refs: dict[str, tuple[str, str]] = {}
-            fk_names = {rel.foreign_key for rel in relationships if rel.foreign_key}
+            key_names: set[str] = set()
+            for rel in relationships:
+                if rel.foreign_key:
+                    key_names.add(rel.foreign_key)
+                if rel.primary_key:
+                    key_names.add(rel.primary_key)
             for join_def in flat_joins:
                 left, right = _extract_join_refs(join_def.get("on"), path_lookup)
                 for ref in (left, right):
-                    if ref and ref[1] in fk_names and ref[0] in known_tables:
+                    if ref and ref[1] in key_names and ref[0] in known_tables:
                         fk_refs.setdefault(ref[1], ref)
 
             sql = _expose_joined_columns(sql, known_tables, dimensions, metrics, base_table, primary_key, fk_refs)
@@ -954,10 +962,10 @@ class ThoughtSpotAdapter(BaseAdapter):
 
             # The keys above follow the `many_to_one` convention: `foreign_key` on
             # the source (local) side, `primary_key` on the destination (related)
-            # side. For a `one_to_many` relationship the related model holds the
-            # foreign key and the local model holds the primary key, so swap them
-            # to match how Sidemantic interprets `one_to_many` keys.
-            if rel_type == "one_to_many":
+            # side. Sidemantic treats `one_to_many` and `one_to_one` as edges
+            # where the related model owns the `foreign_key` and the local model
+            # owns the `primary_key`, so swap them to match that key direction.
+            if rel_type in ("one_to_many", "one_to_one"):
                 foreign_key, primary_key = primary_key, foreign_key
 
             relationships.append(

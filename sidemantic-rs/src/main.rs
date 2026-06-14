@@ -1844,18 +1844,7 @@ pub(crate) fn workbench_command(args: &[String]) -> CliResult<()> {
 
     let demo_mode = option_flag(&options, "--demo");
     let directory = if demo_mode {
-        let candidates = [
-            PathBuf::from("examples").join("multi_format_demo"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("examples")
-                .join("multi_format_demo"),
-        ];
-        candidates
-            .iter()
-            .find(|path| path.exists())
-            .cloned()
-            .ok_or_else(|| "Error: Demo models not found".to_string())?
+        prepare_workbench_demo_models_dir()?
     } else {
         PathBuf::from(
             positionals
@@ -1965,6 +1954,37 @@ fn unique_demo_db_path() -> CliResult<PathBuf> {
     let mut path = env::temp_dir();
     path.push(format!("sidemantic_workbench_demo_{suffix}.db"));
     Ok(path)
+}
+
+/// Native Sidemantic models for `workbench --demo`, matching the tables seeded
+/// by `workbench_demo_seed_sql`. Stored as native YAML so the Rust loader
+/// (which reads native and Cube formats only) can use it without depending on
+/// the multi-format Python examples directory.
+const WORKBENCH_DEMO_MODELS_YAML: &str = include_str!("workbench_demo_models.yml");
+
+/// Write the embedded demo models to a unique temp directory and return it.
+/// Self-contained so `--demo` works regardless of the current directory.
+fn prepare_workbench_demo_models_dir() -> CliResult<PathBuf> {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("failed to compute demo models timestamp: {e}"))?
+        .as_nanos();
+    let mut dir = env::temp_dir();
+    dir.push(format!("sidemantic_workbench_demo_models_{suffix}"));
+    fs::create_dir_all(&dir).map_err(|e| {
+        format!(
+            "failed to create demo models directory '{}': {e}",
+            dir.display()
+        )
+    })?;
+    let models_path = dir.join("models.yml");
+    fs::write(&models_path, WORKBENCH_DEMO_MODELS_YAML).map_err(|e| {
+        format!(
+            "failed to write demo models file '{}': {e}",
+            models_path.display()
+        )
+    })?;
+    Ok(dir)
 }
 
 fn render_duckdb_connection_url(path: &Path) -> String {
@@ -2853,6 +2873,43 @@ SELECT revenue FROM orders
 
         assert_eq!(queries.len(), 2);
         assert!(queries.iter().all(|query| query.contains("-- sidemantic:")));
+    }
+
+    #[test]
+    fn workbench_demo_models_are_valid_native_yaml() {
+        let runtime = sidemantic::SidemanticRuntime::from_yaml(super::WORKBENCH_DEMO_MODELS_YAML)
+            .expect("embedded `workbench --demo` models should parse as native Sidemantic YAML");
+        let names: Vec<String> = runtime
+            .graph()
+            .models()
+            .map(|model| model.name.clone())
+            .collect();
+        for expected in ["orders", "customers", "products"] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "demo models missing '{expected}'; found {names:?}"
+            );
+        }
+    }
+
+    // The original `--demo` shipped models that did not match the seeded tables.
+    // Guard against that drift: every model's table must be created by the seed.
+    #[cfg(feature = "adbc-exec")]
+    #[test]
+    fn workbench_demo_seed_creates_every_model_table() {
+        let runtime = sidemantic::SidemanticRuntime::from_yaml(super::WORKBENCH_DEMO_MODELS_YAML)
+            .expect("embedded `workbench --demo` models should parse");
+        let seed = super::workbench_demo_seed_sql()
+            .join("\n")
+            .to_ascii_lowercase();
+        for model in runtime.graph().models() {
+            let table = model.table_name().to_ascii_lowercase();
+            assert!(
+                seed.contains(&format!("create table {table}")),
+                "demo seed SQL does not create table '{table}' referenced by model '{}'",
+                model.name
+            );
+        }
     }
 
     #[cfg(feature = "adbc-exec")]

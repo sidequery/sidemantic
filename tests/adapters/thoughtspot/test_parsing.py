@@ -1095,6 +1095,82 @@ def test_thoughtspot_relationship_fk_is_projected_for_cross_model_query():
     assert rows == [("West", 125.0)]
 
 
+def test_thoughtspot_single_table_renamed_formula_ref_is_queryable():
+    """A join-less model's formula referencing a renamed column stays queryable.
+
+    Regression: the renamed-column rewrite only ran on the derived (joined) SQL
+    path. For a single-table model (`sql is None`), a formula like
+    `[gross_revenue] - [discount]` kept the bare model names, so the compiled
+    `SELECT gross_revenue - discount FROM sales` failed because the table only has
+    the backing columns `gross_amt`/`disc_amt`.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_single_table_renamed_formula.model.tml")
+    model = graph.models["sales_model"]
+
+    # No join, so the model queries the base table directly; the formula's bare
+    # model-name refs are rewritten to the backing DB columns.
+    assert model.sql is None
+    assert model.table == "sales"
+    assert model.get_metric("net_revenue").sql == "gross_amt - disc_amt"
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, gross_amt DOUBLE, disc_amt DOUBLE)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0), (2, 50.0, 5.0)")
+
+    sql = layer.compile(
+        metrics=["sales_model.gross_revenue", "sales_model.net_revenue"],
+        dimensions=["sales_model.order_id"],
+    )
+    rows = sorted(con.execute(sql).fetchall())
+    # net_revenue = gross_amt - disc_amt
+    assert rows == [(1, 100.0, 90.0), (2, 50.0, 45.0)]
+
+
+def test_thoughtspot_one_to_many_join_keys_match_direction():
+    """A `one_to_many` join maps the foreign key to the related (child) model.
+
+    Regression: keys were assigned with the `many_to_one` convention (foreign key
+    on the local/source side). For a `one_to_many` join `[customers::id] =
+    [orders::customer_id]`, Sidemantic expects `foreign_key` on the related model
+    (`orders.customer_id`) and `primary_key` on the local model (`customers.id`),
+    so cross-model queries joined the wrong columns before this fix.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_one_to_many.model.tml")
+    model = graph.models["customers_model"]
+
+    rel = {r.name: r for r in model.relationships}["orders"]
+    assert rel.type == "one_to_many"
+    # Related (child) model holds the FK; local model holds the PK.
+    assert rel.foreign_key == "customer_id"
+    assert rel.primary_key == "id"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+    con.execute("CREATE TABLE orders (id INT, customer_id INT, amount DOUBLE)")
+    con.execute("INSERT INTO orders VALUES (1, 5, 100.0), (2, 5, 25.0)")
+
+    sql = layer.compile(
+        metrics=["customers_model.order_amount"],
+        dimensions=["customers_model.customer_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

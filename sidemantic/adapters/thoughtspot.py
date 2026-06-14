@@ -357,6 +357,37 @@ def _expose_joined_columns(
     return sql.replace("SELECT * FROM ", f"SELECT {select_list} FROM ", 1)
 
 
+def _resolve_bare_refs_to_db_columns(dimensions: list[Dimension], metrics: list[Metric]) -> None:
+    """Rewrite formula bare model-name refs to their backing DB columns in place.
+
+    For a join-less model the SQL generator queries the base table directly, so a
+    formula that references another TML column by its model name only works when
+    that name equals the backing DB column. Build a map of model name -> DB column
+    from the non-formula fields (whose SQL is a plain ``column`` or
+    ``table.column``) and rewrite each formula's bare references so they target
+    the real column. Only names that differ from their DB column are rewritten;
+    string literals are left untouched.
+    """
+    name_to_db_col: dict[str, str] = {}
+    for field in (*dimensions, *metrics):
+        sql = field.sql
+        if not sql:
+            continue
+        _table, column = _split_sql_identifier(sql)
+        if column and column != field.name:
+            name_to_db_col[field.name] = column
+
+    if not name_to_db_col:
+        return
+
+    def _replace_bare(match: re.Match[str]) -> str:
+        return name_to_db_col.get(match.group(1), match.group(0))
+
+    for field in (*dimensions, *metrics):
+        if field.sql:
+            field.sql = _sub_outside_strings(_BARE_IDENTIFIER, _replace_bare, field.sql)
+
+
 class ThoughtSpotAdapter(BaseAdapter):
     """Adapter for ThoughtSpot TML (YAML) tables and worksheets."""
 
@@ -831,6 +862,15 @@ class ThoughtSpotAdapter(BaseAdapter):
                         fk_refs.setdefault(ref[1], ref)
 
             sql = _expose_joined_columns(sql, known_tables, dimensions, metrics, base_table, primary_key, fk_refs)
+        else:
+            # Single-table (join-less) model: no derived subquery wraps it, so the
+            # `_expose_joined_columns` rewrite never runs. A formula that refers to
+            # another TML column by its model name (e.g. column `gross_revenue`
+            # mapped from `sales::gross_amt`, formula `[gross_revenue] -
+            # [discount]`) keeps the bare model name, which is not a real column on
+            # the base table. Rewrite those bare refs to the backing DB column so
+            # the query stays valid.
+            _resolve_bare_refs_to_db_columns(dimensions, metrics)
 
         default_time_dimension = None
         default_grain = None
@@ -911,6 +951,14 @@ class ThoughtSpotAdapter(BaseAdapter):
             rel_type = _CARDINALITY_MAP.get(cardinality or "", "many_to_one")
             if join_type in {"RIGHT_OUTER", "FULL_OUTER", "OUTER"} and cardinality not in _CARDINALITY_MAP:
                 rel_type = "many_to_many"
+
+            # The keys above follow the `many_to_one` convention: `foreign_key` on
+            # the source (local) side, `primary_key` on the destination (related)
+            # side. For a `one_to_many` relationship the related model holds the
+            # foreign key and the local model holds the primary key, so swap them
+            # to match how Sidemantic interprets `one_to_many` keys.
+            if rel_type == "one_to_many":
+                foreign_key, primary_key = primary_key, foreign_key
 
             relationships.append(
                 Relationship(

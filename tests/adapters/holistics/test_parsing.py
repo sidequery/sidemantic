@@ -335,6 +335,43 @@ def test_holistics_aql_table_and_metric_functions():
     assert _translate_aql_to_sql("sum(orders.amount) / count(orders.id)") == "SUM(orders.amount) / COUNT(orders.id)"
 
 
+def test_holistics_inline_dataset_assignment():
+    """Datasets declared with an inline object assignment (Dataset foo = Dataset {...})
+    are resolved, not silently dropped, surfacing their metrics at graph scope."""
+    aml_content = """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  measure order_count { type: 'number' aggregation_type: 'count' }
+}
+
+Dataset inline_ds = Dataset {
+  label: 'Inline DS'
+  models: [base_orders]
+  metric inline_total {
+    label: 'Inline Total'
+    type: 'number'
+    definition: @aql count(base_orders.order_id);;
+  }
+}
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        # The inline dataset surfaces as a model and its metric is graph-scoped.
+        assert "inline_ds" in graph.models
+        assert "inline_total" in graph.metrics
+        assert graph.models["inline_ds"].get_metric("inline_total").sql == "COUNT(base_orders.order_id)"
+    finally:
+        temp_path.unlink()
+
+
 # =============================================================================
 # RELATIONSHIP PARSING TESTS
 # =============================================================================

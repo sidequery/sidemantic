@@ -607,7 +607,7 @@ def _resolve_block_from_value(
             merged = _merge_blocks(merged, _as_model_block(extension_block))
         return merged
 
-    if isinstance(value, TypedBlock) and value.type_name in {"Model", "PartialModel"}:
+    if isinstance(value, TypedBlock) and value.type_name in {"Model", "PartialModel", "Dataset", "PartialDataset"}:
         return AmlBlock(kind=value.type_name, name=None, items=value.items)
 
     if isinstance(value, InlineBlock):

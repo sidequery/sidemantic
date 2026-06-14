@@ -657,10 +657,12 @@ class SnowflakeAdapter(BaseAdapter):
         # auto-registers at graph level (``time_comparison``/``conversion``). Those
         # are already serialized inside their table and have no valid Snowflake
         # top-level representation, so skip any metric that is owned by a model.
-        owned_metric_names = {metric.name for model in resolved_models.values() for metric in model.metrics}
+        # Match by object identity, not name, so a distinct top-level metric that
+        # merely shares a name with a model-local metric still round-trips.
+        owned_metric_ids = {id(metric) for model in resolved_models.values() for metric in model.metrics}
         top_level_metrics = []
         for name, metric in graph.metrics.items():
-            if name in owned_metric_names:
+            if id(metric) in owned_metric_ids:
                 continue
             metric_def = self._export_metric(metric)
             # Skip metric types Snowflake cannot represent (no `expr`) rather than

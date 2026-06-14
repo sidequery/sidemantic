@@ -456,6 +456,59 @@ metrics:
         # The export must still re-parse cleanly.
         adapter.parse(output_file)
 
+    def test_export_preserves_top_level_metric_sharing_model_metric_name(self, adapter, tmp_path):
+        """A distinct top-level metric must survive even if it shares a model-local name.
+
+        The owned-metric skip in export must match by object identity, not name, so
+        a genuine graph-level metric that merely shares a name with a table-local
+        metric is not dropped on export.
+        """
+        model = Model(
+            name="orders",
+            table="ORDERS",
+            primary_key="id",
+            metrics=[Metric(name="summary", agg="sum", sql="amount")],
+        )
+        graph = SemanticGraph()
+        graph.add_model(model)
+        # Distinct graph-level derived metric that shares the name "summary".
+        top_level = Metric(name="summary", type="derived", sql="orders.summary * 2")
+        graph.metrics["summary"] = top_level
+        assert graph.metrics["summary"] is not model.metrics[0]
+
+        output_file = tmp_path / "export.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+
+        # The distinct top-level metric is serialized to the top-level metrics block.
+        assert [m["name"] for m in data.get("metrics", [])] == ["summary"]
+        assert data["metrics"][0]["expr"] == "orders.summary * 2"
+        # And the export still re-parses cleanly.
+        adapter.parse(output_file)
+
+    def test_export_skips_auto_registered_metric_by_identity_not_name(self, adapter, tmp_path):
+        """Auto-registered model metrics (same object) are still skipped at top level."""
+        model = Model(
+            name="orders",
+            table="ORDERS",
+            primary_key="id",
+            metrics=[
+                Metric(name="total_revenue", agg="sum", sql="amount"),
+                Metric(name="revenue_yoy", type="time_comparison", base_metric="total_revenue", comparison_type="yoy"),
+            ],
+        )
+        graph = SemanticGraph()
+        graph.add_model(model)
+        # The time_comparison metric is the same object registered at graph level.
+        assert graph.metrics["revenue_yoy"] is model.metrics[1]
+
+        output_file = tmp_path / "export.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+
+        assert "metrics" not in data
+        adapter.parse(output_file)
+
     def test_roundtrip_preserves_using_relationships_and_relationship_name(self, adapter, tmp_path):
         """A metric `using_relationships` and the named relationship it points to must survive.
 

@@ -455,3 +455,66 @@ metrics:
         assert "metrics" not in data
         # The export must still re-parse cleanly.
         adapter.parse(output_file)
+
+    def test_roundtrip_preserves_using_relationships_and_relationship_name(self, adapter, tmp_path):
+        """A metric `using_relationships` and the named relationship it points to must survive.
+
+        Snowflake relationship `name` is referenced by metric `using_relationships`.
+        Both the relationship name and the metric reference must round-trip, and the
+        aggregate metric carrying `using_relationships` must be exported as a metric
+        (not a fact) so the key is not dropped on re-parse.
+        """
+        source = tmp_path / "rel.yaml"
+        source.write_text(
+            """
+name: rel_test
+tables:
+  - name: orders
+    base_table: {database: db, schema: s, table: orders}
+    primary_key: {columns: [order_id]}
+    dimensions:
+      - {name: order_id, expr: order_id, data_type: number}
+      - {name: customer_id, expr: customer_id, data_type: number}
+    metrics:
+      - name: distinct_orders
+        expr: COUNT(DISTINCT order_id)
+        using_relationships: [orders_to_customers]
+  - name: customers
+    base_table: {database: db, schema: s, table: customers}
+    primary_key: {columns: [id]}
+    dimensions:
+      - {name: id, expr: id, data_type: number}
+relationships:
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - {left_column: customer_id, right_column: id}
+    relationship_type: many_to_one
+    join_type: left_outer
+"""
+        )
+
+        graph = adapter.parse(source)
+        rel = graph.models["orders"].relationships[0]
+        assert rel.metadata["snowflake"]["name"] == "orders_to_customers"
+
+        output_file = tmp_path / "out.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+
+        # The relationship name is re-emitted so references stay resolvable.
+        assert [r["name"] for r in data["relationships"]] == ["orders_to_customers"]
+
+        # The aggregate metric carrying using_relationships goes to metrics, not facts.
+        orders_table = next(t for t in data["tables"] if t["name"] == "orders")
+        assert "facts" not in orders_table or all(f["name"] != "distinct_orders" for f in orders_table["facts"])
+        exported_metric = next(m for m in orders_table["metrics"] if m["name"] == "distinct_orders")
+        assert exported_metric["using_relationships"] == ["orders_to_customers"]
+
+        # Re-parse preserves both the relationship name and the metric reference.
+        graph2 = adapter.parse(output_file)
+        rel2 = graph2.models["orders"].relationships[0]
+        assert rel2.metadata["snowflake"]["name"] == "orders_to_customers"
+        metric2 = graph2.models["orders"].get_metric("distinct_orders")
+        assert metric2.metadata["snowflake"]["using_relationships"] == ["orders_to_customers"]

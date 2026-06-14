@@ -588,6 +588,15 @@ class SnowflakeAdapter(BaseAdapter):
             left_column = first_col.get("left_column")
             right_column = first_col.get("right_column")
 
+            # The Snowflake relationship name is referenced by metric
+            # `using_relationships`; preserve it so those references stay valid
+            # after export. `Relationship.name` is the related-model identifier and
+            # cannot hold it, so stash it in adapter metadata instead.
+            metadata = None
+            snowflake_name = rel_def.get("name")
+            if snowflake_name:
+                metadata = {"snowflake": {"name": snowflake_name}}
+
             # In Snowflake, left_table is the "many" side, right_table is the "one" side
             # Add relationship to left_table pointing to right_table
             if left_table in graph.models:
@@ -597,6 +606,7 @@ class SnowflakeAdapter(BaseAdapter):
                     type=rel_type,
                     foreign_key=left_column,
                     primary_key=right_column,
+                    metadata=metadata,
                 )
                 model.relationships.append(relationship)
                 # Rebuild adjacency after adding relationship
@@ -740,7 +750,11 @@ class SnowflakeAdapter(BaseAdapter):
         metrics = []
 
         for metric in model.metrics:
-            if metric.agg and not metric.type:
+            snowflake_meta = (metric.metadata or {}).get("snowflake", {})
+            # `using_relationships` is a metric-only Snowflake key that facts do
+            # not collect on re-parse, so a simple aggregation carrying it must be
+            # exported as a metric (not a fact) to survive a round-trip.
+            if metric.agg and not metric.type and "using_relationships" not in snowflake_meta:
                 # Simple aggregation -> fact
                 fact = self._export_fact(metric)
                 facts.append(fact)
@@ -954,5 +968,11 @@ class SnowflakeAdapter(BaseAdapter):
             "relationship_type": rel.type,
             "join_type": "left_outer",
         }
+
+        # Preserve the original Snowflake relationship name so metric
+        # `using_relationships` references resolve after a round-trip.
+        snowflake_name = (rel.metadata or {}).get("snowflake", {}).get("name")
+        if snowflake_name:
+            rel_def = {"name": snowflake_name, **rel_def}
 
         return rel_def

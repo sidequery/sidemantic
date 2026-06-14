@@ -1478,6 +1478,43 @@ def test_thoughtspot_non_equi_join_predicate_is_not_a_relationship_key():
     assert rows == [("West", 125.0)]
 
 
+def test_thoughtspot_aliased_table_referenced_by_id_is_queryable():
+    """An aliased table referenced by its id resolves to the alias, not the table.
+
+    Regression: a `model_tables` entry `id: countries_tbl, alias: ship_country`
+    referenced by `column_id: countries_tbl::name` resolved to `countries.name`,
+    but the SQL emits `JOIN countries AS ship_country`, so `countries` is not in
+    scope. The id/name tokens of an aliased entry must resolve to the alias.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_aliased_table_id_ref.model.tml")
+    model = graph.models["shipments_model"]
+
+    # The id-qualified field resolves to the alias relation, which is in scope.
+    assert model.get_dimension("ship_country_name").sql == "ship_country__name"
+    assert model.sql is not None
+    assert "JOIN countries AS ship_country" in model.sql
+    assert "ship_country.name AS ship_country__name" in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE, ship_country_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 7), (2, 25.0, 7)")
+    con.execute("CREATE TABLE countries (id INT, name VARCHAR)")
+    con.execute("INSERT INTO countries VALUES (7, 'US')")
+
+    sql = layer.compile(
+        metrics=["shipments_model.amount"],
+        dimensions=["shipments_model.ship_country_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [("US", 125.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

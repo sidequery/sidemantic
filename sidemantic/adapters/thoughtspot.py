@@ -787,6 +787,19 @@ class ThoughtSpotAdapter(BaseAdapter):
         path_lookup: dict[str, str] = dict(table_name_lookup)
         for alias in alias_to_table:
             path_lookup[alias] = alias
+        # An aliased entry may still be referenced by its `id`/`name` in a
+        # `column_id` or `on` expression (e.g. `id: countries_tbl, alias:
+        # ship_country` with `column_id: countries_tbl::name`). The SQL relation in
+        # scope is the alias (`JOIN countries AS ship_country`), so map the entry's
+        # id/name tokens to the alias too; otherwise the qualifier resolves to the
+        # backing table name, which is not in scope.
+        for table in model_tables:
+            alias = table.get("alias")
+            if not alias:
+                continue
+            for token in (table.get("id"), table.get("name")):
+                if token and token != alias:
+                    path_lookup[token] = alias
 
         # Flatten nested joins (one per model_tables entry) into the same shape
         # the worksheet join helpers consume. When a table carries an `alias`,

@@ -372,6 +372,51 @@ Dataset inline_ds = Dataset {
         temp_path.unlink()
 
 
+def test_holistics_partial_dataset_assignment_extend():
+    """A PartialDataset declared via object assignment is collected and its
+    metrics compose into a Dataset that extends it. The partial itself is a
+    composition fragment, not a standalone queryable model."""
+    aml_content = """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  measure order_count { type: 'number' aggregation_type: 'count' }
+}
+
+PartialDataset reusable = PartialDataset {
+  metric reusable_count {
+    label: 'Reusable Count'
+    type: 'number'
+    definition: @aql count(base_orders.order_id);;
+  }
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset combined = base_ds.extend(reusable)
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        # The extending dataset surfaces with the partial's metric, graph-scoped.
+        assert "combined" in graph.models
+        assert "reusable_count" in graph.metrics
+        assert graph.models["combined"].get_metric("reusable_count").sql == "COUNT(base_orders.order_id)"
+        # The partial fragment is not a standalone queryable model.
+        assert "reusable" not in graph.models
+    finally:
+        temp_path.unlink()
+
+
 # =============================================================================
 # RELATIONSHIP PARSING TESTS
 # =============================================================================

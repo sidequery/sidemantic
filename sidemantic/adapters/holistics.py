@@ -1188,7 +1188,7 @@ def _collect_dataset_definitions(
                     name = _qualify_declared_name(item.name, context.module_prefix)
                     metric_blocks[name] = (AmlBlock(kind="Metric", name=name, items=item.items), context)
                 continue
-            if isinstance(item, ObjectAssignment) and item.kind == "Dataset":
+            if isinstance(item, ObjectAssignment) and item.kind in {"Dataset", "PartialDataset"}:
                 name = _qualify_declared_name(item.name, context.module_prefix)
                 dataset_assignments[name] = (item, context)
 
@@ -1239,6 +1239,11 @@ def _resolve_dataset_artifacts(
             dataset_models[model.name] = model
 
     for name, (assignment, context) in dataset_assignments.items():
+        # PartialDataset assignments are reusable composition fragments (consumed
+        # via .extend()), not queryable datasets, mirroring named PartialDataset
+        # blocks which never surface as standalone models.
+        if assignment.kind == "PartialDataset":
+            continue
         block = resolve_named_block(name)
         if not block:
             continue

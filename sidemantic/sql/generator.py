@@ -1367,6 +1367,11 @@ class SQLGenerator:
 
         # Include local relationship keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
+            # Custom-SQL joins ({from}/{to}) supply their own key columns via
+            # _custom_join_columns_by_model; skip the default FK/PK passthrough so we
+            # don't inject a non-existent "{name}_id" column for composite/custom joins.
+            if relationship.sql and ("{from}" in relationship.sql or "{to}" in relationship.sql):
+                continue
             if relationship.type == "many_to_one":
                 # Handle multi-column foreign keys
                 for fk in relationship.foreign_key_columns:
@@ -1391,6 +1396,10 @@ class SQLGenerator:
                 if other_model_name not in all_models:
                     continue
                 for other_join in other_model.relationships:
+                    # Custom-SQL joins supply their key columns via the custom-join
+                    # column extraction; don't inject default FK/PK columns for them.
+                    if other_join.sql and ("{from}" in other_join.sql or "{to}" in other_join.sql):
+                        continue
                     if other_join.name == model_name and other_join.type in (
                         "one_to_one",
                         "one_to_many",

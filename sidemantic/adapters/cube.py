@@ -1,6 +1,7 @@
 """Cube adapter for importing Cube.js semantic models."""
 
 import re
+import warnings
 from pathlib import Path
 
 import yaml
@@ -45,6 +46,25 @@ def _normalize_cube_sql(sql: str | None, cube_name: str | None = None) -> str | 
         result = result.replace(f"{{{cube_name}}}", "{model}")
 
     return result
+
+
+# Matches a Cube member reference: ${cube.col}, {cube.col}, ${CUBE}.col, {cube}.col, etc.
+# group(1) = content inside braces, group(2) = optional trailing ".column".
+_CUBE_MEMBER_RE = re.compile(r"\$?\{([^}]+)\}(?:\.(\w+))?")
+
+
+def _split_cube_ref(inner: str, trailing: str | None) -> tuple[str, str | None]:
+    """Split a Cube member reference into ``(cube_name, column)``.
+
+    Handles both ``${cube.col}`` / ``{cube.col}`` (column inside the braces) and
+    ``${cube}.col`` / ``${CUBE}.col`` (column trailing the braces).
+    """
+    if trailing is not None:
+        return inner, trailing
+    if "." in inner:
+        head, col = inner.split(".", 1)
+        return head, col
+    return inner, None
 
 
 class CubeAdapter(BaseAdapter):
@@ -200,35 +220,104 @@ class CubeAdapter(BaseAdapter):
             existing = graph.metadata.get("cube_view_groups") or []
             graph.metadata["cube_view_groups"] = existing + list(view_groups)
 
-    def _extract_fk_from_join_sql(self, join_sql: str, relationship_type: str, join_name: str) -> str | None:
-        """Extract foreign key column from Cube join SQL.
+    def _convert_cube_join(
+        self, join_sql: str, self_name: str, join_name: str
+    ) -> tuple[str | None, str | None, str | None]:
+        """Convert a Cube join condition into Sidemantic form.
 
-        Parses join SQL to extract the foreign key column name based on relationship type:
-        - many_to_one: Extract from ${CUBE}.column (e.g., "${CUBE}.company_id = ${companies.id}" -> "company_id")
-        - one_to_many: Extract from ${join_name.column} (e.g., "${CUBE}.id = ${project_assignments.project_id}" -> "project_id")
+        Cube expresses joins as a SQL equality condition referencing members with
+        ``${CUBE}.col`` (this cube), ``${target.col}`` (the joined cube), and the
+        single-brace ``{cube.col}`` variants. Sidemantic represents the same thing
+        with ``{from}`` / ``{to}`` placeholders.
 
-        Args:
-            join_sql: Join SQL expression from Cube definition
-            relationship_type: Type of relationship (many_to_one or one_to_many)
-            join_name: Name of the joined model
-
-        Returns:
-            Foreign key column name, or None if parsing fails
+        Returns ``(native_sql, from_col, to_col)`` where:
+        - ``native_sql`` is the condition rewritten with ``{from}`` / ``{to}``
+          placeholders, or ``None`` if it references a cube other than this one or
+          the join target (and therefore cannot be represented faithfully).
+        - ``from_col`` / ``to_col`` are the single columns on each side when the
+          condition is a plain ``a = b`` equality, otherwise ``None``.
         """
-        if relationship_type == "one_to_many":
-            # For one_to_many, extract from ${join_name.column}
-            # Example: "${CUBE}.id = ${project_assignments.project_id}" -> "project_id"
-            match = re.search(rf"\$\{{{re.escape(join_name)}\.(\w+)\}}", join_sql)
-            if match:
-                return match.group(1)
-        else:
-            # For many_to_one (default), extract from ${CUBE}.column
-            # Example: "${CUBE}.company_id = ${companies.id}" -> "company_id"
-            match = re.search(r"\$\{CUBE\}\.(\w+)", join_sql)
-            if match:
-                return match.group(1)
+        refs: list[tuple[str, str | None]] = []  # (side, column) in order of appearance
+        untranslatable = False
 
-        return None
+        def repl(match: re.Match) -> str:
+            nonlocal untranslatable
+            head, col = _split_cube_ref(match.group(1), match.group(2))
+            if head in ("CUBE", self_name):
+                side = "from"
+            elif head == join_name:
+                side = "to"
+            else:
+                # References a third cube: cannot be expressed with {from}/{to}.
+                untranslatable = True
+                return match.group(0)
+            refs.append((side, col))
+            return f"{{{side}}}.{col}" if col else f"{{{side}}}"
+
+        native_sql = _CUBE_MEMBER_RE.sub(repl, join_sql)
+        if untranslatable or not refs:
+            return None, None, None
+
+        # Detect a plain single-column equality: exactly two members (one per side)
+        # joined by a single '=' with nothing else around them.
+        residual = re.sub(r"\s+", "", _CUBE_MEMBER_RE.sub("@", join_sql))
+        is_simple_equality = (
+            residual == "@=@"
+            and len(refs) == 2
+            and {side for side, _ in refs} == {"from", "to"}
+            and all(col for _, col in refs)
+        )
+        if is_simple_equality:
+            from_col = next(col for side, col in refs if side == "from")
+            to_col = next(col for side, col in refs if side == "to")
+            return native_sql, from_col, to_col
+        return native_sql, None, None
+
+    def _relationship_from_join(self, join_def: dict, self_name: str) -> Relationship | None:
+        """Build a Relationship from a Cube ``joins`` entry."""
+        join_name = join_def.get("name")
+        if not join_name:
+            return None
+
+        rel_type = join_def.get("relationship", "many_to_one")
+        join_sql = join_def.get("sql", "") or ""
+
+        native_sql, from_col, to_col = self._convert_cube_join(join_sql, self_name, join_name)
+
+        # Plain single-column equality on many_to_one / one_to_many -> structured keys.
+        # Both Sidemantic (Python) and the Rust engine agree on the join direction for
+        # these, so structured keys round-trip cleanly to Cube's simple join form.
+        # one_to_one is deliberately excluded: the two engines interpret its FK/PK
+        # direction differently, so we preserve the explicit condition instead.
+        if from_col and to_col and rel_type in ("many_to_one", "one_to_many"):
+            if rel_type == "many_to_one":
+                return Relationship(name=join_name, type=rel_type, foreign_key=from_col, primary_key=to_col)
+            # one_to_many: FK lives on the related model, local key on this one.
+            return Relationship(name=join_name, type=rel_type, foreign_key=to_col, primary_key=from_col)
+
+        # Composite / non-equality / one_to_one condition -> preserve the full predicate.
+        if native_sql:
+            return Relationship(name=join_name, type=rel_type, sql=native_sql)
+
+        # Unparseable (references another cube, or no recognizable members): fall back
+        # to Cube's naming convention, but warn instead of silently faking a join.
+        warnings.warn(
+            f"Could not parse Cube join '{self_name}' -> '{join_name}' from SQL {join_sql!r}; "
+            f"falling back to foreign key '{join_name}_id'.",
+            stacklevel=2,
+        )
+        return Relationship(name=join_name, type=rel_type, foreign_key=f"{join_name}_id")
+
+    @staticmethod
+    def _native_join_sql_to_cube(native_sql: str, join_name: str) -> str:
+        """Translate a ``{from}`` / ``{to}`` join condition back to Cube placeholders.
+
+        ``{from}.col`` -> ``${CUBE}.col`` and ``{to}.col`` -> ``${join_name.col}``.
+        """
+        result = re.sub(r"\{to\}\.(\w+)", rf"${{{join_name}.\1}}", native_sql)
+        result = result.replace("{to}", f"${{{join_name}}}")
+        result = result.replace("{from}", "${CUBE}")
+        return result
 
     def _parse_cube(self, cube_def: dict) -> Model | None:
         """Parse a Cube definition into a Model.
@@ -292,19 +381,9 @@ class CubeAdapter(BaseAdapter):
         # Parse joins to create relationships
         relationships = []
         for join_def in cube_def.get("joins") or []:
-            join_name = join_def.get("name")
-            if join_name:
-                # Get relationship type from join definition, default to many_to_one
-                rel_type = join_def.get("relationship", "many_to_one")
-
-                # Extract foreign key from join SQL, fallback to convention
-                join_sql = join_def.get("sql", "")
-                fk_column = self._extract_fk_from_join_sql(join_sql, rel_type, join_name)
-                if not fk_column:
-                    # Fallback to conventional naming if parsing fails
-                    fk_column = f"{join_name}_id"
-
-                relationships.append(Relationship(name=join_name, type=rel_type, foreign_key=fk_column))
+            relationship = self._relationship_from_join(join_def, name)
+            if relationship is not None:
+                relationships.append(relationship)
 
         # Parse pre-aggregations (handle None from empty YAML section)
         pre_aggregations = []
@@ -1123,17 +1202,24 @@ class CubeAdapter(BaseAdapter):
             # Find target model from resolved models (inheritance-applied)
             target_model = resolved_models.get(relationship.name)
             if target_model:
-                # Use ${CUBE} for local side and ${target.col} for remote side
-                # so _extract_fk_from_join_sql can re-parse the exported SQL
-                if relationship.type in ("many_to_one", "one_to_one"):
+                if relationship.sql:
+                    # Custom predicate (composite keys, one_to_one, non-equality):
+                    # preserve it by translating {from}/{to} back to Cube placeholders.
+                    join_sql = self._native_join_sql_to_cube(relationship.sql, relationship.name)
+                elif relationship.type == "many_to_one":
+                    # ${CUBE}.fk = ${target.pk}
                     local_key = relationship.sql_expr or relationship.foreign_key
                     remote_key = relationship.primary_key or target_model.primary_key
                     if isinstance(remote_key, list):
                         remote_key = remote_key[0]
                     join_sql = f"${{CUBE}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
                 else:
-                    # one_to_many: ${CUBE}.pk = ${target.fk}
-                    local_key = model.primary_key if isinstance(model.primary_key, str) else model.primary_key[0]
+                    # one_to_many / one_to_one: ${CUBE}.pk = ${target.fk}.
+                    # The local key is this model's key (relationship.primary_key when set,
+                    # else the model's primary key); the FK lives on the related model.
+                    local_key = relationship.primary_key or model.primary_key
+                    if isinstance(local_key, list):
+                        local_key = local_key[0]
                     remote_key = relationship.sql_expr or relationship.foreign_key
                     join_sql = f"${{CUBE}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
 

@@ -174,6 +174,30 @@ impl AdbcExecutor {
     }
 }
 
+/// Candidate driver names to try, in priority order.
+///
+/// `dbc`/ADBC driver manifests are commonly registered under a short name
+/// (e.g. `duckdb`), while the conventional shared library follows the
+/// `adbc_driver_<name>` naming convention. Try both so a driver resolves
+/// regardless of which scheme the local registry uses. Explicit library paths
+/// are passed through untouched.
+fn driver_name_candidates(driver: &str) -> Vec<String> {
+    let mut names = vec![driver.to_string()];
+    if let Some(short) = driver.strip_prefix("adbc_driver_") {
+        if !short.is_empty() {
+            names.push(short.to_string());
+        }
+    } else if !driver.contains('/')
+        && !driver.contains('\\')
+        && !driver.ends_with(".so")
+        && !driver.ends_with(".dylib")
+        && !driver.ends_with(".dll")
+    {
+        names.push(format!("adbc_driver_{driver}"));
+    }
+    names
+}
+
 fn load_managed_driver(
     driver: &str,
     entrypoint: Option<&str>,
@@ -182,25 +206,27 @@ fn load_managed_driver(
     additional_search_paths: Option<Vec<PathBuf>>,
 ) -> std::result::Result<ManagedDriver, adbc_core::error::Error> {
     let entrypoint_bytes = entrypoint.map(str::as_bytes);
-    ManagedDriver::load_from_name(
-        driver,
-        entrypoint_bytes,
-        adbc_version,
-        load_flags,
-        additional_search_paths.clone(),
-    )
-    .or_else(|err| {
-        if matches!(adbc_version, AdbcVersion::V100) {
-            return Err(err);
+    let mut versions = vec![adbc_version];
+    if !matches!(adbc_version, AdbcVersion::V100) {
+        versions.push(AdbcVersion::V100);
+    }
+
+    let mut last_err: Option<adbc_core::error::Error> = None;
+    for name in driver_name_candidates(driver) {
+        for &version in &versions {
+            match ManagedDriver::load_from_name(
+                &name,
+                entrypoint_bytes,
+                version,
+                load_flags,
+                additional_search_paths.clone(),
+            ) {
+                Ok(driver) => return Ok(driver),
+                Err(err) => last_err = Some(err),
+            }
         }
-        ManagedDriver::load_from_name(
-            driver,
-            entrypoint_bytes,
-            AdbcVersion::V100,
-            load_flags,
-            additional_search_paths,
-        )
-    })
+    }
+    Err(last_err.expect("at least one driver candidate is always attempted"))
 }
 
 fn adbc_error(context: &str, err: impl std::fmt::Display) -> SidemanticError {
@@ -277,23 +303,13 @@ pub fn execute_with_adbc(request: AdbcExecutionRequest) -> Result<AdbcExecutionR
 
     let database_options =
         database_options_with_uri(&driver, entrypoint.as_deref(), uri, database_options);
-    let entrypoint_bytes = entrypoint.as_deref().map(str::as_bytes);
-    let mut managed_driver = ManagedDriver::load_from_name(
+    let mut managed_driver = load_managed_driver(
         &driver,
-        entrypoint_bytes,
+        entrypoint.as_deref(),
         AdbcVersion::V110,
         LOAD_FLAG_DEFAULT,
         None,
     )
-    .or_else(|_| {
-        ManagedDriver::load_from_name(
-            &driver,
-            entrypoint_bytes,
-            AdbcVersion::V100,
-            LOAD_FLAG_DEFAULT,
-            None,
-        )
-    })
     .map_err(|e| adbc_error("failed to load ADBC driver", e))?;
 
     let database = if database_options.is_empty() {
@@ -365,23 +381,13 @@ pub fn write_adbc_arrow_ipc<W: Write>(request: AdbcExecutionRequest, writer: W) 
 
     let database_options =
         database_options_with_uri(&driver, entrypoint.as_deref(), uri, database_options);
-    let entrypoint_bytes = entrypoint.as_deref().map(str::as_bytes);
-    let mut managed_driver = ManagedDriver::load_from_name(
+    let mut managed_driver = load_managed_driver(
         &driver,
-        entrypoint_bytes,
+        entrypoint.as_deref(),
         AdbcVersion::V110,
         LOAD_FLAG_DEFAULT,
         None,
     )
-    .or_else(|_| {
-        ManagedDriver::load_from_name(
-            &driver,
-            entrypoint_bytes,
-            AdbcVersion::V100,
-            LOAD_FLAG_DEFAULT,
-            None,
-        )
-    })
     .map_err(|e| adbc_error("failed to load ADBC driver", e))?;
 
     let database = if database_options.is_empty() {
@@ -725,6 +731,29 @@ mod tests {
         );
 
         assert_single_string_database_option(&options, "path", "/tmp/explicit.duckdb");
+    }
+
+    #[test]
+    fn test_driver_name_candidates_tries_both_naming_schemes() {
+        // Short name (dbc manifest convention) also tries the canonical prefix.
+        assert_eq!(
+            driver_name_candidates("duckdb"),
+            vec!["duckdb".to_string(), "adbc_driver_duckdb".to_string()]
+        );
+        // Canonical prefix also tries the short manifest name.
+        assert_eq!(
+            driver_name_candidates("adbc_driver_duckdb"),
+            vec!["adbc_driver_duckdb".to_string(), "duckdb".to_string()]
+        );
+        // Explicit library paths are passed through untouched.
+        assert_eq!(
+            driver_name_candidates("/tmp/libduckdb.dylib"),
+            vec!["/tmp/libduckdb.dylib".to_string()]
+        );
+        assert_eq!(
+            driver_name_candidates(".\\drivers\\duckdb.dll"),
+            vec![".\\drivers\\duckdb.dll".to_string()]
+        );
     }
 
     #[test]

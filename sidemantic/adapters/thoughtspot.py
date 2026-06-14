@@ -340,29 +340,37 @@ def _expose_joined_columns(
     # like `gross_revenue`. Map each such column name to its projected alias when
     # exactly one joined table projects that column, so the rewritten expression
     # uses the in-scope output alias instead of an out-of-scope bare column.
-    bare_to_alias: dict[str, str] = {}
-    ambiguous: set[str] = set()
+    def _build_map(pairs: list[tuple[str, str]]) -> dict[str, str]:
+        """Map name -> alias, dropping names that map to conflicting aliases."""
+        mapping: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for name, alias in pairs:
+            if name in mapping and mapping[name] != alias:
+                ambiguous.add(name)
+            else:
+                mapping[name] = alias
+        for name in ambiguous:
+            mapping.pop(name, None)
+        return mapping
 
-    def _record_bare(name: str, alias: str) -> None:
-        if name in bare_to_alias and bare_to_alias[name] != alias:
-            ambiguous.add(name)
-        else:
-            bare_to_alias[name] = alias
+    # Physical DB column names map to their projected aliases.
+    physical_map = _build_map([(column, alias) for (_table, column), alias in projection.items()])
 
-    for (_table, column), alias in projection.items():
-        _record_bare(column, alias)
     # Formulas can also reference another TML column by its model name even when
     # that name differs from the backing DB column (e.g. a column `gross_revenue`
     # mapped to `column_id: sales::gross_amt`, with formula `[gross_revenue] -
-    # [discount]`). The projection aliases the DB column (`sales__gross_amt`), so
-    # also map the model column name to that alias; otherwise the bare model name
-    # stays out of scope and the query fails.
-    for field in (*dimensions, *metrics):
-        ref = _simple_table_column(field.sql, tables)
-        if ref:
-            _record_bare(field.name, projection[ref])
-    for name in ambiguous:
-        bare_to_alias.pop(name, None)
+    # [discount]`). Build a separate field-name map and let it take precedence:
+    # a formula's `[amount]` refers to the TML field `amount`, which may resolve
+    # to a different physical column than one literally named `amount`.
+    field_map = _build_map(
+        [
+            (field.name, projection[ref])
+            for field in (*dimensions, *metrics)
+            if (ref := _simple_table_column(field.sql, tables))
+        ]
+    )
+
+    bare_to_alias = {**physical_map, **field_map}
 
     def _rewrite(expr: str | None) -> str | None:
         if not expr:
@@ -981,14 +989,17 @@ class ThoughtSpotAdapter(BaseAdapter):
     def _infer_model_primary_key(self, dimensions: list[Dimension], base_table: str | None) -> str:
         """Infer a queryable primary key column for a TML Model.
 
-        Prefer a dimension literally named ``id``. Otherwise, if the base table is
+        Prefer a dimension named ``id`` but resolve it to its backing physical
+        column (a column named ``id`` may map to a differently named DB column,
+        e.g. ``column_id: orders::order_key``). Otherwise, if the base table is
         known, keep ``id`` when a base-table column actually resolves to ``id``;
         failing that, use the first base-table column so the key references a real
         column. Fall back to ``id`` only when no better candidate exists.
         """
         for dim in dimensions:
             if dim.name.lower() == "id":
-                return dim.name
+                _table, column = _split_sql_identifier(dim.sql)
+                return column or dim.name
 
         if base_table:
             base_columns: list[str] = []

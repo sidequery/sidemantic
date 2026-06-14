@@ -1333,6 +1333,74 @@ def test_thoughtspot_nested_formula_ref_is_inlined_and_queryable():
     assert rows == [("Acme", 0.9)]
 
 
+def test_thoughtspot_formula_ref_prefers_tml_field_over_physical_name():
+    """A bare formula ref resolves to the TML field, not a colliding physical name.
+
+    Regression: physical column names were recorded first, so adding TML field
+    names could mark a valid reference ambiguous and drop it. With
+    `gross_revenue -> sales::amount` and `amount -> sales::cost`, the formula
+    `[amount] + [gross_revenue]` must resolve the bare `amount` to `sales__cost`
+    (the TML field), not be dropped because `amount` also names a physical column.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_name_collision.model.tml")
+    model = graph.models["sales_model"]
+
+    # The bare `amount` ref resolves to the TML field's backing column (cost),
+    # not the physical `amount` column.
+    assert model.get_metric("total").sql == "sales__cost + sales__amount"
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, cost DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 30.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["sales_model.total"], dimensions=["sales_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    # total = cost (30) + amount (100) = 130
+    assert rows == [("Acme", 130.0)]
+
+
+def test_thoughtspot_renamed_id_key_uses_backing_column():
+    """A semantic column named `id` backed by another column resolves to it.
+
+    Regression: `_infer_model_primary_key` returned the semantic name `id` even
+    when the column mapped to a different physical column (`column_id:
+    orders::order_key`). The derived projection then injected `orders.id AS id`,
+    failing because the base table only has `order_key`.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_renamed_id_key.model.tml")
+    model = graph.models["orders_model"]
+
+    # The primary key resolves to the backing physical column, not the name `id`.
+    assert model.primary_key == "order_key"
+    assert model.sql is not None
+    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.id AS id" not in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (order_key INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

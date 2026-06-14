@@ -35,7 +35,11 @@ class TestDistinctMeasures:
         m = graph.get_model("order_lines").get_metric("total_order_amount")
         assert m is not None
         assert m.type == "derived"
-        assert m.sql.startswith("SUM(DISTINCT ")
+        # A sql_distinct_key dedupes by the key entity, not the value: this uses a
+        # symmetric aggregate keyed on order_id rather than SUM(DISTINCT value),
+        # so two distinct orders with the same amount are both counted.
+        assert "SUM(DISTINCT" in m.sql
+        assert "HASH({model}.order_id)" in m.sql or "HASH(({model}.order_id))" in m.sql
         assert "{model}.order_amount" in m.sql
         # sql_distinct_key preserved in meta, resolved to row-level SQL.
         assert m.meta["distinct"] is True
@@ -44,7 +48,9 @@ class TestDistinctMeasures:
     def test_average_distinct(self, graph):
         m = graph.get_model("order_lines").get_metric("avg_order_amount")
         assert m.type == "derived"
-        assert m.sql.startswith("AVG(DISTINCT ")
+        # average_distinct keyed on order_id: symmetric keyed sum / distinct keys.
+        assert "SUM(DISTINCT" in m.sql
+        assert "COUNT(DISTINCT" in m.sql
         assert "{model}.order_amount" in m.sql
         assert "{model}.order_id" in m.meta["sql_distinct_key"]
 
@@ -89,13 +95,17 @@ class TestPostSqlMeasures:
     def test_percent_of_total(self, graph):
         m = graph.get_model("order_lines").get_metric("pct_of_total_line_amount")
         assert m.type == "derived"
-        assert m.sql == "total_line_amount / NULLIF(SUM(total_line_amount) OVER (), 0)"
+        # The base measure ref is qualified ({model}) and aggregated with its own
+        # aggregate (SUM) so the generator resolves it to the base measure's _raw
+        # column instead of an out-of-scope bare `total_line_amount` column.
+        assert m.sql == "SUM({model}.total_line_amount) / NULLIF(SUM(SUM({model}.total_line_amount)) OVER (), 0)"
         assert m.meta["table_calculation"] == "percent_of_total"
 
     def test_percent_of_previous(self, graph):
         m = graph.get_model("order_lines").get_metric("pct_of_previous_line_amount")
         assert m.type == "derived"
-        assert "LAG(total_line_amount) OVER ()" in m.sql
+        assert "SUM({model}.total_line_amount)" in m.sql
+        assert "LAG(SUM({model}.total_line_amount)) OVER ()" in m.sql
         assert m.meta["table_calculation"] == "percent_of_previous"
 
 
@@ -122,7 +132,9 @@ class TestDimensionGroupTimeframes:
 
     def test_fiscal_truncation_timeframes(self, graph):
         model = graph.get_model("events_calendar")
-        # fiscal_quarter / fiscal_year truncate to a calendar grain.
+        # fiscal_quarter / fiscal_year are time dimensions truncated at the
+        # matching grain; with the fixture's default offset (0) the SQL is the
+        # bare timestamp (offset shifting is exercised separately).
         assert model.get_dimension("occurred_fiscal_quarter").type == "time"
         assert model.get_dimension("occurred_fiscal_quarter").granularity == "quarter"
         assert model.get_dimension("occurred_fiscal_year").type == "time"
@@ -170,6 +182,102 @@ class TestDimensionGroupTimeframes:
     def test_raw_timeframe_skipped(self, graph):
         model = graph.get_model("events_calendar")
         assert model.get_dimension("occurred_raw") is None
+
+
+# =============================================================================
+# END-TO-END QUERYABILITY / CORRECTNESS (regression for P1 fixes)
+# =============================================================================
+
+
+class TestAdvancedMeasuresQueryable:
+    """The distinct-key and post-SQL measures must compile to SQL that both runs
+    and returns the correct fan-out-safe result."""
+
+    def _layer(self, graph):
+        from sidemantic import SemanticLayer
+
+        layer = SemanticLayer()
+        for model in graph.models.values():
+            layer.add_model(model)
+        return layer
+
+    def _orders_con(self):
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS analytics")
+        con.execute(
+            "CREATE TABLE analytics.order_lines (id INT, order_id INT, order_amount DOUBLE, line_amount DOUBLE)"
+        )
+        # order 1 fans out to two lines (order_amount=10 on both); order 2 also has
+        # order_amount=10. A correct keyed sum_distinct must return 20, not 10.
+        con.execute("INSERT INTO analytics.order_lines VALUES (1,1,10,4),(2,1,10,6),(3,2,10,5)")
+        return con
+
+    def test_sum_distinct_counts_each_key(self, graph):
+        con = self._orders_con()
+        layer = self._layer(graph)
+        sql = layer.compile(metrics=["order_lines.total_order_amount"])
+        (total,) = con.execute(sql).fetchone()
+        assert float(total) == 20.0
+
+    def test_average_distinct_is_per_key(self, graph):
+        con = self._orders_con()
+        layer = self._layer(graph)
+        sql = layer.compile(metrics=["order_lines.avg_order_amount"])
+        (avg,) = con.execute(sql).fetchone()
+        assert float(avg) == 10.0
+
+    def test_percent_of_total_resolves_and_runs(self, graph):
+        con = self._orders_con()
+        layer = self._layer(graph)
+        # line totals: order 1 = 4 + 6 = 10, order 2 = 5; total = 15.
+        sql = layer.compile(
+            metrics=["order_lines.pct_of_total_line_amount"],
+            dimensions=["order_lines.order_id"],
+        )
+        rows = dict(con.execute(sql).fetchall())
+        assert rows[1] == pytest.approx(10 / 15)
+        assert rows[2] == pytest.approx(5 / 15)
+
+    def test_fiscal_offset_buckets_by_fiscal_period(self):
+        import tempfile
+
+        import duckdb
+
+        lkml = """
+view: ev {
+  sql_table_name: analytics.ev ;;
+  dimension: id { type: number primary_key: yes sql: ${TABLE}.id ;; }
+  dimension_group: occurred {
+    type: time
+    timeframes: [fiscal_year]
+    fiscal_month_offset: 3
+    sql: ${TABLE}.occurred_at ;;
+  }
+  measure: count { type: count }
+}
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".lkml", delete=False) as f:
+            f.write(lkml)
+            path = f.name
+        graph = LookMLAdapter().parse(path)
+        # Offset shifts the timestamp so the calendar truncation lands on fiscal
+        # boundaries rather than ignoring the offset.
+        assert "INTERVAL (3) MONTH" in graph.get_model("ev").get_dimension("occurred_fiscal_year").sql
+
+        layer = self._layer(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS analytics")
+        con.execute("CREATE TABLE analytics.ev (id INT, occurred_at DATE)")
+        # April fiscal-year start: 2024-03-31 is the prior fiscal year; 2024-04-01
+        # and 2024-06-15 are the next one.
+        con.execute(
+            "INSERT INTO analytics.ev VALUES (1, DATE '2024-03-31'),(2, DATE '2024-04-01'),(3, DATE '2024-06-15')"
+        )
+        sql = layer.compile(metrics=["ev.count"], dimensions=["ev.occurred_fiscal_year"])
+        counts = sorted(c for _, c in con.execute(sql).fetchall())
+        assert counts == [1, 2]
 
 
 if __name__ == "__main__":

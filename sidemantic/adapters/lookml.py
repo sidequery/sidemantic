@@ -373,10 +373,28 @@ class LookMLAdapter(BaseAdapter):
         # Build a set of dimension names for measure reference resolution
         dimension_names = {d.name for d in dimensions}
 
+        # Collect measure names + their base aggregation up front so post-SQL
+        # measures (running_total / percent_of_total / ...) can recognize a
+        # ${ref} as a base measure, qualify it with {model} (which the generator
+        # resolves to the measure's _raw column) and wrap it in the base
+        # measure's own aggregate function.
+        measure_names: set[str] = set()
+        measure_agg_lookup: dict[str, str] = {}
+        for m in view_def.get("measures") or []:
+            m_name = m.get("name")
+            if not m_name:
+                continue
+            measure_names.add(m_name)
+            agg_func = self._SQL_AGG_FUNC.get(m.get("type", "count"))
+            if agg_func:
+                measure_agg_lookup[m_name] = agg_func
+
         # Parse measures with dimension SQL lookup for reference resolution
         measures = []
         for measure_def in view_def.get("measures") or []:
-            measure = self._parse_measure(measure_def, dimension_names, resolved_dimension_sql)
+            measure = self._parse_measure(
+                measure_def, dimension_names, resolved_dimension_sql, measure_names, measure_agg_lookup
+            )
             if measure:
                 measures.append(measure)
 
@@ -573,9 +591,22 @@ class LookMLAdapter(BaseAdapter):
         "month": "month",
         "quarter": "quarter",
         "year": "year",
-        # Fiscal truncations align to the corresponding calendar grain.
-        "fiscal_quarter": "quarter",
-        "fiscal_year": "year",
+        # NOTE: fiscal_quarter / fiscal_year are intentionally NOT mapped here.
+        # A plain calendar truncation ignores fiscal_month_offset and buckets
+        # non-calendar fiscal years incorrectly, so they are handled as offset
+        # aware truncations in _timeframe_part_sql instead.
+    }
+
+    # SQL aggregate function for a base measure type, used by post-SQL measures
+    # (percent_of_total / percent_of_previous) to aggregate the referenced base
+    # measure before applying the window calculation.
+    _SQL_AGG_FUNC = {
+        "sum": "SUM",
+        "count": "COUNT",
+        "average": "AVG",
+        "min": "MIN",
+        "max": "MAX",
+        "median": "MEDIAN",
     }
 
     def _build_timeframe_dimension(
@@ -614,6 +645,23 @@ class LookMLAdapter(BaseAdapter):
                 description=description,
             )
 
+        # Fiscal quarter/year truncations honoring fiscal_month_offset. The base
+        # timestamp is shifted back by the offset so the generator's calendar
+        # DATE_TRUNC at the matching grain buckets dates into the correct fiscal
+        # periods (each distinct fiscal quarter/year maps to a distinct value),
+        # instead of ignoring the offset and grouping by calendar boundaries.
+        if timeframe in ("fiscal_quarter", "fiscal_year"):
+            fiscal_offset = dim_group_def.get("fiscal_month_offset")
+            shifted_sql, grain = self._fiscal_shifted_sql(timeframe, base_sql, fiscal_offset)
+            return Dimension(
+                name=name,
+                type="time",
+                sql=shifted_sql,
+                granularity=grain,
+                label=label,
+                description=description,
+            )
+
         # Non-standard / fiscal "extracted part" timeframes. These return a
         # number or a string, not a truncated timestamp, so we emit a
         # numeric/categorical dimension with an EXTRACT/strftime-style SQL.
@@ -628,6 +676,28 @@ class LookMLAdapter(BaseAdapter):
             label=label,
             description=description,
         )
+
+    @staticmethod
+    def _fiscal_shifted_sql(timeframe: str, base_sql: str | None, fiscal_offset=None) -> tuple[str, str]:
+        """Build offset-shifted SQL + calendar grain for a fiscal timeframe.
+
+        ``fiscal_month_offset`` is the number of months the fiscal year starts
+        after January (e.g. an April fiscal-year start is offset 3). The base
+        timestamp is shifted back by the offset so that a subsequent calendar
+        DATE_TRUNC at the returned grain (applied by the SQL generator) lands on
+        fiscal-period boundaries. Offset 0 leaves the timestamp unchanged.
+
+        Returns ``(sql, grain)`` where grain is ``quarter`` or ``year``.
+        """
+        expr = base_sql if base_sql is not None else "{model}"
+        grain = "quarter" if timeframe == "fiscal_quarter" else "year"
+        try:
+            offset = int(fiscal_offset) if fiscal_offset is not None else 0
+        except (TypeError, ValueError):
+            offset = 0
+        if offset == 0:
+            return expr, grain
+        return f"(({expr}) - INTERVAL ({offset}) MONTH)", grain
 
     @staticmethod
     def _timeframe_part_sql(timeframe: str, base_sql: str | None, fiscal_offset=None):
@@ -783,6 +853,8 @@ class LookMLAdapter(BaseAdapter):
         measure_def: dict,
         dimension_names: set[str] | None = None,
         dimension_sql_lookup: dict[str, str] | None = None,
+        measure_names: set[str] | None = None,
+        measure_agg_lookup: dict[str, str] | None = None,
     ) -> Metric | None:
         """Parse LookML measure.
 
@@ -790,6 +862,8 @@ class LookMLAdapter(BaseAdapter):
             measure_def: Metric definition
             dimension_names: Set of dimension names in this view (for reference resolution)
             dimension_sql_lookup: Dict mapping dimension names to their resolved SQL
+            measure_names: Set of measure names in this view (for base-measure resolution)
+            measure_agg_lookup: Dict mapping base measure names to their SQL aggregate function
 
         Returns:
             Metric instance or None
@@ -895,7 +969,14 @@ class LookMLAdapter(BaseAdapter):
         # another numeric measure and compute a column-wise calculation.
         # Looker: running_total, percent_of_total, percent_of_previous.
         if measure_type in ("running_total", "percent_of_total", "percent_of_previous"):
-            return self._parse_post_sql_measure(name, measure_type, measure_def, dimension_sql_lookup)
+            return self._parse_post_sql_measure(
+                name,
+                measure_type,
+                measure_def,
+                dimension_sql_lookup,
+                measure_names or set(),
+                measure_agg_lookup or {},
+            )
 
         # Map LookML measure types to sidemantic aggregation types
         # Only include types supported by Metric.agg: sum, count, count_distinct, avg, min, max, median
@@ -1058,11 +1139,20 @@ class LookMLAdapter(BaseAdapter):
             sql_distinct_key = sql_distinct_key.replace("${TABLE}", "{model}")
             sql_distinct_key = self._resolve_dimension_references(sql_distinct_key, dimension_sql_lookup)
 
-        if measure_type == "sum_distinct":
+        # With a sql_distinct_key, Looker dedupes by the *key entity*, not by the
+        # aggregated value: two distinct orders that both have amount 10 must
+        # contribute 20, not collapse to 10. `SUM(DISTINCT value)` deduplicates
+        # by value and corrupts exactly that case, so sum/average distinct keyed
+        # measures use a symmetric aggregate (HASH(key)-based) which is the
+        # fan-out-safe form for keyed deduplication.
+        if sql_distinct_key and measure_type in ("sum_distinct", "average_distinct"):
+            agg_sql = self._keyed_distinct_aggregate_sql(measure_type, sql, sql_distinct_key)
+        elif measure_type == "sum_distinct":
             agg_sql = f"SUM(DISTINCT {sql})"
         elif measure_type == "average_distinct":
             agg_sql = f"AVG(DISTINCT {sql})"
         elif measure_type == "median_distinct":
+            # No fan-out-safe inline form for keyed median; dedupe by value.
             agg_sql = f"MEDIAN(DISTINCT {sql})"
         else:  # percentile_distinct
             percentile_value = measure_def.get("percentile", 50)
@@ -1084,13 +1174,49 @@ class LookMLAdapter(BaseAdapter):
             meta=self._measure_meta(measure_def, extra),
         )
 
-    def _resolve_measure_reference_sql(self, sql: str, dimension_sql_lookup: dict[str, str]) -> str:
+    @staticmethod
+    def _keyed_distinct_aggregate_sql(measure_type: str, value_sql: str, key_sql: str) -> str:
+        """Build a fan-out-safe sum/avg over values deduplicated by a key entity.
+
+        Implements LookML ``sum_distinct`` / ``average_distinct`` with a
+        ``sql_distinct_key`` using a symmetric aggregate: each distinct key
+        contributes its value exactly once even when joins fan rows out. The
+        HASH(key) term is cast to DECIMAL alongside the value so large hash
+        offsets do not lose precision through float arithmetic (which would
+        otherwise corrupt the result). ``{model}`` placeholders are preserved
+        for the SQL generator.
+        """
+        # HASH(key) offset, cast to DECIMAL so summing alongside the value stays
+        # exact; the offset cancels out in the subtraction, leaving the per-key
+        # value summed once.
+        offset = f"(HASH({key_sql})::HUGEINT * (1::HUGEINT << 40))::DECIMAL(38, 6)"
+        value = f"({value_sql})::DECIMAL(38, 6)"
+        keyed_sum = f"(SUM(DISTINCT {offset} + {value}) - SUM(DISTINCT {offset}))"
+        if measure_type == "sum_distinct":
+            return keyed_sum
+        # average_distinct: keyed sum divided by the number of distinct keys.
+        return f"({keyed_sum} / NULLIF(COUNT(DISTINCT {key_sql}), 0))"
+
+    def _resolve_measure_reference_sql(
+        self,
+        sql: str,
+        dimension_sql_lookup: dict[str, str],
+        measure_names: set[str] | None = None,
+        measure_agg_lookup: dict[str, str] | None = None,
+    ) -> str:
         """Resolve ${ref} in a measure-referencing SQL (e.g. running_total sql).
 
-        ${dimension} references resolve to the dimension's SQL; ${measure}
-        references resolve to the bare measure name (sidemantic resolves the
-        dependency by name).
+        ${dimension} references resolve to the dimension's SQL. ${measure}
+        references resolve to ``{model}.<measure>``; when ``measure_agg_lookup``
+        provides the base measure's aggregate function the reference becomes
+        ``<AGG>({model}.<measure>)`` so the value is aggregated per group before
+        the window calculation. The generator's inline-aggregate path then
+        rewrites ``{model}.<measure>`` to the base measure's ``<measure>_raw``
+        CTE column. A bare ``<measure>`` would reference a column the model CTE
+        never exposes (only ``<measure>_raw`` exists).
         """
+        measure_names = measure_names or set()
+        measure_agg_lookup = measure_agg_lookup or {}
         sql = sql.replace("${TABLE}", "{model}")
 
         def _resolve(match: re.Match) -> str:
@@ -1099,6 +1225,11 @@ class LookMLAdapter(BaseAdapter):
                 return match.group(0)
             if ref_name in dimension_sql_lookup:
                 return f"({dimension_sql_lookup[ref_name]})"
+            if ref_name in measure_names:
+                agg_func = measure_agg_lookup.get(ref_name)
+                if agg_func:
+                    return f"{agg_func}({{model}}.{ref_name})"
+                return f"{{model}}.{ref_name}"
             return ref_name
 
         return re.sub(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _resolve, sql)
@@ -1109,6 +1240,8 @@ class LookMLAdapter(BaseAdapter):
         measure_type: str,
         measure_def: dict,
         dimension_sql_lookup: dict[str, str],
+        measure_names: set[str] | None = None,
+        measure_agg_lookup: dict[str, str] | None = None,
     ) -> Metric | None:
         """Parse a post-SQL / table-calculation measure.
 
@@ -1119,11 +1252,17 @@ class LookMLAdapter(BaseAdapter):
           - percent_of_total    -> derived measure: base / SUM(base) OVER ()
           - percent_of_previous -> derived measure: base / LAG(base) OVER ()
 
+        The base measure reference is aggregated with its own aggregate function
+        (via ``measure_agg_lookup``) so percent_of_total / percent_of_previous
+        operate on the grouped measure value rather than a raw, ungrouped column.
+
         Args:
             name: Measure name.
             measure_type: running_total / percent_of_total / percent_of_previous.
             measure_def: Raw measure definition.
             dimension_sql_lookup: Resolved dimension SQL for ${ref} resolution.
+            measure_names: Set of base measure names for ${ref} qualification.
+            measure_agg_lookup: Base measure name -> SQL aggregate function.
 
         Returns:
             A Metric, or None if the referenced base measure SQL is missing.
@@ -1132,7 +1271,29 @@ class LookMLAdapter(BaseAdapter):
         if not sql:
             # Looker requires sql for these; without it there is nothing to compute.
             return None
-        base = self._resolve_measure_reference_sql(sql, dimension_sql_lookup).strip()
+        measure_names = measure_names or set()
+        measure_agg_lookup = measure_agg_lookup or {}
+
+        if measure_type == "running_total":
+            # A running_total maps to a cumulative metric whose `sql` is the base
+            # measure; sidemantic resolves that dependency by bare measure name,
+            # so leave measure refs unqualified here.
+            base = self._resolve_measure_reference_sql(sql, dimension_sql_lookup).strip()
+            return Metric(
+                name=name,
+                type="cumulative",
+                sql=base,
+                meta=self._measure_meta(measure_def, {"table_calculation": "running_total"}),
+                description=measure_def.get("description"),
+                label=measure_def.get("label"),
+                value_format_name=measure_def.get("value_format_name"),
+                format=measure_def.get("value_format"),
+            )
+
+        # percent_of_total / percent_of_previous build window aggregates inline,
+        # so qualify base measure refs with {model} (for the generator's _raw
+        # column rewrite) and wrap them in the base measure's aggregate function.
+        base = self._resolve_measure_reference_sql(sql, dimension_sql_lookup, measure_names, measure_agg_lookup).strip()
 
         common = {
             "description": measure_def.get("description"),
@@ -1140,15 +1301,6 @@ class LookMLAdapter(BaseAdapter):
             "value_format_name": measure_def.get("value_format_name"),
             "format": measure_def.get("value_format"),
         }
-
-        if measure_type == "running_total":
-            return Metric(
-                name=name,
-                type="cumulative",
-                sql=base,
-                meta=self._measure_meta(measure_def, {"table_calculation": "running_total"}),
-                **common,
-            )
 
         if measure_type == "percent_of_total":
             calc_sql = f"{base} / NULLIF(SUM({base}) OVER (), 0)"

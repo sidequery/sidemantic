@@ -48,9 +48,11 @@ def validate_directory(directory: str | Path) -> ValidationReport:
             if rel.name not in layer.graph.models:
                 report.errors.append(f"Model '{model_name}' has relationship to '{rel.name}' which doesn't exist")
 
-        # Hex ``view`` resources reference a base model by name; a missing or
-        # misspelled base would otherwise pass silently because views are exempt
-        # from the physical-source check in ``validate_model``.
+        # Hex ``view`` resources reference a base model by name and carry their
+        # own ``contents``. Both are required by the Hex spec, but views are
+        # exempt from the physical-source check in ``validate_model``, so a
+        # missing/misspelled base or absent contents would otherwise pass
+        # silently on the CLI validation path.
         model_meta = getattr(model, "meta", None) or {}
         if model_meta.get("hex_resource_type") == "view":
             base = model_meta.get("base")
@@ -58,6 +60,8 @@ def validate_directory(directory: str | Path) -> ValidationReport:
                 report.errors.append(f"Hex view '{model_name}' must have a 'base' model reference defined")
             elif base not in layer.graph.models:
                 report.errors.append(f"Hex view '{model_name}' references base model '{base}' which doesn't exist")
+            if not model_meta.get("contents"):
+                report.errors.append(f"Hex view '{model_name}' must have non-empty 'contents' defined")
 
     for metric in layer.graph.metrics.values():
         report.errors.extend(validate_metric(metric, layer.graph))

@@ -409,6 +409,28 @@ contents:
     assert any("subscriptionz" in err and "doesn't exist" in err for err in report.errors)
 
 
+def test_validate_directory_flags_hex_view_without_contents(tmp_path):
+    """A Hex view with a valid `base` but no `contents` is reported as an error.
+
+    Hex views require `contents`; without this check a view that omits it would
+    report Validation Passed because views are exempt from the source check.
+    """
+    from sidemantic.validation_runner import validate_directory
+
+    (tmp_path / "project.yml").write_text(
+        _HEX_VIEW_BASE_MODEL
+        + """
+id: revenue_overview
+type: view
+base: subscriptions
+"""
+    )
+
+    report = validate_directory(tmp_path)
+    assert not report.passed
+    assert any("contents" in err and "revenue_overview" in err for err in report.errors)
+
+
 def test_validate_directory_accepts_valid_hex_view_base(tmp_path):
     """A Hex view with a `base` naming a loaded model emits no view errors."""
     from sidemantic.validation_runner import validate_directory

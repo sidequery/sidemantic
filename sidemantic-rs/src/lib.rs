@@ -34,6 +34,7 @@
 //! println!("{}", sql);
 //! ```
 
+pub mod adapters;
 pub mod config;
 pub mod core;
 pub mod db;
@@ -47,6 +48,7 @@ pub mod sql;
 pub mod wasm;
 
 // Re-export commonly used types
+pub use adapters::{Adapter, CubeAdapter, OsiAdapter, ParsedDocument};
 pub use config::{
     load_from_directory, load_from_directory_with_metadata, load_from_file, load_from_string,
 };

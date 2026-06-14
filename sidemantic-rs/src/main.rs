@@ -24,7 +24,8 @@ use serde_json::Value as JsonValue;
 use sidemantic::{
     build_preaggregation_refresh_statements, extract_preaggregation_patterns,
     generate_preaggregation_definition, recommend_preaggregation_patterns,
-    summarize_preaggregation_patterns, SemanticQuery, SidemanticError, SidemanticRuntime,
+    summarize_preaggregation_patterns, Adapter, OsiAdapter, SemanticQuery, SidemanticError,
+    SidemanticRuntime,
 };
 #[cfg(feature = "adbc-exec")]
 use sidemantic::{execute_with_adbc, AdbcExecutionRequest, AdbcValue};
@@ -130,6 +131,7 @@ fn run() -> CliResult<()> {
         "validate" => validate_command(rest),
         "migrator" => migrator_command(rest),
         "info" => info_command(rest),
+        "convert" => convert_command(rest),
         "query" => query_command(rest),
         "run" => run_command(rest),
         "preagg" => preagg_command(rest),
@@ -156,6 +158,7 @@ fn print_help() {
            validate  Validate model/query references\n\
            migrator  Analyze SQL coverage and bootstrap model files\n\
            info      Show semantic layer model summary\n\
+           convert   Export a semantic graph to OSI YAML\n\
            query     Rewrite SQL and optionally execute via ADBC\n\
            run       Compile and execute query via ADBC\n\
            preagg    Pre-aggregation helpers (materialize/recommend/refresh)\n\
@@ -174,7 +177,7 @@ fn print_help() {
            sidemantic preagg refresh --models ./models --model orders --name daily_revenue --mode full\n\
           sidemantic serve --models ./models --bind 127.0.0.1:5544\n\
          \n\
-         Model loading: Rust --models accepts native Sidemantic YAML/SQL and Cube YAML only.\n\
+         Model loading: Rust --models accepts native Sidemantic YAML/SQL, Cube YAML, and OSI YAML.\n\
          Convert LookML, MetricFlow, Hex, Rill, Malloy, and other external formats with the Python CLI/API first.\n\
          \n\
          Use '<command> --help' for command-specific usage."
@@ -951,6 +954,51 @@ fn info_command(args: &[String]) -> CliResult<()> {
             println!("  Connected to: {connected}");
         }
         println!();
+    }
+
+    Ok(())
+}
+
+fn convert_command(args: &[String]) -> CliResult<()> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!(
+            "Usage: sidemantic convert --models <path> [--to osi] [--output <file>] [--dialects ANSI_SQL,SNOWFLAKE,DATABRICKS]"
+        );
+        return Ok(());
+    }
+
+    let (options, positionals) = parse_options(args)?;
+    expect_no_positionals(&positionals, "convert")?;
+
+    let models = require_option(&options, "--models")?;
+    let to = option_value(&options, "--to").unwrap_or_else(|| "osi".to_string());
+    if !to.eq_ignore_ascii_case("osi") {
+        return Err(format!(
+            "unsupported --to format '{to}'; supported formats: osi"
+        ));
+    }
+
+    let dialects: Vec<String> = match option_value(&options, "--dialects") {
+        Some(value) => value
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect(),
+        None => vec!["ANSI_SQL".to_string()],
+    };
+
+    let runtime = load_runtime(&models)?;
+    let adapter = OsiAdapter::new().with_dialects(dialects);
+    let yaml = adapter
+        .export_string(runtime.graph())
+        .map_err(|e| format!("OSI export failed: {e}"))?;
+
+    match option_value(&options, "--output") {
+        Some(path) => {
+            fs::write(&path, yaml).map_err(|e| format!("failed to write '{path}': {e}"))?;
+            println!("Wrote OSI semantic model to {path}");
+        }
+        None => print!("{yaml}"),
     }
 
     Ok(())

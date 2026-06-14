@@ -27,6 +27,11 @@ export interface CreateRuntimeOptions {
   wasmUrl?: string | URL | Request | Response | BufferSource | WebAssembly.Module;
 }
 
+/**
+ * `models` in every method is a Sidemantic YAML model-definition string.
+ * Native SQL model definitions load via the raw `wasm_load_graph_with_sql`
+ * export; compile/validate/rewrite operate on YAML definitions.
+ */
 export interface SidemanticRuntime {
   /** Compile a query into SQL for the given model set. */
   compile(models: string, query: SidemanticQueryInput): string;

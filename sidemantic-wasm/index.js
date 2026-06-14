@@ -36,7 +36,9 @@ export function initSidemantic(options = {}) {
 
 /**
  * Initialize wasm and return a small typed runtime around the core operations.
- * `models` is a Sidemantic YAML (or native SQL) definition string.
+ * `models` is a Sidemantic YAML model-definition string. (Native SQL model
+ * definitions can be loaded via the raw `wasm_load_graph_with_sql` export, but
+ * compile/validate/rewrite operate on YAML definitions.)
  */
 export async function createSidemanticRuntime(options = {}) {
   await initSidemantic(options);

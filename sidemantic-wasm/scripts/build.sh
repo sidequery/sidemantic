@@ -44,17 +44,13 @@ wasm-bindgen \
   --out-dir "$OUT_DIR" \
   "$WASM_PATH"
 
-# Shrink the bindgen output further with wasm-opt (binaryen) when available.
-# Optional: a missing wasm-opt only forgoes the extra size reduction.
-# `-all` enables every wasm feature so wasm-opt accepts the features rustc
-# emits (e.g. bulk-memory's memory.copy) across binaryen versions, instead of
-# rejecting the module or erroring on a version-specific feature flag.
-if [[ "$PROFILE" == "release" ]] && command -v wasm-opt >/dev/null 2>&1; then
-  wasm-opt -Oz -all \
-    "$OUT_DIR/sidemantic_bg.wasm" \
-    -o "$OUT_DIR/sidemantic_bg.wasm.opt"
-  mv "$OUT_DIR/sidemantic_bg.wasm.opt" "$OUT_DIR/sidemantic_bg.wasm"
-fi
+# No wasm-opt pass. The size-optimized wasm-release profile already does the
+# heavy lifting (~18 MB debug -> ~5.7 MB). wasm-opt -Oz trims a little more raw
+# size but *increases* the brotli transfer size (what browsers actually
+# download), and its output varies by binaryen version (older binaryen + -all
+# emitted a module some wasm runtimes could not parse). For a published browser
+# bundle the plain wasm-bindgen output is smaller over the wire and avoids that
+# fragility.
 
 cat > "$OUT_DIR/manifest.json" <<JSON
 {

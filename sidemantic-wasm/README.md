@@ -52,6 +52,30 @@ const sql = sidemantic.compile(models, {
 
 A query can be a structured payload (`SidemanticQuery`) or a raw YAML/JSON string.
 
+### Querying with Sidemantic SQL
+
+If you'd rather write SQL than build a structured payload, `rewrite` takes a
+Sidemantic SQL query — `SELECT`ing metrics and dimensions by qualified name —
+and expands it into executable SQL:
+
+```js
+const sidemantic = await createSidemanticRuntime();
+
+const sql = sidemantic.rewrite(
+  models,
+  "SELECT orders.revenue AS rev, orders.status FROM orders ORDER BY rev DESC LIMIT 5",
+);
+// =>
+// WITH orders_cte AS (SELECT *, amount AS revenue_raw FROM orders)
+// SELECT orders_cte.status AS status, SUM(orders_cte.revenue_raw) AS revenue
+// FROM orders_cte GROUP BY 1 ORDER BY revenue DESC LIMIT 5
+```
+
+Aliases, `ORDER BY` (by alias or position), `LIMIT`, and aggregate expressions
+such as `SUM(orders.amount) / COUNT(*)` are supported, as are semantic `SELECT`s
+nested in CTEs and subqueries. WASM rewrite parity vs. the Python engine is
+partial — test the query shapes you depend on.
+
 ## API
 
 | Method | Returns | Description |
@@ -60,7 +84,7 @@ A query can be a structured payload (`SidemanticQuery`) or a raw YAML/JSON strin
 | `initSidemantic(options?)` | `Promise` | Initialize wasm only (idempotent). |
 | `runtime.compile(models, query)` | `string` | Compile a query to SQL. |
 | `runtime.validate(models, query)` | `string[]` | Validation errors; `[]` when valid. |
-| `runtime.rewrite(models, sql)` | `string` | Rewrite raw SQL against the layer. |
+| `runtime.rewrite(models, sql)` | `string` | Rewrite a Sidemantic SQL query into executable SQL. |
 | `runtime.loadGraph(models)` | `object` | Parse models into a semantic graph. |
 | `runtime.generateCatalogMetadata(models, schema?)` | `string` | Catalog metadata for the model set. |
 
@@ -71,13 +95,13 @@ The full raw `wasm_*` function surface is also re-exported from the package root
 ## Scope and limitations
 
 - **SQL generation only** — no query execution. Bring your own engine (DuckDB-WASM, a backend, etc.).
-- **Native Sidemantic YAML/SQL projects.** Importing external formats (Cube, LookML, dbt, …) stays in the Python package.
+- **Model definitions are passed as YAML.** `compile` / `validate` / `rewrite` operate on YAML definitions; native SQL model definitions can be loaded via the raw `wasm_load_graph_with_sql` export. Importing external formats (Cube, LookML, dbt, …) stays in the Python package.
 - **Feature parity is partial** vs. the Python layer; see the runtime feature matrix in the repo.
-- **Size**: the binary is ~5 MB raw (~1.2 MB brotli). Serve it compressed and lazy-load alongside DuckDB-WASM.
+- **Size**: the binary is ~5.7 MB raw (~1.1 MB brotli). Serve it compressed and lazy-load alongside DuckDB-WASM.
 
 ## Building from source
 
-The bundle is generated from the `sidemantic-rs` crate. Requires the Rust `wasm32-unknown-unknown` target, a `wasm-bindgen-cli` matching the crate's `wasm-bindgen` version, and (optionally) `wasm-opt` from binaryen.
+The bundle is generated from the `sidemantic-rs` crate. Requires the Rust `wasm32-unknown-unknown` target and a `wasm-bindgen-cli` matching the crate's `wasm-bindgen` version.
 
 ```bash
 bun run build   # runs scripts/build.sh -> wasm/

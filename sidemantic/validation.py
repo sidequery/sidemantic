@@ -122,6 +122,11 @@ def validate_model(model: "Model") -> list[str]:
             continue
         if measure.agg is None and measure.sql and sql_has_aggregate(measure.sql):
             continue
+        # Opaque complete expressions (e.g. imported Cube/Tesseract
+        # number_agg/time/string/boolean measures) preserve their sql verbatim
+        # with agg=None and are valid even when the sql is a plain column.
+        if measure.agg is None and getattr(measure, "sql_is_complete", False) and measure.sql:
+            continue
         if measure.agg not in valid_aggs:
             valid_aggs_str = ", ".join(sorted(valid_aggs))
             errors.append(

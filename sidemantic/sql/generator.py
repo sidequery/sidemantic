@@ -1473,6 +1473,9 @@ class SQLGenerator:
         extra_metric_sql_columns: set[str] = set()
 
         def collect_sql_columns_for_model(sql_expr: str) -> None:
+            # Strip the {model} placeholder before parsing so it is not mistaken for
+            # a real column named "model" (e.g. PERCENTILE_CONT(... {model}.amount)).
+            sql_expr = sql_expr.replace("{model}.", "").replace("{model}", "")
             try:
                 parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
                 for col in parsed.find_all(exp.Column):
@@ -1519,6 +1522,12 @@ class SQLGenerator:
                     return
                 measure_name = metric_ref.split(".", 1)[1]
                 measure = resolved_metric
+                if getattr(measure, "sql_is_complete", False) and measure.sql:
+                    # Opaque complete expression - project the raw columns it
+                    # references (placeholder already stripped) without dependency
+                    # expansion, regardless of whether the sql is an aggregate.
+                    collect_sql_columns_for_model(measure.sql)
+                    return
                 if (
                     not measure.type
                     and not measure.agg
@@ -1544,6 +1553,10 @@ class SQLGenerator:
                 # First check if it's a measure on the current model
                 measure = model.get_metric(metric_ref)
                 if measure:
+                    if getattr(measure, "sql_is_complete", False) and measure.sql:
+                        # Opaque complete expression - see qualified branch above.
+                        collect_sql_columns_for_model(measure.sql)
+                        return
                     if (
                         not measure.type
                         and not measure.agg
@@ -2814,6 +2827,26 @@ class SQLGenerator:
                 f"Metric '{metric.name}' contains DAX expression but has no SQL translation. "
                 "DAX lowering is not available in this build."
             )
+
+        # Opaque complete expression (e.g. imported Cube/Tesseract
+        # number_agg/time/string/boolean measures). Emit the sql verbatim with the
+        # {model} placeholder resolved to the model's CTE alias - never parse it for
+        # dependencies. Handles both aggregate sql (MAX({model}.created_at)) and plain
+        # column sql (status), which would otherwise be mis-resolved as metric refs.
+        if getattr(metric, "sql_is_complete", False) and metric.sql:
+            metric_model_name = model_context
+            if not metric_model_name:
+                for m_name, m in self.graph.models.items():
+                    if any(metric is mm for mm in m.metrics):
+                        metric_model_name = m_name
+                        break
+            formula = metric.sql
+            if metric_model_name:
+                cte_alias = self._quote_identifier(self._cte_name(metric_model_name))
+                formula = formula.replace("{model}", cte_alias)
+            else:
+                formula = formula.replace("{model}.", "")
+            return self._rewrite_model_refs_to_ctes(formula)
 
         if metric.type == "ratio":
             # numerator / NULLIF(denominator, 0)

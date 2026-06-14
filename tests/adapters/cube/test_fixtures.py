@@ -834,6 +834,81 @@ class TestTesseractFeatures:
         assert total_agg.meta.get("cube_type") == "number_agg"
         assert total_agg.sql == "SUM({model}.amount)"
 
+    def test_complete_sql_measures_have_no_dependencies(self, graph):
+        """sql_is_complete measures are opaque - never dependency-expanded.
+
+        A plain-column measure like ``last_status`` (sql: status) must NOT treat
+        ``status`` as a metric reference, otherwise compilation raises
+        "Metric status not found".
+        """
+        orders = graph.get_model("orders")
+        for mname in ("last_status", "last_order_time", "amount_p95", "latest_order_at"):
+            m = orders.get_metric(mname)
+            assert m.sql_is_complete is True, mname
+            assert m.get_dependencies(graph, "orders") == set(), mname
+
+    def test_aggregate_complete_measures_queryable(self, graph):
+        """number_agg / aggregate string|time|boolean measures compile and execute.
+
+        Regression: the {model} placeholder must not be collected as a real column
+        named "model" in the CTE (which produced "SELECT amount AS amount, model AS
+        model FROM public.orders" and failed on tables without a model column).
+        """
+        import duckdb
+
+        from sidemantic import SemanticLayer
+        from sidemantic.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',100.0,TIMESTAMP '2024-01-01'),"
+            "(2,'pending',50.0,TIMESTAMP '2024-02-01'),"
+            "(3,'completed',200.0,TIMESTAMP '2024-03-01')) "
+            "t(id,status,amount,created_at)"
+        )
+
+        for mref in ("orders.amount_p95", "orders.latest_order_at", "orders.any_completed", "orders.amount_total_agg"):
+            sql = gen.generate(metrics=[mref]).split("-- sidemantic")[0]
+            assert "model AS model" not in sql, mref
+            # Must execute against a real table that has no "model" column.
+            con.execute(sql).fetchall()
+
+        # Also exercise the public SemanticLayer.compile path used by the CLI.
+        layer = SemanticLayer()
+        layer.add_model(graph.get_model("orders"))
+        layer.compile(metrics=["orders.amount_total_agg"])
+
+    def test_plain_non_numeric_measures_queryable(self, graph):
+        """type: string / time measures with plain-column sql are queryable.
+
+        Regression: these import as type=None, agg=None, sql_is_complete=True and
+        previously raised "Metric status not found" during dependency expansion.
+        """
+        import duckdb
+
+        from sidemantic.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',TIMESTAMP '2024-01-01'),"
+            "(2,'pending',TIMESTAMP '2024-02-01')) t(id,status,created_at)"
+        )
+
+        # Ungrouped: plain column projected directly.
+        for mref in ("orders.last_status", "orders.last_order_time"):
+            sql = gen.generate(metrics=[mref], ungrouped=True).split("-- sidemantic")[0]
+            con.execute(sql).fetchall()
+
+        # Grouped by the same dimension also compiles and executes.
+        sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.status"]).split("-- sidemantic")[0]
+        con.execute(sql).fetchall()
+
     def test_measure_mask_and_currency(self, graph):
         orders = graph.get_model("orders")
         total = orders.get_metric("total_amount")

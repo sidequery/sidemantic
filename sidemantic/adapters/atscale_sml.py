@@ -153,7 +153,7 @@ def _parse_custom_quantiles(value: Any) -> list[float]:
 
 
 _PERCENTILE_CONT_RE = re.compile(
-    r"PERCENTILE_CONT\s*\(.*?\)\s*WITHIN\s+GROUP\s*\(\s*ORDER\s+BY\s+(?P<column>.+?)\s*\)\s*$",
+    r"PERCENTILE_CONT\s*\(\s*(?P<quantile>[0-9.]+)\s*\)\s*WITHIN\s+GROUP\s*\(\s*ORDER\s+BY\s+(?P<column>.+?)\s*\)\s*$",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -166,6 +166,22 @@ def _percentile_column_from_sql(sql: str | None) -> str | None:
     if not match:
         return None
     return match.group("column").strip() or None
+
+
+def _percentile_quantile_from_sql(sql: str | None) -> float | None:
+    """Extract the quantile from a PERCENTILE_CONT(q) WITHIN GROUP (ORDER BY col) expression."""
+    if not sql:
+        return None
+    match = _PERCENTILE_CONT_RE.search(sql.strip())
+    if not match:
+        return None
+    try:
+        quantile = float(match.group("quantile"))
+    except (TypeError, ValueError):
+        return None
+    if 0 < quantile < 1:
+        return quantile
+    return None
 
 
 def _data_type_to_granularity(data_type: str | None) -> str | None:
@@ -1315,23 +1331,30 @@ class AtScaleSMLAdapter(BaseAdapter):
         return metric_def
 
     def _export_percentile_metric(self, metric: Metric, model: Model) -> dict[str, Any] | None:
-        """Export an imported custom-quantile percentile metric as a percentile metric definition.
+        """Export an imported percentile metric as a percentile metric definition.
 
-        Imported SML v1.5 percentiles (e.g. ``custom_quantiles: [0.75]``) parse to derived metrics
-        with ``agg=None`` and a ``PERCENTILE_CONT(...) WITHIN GROUP (ORDER BY col)`` expression. Without
-        this, ``_export_metric`` would emit a ``metric_calc`` and drop ``custom_quantiles``/``compression``.
+        Imported SML v1.5 percentiles parse to derived metrics with ``agg=None`` and a
+        ``PERCENTILE_CONT(q) WITHIN GROUP (ORDER BY col)`` expression. Both custom-quantile
+        percentiles (``custom_quantiles: [0.75]``) and named percentiles (``named_quantiles: p90``,
+        which carry ``compression`` but no ``custom_quantiles``) are handled here. Without this,
+        ``_export_metric`` would emit a ``metric_calc`` and drop the percentile shape plus
+        ``custom_quantiles``/``compression``. Named percentiles are re-emitted as their numeric
+        ``custom_quantiles`` equivalent since the original name is not preserved on import.
         """
         if metric.agg is not None:
-            return None
-
-        metadata = metric.metadata or {}
-        custom_quantiles = _parse_custom_quantiles(metadata.get("custom_quantiles"))
-        if not custom_quantiles:
             return None
 
         column = _percentile_column_from_sql(metric.sql)
         if column is None:
             return None
+
+        metadata = metric.metadata or {}
+        custom_quantiles = _parse_custom_quantiles(metadata.get("custom_quantiles"))
+        if not custom_quantiles:
+            quantile = _percentile_quantile_from_sql(metric.sql)
+            if quantile is None:
+                return None
+            custom_quantiles = [quantile]
 
         metric_def: dict[str, Any] = {
             "unique_name": metric.name,

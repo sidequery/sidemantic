@@ -187,6 +187,78 @@ class TestAtScaleSMLExport:
         assert exported["compression"] == 10000
         assert exported["column"] == "amount"
 
+    def test_imported_named_percentile_with_compression_roundtrips(self, tmp_path):
+        """An imported SML v1.5 named percentile carrying compression re-exports as a percentile.
+
+        Named percentiles (e.g. named_quantiles: p90) with compression but no custom_quantiles
+        parse to derived metrics with agg=None and a PERCENTILE_CONT(...) expression, storing
+        compression in metadata only. Export must preserve the percentile shape and compression
+        instead of degrading to a metric_calc that drops both. The numeric quantile is re-emitted
+        via custom_quantiles since the original name is not preserved on import.
+        """
+        src = tmp_path / "src"
+        for sub in ("metrics", "models", "datasets"):
+            (src / sub).mkdir(parents=True)
+        (src / "atscale.yml").write_text(
+            yaml.safe_dump({"object_type": "catalog", "unique_name": "cat", "label": "cat"})
+        )
+        (src / "models" / "orders_model.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "object_type": "model",
+                    "unique_name": "orders_model",
+                    "label": "Orders",
+                    "metrics": [{"unique_name": "amount_p90"}],
+                    "dimensions": ["orders"],
+                }
+            )
+        )
+        (src / "datasets" / "orders.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "object_type": "dataset",
+                    "unique_name": "orders",
+                    "label": "Orders",
+                    "sql": "select * from public.orders",
+                    "columns": [{"name": "order_id"}, {"name": "amount"}],
+                }
+            )
+        )
+        (src / "metrics" / "amount_p90.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "object_type": "metric",
+                    "unique_name": "amount_p90",
+                    "label": "Amount P90",
+                    "calculation_method": "percentile",
+                    "dataset": "orders",
+                    "column": "amount",
+                    "named_quantiles": "p90",
+                    "compression": 10000,
+                }
+            )
+        )
+
+        adapter = AtScaleSMLAdapter()
+        graph = adapter.parse(src)
+
+        # Imported as a derived percentile with compression in metadata, no custom_quantiles.
+        metric = graph.models["orders_model"].get_metric("amount_p90")
+        assert metric.agg is None
+        assert metric.metadata["compression"] == 10000
+        assert "custom_quantiles" not in metric.metadata
+
+        out = tmp_path / "out"
+        adapter.export(graph, out)
+
+        with open(out / "metrics" / "amount_p90.yml") as f:
+            exported = yaml.safe_load(f)
+        assert exported["object_type"] == "metric"
+        assert exported["calculation_method"] == "percentile"
+        assert exported["custom_quantiles"] == [0.9]
+        assert exported["compression"] == 10000
+        assert exported["column"] == "amount"
+
     def test_export_relationship_level_uses_dimension(self, tmp_path):
         orders = Model(
             name="orders",

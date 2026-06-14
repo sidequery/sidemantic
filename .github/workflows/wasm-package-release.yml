@@ -1,0 +1,92 @@
+name: WASM Package Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_npm:
+        description: "Publish sidemantic-wasm to npm when NPM_TOKEN is available"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "sidemantic-wasm-v*"
+  pull_request:
+    paths:
+      - "sidemantic-wasm/**"
+      - ".github/workflows/wasm-package-release.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-publish:
+    name: Build and publish wasm package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidemantic-wasm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Install wasm-bindgen-cli matching the crate
+        working-directory: .
+        run: |
+          # Keep the CLI in lockstep with the wasm-bindgen version cargo resolves,
+          # otherwise wasm-bindgen rejects the module with a schema-version error.
+          WB_VERSION="$(awk '/^name = "wasm-bindgen"$/{getline; print}' Cargo.lock \
+            | head -1 | sed -E 's/version = "(.*)"/\1/')"
+          echo "Installing wasm-bindgen-cli $WB_VERSION"
+          cargo install wasm-bindgen-cli --version "$WB_VERSION" --locked
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build bundle
+        run: bun run build
+
+      - name: Check bundle output
+        run: |
+          test -f wasm/sidemantic_bg.wasm
+          test -f wasm/sidemantic.js
+          ls -la wasm/
+          echo "raw wasm bytes: $(stat -c%s wasm/sidemantic_bg.wasm)"
+
+      - name: Smoke test the bundle
+        run: bun run scripts/smoke.mjs
+
+      - name: Check package contents
+        run: npm pack --dry-run
+
+      - name: Set up npm registry
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_npm == true) || startsWith(github.ref, 'refs/tags/sidemantic-wasm-v') }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_npm == true) || startsWith(github.ref, 'refs/tags/sidemantic-wasm-v') }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN not set; skipping publish."
+            exit 0
+          fi
+          # wasm/ is already built above; --ignore-scripts avoids a redundant rebuild.
+          npm publish --access public --ignore-scripts

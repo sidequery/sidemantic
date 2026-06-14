@@ -1,16 +1,24 @@
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, size as terminal_size, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap};
+use ratatui::symbols;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Axis, Bar, BarChart, BarGroup, Block, Borders, Cell, Chart, Dataset, GraphType, List, ListItem,
+    ListState, Paragraph, Row, Table, Wrap,
+};
 use ratatui::Terminal;
 use sidemantic::SidemanticRuntime;
 #[cfg(feature = "workbench-adbc")]
@@ -20,6 +28,10 @@ use crate::CliResult;
 
 const PREVIEW_ROW_LIMIT: usize = 25;
 const PREVIEW_CELL_WIDTH: usize = 48;
+const CHART_MAX_BARS: usize = 16;
+/// Upper bound on rows materialized into chart points per draw (line mode plots
+/// all of them; bar mode shows the first `CHART_MAX_BARS`).
+const CHART_MAX_POINTS: usize = 200;
 
 #[derive(Debug, Clone)]
 struct ModelSummary {
@@ -64,31 +76,33 @@ impl OutputView {
     }
 }
 
+/// Order the view tabs are displayed in (results-first, the most common case).
+const VIEW_TAB_ORDER: [OutputView; 3] = [OutputView::Table, OutputView::Sql, OutputView::Chart];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChartRenderMode {
     Bar,
-    Dot,
+    Line,
 }
 
 impl ChartRenderMode {
     fn next(self) -> Self {
         match self {
-            ChartRenderMode::Bar => ChartRenderMode::Dot,
-            ChartRenderMode::Dot => ChartRenderMode::Bar,
+            ChartRenderMode::Bar => ChartRenderMode::Line,
+            ChartRenderMode::Line => ChartRenderMode::Bar,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             ChartRenderMode::Bar => "BAR",
-            ChartRenderMode::Dot => "DOT",
+            ChartRenderMode::Line => "LINE",
         }
     }
 }
 
 #[derive(Debug, Clone)]
 struct ExecutionPreview {
-    rewritten_sql: String,
     columns: Vec<String>,
     rows: Vec<Vec<WorkbenchValue>>,
 }
@@ -120,12 +134,62 @@ impl From<AdbcValue> for WorkbenchValue {
     }
 }
 
+/// Pre-computed rectangles for every panel, shared by drawing and mouse
+/// hit-testing so a click always lands on the panel the user sees.
+struct UiRects {
+    models: Rect,
+    details: Rect,
+    sql: Rect,
+    tabs: Rect,
+    output: Rect,
+}
+
+fn ui_rects(area: Rect) -> UiRects {
+    let root = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .split(root[1]);
+
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(body[0]);
+
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(46),
+            Constraint::Length(1),
+            Constraint::Min(4),
+        ])
+        .split(body[1]);
+
+    UiRects {
+        models: left[0],
+        details: left[1],
+        sql: right[0],
+        tabs: right[1],
+        output: right[2],
+    }
+}
+
 #[derive(Debug)]
 struct WorkbenchApp {
     runtime: SidemanticRuntime,
     models: Vec<ModelSummary>,
     selected_model_index: usize,
     sql_input: String,
+    /// Cursor position as a character index into `sql_input`.
+    cursor: usize,
     output: String,
     output_view: OutputView,
     execution_preview: Option<ExecutionPreview>,
@@ -168,27 +232,21 @@ impl WorkbenchApp {
             .collect::<Vec<_>>();
         models.sort_by(|left, right| left.name.cmp(&right.name));
 
-        let sql_input = models.first().map_or_else(
-            || "select 1".to_string(),
-            |model| format!("select * from {}", model.name),
-        );
-        let status = if connection.is_some() {
-            "Ready. F5 rewrite, F6 execute, F7 view cycle, Ctrl+M/V/L chart controls, Tab switch focus, Esc quit."
-                .to_string()
-        } else {
-            "Ready. F5 rewrite. F6 execute requires --connection/--db. F7 view cycle, Ctrl+M/V/L chart controls, Tab switch focus, Esc quit."
-                .to_string()
-        };
+        let sql_input = models
+            .first()
+            .map_or_else(|| "select 1".to_string(), starter_query_for);
+        let cursor = sql_input.chars().count();
 
         let mut app = Self {
             runtime,
             models,
             selected_model_index: 0,
             sql_input,
+            cursor,
             output: String::new(),
             output_view: OutputView::Sql,
             execution_preview: None,
-            status,
+            status: "Ready. Ctrl+R run · 1/2/3 switch views · Tab focus · Esc quit.".to_string(),
             focus: FocusPanel::Sql,
             should_quit: false,
             connection,
@@ -196,51 +254,57 @@ impl WorkbenchApp {
             chart_value_column: None,
             chart_label_column: None,
         };
-        app.run_rewrite();
+        app.compile_only();
         app
     }
 
-    fn run_rewrite(&mut self) {
-        match self.runtime.rewrite(&self.sql_input) {
-            Ok(sql) => {
-                self.output = sql;
-                self.status = "Rewrite ok".to_string();
-            }
-            Err(err) => {
-                self.output = err.to_string();
-                self.status = "Rewrite failed".to_string();
-            }
+    fn compile(&self) -> Result<String, String> {
+        self.runtime
+            .rewrite(&self.sql_input)
+            .map_err(|err| err.to_string())
+    }
+
+    /// Compile the editor SQL into the SQL view without touching the database.
+    /// Used on startup and whenever the query is reloaded.
+    fn compile_only(&mut self) {
+        match self.compile() {
+            Ok(sql) => self.output = sql,
+            Err(err) => self.output = err,
         }
     }
 
-    fn selected_model_name(&self) -> Option<&str> {
-        self.models
-            .get(self.selected_model_index)
-            .map(|model| model.name.as_str())
+    /// Compile-only preview (F5): rewrite the editor SQL and show it in the SQL
+    /// view without executing. Kept distinct from `run_query` so the legacy F5
+    /// shortcut never sends a query to the database.
+    fn preview_compiled_sql(&mut self) {
+        self.compile_only();
+        self.output_view = OutputView::Sql;
+        self.status = match self.compile() {
+            Ok(_) => "Compiled SQL preview (not run). Press Ctrl+R to run.".to_string(),
+            Err(_) => "Query did not compile — see SQL view.".to_string(),
+        };
     }
 
-    fn apply_model_template(&mut self) {
-        if let Some(model_name) = self.selected_model_name().map(str::to_string) {
-            self.sql_input = format!("select * from {model_name}");
-            self.status = format!("Loaded template for model '{model_name}'");
-        }
-    }
-
-    fn run_execute(&mut self) {
-        let rewritten = match self.runtime.rewrite(&self.sql_input) {
+    /// The single primary action: compile, then execute if a connection is
+    /// configured, then jump to the most useful view.
+    fn run_query(&mut self) {
+        let compiled = match self.compile() {
             Ok(sql) => sql,
             Err(err) => {
                 self.execution_preview = None;
-                self.output = err.to_string();
-                self.status = "Execute failed (rewrite)".to_string();
+                self.output = err;
+                self.output_view = OutputView::Sql;
+                self.status = "Query did not compile — see SQL view.".to_string();
                 return;
             }
         };
 
-        let Some(connection) = self.connection.as_deref() else {
+        let Some(connection) = self.connection.clone() else {
             self.execution_preview = None;
-            self.output = rewritten;
-            self.status = "Execute skipped: no connection configured".to_string();
+            self.output = compiled;
+            self.output_view = OutputView::Sql;
+            self.status =
+                "Compiled. No connection configured — pass --db/--connection to run.".to_string();
             return;
         };
 
@@ -248,32 +312,29 @@ impl WorkbenchApp {
         {
             let _ = connection;
             self.execution_preview = None;
-            self.output = rewritten;
-            self.status = "Execute unavailable: build without workbench-adbc".to_string();
-            self.output.push_str(
-                "\n\nADBC execution support is not enabled. Rebuild with feature 'workbench-adbc' to run database-backed queries.",
-            );
+            self.output = compiled;
+            self.output_view = OutputView::Sql;
+            self.status = "Built without ADBC — rebuild with feature 'workbench-adbc'.".to_string();
             return;
         }
 
         #[cfg(feature = "workbench-adbc")]
         {
             let (driver, uri, database_options) =
-                match crate::parse_connection_url_to_adbc(connection) {
+                match crate::parse_connection_url_to_adbc(&connection) {
                     Ok(payload) => payload,
                     Err(err) => {
                         self.execution_preview = None;
-                        self.output = rewritten;
-                        self.status = "Execute failed (connection)".to_string();
-                        self.output.push_str("\n\nConnection parsing failed:\n");
-                        self.output.push_str(&err);
+                        self.output = format!("{compiled}\n\nConnection parsing failed:\n{err}");
+                        self.output_view = OutputView::Sql;
+                        self.status = "Bad connection URL — see SQL view.".to_string();
                         return;
                     }
                 };
 
             match execute_with_adbc(AdbcExecutionRequest {
                 driver,
-                sql: rewritten.clone(),
+                sql: compiled.clone(),
                 uri,
                 entrypoint: None,
                 database_options,
@@ -290,26 +351,31 @@ impl WorkbenchApp {
                         })
                         .collect::<Vec<_>>();
                     let row_count = rows.len();
+                    let has_columns = !result.columns.is_empty();
                     self.execution_preview = Some(ExecutionPreview {
-                        rewritten_sql: rewritten.clone(),
-                        columns: result.columns.clone(),
-                        rows: rows.clone(),
+                        columns: result.columns,
+                        rows,
                     });
                     self.chart_value_column = None;
                     self.chart_label_column = None;
-                    self.output = format_execution_output(&rewritten, &result.columns, &rows);
+                    // SQL view keeps the compiled SQL; data lands in the table.
+                    self.output = compiled;
+                    self.output_view = if has_columns {
+                        OutputView::Table
+                    } else {
+                        OutputView::Sql
+                    };
                     self.status = format!(
-                        "Execute ok ({} row{})",
+                        "Ran query — {} row{}.",
                         row_count,
                         if row_count == 1 { "" } else { "s" }
                     );
                 }
                 Err(err) => {
                     self.execution_preview = None;
-                    self.output = rewritten;
-                    self.status = "Execute failed".to_string();
-                    self.output.push_str("\n\nExecution failed:\n");
-                    self.output.push_str(&err.to_string());
+                    self.output = format!("{compiled}\n\nExecution failed:\n{err}");
+                    self.output_view = OutputView::Sql;
+                    self.status = "Query failed — see SQL view.".to_string();
                 }
             }
         }
@@ -317,12 +383,12 @@ impl WorkbenchApp {
 
     fn cycle_output_view(&mut self) {
         self.output_view = self.output_view.next();
-        self.status = format!("Output view: {}", self.output_view.label());
+        self.status = format!("View: {}", self.output_view.label());
     }
 
     fn set_output_view(&mut self, view: OutputView) {
         self.output_view = view;
-        self.status = format!("Output view: {}", self.output_view.label());
+        self.status = format!("View: {}", self.output_view.label());
     }
 
     fn cycle_chart_mode(&mut self) {
@@ -333,13 +399,13 @@ impl WorkbenchApp {
 
     fn cycle_chart_value_column(&mut self) {
         let Some(preview) = self.execution_preview.as_ref() else {
-            self.status = "Chart value column unavailable: run execute first".to_string();
+            self.status = "Run a query before configuring the chart.".to_string();
             return;
         };
 
         let numeric_candidates = chart_numeric_column_indices(preview);
         if numeric_candidates.is_empty() {
-            self.status = "Chart value column unavailable: no numeric columns".to_string();
+            self.status = "No numeric columns to chart.".to_string();
             return;
         }
 
@@ -363,11 +429,11 @@ impl WorkbenchApp {
 
     fn cycle_chart_label_column(&mut self) {
         let Some(preview) = self.execution_preview.as_ref() else {
-            self.status = "Chart label column unavailable: run execute first".to_string();
+            self.status = "Run a query before configuring the chart.".to_string();
             return;
         };
         if preview.columns.is_empty() {
-            self.status = "Chart label column unavailable: no columns".to_string();
+            self.status = "No columns to chart.".to_string();
             return;
         }
 
@@ -382,7 +448,7 @@ impl WorkbenchApp {
             label_candidates.retain(|index| *index != value_index);
         }
         if label_candidates.is_empty() {
-            self.status = "Chart label column unavailable: no label candidates".to_string();
+            self.status = "No label columns to chart.".to_string();
             return;
         }
 
@@ -409,6 +475,121 @@ impl WorkbenchApp {
         };
     }
 
+    fn selected_model_name(&self) -> Option<&str> {
+        self.models
+            .get(self.selected_model_index)
+            .map(|model| model.name.as_str())
+    }
+
+    /// Replace the editor contents with a starter query for the selected model.
+    fn load_selected_starter(&mut self) {
+        if let Some(model) = self.models.get(self.selected_model_index) {
+            let name = model.name.clone();
+            self.sql_input = starter_query_for(model);
+            self.cursor = self.sql_input.chars().count();
+            self.compile_only();
+            self.execution_preview = None;
+            self.output_view = OutputView::Sql;
+            self.focus = FocusPanel::Sql;
+            self.status = format!("Loaded starter query for '{name}'. Press Ctrl+R to run.");
+        }
+    }
+
+    // --- minimal text editor over `sql_input` -----------------------------
+
+    fn sql_char_len(&self) -> usize {
+        self.sql_input.chars().count()
+    }
+
+    fn cursor_byte(&self) -> usize {
+        self.sql_input
+            .char_indices()
+            .nth(self.cursor)
+            .map_or(self.sql_input.len(), |(byte, _)| byte)
+    }
+
+    fn insert_char(&mut self, ch: char) {
+        let byte = self.cursor_byte();
+        self.sql_input.insert(byte, ch);
+        self.cursor += 1;
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let start = self
+            .sql_input
+            .char_indices()
+            .nth(self.cursor - 1)
+            .map_or(0, |(byte, _)| byte);
+        let end = self.cursor_byte();
+        self.sql_input.replace_range(start..end, "");
+        self.cursor -= 1;
+    }
+
+    fn delete(&mut self) {
+        if self.cursor >= self.sql_char_len() {
+            return;
+        }
+        let start = self.cursor_byte();
+        let end = self
+            .sql_input
+            .char_indices()
+            .nth(self.cursor + 1)
+            .map_or(self.sql_input.len(), |(byte, _)| byte);
+        self.sql_input.replace_range(start..end, "");
+    }
+
+    fn cursor_line_col(&self) -> (usize, usize) {
+        let mut line = 0;
+        let mut col = 0;
+        for ch in self.sql_input.chars().take(self.cursor) {
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    fn line_start_char(&self, line: usize) -> usize {
+        let mut index = 0;
+        for current in self.sql_input.split('\n').take(line) {
+            index += current.chars().count() + 1;
+        }
+        index
+    }
+
+    fn move_home(&mut self) {
+        let (line, _) = self.cursor_line_col();
+        self.cursor = self.line_start_char(line);
+    }
+
+    fn move_end(&mut self) {
+        let (line, _) = self.cursor_line_col();
+        let line_len = self
+            .sql_input
+            .split('\n')
+            .nth(line)
+            .map_or(0, |value| value.chars().count());
+        self.cursor = self.line_start_char(line) + line_len;
+    }
+
+    fn move_vertical(&mut self, delta: isize) {
+        let lines: Vec<&str> = self.sql_input.split('\n').collect();
+        let (line, col) = self.cursor_line_col();
+        let target = line as isize + delta;
+        if target < 0 || target as usize >= lines.len() {
+            return;
+        }
+        let target_line = target as usize;
+        let target_len = lines[target_line].chars().count();
+        self.cursor = self.line_start_char(target_line) + col.min(target_len);
+    }
+
     fn handle_models_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Down if !self.models.is_empty() => {
@@ -418,7 +599,7 @@ impl WorkbenchApp {
             KeyCode::Up if self.selected_model_index > 0 => {
                 self.selected_model_index -= 1;
             }
-            KeyCode::Enter => self.apply_model_template(),
+            KeyCode::Enter => self.load_selected_starter(),
             _ => {}
         }
     }
@@ -429,15 +610,17 @@ impl WorkbenchApp {
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     return;
                 }
-                self.sql_input.push(ch);
+                self.insert_char(ch);
             }
-            KeyCode::Backspace => {
-                self.sql_input.pop();
-            }
-            KeyCode::Enter => {
-                self.sql_input.push('\n');
-            }
-            KeyCode::Tab => self.next_focus(),
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete(),
+            KeyCode::Enter => self.insert_char('\n'),
+            KeyCode::Left if self.cursor > 0 => self.cursor -= 1,
+            KeyCode::Right if self.cursor < self.sql_char_len() => self.cursor += 1,
+            KeyCode::Up => self.move_vertical(-1),
+            KeyCode::Down => self.move_vertical(1),
+            KeyCode::Home => self.move_home(),
+            KeyCode::End => self.move_end(),
             _ => {}
         }
     }
@@ -447,56 +630,159 @@ impl WorkbenchApp {
             return;
         }
 
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
-            return;
-        }
-
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
-            self.run_rewrite();
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('e') {
-            self.run_execute();
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('1') {
-            self.set_output_view(OutputView::Sql);
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('2') {
-            self.set_output_view(OutputView::Table);
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('3') {
-            self.set_output_view(OutputView::Chart);
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('m') {
-            self.cycle_chart_mode();
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v') {
-            self.cycle_chart_value_column();
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
-            self.cycle_chart_label_column();
-            return;
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('c') => {
+                    self.should_quit = true;
+                    return;
+                }
+                // Run: Ctrl+R (primary), Ctrl+E (alias).
+                KeyCode::Char('r') | KeyCode::Char('e') => {
+                    self.run_query();
+                    return;
+                }
+                KeyCode::Char('1') => {
+                    self.set_output_view(OutputView::Table);
+                    return;
+                }
+                KeyCode::Char('2') => {
+                    self.set_output_view(OutputView::Sql);
+                    return;
+                }
+                KeyCode::Char('3') => {
+                    self.set_output_view(OutputView::Chart);
+                    return;
+                }
+                KeyCode::Char('m') => {
+                    self.cycle_chart_mode();
+                    return;
+                }
+                KeyCode::Char('v') => {
+                    self.cycle_chart_value_column();
+                    return;
+                }
+                KeyCode::Char('l') => {
+                    self.cycle_chart_label_column();
+                    return;
+                }
+                _ => {}
+            }
         }
 
         match key.code {
             KeyCode::Esc => self.should_quit = true,
-            KeyCode::F(5) => self.run_rewrite(),
-            KeyCode::F(6) => self.run_execute(),
+            // F5 is compile-only (legacy "rewrite" preview): never execute, so
+            // muscle memory cannot accidentally run DDL/expensive queries.
+            KeyCode::F(5) => self.preview_compiled_sql(),
             KeyCode::F(7) => self.cycle_output_view(),
-            KeyCode::Tab => self.next_focus(),
+            KeyCode::Tab | KeyCode::BackTab => self.next_focus(),
             _ => match self.focus {
                 FocusPanel::Models => self.handle_models_key(key),
                 FocusPanel::Sql => self.handle_sql_key(key),
             },
         }
     }
+
+    fn handle_mouse(&mut self, area: Rect, mouse: MouseEvent) {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
+        let rects = ui_rects(area);
+        let (col, row) = (mouse.column, mouse.row);
+
+        if rect_contains(rects.models, col, row) || rect_contains(rects.details, col, row) {
+            self.focus = FocusPanel::Models;
+            // Map the click to a model row (first inner row is just below the border).
+            let inner_top = rects.models.y + 1;
+            if row >= inner_top && row < rects.models.y + rects.models.height.saturating_sub(1) {
+                let index = (row - inner_top) as usize;
+                if index < self.models.len() {
+                    self.selected_model_index = index;
+                }
+            }
+            return;
+        }
+
+        if rect_contains(rects.tabs, col, row) {
+            for (view, start, width) in view_tab_ranges() {
+                let absolute = rects.tabs.x + start;
+                if col >= absolute && col < absolute + width {
+                    self.set_output_view(view);
+                    return;
+                }
+            }
+            return;
+        }
+
+        if rect_contains(rects.sql, col, row) || rect_contains(rects.output, col, row) {
+            self.focus = FocusPanel::Sql;
+        }
+    }
+}
+
+fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
+    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+}
+
+/// A starter query that demonstrates qualified `model.field` semantic SQL,
+/// using the model's own dimensions and metrics where available.
+fn starter_query_for(model: &ModelSummary) -> String {
+    let mut fields: Vec<String> = Vec::new();
+    if let Some(dimension) = model.dimension_names.first() {
+        fields.push(format!("{}.{}", model.name, dimension));
+    }
+    for metric in model.metric_names.iter().take(2) {
+        fields.push(format!("{}.{}", model.name, metric));
+    }
+    if fields.is_empty() {
+        return format!("select *\nfrom {}", model.name);
+    }
+    let select_list = fields
+        .iter()
+        .map(|field| format!("  {field}"))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let mut query = format!("select\n{select_list}\nfrom {}", model.name);
+    if let Some(metric) = model.metric_names.first() {
+        query.push_str(&format!(
+            "\norder by {}.{} desc\nlimit 20",
+            model.name, metric
+        ));
+    }
+    query
+}
+
+/// Relative x offsets and widths of each view tab within the tab bar.
+fn view_tab_ranges() -> Vec<(OutputView, u16, u16)> {
+    let mut ranges = Vec::new();
+    let mut x = 0u16;
+    for (index, view) in VIEW_TAB_ORDER.iter().enumerate() {
+        let width = tab_label(index, *view).chars().count() as u16;
+        ranges.push((*view, x, width));
+        x += width + 1; // trailing space between tabs
+    }
+    ranges
+}
+
+fn tab_label(index: usize, view: OutputView) -> String {
+    format!(" {} {} ", index + 1, view.label())
+}
+
+fn view_tab_line(active: OutputView) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, view) in VIEW_TAB_ORDER.iter().enumerate() {
+        let style = if *view == active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Span::styled(tab_label(index, *view), style));
+        spans.push(Span::raw(" "));
+    }
+    Line::from(spans)
 }
 
 fn selected_model_details(model: Option<&ModelSummary>) -> String {
@@ -520,6 +806,7 @@ fn selected_model_details(model: Option<&ModelSummary>) -> String {
         model.relationships,
         summarize_name_list(&model.relationship_names, 6)
     ));
+    details.push_str("\nEnter loads a starter query for this model.");
     details
 }
 
@@ -574,144 +861,103 @@ fn default_chart_label_index(preview: &ExecutionPreview, value_index: usize) -> 
     }
 }
 
-fn build_chart_lines(
-    preview: Option<&ExecutionPreview>,
-    chart_mode: ChartRenderMode,
+#[derive(Debug, Clone, PartialEq)]
+struct ChartData {
+    value_col: usize,
+    label_col: usize,
+    points: Vec<(String, f64)>,
+    /// Total rows in the result; `points` may be fewer (capped at `CHART_MAX_POINTS`
+    /// and/or with non-numeric rows skipped), which the chart title surfaces.
+    total_rows: usize,
+}
+
+/// Resolve which columns to chart and extract `(label, value)` points, or return
+/// a message explaining why a chart cannot be drawn. Rendering (bar/line) is done
+/// with ratatui's `BarChart`/`Chart` widgets in `draw_app`.
+///
+/// Only the first `CHART_MAX_POINTS` rows are materialized: the chart redraws on
+/// every event loop tick, so formatting every row of a large detail query would
+/// allocate thousands of labels many times per second for no visible gain (a
+/// terminal can't resolve more points than its width).
+fn chart_data(
+    preview: &ExecutionPreview,
     value_column_override: Option<usize>,
     label_column_override: Option<usize>,
-) -> Vec<String> {
-    let Some(preview) = preview else {
-        return vec!["No execution results yet. Press F6 to run query.".to_string()];
-    };
+) -> Result<ChartData, String> {
     if preview.rows.is_empty() || preview.columns.is_empty() {
-        return vec!["Execution returned no rows.".to_string()];
+        return Err("Query returned no rows.".to_string());
     }
 
     let numeric_candidates = chart_numeric_column_indices(preview);
     let Some(default_value_index) = numeric_candidates.first().copied() else {
-        return vec!["Chart unavailable: no numeric columns in execution result.".to_string()];
+        return Err("No numeric columns to chart.".to_string());
     };
-    let value_index = value_column_override
+    let value_col = value_column_override
         .filter(|index| numeric_candidates.contains(index))
         .unwrap_or(default_value_index);
-    let default_label_index = default_chart_label_index(preview, value_index);
-    let label_index = label_column_override
+    let default_label_index = default_chart_label_index(preview, value_col);
+    let label_col = label_column_override
         .filter(|index| preview.columns.get(*index).is_some())
         .unwrap_or(default_label_index);
 
     let mut points = Vec::new();
-    for (row_index, row) in preview.rows.iter().take(12).enumerate() {
-        let Some(value) = row.get(value_index).and_then(workbench_value_as_f64) else {
+    for (row_index, row) in preview.rows.iter().take(CHART_MAX_POINTS).enumerate() {
+        let Some(value) = row.get(value_col).and_then(workbench_value_as_f64) else {
             continue;
         };
         let label = row
-            .get(label_index)
+            .get(label_col)
             .map(format_workbench_value)
             .filter(|value| !value.trim().is_empty() && value != "NULL")
             .unwrap_or_else(|| format!("row {}", row_index + 1));
         points.push((label, value));
     }
     if points.is_empty() {
-        return vec!["Chart unavailable: no numeric rows in preview subset.".to_string()];
+        return Err("No numeric rows to chart.".to_string());
     }
-
-    let max_abs = points
-        .iter()
-        .map(|(_, value)| value.abs())
-        .fold(0.0_f64, f64::max)
-        .max(1.0);
-    let min_value = points
-        .iter()
-        .map(|(_, value)| *value)
-        .fold(f64::INFINITY, f64::min);
-    let max_value = points
-        .iter()
-        .map(|(_, value)| *value)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let value_span = (max_value - min_value).abs().max(1e-9);
-
-    let mut lines = vec![
-        format!(
-            "chart source: value={} label={} mode={}",
-            preview.columns[value_index],
-            preview.columns[label_index],
-            chart_mode.label()
-        ),
-        "chart controls: Ctrl+M mode, Ctrl+V value column, Ctrl+L label column".to_string(),
-    ];
-    for (label, value) in points {
-        match chart_mode {
-            ChartRenderMode::Bar => {
-                let bar_units = ((value.abs() / max_abs) * 24.0).round().max(1.0) as usize;
-                let bar_symbol = if value < 0.0 { '-' } else { '#' };
-                let bar = std::iter::repeat_n(bar_symbol, bar_units).collect::<String>();
-                lines.push(format!("{label:>20} | {bar:<24} {value:.3}"));
-            }
-            ChartRenderMode::Dot => {
-                let marker_position = (((value - min_value) / value_span) * 23.0).round() as usize;
-                let mut markers = [' '; 24];
-                markers[marker_position.min(23)] = 'o';
-                let track = markers.iter().collect::<String>();
-                lines.push(format!("{label:>20} | {track} {value:.3}"));
-            }
-        }
-    }
-    lines
+    Ok(ChartData {
+        value_col,
+        label_col,
+        points,
+        total_rows: preview.rows.len(),
+    })
 }
 
-#[cfg_attr(not(feature = "workbench-adbc"), allow(dead_code))]
-fn format_execution_output(
-    rewritten: &str,
-    columns: &[String],
-    rows: &[Vec<WorkbenchValue>],
-) -> String {
-    let shown = rows.len().min(PREVIEW_ROW_LIMIT);
-    let mut output = String::new();
-    output.push_str("Rendered SQL:\n");
-    output.push_str(rewritten);
-    output.push_str("\n\nResult preview:\n");
-    output.push_str(&format!(
-        "rows={} shown={} limit={}\n",
-        rows.len(),
-        shown,
-        PREVIEW_ROW_LIMIT
-    ));
+/// Bar length in `BarChart`'s u64 units, scaled so the largest magnitude in the
+/// series fills the chart. Uses magnitude (not the raw value) so negative values
+/// render a proportional bar instead of collapsing to zero; the sign is conveyed
+/// by the bar's label text and colour.
+fn bar_chart_value(value: f64, max_magnitude: f64) -> u64 {
+    let max_magnitude = max_magnitude.max(1e-9);
+    ((value.abs() / max_magnitude) * 10_000.0).round() as u64
+}
 
-    if columns.is_empty() {
-        output.push_str("(no columns)\n");
-        return output;
+fn truncate_label(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        value.to_string()
+    } else {
+        let prefix: String = value.chars().take(max.saturating_sub(1)).collect();
+        format!("{prefix}…")
     }
+}
 
-    output.push_str(&columns.join(" | "));
-    output.push('\n');
-    output.push_str(
-        &columns
-            .iter()
-            .map(|_| "--------")
-            .collect::<Vec<_>>()
-            .join("-+-"),
-    );
-    output.push('\n');
-
-    for row in rows.iter().take(shown) {
-        let rendered_row = columns
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                let value = row.get(index).unwrap_or(&WorkbenchValue::Null);
-                format_workbench_value(value)
-            })
-            .collect::<Vec<_>>();
-        output.push_str(&rendered_row.join(" | "));
-        output.push('\n');
+/// Evenly-spaced x-axis tick labels (first / middle / last category) for line charts.
+fn chart_x_axis_labels(points: &[(String, f64)]) -> Vec<Line<'static>> {
+    if points.is_empty() {
+        return Vec::new();
     }
-
-    if rows.len() > shown {
-        output.push('\n');
-        output.push_str(&format!("... {} more rows", rows.len() - shown));
+    let last = points.len() - 1;
+    let mut indices = vec![0];
+    if last >= 2 {
+        indices.push(last / 2);
     }
-
-    output
+    if last >= 1 {
+        indices.push(last);
+    }
+    indices
+        .into_iter()
+        .map(|index| Line::from(truncate_label(&points[index].0, 12)))
+        .collect()
 }
 
 fn format_workbench_value(value: &WorkbenchValue) -> String {
@@ -747,16 +993,30 @@ fn format_workbench_value(value: &WorkbenchValue) -> String {
     }
 }
 
-fn draw_app(frame: &mut ratatui::Frame<'_>, app: &WorkbenchApp) {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
+fn footer_hint(app: &WorkbenchApp) -> String {
+    let mut parts = vec!["Ctrl+R run", "1/2/3 views"];
+    match app.focus {
+        FocusPanel::Models => parts.push("↑↓ pick · Enter load · Tab→editor"),
+        FocusPanel::Sql => parts.push("Tab→models"),
+    }
+    if app.output_view == OutputView::Chart {
+        parts.push("Ctrl+M/V/L chart");
+    }
+    parts.push("Esc quit");
+    parts.join("  ·  ")
+}
 
+fn draw_app(frame: &mut ratatui::Frame<'_>, app: &WorkbenchApp) {
+    let area = frame.area();
+    let rects = ui_rects(area);
+    let header_rect = Rect::new(area.x, area.y, area.width, 3.min(area.height));
+    let footer_rect = if area.height >= 3 {
+        Rect::new(area.x, area.y + area.height - 3, area.width, 3)
+    } else {
+        area
+    };
+
+    // --- header -----------------------------------------------------------
     let connection_text = app
         .connection
         .as_deref()
@@ -765,62 +1025,65 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &WorkbenchApp) {
         });
     let selected_text = app
         .selected_model_name()
-        .map_or("selected=none".to_string(), |name| {
-            format!("selected={name}")
-        });
+        .map_or("model=none".to_string(), |name| format!("model={name}"));
+    let focus_text = match app.focus {
+        FocusPanel::Models => "focus=models",
+        FocusPanel::Sql => "focus=editor",
+    };
     let header = Paragraph::new(format!(
-        "Sidemantic Workbench (ratatui) | {selected_text} | {connection_text}"
+        "Sidemantic Workbench    {selected_text}    {connection_text}    {focus_text}"
     ))
     .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(header, layout[0]);
+    frame.render_widget(header, header_rect);
 
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(layout[1]);
-
+    // --- models list ------------------------------------------------------
     let model_items = app
         .models
         .iter()
         .map(|model| {
             ListItem::new(Line::from(format!(
-                "{} [table={} dims={} metrics={} rels={}]",
-                model.name, model.table, model.dimensions, model.metrics, model.relationships
+                "{}  ({}d {}m {}r)",
+                model.name, model.dimensions, model.metrics, model.relationships
             )))
         })
         .collect::<Vec<_>>();
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(body[0]);
     let model_title = if app.focus == FocusPanel::Models {
         "Models [focus]"
     } else {
         "Models"
     };
-    let model_list =
-        List::new(model_items).block(Block::default().title(model_title).borders(Borders::ALL));
-    let mut model_state = ratatui::widgets::ListState::default();
+    let highlight_bg = if app.focus == FocusPanel::Models {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+    let model_list = List::new(model_items)
+        .block(Block::default().title(model_title).borders(Borders::ALL))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(highlight_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+    let mut model_state = ListState::default();
     if !app.models.is_empty() {
         model_state.select(Some(app.selected_model_index));
     }
-    frame.render_stateful_widget(model_list, left[0], &mut model_state);
+    frame.render_stateful_widget(model_list, rects.models, &mut model_state);
 
+    // --- model details ----------------------------------------------------
     let details = selected_model_details(app.models.get(app.selected_model_index));
     let details_panel = Paragraph::new(details)
         .block(
             Block::default()
-                .title("Model Details (Enter loads template)")
+                .title("Model Details")
                 .borders(Borders::ALL),
         )
         .wrap(Wrap { trim: false });
-    frame.render_widget(details_panel, left[1]);
+    frame.render_widget(details_panel, rects.details);
 
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(body[1]);
-
+    // --- SQL editor -------------------------------------------------------
     let sql_style = if app.focus == FocusPanel::Sql {
         Style::default()
             .fg(Color::Yellow)
@@ -828,38 +1091,50 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &WorkbenchApp) {
     } else {
         Style::default()
     };
+    let inner_w = rects.sql.width.saturating_sub(2);
+    let inner_h = rects.sql.height.saturating_sub(2);
+    let (cursor_line, cursor_col) = app.cursor_line_col();
+    let scroll_y = (cursor_line as u16).saturating_sub(inner_h.saturating_sub(1));
+    let scroll_x = (cursor_col as u16).saturating_sub(inner_w.saturating_sub(1));
     let sql_editor = Paragraph::new(app.sql_input.as_str())
         .block(
             Block::default()
-                .title(
-                    "SQL Input [Tab switch, F5 rewrite, F6 execute, F7 view cycle, Ctrl+M/V/L chart config]",
-                )
+                .title("SQL Input — Ctrl+R run, Tab switch focus")
                 .borders(Borders::ALL)
                 .border_style(sql_style),
         )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(sql_editor, right[0]);
+        .scroll((scroll_y, scroll_x));
+    frame.render_widget(sql_editor, rects.sql);
+    if app.focus == FocusPanel::Sql && inner_w > 0 && inner_h > 0 {
+        let cursor_x = rects.sql.x + 1 + (cursor_col as u16).saturating_sub(scroll_x);
+        let cursor_y = rects.sql.y + 1 + (cursor_line as u16).saturating_sub(scroll_y);
+        frame.set_cursor_position(Position::new(
+            cursor_x.min(rects.sql.x + rects.sql.width.saturating_sub(1)),
+            cursor_y.min(rects.sql.y + rects.sql.height.saturating_sub(1)),
+        ));
+    }
 
-    let output_title = format!(
-        "Output [{}] (Ctrl+1 SQL / Ctrl+2 TABLE / Ctrl+3 CHART)",
-        app.output_view.label()
-    );
+    // --- view tabs --------------------------------------------------------
+    frame.render_widget(Paragraph::new(view_tab_line(app.output_view)), rects.tabs);
+
+    // --- output -----------------------------------------------------------
+    let output_title = format!("Output [{}]", app.output_view.label());
     match app.output_view {
         OutputView::Sql => {
             let output = Paragraph::new(app.output.as_str())
                 .block(Block::default().title(output_title).borders(Borders::ALL))
                 .wrap(Wrap { trim: false });
-            frame.render_widget(output, right[1]);
+            frame.render_widget(output, rects.output);
         }
         OutputView::Table => {
             if let Some(preview) = app.execution_preview.as_ref() {
                 let row_count = preview.rows.len();
                 let shown_count = row_count.min(PREVIEW_ROW_LIMIT);
                 if preview.columns.is_empty() {
-                    let output = Paragraph::new("Execution returned no columns.")
+                    let output = Paragraph::new("Query returned no columns.")
                         .block(Block::default().title(output_title).borders(Borders::ALL))
                         .wrap(Wrap { trim: false });
-                    frame.render_widget(output, right[1]);
+                    frame.render_widget(output, rects.output);
                 } else {
                     let header = Row::new(preview.columns.iter().map(|column| {
                         Cell::from(column.clone()).style(
@@ -890,36 +1165,141 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &WorkbenchApp) {
                         .block(
                             Block::default()
                                 .title(format!(
-                                    "{output_title} rows={row_count} shown={shown_count} sql={}",
-                                    preview.rewritten_sql.lines().next().unwrap_or("")
+                                    "{output_title}  rows={row_count} shown={shown_count}"
                                 ))
                                 .borders(Borders::ALL),
                         );
-                    frame.render_widget(table, right[1]);
+                    frame.render_widget(table, rects.output);
                 }
             } else {
-                let output = Paragraph::new("No execution results. Press F6 to execute query.")
+                let output = Paragraph::new("No results yet. Press Ctrl+R to run the query.")
                     .block(Block::default().title(output_title).borders(Borders::ALL))
                     .wrap(Wrap { trim: false });
-                frame.render_widget(output, right[1]);
+                frame.render_widget(output, rects.output);
             }
         }
         OutputView::Chart => {
-            let chart_lines = build_chart_lines(
-                app.execution_preview.as_ref(),
-                app.chart_mode,
-                app.chart_value_column,
-                app.chart_label_column,
-            );
-            let output = Paragraph::new(chart_lines.join("\n"))
-                .block(Block::default().title(output_title).borders(Borders::ALL))
-                .wrap(Wrap { trim: false });
-            frame.render_widget(output, right[1]);
+            let resolved = app
+                .execution_preview
+                .as_ref()
+                .ok_or_else(|| "No results yet. Press Ctrl+R to run the query.".to_string())
+                .and_then(|preview| {
+                    chart_data(preview, app.chart_value_column, app.chart_label_column)
+                        .map(|data| (preview, data))
+                });
+            match resolved {
+                Err(message) => {
+                    let output = Paragraph::new(message)
+                        .block(Block::default().title(output_title).borders(Borders::ALL))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(output, rects.output);
+                }
+                Ok((preview, data)) => {
+                    let scope = if data.points.len() < data.total_rows {
+                        format!(
+                            "  (first {} of {} rows)",
+                            data.points.len(),
+                            data.total_rows
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let title = format!(
+                        "{output_title}  {} by {}  [{}]{scope}  Ctrl+M · Ctrl+V/L",
+                        preview.columns[data.value_col],
+                        preview.columns[data.label_col],
+                        app.chart_mode.label(),
+                    );
+                    let block = Block::default().title(title).borders(Borders::ALL);
+                    match app.chart_mode {
+                        ChartRenderMode::Bar => {
+                            let max_magnitude = data
+                                .points
+                                .iter()
+                                .map(|(_, value)| value.abs())
+                                .fold(0.0_f64, f64::max);
+                            let bars: Vec<Bar> = data
+                                .points
+                                .iter()
+                                .take(CHART_MAX_BARS)
+                                .map(|(label, value)| {
+                                    let color = if *value < 0.0 {
+                                        Color::Red
+                                    } else {
+                                        Color::Cyan
+                                    };
+                                    Bar::default()
+                                        .value(bar_chart_value(*value, max_magnitude))
+                                        .label(Line::from(truncate_label(label, 18)))
+                                        .text_value(format!("{value:.2}"))
+                                        .style(Style::default().fg(color))
+                                })
+                                .collect();
+                            let barchart = BarChart::default()
+                                .block(block)
+                                .direction(Direction::Horizontal)
+                                .bar_width(1)
+                                .bar_gap(0)
+                                .data(BarGroup::default().bars(&bars));
+                            frame.render_widget(barchart, rects.output);
+                        }
+                        ChartRenderMode::Line => {
+                            let series: Vec<(f64, f64)> = data
+                                .points
+                                .iter()
+                                .enumerate()
+                                .map(|(index, (_, value))| (index as f64, *value))
+                                .collect();
+                            let min_y =
+                                series.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
+                            let max_y = series
+                                .iter()
+                                .map(|(_, y)| *y)
+                                .fold(f64::NEG_INFINITY, f64::max);
+                            let (min_y, max_y) = if (max_y - min_y).abs() < 1e-9 {
+                                (min_y - 1.0, max_y + 1.0)
+                            } else {
+                                (min_y, max_y)
+                            };
+                            let last_x = series.len().saturating_sub(1).max(1) as f64;
+                            let datasets = vec![Dataset::default()
+                                .marker(symbols::Marker::Braille)
+                                .graph_type(GraphType::Line)
+                                .style(Style::default().fg(Color::Cyan))
+                                .data(&series)];
+                            let chart = Chart::new(datasets)
+                                .block(block)
+                                .x_axis(
+                                    Axis::default()
+                                        .style(Style::default().fg(Color::DarkGray))
+                                        .bounds([0.0, last_x])
+                                        .labels(chart_x_axis_labels(&data.points)),
+                                )
+                                .y_axis(
+                                    Axis::default()
+                                        .style(Style::default().fg(Color::DarkGray))
+                                        .bounds([min_y, max_y])
+                                        .labels(vec![
+                                            Line::from(format!("{min_y:.2}")),
+                                            Line::from(format!("{:.2}", (min_y + max_y) / 2.0)),
+                                            Line::from(format!("{max_y:.2}")),
+                                        ]),
+                                );
+                            frame.render_widget(chart, rects.output);
+                        }
+                    }
+                }
+            }
         }
     }
 
-    let footer = Paragraph::new(app.status.as_str()).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, layout[2]);
+    // --- footer -----------------------------------------------------------
+    let footer = Paragraph::new(app.status.as_str()).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(footer_hint(app)),
+    );
+    frame.render_widget(footer, footer_rect);
 }
 
 pub fn launch(models_path: &str, connection: Option<String>) -> CliResult<()> {
@@ -932,7 +1312,7 @@ pub fn launch(models_path: &str, connection: Option<String>) -> CliResult<()> {
 
     enable_raw_mode().map_err(|e| format!("failed to enable raw mode: {e}"))?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
         .map_err(|e| format!("failed to enter alternate screen: {e}"))?;
 
     let backend = CrosstermBackend::new(stdout);
@@ -949,6 +1329,10 @@ pub fn launch(models_path: &str, connection: Option<String>) -> CliResult<()> {
         match event::poll(Duration::from_millis(100)) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) => app.handle_key(key),
+                Ok(Event::Mouse(mouse)) => {
+                    let (cols, rows) = terminal_size().unwrap_or((80, 24));
+                    app.handle_mouse(Rect::new(0, 0, cols, rows), mouse);
+                }
                 Ok(_) => {}
                 Err(err) => {
                     loop_result = Err(format!("failed to read terminal event: {err}"));
@@ -967,7 +1351,11 @@ pub fn launch(models_path: &str, connection: Option<String>) -> CliResult<()> {
     if let Err(err) = disable_raw_mode() {
         restore_error = Some(format!("failed to disable raw mode: {err}"));
     }
-    if let Err(err) = execute!(terminal.backend_mut(), LeaveAlternateScreen) {
+    if let Err(err) = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    ) {
         restore_error = Some(format!("failed to leave alternate screen: {err}"));
     }
     if let Err(err) = terminal.show_cursor() {
@@ -999,27 +1387,6 @@ mod tests {
     }
 
     #[test]
-    fn format_execution_output_includes_row_counts_and_preview() {
-        let columns = vec!["id".to_string(), "name".to_string()];
-        let rows = vec![
-            vec![
-                WorkbenchValue::I64(1),
-                WorkbenchValue::String("alice".to_string()),
-            ],
-            vec![
-                WorkbenchValue::I64(2),
-                WorkbenchValue::String("bob".to_string()),
-            ],
-        ];
-        let rendered = format_execution_output("select * from users", &columns, &rows);
-        assert!(rendered.contains("Rendered SQL:"));
-        assert!(rendered.contains("rows=2 shown=2"));
-        assert!(rendered.contains("id | name"));
-        assert!(rendered.contains("alice"));
-        assert!(rendered.contains("bob"));
-    }
-
-    #[test]
     fn output_view_cycles_in_expected_order() {
         assert_eq!(OutputView::Sql.next(), OutputView::Table);
         assert_eq!(OutputView::Table.next(), OutputView::Chart);
@@ -1027,9 +1394,54 @@ mod tests {
     }
 
     #[test]
-    fn build_chart_lines_uses_numeric_column_when_available() {
+    fn starter_query_uses_qualified_dimensions_and_metrics() {
+        let model = ModelSummary {
+            name: "orders".to_string(),
+            table: "orders".to_string(),
+            dimensions: 1,
+            metrics: 1,
+            relationships: 0,
+            dimension_names: vec!["status".to_string()],
+            metric_names: vec!["revenue".to_string()],
+            relationship_names: vec![],
+        };
+        let query = starter_query_for(&model);
+        assert!(query.contains("orders.status"), "{query}");
+        assert!(query.contains("orders.revenue"), "{query}");
+        assert!(query.contains("from orders"), "{query}");
+        assert!(query.contains("order by orders.revenue desc"), "{query}");
+    }
+
+    #[test]
+    fn starter_query_without_metrics_selects_star() {
+        let model = ModelSummary {
+            name: "lookup".to_string(),
+            table: "lookup".to_string(),
+            dimensions: 0,
+            metrics: 0,
+            relationships: 0,
+            dimension_names: vec![],
+            metric_names: vec![],
+            relationship_names: vec![],
+        };
+        assert_eq!(starter_query_for(&model), "select *\nfrom lookup");
+    }
+
+    #[test]
+    fn view_tab_ranges_are_contiguous_and_match_labels() {
+        let ranges = view_tab_ranges();
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0].0, OutputView::Table);
+        assert_eq!(ranges[1].0, OutputView::Sql);
+        assert_eq!(ranges[2].0, OutputView::Chart);
+        // Table tab starts at 0 and has the width of " 1 TABLE ".
+        assert_eq!(ranges[0].1, 0);
+        assert_eq!(ranges[0].2, " 1 TABLE ".chars().count() as u16);
+    }
+
+    #[test]
+    fn chart_data_picks_numeric_column_and_label() {
         let preview = ExecutionPreview {
-            rewritten_sql: "select name, amount from t".to_string(),
             columns: vec!["name".to_string(), "amount".to_string()],
             rows: vec![
                 vec![
@@ -1042,32 +1454,30 @@ mod tests {
                 ],
             ],
         };
-        let lines = build_chart_lines(Some(&preview), ChartRenderMode::Bar, None, None);
-        assert!(lines
-            .first()
-            .is_some_and(|line| line.contains("chart source")));
-        assert!(lines.iter().any(|line| line.contains("alpha")));
-        assert!(lines.iter().any(|line| line.contains("beta")));
-    }
-
-    #[test]
-    fn build_chart_lines_reports_missing_numeric_data() {
-        let preview = ExecutionPreview {
-            rewritten_sql: "select name from t".to_string(),
-            columns: vec!["name".to_string()],
-            rows: vec![vec![WorkbenchValue::String("alpha".to_string())]],
-        };
-        let lines = build_chart_lines(Some(&preview), ChartRenderMode::Bar, None, None);
+        let data = chart_data(&preview, None, None).expect("chart data");
+        assert_eq!(data.value_col, 1);
+        assert_eq!(data.label_col, 0);
         assert_eq!(
-            lines,
-            vec!["Chart unavailable: no numeric columns in execution result.".to_string()]
+            data.points,
+            vec![("alpha".to_string(), 10.0), ("beta".to_string(), 20.0)]
         );
     }
 
     #[test]
-    fn build_chart_lines_honors_column_overrides() {
+    fn chart_data_reports_missing_numeric_data() {
         let preview = ExecutionPreview {
-            rewritten_sql: "select label, amount_a, amount_b from t".to_string(),
+            columns: vec!["name".to_string()],
+            rows: vec![vec![WorkbenchValue::String("alpha".to_string())]],
+        };
+        assert_eq!(
+            chart_data(&preview, None, None),
+            Err("No numeric columns to chart.".to_string())
+        );
+    }
+
+    #[test]
+    fn chart_data_honors_column_overrides() {
+        let preview = ExecutionPreview {
             columns: vec![
                 "label".to_string(),
                 "amount_a".to_string(),
@@ -1087,32 +1497,51 @@ mod tests {
             ],
         };
 
-        let lines = build_chart_lines(Some(&preview), ChartRenderMode::Bar, Some(2), Some(0));
-        assert!(lines
-            .first()
-            .is_some_and(|line| line.contains("value=amount_b label=label mode=BAR")));
+        let data = chart_data(&preview, Some(2), Some(0)).expect("chart data");
+        assert_eq!(data.value_col, 2);
+        assert_eq!(data.label_col, 0);
+        assert_eq!(
+            data.points,
+            vec![("first".to_string(), 3.0), ("second".to_string(), 7.0)]
+        );
     }
 
     #[test]
-    fn build_chart_lines_dot_mode_renders_dot_track() {
-        let preview = ExecutionPreview {
-            rewritten_sql: "select name, amount from t".to_string(),
-            columns: vec!["name".to_string(), "amount".to_string()],
-            rows: vec![
-                vec![
-                    WorkbenchValue::String("alpha".to_string()),
-                    WorkbenchValue::F64(10.0),
-                ],
-                vec![
-                    WorkbenchValue::String("beta".to_string()),
-                    WorkbenchValue::F64(20.0),
-                ],
-            ],
-        };
+    fn chart_render_mode_toggles_between_bar_and_line() {
+        assert_eq!(ChartRenderMode::Bar.next(), ChartRenderMode::Line);
+        assert_eq!(ChartRenderMode::Line.next(), ChartRenderMode::Bar);
+        assert_eq!(ChartRenderMode::Line.label(), "LINE");
+    }
 
-        let lines = build_chart_lines(Some(&preview), ChartRenderMode::Dot, None, None);
-        assert!(lines.first().is_some_and(|line| line.contains("mode=DOT")));
-        assert!(lines.iter().any(|line| line.contains("o")));
+    #[test]
+    fn chart_data_caps_materialized_points_for_large_results() {
+        let rows: Vec<Vec<WorkbenchValue>> = (0..CHART_MAX_POINTS + 50)
+            .map(|i| {
+                vec![
+                    WorkbenchValue::String(format!("row{i}")),
+                    WorkbenchValue::I64(i as i64),
+                ]
+            })
+            .collect();
+        let preview = ExecutionPreview {
+            columns: vec!["label".to_string(), "value".to_string()],
+            rows,
+        };
+        let data = chart_data(&preview, None, None).expect("chart data");
+        assert_eq!(data.points.len(), CHART_MAX_POINTS);
+        assert_eq!(data.total_rows, CHART_MAX_POINTS + 50);
+    }
+
+    #[test]
+    fn bar_chart_value_preserves_negative_magnitudes() {
+        // Largest magnitude (whether positive or negative) fills the chart.
+        assert_eq!(bar_chart_value(-20.0, 20.0), 10_000);
+        assert_eq!(bar_chart_value(20.0, 20.0), 10_000);
+        // A negative value renders a proportional, non-zero bar (not clamped to 0).
+        assert_eq!(bar_chart_value(-10.0, 20.0), 5_000);
+        assert_eq!(bar_chart_value(5.0, 20.0), 2_500);
+        // An all-zero series does not divide by zero.
+        assert_eq!(bar_chart_value(0.0, 0.0), 0);
     }
 
     fn fixture_runtime() -> SidemanticRuntime {
@@ -1149,57 +1578,131 @@ models:
     }
 
     #[test]
-    fn workbench_app_startup_sorts_models_and_rewrites_initial_query() {
+    fn workbench_app_startup_sorts_models_and_seeds_starter_query() {
         let app = WorkbenchApp::new(fixture_runtime(), None);
         assert_eq!(app.models[0].name, "customers");
         assert_eq!(app.models[1].name, "z_orders");
-        assert_eq!(app.sql_input, "select * from customers");
+        // First model has a dimension but no metrics → dimension-only starter.
+        assert_eq!(app.sql_input, "select\n  customers.country\nfrom customers");
+        assert_eq!(app.cursor, app.sql_char_len());
         assert_eq!(app.output_view, OutputView::Sql);
         assert_eq!(app.focus, FocusPanel::Sql);
-        assert_eq!(app.status, "Rewrite ok");
+        assert!(app.status.contains("Ready"));
         assert!(!app.output.trim().is_empty());
-
-        let with_connection =
-            WorkbenchApp::new(fixture_runtime(), Some("duckdb:///tmp/demo.db".to_string()));
-        assert_eq!(with_connection.status, "Rewrite ok");
     }
 
     #[test]
-    fn workbench_key_handling_updates_state_deterministically() {
+    fn run_without_connection_compiles_and_reports_missing_connection() {
         let mut app = WorkbenchApp::new(fixture_runtime(), None);
+        app.handle_key(ctrl('r'));
+        assert!(app.status.contains("No connection configured"));
+        assert_eq!(app.output_view, OutputView::Sql);
+        assert!(!app.output.trim().is_empty());
+    }
 
-        app.handle_key(key(KeyCode::Char('x')));
-        assert!(app.sql_input.ends_with('x'));
+    #[test]
+    fn f5_previews_compiled_sql_without_executing() {
+        // Even with a connection configured, F5 must never hit the database:
+        // it is the legacy compile-only "rewrite" preview.
+        let mut app = WorkbenchApp::new(
+            fixture_runtime(),
+            Some("duckdb:///tmp/sidemantic-does-not-exist.db".to_string()),
+        );
+        app.handle_key(key(KeyCode::F(5)));
+        assert!(app.execution_preview.is_none());
+        assert_eq!(app.output_view, OutputView::Sql);
+        // The clean compiled SQL is shown, not an execution attempt/error.
+        assert!(!app.output.contains("Execution failed"), "{}", app.output);
+        assert!(app.status.contains("not run"), "{}", app.status);
+    }
+
+    #[test]
+    fn editor_supports_cursor_movement_and_mid_string_edits() {
+        let mut app = WorkbenchApp::new(fixture_runtime(), None);
+        app.sql_input = "abc".to_string();
+        app.cursor = 3;
+
+        app.handle_key(key(KeyCode::Left));
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.cursor, 1);
+        app.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(app.sql_input, "aXbc");
+        assert_eq!(app.cursor, 2);
         app.handle_key(key(KeyCode::Backspace));
-        assert!(!app.sql_input.ends_with('x'));
+        assert_eq!(app.sql_input, "abc");
+        app.handle_key(key(KeyCode::Home));
+        assert_eq!(app.cursor, 0);
+        app.handle_key(key(KeyCode::Delete));
+        assert_eq!(app.sql_input, "bc");
+        app.handle_key(key(KeyCode::End));
+        assert_eq!(app.cursor, 2);
         app.handle_key(key(KeyCode::Enter));
-        assert!(app.sql_input.ends_with('\n'));
-        app.handle_key(ctrl('z'));
-        assert!(!app.sql_input.ends_with('z'));
+        app.handle_key(key(KeyCode::Char('z')));
+        assert_eq!(app.sql_input, "bc\nz");
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.cursor_line_col(), (0, 1));
+    }
+
+    #[test]
+    fn key_handling_switches_views_models_and_focus() {
+        let mut app = WorkbenchApp::new(fixture_runtime(), None);
 
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focus, FocusPanel::Models);
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.selected_model_index, 1);
-        app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.selected_model_index, 1);
-        app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.selected_model_index, 0);
         app.handle_key(key(KeyCode::Enter));
-        assert_eq!(app.sql_input, "select * from customers");
+        // Loading a starter focuses the editor with the model's query.
+        assert_eq!(app.focus, FocusPanel::Sql);
+        assert!(app.sql_input.contains("z_orders.revenue"));
 
-        app.handle_key(key(KeyCode::F(5)));
-        assert_eq!(app.status, "Rewrite ok");
-        app.handle_key(key(KeyCode::F(6)));
-        assert_eq!(app.status, "Execute skipped: no connection configured");
-        app.handle_key(key(KeyCode::F(7)));
+        app.handle_key(ctrl('1'));
         assert_eq!(app.output_view, OutputView::Table);
+        app.handle_key(ctrl('2'));
+        assert_eq!(app.output_view, OutputView::Sql);
         app.handle_key(ctrl('3'));
         assert_eq!(app.output_view, OutputView::Chart);
+        app.handle_key(key(KeyCode::F(7)));
+        assert_eq!(app.output_view, OutputView::Sql);
         app.handle_key(ctrl('m'));
-        assert_eq!(app.chart_mode, ChartRenderMode::Dot);
+        assert_eq!(app.chart_mode, ChartRenderMode::Line);
+
         app.handle_key(key(KeyCode::Esc));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn mouse_click_selects_model_and_switches_view_tab() {
+        let mut app = WorkbenchApp::new(fixture_runtime(), None);
+        let area = Rect::new(0, 0, 100, 32);
+        let rects = ui_rects(area);
+
+        // Click the second model row.
+        let second_row = rects.models.y + 1 + 1;
+        app.handle_mouse(
+            area,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rects.models.x + 2,
+                row: second_row,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.focus, FocusPanel::Models);
+        assert_eq!(app.selected_model_index, 1);
+
+        // Click the Chart tab.
+        let chart_range = view_tab_ranges()[2];
+        app.handle_mouse(
+            area,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rects.tabs.x + chart_range.1 + 1,
+                row: rects.tabs.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.output_view, OutputView::Chart);
     }
 
     #[test]
@@ -1216,7 +1719,9 @@ models:
             "Models",
             "Model Details",
             "SQL Input",
-            "Output [SQL]",
+            "TABLE",
+            "SQL",
+            "CHART",
             "connection=none",
         ] {
             assert!(
@@ -1226,7 +1731,6 @@ models:
         }
 
         app.execution_preview = Some(ExecutionPreview {
-            rewritten_sql: "select country, count(*) from customers group by 1".to_string(),
             columns: vec!["country".to_string(), "count".to_string()],
             rows: vec![vec![
                 WorkbenchValue::String("US".to_string()),
@@ -1244,9 +1748,14 @@ models:
         app.output_view = OutputView::Chart;
         terminal
             .draw(|frame| draw_app(frame, &app))
-            .expect("chart view should draw");
+            .expect("bar chart should draw");
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("chart source"));
+        assert!(rendered.contains("count by country"), "{rendered}");
+
+        app.chart_mode = ChartRenderMode::Line;
+        terminal
+            .draw(|frame| draw_app(frame, &app))
+            .expect("line chart should draw");
 
         let backend = TestBackend::new(60, 20);
         let mut small_terminal = Terminal::new(backend).expect("small terminal should initialize");

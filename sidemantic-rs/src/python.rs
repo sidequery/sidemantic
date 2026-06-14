@@ -16,6 +16,7 @@ use crate::runtime::{
     dimension_sql_expr_with_yaml as dimension_sql_expr_with_yaml_native,
     dimension_with_granularity_with_yaml as dimension_with_granularity_with_yaml_native,
     evaluate_table_calculation_expression as evaluate_table_calculation_expression_native,
+    export_osi_yaml as export_osi_yaml_native,
     extract_column_references as extract_column_references_native,
     extract_metric_dependencies_from_yaml as extract_metric_dependencies_from_yaml_native,
     extract_preaggregation_patterns as extract_preaggregation_patterns_native,
@@ -298,6 +299,25 @@ fn load_graph_with_sql(sql_content: &str) -> PyResult<String> {
 #[pyfunction]
 fn load_graph_from_directory(path: &str) -> PyResult<String> {
     load_graph_from_directory_native(path).map_err(|e| match e {
+        SidemanticError::Validation(_)
+        | SidemanticError::YamlParse(_)
+        | SidemanticError::InvalidConfig(_)
+        | SidemanticError::FileNotFound(_)
+        | SidemanticError::Io(_) => PyValueError::new_err(e.to_string()),
+        _ => PyRuntimeError::new_err(e.to_string()),
+    })
+}
+
+/// Export a native-YAML graph (plus optional graph-level metrics and top-level
+/// `metadata`) to OSI YAML.
+#[pyfunction]
+#[pyo3(signature = (models_yaml, graph_metrics_yaml, dialects))]
+fn export_osi(
+    models_yaml: &str,
+    graph_metrics_yaml: &str,
+    dialects: Vec<String>,
+) -> PyResult<String> {
+    export_osi_yaml_native(models_yaml, graph_metrics_yaml, dialects).map_err(|e| match e {
         SidemanticError::Validation(_)
         | SidemanticError::YamlParse(_)
         | SidemanticError::InvalidConfig(_)
@@ -1304,6 +1324,7 @@ fn sidemantic_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_graph_with_yaml, m)?)?;
     m.add_function(wrap_pyfunction!(load_graph_with_sql, m)?)?;
     m.add_function(wrap_pyfunction!(load_graph_from_directory, m)?)?;
+    m.add_function(wrap_pyfunction!(export_osi, m)?)?;
     m.add_function(wrap_pyfunction!(parse_sql_definitions_payload, m)?)?;
     m.add_function(wrap_pyfunction!(parse_sql_graph_definitions_payload, m)?)?;
     m.add_function(wrap_pyfunction!(parse_sql_model_payload, m)?)?;

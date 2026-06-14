@@ -152,8 +152,11 @@ def _parse_custom_quantiles(value: Any) -> list[float]:
     return quantiles
 
 
+# Anchored at both ends so only a SQL expression that is *entirely* a percentile
+# (no prefix/suffix such as ``1 + PERCENTILE_CONT(...)``) is reclassified as a
+# percentile metric on export; otherwise the prefix would be silently dropped.
 _PERCENTILE_CONT_RE = re.compile(
-    r"PERCENTILE_CONT\s*\(\s*(?P<quantile>[0-9.]+)\s*\)\s*WITHIN\s+GROUP\s*\(\s*ORDER\s+BY\s+(?P<column>.+?)\s*\)\s*$",
+    r"\A\s*PERCENTILE_CONT\s*\(\s*(?P<quantile>[0-9.]+)\s*\)\s*WITHIN\s+GROUP\s*\(\s*ORDER\s+BY\s+(?P<column>.+?)\s*\)\s*\Z",
     re.IGNORECASE | re.DOTALL,
 )
 

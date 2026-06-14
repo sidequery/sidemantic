@@ -259,6 +259,37 @@ class TestAtScaleSMLExport:
         assert exported["compression"] == 10000
         assert exported["column"] == "amount"
 
+    def test_prefixed_percentile_expression_not_reclassified(self, tmp_path):
+        """A derived metric whose SQL only contains a percentile sub-expression is not a percentile.
+
+        Percentile detection must match the full SQL expression. An expression like
+        ``1 + PERCENTILE_CONT(...)`` must export as a metric_calc preserving the whole
+        expression, not as a percentile metric that drops the ``1 +`` prefix.
+        """
+        prefixed_sql = "1 + PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)"
+        orders = Model(
+            name="orders",
+            table="public.orders",
+            primary_key="order_id",
+            dimensions=[Dimension(name="order_id", type="numeric", sql="order_id")],
+            metrics=[
+                Metric(name="weird_pct", type="derived", sql=prefixed_sql),
+            ],
+        )
+        graph = SemanticGraph()
+        graph.add_model(orders)
+
+        adapter = AtScaleSMLAdapter()
+        out = tmp_path / "out"
+        adapter.export(graph, out)
+
+        with open(out / "metrics" / "weird_pct.yml") as f:
+            exported = yaml.safe_load(f)
+        # Must degrade to a metric_calc that preserves the full expression, not a percentile.
+        assert exported["object_type"] == "metric_calc"
+        assert exported["expression"] == prefixed_sql
+        assert "custom_quantiles" not in exported
+
     def test_export_relationship_level_uses_dimension(self, tmp_path):
         orders = Model(
             name="orders",

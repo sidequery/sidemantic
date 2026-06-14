@@ -1,0 +1,54 @@
+{
+  "name": "sidemantic-wasm",
+  "version": "0.1.0",
+  "description": "In-browser Sidemantic semantic layer: compile, validate, and rewrite semantic queries to SQL via WebAssembly. Pair with DuckDB-WASM to execute.",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://sidemantic.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sidequery/sidemantic.git",
+    "directory": "sidemantic-wasm"
+  },
+  "bugs": {
+    "url": "https://github.com/sidequery/sidemantic/issues"
+  },
+  "keywords": [
+    "sidemantic",
+    "semantic-layer",
+    "metrics",
+    "sql",
+    "wasm",
+    "webassembly",
+    "duckdb",
+    "analytics"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
+    "./wasm": {
+      "types": "./wasm/sidemantic.d.ts",
+      "import": "./wasm/sidemantic.js"
+    },
+    "./sidemantic_bg.wasm": "./wasm/sidemantic_bg.wasm"
+  },
+  "main": "./index.js",
+  "module": "./index.js",
+  "types": "./index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "prepack": "bash scripts/build.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

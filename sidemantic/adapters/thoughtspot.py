@@ -209,6 +209,23 @@ def _simple_column(sql: str | None, fallback: str | None) -> str | None:
     return fallback
 
 
+def _simple_table_column(sql: str | None, tables: set[str]) -> tuple[str, str] | None:
+    """Return the ``(table, column)`` pair if ``sql`` is exactly ``table.column``.
+
+    Only matches when ``table`` is one of the joined ``tables`` so the reference
+    corresponds to a column projected by the derived subquery.
+    """
+    if not sql:
+        return None
+    match = _TML_DOT_REF.fullmatch(sql.strip())
+    if not match:
+        return None
+    table, column = match.group(1), match.group(2)
+    if table in tables:
+        return (table, column)
+    return None
+
+
 def _expose_joined_columns(
     sql: str | None,
     tables: set[str],
@@ -216,6 +233,7 @@ def _expose_joined_columns(
     metrics: list[Metric],
     base_table: str | None = None,
     primary_key: str | None = None,
+    foreign_keys: dict[str, tuple[str, str]] | None = None,
 ) -> str | None:
     """Rewrite a joined model's derived SQL so its columns are queryable.
 
@@ -231,6 +249,12 @@ def _expose_joined_columns(
     The model's ``primary_key`` is also passed through by the SQL generator as a
     bare column, so the base table's primary key is exposed under that name when
     no model column already projects it.
+
+    ``foreign_keys`` maps each relationship join key (the bare column name the
+    SQL generator selects when this model participates in a cross-model join) to
+    the ``(table, column)`` that backs it. Each one is projected under its bare
+    name when no model column already exposes it, so the derived subquery stays
+    joinable.
     """
     if not sql or "SELECT * FROM " not in sql:
         return sql
@@ -262,13 +286,27 @@ def _expose_joined_columns(
     # uses the in-scope output alias instead of an out-of-scope bare column.
     bare_to_alias: dict[str, str] = {}
     ambiguous: set[str] = set()
-    for (_table, column), alias in projection.items():
-        if column in bare_to_alias and bare_to_alias[column] != alias:
-            ambiguous.add(column)
+
+    def _record_bare(name: str, alias: str) -> None:
+        if name in bare_to_alias and bare_to_alias[name] != alias:
+            ambiguous.add(name)
         else:
-            bare_to_alias[column] = alias
-    for column in ambiguous:
-        bare_to_alias.pop(column, None)
+            bare_to_alias[name] = alias
+
+    for (_table, column), alias in projection.items():
+        _record_bare(column, alias)
+    # Formulas can also reference another TML column by its model name even when
+    # that name differs from the backing DB column (e.g. a column `gross_revenue`
+    # mapped to `column_id: sales::gross_amt`, with formula `[gross_revenue] -
+    # [discount]`). The projection aliases the DB column (`sales__gross_amt`), so
+    # also map the model column name to that alias; otherwise the bare model name
+    # stays out of scope and the query fails.
+    for field in (*dimensions, *metrics):
+        ref = _simple_table_column(field.sql, tables)
+        if ref:
+            _record_bare(field.name, projection[ref])
+    for name in ambiguous:
+        bare_to_alias.pop(name, None)
 
     def _rewrite(expr: str | None) -> str | None:
         if not expr:
@@ -295,12 +333,25 @@ def _expose_joined_columns(
 
     select_parts = [f"{table}.{column} AS {alias}" for (table, column), alias in projection.items()]
 
+    # Track which bare output names already exist so pass-through keys are not
+    # projected twice.
+    exposed: set[str] = set(projection.values())
+
     # The SQL generator passes through `model.primary_key` as a bare column when
     # querying derived models. Expose `<base_table>.<primary_key>` under that
     # name so the key resolves instead of referencing an out-of-scope column.
-    aliases = set(projection.values())
-    if base_table and primary_key and primary_key not in aliases:
+    if base_table and primary_key and primary_key not in exposed:
         select_parts.append(f"{base_table}.{primary_key} AS {primary_key}")
+        exposed.add(primary_key)
+
+    # Relationship foreign keys are also passed through as bare columns when this
+    # model is joined to a separately loaded related model. A foreign key that is
+    # not already projected by a dimension/metric (or the primary key) would be
+    # missing from the subquery, so expose it from its backing table.
+    for fk, (fk_table, fk_column) in sorted((foreign_keys or {}).items()):
+        if fk and fk not in exposed and fk_table in tables:
+            select_parts.append(f"{fk_table}.{fk_column} AS {fk}")
+            exposed.add(fk)
 
     select_list = ", ".join(select_parts)
     return sql.replace("SELECT * FROM ", f"SELECT {select_list} FROM ", 1)
@@ -767,7 +818,19 @@ class ThoughtSpotAdapter(BaseAdapter):
                 known_tables.add(join_def.get("source"))
                 known_tables.add(join_def.get("destination"))
             known_tables.discard(None)
-            sql = _expose_joined_columns(sql, known_tables, dimensions, metrics, base_table, primary_key)
+
+            # Resolve each relationship's foreign key to the `(table, column)` it
+            # comes from in the join `on` clauses, so the derived projection can
+            # expose those join keys for cross-model queries.
+            fk_refs: dict[str, tuple[str, str]] = {}
+            fk_names = {rel.foreign_key for rel in relationships if rel.foreign_key}
+            for join_def in flat_joins:
+                left, right = _extract_join_refs(join_def.get("on"), path_lookup)
+                for ref in (left, right):
+                    if ref and ref[1] in fk_names and ref[0] in known_tables:
+                        fk_refs.setdefault(ref[1], ref)
+
+            sql = _expose_joined_columns(sql, known_tables, dimensions, metrics, base_table, primary_key, fk_refs)
 
         default_time_dimension = None
         default_grain = None

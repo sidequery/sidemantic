@@ -1006,6 +1006,95 @@ def test_thoughtspot_single_aliased_table_is_queryable():
     assert rows == [(1, 100.0), (2, 25.0)]
 
 
+def test_thoughtspot_renamed_column_formula_ref_is_queryable():
+    """A formula referencing a TML column whose backing DB column differs stays queryable.
+
+    Regression: a column `gross_revenue` mapped to `column_id: sales::gross_amt`
+    is projected as `sales.gross_amt AS sales__gross_amt`, but the bare-reference
+    map was keyed only on DB column names. A formula `[gross_revenue] - [discount]`
+    kept the bare model names `gross_revenue`/`discount`, which are out of scope in
+    the derived subquery, so a normal query failed. The bare model names must
+    resolve to their projected output aliases.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_renamed_formula.model.tml")
+    model = graph.models["sales_model"]
+
+    # The formula's bare model-name refs resolve to the projected DB-column aliases.
+    net_revenue = model.get_metric("net_revenue")
+    assert net_revenue is not None
+    assert net_revenue.sql == "sales__gross_amt - sales__disc_amt"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, gross_amt DOUBLE, disc_amt DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0, 5), (2, 50.0, 5.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(
+        metrics=["sales_model.gross_revenue", "sales_model.net_revenue"],
+        dimensions=["sales_model.customer_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    # gross_revenue = 150, net_revenue = (100-10) + (50-5) = 135
+    assert rows == [("Acme", 150.0, 135.0)]
+
+
+def test_thoughtspot_relationship_fk_is_projected_for_cross_model_query():
+    """A relationship foreign key is exposed even when it is not also a column.
+
+    Regression: the derived projection only emitted columns referenced by
+    dimensions/metrics plus the primary key. When this model joined a separately
+    loaded related model, the SQL generator selected the relationship's foreign
+    key (e.g. `region_id`) as a bare column from the derived subquery, but it was
+    never projected, so the cross-model query failed with "Column region_id ...
+    cannot be referenced before it is defined".
+    """
+    import duckdb
+
+    from sidemantic.core.dimension import Dimension
+    from sidemantic.core.model import Model
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_relationship_fk.model.tml")
+    sales_model = graph.models["sales_model"]
+
+    # The foreign key is projected from the base table under its bare name even
+    # though no dimension/metric references it.
+    assert sales_model.sql is not None
+    assert "sales.region_id AS region_id" in sales_model.sql
+    rel = {r.name: r for r in sales_model.relationships}["regions"]
+    assert rel.foreign_key == "region_id"
+
+    # A separately loaded `regions` model joined via the parsed relationship.
+    regions = Model(
+        name="regions",
+        table="regions",
+        primary_key="id",
+        dimensions=[Dimension(name="name", type="categorical", sql="name")],
+    )
+
+    layer = SemanticLayer()
+    layer.add_model(sales_model)
+    layer.add_model(regions)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, region_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 7), (2, 25.0, 7)")
+    con.execute("CREATE TABLE regions (id INT, name VARCHAR)")
+    con.execute("INSERT INTO regions VALUES (7, 'West')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["regions.name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("West", 125.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

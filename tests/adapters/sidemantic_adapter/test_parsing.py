@@ -1118,5 +1118,67 @@ def test_dimension_window_in_sql_generation():
     assert "LEAD(event) OVER (PARTITION BY person_id ORDER BY timestamp)" in sql
 
 
+def test_parse_native_yaml_round_trips_cortex_enrichment_fields(tmp_path):
+    """Cortex enrichment fields (synonyms/sample_values/search service) survive round-trip.
+
+    These fields are populated when importing a Snowflake Cortex model; the native
+    adapter must both accept them in hand-authored YAML and re-emit them on export
+    so `sidemantic export-native` does not silently drop them.
+    """
+    adapter = SidemanticAdapter()
+    yaml_path = tmp_path / "orders.yml"
+    yaml_path.write_text(
+        """
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+        synonyms:
+          - state
+          - order_status
+        sample_values:
+          - delivered
+          - shipped
+        cortex_search_service_name: ORDERS_STATUS_SEARCH
+    metrics:
+      - name: order_count
+        agg: count
+        synonyms:
+          - num_orders
+"""
+    )
+
+    graph = adapter.parse(yaml_path)
+    model = graph.models["orders"]
+
+    status = model.get_dimension("status")
+    assert status.synonyms == ["state", "order_status"]
+    assert status.sample_values == ["delivered", "shipped"]
+    assert status.cortex_search_service_name == "ORDERS_STATUS_SEARCH"
+    order_count = model.get_metric("order_count")
+    assert order_count.synonyms == ["num_orders"]
+
+    export_path = tmp_path / "exported.yml"
+    adapter.export(graph, export_path)
+    exported = yaml.safe_load(export_path.read_text())
+
+    exported_dim = exported["models"][0]["dimensions"][0]
+    assert exported_dim["synonyms"] == ["state", "order_status"]
+    assert exported_dim["sample_values"] == ["delivered", "shipped"]
+    assert exported_dim["cortex_search_service_name"] == "ORDERS_STATUS_SEARCH"
+    exported_metric = exported["models"][0]["metrics"][0]
+    assert exported_metric["synonyms"] == ["num_orders"]
+
+    # And a full re-parse preserves them.
+    graph2 = adapter.parse(export_path)
+    status2 = graph2.models["orders"].get_dimension("status")
+    assert status2.synonyms == ["state", "order_status"]
+    assert status2.cortex_search_service_name == "ORDERS_STATUS_SEARCH"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

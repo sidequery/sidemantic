@@ -79,6 +79,9 @@ DIMENSION_FIELDS = {
     "label",
     "metadata",
     "meta",
+    "synonyms",
+    "sample_values",
+    "cortex_search_service_name",
     "format",
     "value_format_name",
     "parent",
@@ -118,6 +121,7 @@ METRIC_FIELDS = {
     "periods",
     "retention_granularity",
     "granularity",
+    "synonyms",
     "inner_metrics",
     "entity_dimensions",
     "having",
@@ -561,6 +565,9 @@ class SidemanticAdapter(BaseAdapter):
                 parent=dim_def.get("parent"),
                 metadata=dim_def.get("metadata"),
                 meta=dim_def.get("meta"),
+                synonyms=dim_def.get("synonyms"),
+                sample_values=dim_def.get("sample_values"),
+                cortex_search_service_name=dim_def.get("cortex_search_service_name"),
                 window=dim_def.get("window"),
             )
             dimensions.append(dimension)
@@ -781,6 +788,7 @@ class SidemanticAdapter(BaseAdapter):
             "value_format_name",
             "drill_fields",
             "non_additive_dimension",
+            "synonyms",
             "meta",
             "public",
         ]:
@@ -928,6 +936,12 @@ class SidemanticAdapter(BaseAdapter):
                     dim_def["metadata"] = dim.metadata
                 if dim.meta:
                     dim_def["meta"] = dim.meta
+                if dim.synonyms:
+                    dim_def["synonyms"] = dim.synonyms
+                if dim.sample_values:
+                    dim_def["sample_values"] = dim.sample_values
+                if dim.cortex_search_service_name:
+                    dim_def["cortex_search_service_name"] = dim.cortex_search_service_name
                 if dim.format:
                     dim_def["format"] = dim.format
                 if dim.value_format_name:
@@ -966,6 +980,8 @@ class SidemanticAdapter(BaseAdapter):
                     measure_def["metadata"] = measure.metadata
                 if measure.meta:
                     measure_def["meta"] = measure.meta
+                if measure.synonyms:
+                    measure_def["synonyms"] = measure.synonyms
                 if not measure.public:
                     measure_def["public"] = measure.public
                 if measure.format:

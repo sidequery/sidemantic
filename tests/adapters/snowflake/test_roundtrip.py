@@ -423,3 +423,35 @@ metrics:
         # Bare table-local columns must be qualified with {model}.
         assert "{model}.amount" in metric.sql
         assert "{model}.id" in metric.sql
+
+    def test_export_skips_auto_registered_model_metrics(self, adapter, tmp_path):
+        """Model-owned metrics auto-registered at graph level must not leak into top-level metrics.
+
+        ``graph.add_model()`` registers ``time_comparison``/``conversion`` metrics in
+        ``graph.metrics``. These are already serialized inside their owning table and
+        have no valid Snowflake top-level representation, so export must skip them.
+        """
+        model = Model(
+            name="orders",
+            table="ORDERS",
+            primary_key="id",
+            metrics=[
+                Metric(name="total_revenue", agg="sum", sql="amount"),
+                Metric(name="revenue_yoy", type="time_comparison", base_metric="total_revenue", comparison_type="yoy"),
+            ],
+        )
+        graph = SemanticGraph()
+        graph.add_model(model)
+        # Sanity check: the time_comparison metric is auto-registered at graph level.
+        assert "revenue_yoy" in graph.metrics
+
+        output_file = tmp_path / "export.yaml"
+        adapter.export(graph, output_file)
+
+        with open(output_file) as f:
+            data = yaml.safe_load(f)
+
+        # No top-level metrics section should be emitted for model-owned metrics.
+        assert "metrics" not in data
+        # The export must still re-parse cleanly.
+        adapter.parse(output_file)

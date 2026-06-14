@@ -627,9 +627,22 @@ class SnowflakeAdapter(BaseAdapter):
         # Export graph-level (top-level) metrics. These have no owning table and
         # were parsed from the semantic model's top-level `metrics:` section, so
         # they must be serialized back there to survive a parse/export round-trip.
+        #
+        # ``graph.metrics`` also contains model-owned metrics that ``add_model()``
+        # auto-registers at graph level (``time_comparison``/``conversion``). Those
+        # are already serialized inside their table and have no valid Snowflake
+        # top-level representation, so skip any metric that is owned by a model.
+        owned_metric_names = {metric.name for model in resolved_models.values() for metric in model.metrics}
         top_level_metrics = []
-        for metric in graph.metrics.values():
-            top_level_metrics.append(self._export_metric(metric))
+        for name, metric in graph.metrics.items():
+            if name in owned_metric_names:
+                continue
+            metric_def = self._export_metric(metric)
+            # Skip metric types Snowflake cannot represent (no `expr`) rather than
+            # emitting an invalid stub that would fail to re-parse.
+            if "expr" not in metric_def:
+                continue
+            top_level_metrics.append(metric_def)
         if top_level_metrics:
             semantic_model["metrics"] = top_level_metrics
 
@@ -711,8 +724,14 @@ class SnowflakeAdapter(BaseAdapter):
                 fact = self._export_fact(metric)
                 facts.append(fact)
             else:
-                # Complex metric or derived -> metric
+                # Complex metric or derived -> metric. Snowflake has no
+                # representation for metric types like time_comparison or
+                # conversion, so _export_metric() cannot build an `expr` for
+                # them; skip those rather than emitting an invalid stub that
+                # would fail to re-parse.
                 metric_def = self._export_metric(metric)
+                if "expr" not in metric_def:
+                    continue
                 metrics.append(metric_def)
 
         if facts:

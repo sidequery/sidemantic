@@ -417,6 +417,86 @@ Dataset combined = base_ds.extend(reusable)
         temp_path.unlink()
 
 
+def test_holistics_inline_metric_assignment():
+    """A standalone metric written in inline assignment form (Metric x = Metric {...})
+    registers as a graph-level metric, matching block-form standalone metrics."""
+    aml_content = """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric revenue = Metric {
+  label: 'Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount);;
+}
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        assert "revenue" in graph.metrics
+        assert graph.metrics["revenue"].sql == "SUM(base_orders.amount)"
+    finally:
+        temp_path.unlink()
+
+
+def test_holistics_inline_dataset_assignment_relationships():
+    """Relationships declared inside an inline Dataset assignment are attached to
+    the referenced models, not dropped (so cross-model metrics have a join path)."""
+    aml_content = """
+Model rel_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension customer_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Model rel_customers {
+  type: 'table'
+  table_name: 'customers'
+  dimension id { type: 'number' }
+  dimension name { type: 'text' }
+}
+
+Dataset rel_ds = Dataset {
+  label: 'Rel DS'
+  models: [rel_orders, rel_customers]
+  relationships: [
+    rel(rel_orders.customer_id > rel_customers.id, true)
+  ]
+  metric total_amount {
+    label: 'Total Amount'
+    type: 'number'
+    definition: @aql sum(rel_orders.amount);;
+  }
+}
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        assert "total_amount" in graph.metrics
+        rels = graph.models["rel_orders"].relationships
+        assert any(
+            r.name == "rel_customers" and r.type == "many_to_one" and r.foreign_key == "customer_id" for r in rels
+        ), f"expected join edge attached, got {[(r.name, r.type) for r in rels]}"
+    finally:
+        temp_path.unlink()
+
+
 # =============================================================================
 # RELATIONSHIP PARSING TESTS
 # =============================================================================

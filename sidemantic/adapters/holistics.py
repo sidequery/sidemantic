@@ -254,7 +254,9 @@ class HolisticsAdapter(BaseAdapter):
         # PartialDataset blocks composed via .extend(). Datasets surface as
         # models so their cross-model dimensions/metrics are not dropped, and
         # standalone metrics register as graph-level metrics.
-        dataset_models, standalone_metrics = _resolve_dataset_artifacts(documents, constants, resolved_models)
+        dataset_models, standalone_metrics, assignment_dataset_blocks = _resolve_dataset_artifacts(
+            documents, constants, resolved_models
+        )
         for model in dataset_models.values():
             if model.name not in graph.models:
                 graph.add_model(model)
@@ -285,6 +287,13 @@ class HolisticsAdapter(BaseAdapter):
                 dataset_relationships, dataset_rel_refs = _parse_dataset_relationships(dataset, context)
                 pending_relationships.extend(dataset_relationships)
                 pending_relationship_refs.extend(dataset_rel_refs)
+
+        # Assignment-form datasets (Dataset x = Dataset { ... }) are not top-level
+        # AmlBlocks, so attach their relationships from the resolved blocks.
+        for dataset_block, dataset_context in assignment_dataset_blocks:
+            dataset_relationships, dataset_rel_refs = _parse_dataset_relationships(dataset_block, dataset_context)
+            pending_relationships.extend(dataset_relationships)
+            pending_relationship_refs.extend(dataset_rel_refs)
 
         for rel_ref in pending_relationship_refs:
             rel = relationships_by_name.get(rel_ref.name)
@@ -1191,6 +1200,13 @@ def _collect_dataset_definitions(
             if isinstance(item, ObjectAssignment) and item.kind in {"Dataset", "PartialDataset"}:
                 name = _qualify_declared_name(item.name, context.module_prefix)
                 dataset_assignments[name] = (item, context)
+            elif isinstance(item, ObjectAssignment) and item.kind == "Metric":
+                # Inline assignment form: `Metric x = Metric { ... }`. Materialize
+                # the value's items into a metric block, matching block-form metrics.
+                value = item.value
+                if isinstance(value, (TypedBlock, InlineBlock)):
+                    name = _qualify_declared_name(item.name, context.module_prefix)
+                    metric_blocks[name] = (AmlBlock(kind="Metric", name=name, items=value.items), context)
 
     return dataset_blocks, partial_dataset_blocks, metric_blocks, dataset_assignments
 
@@ -1199,8 +1215,13 @@ def _resolve_dataset_artifacts(
     documents: Iterable[_AmlDocument],
     constants: dict[str, AmlValue],
     existing_models: dict[str, Model],
-) -> tuple[dict[str, Model], dict[str, Metric]]:
-    """Resolve dataset-level fields and standalone metrics into models / graph metrics."""
+) -> tuple[dict[str, Model], dict[str, Metric], list[tuple[AmlBlock, _FileContext]]]:
+    """Resolve dataset-level fields and standalone metrics into models / graph metrics.
+
+    Also returns the resolved assignment-form Dataset blocks (with their
+    relationships property intact) so the relationship pass can attach join
+    edges declared inside inline `Dataset x = Dataset { ... }` assignments.
+    """
     documents = list(documents)
     dataset_blocks, partial_dataset_blocks, metric_blocks, dataset_assignments = _collect_dataset_definitions(documents)
 
@@ -1238,6 +1259,10 @@ def _resolve_dataset_artifacts(
         if model and model.name not in existing_models:
             dataset_models[model.name] = model
 
+    # Resolved assignment-form dataset blocks, surfaced so the relationship pass
+    # can attach join edges declared inside them.
+    assignment_dataset_blocks: list[tuple[AmlBlock, _FileContext]] = []
+
     for name, (assignment, context) in dataset_assignments.items():
         # PartialDataset assignments are reusable composition fragments (consumed
         # via .extend()), not queryable datasets, mirroring named PartialDataset
@@ -1248,6 +1273,7 @@ def _resolve_dataset_artifacts(
         if not block:
             continue
         block_with_name = AmlBlock(kind="Dataset", name=name, items=block.items)
+        assignment_dataset_blocks.append((block_with_name, context))
         model = _parse_dataset_block(block_with_name, constants, context)
         if model and model.name not in existing_models:
             dataset_models[model.name] = model
@@ -1261,7 +1287,7 @@ def _resolve_dataset_artifacts(
             metric.name = name
             standalone_metrics[name] = metric
 
-    return dataset_models, standalone_metrics
+    return dataset_models, standalone_metrics, assignment_dataset_blocks
 
 
 def _parse_dataset_block(block: AmlBlock, constants: dict[str, AmlValue], context: _FileContext) -> Model | None:

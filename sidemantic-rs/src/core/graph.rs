@@ -284,6 +284,22 @@ impl SemanticGraph {
         self.models.values()
     }
 
+    /// Add a graph-level metric without validating its dependencies.
+    ///
+    /// Use when reconstructing a graph whose metrics were already validated
+    /// elsewhere (e.g. re-exporting a graph built by the Python layer), where
+    /// insertion order may not match dependency order.
+    pub fn add_metric_unvalidated(&mut self, metric: Metric) -> Result<()> {
+        if self.get_metric(&metric.name).is_some() {
+            return Err(SidemanticError::Validation(format!(
+                "Measure '{}' already exists",
+                metric.name
+            )));
+        }
+        self.metrics.insert(metric.name.clone(), metric);
+        Ok(())
+    }
+
     /// Add a graph-level metric.
     pub fn add_metric(&mut self, metric: Metric) -> Result<()> {
         if self.get_metric(&metric.name).is_some() {

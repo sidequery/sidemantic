@@ -1115,9 +1115,13 @@ pub fn export_osi_yaml(
     let mut graph = runtime.graph().clone();
 
     if !graph_metrics_yaml.trim().is_empty() {
+        // These metrics came from an already-valid graph; register them without
+        // dependency validation so export does not depend on the order metrics
+        // happen to appear in (e.g. a ratio listed before the metrics it
+        // references).
         for metric in crate::config::schema::metrics_from_config_yaml(graph_metrics_yaml)? {
             if graph.get_metric(&metric.name).is_none() {
-                graph.add_metric(metric)?;
+                graph.add_metric_unvalidated(metric)?;
             }
         }
     }
@@ -5796,6 +5800,43 @@ pub fn validate_query_references(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn test_export_osi_yaml_accepts_out_of_order_graph_metrics() {
+        // A ratio metric listed before the graph metrics it references must not
+        // fail export: these come from an already-valid graph and graph.metrics
+        // is insertion-ordered, not dependency-ordered.
+        let models_yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: amount
+        type: numeric
+"#;
+        let graph_metrics_yaml = r#"
+- name: revenue_per_order
+  type: ratio
+  numerator: total_revenue
+  denominator: order_count
+- name: total_revenue
+  agg: sum
+  sql: amount
+- name: order_count
+  agg: count
+"#;
+
+        let osi = export_osi_yaml(
+            models_yaml,
+            graph_metrics_yaml,
+            vec!["ANSI_SQL".to_string()],
+        )
+        .expect("out-of-order graph metrics should export");
+        assert!(osi.contains("revenue_per_order"));
+        assert!(osi.contains("total_revenue"));
+        assert!(osi.contains("order_count"));
+    }
 
     #[test]
     fn test_runtime_compile_and_rewrite() {

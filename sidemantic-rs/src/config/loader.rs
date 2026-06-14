@@ -1132,10 +1132,6 @@ fn infer_relationships(models: &mut HashMap<String, Model>, skip: &HashSet<Strin
                         .find(|n| n.to_lowercase() == target)
                         .unwrap()
                         .clone();
-                    // Don't infer relationships into models that declare them explicitly.
-                    if skip.contains(&actual_target) {
-                        continue;
-                    }
                     let target_primary_keys = models
                         .get(&actual_target)
                         .map(Model::primary_keys)
@@ -1314,6 +1310,62 @@ semantic_model:
             loaded.model_sources["orders"].source_format,
             "OSI".to_string()
         );
+    }
+
+    #[test]
+    fn test_directory_infers_native_fk_into_osi_target() {
+        // A native source model should still infer its many_to_one even when
+        // the matched target model came from OSI (which is excluded only as an
+        // inference *source*, not as a target).
+        let dir = std::env::temp_dir().join(format!(
+            "sidemantic-rs-loader-mixed-osi-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("orders.yml"),
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - name: customer_id
+        type: categorical
+"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("customers.yaml"),
+            r#"
+semantic_model:
+  - name: crm
+    datasets:
+      - name: customers
+        source: public.customers
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+"#,
+        )
+        .unwrap();
+
+        let graph = load_from_directory(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        let orders = graph.get_model("orders").unwrap();
+        let rel = orders.get_relationship("customers").unwrap();
+        assert_eq!(rel.r#type, RelationshipType::ManyToOne);
+        assert_eq!(rel.foreign_key_columns(), vec!["customer_id".to_string()]);
+        assert_eq!(rel.primary_key_columns(), vec!["id".to_string()]);
     }
 
     #[test]

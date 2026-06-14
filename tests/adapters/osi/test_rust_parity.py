@@ -141,3 +141,33 @@ def test_osi_roundtrip_parity(fixture, tmp_path):
     python_graph = PyOSIAdapter().parse(str(out))
     rust_graph = load_osi_graph_with_rust(str(out))
     assert _canonical_graph(rust_graph) == _canonical_graph(python_graph)
+
+
+def test_osi_export_resolves_model_inheritance(tmp_path):
+    """A graph with unresolved Model.extends exports identically via both adapters."""
+    from sidemantic.core.dimension import Dimension
+    from sidemantic.core.model import Model
+    from sidemantic.core.semantic_graph import SemanticGraph
+
+    base = Model(
+        name="base_orders",
+        table="orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="status", type="categorical", sql="status")],
+    )
+    child = Model(name="orders", extends="base_orders", primary_key="order_id")
+    graph = SemanticGraph()
+    graph.add_model(base)
+    graph.add_model(child)
+    assert graph.models["orders"].table is None  # unresolved before export
+
+    python_path = tmp_path / "python.yaml"
+    PyOSIAdapter().export(graph, python_path)
+    python_doc = yaml.safe_load(python_path.read_text())
+    rust_doc = yaml.safe_load(export_osi_with_rust(graph))
+
+    assert _canonical_osi_doc(rust_doc) == _canonical_osi_doc(python_doc)
+    # The child dataset must carry the inherited source and field.
+    orders = {d["name"]: d for d in rust_doc["semantic_model"][0]["datasets"]}["orders"]
+    assert orders["source"] == "orders"
+    assert [field["name"] for field in orders["fields"]] == ["status"]

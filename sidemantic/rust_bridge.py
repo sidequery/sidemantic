@@ -308,10 +308,16 @@ def export_osi_with_rust(graph: SemanticGraph, dialects: list[str] | None = None
     Model-owned metrics travel with the models; graph-level metrics are sent
     separately so they stay graph-level (OSI has no single-owner requirement).
     """
+    from sidemantic.core.inheritance import resolve_model_inheritance
+
     rust_module = get_rust_module()
     graph_metadata = dict(graph.metadata) if getattr(graph, "metadata", None) else None
+    # Resolve model inheritance first (matching OSIAdapter.export); otherwise a
+    # child still carrying `extends` would be serialized standalone and lose its
+    # inherited table/dimensions/metrics.
+    resolved_models = resolve_model_inheritance(graph.models)
     models_yaml = models_to_rust_yaml(
-        list(graph.models.values()),
+        list(resolved_models.values()),
         top_level_parameters=list(graph.parameters.values()),
         graph_metadata=graph_metadata,
     )

@@ -1515,6 +1515,76 @@ def test_thoughtspot_aliased_table_referenced_by_id_is_queryable():
     assert rows == [("US", 125.0)]
 
 
+def test_thoughtspot_join_target_by_id_resolves_to_alias():
+    """A join whose `with:` target is an aliased table id resolves to the alias.
+
+    Regression: after id/name refs mapped to the alias, the join-flatten step
+    still resolved `with: countries_tbl` to the backing table name, so the SQL
+    emitted `JOIN countries ON ... ship_country.id` (alias not in scope) and the
+    relationship was named `countries`. The join target must resolve to the alias.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_join_target_by_id.model.tml")
+    model = graph.models["shipments_model"]
+
+    # The join uses the alias as the relation name, matching the ON clause.
+    assert model.sql is not None
+    assert "JOIN countries AS ship_country" in model.sql
+    assert {r.name for r in model.relationships} == {"ship_country"}
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE, ship_country_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 7), (2, 25.0, 7)")
+    con.execute("CREATE TABLE countries (id INT, name VARCHAR)")
+    con.execute("INSERT INTO countries VALUES (7, 'US')")
+
+    sql = layer.compile(
+        metrics=["shipments_model.amount"],
+        dimensions=["shipments_model.ship_country_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [("US", 125.0)]
+
+
+def test_thoughtspot_measure_key_column_is_inferred_as_primary_key():
+    """A base-table key exported as a measure is still inferred as the primary key.
+
+    Regression: `_infer_model_primary_key` only scanned dimensions, but
+    ThoughtSpot often exports key columns as measures. With `order_key` as a
+    MEASURE and no physical `orders.id`, the primary key defaulted to `id` and the
+    derived projection injected a non-existent `orders.id AS id`, breaking even a
+    plain aggregate query.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_measure_key.model.tml")
+    model = graph.models["orders_model"]
+
+    # The measure-backed base-table column is used as the key.
+    assert model.primary_key == "order_key"
+    assert model.sql is not None
+    assert "orders.id AS id" not in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (order_key INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

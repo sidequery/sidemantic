@@ -813,12 +813,15 @@ class ThoughtSpotAdapter(BaseAdapter):
                 destination = join_def.get("with")
                 if not source or not destination:
                     continue
-                # Keep an aliased destination as-is (the role name); only resolve
-                # non-aliased ids to their table name.
+                # Resolve the join target to the in-scope relation name. For an
+                # aliased entry that is the role alias (so a `with:` token that is
+                # the alias, or the table id/name of an aliased entry, becomes the
+                # alias); `path_lookup` already encodes both, falling back to the
+                # backing table name for non-aliased entries.
                 if destination in alias_to_table:
                     resolved_dest = destination
                 else:
-                    resolved_dest = table_name_lookup.get(destination, destination)
+                    resolved_dest = path_lookup.get(destination, table_name_lookup.get(destination, destination))
                 # PyYAML (YAML 1.1) parses the bare `on:` key as the boolean True.
                 on_value = join_def.get("on")
                 if on_value is None and True in join_def:
@@ -939,7 +942,7 @@ class ThoughtSpotAdapter(BaseAdapter):
         # table. Prefer a dimension named `id`; otherwise infer the key from a
         # base-table column so a model whose key is not literally `id` (e.g.
         # `order_key`) does not project a non-existent `id` column.
-        primary_key = self._infer_model_primary_key(dimensions, base_table)
+        primary_key = self._infer_model_primary_key(dimensions, metrics, base_table)
 
         # A joined model is exported as derived SQL (FROM (<sql>) AS t); rewrite
         # its `SELECT *` into explicit aliased columns and update the dimension/
@@ -1012,30 +1015,37 @@ class ThoughtSpotAdapter(BaseAdapter):
 
         return model
 
-    def _infer_model_primary_key(self, dimensions: list[Dimension], base_table: str | None) -> str:
+    def _infer_model_primary_key(
+        self,
+        dimensions: list[Dimension],
+        metrics: list[Metric],
+        base_table: str | None,
+    ) -> str:
         """Infer a queryable primary key column for a TML Model.
 
-        Prefer a dimension named ``id`` but resolve it to its backing physical
-        column (a column named ``id`` may map to a differently named DB column,
-        e.g. ``column_id: orders::order_key``). Only accept it when its SQL is
+        Prefer a field named ``id`` but resolve it to its backing physical column
+        (a column named ``id`` may map to a differently named DB column, e.g.
+        ``column_id: orders::order_key``). Only accept it when its SQL is
         unqualified or belongs to the base table; a joined-table ``id`` (e.g.
         ``customers::id``) is not the base model's key. Otherwise, if the base
         table is known, keep ``id`` when a base-table column actually resolves to
         ``id``; failing that, use the first base-table column so the key
-        references a real column. Fall back to ``id`` only when no better
-        candidate exists.
+        references a real column. ThoughtSpot often exports numeric key columns as
+        measures, so dimensions are scanned first but metrics are considered too.
+        Fall back to ``id`` only when no better candidate exists.
         """
-        for dim in dimensions:
-            if dim.name.lower() == "id":
-                table, column = _split_sql_identifier(dim.sql)
+        fields: list[Dimension | Metric] = [*dimensions, *metrics]
+        for field in fields:
+            if field.name.lower() == "id":
+                table, column = _split_sql_identifier(field.sql)
                 if table is None or base_table is None or table == base_table:
-                    return column or dim.name
+                    return column or field.name
                 break
 
         if base_table:
             base_columns: list[str] = []
-            for dim in dimensions:
-                table, column = _split_sql_identifier(dim.sql)
+            for field in fields:
+                table, column = _split_sql_identifier(field.sql)
                 if column and (table is None or table == base_table):
                     base_columns.append(column)
             if "id" in base_columns:

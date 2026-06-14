@@ -164,6 +164,35 @@ def _extract_join_refs(
     return left, right
 
 
+def _extract_all_join_refs(
+    expr: str | None, table_path_lookup: dict[str, str] | None = None
+) -> list[tuple[tuple[str | None, str], tuple[str | None, str]]]:
+    """Extract every ``left = right`` key pair from a (possibly composite) join.
+
+    A composite ON clause like ``[a::x] = [b::y] AND [a::p] = [b::q]`` yields all
+    consecutive ref pairs, so composite-key relationships keep both columns
+    instead of silently dropping all but the first pair.
+    """
+    if not expr:
+        return []
+
+    tokens = _TML_REF.findall(expr)
+    if len(tokens) < 2:
+        tokens = [f"{t[0]}.{t[1]}" for t in _TML_DOT_REF.findall(expr)]
+
+    pairs: list[tuple[tuple[str | None, str], tuple[str | None, str]]] = []
+    for i in range(0, len(tokens) - 1, 2):
+        left = _parse_ref_token(tokens[i])
+        right = _parse_ref_token(tokens[i + 1])
+        if table_path_lookup:
+            if left[0] in table_path_lookup:
+                left = (table_path_lookup[left[0]], left[1])
+            if right[0] in table_path_lookup:
+                right = (table_path_lookup[right[0]], right[1])
+        pairs.append((left, right))
+    return pairs
+
+
 def _split_sql_identifier(sql: str | None) -> tuple[str | None, str | None]:
     if not sql or not _SIMPLE_IDENTIFIER.match(sql):
         return None, None
@@ -832,9 +861,12 @@ class ThoughtSpotAdapter(BaseAdapter):
                 )
                 dimensions.append(dim)
 
-        primary_key = "id"
-        if any(d.name.lower() == "id" for d in dimensions):
-            primary_key = next(d.name for d in dimensions if d.name.lower() == "id")
+        # The SQL generator always selects `model.primary_key` from derived models
+        # as a bare column, so it must name a column that exists on the base
+        # table. Prefer a dimension named `id`; otherwise infer the key from a
+        # base-table column so a model whose key is not literally `id` (e.g.
+        # `order_key`) does not project a non-existent `id` column.
+        primary_key = self._infer_model_primary_key(dimensions, base_table)
 
         # A joined model is exported as derived SQL (FROM (<sql>) AS t); rewrite
         # its `SELECT *` into explicit aliased columns and update the dimension/
@@ -860,14 +892,14 @@ class ThoughtSpotAdapter(BaseAdapter):
             key_names: set[str] = set()
             for rel in relationships:
                 if rel.foreign_key:
-                    key_names.add(rel.foreign_key)
+                    key_names.update(rel.foreign_key_columns)
                 if rel.primary_key:
-                    key_names.add(rel.primary_key)
+                    key_names.update(rel.primary_key_columns)
             for join_def in flat_joins:
-                left, right = _extract_join_refs(join_def.get("on"), path_lookup)
-                for ref in (left, right):
-                    if ref and ref[1] in key_names and ref[0] in known_tables:
-                        fk_refs.setdefault(ref[1], ref)
+                for left, right in _extract_all_join_refs(join_def.get("on"), path_lookup):
+                    for ref in (left, right):
+                        if ref and ref[1] in key_names and ref[0] in known_tables:
+                            fk_refs.setdefault(ref[1], ref)
 
             sql = _expose_joined_columns(sql, known_tables, dimensions, metrics, base_table, primary_key, fk_refs)
         else:
@@ -907,6 +939,31 @@ class ThoughtSpotAdapter(BaseAdapter):
 
         return model
 
+    def _infer_model_primary_key(self, dimensions: list[Dimension], base_table: str | None) -> str:
+        """Infer a queryable primary key column for a TML Model.
+
+        Prefer a dimension literally named ``id``. Otherwise, if the base table is
+        known, keep ``id`` when a base-table column actually resolves to ``id``;
+        failing that, use the first base-table column so the key references a real
+        column. Fall back to ``id`` only when no better candidate exists.
+        """
+        for dim in dimensions:
+            if dim.name.lower() == "id":
+                return dim.name
+
+        if base_table:
+            base_columns: list[str] = []
+            for dim in dimensions:
+                table, column = _split_sql_identifier(dim.sql)
+                if column and (table is None or table == base_table):
+                    base_columns.append(column)
+            if "id" in base_columns:
+                return "id"
+            if base_columns:
+                return base_columns[0]
+
+        return "id"
+
     def _parse_model_relationships(
         self,
         joins: list[dict[str, Any]],
@@ -930,30 +987,34 @@ class ThoughtSpotAdapter(BaseAdapter):
             join_type = _normalize(join_def.get("type")) or "INNER"
             on_value = join_def.get("on")
             lookup = table_path_lookup or table_name_lookup
-            left, right = _extract_join_refs(on_value, lookup)
+            # Composite predicates carry more than one key pair; keep all of them
+            # so cross-model joins do not silently drop part of the key.
+            ref_pairs = _extract_all_join_refs(on_value, lookup)
 
             if table_name_lookup:
                 source = table_name_lookup.get(source, source)
                 destination = table_name_lookup.get(destination, destination)
 
-            foreign_key = None
-            primary_key = None
-
-            if left and right:
+            foreign_keys: list[str] = []
+            primary_keys: list[str] = []
+            for left, right in ref_pairs:
                 left_table, left_col = left
                 right_table, right_col = right
 
                 if left_table == source and right_table == destination:
-                    foreign_key = left_col
-                    primary_key = right_col
+                    foreign_keys.append(left_col)
+                    primary_keys.append(right_col)
                 elif left_table == destination and right_table == source:
-                    foreign_key = right_col
-                    primary_key = left_col
+                    foreign_keys.append(right_col)
+                    primary_keys.append(left_col)
                 else:
                     if left_table == source:
-                        foreign_key = left_col
+                        foreign_keys.append(left_col)
                     if right_table == destination:
-                        primary_key = right_col
+                        primary_keys.append(right_col)
+
+            foreign_key = foreign_keys[0] if len(foreign_keys) == 1 else (foreign_keys or None)
+            primary_key = primary_keys[0] if len(primary_keys) == 1 else (primary_keys or None)
 
             cardinality = _normalize(join_def.get("cardinality"))
             rel_type = _CARDINALITY_MAP.get(cardinality or "", "many_to_one")

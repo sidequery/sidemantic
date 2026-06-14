@@ -701,12 +701,14 @@ def test_import_thoughtspot_model():
     assert relationships["customers"].type == "many_to_one"
     assert relationships["customers"].foreign_key == "customer_id"
     assert relationships["customers"].primary_key == "id"
-    # cardinality: ONE_TO_ONE. Sidemantic treats one_to_one (like one_to_many) as
-    # an edge where the related model owns the foreign key and the local model
-    # owns the primary key, so the parsed source-side FK/PK are stored swapped.
+    # cardinality: ONE_TO_ONE with a composite ON predicate. Sidemantic treats
+    # one_to_one (like one_to_many) as an edge where the related model owns the
+    # foreign key and the local model owns the primary key, so the parsed
+    # source-side FK/PK are stored swapped. Both key pairs from the composite
+    # predicate are preserved.
     assert relationships["regions"].type == "one_to_one"
-    assert relationships["regions"].foreign_key == "id"
-    assert relationships["regions"].primary_key == "region_id"
+    assert relationships["regions"].foreign_key == ["id", "country_code"]
+    assert relationships["regions"].primary_key == ["region_id", "country_code"]
 
     # A joined model becomes a derived table. Its `SELECT *` is rewritten into an
     # explicit projection that aliases each inner `table.column` to a stable,
@@ -1219,6 +1221,82 @@ def test_thoughtspot_one_to_one_join_keys_match_direction():
     sql = layer.compile(metrics=["sales_model.amount"], dimensions=["regions.zone"])
     rows = con.execute(sql).fetchall()
     assert rows == [("PACIFIC", 125.0)]
+
+
+def test_thoughtspot_non_id_primary_key_is_queryable():
+    """A joined model whose key is not literally `id` stays queryable.
+
+    Regression: `primary_key` defaulted to `id`, and the derived projection
+    injected `orders.id AS id`. The SQL generator always selects the primary key
+    from derived models, so even a basic aggregate failed with
+    `Table "orders" does not have a column named "id"`. The key must be inferred
+    from a real base-table column (here `order_key`).
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_non_id_key.model.tml")
+    model = graph.models["orders_model"]
+
+    # The primary key is inferred from a real base-table column, not the default.
+    assert model.primary_key == "order_key"
+    assert model.sql is not None
+    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.id AS id" not in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (order_key INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_composite_join_keys_are_preserved():
+    """A composite-key join keeps every key pair instead of dropping all but one.
+
+    Regression: only the first `left = right` pair of a composite ON predicate was
+    stored, so `[sales::region_id] = [regions::id] AND [sales::country_code] =
+    [regions::country_code]` became `region_id -> id` only. Cross-model joins then
+    used a truncated key and could mis-join rows.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_composite_key.model.tml")
+    model = graph.models["sales_model"]
+
+    rel = {r.name: r for r in model.relationships}["regions"]
+    assert rel.type == "many_to_one"
+    # Both key pairs are preserved as composite lists.
+    assert rel.foreign_key == ["region_id", "country_code"]
+    assert rel.primary_key == ["id", "country_code"]
+
+    # Both join columns are projected by the derived subquery so a composite
+    # cross-model join stays in scope.
+    assert model.sql is not None
+    assert "sales.region_id AS region_id" in model.sql
+    assert "sales.country_code AS country_code" in model.sql
+
+    # The model still compiles and runs standalone.
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, region_id INT, country_code VARCHAR)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 7, 'US'), (2, 25.0, 7, 'US')")
+    con.execute("CREATE TABLE regions (id INT, country_code VARCHAR, name VARCHAR)")
+    con.execute("INSERT INTO regions VALUES (7, 'US', 'West')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["sales_model.region_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("West", 125.0)]
 
 
 def test_thoughtspot_model_auto_detect_loader():

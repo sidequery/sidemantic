@@ -542,3 +542,32 @@ def test_top_level_subquery_relation_not_double_aliased(adapter, tmp_path):
 
     sql = _compiles_to_valid_duckdb_sql(model)
     assert 'AS "Active Users"' not in sql
+
+
+def test_subquery_with_paren_in_string_literal_strips_alias(adapter, tmp_path):
+    """A subquery whose SELECT contains a ")" inside a SQL string literal must
+    still have its outer "AS <alias>" stripped. The alias-stripping paren scan
+    must skip quoted strings, otherwise the literal ")" ends the scan early and
+    leaves "(...) AS <alias>" double-aliased by the generator."""
+    tds = tmp_path / "paren_literal.tds"
+    tds.write_text(
+        f"""<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='paren_ds' inline='true' version='18.1'>
+  <connection class='federated'>
+    <relation type='subquery' name='Weird'>SELECT 1 AS amount, ')' AS marker</relation>
+  </connection>
+  {_MEASURE_COL}
+</datasource>"""
+    )
+
+    graph = adapter.parse(tds)
+    model = graph.models["paren_ds"]
+
+    assert model.table is None
+    assert model.sql is not None
+    # The ")" literal must not have truncated alias stripping.
+    assert not model.sql.rstrip().endswith('AS "Weird"')
+    assert "')'" in model.sql
+
+    sql = _compiles_to_valid_duckdb_sql(model)
+    assert 'AS "Weird"' not in sql

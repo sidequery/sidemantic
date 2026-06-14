@@ -3,8 +3,18 @@
   <connection class='excel-direct' filename='sales.xlsx'>
     <relation name='Pivoted' type='pivot'>
       <relation name='sales_wide' type='table' table='[sales_wide$]' />
-      <pivot-column name='[Pivot Field Names]' />
-      <pivot-column name='[Pivot Field Values]' />
+      <pivot-column name='[Pivot Field Names]'>
+        <map source='[Q1]' />
+        <map source='[Q2]' />
+        <map source='[Q3]' />
+        <map source='[Q4]' />
+      </pivot-column>
+      <pivot-column name='[Pivot Field Values]'>
+        <map source='[Q1]' />
+        <map source='[Q2]' />
+        <map source='[Q3]' />
+        <map source='[Q4]' />
+      </pivot-column>
     </relation>
     <metadata-records>
       <metadata-record class='column'>

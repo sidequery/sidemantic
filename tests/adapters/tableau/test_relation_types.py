@@ -87,17 +87,51 @@ def test_stored_proc_relation_resolves_actual_name(adapter):
     assert model.table == "dbo.get_store_locations"
 
 
-def test_pivot_relation_resolves_to_child_table(adapter):
-    """pivot.tds: a pivot relation resolves to its wrapped child table."""
+def test_pivot_relation_builds_unpivot_sql(adapter):
+    """pivot.tds: a pivot relation emits UNPIVOT derived SQL, not a bare reference
+    to the wide child table (where the pivot output columns do not exist)."""
     graph = adapter.parse(FIXTURES / "pivot.tds")
 
     assert "pivoted_sales" in graph.models
     model = graph.models["pivoted_sales"]
 
-    assert model.table == "sales_wide$"
+    # Must NOT resolve to the raw wide table: the imported fields are the pivot
+    # outputs, which only exist after the UNPIVOT.
+    assert model.table is None
+    assert model.sql is not None
+    assert "UNPIVOT" in model.sql
+    # Wide source columns are unpivoted into the standard output columns.
+    assert '"Q1"' in model.sql and '"Q4"' in model.sql
+    assert 'INTO NAME "Pivot Field Names" VALUE "Pivot Field Values"' in model.sql
+
     # Pivot output columns still imported
     assert model.get_dimension("Pivot Field Names") is not None
     assert model.get_metric("Pivot Field Values") is not None
+
+
+def test_pivot_relation_sql_compiles_to_valid_duckdb(adapter):
+    """The synthesized UNPIVOT SQL must form a valid DuckDB derived table when the
+    generator wraps it as "(<sql>) AS t"."""
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = adapter.parse(FIXTURES / "pivot.tds")
+    model = graph.models["pivoted_sales"]
+
+    sl = SemanticLayer()
+    sl.add_model(model)
+    sql = sl.compile(metrics=["pivoted_sales.Pivot Field Values"])
+
+    con = duckdb.connect()
+    try:
+        con.execute("EXPLAIN " + sql)
+    except duckdb.Error as exc:  # pragma: no cover - failure path
+        message = str(exc).splitlines()[0]
+        # A missing source table is fine (the fixture references an uncreated
+        # table); only a syntax/parser error means we emitted invalid SQL.
+        if "does not exist" not in message and "Catalog Error" not in message:
+            raise AssertionError(f"DuckDB rejected generated UNPIVOT SQL:\n{sql}\n--> {message}") from exc
 
 
 def test_project_relation_resolves_to_child_table(adapter):

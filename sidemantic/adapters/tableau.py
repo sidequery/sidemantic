@@ -594,7 +594,10 @@ _SET_OPERATION_RELATIONS: set[str] = {"union", "batch-union"}
 
 # Derived/wrapper relations that transform or wrap a single child relation
 # (or raw SQL) rather than referencing a base table directly:
-#   - pivot:           reshapes columns of its child relation
+#   - pivot:           reshapes columns of its child relation (top-level pivots
+#                      are emitted as synthesized UNPIVOT SQL; see
+#                      _build_pivot_sql. Listed here so a pivot nested inside a
+#                      join/union tree still resolves to its child's grain.)
 #   - subquery:        wraps SQL as a derived subquery (like "text")
 #   - stored-proc:     references a stored procedure as a relation
 #   - project:         column projection over a child relation
@@ -615,6 +618,40 @@ def _iter_child_relations(relation_elem: ET.Element) -> list[ET.Element]:
     return [child for child in relation_elem if _is_relation_tag(child.tag)]
 
 
+def _local_tag(tag: str) -> str:
+    """Return the local part of a possibly namespace-prefixed XML tag."""
+    local = tag
+    for sep in ("}", ":"):
+        if sep in local:
+            local = local.rsplit(sep, 1)[-1]
+    return local
+
+
+def _extract_pivot_source_columns(relation_elem: ET.Element) -> list[str]:
+    """Collect the wide source columns a <relation type="pivot"> unpivots.
+
+    Tableau stores the source (wide) columns being unpivoted as ``<map source=.../>``
+    children (either directly under the pivot relation or nested inside each
+    ``<pivot-column>`` element). Returns the de-duplicated, normalized column
+    names in document order. Returns an empty list when no source columns are
+    declared (older / minimal datasources), in which case UNPIVOT SQL cannot be
+    synthesized.
+    """
+    sources: list[str] = []
+    seen: set[str] = set()
+    for elem in relation_elem.iter():
+        if _local_tag(elem.tag) != "map":
+            continue
+        source = elem.get("source")
+        if not source:
+            continue
+        name = _normalize_column_name(source)
+        if name and name not in seen:
+            seen.add(name)
+            sources.append(name)
+    return sources
+
+
 def _strip_derived_alias(expr: str) -> str:
     """Strip a trailing "AS <alias>" from a parenthesized derived-table expression.
 
@@ -630,17 +667,36 @@ def _strip_derived_alias(expr: str) -> str:
     text = expr.strip()
     if not text.startswith("("):
         return expr
-    # Find the parenthesis that closes the leading "(".
+    # Find the parenthesis that closes the leading "(", skipping parentheses that
+    # appear inside SQL string literals ('...') and quoted identifiers ("...").
+    # Without this, a body like ``SELECT ')' AS amount`` would terminate the scan
+    # early and leave the outer alias attached.
     depth = 0
     close_idx = -1
-    for i, ch in enumerate(text):
-        if ch == "(":
+    quote: str | None = None
+    i = 0
+    length = len(text)
+    while i < length:
+        ch = text[i]
+        if quote is not None:
+            if ch == quote:
+                # Two consecutive quote chars are an escaped quote, not a close.
+                if i + 1 < length and text[i + 1] == quote:
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == "(":
             depth += 1
         elif ch == ")":
             depth -= 1
             if depth == 0:
                 close_idx = i
                 break
+        i += 1
     if close_idx == -1:
         return expr
     remainder = text[close_idx + 1 :].lstrip()
@@ -995,8 +1051,21 @@ class TableauAdapter(BaseAdapter):
                         # derived SQL, not a bare table reference, so store them as
                         # model.sql; the generator wraps model.sql as "(<sql>) AS t".
                         sql = union_sql
+                elif rel_type == "pivot":
+                    # Pivot reshapes wide source columns into "Pivot Field Names"/
+                    # "Pivot Field Values" outputs. Synthesize UNPIVOT derived SQL
+                    # so the model queries those output columns rather than the raw
+                    # child table where they do not exist.
+                    pivot_sql = self._build_pivot_sql(relation)
+                    if pivot_sql:
+                        sql = pivot_sql
+                    else:
+                        # Source columns not declared: fall back to the wrapped
+                        # child table (best effort for minimal datasources).
+                        base_table, _ = self._parse_relation_tree(relation)
+                        table = base_table
                 elif rel_type in _WRAPPER_RELATIONS:
-                    # pivot / subquery / stored-proc / project / text-transform:
+                    # subquery / stored-proc / project / text-transform:
                     # derived relations that wrap a child relation or raw SQL.
                     base_table, joins = self._parse_relation_tree(relation)
                     if joins:
@@ -1785,6 +1854,55 @@ class TableauAdapter(BaseAdapter):
             return selects[0] if selects else None
 
         return "\nUNION ALL\n".join(selects)
+
+    def _build_pivot_sql(self, relation_elem: ET.Element) -> str | None:
+        """Synthesize UNPIVOT SQL for a <relation type="pivot"> element.
+
+        A Tableau pivot reshapes a set of wide source columns into two output
+        columns: a name column (default "Pivot Field Names") and a value column
+        (default "Pivot Field Values"). Resolving such a relation to its raw
+        child table is wrong: the imported fields are the pivot outputs, which do
+        not exist on the wide source table. We emit a DuckDB UNPIVOT derived
+        query so the generated SQL selects the pivot output columns from a source
+        that actually produces them.
+
+        Returns ``None`` when the wrapped child table or the wide source columns
+        cannot be determined, so the caller can fall back to its prior behavior.
+        """
+        children = _iter_child_relations(relation_elem)
+        if not children:
+            return None
+        child_table, child_joins = self._parse_relation_tree(children[0])
+        # UNPIVOT needs a single concrete FROM source, not a joined/derived tree.
+        if not child_table or child_joins or child_table.startswith("(") or " " in child_table:
+            return None
+
+        source_columns = _extract_pivot_source_columns(relation_elem)
+        if not source_columns:
+            return None
+
+        # Default to Tableau's standard pivot output column names; override from
+        # <pivot-column> declarations when present so a renamed pivot still maps.
+        name_col = "Pivot Field Names"
+        value_col = "Pivot Field Values"
+        pivot_outputs = [
+            _normalize_column_name(elem.get("name", ""))
+            for elem in relation_elem
+            if _local_tag(elem.tag) == "pivot-column" and elem.get("name")
+        ]
+        for output in pivot_outputs:
+            lowered = output.lower()
+            if "name" in lowered:
+                name_col = output
+            elif "value" in lowered:
+                value_col = output
+
+        on_cols = ", ".join(_quote_sql_identifier(col) for col in source_columns)
+        return (
+            f"SELECT * FROM (UNPIVOT {_quote_table_reference(child_table)} "
+            f"ON {on_cols} "
+            f"INTO NAME {_quote_sql_identifier(name_col)} VALUE {_quote_sql_identifier(value_col)})"
+        )
 
     def _extract_relationships(self, joins: list[_JoinInfo]) -> list[Relationship]:
         """Extract Relationship objects from parsed joins."""

@@ -155,7 +155,11 @@ class GoodDataAdapter(BaseAdapter):
                 "table",
             )
         )
-        sql, sql_data_source_id = self._coerce_sql(dataset_def.get("sql"))
+        raw_sql = dataset_def.get("sql")
+        sql, sql_data_source_id = self._coerce_sql(raw_sql)
+        # Track object-form SQL so an export round-trip can re-emit the SDK
+        # shape ``{"dataSourceId": ..., "statement": ...}`` instead of a bare string.
+        sql_is_object = isinstance(raw_sql, dict)
         if sql:
             table = None
 
@@ -224,6 +228,8 @@ class GoodDataAdapter(BaseAdapter):
                 "description": dataset_def.get("description"),
                 "tags": dataset_def.get("tags"),
                 "data_source_id": data_source_id,
+                "sql_is_object": sql_is_object,
+                "sql_data_source_id": sql_data_source_id if sql_is_object else None,
                 "data_source_table_id": data_source_table_id,
                 "table_path": dataset_def.get("tablePath") or dataset_def.get("table_path"),
                 "grain": grain_ids,
@@ -408,8 +414,10 @@ class GoodDataAdapter(BaseAdapter):
             )
 
         foreign_key = None
-        if isinstance(source_columns, list) and len(source_columns) == 1:
-            foreign_key = source_columns[0]
+        if isinstance(source_columns, list) and source_columns:
+            # Composite keys keep the full column list (Relationship.foreign_key
+            # accepts list[str]); single-column refs unwrap to a plain string.
+            foreign_key = source_columns[0] if len(source_columns) == 1 else list(source_columns)
         elif isinstance(source_columns, str):
             foreign_key = source_columns
 
@@ -712,11 +720,20 @@ class GoodDataAdapter(BaseAdapter):
         elif gd_meta.get("table_path"):
             dataset["tablePath"] = gd_meta["table_path"]
 
-        if gd_meta.get("data_source_id"):
+        # SQL-backed datasets parsed from the SDK object form keep the data
+        # source nested inside the ``sql`` object, so skip the top-level field.
+        sql_is_object = bool(model.sql) and gd_meta.get("sql_is_object")
+
+        if gd_meta.get("data_source_id") and not sql_is_object:
             dataset["dataSourceId"] = gd_meta["data_source_id"]
 
         if model.sql:
-            dataset["sql"] = model.sql
+            sql_data_source_id = gd_meta.get("sql_data_source_id") or gd_meta.get("data_source_id")
+            if sql_is_object and sql_data_source_id:
+                # Re-emit the SDK object shape {dataSourceId, statement}.
+                dataset["sql"] = {"dataSourceId": sql_data_source_id, "statement": model.sql}
+            else:
+                dataset["sql"] = model.sql
 
         wdf_columns = gd_meta.get("workspace_data_filter_columns")
         if wdf_columns:
@@ -832,7 +849,8 @@ class GoodDataAdapter(BaseAdapter):
             else:
                 source_columns = rel_meta.get("source_columns")
                 if not source_columns and rel.foreign_key:
-                    source_columns = [rel.foreign_key]
+                    # foreign_key may be a single string or a composite list.
+                    source_columns = list(rel.foreign_key) if isinstance(rel.foreign_key, list) else [rel.foreign_key]
                 if source_columns:
                     ref["sourceColumns"] = source_columns
 

@@ -539,7 +539,13 @@ def test_sdk_declarative_ldm_sql_dataset_export_roundtrip():
 
     # SQL dataset keeps its statement and emits aggregatedFacts.
     per_category = datasets["campaign_channels_per_category"]
-    assert per_category["sql"] == "SELECT category, SUM(budget) FROM campaign_channels GROUP BY category"
+    # Object-form SQL round-trips back to the SDK shape {dataSourceId, statement},
+    # not a bare string, and the data source stays nested (no top-level dataSourceId).
+    assert per_category["sql"] == {
+        "dataSourceId": "demo-test-ds",
+        "statement": "SELECT category, SUM(budget) FROM campaign_channels GROUP BY category",
+    }
+    assert "dataSourceId" not in per_category
     assert "facts" not in per_category or not per_category["facts"]
     agg_facts = per_category["aggregatedFacts"]
     assert len(agg_facts) == 1
@@ -556,3 +562,110 @@ def test_sdk_declarative_ldm_sql_dataset_export_roundtrip():
     reparsed_agg = reparsed.models["campaign_channels_per_category"].get_metric("budget_agg")
     assert reparsed_agg.agg == "sum"
     assert reparsed_agg.metadata["gooddata"]["operation"] == "SUM"
+
+
+def test_sdk_sql_dataset_object_sql_export_roundtrip():
+    """SQL-backed datasets re-emit the SDK ``sql`` object shape on export.
+
+    Object-form ``sql`` ({dataSourceId, statement}) must survive a parse/export
+    round-trip without collapsing to a bare statement string or hoisting the
+    data source to a top-level ``dataSourceId``.
+    """
+    adapter = GoodDataAdapter()
+    graph = adapter.parse("tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter.export(graph, tmpdir)
+        data = json.loads((Path(tmpdir) / "ldm.json").read_text())
+
+    datasets = {d["id"]: d for d in data["ldm"]["datasets"]}
+
+    sql_ds = datasets["Customers_sql_dataset_with_WDF"]
+    assert sql_ds["sql"] == {"dataSourceId": "demo-test-ds", "statement": "SELECT * FROM v_wdf_customers"}
+    assert "dataSourceId" not in sql_ds
+    assert "dataSourceTableId" not in sql_ds
+
+    dup = datasets["Order_lines_duplicate_sql_dataset"]
+    assert dup["sql"] == {"dataSourceId": "demo-test-ds", "statement": "SELECT * FROM order_lines"}
+    assert "dataSourceId" not in dup
+
+    # Table-backed cloud datasets still emit a top-level dataSourceId string.
+    cloud = adapter.parse("tests/fixtures/gooddata/cloud_ldm.json")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter.export(cloud, tmpdir)
+        cloud_data = json.loads((Path(tmpdir) / "ldm.json").read_text())
+    cloud_datasets = {d["id"]: d for d in cloud_data["ldm"]["datasets"]}
+    assert cloud_datasets["customers"]["dataSourceId"] == "demo"
+    assert "sql" not in cloud_datasets["customers"]
+
+    # Re-parsing the SQL export recovers the statement and nested data source.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter.export(graph, tmpdir)
+        reparsed = adapter.parse(Path(tmpdir) / "ldm.json")
+    reparsed_sql = reparsed.models["Customers_sql_dataset_with_WDF"]
+    assert reparsed_sql.sql == "SELECT * FROM v_wdf_customers"
+    assert reparsed_sql.table is None
+    assert reparsed_sql.metadata["gooddata"]["data_source_id"] == "demo-test-ds"
+
+
+def test_gooddata_composite_sources_reference_foreign_key():
+    """A multi-column ``sources`` reference sets the full composite foreign key.
+
+    Single-column refs unwrap to a plain string; composite refs keep the list so
+    the SQL planner joins on every column instead of falling back to ``<target>_id``.
+    """
+    ldm = {
+        "ldm": {
+            "datasets": [
+                {
+                    "id": "orders",
+                    "title": "Orders",
+                    "dataSourceTableId": "orders",
+                    "grain": [{"id": "order_id", "type": "attribute"}],
+                    "references": [
+                        {
+                            "identifier": {"id": "customers", "type": "dataset"},
+                            "multivalue": False,
+                            "sources": [
+                                {"column": "region", "target": {"id": "region", "type": "attribute"}},
+                                {"column": "customer_code", "target": {"id": "customer_code", "type": "attribute"}},
+                            ],
+                        },
+                        {
+                            "identifier": {"id": "products", "type": "dataset"},
+                            "multivalue": False,
+                            "sources": [
+                                {"column": "product_id", "target": {"id": "product_id", "type": "attribute"}},
+                            ],
+                        },
+                    ],
+                },
+                {"id": "customers", "title": "Customers", "dataSourceTableId": "customers"},
+                {"id": "products", "title": "Products", "dataSourceTableId": "products"},
+            ]
+        }
+    }
+
+    adapter = GoodDataAdapter()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Path(tmpdir) / "ldm.json"
+        src.write_text(json.dumps(ldm))
+        graph = adapter.parse(src)
+
+    orders = graph.models["orders"]
+    customers_rel = next(r for r in orders.relationships if r.name == "customers")
+    # Composite key: full column list preserved (not collapsed, not defaulted).
+    assert customers_rel.foreign_key == ["region", "customer_code"]
+    assert customers_rel.foreign_key_columns == ["region", "customer_code"]
+
+    products_rel = next(r for r in orders.relationships if r.name == "products")
+    # Single column unwraps to a plain string.
+    assert products_rel.foreign_key == "product_id"
+
+    # Export preserves the composite sources array verbatim.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter.export(graph, tmpdir)
+        exported = json.loads((Path(tmpdir) / "ldm.json").read_text())
+    exported_orders = next(d for d in exported["ldm"]["datasets"] if d["id"] == "orders")
+    cust_ref = next(r for r in exported_orders["references"] if r["identifier"]["id"] == "customers")
+    assert [s["column"] for s in cust_ref["sources"]] == ["region", "customer_code"]

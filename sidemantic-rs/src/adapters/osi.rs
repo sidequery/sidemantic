@@ -14,6 +14,8 @@
 //!
 //! Spec: <https://github.com/open-semantic-interchange/OSI>
 
+use std::collections::HashSet;
+
 use polyglot_sql::{DialectType, Expression};
 use serde_json::{Map as JsonMap, Value as Json};
 use serde_yaml::{Mapping as YamlMap, Value as Yaml};
@@ -622,10 +624,23 @@ fn export_semantic_model(models: &[&Model], graph: &SemanticGraph, dialects: &[S
         put(&mut sm, "relationships", Yaml::Sequence(relationships));
     }
 
+    // Metrics owned by a model are exported (qualified) in the model loop
+    // below. `graph.metrics()` can surface the same metric at graph scope
+    // (model-level time_comparison/conversion metrics are indexed there, and
+    // top-level metrics get assigned to an owner model), so exclude those names
+    // from the graph-level loop to avoid emitting duplicate OSI definitions.
+    let model_owned: HashSet<&str> = models
+        .iter()
+        .flat_map(|model| model.metrics.iter().map(|metric| metric.name.as_str()))
+        .collect();
+
     let mut metrics = Vec::new();
     let mut graph_metrics: Vec<&Metric> = graph.metrics().collect();
     graph_metrics.sort_by(|a, b| a.name.cmp(&b.name));
     for metric in graph_metrics {
+        if model_owned.contains(metric.name.as_str()) {
+            continue;
+        }
         if let Some(metric_def) = export_metric(metric, None, dialects) {
             metrics.push(metric_def);
         }
@@ -1493,5 +1508,49 @@ semantic_model:
         assert_eq!(sm["name"], "current_model");
         assert_eq!(sm["description"], "Current OSI model");
         assert_eq!(sm["ai_context"]["instructions"], "Use for tests");
+    }
+
+    #[test]
+    fn test_export_does_not_duplicate_owner_assigned_metrics() {
+        // A top-level metric assigned to an owner model lives in both
+        // `graph.metrics()` and `model.metrics`; it must be exported once.
+        let yaml = r#"
+version: 1
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+metrics:
+  - name: revenue_per_order
+    type: ratio
+    numerator: revenue
+    denominator: order_count
+"#;
+        let graph = crate::config::load_from_string(yaml).unwrap();
+        let data = export_to_json(&graph, vec!["ANSI_SQL".to_string()]);
+        let names: Vec<&str> = data["semantic_model"][0]["metrics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|metric| metric["name"].as_str().unwrap())
+            .collect();
+
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "duplicate metric names: {names:?}"
+        );
+        assert!(names.contains(&"revenue"));
+        assert!(names.contains(&"order_count"));
+        assert!(names.contains(&"revenue_per_order"));
     }
 }

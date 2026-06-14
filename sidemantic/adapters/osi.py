@@ -32,6 +32,25 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
+# Directories that hold generated/compiled artifacts rather than source models.
+# dbt writes a copy of the OSI document to ``target/`` on ``dbt compile``; parsing
+# those would duplicate or resurrect deleted/stale models, so they are skipped
+# when an OSI directory (e.g. a dbt project root) is parsed.
+_GENERATED_ARTIFACT_DIRS = frozenset({"target", "dbt_packages"})
+
+
+def _is_generated_artifact(file_path: Path, directory: Path) -> bool:
+    """Return True when ``file_path`` lives under a generated-artifact directory.
+
+    Only path components *below* ``directory`` are considered so that parsing a
+    directory literally named ``target`` still works.
+    """
+    try:
+        relative_parts = file_path.relative_to(directory).parts
+    except ValueError:
+        relative_parts = file_path.parts
+    return any(part in _GENERATED_ARTIFACT_DIRS for part in relative_parts[:-1])
+
 
 class OSIAdapter(BaseAdapter):
     """Adapter for importing/exporting OSI (Open Semantic Interchange) YAML files.
@@ -100,6 +119,11 @@ class OSIAdapter(BaseAdapter):
             # released JSON profile (.json) consumed by dbt's OSI consumer.
             for pattern in ("*.yml", "*.yaml", "*.json"):
                 for osi_file in source_path.rglob(pattern):
+                    # Skip dbt-generated copies (e.g. target/osi_document.json) so
+                    # a `dbt compile` artifact never duplicates or resurrects the
+                    # real OSI/ sources when a project root is parsed directly.
+                    if _is_generated_artifact(osi_file, source_path):
+                        continue
                     self._parse_file(osi_file, graph)
         else:
             self._parse_file(source_path, graph)

@@ -1972,6 +1972,48 @@ def test_parse_directory_with_json_and_yaml():
         assert graph.models["json_orders"].table == "db.schema.fct_orders"
 
 
+def test_parse_directory_skips_generated_osi_artifacts():
+    """Parsing a project root ignores dbt-generated target/ OSI documents."""
+
+    def _osi_doc(dataset_name: str, source: str) -> dict:
+        return {
+            "version": "0.1.1",
+            "semantic_model": [
+                {
+                    "name": "analytics",
+                    "datasets": [
+                        {
+                            "name": dataset_name,
+                            "source": source,
+                            "fields": [
+                                {
+                                    "name": "id",
+                                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "id"}]},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        (tmp / "OSI").mkdir()
+        (tmp / "OSI" / "model.json").write_text(json.dumps(_osi_doc("orders", "db.schema.fct_orders")))
+
+        # dbt compile writes the same model to target/; parsing it would either
+        # raise a duplicate-model error or resurrect a stale model.
+        (tmp / "target").mkdir()
+        (tmp / "target" / "osi_document.json").write_text(json.dumps(_osi_doc("stale_orders", "db.schema.old_orders")))
+
+        # Must not raise a duplicate-model error and must skip the stale artifact.
+        graph = OSIAdapter().parse(tmp)
+
+        assert "orders" in graph.models
+        assert "stale_orders" not in graph.models
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

@@ -531,12 +531,17 @@ def test_omni_extended_aggregate_types():
         graph = adapter.parse(temp_path)
         model = graph.models["test"]
 
-        # median variants map to median
+        # plain median maps to median
         assert model.get_metric("med").agg == "median"
-        assert model.get_metric("med_distinct").agg == "median"
-        # sum/average distinct_on map to sum/avg
-        assert model.get_metric("sum_distinct").agg == "sum"
-        assert model.get_metric("avg_distinct").agg == "avg"
+        # *_distinct_on variants dedupe by a custom key before aggregating, which
+        # Sidemantic cannot model natively; they must NOT collapse to a plain
+        # sum/avg/median (that would silently drop the dedup and overcount on
+        # fan-out). They parse with agg unset and preserve the intent in metadata.
+        assert model.get_metric("med_distinct").agg is None
+        assert model.get_metric("sum_distinct").agg is None
+        assert model.get_metric("avg_distinct").agg is None
+        assert model.get_metric("sum_distinct").metadata["aggregate_type"] == "sum_distinct_on"
+        assert model.get_metric("avg_distinct").metadata["aggregate_type"] == "average_distinct_on"
         # percentile and list have no native agg -> parsed as custom SQL (derived)
         assert model.get_metric("p95").agg is None
         assert model.get_metric("p95").metadata["aggregate_type"] == "percentile"
@@ -654,6 +659,65 @@ def test_omni_global_relationships_file():
         assert rel.foreign_key == "customer_id"
         assert rel.primary_key == "id"
         assert rel.metadata["assumed"] is True
+
+
+def test_omni_schemaless_view_name_from_file_stem():
+    """Schema-less views are named by their file stem, not ``table_name``.
+
+    Omni relationships/topics reference a schema-less view by its file name. When
+    ``table_name`` differs from the stem (e.g. ``views/orders.yaml`` with
+    ``table_name: fact_orders``), the model must still be registered as ``orders``
+    so a ``join_from_view: orders`` relationship attaches instead of being dropped.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        views_dir = tmpdir_path / "views"
+        views_dir.mkdir()
+
+        # No name, no schema, and table_name differs from the file stem.
+        with open(views_dir / "orders.yaml", "w") as f:
+            yaml.dump(
+                {
+                    "table_name": "fact_orders",
+                    "dimensions": {"customer_id": {"type": "number", "sql": "${TABLE}.customer_id"}},
+                },
+                f,
+            )
+        with open(views_dir / "customers.yaml", "w") as f:
+            yaml.dump(
+                {
+                    "table_name": "dim_customers",
+                    "dimensions": {"id": {"type": "number", "sql": "${TABLE}.id", "primary_key": True}},
+                },
+                f,
+            )
+
+        with open(tmpdir_path / "relationships.yaml", "w") as f:
+            yaml.dump(
+                [
+                    {
+                        "join_from_view": "orders",
+                        "join_to_view": "customers",
+                        "relationship_type": "many_to_one",
+                        "on_sql": "${orders.customer_id} = ${customers.id}",
+                    }
+                ],
+                f,
+            )
+
+        adapter = OmniAdapter()
+        graph = adapter.parse(tmpdir_path)
+
+        # Registered under the file stem, with the physical table preserved.
+        assert "orders" in graph.models
+        assert "fact_orders" not in graph.models
+        assert graph.models["orders"].table == "fact_orders"
+
+        # The relationship referencing the stem-named view attaches (not dropped).
+        rel = next(r for r in graph.models["orders"].relationships if r.name == "customers")
+        assert rel.type == "many_to_one"
+        assert rel.foreign_key == "customer_id"
+        assert rel.primary_key == "id"
 
 
 def test_omni_topic_realizes_relationships():

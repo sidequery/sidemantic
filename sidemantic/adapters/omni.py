@@ -188,12 +188,15 @@ class OmniAdapter(BaseAdapter):
         # Derive the view name. Omni references a view as ``{schema}__{table_name}``
         # when it is scoped to a schema (see the "Reference this view as ..." header
         # Omni emits), otherwise by its file stem. An explicit ``name:`` always wins.
+        # For schema-less views the file stem is the identifier that relationships and
+        # topics reference, so it must be used even when ``table_name`` differs from it
+        # (e.g. ``views/orders.yaml`` with ``table_name: fact_orders`` is the ``orders``
+        # view, not ``fact_orders``). Using ``table_name`` there would silently drop any
+        # ``join_from_view: orders`` relationship.
         name = view.get("name")
         if not name:
             if schema and table_name:
                 name = f"{schema}__{table_name}"
-            elif table_name:
-                name = table_name
             else:
                 # Strip the ``.view`` suffix Omni adds to view filenames.
                 stem = file_path.name
@@ -382,17 +385,18 @@ class OmniAdapter(BaseAdapter):
             "count": "count",
             "count_distinct": "count_distinct",
             "sum": "sum",
-            "sum_distinct_on": "sum",
             "average": "avg",
             "avg": "avg",
-            "average_distinct_on": "avg",
             "min": "min",
             "max": "max",
             "median": "median",
-            "median_distinct_on": "median",
-            # Omni percentile/list have no direct Sidemantic aggregation; the SQL
-            # (or metadata) carries the intent. Leave agg unset so they parse as
-            # derived/custom-SQL measures rather than mislabeling the aggregation.
+            # Omni percentile/list and the *_distinct_on variants have no direct
+            # Sidemantic aggregation. The distinct-on measures deduplicate rows by a
+            # custom primary key before aggregating; collapsing them to a plain
+            # sum/avg/median would silently drop the dedup and overcount whenever the
+            # source rows fan out. Leave agg unset so they parse as derived/custom-SQL
+            # measures (with the original aggregate_type and custom_primary_key_sql in
+            # metadata) rather than mislabeling the aggregation.
         }
 
         agg = type_mapping.get(agg_type_str)

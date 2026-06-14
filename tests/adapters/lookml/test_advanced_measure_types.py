@@ -63,9 +63,12 @@ class TestDistinctMeasures:
     def test_percentile_distinct(self, graph):
         m = graph.get_model("order_lines").get_metric("p90_order_amount")
         assert m.type == "derived"
-        # percentile: 90 -> fraction 0.9
+        # percentile: 90 -> fraction 0.9. Uses the standard parseable ordered-set
+        # form (no `ORDER BY DISTINCT`, which SQLGlot rejects) so the metric
+        # actually compiles and runs.
         assert "PERCENTILE_CONT(0.9)" in m.sql
-        assert "WITHIN GROUP (ORDER BY DISTINCT" in m.sql
+        assert "WITHIN GROUP (ORDER BY" in m.sql
+        assert "ORDER BY DISTINCT" not in m.sql
         assert "{model}.order_amount" in m.sql
 
     def test_distinct_without_sql_distinct_key(self, graph):
@@ -239,6 +242,80 @@ class TestAdvancedMeasuresQueryable:
         rows = dict(con.execute(sql).fetchall())
         assert rows[1] == pytest.approx(10 / 15)
         assert rows[2] == pytest.approx(5 / 15)
+
+    def test_percentile_distinct_compiles_and_runs(self, graph):
+        # Regression: percentile_distinct previously emitted `ORDER BY DISTINCT`
+        # inside PERCENTILE_CONT, which SQLGlot cannot parse, so the metric was
+        # unusable. It must now compile to parseable SQL and execute.
+        con = self._orders_con()
+        layer = self._layer(graph)
+        sql = layer.compile(metrics=["order_lines.p90_order_amount"])
+        (val,) = con.execute(sql).fetchone()
+        assert val is not None
+
+    def test_keyed_sum_distinct_does_not_overflow(self, graph):
+        # Regression: the keyed distinct offset (HASH(key) scaled into DECIMAL)
+        # overflowed once a query accumulated ~100 distinct keys. A high-key-count
+        # query must run and return the correct fan-out-safe keyed sum.
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS analytics")
+        con.execute(
+            "CREATE TABLE analytics.order_lines (id INT, order_id INT, order_amount DOUBLE, line_amount DOUBLE)"
+        )
+        rows = []
+        expected = 0.0
+        idx = 0
+        for order_id in range(1, 501):  # 500 distinct keys, well past the old ~100 ceiling
+            amount = float(order_id)
+            expected += amount
+            for _ in range(3):  # fan out each order to 3 lines
+                idx += 1
+                rows.append((idx, order_id, amount, 1.0))
+        con.executemany("INSERT INTO analytics.order_lines VALUES (?,?,?,?)", rows)
+        layer = self._layer(graph)
+        sql = layer.compile(metrics=["order_lines.total_order_amount"])
+        (total,) = con.execute(sql).fetchone()
+        assert float(total) == pytest.approx(expected)
+
+    def test_percent_of_total_over_count_distinct_base(self):
+        # Regression: percent_of_total / percent_of_previous referencing a
+        # count_distinct base measure had no entry in the aggregate lookup, so the
+        # base stayed a raw id column instead of COUNT(DISTINCT ...), producing
+        # invalid SQL / percentages over raw ids.
+        import tempfile
+
+        import duckdb
+
+        lkml = """
+view: visits {
+  sql_table_name: analytics.visits ;;
+  dimension: id { type: number primary_key: yes sql: ${TABLE}.id ;; }
+  dimension: country { type: string sql: ${TABLE}.country ;; }
+  dimension: user_id { type: number sql: ${TABLE}.user_id ;; }
+  measure: unique_users { type: count_distinct sql: ${user_id} ;; }
+  measure: pct_unique_users { type: percent_of_total sql: ${unique_users} ;; }
+}
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".lkml", delete=False) as f:
+            f.write(lkml)
+            path = f.name
+        graph = LookMLAdapter().parse(path)
+        m = graph.get_model("visits").get_metric("pct_unique_users")
+        # The base ref must be wrapped in COUNT(DISTINCT ...), not left as a raw id.
+        assert "COUNT(DISTINCT {model}.unique_users)" in m.sql
+
+        layer = self._layer(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS analytics")
+        con.execute("CREATE TABLE analytics.visits (id INT, country VARCHAR, user_id INT)")
+        # US has 3 distinct users, CA has 1; shares are 3/4 and 1/4.
+        con.execute("INSERT INTO analytics.visits VALUES (1,'US',1),(2,'US',2),(3,'US',3),(4,'CA',4),(5,'CA',4)")
+        sql = layer.compile(metrics=["visits.pct_unique_users"], dimensions=["visits.country"])
+        rows = dict(con.execute(sql).fetchall())
+        assert rows["US"] == pytest.approx(3 / 4)
+        assert rows["CA"] == pytest.approx(1 / 4)
 
     def test_fiscal_offset_buckets_by_fiscal_period(self):
         import tempfile

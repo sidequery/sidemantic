@@ -385,9 +385,9 @@ class LookMLAdapter(BaseAdapter):
             if not m_name:
                 continue
             measure_names.add(m_name)
-            agg_func = self._SQL_AGG_FUNC.get(m.get("type", "count"))
-            if agg_func:
-                measure_agg_lookup[m_name] = agg_func
+            agg_template = self._SQL_AGG_FUNC.get(m.get("type", "count"))
+            if agg_template:
+                measure_agg_lookup[m_name] = agg_template
 
         # Parse measures with dimension SQL lookup for reference resolution
         measures = []
@@ -597,16 +597,20 @@ class LookMLAdapter(BaseAdapter):
         # aware truncations in _timeframe_part_sql instead.
     }
 
-    # SQL aggregate function for a base measure type, used by post-SQL measures
+    # SQL aggregate wrapper for a base measure type, used by post-SQL measures
     # (percent_of_total / percent_of_previous) to aggregate the referenced base
-    # measure before applying the window calculation.
+    # measure before applying the window calculation. Each entry is a format
+    # template with a single ``{0}`` placeholder for the column reference, so
+    # count_distinct (which needs ``COUNT(DISTINCT col)``) is expressed correctly
+    # rather than being silently dropped from the lookup.
     _SQL_AGG_FUNC = {
-        "sum": "SUM",
-        "count": "COUNT",
-        "average": "AVG",
-        "min": "MIN",
-        "max": "MAX",
-        "median": "MEDIAN",
+        "sum": "SUM({0})",
+        "count": "COUNT({0})",
+        "count_distinct": "COUNT(DISTINCT {0})",
+        "average": "AVG({0})",
+        "min": "MIN({0})",
+        "max": "MAX({0})",
+        "median": "MEDIAN({0})",
     }
 
     def _build_timeframe_dimension(
@@ -863,7 +867,7 @@ class LookMLAdapter(BaseAdapter):
             dimension_names: Set of dimension names in this view (for reference resolution)
             dimension_sql_lookup: Dict mapping dimension names to their resolved SQL
             measure_names: Set of measure names in this view (for base-measure resolution)
-            measure_agg_lookup: Dict mapping base measure names to their SQL aggregate function
+            measure_agg_lookup: Dict mapping base measure names to their SQL aggregate template
 
         Returns:
             Metric instance or None
@@ -1157,7 +1161,15 @@ class LookMLAdapter(BaseAdapter):
         else:  # percentile_distinct
             percentile_value = measure_def.get("percentile", 50)
             fraction = float(percentile_value) / 100.0
-            agg_sql = f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY DISTINCT {sql})"
+            # `ORDER BY DISTINCT ...` inside PERCENTILE_CONT is rejected by SQLGlot
+            # and standard SQL, so the imported metric would fail to parse before
+            # reaching the database, making the measure type unusable. Emit the
+            # standard parseable ordered-set form (the same one used for the plain
+            # `percentile` measure type above), which the generator compiles and
+            # runs. There is no fan-out-safe inline DISTINCT form for an ordered
+            # percentile, so this de-duplicates rows the same way the database's
+            # PERCENTILE_CONT does rather than by the value list.
+            agg_sql = f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY {sql})"
 
         extra = {"distinct": True}
         if sql_distinct_key:
@@ -1181,15 +1193,21 @@ class LookMLAdapter(BaseAdapter):
         Implements LookML ``sum_distinct`` / ``average_distinct`` with a
         ``sql_distinct_key`` using a symmetric aggregate: each distinct key
         contributes its value exactly once even when joins fan rows out. The
-        HASH(key) term is cast to DECIMAL alongside the value so large hash
-        offsets do not lose precision through float arithmetic (which would
-        otherwise corrupt the result). ``{model}`` placeholders are preserved
-        for the SQL generator.
+        bounded HASH(key) offset is cast to DECIMAL alongside the value so the
+        per-key value stays exact, and the bound keeps the summed offsets within
+        DECIMAL(38, 6) range so the aggregate does not overflow at realistic key
+        cardinalities. ``{model}`` placeholders are preserved for the SQL
+        generator.
         """
-        # HASH(key) offset, cast to DECIMAL so summing alongside the value stays
+        # Per-key offset, cast to DECIMAL so summing alongside the value stays
         # exact; the offset cancels out in the subtraction, leaving the per-key
-        # value summed once.
-        offset = f"(HASH({key_sql})::HUGEINT * (1::HUGEINT << 40))::DECIMAL(38, 6)"
+        # value summed once. HASH is bounded by `% (1 << 61)` so each offset stays
+        # below ~2.3e18: summing many of them (thousands of distinct keys) stays
+        # well within DECIMAL(38, 6) headroom and never overflows, while the 2^61
+        # separation dwarfs realistic measure magnitudes so distinct keys do not
+        # collide. The unbounded `HASH * (1 << 40)` form overflowed once a query
+        # accumulated ~100 distinct keys.
+        offset = f"(HASH({key_sql}) % (1::HUGEINT << 61))::DECIMAL(38, 6)"
         value = f"({value_sql})::DECIMAL(38, 6)"
         keyed_sum = f"(SUM(DISTINCT {offset} + {value}) - SUM(DISTINCT {offset}))"
         if measure_type == "sum_distinct":
@@ -1208,8 +1226,9 @@ class LookMLAdapter(BaseAdapter):
 
         ${dimension} references resolve to the dimension's SQL. ${measure}
         references resolve to ``{model}.<measure>``; when ``measure_agg_lookup``
-        provides the base measure's aggregate function the reference becomes
-        ``<AGG>({model}.<measure>)`` so the value is aggregated per group before
+        provides the base measure's aggregate template the reference becomes
+        ``<AGG>({model}.<measure>)`` (e.g. ``COUNT(DISTINCT {model}.<measure>)``
+        for a count_distinct base) so the value is aggregated per group before
         the window calculation. The generator's inline-aggregate path then
         rewrites ``{model}.<measure>`` to the base measure's ``<measure>_raw``
         CTE column. A bare ``<measure>`` would reference a column the model CTE
@@ -1226,9 +1245,9 @@ class LookMLAdapter(BaseAdapter):
             if ref_name in dimension_sql_lookup:
                 return f"({dimension_sql_lookup[ref_name]})"
             if ref_name in measure_names:
-                agg_func = measure_agg_lookup.get(ref_name)
-                if agg_func:
-                    return f"{agg_func}({{model}}.{ref_name})"
+                agg_template = measure_agg_lookup.get(ref_name)
+                if agg_template:
+                    return agg_template.format(f"{{model}}.{ref_name}")
                 return f"{{model}}.{ref_name}"
             return ref_name
 
@@ -1262,7 +1281,7 @@ class LookMLAdapter(BaseAdapter):
             measure_def: Raw measure definition.
             dimension_sql_lookup: Resolved dimension SQL for ${ref} resolution.
             measure_names: Set of base measure names for ${ref} qualification.
-            measure_agg_lookup: Base measure name -> SQL aggregate function.
+            measure_agg_lookup: Base measure name -> SQL aggregate template.
 
         Returns:
             A Metric, or None if the referenced base measure SQL is missing.

@@ -1818,6 +1818,71 @@ def test_export_released_json_coerces_unsupported_extension_vendor():
         temp_path.unlink()
 
 
+def test_released_json_extension_roundtrip_restores_original():
+    """Released JSON round-trips a non-enum custom_extension back to its original.
+
+    Coercion to COMMON for the released schema must be reversible on import so the
+    documented custom-extension round-trip holds for the released JSON path.
+    """
+    model = Model(
+        name="orders",
+        table="db.schema.fct_orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_id", type="categorical", sql="order_id")],
+        meta={"custom_extensions": {"vendor_id": "acme123"}},
+    )
+    graph = SemanticGraph()
+    graph.add_model(model)
+
+    adapter = OSIAdapter()
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph, temp_path, format="json")
+        graph2 = adapter.parse(temp_path)
+
+        orders = graph2.models["orders"]
+        # The original permissive dict payload is restored, not a raw OSI list.
+        assert orders.meta["custom_extensions"]["vendor_id"] == "acme123"
+    finally:
+        temp_path.unlink()
+
+
+def test_released_json_named_vendor_roundtrip_restores_original():
+    """A named non-enum vendor (e.g. ACME) survives the released JSON round-trip."""
+    model = Model(
+        name="orders",
+        table="db.schema.fct_orders",
+        primary_key="order_id",
+        dimensions=[Dimension(name="order_id", type="categorical", sql="order_id")],
+        meta={"custom_extensions": [{"vendor_name": "ACME", "data": '{"k": "v"}'}]},
+    )
+    graph = SemanticGraph()
+    graph.add_model(model)
+
+    adapter = OSIAdapter()
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        adapter.export(graph, temp_path, format="json")
+        # Exported document must only carry enum vendors.
+        data = json.loads(temp_path.read_text())
+        for ext in data["semantic_model"][0]["datasets"][0]["custom_extensions"]:
+            assert ext["vendor_name"] in OSIAdapter.RELEASED_OSI_VENDORS
+
+        graph2 = adapter.parse(temp_path)
+        ext = graph2.models["orders"].meta["custom_extensions"]
+        # Original non-enum vendor and data are restored on import.
+        assert ext[0]["vendor_name"] == "ACME"
+        assert ext[0]["data"] == '{"k": "v"}'
+    finally:
+        temp_path.unlink()
+
+
 def test_export_released_json_preserves_dbt_extension_vendor():
     """An already-allowed vendor (e.g. DBT) is passed through unchanged in JSON."""
     model = Model(

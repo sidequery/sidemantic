@@ -892,6 +892,11 @@ class OSIAdapter(BaseAdapter):
 
     def _decode_custom_extensions(self, custom_extensions: Any) -> Any:
         """Decode Sidemantic-owned extension wrappers while preserving standard OSI lists."""
+        # Released JSON export relabels non-enum vendors to COMMON and stashes the
+        # original under ``original_vendor_name``. Undo that first so the original
+        # vendor/payload is restored before the SIDEMANTIC unwrap below.
+        custom_extensions = self._restore_coerced_extension_vendors(custom_extensions)
+
         if (
             isinstance(custom_extensions, list)
             and len(custom_extensions) == 1
@@ -906,6 +911,40 @@ class OSIAdapter(BaseAdapter):
                     return data
             return data
         return custom_extensions
+
+    def _restore_coerced_extension_vendors(self, custom_extensions: Any) -> Any:
+        """Reverse :meth:`_coerce_extension_vendors_for_export` on import.
+
+        A coerced extension is a ``COMMON`` entry whose ``data`` decodes to a dict
+        carrying ``original_vendor_name``. Restore the original ``vendor_name`` and
+        inner ``data`` so the released JSON path round-trips identically to YAML.
+        """
+        if not isinstance(custom_extensions, list):
+            return custom_extensions
+
+        restored = []
+        changed = False
+        for ext in custom_extensions:
+            if (
+                isinstance(ext, dict)
+                and ext.get("vendor_name") == self.RELEASED_OSI_FALLBACK_VENDOR
+                and isinstance(ext.get("data"), str)
+            ):
+                try:
+                    payload = json.loads(ext["data"])
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict) and "original_vendor_name" in payload:
+                    restored.append(
+                        {
+                            "vendor_name": payload.get("original_vendor_name"),
+                            "data": payload.get("data"),
+                        }
+                    )
+                    changed = True
+                    continue
+            restored.append(ext)
+        return restored if changed else custom_extensions
 
     def _extension_data_to_string(self, data: Any) -> str:
         """Convert custom extension data to the string required by OSI."""

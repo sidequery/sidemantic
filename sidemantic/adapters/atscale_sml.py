@@ -391,9 +391,12 @@ class AtScaleSMLAdapter(BaseAdapter):
         if key:
             objects[obj_type][key] = data
 
-        # A catalog may declare external Git-repo packages inline. Register each
-        # so it is tracked alongside standalone package files.
-        if obj_type == "catalog":
+        # A standalone SML package file or a catalog may declare external
+        # Git-repo packages via a top-level `packages` list (the canonical
+        # package-file shape is `{version, packages: [{name, url, ...}, ...]}`
+        # with no `object_type`/`unique_name`). Register each nested entry so
+        # the references are tracked alongside single-package fixtures.
+        if obj_type in {"catalog", "package"}:
             for package in data.get("packages") or []:
                 if not isinstance(package, dict):
                     continue

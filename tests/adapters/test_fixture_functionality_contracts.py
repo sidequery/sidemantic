@@ -80,6 +80,7 @@ EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/atscale_sml_kitchen_sink/model_orders.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/model_returns.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/package_shared_dims.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/packages/shared_repos.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/row_security_country.yml",
     "tests/fixtures/cube/rbac_views.yaml",
     "tests/fixtures/holistics/ecommerce.dataset.aml",

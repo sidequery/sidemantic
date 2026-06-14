@@ -387,6 +387,20 @@ class TestAtScaleSMLNewerSpecFeatures:
         assert "shared_dimensions" not in graph.models
         assert "order_model" in graph.models
 
+    def test_standalone_package_file_registers_entries(self, adapter, fixtures_dir):
+        """A canonical SML package file (`{version, packages: [...]}` in a
+        packages/ dir, with no object_type/unique_name) registers every nested
+        package reference, not just single-package or inline-catalog shapes."""
+        files = adapter._collect_yaml_files(fixtures_dir)
+        objects = adapter._load_objects(files)
+        package_keys = objects["package"].keys()
+        # Nested entries from packages/shared_repos.yml are registered.
+        assert "shared_repo_dims" in package_keys
+        assert "shared_repo_metrics" in package_keys
+        # Existing single-package and inline-catalog references still register.
+        assert "shared_dimensions" in package_keys
+        assert "shared_metrics" in package_keys
+
     def test_catalog_new_fields_parse_without_error(self, adapter, fixtures_dir):
         """Catalog hidden_models (v1.2), description (v1.6), dataset_properties,
         and inline packages do not break parsing or hide referenced models."""

@@ -897,6 +897,15 @@ fn chart_data(
     })
 }
 
+/// Bar length in `BarChart`'s u64 units, scaled so the largest magnitude in the
+/// series fills the chart. Uses magnitude (not the raw value) so negative values
+/// render a proportional bar instead of collapsing to zero; the sign is conveyed
+/// by the bar's label text and colour.
+fn bar_chart_value(value: f64, max_magnitude: f64) -> u64 {
+    let max_magnitude = max_magnitude.max(1e-9);
+    ((value.abs() / max_magnitude) * 10_000.0).round() as u64
+}
+
 fn truncate_label(value: &str, max: usize) -> String {
     if value.chars().count() <= max {
         value.to_string()
@@ -1169,23 +1178,26 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &WorkbenchApp) {
                     let block = Block::default().title(title).borders(Borders::ALL);
                     match app.chart_mode {
                         ChartRenderMode::Bar => {
-                            let max_value = data
+                            let max_magnitude = data
                                 .points
                                 .iter()
-                                .map(|(_, value)| value.max(0.0))
-                                .fold(0.0_f64, f64::max)
-                                .max(1e-9);
-                            let scale = 10_000.0 / max_value;
+                                .map(|(_, value)| value.abs())
+                                .fold(0.0_f64, f64::max);
                             let bars: Vec<Bar> = data
                                 .points
                                 .iter()
                                 .take(CHART_MAX_BARS)
                                 .map(|(label, value)| {
+                                    let color = if *value < 0.0 {
+                                        Color::Red
+                                    } else {
+                                        Color::Cyan
+                                    };
                                     Bar::default()
-                                        .value((value.max(0.0) * scale).round() as u64)
+                                        .value(bar_chart_value(*value, max_magnitude))
                                         .label(Line::from(truncate_label(label, 18)))
                                         .text_value(format!("{value:.2}"))
-                                        .style(Style::default().fg(Color::Cyan))
+                                        .style(Style::default().fg(color))
                                 })
                                 .collect();
                             let barchart = BarChart::default()
@@ -1464,6 +1476,18 @@ mod tests {
         assert_eq!(ChartRenderMode::Bar.next(), ChartRenderMode::Line);
         assert_eq!(ChartRenderMode::Line.next(), ChartRenderMode::Bar);
         assert_eq!(ChartRenderMode::Line.label(), "LINE");
+    }
+
+    #[test]
+    fn bar_chart_value_preserves_negative_magnitudes() {
+        // Largest magnitude (whether positive or negative) fills the chart.
+        assert_eq!(bar_chart_value(-20.0, 20.0), 10_000);
+        assert_eq!(bar_chart_value(20.0, 20.0), 10_000);
+        // A negative value renders a proportional, non-zero bar (not clamped to 0).
+        assert_eq!(bar_chart_value(-10.0, 20.0), 5_000);
+        assert_eq!(bar_chart_value(5.0, 20.0), 2_500);
+        // An all-zero series does not divide by zero.
+        assert_eq!(bar_chart_value(0.0, 0.0), 0);
     }
 
     fn fixture_runtime() -> SidemanticRuntime {

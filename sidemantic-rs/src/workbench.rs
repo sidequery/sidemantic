@@ -29,6 +29,9 @@ use crate::CliResult;
 const PREVIEW_ROW_LIMIT: usize = 25;
 const PREVIEW_CELL_WIDTH: usize = 48;
 const CHART_MAX_BARS: usize = 16;
+/// Upper bound on rows materialized into chart points per draw (line mode plots
+/// all of them; bar mode shows the first `CHART_MAX_BARS`).
+const CHART_MAX_POINTS: usize = 200;
 
 #[derive(Debug, Clone)]
 struct ModelSummary {
@@ -849,11 +852,19 @@ struct ChartData {
     value_col: usize,
     label_col: usize,
     points: Vec<(String, f64)>,
+    /// Total rows in the result; `points` may be fewer (capped at `CHART_MAX_POINTS`
+    /// and/or with non-numeric rows skipped), which the chart title surfaces.
+    total_rows: usize,
 }
 
 /// Resolve which columns to chart and extract `(label, value)` points, or return
 /// a message explaining why a chart cannot be drawn. Rendering (bar/line) is done
 /// with ratatui's `BarChart`/`Chart` widgets in `draw_app`.
+///
+/// Only the first `CHART_MAX_POINTS` rows are materialized: the chart redraws on
+/// every event loop tick, so formatting every row of a large detail query would
+/// allocate thousands of labels many times per second for no visible gain (a
+/// terminal can't resolve more points than its width).
 fn chart_data(
     preview: &ExecutionPreview,
     value_column_override: Option<usize>,
@@ -876,7 +887,7 @@ fn chart_data(
         .unwrap_or(default_label_index);
 
     let mut points = Vec::new();
-    for (row_index, row) in preview.rows.iter().enumerate() {
+    for (row_index, row) in preview.rows.iter().take(CHART_MAX_POINTS).enumerate() {
         let Some(value) = row.get(value_col).and_then(workbench_value_as_f64) else {
             continue;
         };
@@ -894,6 +905,7 @@ fn chart_data(
         value_col,
         label_col,
         points,
+        total_rows: preview.rows.len(),
     })
 }
 
@@ -1169,8 +1181,17 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &WorkbenchApp) {
                     frame.render_widget(output, rects.output);
                 }
                 Ok((preview, data)) => {
+                    let scope = if data.points.len() < data.total_rows {
+                        format!(
+                            "  (first {} of {} rows)",
+                            data.points.len(),
+                            data.total_rows
+                        )
+                    } else {
+                        String::new()
+                    };
                     let title = format!(
-                        "{output_title}  {} by {}  [{}]  Ctrl+M mode · Ctrl+V/L cols",
+                        "{output_title}  {} by {}  [{}]{scope}  Ctrl+M · Ctrl+V/L",
                         preview.columns[data.value_col],
                         preview.columns[data.label_col],
                         app.chart_mode.label(),
@@ -1476,6 +1497,25 @@ mod tests {
         assert_eq!(ChartRenderMode::Bar.next(), ChartRenderMode::Line);
         assert_eq!(ChartRenderMode::Line.next(), ChartRenderMode::Bar);
         assert_eq!(ChartRenderMode::Line.label(), "LINE");
+    }
+
+    #[test]
+    fn chart_data_caps_materialized_points_for_large_results() {
+        let rows: Vec<Vec<WorkbenchValue>> = (0..CHART_MAX_POINTS + 50)
+            .map(|i| {
+                vec![
+                    WorkbenchValue::String(format!("row{i}")),
+                    WorkbenchValue::I64(i as i64),
+                ]
+            })
+            .collect();
+        let preview = ExecutionPreview {
+            columns: vec!["label".to_string(), "value".to_string()],
+            rows,
+        };
+        let data = chart_data(&preview, None, None).expect("chart data");
+        assert_eq!(data.points.len(), CHART_MAX_POINTS);
+        assert_eq!(data.total_rows, CHART_MAX_POINTS + 50);
     }
 
     #[test]

@@ -331,3 +331,95 @@ class TestSnowflakeRoundtripYamlStructure:
             # metrics should have expr
             for metric in table.get("metrics", []):
                 assert "name" in metric
+
+
+class TestSnowflakeTopLevelMetrics:
+    """Test parsing/exporting of graph-level (top-level) metrics.
+
+    Snowflake semantic-view metrics that omit ``table`` (or reference a table not
+    present in the model) become graph-level Sidemantic metrics that reference
+    other fields with ``model.field`` syntax.
+    """
+
+    @pytest.fixture
+    def top_level_yaml(self, tmp_path):
+        path = tmp_path / "top_level.yaml"
+        path.write_text("""
+name: shop
+tables:
+  - name: orders
+    base_table:
+      table: orders
+    primary_key:
+      columns:
+        - id
+    facts:
+      - name: total_revenue
+        expr: amount
+        default_aggregation: sum
+      - name: order_count
+        expr: id
+        default_aggregation: count
+metrics:
+  - name: revenue_per_order
+    expr: orders.total_revenue / orders.order_count
+""")
+        return path
+
+    def test_top_level_metric_is_not_overqualified(self, adapter, top_level_yaml):
+        """Graph-level metric expressions must keep model.field references intact."""
+        graph = adapter.parse(top_level_yaml)
+
+        assert "revenue_per_order" in graph.metrics
+        metric = graph.metrics["revenue_per_order"]
+        assert metric.type == "derived"
+        # Must NOT be corrupted with the {model} placeholder.
+        assert "{model}" not in metric.sql
+        assert metric.sql == "orders.total_revenue / orders.order_count"
+
+    def test_top_level_metric_survives_roundtrip(self, adapter, top_level_yaml, tmp_path):
+        """Graph-level metrics must be re-exported into the top-level metrics section."""
+        graph = adapter.parse(top_level_yaml)
+
+        output_file = tmp_path / "roundtrip.yaml"
+        adapter.export(graph, output_file)
+
+        with open(output_file) as f:
+            data = yaml.safe_load(f)
+
+        # Top-level metrics section must be present after export.
+        assert "metrics" in data
+        names = {m["name"]: m for m in data["metrics"]}
+        assert "revenue_per_order" in names
+        assert names["revenue_per_order"]["expr"] == "orders.total_revenue / orders.order_count"
+
+        # And it must survive a full re-parse without being lost or corrupted.
+        graph2 = adapter.parse(output_file)
+        assert "revenue_per_order" in graph2.metrics
+        assert graph2.metrics["revenue_per_order"].sql == "orders.total_revenue / orders.order_count"
+
+    def test_table_scoped_metric_still_qualified(self, adapter, tmp_path):
+        """Table-scoped derived metrics must still get the {model} placeholder."""
+        path = tmp_path / "scoped.yaml"
+        path.write_text("""
+name: shop
+tables:
+  - name: orders
+    base_table:
+      table: orders
+    primary_key:
+      columns:
+        - id
+metrics:
+  - name: weird_ratio
+    table: orders
+    expr: SUM(amount) / COUNT(id)
+""")
+        graph = adapter.parse(path)
+
+        metric = graph.models["orders"].get_metric("weird_ratio")
+        assert metric is not None
+        assert metric.type == "derived"
+        # Bare table-local columns must be qualified with {model}.
+        assert "{model}.amount" in metric.sql
+        assert "{model}.id" in metric.sql

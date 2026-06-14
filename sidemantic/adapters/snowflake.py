@@ -178,13 +178,21 @@ class SnowflakeAdapter(BaseAdapter):
 
         # Parse top-level metrics (semantic-model-scoped metrics referencing tables)
         for metric_def in data.get("metrics") or []:
-            metric = self._parse_metric(metric_def)
-            if metric is None:
-                continue
             table_name = metric_def.get("table")
             if table_name and table_name in graph.models:
+                # Table-scoped: bare column refs are local to the table, so qualify
+                # complex expressions with the {model} placeholder.
+                metric = self._parse_metric(metric_def)
+                if metric is None:
+                    continue
                 graph.models[table_name].metrics.append(metric)
             else:
+                # Graph-level metric: expressions reference other fields as
+                # `model.field` (already qualified), so leave them untouched
+                # instead of corrupting them with the {model} placeholder.
+                metric = self._parse_metric(metric_def, qualify=False)
+                if metric is None:
+                    continue
                 graph.metrics[metric.name] = metric
 
         # Parse top-level Cortex Analyst sections onto the graph.
@@ -362,13 +370,18 @@ class SnowflakeAdapter(BaseAdapter):
             metadata=self._measure_metadata(fact_def),
         )
 
-    def _parse_metric(self, metric_def: dict) -> Metric | None:
+    def _parse_metric(self, metric_def: dict, qualify: bool = True) -> Metric | None:
         """Parse Snowflake metric into Sidemantic metric.
 
         Metrics in Snowflake are table-scoped aggregations (already contain aggregate functions).
 
         Args:
             metric_def: Metric definition dictionary
+            qualify: When True (table-scoped metrics), bare column references in
+                complex/derived expressions are qualified with the {model}
+                placeholder. When False (graph-level metrics), the expression is
+                left as-is because it already uses ``model.field`` references that
+                must not be rewritten.
 
         Returns:
             Metric instance or None
@@ -413,12 +426,14 @@ class SnowflakeAdapter(BaseAdapter):
                 )
 
         # Complex expression (multiple aggregations or couldn't parse simple one)
-        # Mark as derived and qualify column references with {model} placeholder
-        qualified_expr = _qualify_columns(expr)
+        # Mark as derived. Table-scoped metrics qualify bare column references with
+        # the {model} placeholder; graph-level metrics already use `model.field`
+        # references and must be left untouched.
+        derived_expr = _qualify_columns(expr) if qualify else expr
         return Metric(
             name=name,
             type="derived",
-            sql=qualified_expr,
+            sql=derived_expr,
             description=metric_def.get("description"),
             synonyms=metric_def.get("synonyms"),
             metadata=self._metric_metadata(metric_def),
@@ -608,6 +623,15 @@ class SnowflakeAdapter(BaseAdapter):
         # Remove empty relationships list
         if not semantic_model["relationships"]:
             del semantic_model["relationships"]
+
+        # Export graph-level (top-level) metrics. These have no owning table and
+        # were parsed from the semantic model's top-level `metrics:` section, so
+        # they must be serialized back there to survive a parse/export round-trip.
+        top_level_metrics = []
+        for metric in graph.metrics.values():
+            top_level_metrics.append(self._export_metric(metric))
+        if top_level_metrics:
+            semantic_model["metrics"] = top_level_metrics
 
         # Export top-level Cortex Analyst sections if present on the graph.
         verified_queries = getattr(graph, "verified_queries", None)

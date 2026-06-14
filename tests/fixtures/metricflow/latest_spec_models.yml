@@ -76,6 +76,18 @@ metrics:
         offset_window: 7 days
         alias: total_7_days_ago
 
+  # Derived whose inputs are all non-offset aliases: aliases are rewritten back
+  # to their real input metrics so the metric is queryable on its own.
+  - name: net_order_total
+    description: Order total minus a fixed adjustment of itself
+    type: derived
+    expr: gross_total - half_total / 2
+    input_metrics:
+      - name: order_total
+        alias: gross_total
+      - name: order_total
+        alias: half_total
+
   # Cumulative with promoted input_metric + window + period_agg
   - name: rolling_30d_revenue
     description: Trailing 30 day revenue

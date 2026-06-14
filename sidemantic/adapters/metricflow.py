@@ -37,6 +37,14 @@ class MetricFlowAdapter(BaseAdapter):
         # retained here (and on ``graph.metadata["saved_queries"]``) rather than
         # turned into models or metrics.
         self.saved_queries: dict[str, dict] = {}
+        # Parsed conversion metrics keyed by name. MetricFlow conversion metrics
+        # reference base/conversion *measures*, which have no faithful mapping to
+        # Sidemantic's event-filter conversion funnel. Rather than register a
+        # queryable ``type: conversion`` metric that would generate wrong SQL
+        # (filtering an ``event_type`` dimension by a measure name), the spec is
+        # retained here (and on ``graph.metadata["metricflow_conversion_metrics"]``)
+        # for round-tripping without exposing a broken queryable metric.
+        self.conversion_metrics: dict[str, dict] = {}
 
     def parse(self, source: str | Path) -> SemanticGraph:
         """Parse MetricFlow YAML files into semantic graph.
@@ -51,8 +59,10 @@ class MetricFlowAdapter(BaseAdapter):
         source_path = Path(source)
 
         # Reset per-parse state so reusing the adapter does not leak saved
-        # queries from a previously parsed source into this graph's metadata.
+        # queries or conversion metrics from a previously parsed source into this
+        # graph's metadata.
         self.saved_queries = {}
+        self.conversion_metrics = {}
 
         if source_path.is_dir():
             # Parse all YAML files in directory
@@ -74,6 +84,10 @@ class MetricFlowAdapter(BaseAdapter):
         # Expose parsed saved queries on the graph for downstream consumers.
         if self.saved_queries:
             graph.metadata["saved_queries"] = self.saved_queries
+
+        # Expose parsed conversion metrics (retained as non-queryable metadata).
+        if self.conversion_metrics:
+            graph.metadata["metricflow_conversion_metrics"] = self.conversion_metrics
 
         return graph
 
@@ -111,14 +125,24 @@ class MetricFlowAdapter(BaseAdapter):
                 if not metric:
                     continue
                 if model and metric_def.get("type", "simple") == "simple" and metric.agg is not None:
+                    primary_key_ref = f"{model.name}.{model.primary_key}"
                     if metric.sql is not None:
-                        metric.sql = self._qualify_measure_sql(metric.sql, model.name)
+                        qualified = self._qualify_measure_sql(metric.sql, model.name)
+                        # A constant count measure (``agg: count`` with ``expr: 1``
+                        # or ``expr: '*'``) has no column to qualify, so the metric
+                        # would carry no model reference and the planner would raise
+                        # ``No models found for query``. Anchor such counts to the
+                        # model via its primary key, the same as a bare ``count``.
+                        # COUNT over a non-null primary key is equivalent to COUNT(*).
+                        if metric.agg == "count" and not self._has_qualified_column(qualified, model.name):
+                            metric.sql = primary_key_ref
+                        else:
+                            metric.sql = qualified
                     else:
                         # Bare aggregation (e.g. ``count`` with no ``expr``):
                         # anchor it to the model via its primary key so the
-                        # planner can resolve the model. COUNT over a non-null
-                        # primary key is equivalent to COUNT(*).
-                        metric.sql = f"{model.name}.{model.primary_key}"
+                        # planner can resolve the model.
+                        metric.sql = primary_key_ref
                 self._add_metric(graph, metric)
 
         # Legacy spec: top-level ``semantic_models:``.
@@ -159,6 +183,28 @@ class MetricFlowAdapter(BaseAdapter):
             if not column.table:
                 column.set("table", exp.to_identifier(model_name))
         return parsed.sql()
+
+    @staticmethod
+    def _has_qualified_column(sql: str, model_name: str) -> bool:
+        """Return True if ``sql`` references at least one column on ``model_name``.
+
+        Used to detect folded measures whose ``expr`` is a bare constant (e.g.
+        ``count`` with ``expr: 1`` or ``expr: '*'``). Such expressions contain no
+        column for ``_qualify_measure_sql`` to anchor, so the metric would carry
+        no model reference and could not be queried on its own.
+        """
+        import sqlglot
+        from sqlglot import exp
+
+        try:
+            parsed = sqlglot.parse_one(sql)
+        except Exception:
+            return False
+
+        for column in parsed.find_all(exp.Column):
+            if column.table == model_name:
+                return True
+        return False
 
     @staticmethod
     def _add_metric(graph: SemanticGraph, metric: Metric) -> None:
@@ -614,6 +660,19 @@ class MetricFlowAdapter(BaseAdapter):
             input_summary = self._summarize_input_metrics(input_metrics)
             if input_summary:
                 metadata["input_metrics"] = input_summary
+            # Rewrite non-offset aliases back to their real input metric so the
+            # expression references metrics that actually exist in the graph.
+            # MetricFlow lets a derived metric reference an input by ``alias``
+            # (e.g. ``current_total`` for ``order_total``); without rewriting,
+            # ``get_dependencies`` would scan the expression and resolve only the
+            # aliases, so ``_find_required_models`` could not infer a model and a
+            # CLI query like ``--metrics order_total_growth`` would raise
+            # ``No models found for query``. An alias carrying ``offset_window`` /
+            # ``offset_to_grain`` denotes a time-shifted value distinct from the
+            # base metric, which Sidemantic cannot yet express, so those aliases
+            # are left intact (the metric stays as round-trip metadata).
+            if expr and input_summary:
+                expr = self._rewrite_input_aliases(expr, input_summary)
 
         elif metric_type == "cumulative":
             # Base measure: ``measure`` (legacy) or ``input_metric`` (latest).
@@ -669,7 +728,7 @@ class MetricFlowAdapter(BaseAdapter):
         )
 
     def _summarize_input_metrics(self, input_metrics) -> list[dict] | None:
-        """Capture per-input derived modifiers (offset_window / offset_to_grain / alias).
+        """Capture per-input derived modifiers (offset_window / offset_to_grain / alias / filter).
 
         Args:
             input_metrics: The ``metrics`` (legacy) / ``input_metrics`` (latest) list.
@@ -684,7 +743,7 @@ class MetricFlowAdapter(BaseAdapter):
         for entry in input_metrics:
             if isinstance(entry, dict):
                 item = {"name": entry.get("name")}
-                for key in ("alias", "offset_window", "offset_to_grain"):
+                for key in ("alias", "offset_window", "offset_to_grain", "filter"):
                     if entry.get(key) is not None:
                         item[key] = entry.get(key)
                 summary.append(item)
@@ -692,12 +751,55 @@ class MetricFlowAdapter(BaseAdapter):
                 summary.append({"name": entry})
         return summary or None
 
+    @staticmethod
+    def _rewrite_input_aliases(expr: str, input_summary: list[dict]) -> str:
+        """Replace plain derived input aliases with their real metric names.
+
+        Each entry in ``input_summary`` may carry an ``alias`` referenced by the
+        derived expression. An alias is only rewritten when the input has no
+        modifier that makes its value differ from the underlying metric:
+
+        - ``offset_window`` / ``offset_to_grain`` denote a time-shifted value, and
+        - ``filter`` denotes a filtered subset value,
+
+        so aliases carrying either are left intact (the metric stays as round-trip
+        metadata). Identifiers are matched on word boundaries so an alias is not
+        rewritten inside a longer identifier.
+        """
+        import re
+
+        rewritten = expr
+        for item in input_summary:
+            alias = item.get("alias")
+            real_name = item.get("name")
+            if not alias or not real_name or alias == real_name:
+                continue
+            if (
+                item.get("offset_window") is not None
+                or item.get("offset_to_grain") is not None
+                or item.get("filter") is not None
+            ):
+                continue
+            rewritten = re.sub(rf"\b{re.escape(alias)}\b", real_name, rewritten)
+        return rewritten
+
     def _parse_conversion_metric(self, name: str, metric_def: dict, type_params: dict) -> Metric | None:
-        """Parse a MetricFlow conversion metric into a Sidemantic conversion Metric.
+        """Record a MetricFlow conversion metric as non-queryable metadata.
 
         Handles both the legacy shape (``type_params.conversion_type_params`` with
         ``base_measure`` / ``conversion_measure``) and the latest shape (promoted
         top-level ``base_metric`` / ``conversion_metric`` / ``entity`` keys).
+
+        MetricFlow conversion metrics reference base/conversion *measures*, but
+        Sidemantic's ``type: conversion`` funnel filters an ``event_type``
+        dimension by a string literal (e.g. ``WHERE event_type = 'visit'``). The
+        measure name is not such a filter, so registering a queryable conversion
+        metric would either fail to find an ``event_type`` dimension or silently
+        compute wrong conversions (``WHERE event_type = 'order_count'``). Until a
+        faithful measure-predicate mapping exists, the spec is captured in
+        ``self.conversion_metrics`` (surfaced on
+        ``graph.metadata["metricflow_conversion_metrics"]``) and no metric is
+        registered, so the parsed graph never exposes a broken conversion metric.
 
         Args:
             name: Metric name.
@@ -705,7 +807,7 @@ class MetricFlowAdapter(BaseAdapter):
             type_params: The metric's ``type_params`` (may be empty in latest spec).
 
         Returns:
-            Conversion Metric instance or None.
+            ``None`` always; the conversion spec is retained as metadata instead.
         """
         conv = type_params.get("conversion_type_params") or {}
 
@@ -725,37 +827,22 @@ class MetricFlowAdapter(BaseAdapter):
         constant_properties = conv.get("constant_properties") or metric_def.get("constant_properties")
 
         if not base or not conversion or not entity:
-            # Not enough information to build a valid conversion metric.
+            # Not enough information to describe a valid conversion metric.
             return None
 
-        # Sidemantic's conversion metric models a base event -> conversion event
-        # funnel keyed on an entity. MetricFlow keys on measures rather than event
-        # filters, so the measure names become the event references and the
-        # calculation flavor / fill behavior is retained in metadata.
-        metadata: dict = {"calculation": calculation, "source": "metricflow"}
-        if constant_properties:
-            metadata["constant_properties"] = constant_properties
-
-        filter_expr = metric_def.get("filter")
-        filters = [filter_expr] if filter_expr else None
-
-        meta = metric_def.get("meta", {})
-
-        return Metric(
-            name=name,
-            type="conversion",
-            description=metric_def.get("description"),
-            label=metric_def.get("label"),
-            entity=entity,
-            base_event=base,
-            conversion_event=conversion,
-            conversion_window=window,
-            filters=filters,
-            format=meta.get("format"),
-            value_format_name=meta.get("value_format_name"),
-            drill_fields=meta.get("drill_fields"),
-            metadata=metadata,
-        )
+        self.conversion_metrics[name] = {
+            "name": name,
+            "description": metric_def.get("description"),
+            "label": metric_def.get("label"),
+            "entity": entity,
+            "base_measure": base,
+            "conversion_measure": conversion,
+            "window": window,
+            "calculation": calculation,
+            "constant_properties": constant_properties,
+            "filter": metric_def.get("filter"),
+        }
+        return None
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to MetricFlow YAML format.

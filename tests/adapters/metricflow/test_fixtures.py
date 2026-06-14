@@ -773,11 +773,14 @@ class TestSimpleManifestMetrics:
         assert "booking_value_sub_instant" in nested.sql
 
     def test_derived_with_alias(self, graph):
-        """Derived metric with alias on input parses."""
+        """Derived metric with non-offset alias rewrites the alias to its input metric."""
         pct = graph.get_metric("non_referred_bookings_pct")
         assert pct is not None
         assert pct.type == "derived"
-        assert "ref_bookings" in pct.sql
+        # The non-offset alias ``ref_bookings`` is rewritten back to its real
+        # input metric ``referred_bookings`` so the metric is queryable.
+        assert pct.sql == "(bookings - referred_bookings) * 1.0 / bookings"
+        assert pct.get_dependencies(graph) == {"bookings", "referred_bookings"}
 
     def test_derived_with_filtered_input(self, graph):
         """Derived metric with filter on input metric parses."""
@@ -806,14 +809,17 @@ class TestSimpleManifestMetrics:
         assert twice.type == "derived"
 
     def test_derived_shared_aliases(self, graph):
-        """Derived metrics with shared alias names parse independently."""
+        """Derived metrics with shared alias names rewrite to their own input metrics."""
+        # Same alias name (``shared_alias``) maps to a different underlying metric
+        # in each derived metric; each is rewritten independently.
         a = graph.get_metric("derived_shared_alias_1a")
         assert a is not None
         assert a.type == "derived"
-        assert "shared_alias" in a.sql
+        assert a.sql == "bookings - 10"
 
         b = graph.get_metric("derived_shared_alias_2")
         assert b is not None
+        assert b.sql == "instant_bookings + 10"
 
     def test_derived_fill_nulls(self, graph):
         """Derived metrics with fill_nulls inputs parse."""
@@ -851,32 +857,35 @@ class TestSimpleManifestMetrics:
         assert ratio.filters is not None
 
     def test_conversion_metrics_parsed(self, graph):
-        """Conversion metrics are parsed from type_params.conversion_type_params."""
-        assert "visit_buy_conversion_rate_7days" in graph.metrics
-        assert "visit_buy_conversion_rate" in graph.metrics
-        assert "visit_buy_conversions" in graph.metrics
-        assert "visit_buy_conversion_rate_by_session" in graph.metrics
+        """Conversion metrics are retained as non-queryable metadata.
 
-        rate_7d = graph.get_metric("visit_buy_conversion_rate_7days")
-        assert rate_7d.type == "conversion"
-        assert rate_7d.entity == "user"
-        assert rate_7d.base_event == "visits"
-        assert rate_7d.conversion_event == "buys"
-        assert rate_7d.conversion_window == "7 days"
-        assert rate_7d.metadata["calculation"] == "conversion_rate"
+        MetricFlow conversion metrics reference base/conversion *measures*, which
+        cannot be faithfully mapped to Sidemantic's event-filter conversion
+        funnel, so they are captured in metadata rather than registered as
+        broken queryable metrics.
+        """
+        assert "visit_buy_conversion_rate_7days" not in graph.metrics
+        assert "visit_buy_conversion_rate" not in graph.metrics
+        assert "visit_buy_conversions" not in graph.metrics
+        assert "visit_buy_conversion_rate_by_session" not in graph.metrics
+
+        conv_specs = graph.metadata["metricflow_conversion_metrics"]
+
+        rate_7d = conv_specs["visit_buy_conversion_rate_7days"]
+        assert rate_7d["entity"] == "user"
+        assert rate_7d["base_measure"] == "visits"
+        assert rate_7d["conversion_measure"] == "buys"
+        assert rate_7d["window"] == "7 days"
+        assert rate_7d["calculation"] == "conversion_rate"
 
         # conversions count flavor with a dict conversion_measure (fill_nulls_with)
-        conversions = graph.get_metric("visit_buy_conversions")
-        assert conversions.type == "conversion"
-        assert conversions.conversion_event == "buys"
-        assert conversions.metadata["calculation"] == "conversions"
+        conversions = conv_specs["visit_buy_conversions"]
+        assert conversions["conversion_measure"] == "buys"
+        assert conversions["calculation"] == "conversions"
 
         # constant_properties retained in metadata
-        by_session = graph.get_metric("visit_buy_conversion_rate_by_session")
-        assert by_session.type == "conversion"
-        assert by_session.metadata["constant_properties"] == [
-            {"base_property": "session", "conversion_property": "session_id"}
-        ]
+        by_session = conv_specs["visit_buy_conversion_rate_by_session"]
+        assert by_session["constant_properties"] == [{"base_property": "session", "conversion_property": "session_id"}]
 
     def test_total_metric_count(self, graph):
         """Verify total number of parsed metrics (simple + cumulative + derived + ratio + conversion)."""

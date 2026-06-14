@@ -173,13 +173,15 @@ def test_metricflow_advanced_metrics():
     assert profit_margin.numerator == "order_total"
     assert profit_margin.denominator == "order_cost"
 
-    # Check derived metrics
+    # Check derived metrics - plain (non-offset, unfiltered) aliases are
+    # rewritten back to their real input metrics so the metric is queryable.
     assert "order_gross_profit" in graph.metrics
     gross_profit = graph.get_metric("order_gross_profit")
     assert gross_profit.type == "derived"
-    assert gross_profit.sql == "revenue - cost"
+    assert gross_profit.sql == "total_order_revenue - total_order_cost"
 
-    # Check derived metric with filters
+    # Check derived metric with filters - filtered-input aliases are preserved
+    # because the filtered value differs from the underlying metric.
     assert "food_order_profit" in graph.metrics
     food_profit = graph.get_metric("food_order_profit")
     assert food_profit.type == "derived"
@@ -650,32 +652,32 @@ def test_metricflow_conversion_metrics():
     buys = events.get_metric("buys")
     assert buys is not None
 
-    # Conversion metrics are now parsed from type_params.conversion_type_params.
-    assert "visit_to_buy_conversion_rate" in graph.metrics
-    assert "visit_to_buy_conversions_1_week" in graph.metrics
-    assert "view_to_purchase_same_product" in graph.metrics
+    # MetricFlow conversion metrics reference base/conversion *measures*, which
+    # have no faithful mapping to Sidemantic's event-filter conversion funnel.
+    # They are retained as non-queryable metadata rather than registered as
+    # broken queryable metrics, so they never appear in graph.metrics.
+    assert "visit_to_buy_conversion_rate" not in graph.metrics
+    assert "visit_to_buy_conversions_1_week" not in graph.metrics
+    assert "view_to_purchase_same_product" not in graph.metrics
 
-    conv = graph.get_metric("visit_to_buy_conversion_rate")
-    assert conv.type == "conversion"
-    assert conv.entity == "user"
-    assert conv.base_event == "visits"
-    assert conv.conversion_event == "buys"
-    assert conv.conversion_window == "7 days"
-    assert conv.metadata["calculation"] == "conversion_rate"
+    conv_specs = graph.metadata["metricflow_conversion_metrics"]
+
+    conv = conv_specs["visit_to_buy_conversion_rate"]
+    assert conv["entity"] == "user"
+    assert conv["base_measure"] == "visits"
+    assert conv["conversion_measure"] == "buys"
+    assert conv["window"] == "7 days"
+    assert conv["calculation"] == "conversion_rate"
 
     # Conversion with calculation: conversions (count flavor)
-    conversions = graph.get_metric("visit_to_buy_conversions_1_week")
-    assert conversions.type == "conversion"
-    assert conversions.conversion_window == "1 week"
-    assert conversions.metadata["calculation"] == "conversions"
+    conversions = conv_specs["visit_to_buy_conversions_1_week"]
+    assert conversions["window"] == "1 week"
+    assert conversions["calculation"] == "conversions"
 
     # Conversion with constant_properties
-    same_product = graph.get_metric("view_to_purchase_same_product")
-    assert same_product.type == "conversion"
-    assert same_product.base_event == "view_item_detail"
-    assert same_product.metadata["constant_properties"] == [
-        {"base_property": "product", "conversion_property": "product"}
-    ]
+    same_product = conv_specs["view_to_purchase_same_product"]
+    assert same_product["base_measure"] == "view_item_detail"
+    assert same_product["constant_properties"] == [{"base_property": "product", "conversion_property": "product"}]
 
     # Test that parsing doesn't fail
     assert graph is not None
@@ -922,10 +924,12 @@ def test_metricflow_latest_spec_models():
     assert rpo.numerator == "order_total"
     assert rpo.denominator == "order_count"
 
-    # Derived with promoted expr + input_metrics offset modifiers
+    # Derived with promoted expr + input_metrics offset modifiers. The plain
+    # alias (current_total) is rewritten to its input metric (order_total); the
+    # offset alias (total_7_days_ago) is preserved because it is time-shifted.
     growth = graph.get_metric("order_total_growth")
     assert growth.type == "derived"
-    assert growth.sql == "current_total - total_7_days_ago"
+    assert growth.sql == "order_total - total_7_days_ago"
     inputs = growth.metadata["input_metrics"]
     offset_input = next(i for i in inputs if i.get("alias") == "total_7_days_ago")
     assert offset_input["offset_window"] == "7 days"
@@ -942,14 +946,15 @@ def test_metricflow_latest_spec_models():
     assert mtd.type == "cumulative"
     assert mtd.grain_to_date == "month"
 
-    # Conversion with promoted base_metric/conversion_metric/entity
-    conv = graph.get_metric("order_to_repeat_conversion")
-    assert conv.type == "conversion"
-    assert conv.entity == "customer"
-    assert conv.base_event == "order_count"
-    assert conv.conversion_event == "order_count"
-    assert conv.metadata["calculation"] == "conversion_rate"
-    assert conv.metadata["constant_properties"] == [{"base_property": "region", "conversion_property": "region"}]
+    # Conversion with promoted base_metric/conversion_metric/entity is retained
+    # as non-queryable metadata (no faithful mapping to Sidemantic's funnel).
+    assert "order_to_repeat_conversion" not in graph.metrics
+    conv = graph.metadata["metricflow_conversion_metrics"]["order_to_repeat_conversion"]
+    assert conv["entity"] == "customer"
+    assert conv["base_measure"] == "order_count"
+    assert conv["conversion_measure"] == "order_count"
+    assert conv["calculation"] == "conversion_rate"
+    assert conv["constant_properties"] == [{"base_property": "region", "conversion_property": "region"}]
 
 
 def test_metricflow_latest_spec_inline_metric_queryable_alone():
@@ -976,6 +981,126 @@ def test_metricflow_latest_spec_inline_metric_queryable_alone():
     # A ratio referencing the inline measures by bare name still resolves
     sql = generator.generate(metrics=["revenue_per_order"])
     assert "orders" in sql.lower()
+
+
+def test_metricflow_inline_constant_count_anchored_to_model():
+    """A constant inline count (``agg: count`` with ``expr: 1``/``'*'``) is queryable.
+
+    Such a measure has no column to qualify, so without anchoring it carries no
+    model reference and selecting it raises ``No models found for query``. It
+    should take the same primary-key anchoring path as a bare ``count``.
+    """
+    import tempfile
+    import textwrap
+
+    yml = textwrap.dedent("""
+        models:
+          - name: events
+            semantic_model:
+              enabled: true
+              name: events
+            columns:
+              - name: event_id
+                entity:
+                  type: primary
+                  name: event
+            metrics:
+              - name: row_count
+                type: simple
+                agg: count
+                expr: 1
+              - name: star_count
+                type: simple
+                agg: count
+                expr: '*'
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(yml)
+        path = Path(f.name)
+
+    try:
+        adapter = MetricFlowAdapter()
+        graph = adapter.parse(path)
+        # Constant counts are anchored to the model primary key.
+        assert graph.get_metric("row_count").sql == "events.event_id"
+        assert graph.get_metric("star_count").sql == "events.event_id"
+
+        generator = SQLGenerator(graph)
+        for metric_name in ("row_count", "star_count"):
+            sql = generator.generate(metrics=[metric_name])
+            assert "events" in sql.lower()
+            assert "count" in sql.lower()
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_metricflow_derived_non_offset_aliases_queryable():
+    """Derived metrics whose inputs are all non-offset aliases are queryable.
+
+    MetricFlow lets a derived expression reference an input metric by ``alias``.
+    Aliases without an offset modifier are rewritten back to their real input
+    metric so dependency resolution sees real metrics; otherwise the planner
+    cannot infer a model and the metric cannot be queried.
+    """
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("tests/fixtures/metricflow/latest_spec_models.yml"))
+
+    net = graph.get_metric("net_order_total")
+    assert net.type == "derived"
+    # Both aliases (gross_total, half_total) rewritten back to order_total.
+    assert net.sql == "order_total - order_total / 2"
+    assert net.get_dependencies(graph) == {"order_total"}
+
+    sql = SQLGenerator(graph).generate(metrics=["net_order_total"])
+    assert "orders" in sql.lower()
+
+
+def test_metricflow_derived_offset_alias_preserved():
+    """An offset-carrying derived input alias is left intact (time-shifted value).
+
+    Rewriting an offset alias to its base metric would conflate a time-shifted
+    value with the current one, so those aliases are preserved as-is and the
+    metric remains round-trip metadata rather than a misleading queryable metric.
+    """
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("tests/fixtures/metricflow/latest_spec_models.yml"))
+
+    growth = graph.get_metric("order_total_growth")
+    # Non-offset alias (current_total) rewritten; offset alias (total_7_days_ago) kept.
+    assert growth.sql == "order_total - total_7_days_ago"
+
+
+def test_metricflow_conversion_metrics_not_queryable_metadata_only():
+    """Conversion metrics are retained as metadata, never registered as metrics.
+
+    MetricFlow conversion metrics reference base/conversion *measures*, which do
+    not map to Sidemantic's event-filter conversion funnel. Registering one
+    would generate wrong SQL (filtering an event_type dimension by a measure
+    name), so the spec is captured in graph metadata instead.
+    """
+    adapter = MetricFlowAdapter()
+    graph = adapter.parse(Path("tests/fixtures/metricflow/latest_spec_models.yml"))
+
+    assert "order_to_repeat_conversion" not in graph.metrics
+    specs = graph.metadata["metricflow_conversion_metrics"]
+    spec = specs["order_to_repeat_conversion"]
+    assert spec["entity"] == "customer"
+    assert spec["base_measure"] == "order_count"
+    assert spec["conversion_measure"] == "order_count"
+    assert spec["calculation"] == "conversion_rate"
+
+
+def test_metricflow_conversion_metrics_not_leaked_on_reuse():
+    """Reusing an adapter must not leak conversion metrics into a later graph."""
+    adapter = MetricFlowAdapter()
+
+    with_conv = adapter.parse(Path("tests/fixtures/metricflow/latest_spec_models.yml"))
+    assert "metricflow_conversion_metrics" in with_conv.metadata
+
+    # Parsing a source without conversion metrics on the same adapter must not
+    # retain the previous file's entries.
+    without_conv = adapter.parse(Path("tests/fixtures/metricflow/semantic_models.yml"))
+    assert "metricflow_conversion_metrics" not in without_conv.metadata
 
 
 def test_metricflow_saved_queries_not_leaked_on_reuse():

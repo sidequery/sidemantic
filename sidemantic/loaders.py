@@ -396,15 +396,21 @@ def _load_yaml_mapping(content: str) -> dict:
 def _is_hex_resource_mapping(data: object) -> bool:
     """Return True when a single YAML mapping is a Hex Semantic Authoring resource.
 
-    Covers both the legacy single-document form (``base_sql_table`` +
-    ``measures``) and the current typed form where each resource carries a
-    ``type: model`` / ``type: view`` discriminator alongside an ``id``.
+    Covers both the legacy single-document form (``base_sql_table``/
+    ``base_sql_query`` + ``measures``) and the current typed form where each
+    resource carries a ``type: model`` / ``type: view`` discriminator alongside
+    an ``id``.
     """
     if not isinstance(data, dict):
         return False
     if data.get("type") in ("model", "view") and "id" in data:
         return True
-    return _contains_yaml_key(data, "base_sql_table") and _contains_yaml_key(data, "measures")
+    # ``HexAdapter`` accepts query-backed models (``base_sql_query``) in addition
+    # to table-backed ones; both must be recognized so directory auto-discovery
+    # does not silently skip query-backed Hex models on the CLI/MCP path.
+    if not _contains_yaml_key(data, "measures"):
+        return False
+    return _contains_yaml_key(data, "base_sql_table") or _contains_yaml_key(data, "base_sql_query")
 
 
 def _looks_like_hex_yaml(content: str) -> bool:

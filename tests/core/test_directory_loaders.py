@@ -303,3 +303,44 @@ contents:
 
     assert "revenue_overview" in layer.graph.models
     assert layer.graph.models["revenue_overview"].meta.get("hex_resource_type") == "view"
+
+
+def test_load_from_directory_detects_query_backed_hex(tmp_path):
+    """Untyped query-backed Hex models (``base_sql_query``) load via auto-discovery.
+
+    ``HexAdapter`` accepts ``base_sql_query`` as well as ``base_sql_table``, but
+    directory auto-discovery previously required ``base_sql_table`` to select the
+    Hex adapter, so query-backed Hex models were silently skipped on the
+    documented CLI/MCP load path.
+    """
+    hex_file = tmp_path / "support_tickets.yml"
+    hex_file.write_text(
+        """
+id: support_tickets
+base_sql_query: |
+  SELECT id, customer_id, status
+  FROM support.tickets
+dimensions:
+  - id: id
+    type: number
+    unique: true
+  - id: customer_id
+    type: number
+  - id: status
+    type: string
+measures:
+  - id: ticket_count
+    func: count
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "support_tickets" in layer.graph.models
+    model = layer.graph.models["support_tickets"]
+    assert model._source_format == "Hex"
+    # The query-backed model carries its SQL, not a physical table reference.
+    assert model.sql is not None
+    assert model.table is None
+    assert model.get_metric("ticket_count") is not None

@@ -45,18 +45,12 @@ wasm-bindgen \
   "$WASM_PATH"
 
 # Shrink the bindgen output further with wasm-opt (binaryen) when available.
-# Optional: a missing wasm-opt only forgoes the extra size reduction. The
-# feature flags enable the wasm features rustc emits so wasm-opt accepts the
-# module rather than rejecting it.
+# Optional: a missing wasm-opt only forgoes the extra size reduction.
+# `-all` enables every wasm feature so wasm-opt accepts the features rustc
+# emits (e.g. bulk-memory's memory.copy) across binaryen versions, instead of
+# rejecting the module or erroring on a version-specific feature flag.
 if [[ "$PROFILE" == "release" ]] && command -v wasm-opt >/dev/null 2>&1; then
-  wasm-opt -Oz \
-    --enable-bulk-memory \
-    --enable-bulk-memory-opt \
-    --enable-nontrapping-float-to-int \
-    --enable-sign-ext \
-    --enable-mutable-globals \
-    --enable-multivalue \
-    --enable-reference-types \
+  wasm-opt -Oz -all \
     "$OUT_DIR/sidemantic_bg.wasm" \
     -o "$OUT_DIR/sidemantic_bg.wasm.opt"
   mv "$OUT_DIR/sidemantic_bg.wasm.opt" "$OUT_DIR/sidemantic_bg.wasm"

@@ -273,6 +273,18 @@ impl WorkbenchApp {
         }
     }
 
+    /// Compile-only preview (F5): rewrite the editor SQL and show it in the SQL
+    /// view without executing. Kept distinct from `run_query` so the legacy F5
+    /// shortcut never sends a query to the database.
+    fn preview_compiled_sql(&mut self) {
+        self.compile_only();
+        self.output_view = OutputView::Sql;
+        self.status = match self.compile() {
+            Ok(_) => "Compiled SQL preview (not run). Press Ctrl+R to run.".to_string(),
+            Err(_) => "Query did not compile — see SQL view.".to_string(),
+        };
+    }
+
     /// The single primary action: compile, then execute if a connection is
     /// configured, then jump to the most useful view.
     fn run_query(&mut self) {
@@ -659,7 +671,9 @@ impl WorkbenchApp {
 
         match key.code {
             KeyCode::Esc => self.should_quit = true,
-            KeyCode::F(5) => self.run_query(),
+            // F5 is compile-only (legacy "rewrite" preview): never execute, so
+            // muscle memory cannot accidentally run DDL/expensive queries.
+            KeyCode::F(5) => self.preview_compiled_sql(),
             KeyCode::F(7) => self.cycle_output_view(),
             KeyCode::Tab | KeyCode::BackTab => self.next_focus(),
             _ => match self.focus {
@@ -1584,6 +1598,22 @@ models:
         assert!(app.status.contains("No connection configured"));
         assert_eq!(app.output_view, OutputView::Sql);
         assert!(!app.output.trim().is_empty());
+    }
+
+    #[test]
+    fn f5_previews_compiled_sql_without_executing() {
+        // Even with a connection configured, F5 must never hit the database:
+        // it is the legacy compile-only "rewrite" preview.
+        let mut app = WorkbenchApp::new(
+            fixture_runtime(),
+            Some("duckdb:///tmp/sidemantic-does-not-exist.db".to_string()),
+        );
+        app.handle_key(key(KeyCode::F(5)));
+        assert!(app.execution_preview.is_none());
+        assert_eq!(app.output_view, OutputView::Sql);
+        // The clean compiled SQL is shown, not an execution attempt/error.
+        assert!(!app.output.contains("Execution failed"), "{}", app.output);
+        assert!(app.status.contains("not run"), "{}", app.status);
     }
 
     #[test]

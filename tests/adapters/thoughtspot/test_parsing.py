@@ -1299,6 +1299,40 @@ def test_thoughtspot_composite_join_keys_are_preserved():
     assert rows == [("West", 125.0)]
 
 
+def test_thoughtspot_nested_formula_ref_is_inlined_and_queryable():
+    """A formula referencing another formula inlines the nested expression.
+
+    Regression: a formula like `[net_revenue] / [gross_revenue]` (where
+    `net_revenue` is itself a formula) kept the bare `net_revenue` token, which the
+    derived subquery never projected, so the query failed with
+    `Referenced column "net_revenue" not found`. The nested formula must be
+    expanded inline so the expression resolves to physical columns.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_nested_formula.model.tml")
+    model = graph.models["sales_model"]
+
+    # The nested `net_revenue` formula is inlined into `margin`.
+    assert model.get_metric("net_revenue").sql == "sales__gross_revenue - sales__discount"
+    assert model.get_metric("margin").sql == "(sales__gross_revenue - sales__discount) / sales__gross_revenue"
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, gross_revenue DOUBLE, discount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["sales_model.margin"], dimensions=["sales_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    # margin = (100 - 10) / 100 = 0.9
+    assert rows == [("Acme", 0.9)]
+
+
 def test_thoughtspot_model_auto_detect_loader():
     """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
     with tempfile.TemporaryDirectory() as tmpdir:

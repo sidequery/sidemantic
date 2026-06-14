@@ -130,6 +130,33 @@ def _convert_tml_expr(expr: str | None, table_path_lookup: dict[str, str] | None
     return _TML_REF.sub(_replace, expr)
 
 
+def _inline_formula_refs(
+    expr: str | None,
+    formula_expr_by_name: dict[str, str],
+    _seen: frozenset[str] = frozenset(),
+) -> str | None:
+    """Recursively inline ``[formula_name]`` references in a TML formula.
+
+    A formula that references another formula by name (e.g. ``margin`` defined as
+    ``[net_revenue] / [gross_revenue]`` where ``net_revenue`` is itself a formula)
+    must have the nested formula expanded inline; otherwise the bare reference is
+    left unresolved and points at a column the derived subquery never projects.
+    Self/cyclic references are left untouched to avoid infinite recursion.
+    """
+    if not expr or not formula_expr_by_name:
+        return expr
+
+    def _replace(match: re.Match[str]) -> str:
+        token = match.group(1)
+        # Only inline unqualified references to a known formula name.
+        if "::" not in token and token in formula_expr_by_name and token not in _seen:
+            inner = _inline_formula_refs(formula_expr_by_name[token], formula_expr_by_name, _seen | {token})
+            return f"({inner})"
+        return match.group(0)
+
+    return _TML_REF.sub(_replace, expr)
+
+
 def _parse_ref_token(token: str) -> tuple[str | None, str]:
     if "::" in token:
         table, column = token.split("::", 1)
@@ -778,6 +805,9 @@ class ThoughtSpotAdapter(BaseAdapter):
         formulas = model_def.get("formulas") or []
         formula_by_id = {f.get("id"): f for f in formulas if f.get("id")}
         formula_by_name = {f.get("name"): f for f in formulas if f.get("name")}
+        # Map formula name -> expression so nested formula references can be
+        # inlined before the expression is converted/aliased.
+        formula_expr_by_name = {f.get("name"): f.get("expr") for f in formulas if f.get("name") and f.get("expr")}
 
         dimensions: list[Dimension] = []
         metrics: list[Metric] = []
@@ -803,12 +833,21 @@ class ThoughtSpotAdapter(BaseAdapter):
             format_pattern = properties.get("format_pattern")
 
             sql_expr = None
+            is_formula = False
             if formula_id and formula_id in formula_by_id:
                 sql_expr = formula_by_id[formula_id].get("expr")
+                is_formula = True
             elif formula_id and formula_id in formula_by_name:
                 sql_expr = formula_by_name[formula_id].get("expr")
+                is_formula = True
             elif col_name in formula_by_name:
                 sql_expr = formula_by_name[col_name].get("expr")
+                is_formula = True
+
+            # Inline references to other formulas so nested formula expressions
+            # resolve to physical columns instead of unprojected formula names.
+            if is_formula:
+                sql_expr = _inline_formula_refs(sql_expr, formula_expr_by_name)
 
             if not sql_expr and column_id:
                 if "::" in column_id:

@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from sidemantic.adapters.superset import SupersetAdapter
+from sidemantic.core.semantic_graph import SemanticGraph
 
 # =============================================================================
 # MULTI-CATALOG FIXTURE PARSING
@@ -127,6 +128,41 @@ class TestOrdersMetadata:
         revenue = model.get_metric("total_revenue")
         assert revenue.meta["superset"]["currency"]["symbol"] == "USD"
         assert revenue.meta["superset"]["warning_text"] == "Excludes refunded orders"
+
+
+# =============================================================================
+# NESTED extra.currency_code_column (authentic Superset export layout)
+# =============================================================================
+
+
+class TestNestedCurrencyCodeColumn:
+    """Real Superset datasets nest ``currency_code_column`` under ``extra`` rather
+    than at the top level. The international_sales.yaml fixture uses that layout;
+    the value must be preserved on import and survive a roundtrip."""
+
+    @pytest.fixture
+    def model(self):
+        adapter = SupersetAdapter()
+        graph = adapter.parse("tests/fixtures/superset/international_sales.yaml")
+        return graph.models["international_sales"]
+
+    def test_nested_currency_code_column_imported(self, model):
+        assert model.meta["superset"]["currency_code_column"] == "currency_code"
+
+    def test_nested_currency_code_column_roundtrip(self, model):
+        adapter = SupersetAdapter()
+        graph = SemanticGraph()
+        graph.add_model(model)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter.export(graph, tmpdir)
+            with open(Path(tmpdir) / "international_sales.yaml") as f:
+                exported = yaml.safe_load(f)
+            # Emitted in the authentic Superset location (nested under extra).
+            assert exported["extra"]["currency_code_column"] == "currency_code"
+
+            reparsed = adapter.parse(Path(tmpdir) / "international_sales.yaml")
+            reloaded = reparsed.models["international_sales"]
+            assert reloaded.meta["superset"]["currency_code_column"] == "currency_code"
 
 
 # =============================================================================

@@ -114,8 +114,15 @@ class SupersetAdapter(BaseAdapter):
         superset_meta: dict[str, Any] = {}
         if catalog is not None:
             superset_meta["catalog"] = catalog
-        if dataset.get("currency_code_column") is not None:
-            superset_meta["currency_code_column"] = dataset.get("currency_code_column")
+        # `currency_code_column` enables dynamic per-row currency formatting.
+        # Real Superset exports nest it under `extra.currency_code_column`; some
+        # flattened payloads put it top-level. Accept both, preferring top-level.
+        extra = dataset.get("extra")
+        currency_code_column = dataset.get("currency_code_column")
+        if currency_code_column is None and isinstance(extra, dict):
+            currency_code_column = extra.get("currency_code_column")
+        if currency_code_column is not None:
+            superset_meta["currency_code_column"] = currency_code_column
         if dataset.get("folders") is not None:
             superset_meta["folders"] = dataset.get("folders")
 
@@ -341,8 +348,16 @@ class SupersetAdapter(BaseAdapter):
             dataset["catalog"] = superset_meta["catalog"]
 
         # Dataset-level currency formatting metadata and folder organization.
+        # Emit `currency_code_column` both top-level and nested under `extra`
+        # (where real Superset stores it) so the export is consumable by Superset
+        # and still round-trips through this adapter.
         if superset_meta.get("currency_code_column") is not None:
             dataset["currency_code_column"] = superset_meta["currency_code_column"]
+            extra = dataset.get("extra")
+            if not isinstance(extra, dict):
+                extra = {}
+            extra["currency_code_column"] = superset_meta["currency_code_column"]
+            dataset["extra"] = extra
         if superset_meta.get("folders") is not None:
             dataset["folders"] = superset_meta["folders"]
 

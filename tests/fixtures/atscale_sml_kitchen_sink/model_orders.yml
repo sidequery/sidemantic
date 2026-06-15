@@ -41,7 +41,14 @@ metrics:
   - unique_name: amount_stddev
   - unique_name: amount_median
   - unique_name: amount_p90
+  - unique_name: amount_p75
   - unique_name: avg_order_value
+dataset_properties:
+  fact_orders:
+    create_hinted_aggregate: true
+overrides:
+  total_amount:
+    query_name: order_total_amount
 aggregates:
   - unique_name: orders_rollup
     label: Orders Rollup

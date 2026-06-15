@@ -1,0 +1,5 @@
+object_type: package
+name: shared_dimensions
+url: https://github.com/semanticdatalayer/shared-dimensions.git
+branch: main
+version: tag:v2024.01

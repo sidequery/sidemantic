@@ -1,0 +1,10 @@
+version: 1
+packages:
+  - name: shared_repo_dims
+    url: https://github.com/company/shared-dims.git
+    branch: main
+    version: tag:v2024.01
+  - name: shared_repo_metrics
+    url: https://github.com/company/shared-metrics.git
+    branch: main
+    version: commit:abcdef12

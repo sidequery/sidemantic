@@ -98,6 +98,11 @@ EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/lookml/segment_attribution_model.model.lkml",
     "tests/fixtures/omni/estore/model.yaml",
     "tests/fixtures/omni/estore/relationships.yaml",
+    # Topic files reference views but define no models of their own; parsed
+    # standalone they yield an empty graph.
+    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
+    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
+    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
     "tests/fixtures/omni/model.yaml",
     "tests/fixtures/rill/bids_canvas.yaml",
     "tests/fixtures/rill/bids_explore.yaml",
@@ -125,9 +130,6 @@ EXPECTED_LOW_SIGNAL_FIXTURES = {
     "tests/fixtures/malloy/ecommerce_malloydata.malloy",
     "tests/fixtures/malloy/flights_cube.malloy",
     "tests/fixtures/malloy/ga4_config.malloy",
-    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
-    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
-    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
     "tests/fixtures/tableau/real_world/document_api_tableau10.tds",
     "tests/fixtures/tableau/real_world/document_api_tableau93.tds",
 }

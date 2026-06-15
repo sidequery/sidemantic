@@ -96,13 +96,15 @@ class TestParentMetricsParsing:
         assert m.meta["rill_per"] == "region"
 
     def test_time_comparison_measure(self, parent_metrics):
-        """time_comparison measures parse and record the Rill type in metadata."""
+        """time_comparison measures map to a native period-over-period comparison."""
         metrics = {m.name: m for m in parent_metrics.metrics}
         m = metrics["revenue_prev_period"]
-        # Mapped to derived (expression over a base measure) with type recorded.
-        assert m.type == "derived"
+        # Mapped to a native time_comparison so it queries as an actual comparison
+        # (a derived metric would silently resolve to the current-period value).
+        assert m.type == "time_comparison"
+        assert m.base_metric == "revenue"
+        assert m.comparison_type == "prior_period"
         assert m.meta["rill_type"] == "time_comparison"
-        assert m.sql == "revenue"
 
     def test_ai_instructions_cache_watermark_ignored(self):
         """ai_instructions / cache / watermark / rollups do not break parsing."""
@@ -175,9 +177,11 @@ class TestDerivedMetricsResolution:
         assert resolved_derived.table == "sales_model"
 
     def test_inherits_selected_dimensions(self, resolved_derived):
-        """Only the parent_dimensions selectors are materialized."""
+        """The parent_dimensions selectors (plus the inherited time dim) are materialized."""
         dim_names = {d.name for d in resolved_derived.dimensions}
-        assert dim_names == {"region", "channel"}
+        # region/channel are selected; order_date comes from the parent's
+        # inherited default timeseries.
+        assert {"region", "channel"} <= dim_names
         # country_name is on the parent but not selected, so it is excluded.
         assert "country_name" not in dim_names
 
@@ -204,6 +208,128 @@ class TestDerivedMetricsResolution:
     def test_parent_linkage_preserved_after_resolution(self, resolved_derived):
         """Resolution keeps the parent linkage metadata intact."""
         assert resolved_derived.meta["rill_parent"] == "parent_metrics"
+
+    def test_inherits_parent_default_timeseries(self, resolved_derived):
+        """The derived view inherits the parent's default time dimension/grain."""
+        assert resolved_derived.default_time_dimension == "order_date"
+        assert resolved_derived.default_grain == "day"
+        assert any(d.name == "order_date" for d in resolved_derived.dimensions)
+
+    def test_inherited_metric_compiles(self):
+        """An inherited measure compiles to SQL against the parent's table."""
+        graph = RillAdapter().parse("tests/fixtures/rill")
+        layer = SemanticLayer()
+        for name in ("parent_metrics", "derived_metrics"):
+            layer.add_model(graph.models[name])
+        sql = layer.compile(metrics=["derived_metrics.revenue"], dimensions=["derived_metrics.region"])
+        assert "sales_model" in sql
+        assert "SUM" in sql.upper()
+
+
+def _parse_project(files: dict[str, dict]):
+    """Write each {filename: yaml-dict} into a temp dir and parse the directory."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        for filename, content in files.items():
+            (tmp_path / filename).write_text(yaml.dump(content))
+        return RillAdapter().parse(tmp_path)
+
+
+class TestDerivedMetricsSelectorForms:
+    """Parent selector normalization (Rill `*`, exclude, regex, omitted)."""
+
+    PARENT = {
+        "type": "metrics_view",
+        "name": "parent",
+        "model": "src",
+        "timeseries": "day",
+        "smallest_time_grain": "day",
+        "dimensions": [{"name": "a", "column": "a"}, {"name": "b", "column": "b"}],
+        "measures": [
+            {"name": "m1", "expression": "SUM(x)"},
+            {"name": "m2", "expression": "SUM(y)"},
+        ],
+    }
+
+    def test_star_selector_inherits_all(self):
+        """`parent_dimensions: '*'` / `parent_measures: '*'` inherit every field."""
+        graph = _parse_project(
+            {
+                "parent.yaml": self.PARENT,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "parent_dimensions": "*",
+                    "parent_measures": "*",
+                },
+            }
+        )
+        child = graph.models["child"]
+        assert {d.name for d in child.dimensions} >= {"a", "b"}
+        assert {m.name for m in child.metrics} == {"m1", "m2"}
+
+    def test_omitted_selector_inherits_all(self):
+        """A parent without explicit selectors inherits all parent fields."""
+        graph = _parse_project(
+            {
+                "parent.yaml": self.PARENT,
+                "child.yaml": {"type": "metrics_view", "name": "child", "parent": "parent"},
+            }
+        )
+        child = graph.models["child"]
+        assert {m.name for m in child.metrics} == {"m1", "m2"}
+
+    def test_exclude_selector(self):
+        """A mapping with `exclude` inherits everything except the listed names."""
+        graph = _parse_project(
+            {
+                "parent.yaml": self.PARENT,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "parent_measures": {"exclude": ["m2"]},
+                },
+            }
+        )
+        child = graph.models["child"]
+        assert {m.name for m in child.metrics} == {"m1"}
+
+    def test_regex_selector(self):
+        """A mapping with `regex` inherits names matching the pattern."""
+        graph = _parse_project(
+            {
+                "parent.yaml": self.PARENT,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "parent_measures": {"regex": "^m1$"},
+                },
+            }
+        )
+        child = graph.models["child"]
+        assert {m.name for m in child.metrics} == {"m1"}
+
+    def test_inherits_parent_default_time_settings(self):
+        """A derived view omitting timeseries inherits the parent's defaults."""
+        graph = _parse_project(
+            {
+                "parent.yaml": self.PARENT,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "parent_measures": ["m1"],
+                },
+            }
+        )
+        child = graph.models["child"]
+        assert child.default_time_dimension == "day"
+        assert child.default_grain == "day"
+        # The referenced time dimension is materialized so the default resolves.
+        assert any(d.name == "day" for d in child.dimensions)
 
 
 # =============================================================================
@@ -305,7 +431,7 @@ def test_empty_type_with_requires_is_derived():
 
 
 def test_time_comparison_type_records_metadata():
-    """time_comparison measures map to derived and record the original type."""
+    """time_comparison measures map to a native comparison over the base measure."""
     graph = _parse_inline(
         {
             "type": "metrics_view",
@@ -323,8 +449,11 @@ def test_time_comparison_type_records_metadata():
         }
     )
     metrics = {m.name: m for m in graph.models["test"].metrics}
-    assert metrics["rev_yoy"].type == "derived"
-    assert metrics["rev_yoy"].meta["rill_type"] == "time_comparison"
+    m = metrics["rev_yoy"]
+    assert m.type == "time_comparison"
+    assert m.base_metric == "rev"
+    assert m.comparison_type == "prior_period"
+    assert m.meta["rill_type"] == "time_comparison"
 
 
 if __name__ == "__main__":

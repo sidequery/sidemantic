@@ -91,23 +91,70 @@ class RillAdapter:
             existing_dims = {d.name for d in model.dimensions}
             existing_metrics = {m.name for m in model.metrics}
 
-            selected_dims = meta.get("rill_parent_dimensions")
+            dim_selected = self._field_selector(meta.get("rill_parent_dimensions"))
             for dim in parent.dimensions:
-                if selected_dims is not None and dim.name not in selected_dims:
+                if not dim_selected(dim.name):
                     continue
                 if dim.name in existing_dims:
                     continue
                 model.dimensions.append(dim.model_copy(deep=True))
                 existing_dims.add(dim.name)
 
-            selected_measures = meta.get("rill_parent_measures")
+            measure_selected = self._field_selector(meta.get("rill_parent_measures"))
             for metric in parent.metrics:
-                if selected_measures is not None and metric.name not in selected_measures:
+                if not measure_selected(metric.name):
                     continue
                 if metric.name in existing_metrics:
                     continue
                 model.metrics.append(metric.model_copy(deep=True))
                 existing_metrics.add(metric.name)
+
+            # Inherit the parent's default time series/grain when the derived view
+            # does not define its own, mirroring Rill (derived views inherit the
+            # parent's timeseries). Without this, metric-only CLI queries lose the
+            # parent's time dimension. Ensure the referenced time dimension is also
+            # present on the model.
+            if not model.default_time_dimension and parent.default_time_dimension:
+                model.default_time_dimension = parent.default_time_dimension
+                model.default_grain = model.default_grain or parent.default_grain
+                if parent.default_time_dimension not in existing_dims:
+                    parent_time_dim = parent.get_dimension(parent.default_time_dimension)
+                    if parent_time_dim is not None:
+                        model.dimensions.append(parent_time_dim.model_copy(deep=True))
+                        existing_dims.add(parent_time_dim.name)
+
+    @staticmethod
+    def _field_selector(selector: Any):
+        """Build a predicate deciding whether a parent field name is inherited.
+
+        Normalizes Rill's `parent_dimensions` / `parent_measures` selector forms:
+        - ``None`` (omitted) or ``"*"`` -> select all fields
+        - a list/tuple/set of names -> select those names
+        - a mapping with ``exclude`` (list) -> select all except those names
+        - a mapping with ``regex`` (pattern) -> select names matching the pattern
+
+        Unrecognized forms fall back to select-all so fields are never silently
+        dropped (Rill would still expose them).
+        """
+        if selector is None or selector == "*":
+            return lambda _name: True
+
+        if isinstance(selector, (list, tuple, set)):
+            names = set(selector)
+            return lambda name: name in names
+
+        if isinstance(selector, dict):
+            if "exclude" in selector:
+                excluded = set(selector.get("exclude") or [])
+                return lambda name: name not in excluded
+            if "regex" in selector:
+                import re
+
+                pattern = re.compile(selector["regex"])
+                return lambda name: pattern.search(name) is not None
+
+        # Unknown selector form: inherit everything rather than dropping fields.
+        return lambda _name: True
 
     def _parse_file(self, file_path: Path) -> Model | None:
         """Parse a single Rill YAML file.
@@ -325,6 +372,8 @@ class RillAdapter:
         window_order = None
         window_frame = None
         metric_type = None
+        base_metric = None
+        comparison_type = None
         meta: dict[str, Any] | None = None
 
         if window_def:
@@ -337,12 +386,15 @@ class RillAdapter:
                 window_order = window_def.get("order")
                 window_frame = window_def.get("frame")
         elif measure_type == "time_comparison":
-            # Rill time_comparison measures compute period-over-period values from a
-            # base measure expression. Sidemantic's native time_comparison type
-            # requires explicit base_metric/comparison wiring that Rill does not
-            # express here, so we keep the expression as a derived calculation and
-            # record the original Rill type in metadata for fidelity/round-trip.
-            metric_type = "derived"
+            # Rill time_comparison measures compute a period-over-period value from a
+            # base measure (the expression names that base measure). Map to
+            # Sidemantic's native time_comparison so it queries as an actual
+            # comparison; treating it as a derived metric would silently resolve to
+            # the current-period value of the base measure instead. Rill compares
+            # against the immediately prior period, so default to prior_period.
+            metric_type = "time_comparison"
+            base_metric = expression
+            comparison_type = "prior_period"
             meta = {"rill_type": "time_comparison"}
         elif measure_type == "derived" or requires or per:
             # "simple" = basic aggregation (None type), "derived" = calculation
@@ -354,6 +406,10 @@ class RillAdapter:
             meta = meta or {}
             meta["rill_per"] = per
 
+        # A native time_comparison carries its base measure via base_metric, not
+        # sql (the expression is the referenced measure name, not an aggregation).
+        metric_sql = None if metric_type == "time_comparison" else expression
+
         # Let the Metric class handle aggregation parsing via its model_validator.
         # This properly handles complex expressions like SUM(x) / SUM(y) and
         # COUNT(DISTINCT col) using sqlglot.
@@ -361,8 +417,10 @@ class RillAdapter:
             name=name,
             label=label,
             description=description,
-            sql=expression,  # Pass full expression, Metric will parse aggregations
+            sql=metric_sql,  # Pass full expression, Metric will parse aggregations
             type=metric_type,
+            base_metric=base_metric,
+            comparison_type=comparison_type,
             format=format_str,
             value_format_name=value_format_name,
             window_order=window_order,

@@ -796,6 +796,23 @@ def _merge_graph_passthrough_metadata(target_graph: object, source_graph: object
             continue
         setattr(target_graph, name, copy.deepcopy(value))
 
+    # Merge graph-level metadata (e.g. Snowflake Cortex top-level sections) so the
+    # CLI-first load -> export-native path round-trips them.
+    source_metadata = getattr(source_graph, "metadata", None)
+    if isinstance(source_metadata, dict) and source_metadata:
+        target_metadata = getattr(target_graph, "metadata", None)
+        if not isinstance(target_metadata, dict):
+            target_metadata = {}
+            target_graph.metadata = target_metadata
+        for key, value in source_metadata.items():
+            target_metadata[key] = copy.deepcopy(value)
+
+    # Carry over Snowflake dynamic top-level attributes set by the adapter.
+    for attr in ("verified_queries", "custom_instructions", "module_custom_instructions"):
+        value = getattr(source_graph, attr, None)
+        if value:
+            setattr(target_graph, attr, copy.deepcopy(value))
+
 
 def _infer_relationships(models: dict) -> None:
     """Infer relationships between models based on foreign key naming conventions.

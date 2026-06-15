@@ -226,3 +226,60 @@ accounts:
     events_sql = layer.compile(metrics=["events.count"], dimensions=["events_user.name"])
     assert "events_user_cte" in events_sql
     assert "FROM accounts" in events_sql
+
+
+def test_load_from_directory_preserves_snowflake_top_level_sections(tmp_path):
+    """CLI-first load -> export-native must round-trip Snowflake Cortex top-level sections."""
+    import yaml
+
+    from sidemantic.adapters.sidemantic import SidemanticAdapter
+
+    (tmp_path / "cortex.yaml").write_text(
+        """
+name: cortex
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    measures:
+      - name: order_total
+        expr: total
+        data_type: number
+        default_aggregation: sum
+verified_queries:
+  - name: total revenue
+    question: what is the total revenue
+    sql: "SELECT SUM(total) FROM orders"
+custom_instructions: Prefer revenue.
+module_custom_instructions:
+  sql_generation: Use explicit columns.
+"""
+    )
+
+    layer = SemanticLayer(auto_register=False)
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    # Top-level sections reach layer.graph (both as metadata and dynamic attrs).
+    assert graph.metadata["snowflake"]["verified_queries"]
+    assert graph.metadata["snowflake"]["custom_instructions"] == "Prefer revenue."
+    assert getattr(graph, "verified_queries", None)
+    assert getattr(graph, "custom_instructions", None) == "Prefer revenue."
+
+    # export-native emits a root metadata block carrying them.
+    out = tmp_path / "native.yml"
+    SidemanticAdapter().export(graph, out)
+    data = yaml.safe_load(out.read_text())
+    assert data["metadata"]["snowflake"]["custom_instructions"] == "Prefer revenue."
+
+    # And a native re-parse keeps them on graph.metadata.
+    graph2 = SidemanticAdapter().parse(out)
+    assert graph2.metadata["snowflake"]["verified_queries"]

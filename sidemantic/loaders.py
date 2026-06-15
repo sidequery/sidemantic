@@ -267,6 +267,11 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     # not have been known when the metric file was parsed).
     _resolve_snowflake_pending_table_metrics(all_models, all_metrics, all_pending_table_metrics)
 
+    # Apply Snowflake relationships declared in a separate file before FK inference
+    # so an explicit Cortex join takes precedence over a guessed one for the same
+    # table pair.
+    _apply_snowflake_pending_relationships(all_models, all_pending_relationships)
+
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
 
@@ -274,10 +279,6 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     for model in all_models.values():
         if model.name not in layer.graph.models:
             layer.add_model(model)
-
-    # Apply Snowflake relationships declared in a separate file now that every
-    # referenced table is loaded.
-    _apply_snowflake_pending_relationships(layer.graph, all_pending_relationships)
 
     # Register graph-level metrics and parameters after models.
     for metric in all_metrics.values():
@@ -454,6 +455,15 @@ def _yaml_has_top_level_key(data: dict, key: str) -> bool:
 
 
 _SNOWFLAKE_TOP_LEVEL_SECTIONS = ("verified_queries", "custom_instructions", "module_custom_instructions")
+# Per-metric keys that only Snowflake Cortex uses (not in the native METRIC_FIELDS).
+_SNOWFLAKE_METRIC_KEYS = (
+    "table",
+    "access_modifier",
+    "labels",
+    "tags",
+    "non_additive_dimensions",
+    "using_relationships",
+)
 
 
 def _looks_like_snowflake_relationships(data: dict) -> bool:
@@ -478,7 +488,9 @@ def _looks_like_snowflake_metrics_file(data: dict) -> bool:
     - a Snowflake-only top-level section (verified_queries / custom instructions),
       even when no ``metrics`` are present (instruction-only sidecar),
     - Snowflake-shaped top-level ``relationships`` (relationship-only sidecar), or
-    - top-level ``metrics`` with at least one ``table`` reference.
+    - top-level ``metrics`` carrying a Snowflake-only metric key (``table`` or per-
+      metric ``access_modifier``/``labels``/``tags``/``non_additive_dimensions``/
+      ``using_relationships``).
 
     Any present metrics must be Cortex-shaped (``expr`` with no MetricFlow
     ``type_params``/``measure`` markers). A tableless metrics file with none of
@@ -488,7 +500,7 @@ def _looks_like_snowflake_metrics_file(data: dict) -> bool:
         return False
 
     metrics = data.get("metrics")
-    has_table_scoped = False
+    has_snowflake_metric_key = False
     if metrics is not None:
         if not isinstance(metrics, list) or not metrics:
             return False
@@ -499,11 +511,11 @@ def _looks_like_snowflake_metrics_file(data: dict) -> bool:
                 return False
             if "type_params" in metric or "measure" in metric:
                 return False
-            if "table" in metric:
-                has_table_scoped = True
+            if any(key in metric for key in _SNOWFLAKE_METRIC_KEYS):
+                has_snowflake_metric_key = True
 
     has_snowflake_section = any(section in data for section in _SNOWFLAKE_TOP_LEVEL_SECTIONS)
-    return has_table_scoped or has_snowflake_section or _looks_like_snowflake_relationships(data)
+    return has_snowflake_metric_key or has_snowflake_section or _looks_like_snowflake_relationships(data)
 
 
 def _contains_yaml_key(value: object, key: str) -> bool:
@@ -881,13 +893,13 @@ def _resolve_snowflake_pending_table_metrics(all_models: dict, all_metrics: dict
     pending.clear()
 
 
-def _apply_snowflake_pending_relationships(graph: object, pending: list) -> None:
+def _apply_snowflake_pending_relationships(all_models: dict, pending: list) -> None:
     """Apply Snowflake relationship definitions whose tables live in other files."""
     if not pending:
         return
     from sidemantic.adapters.snowflake import SnowflakeAdapter
 
-    SnowflakeAdapter().apply_pending_relationships(pending, graph)
+    SnowflakeAdapter().apply_pending_relationships(pending, all_models)
     pending.clear()
 
 

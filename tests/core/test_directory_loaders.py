@@ -712,3 +712,111 @@ tables:
     assert rel.metadata["snowflake"]["name"] == "orders_to_customers"
     assert rel.foreign_key == "cust_ref"
     assert graph.find_relationship_path("orders", "customers")
+
+
+def test_load_from_directory_explicit_snowflake_relationship_beats_inference(tmp_path):
+    """An explicit Cortex relationship takes precedence over a guessed foreign key."""
+    # orders has customer_id (inferable to customers) AND an explicit Snowflake join.
+    (tmp_path / "a_rels.yaml").write_text(
+        """
+relationships:
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+      - name: customer_id
+        expr: customer_id
+        data_type: number
+      - name: cust_ref
+        expr: cust_ref
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cust_pk]
+    dimensions:
+      - name: cust_pk
+        expr: cust_pk
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    orders = layer.graph.models["orders"]
+
+    customer_rels = [r for r in orders.relationships if r.name == "customers"]
+    assert len(customer_rels) == 1
+    assert customer_rels[0].foreign_key == "cust_ref"
+    assert customer_rels[0].metadata["snowflake"]["name"] == "orders_to_customers"
+
+
+def test_load_from_directory_detects_metric_sidecar_with_snowflake_metric_keys(tmp_path):
+    """A tableless metrics sidecar carrying Snowflake-only metric keys routes to Snowflake."""
+    (tmp_path / "a_metrics.yaml").write_text(
+        """
+metrics:
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+    access_modifier: public_access
+    labels: [KPI]
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    assert "global_ratio" in graph.metrics
+    sf = graph.metrics["global_ratio"].metadata["snowflake"]
+    assert sf["access_modifier"] == "public_access"
+    assert sf["labels"] == ["KPI"]

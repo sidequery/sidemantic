@@ -646,13 +646,51 @@ class SnowflakeAdapter(BaseAdapter):
             description=filter_def.get("description"),
         )
 
-    def apply_pending_relationships(self, relationships_def: list, graph: SemanticGraph) -> None:
+    def apply_pending_relationships(self, relationships_def: list, models: dict) -> None:
         """Apply relationship definitions collected from separately-parsed files.
 
-        Used by the directory loader after every file's models are loaded so a
-        relationship-only Cortex sidecar still attaches its joins.
+        Used by the directory loader after every file's models are loaded (and
+        before foreign-key inference) so a relationship-only Cortex sidecar attaches
+        its joins and an explicit join takes precedence over a guessed one. Operates
+        on the name-keyed ``models`` dict; adjacency is rebuilt later by the loader.
         """
-        self._apply_relationships(relationships_def, graph)
+        for rel_def in relationships_def:
+            left_table = rel_def.get("left_table")
+            right_table = rel_def.get("right_table")
+            rel_type = rel_def.get("relationship_type", "many_to_one")
+
+            if not left_table or not right_table:
+                continue
+
+            rel_columns = rel_def.get("relationship_columns") or []
+            if not rel_columns:
+                continue
+
+            first_col = rel_columns[0]
+            left_column = first_col.get("left_column")
+            right_column = first_col.get("right_column")
+
+            metadata = None
+            snowflake_name = rel_def.get("name")
+            if snowflake_name:
+                metadata = {"snowflake": {"name": snowflake_name}}
+
+            model = models.get(left_table)
+            if model is None:
+                continue
+            # Skip if a relationship to the same target already exists (e.g. another
+            # sidecar declared it) to avoid duplicates.
+            if any(r.name == right_table for r in model.relationships):
+                continue
+            model.relationships.append(
+                Relationship(
+                    name=right_table,
+                    type=rel_type,
+                    foreign_key=left_column,
+                    primary_key=right_column,
+                    metadata=metadata,
+                )
+            )
 
     def _apply_relationships(self, relationships_def: list, graph: SemanticGraph) -> None:
         """Apply relationships from semantic model to models in graph.

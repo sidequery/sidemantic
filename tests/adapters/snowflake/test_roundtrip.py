@@ -644,3 +644,58 @@ tables:
 
         graph2 = adapter.parse(output_file)
         assert graph2.models["orders"].get_dimension("ssn").public is False
+
+    def test_export_strips_model_placeholder_from_table_scoped_metric(self, adapter, tmp_path):
+        """Table-scoped derived metrics must not leak {model} placeholders into Snowflake."""
+        source = tmp_path / "ph.yaml"
+        source.write_text(
+            """
+name: ph_test
+tables:
+  - name: orders
+    base_table: {database: db, schema: s, table: orders}
+    primary_key: {columns: [id]}
+    dimensions:
+      - {name: id, expr: id, data_type: number}
+    facts:
+      - {name: amount, expr: amount, data_type: number}
+metrics:
+  - name: avg_order
+    table: orders
+    expr: SUM(amount) / COUNT(id)
+"""
+        )
+
+        graph = adapter.parse(source)
+        # Internally the table-scoped expression is qualified for queryability.
+        assert "{model}" in graph.models["orders"].get_metric("avg_order").sql
+
+        output_file = tmp_path / "out.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+        orders = next(t for t in data["tables"] if t["name"] == "orders")
+        expr = next(m["expr"] for m in orders["metrics"] if m["name"] == "avg_order")
+        assert "{model}" not in expr
+        assert expr == "SUM(amount) / COUNT(id)"
+
+    def test_export_top_level_ratio_keeps_model_qualifiers(self, adapter, tmp_path):
+        """Graph-level ratio metrics keep model.field qualifiers for cross-table refs."""
+        graph = SemanticGraph()
+        graph.add_model(
+            Model(
+                name="orders",
+                table="ORDERS",
+                primary_key="id",
+                metrics=[
+                    Metric(name="revenue", agg="sum", sql="amount"),
+                    Metric(name="order_count", agg="count"),
+                ],
+            )
+        )
+        graph.add_metric(Metric(name="aov", type="ratio", numerator="orders.revenue", denominator="orders.order_count"))
+
+        output_file = tmp_path / "out.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+        expr = next(m["expr"] for m in data["metrics"] if m["name"] == "aov")
+        assert expr == "orders.revenue / NULLIF(orders.order_count, 0)"

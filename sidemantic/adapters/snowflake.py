@@ -679,7 +679,7 @@ class SnowflakeAdapter(BaseAdapter):
         for name, metric in graph.metrics.items():
             if id(metric) in owned_metric_ids:
                 continue
-            metric_def = self._export_metric(metric)
+            metric_def = self._export_metric(metric, top_level=True)
             # Skip metric types Snowflake cannot represent (no `expr`) rather than
             # emitting an invalid stub that would fail to re-parse.
             if "expr" not in metric_def:
@@ -911,11 +911,28 @@ class SnowflakeAdapter(BaseAdapter):
 
         return fact
 
-    def _export_metric(self, metric: Metric) -> dict:
+    @staticmethod
+    def _strip_model_placeholder(sql: str | None) -> str | None:
+        """Drop the ``{model}.`` placeholder so Snowflake sees bare column refs.
+
+        Table-scoped metric expressions are parsed with the ``{model}`` placeholder
+        for table-local columns; Snowflake cannot resolve that token, so it must be
+        removed when re-exporting these metrics to Snowflake.
+        """
+        if sql is None:
+            return None
+        return sql.replace("{model}.", "").replace("{model}", "")
+
+    def _export_metric(self, metric: Metric, *, top_level: bool = False) -> dict:
         """Export metric to Snowflake metric format.
 
         Args:
             metric: Metric to export
+            top_level: When True the metric is a graph-level (view) metric whose
+                references already use ``model.field`` qualifiers that Snowflake
+                needs to resolve cross-table references, so they are preserved.
+                When False the metric is table-scoped and ``{model}`` placeholders
+                are stripped to bare column references.
 
         Returns:
             Metric definition dictionary
@@ -927,21 +944,28 @@ class SnowflakeAdapter(BaseAdapter):
 
         # Build expression based on metric type
         if metric.type == "ratio" and metric.numerator and metric.denominator:
-            # Extract measure names from qualified references
-            num = metric.numerator.split(".")[-1] if "." in metric.numerator else metric.numerator
-            denom = metric.denominator.split(".")[-1] if "." in metric.denominator else metric.denominator
+            if top_level:
+                # Graph-level metric: keep qualified references so Snowflake can
+                # resolve cross-table members (e.g. ``orders.revenue``).
+                num = metric.numerator
+                denom = metric.denominator
+            else:
+                # Table-scoped metric: Snowflake expressions use bare column names.
+                num = metric.numerator.split(".")[-1] if "." in metric.numerator else metric.numerator
+                denom = metric.denominator.split(".")[-1] if "." in metric.denominator else metric.denominator
             metric_def["expr"] = f"{num} / NULLIF({denom}, 0)"
         elif metric.type == "derived" and metric.sql:
-            metric_def["expr"] = metric.sql
+            metric_def["expr"] = metric.sql if top_level else self._strip_model_placeholder(metric.sql)
         elif metric.agg and metric.sql:
             # Simple aggregation - wrap in aggregate function
             agg_func = metric.agg.upper()
+            sql = metric.sql if top_level else self._strip_model_placeholder(metric.sql)
             if agg_func == "COUNT_DISTINCT":
-                metric_def["expr"] = f"COUNT(DISTINCT {metric.sql})"
+                metric_def["expr"] = f"COUNT(DISTINCT {sql})"
             else:
-                metric_def["expr"] = f"{agg_func}({metric.sql})"
+                metric_def["expr"] = f"{agg_func}({sql})"
         elif metric.sql:
-            metric_def["expr"] = metric.sql
+            metric_def["expr"] = metric.sql if top_level else self._strip_model_placeholder(metric.sql)
 
         if metric.synonyms:
             metric_def["synonyms"] = metric.synonyms

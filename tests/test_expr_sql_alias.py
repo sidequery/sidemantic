@@ -138,6 +138,28 @@ def test_dimension_serialization_roundtrip():
     assert dim2.sql == "order_status"
 
 
+def test_metric_auto_extracts_aggregation_by_default():
+    """Without sql_is_complete, a top-level aggregate sql is decomposed into agg + inner sql."""
+    metric = Metric(name="revenue", sql="SUM(amount)")
+    assert metric.agg == "sum"
+    assert metric.sql == "amount"
+
+
+def test_metric_sql_is_complete_skips_aggregation_parsing():
+    """sql_is_complete preserves the full sql verbatim and keeps agg=None."""
+    metric = Metric(name="latest", sql="MAX(created_at)", sql_is_complete=True)
+    assert metric.agg is None
+    assert metric.type is None
+    assert metric.sql == "MAX(created_at)"
+
+
+def test_metric_sql_is_complete_preserves_placeholder():
+    """sql_is_complete must not let sqlglot mangle the {model} placeholder."""
+    metric = Metric(name="latest", sql="MAX({model}.created_at)", sql_is_complete=True)
+    assert metric.agg is None
+    assert metric.sql == "MAX({model}.created_at)"
+
+
 def test_metric_dict_construction():
     """Test constructing Metric from dict with expr."""
     data = {"name": "revenue", "agg": "sum", "expr": "amount"}

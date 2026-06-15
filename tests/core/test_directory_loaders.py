@@ -401,3 +401,46 @@ tables:
     assert "{model}" in metric.sql
     # The internal pending marker is cleaned up after attachment.
     assert (metric.metadata or {}).get("snowflake", {}).get("pending_table") is None
+
+
+def test_load_from_directory_detects_metric_only_snowflake_file(tmp_path):
+    """A Cortex file with only top-level metrics (table + expr) is routed to Snowflake."""
+    # Metric-only file (no tables section) parsed before the table file.
+    (tmp_path / "a_metrics.yaml").write_text(
+        """
+metrics:
+  - name: avg_order
+    table: orders
+    expr: SUM(amount) / COUNT(order_id)
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tables_model
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    orders = graph.models["orders"]
+    assert "avg_order" in [m.name for m in orders.metrics]
+    assert "avg_order" not in graph.metrics
+    assert "{model}" in orders.get_metric("avg_order").sql

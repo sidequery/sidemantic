@@ -178,6 +178,11 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 # carry top-level `metrics:` and `data_type:` while `base_table` is a
                 # Snowflake-only signal MetricFlow never has.
                 adapter = SnowflakeAdapter()
+            elif _looks_like_snowflake_metrics_file(yaml_data):
+                # Cortex top-level metrics split into their own file (table + expr,
+                # no tables section). Route to Snowflake so the metrics defer and
+                # attach to tables defined in sibling files.
+                adapter = SnowflakeAdapter()
             elif _yaml_has_top_level_key(yaml_data, "metrics") and "type: " in content:
                 adapter = MetricFlowAdapter()
             elif _contains_yaml_key(yaml_data, "base_sql_table") and _contains_yaml_key(yaml_data, "measures"):
@@ -435,6 +440,31 @@ def _looks_like_native_sidemantic_yaml(data: dict) -> bool:
 def _yaml_has_top_level_key(data: dict, key: str) -> bool:
     """Return True when a YAML mapping has an exact top-level key."""
     return isinstance(data, dict) and key in data
+
+
+def _looks_like_snowflake_metrics_file(data: dict) -> bool:
+    """Detect a Snowflake Cortex file that contains only top-level metrics.
+
+    Cortex projects may split top-level ``metrics:`` (entries with ``table`` and
+    ``expr``) into their own file without any ``tables`` section. Such a file must
+    route to the Snowflake adapter so the metrics can be deferred and attached to
+    tables defined in sibling files. MetricFlow metrics use ``type``/``type_params``
+    /``measure`` instead, so require Cortex-only ``table`` + ``expr`` keys and the
+    absence of those MetricFlow markers.
+    """
+    if not isinstance(data, dict) or "tables" in data:
+        return False
+    metrics = data.get("metrics")
+    if not isinstance(metrics, list) or not metrics:
+        return False
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            return False
+        if "table" not in metric or "expr" not in metric:
+            return False
+        if "type_params" in metric or "measure" in metric:
+            return False
+    return True
 
 
 def _contains_yaml_key(value: object, key: str) -> bool:

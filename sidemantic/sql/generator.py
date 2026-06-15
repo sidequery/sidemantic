@@ -2672,6 +2672,55 @@ class SQLGenerator:
                 )
             return rewritten
 
+    def _infer_metric_filter_model(self, metric, model_context: str | None) -> str | None:
+        """Infer the owning model of a graph-level simple aggregate metric.
+
+        Used to qualify the metric's unqualified filter columns. Prefers an
+        explicit ``model_context``; otherwise resolves the model from the first
+        qualified column in the metric SQL (e.g. ``orders.amount`` -> ``orders``).
+        """
+        if model_context and model_context in self.graph.models:
+            return model_context
+        if metric.sql:
+            try:
+                parsed = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+                for col in parsed.find_all(exp.Column):
+                    candidate = col.table.replace("_cte", "") if col.table else None
+                    if candidate and candidate in self.graph.models:
+                        return candidate
+            except Exception:
+                return None
+        return None
+
+    def _qualify_metric_filter_sql(self, filter_expr: str, model_name: str | None) -> str:
+        """Qualify a metric filter's columns with the owning model's CTE.
+
+        Already-qualified ``model.col`` refs are rewritten to ``model_cte.col``;
+        unqualified columns are anchored to ``model_name``'s CTE so the predicate
+        is unambiguous when other joined CTEs expose same-named columns. Falls
+        back to plain CTE rewriting when the owning model is unknown.
+        """
+        if model_name is None:
+            return self._rewrite_model_refs_to_ctes(filter_expr)
+        cte_name = self._cte_name(model_name)
+        cte_identifier = exp.to_identifier(cte_name, quoted=not self._is_simple_identifier(cte_name))
+        try:
+            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+        except Exception:
+            return self._rewrite_model_refs_to_ctes(filter_expr)
+        for col in parsed.find_all(exp.Column):
+            if col.table:
+                ref_model = col.table.replace("_cte", "")
+                if ref_model in self.graph.models:
+                    rewritten = self._cte_name(ref_model)
+                    col.set(
+                        "table",
+                        exp.to_identifier(rewritten, quoted=not self._is_simple_identifier(rewritten)),
+                    )
+            else:
+                col.set("table", cte_identifier.copy())
+        return parsed.sql(dialect=self.dialect)
+
     def _build_measure_aggregation_sql(self, model_name: str, measure) -> str:
         """Build SQL aggregation expression for a measure.
 
@@ -2882,10 +2931,14 @@ class SQLGenerator:
             # ``filter: status = 'completed'`` would silently aggregate every row.
             filter_sql = None
             if metric.filters:
+                # Qualify unqualified filter columns with the metric's owning model
+                # CTE so a filter like ``status = 'completed'`` is not ambiguous
+                # when a joined model's CTE also exposes a ``status`` column.
+                filter_model = self._infer_metric_filter_model(metric, model_context)
                 conditions = []
                 for filter_str in metric.filters:
                     condition = filter_str.replace("{model}.", "").replace("{model}", "")
-                    conditions.append(self._rewrite_model_refs_to_ctes(condition))
+                    conditions.append(self._qualify_metric_filter_sql(condition, filter_model))
                 if conditions:
                     filter_sql = " AND ".join(conditions)
 

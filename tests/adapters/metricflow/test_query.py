@@ -159,5 +159,93 @@ def test_inline_simple_metric_filter_is_applied():
     assert grouped["pending"]["completed_revenue"] in (None, 0)
 
 
+def test_inline_metric_filter_qualified_in_join():
+    """A filtered inline metric's columns are qualified to its owning model CTE.
+
+    Regression: the metric filter was rendered with unqualified columns. When the
+    metric is queried with a joined dimension whose CTE also exposes a same-named
+    column, the unqualified filter column was ambiguous and the query failed to
+    bind. The filter columns must be qualified with the owning model's CTE.
+    """
+    import tempfile
+    import textwrap
+    from pathlib import Path
+
+    import duckdb
+
+    from tests.utils import fetch_dicts
+
+    yml = textwrap.dedent("""
+        models:
+          - name: orders
+            semantic_model:
+              enabled: true
+              name: orders
+            columns:
+              - name: order_id
+                entity:
+                  type: primary
+                  name: order
+              - name: customer_id
+                entity:
+                  type: foreign
+                  name: customer
+              - name: status
+                dimension:
+                  type: categorical
+              - name: amount
+                dimension:
+                  type: categorical
+            metrics:
+              - name: completed_revenue
+                type: simple
+                agg: sum
+                expr: amount
+                filter: "status = 'completed'"
+          - name: customers
+            semantic_model:
+              enabled: true
+              name: customers
+            columns:
+              - name: customer_id
+                entity:
+                  type: primary
+                  name: customer
+              - name: status
+                dimension:
+                  type: categorical
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(yml)
+        path = Path(f.name)
+
+    try:
+        graph = MetricFlowAdapter().parse(path)
+    finally:
+        path.unlink(missing_ok=True)
+
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES "
+        "(1, 10, 'completed', 100.0), (2, 11, 'pending', 50.0), (3, 10, 'completed', 25.0)) "
+        "AS t(order_id, customer_id, status, amount)"
+    )
+    conn.execute(
+        "CREATE TABLE customers AS SELECT * FROM (VALUES (10, 'active'), (11, 'active')) AS t(customer_id, status)"
+    )
+
+    layer = SemanticLayer(auto_register=False)
+    layer.conn = conn
+    layer.graph = graph
+
+    # The filter column is qualified to the orders CTE (not the ambiguous bare name).
+    sql = layer.compile(metrics=["completed_revenue"], dimensions=["customers.status"])
+    assert "orders_cte.status" in sql
+
+    # The join query binds and returns the filtered total.
+    rows = fetch_dicts(layer.query(metrics=["completed_revenue"], dimensions=["customers.status"]))
+    assert {r["status"]: r["completed_revenue"] for r in rows} == {"active": 125.0}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

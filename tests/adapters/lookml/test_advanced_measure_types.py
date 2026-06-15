@@ -57,18 +57,26 @@ class TestDistinctMeasures:
     def test_median_distinct(self, graph):
         m = graph.get_model("order_lines").get_metric("median_order_amount")
         assert m.type == "derived"
-        assert m.sql.startswith("MEDIAN(DISTINCT ")
+        # With a sql_distinct_key the ordered-set quantile must dedupe by key
+        # before computing the median, so it collapses (key, value) pairs to one
+        # value per key and takes the 0.5 quantile of that list. An ordered-set
+        # MEDIAN over the fanned-out rows would weight repeated values per row.
+        assert "LIST_AGGREGATE(" in m.sql
+        assert "'quantile_cont', 0.5)" in m.sql
+        assert "{model}.order_id" in m.sql  # dedupe key
         assert "{model}.order_amount" in m.sql
 
     def test_percentile_distinct(self, graph):
         m = graph.get_model("order_lines").get_metric("p90_order_amount")
         assert m.type == "derived"
-        # percentile: 90 -> fraction 0.9. Uses the standard parseable ordered-set
-        # form (no `ORDER BY DISTINCT`, which SQLGlot rejects) so the metric
-        # actually compiles and runs.
-        assert "PERCENTILE_CONT(0.9)" in m.sql
-        assert "WITHIN GROUP (ORDER BY" in m.sql
+        # percentile: 90 -> fraction 0.9. With a sql_distinct_key the value is
+        # deduplicated by key (one value per distinct order) before the quantile,
+        # so fan-out rows do not skew the result. `ORDER BY DISTINCT` (which
+        # SQLGlot rejects) is never emitted.
+        assert "LIST_AGGREGATE(" in m.sql
+        assert "'quantile_cont', 0.9)" in m.sql
         assert "ORDER BY DISTINCT" not in m.sql
+        assert "{model}.order_id" in m.sql  # dedupe key
         assert "{model}.order_amount" in m.sql
 
     def test_distinct_without_sql_distinct_key(self, graph):
@@ -243,15 +251,52 @@ class TestAdvancedMeasuresQueryable:
         assert rows[1] == pytest.approx(10 / 15)
         assert rows[2] == pytest.approx(5 / 15)
 
-    def test_percentile_distinct_compiles_and_runs(self, graph):
+    def _fanned_orders_con(self):
+        # Five distinct orders with amounts 100..500; order 1 fans out to 3 lines.
+        # Distinct-by-key values are [100,200,300,400,500]: median 300, p90 460.
+        # Without keyed dedup, the repeated 100 skews both (median 200, p90 440).
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS analytics")
+        con.execute(
+            "CREATE TABLE analytics.order_lines (id INT, order_id INT, order_amount DOUBLE, line_amount DOUBLE)"
+        )
+        con.executemany(
+            "INSERT INTO analytics.order_lines VALUES (?,?,?,?)",
+            [
+                (1, 1, 100, 1),
+                (2, 1, 100, 1),
+                (3, 1, 100, 1),
+                (4, 2, 200, 1),
+                (5, 3, 300, 1),
+                (6, 4, 400, 1),
+                (7, 5, 500, 1),
+            ],
+        )
+        return con
+
+    def test_percentile_distinct_dedupes_by_key(self, graph):
         # Regression: percentile_distinct previously emitted `ORDER BY DISTINCT`
-        # inside PERCENTILE_CONT, which SQLGlot cannot parse, so the metric was
-        # unusable. It must now compile to parseable SQL and execute.
-        con = self._orders_con()
+        # inside PERCENTILE_CONT (unparseable), and then a plain ordered-set
+        # PERCENTILE_CONT that ignored sql_distinct_key, so fan-out rows skewed the
+        # result. It must now compile, run, and dedupe by key: p90 over the five
+        # distinct order amounts is 460, not the fan-out-skewed 440.
+        con = self._fanned_orders_con()
         layer = self._layer(graph)
         sql = layer.compile(metrics=["order_lines.p90_order_amount"])
         (val,) = con.execute(sql).fetchone()
-        assert val is not None
+        assert float(val) == pytest.approx(460.0)
+
+    def test_median_distinct_dedupes_by_key(self, graph):
+        # median_distinct with a sql_distinct_key must also dedupe by key before
+        # taking the median: median of [100,200,300,400,500] is 300, not the
+        # fan-out-skewed 200.
+        con = self._fanned_orders_con()
+        layer = self._layer(graph)
+        sql = layer.compile(metrics=["order_lines.median_order_amount"])
+        (val,) = con.execute(sql).fetchone()
+        assert float(val) == pytest.approx(300.0)
 
     def test_keyed_sum_distinct_does_not_overflow(self, graph):
         # Regression: the keyed distinct offset (HASH(key) scaled into DECIMAL)

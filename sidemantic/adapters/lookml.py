@@ -1151,14 +1151,27 @@ class LookMLAdapter(BaseAdapter):
         # fan-out-safe form for keyed deduplication.
         if sql_distinct_key and measure_type in ("sum_distinct", "average_distinct"):
             agg_sql = self._keyed_distinct_aggregate_sql(measure_type, sql, sql_distinct_key)
+        elif sql_distinct_key and measure_type in ("median_distinct", "percentile_distinct"):
+            # Ordered-set aggregates (median / percentile) are skewed by fan-out:
+            # a value repeated across joined rows is counted once per row, so the
+            # plain ordered-set form computes the quantile over the duplicated
+            # distribution rather than one value per distinct key. There is no
+            # fan-out-safe ordered-set form via WITHIN GROUP (an ORDER BY DISTINCT
+            # is rejected by SQLGlot and standard SQL). Instead collapse to one
+            # value per distinct key first, then take the quantile of that list.
+            if measure_type == "median_distinct":
+                fraction = 0.5
+            else:
+                fraction = float(measure_def.get("percentile", 50)) / 100.0
+            agg_sql = self._keyed_distinct_quantile_sql(sql, sql_distinct_key, fraction)
         elif measure_type == "sum_distinct":
             agg_sql = f"SUM(DISTINCT {sql})"
         elif measure_type == "average_distinct":
             agg_sql = f"AVG(DISTINCT {sql})"
         elif measure_type == "median_distinct":
-            # No fan-out-safe inline form for keyed median; dedupe by value.
+            # No key: dedupe by value (the same row-collapsing the database does).
             agg_sql = f"MEDIAN(DISTINCT {sql})"
-        else:  # percentile_distinct
+        else:  # percentile_distinct, no key
             percentile_value = measure_def.get("percentile", 50)
             fraction = float(percentile_value) / 100.0
             # `ORDER BY DISTINCT ...` inside PERCENTILE_CONT is rejected by SQLGlot
@@ -1166,9 +1179,8 @@ class LookMLAdapter(BaseAdapter):
             # reaching the database, making the measure type unusable. Emit the
             # standard parseable ordered-set form (the same one used for the plain
             # `percentile` measure type above), which the generator compiles and
-            # runs. There is no fan-out-safe inline DISTINCT form for an ordered
-            # percentile, so this de-duplicates rows the same way the database's
-            # PERCENTILE_CONT does rather than by the value list.
+            # runs. Without a key the only available de-duplication is by value,
+            # which is what the database's PERCENTILE_CONT already does.
             agg_sql = f"PERCENTILE_CONT({fraction}) WITHIN GROUP (ORDER BY {sql})"
 
         extra = {"distinct": True}
@@ -1214,6 +1226,26 @@ class LookMLAdapter(BaseAdapter):
             return keyed_sum
         # average_distinct: keyed sum divided by the number of distinct keys.
         return f"({keyed_sum} / NULLIF(COUNT(DISTINCT {key_sql}), 0))"
+
+    @staticmethod
+    def _keyed_distinct_quantile_sql(value_sql: str, key_sql: str, fraction: float) -> str:
+        """Build a fan-out-safe ordered-set quantile deduplicated by a key entity.
+
+        Implements LookML ``median_distinct`` / ``percentile_distinct`` with a
+        ``sql_distinct_key``. A plain ``PERCENTILE_CONT(...) WITHIN GROUP`` over the
+        fanned-out rows counts a value once per joined row, skewing the quantile.
+        DuckDB forbids ``ORDER BY DISTINCT`` inside an ordered-set aggregate and
+        forbids nesting an aggregate inside another aggregate, so instead collect
+        the ``(key, value)`` pairs into a single ``LIST`` aggregate, drop duplicate
+        keys with scalar ``list_distinct``, project the value, and take the
+        continuous quantile of that per-key value list via scalar ``list_aggregate``.
+        NULL values are ignored by ``quantile_cont`` (matching ordered-set
+        semantics), and an empty group yields NULL. ``{model}`` placeholders are
+        preserved for the SQL generator.
+        """
+        pairs = f"LIST(STRUCT_PACK(k := {key_sql}, v := {value_sql}))"
+        per_key_values = f"LIST_TRANSFORM(LIST_DISTINCT({pairs}), x -> x.v)"
+        return f"LIST_AGGREGATE({per_key_values}, 'quantile_cont', {fraction})"
 
     def _resolve_measure_reference_sql(
         self,

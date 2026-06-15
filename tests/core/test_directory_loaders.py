@@ -494,3 +494,54 @@ tables:
     assert "avg_order" in [m.name for m in graph.models["orders"].metrics]
     assert "global_ratio" in graph.metrics
     assert "avg_order" not in graph.metrics
+
+
+def test_load_from_directory_detects_view_metric_sidecar_with_snowflake_sections(tmp_path):
+    """A tableless Cortex sidecar with verified_queries routes to Snowflake."""
+    # Pure view-level metrics (no table) plus Snowflake-only top-level sections.
+    (tmp_path / "a_sidecar.yaml").write_text(
+        """
+metrics:
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+verified_queries:
+  - name: total revenue
+    sql: SELECT SUM(amount) FROM orders
+custom_instructions: Prefer revenue.
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    assert "global_ratio" in graph.metrics
+    snowflake_meta = graph.metadata.get("snowflake", {})
+    assert snowflake_meta.get("verified_queries")
+    assert snowflake_meta.get("custom_instructions") == "Prefer revenue."

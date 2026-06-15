@@ -442,15 +442,20 @@ def _yaml_has_top_level_key(data: dict, key: str) -> bool:
     return isinstance(data, dict) and key in data
 
 
+_SNOWFLAKE_TOP_LEVEL_SECTIONS = ("verified_queries", "custom_instructions", "module_custom_instructions")
+
+
 def _looks_like_snowflake_metrics_file(data: dict) -> bool:
     """Detect a Snowflake Cortex file that contains only top-level metrics.
 
     Cortex projects may split top-level ``metrics:`` into their own file without a
     ``tables`` section. Such a file mixes table-scoped metrics (with ``table``) and
     graph-level view metrics (without ``table``); both use ``expr`` and never the
-    MetricFlow ``type_params``/``measure`` markers. Require every metric to use
-    ``expr`` with no MetricFlow markers, plus at least one ``table`` reference so
-    native detection (which already handles tableless graph metrics) keeps those.
+    MetricFlow ``type_params``/``measure`` markers. Route the file to Snowflake when
+    every metric is Cortex-shaped and it carries a Cortex-only signal: at least one
+    ``table`` reference, or a Snowflake-only top-level section (verified_queries /
+    custom instructions). A tableless metrics file with none of these is left to
+    native detection.
     """
     if not isinstance(data, dict) or "tables" in data:
         return False
@@ -467,7 +472,8 @@ def _looks_like_snowflake_metrics_file(data: dict) -> bool:
             return False
         if "table" in metric:
             has_table_scoped = True
-    return has_table_scoped
+    has_snowflake_section = any(section in data for section in _SNOWFLAKE_TOP_LEVEL_SECTIONS)
+    return has_table_scoped or has_snowflake_section
 
 
 def _contains_yaml_key(value: object, key: str) -> bool:

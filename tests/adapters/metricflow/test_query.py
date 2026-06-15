@@ -65,5 +65,99 @@ def test_query_with_filter_metricflow():
     assert "completed" in sql.lower()
 
 
+def test_inline_simple_metric_filter_is_applied():
+    """A latest-spec inline simple metric with a ``filter`` scopes its aggregation.
+
+    Regression: the filter was registered on the graph-level metric but the
+    aggregation path ignored ``Metric.filters``, so a filtered metric like
+    ``completed_revenue`` aggregated every row (``SUM(amount)``) and silently
+    dropped the MetricFlow filter. The filter must be rendered via CASE WHEN so
+    only matching rows contribute, and only for that metric.
+    """
+    import tempfile
+    import textwrap
+    from pathlib import Path
+
+    import duckdb
+
+    from tests.utils import fetch_dicts
+
+    yml = textwrap.dedent("""
+        models:
+          - name: orders
+            semantic_model:
+              enabled: true
+              name: orders
+            columns:
+              - name: order_id
+                entity:
+                  type: primary
+                  name: order
+              - name: order_status
+                dimension:
+                  type: categorical
+              - name: amount
+                dimension:
+                  type: categorical
+            metrics:
+              - name: total_revenue
+                type: simple
+                agg: sum
+                expr: amount
+              - name: completed_revenue
+                type: simple
+                agg: sum
+                expr: amount
+                filter: "order_status = 'completed'"
+              - name: completed_count
+                type: simple
+                agg: count
+                expr: amount
+                filter: "order_status = 'completed'"
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(yml)
+        path = Path(f.name)
+
+    try:
+        graph = MetricFlowAdapter().parse(path)
+    finally:
+        path.unlink(missing_ok=True)
+
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES "
+        "(1, 'completed', 100.0), (2, 'completed', 50.0), (3, 'pending', 999.0)) "
+        "AS t(order_id, order_status, amount)"
+    )
+
+    layer = SemanticLayer(auto_register=False)
+    layer.conn = conn
+    layer.graph = graph
+
+    # The filter renders as CASE WHEN, not a bare aggregate.
+    sql = layer.compile(metrics=["completed_revenue"])
+    assert "CASE WHEN" in sql.upper()
+
+    # Filtered totals only include matching rows; the unfiltered metric includes all.
+    row = fetch_dicts(layer.query(metrics=["total_revenue", "completed_revenue", "completed_count"]))[0]
+    assert row["total_revenue"] == 1149.0
+    assert row["completed_revenue"] == 150.0
+    assert row["completed_count"] == 2
+
+    # The per-metric filter does not leak into a sibling metric grouped by dimension.
+    grouped = {
+        r["order_status"]: r
+        for r in fetch_dicts(
+            layer.query(
+                metrics=["total_revenue", "completed_revenue"],
+                dimensions=["orders.order_status"],
+            )
+        )
+    }
+    assert grouped["pending"]["total_revenue"] == 999.0
+    assert grouped["pending"]["completed_revenue"] in (None, 0)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

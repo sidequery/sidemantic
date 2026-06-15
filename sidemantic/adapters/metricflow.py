@@ -518,8 +518,17 @@ class MetricFlowAdapter(BaseAdapter):
         )
 
     @staticmethod
-    def _map_agg(agg_type: str | None) -> str:
-        """Map a MetricFlow aggregation name to a Sidemantic aggregation name."""
+    def _map_agg(agg_type: str | None) -> str | None:
+        """Map a MetricFlow aggregation name to a Sidemantic aggregation name.
+
+        Returns ``None`` for an aggregation Sidemantic cannot represent (e.g.
+        ``percentile``). Callers must skip such measures/metrics rather than
+        coerce them: defaulting an unrepresentable aggregation to ``sum`` would
+        silently emit wrong SQL (``SUM(amount)`` for ``agg: percentile``). A
+        missing ``agg`` still defaults to ``sum`` as before.
+        """
+        if agg_type is None:
+            return "sum"
         type_mapping = {
             "sum": "sum",
             "count": "count",
@@ -531,7 +540,8 @@ class MetricFlowAdapter(BaseAdapter):
             "median": "median",
             "sum_boolean": "sum",
         }
-        return type_mapping.get(agg_type, "sum")
+        # MetricFlow aggregation names are case-insensitive (e.g. ``SUM``).
+        return type_mapping.get(agg_type.lower())
 
     def _parse_measure(self, measure_def: dict) -> Metric | None:
         """Parse MetricFlow measure into Sidemantic measure.
@@ -547,6 +557,11 @@ class MetricFlowAdapter(BaseAdapter):
             return None
 
         sidemantic_agg = self._map_agg(measure_def.get("agg", "sum"))
+        if sidemantic_agg is None:
+            # Aggregation Sidemantic cannot represent (e.g. ``percentile``). Skip
+            # rather than coerce to ``sum``, which would silently return a wrong
+            # value for the measure.
+            return None
 
         # Parse metadata and filters from meta
         meta = measure_def.get("meta", {})
@@ -649,6 +664,11 @@ class MetricFlowAdapter(BaseAdapter):
             if top_agg is not None:
                 # Latest-spec folded measure: keep the aggregation and column expr.
                 agg = self._map_agg(top_agg)
+                if agg is None:
+                    # Aggregation Sidemantic cannot represent (e.g. ``percentile``).
+                    # Skip the metric rather than coerce to ``sum``, which would
+                    # silently return a wrong value.
+                    return None
                 raw_expr = metric_def.get("expr")
                 expr = str(raw_expr) if raw_expr is not None else None
             elif measure is not None:

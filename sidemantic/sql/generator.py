@@ -1208,6 +1208,7 @@ class SQLGenerator:
             """Recursively extract filter columns from a metric and its dependencies."""
             # Extract from the metric's own filters
             if metric.filters:
+                filter_model_name = None
                 deps = metric.get_dependencies(self.graph)
                 for dep in deps:
                     try:
@@ -1215,8 +1216,24 @@ class SQLGenerator:
                     except KeyError:
                         dep_model_name = dep.split(".", 1)[0] if "." in dep else None
                     if dep_model_name:
-                        add_filter_columns(dep_model_name, metric.filters)
+                        filter_model_name = dep_model_name
                         break
+                # A graph-level simple aggregate (``agg`` + ``sql``) has no metric
+                # dependencies, so resolve its owning model from the SQL's column
+                # refs. Without this the filter columns are never projected into
+                # the CTE and the CASE WHEN filter references a missing column.
+                if filter_model_name is None and metric.agg and metric.sql:
+                    try:
+                        parsed = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+                        for col in parsed.find_all(exp.Column):
+                            candidate = col.table.replace("_cte", "") if col.table else None
+                            if candidate and candidate in self.graph.models:
+                                filter_model_name = candidate
+                                break
+                    except Exception:
+                        filter_model_name = None
+                if filter_model_name:
+                    add_filter_columns(filter_model_name, metric.filters)
 
             # For ratio metrics, check numerator and denominator
             if metric.type == "ratio":
@@ -2858,13 +2875,35 @@ class SQLGenerator:
             if inner_expr != "*":
                 inner_expr = self._rewrite_model_refs_to_ctes(inner_expr)
 
+            # Metric-level filters scope the aggregation to matching rows. Apply
+            # them via CASE WHEN so the filter only affects this metric (mirrors
+            # the model-scoped measure path in _build_model_cte). Without this a
+            # filtered simple metric like a MetricFlow inline measure with
+            # ``filter: status = 'completed'`` would silently aggregate every row.
+            filter_sql = None
+            if metric.filters:
+                conditions = []
+                for filter_str in metric.filters:
+                    condition = filter_str.replace("{model}.", "").replace("{model}", "")
+                    conditions.append(self._rewrite_model_refs_to_ctes(condition))
+                if conditions:
+                    filter_sql = " AND ".join(conditions)
+
             if metric.agg == "count":
+                if filter_sql is not None:
+                    # COUNT ignores NULLs, so emit 1 for matching rows and NULL otherwise.
+                    return f"COUNT(CASE WHEN {filter_sql} THEN 1 ELSE NULL END)"
                 if inner_expr == "*":
                     return "COUNT(*)"
                 return f"COUNT({inner_expr})"
             if metric.agg == "count_distinct":
+                if filter_sql is not None:
+                    return f"COUNT(DISTINCT CASE WHEN {filter_sql} THEN {inner_expr} ELSE NULL END)"
                 return f"COUNT(DISTINCT {inner_expr})"
-            return f"{self._agg_sql_name(metric.agg)}({inner_expr})"
+            agg_arg = (
+                f"CASE WHEN {filter_sql} THEN {inner_expr} ELSE NULL END" if filter_sql is not None else inner_expr
+            )
+            return f"{self._agg_sql_name(metric.agg)}({agg_arg})"
 
         elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
             # Parse formula and replace metric references (handles both typed "derived" and untyped metrics with sql)

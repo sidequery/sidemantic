@@ -1250,5 +1250,81 @@ def test_metricflow_disabled_model_skips_inline_metrics():
         path.unlink(missing_ok=True)
 
 
+def test_metricflow_unrepresentable_agg_is_skipped():
+    """An ``agg`` Sidemantic cannot represent is skipped, not coerced to sum.
+
+    MetricFlow allows ``agg: percentile`` (with ``agg_params``). Sidemantic has no
+    percentile aggregation, and the agg mapper previously defaulted unknown aggs
+    to ``sum``, so ``revenue_p95`` parsed as ``SUM(amount)`` and silently returned
+    the wrong value. Such metrics/measures must be dropped while representable
+    siblings remain.
+    """
+    import tempfile
+    import textwrap
+
+    # Latest-spec inline metric.
+    inline_yml = textwrap.dedent("""
+        models:
+          - name: payments
+            semantic_model:
+              enabled: true
+              name: payments
+            columns:
+              - name: payment_id
+                entity:
+                  type: primary
+                  name: payment
+            metrics:
+              - name: revenue_p95
+                type: simple
+                agg: percentile
+                expr: amount
+              - name: total_revenue
+                type: simple
+                agg: sum
+                expr: amount
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(inline_yml)
+        inline_path = Path(f.name)
+
+    # Legacy-spec measure.
+    legacy_yml = textwrap.dedent("""
+        semantic_models:
+          - name: payments_legacy
+            model: ref('payments')
+            entities:
+              - name: payment
+                type: primary
+                expr: payment_id
+            measures:
+              - name: p95_amount
+                agg: percentile
+                expr: amount
+              - name: total_amount
+                agg: sum
+                expr: amount
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(legacy_yml)
+        legacy_path = Path(f.name)
+
+    try:
+        inline_graph = MetricFlowAdapter().parse(inline_path)
+        legacy_graph = MetricFlowAdapter().parse(legacy_path)
+    finally:
+        inline_path.unlink(missing_ok=True)
+        legacy_path.unlink(missing_ok=True)
+
+    # Inline percentile metric is skipped; sibling sum metric is kept.
+    assert "revenue_p95" not in inline_graph.metrics
+    assert "total_revenue" in inline_graph.metrics
+
+    # Legacy percentile measure is skipped; sibling sum measure is kept.
+    legacy_measures = {m.name for m in legacy_graph.get_model("payments_legacy").metrics}
+    assert "p95_amount" not in legacy_measures
+    assert "total_amount" in legacy_measures
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -47,12 +47,17 @@ class TestBookingsSource:
         assert model.table == "fct_bookings"
 
     def test_measure_count(self, graph):
-        """All 14 measures are imported."""
+        """Representable measures are imported; percentile measures are skipped.
+
+        The fixture declares 14 measures, but the 4 ``agg: percentile`` measures
+        have no Sidemantic equivalent and are skipped rather than coerced to sum,
+        leaving 10.
+        """
         model = graph.models["bookings_source"]
-        assert len(model.metrics) == 14
+        assert len(model.metrics) == 10
 
     def test_measure_names(self, graph):
-        """All measure names are present."""
+        """Representable measure names are present; percentile measures are absent."""
         model = graph.models["bookings_source"]
         names = {m.name for m in model.metrics}
         expected = {
@@ -66,12 +71,13 @@ class TestBookingsSource:
             "booking_payments",
             "referred_bookings",
             "median_booking_value",
-            "booking_value_p99",
-            "discrete_booking_value_p99",
-            "approximate_continuous_booking_value_p99",
-            "approximate_discrete_booking_value_p99",
         }
         assert names == expected
+        # ``agg: percentile`` measures cannot be represented and are skipped.
+        assert "booking_value_p99" not in names
+        assert "discrete_booking_value_p99" not in names
+        assert "approximate_continuous_booking_value_p99" not in names
+        assert "approximate_discrete_booking_value_p99" not in names
 
     def test_sum_boolean_maps_to_sum(self, graph):
         """sum_boolean aggregation maps to sum."""
@@ -85,11 +91,15 @@ class TestBookingsSource:
         median = model.get_metric("median_booking_value")
         assert median.agg == "median"
 
-    def test_percentile_aggregation_fallback(self, graph):
-        """percentile aggregation falls through to default (sum) since not in type_mapping."""
+    def test_percentile_aggregation_skipped(self, graph):
+        """percentile aggregation is skipped, not silently coerced to sum.
+
+        Sidemantic has no percentile aggregation. Coercing it to ``sum`` would
+        register ``SUM(booking_value)`` under the percentile measure's name and
+        return a wrong value, so the measure is dropped instead.
+        """
         model = graph.models["bookings_source"]
-        p99 = model.get_metric("booking_value_p99")
-        assert p99.agg == "sum"
+        assert model.get_metric("booking_value_p99") is None
 
     def test_count_distinct(self, graph):
         """count_distinct aggregation is mapped correctly."""
@@ -659,9 +669,13 @@ class TestSimpleManifestMetrics:
         assert "bookings_source" in graph.models
 
     def test_measure_count(self, graph):
-        """All 14 measures are imported from the semantic model."""
+        """Representable measures are imported; percentile measures are skipped.
+
+        Of the 14 declared measures, the 4 ``agg: percentile`` flavors have no
+        Sidemantic equivalent and are skipped rather than coerced to sum.
+        """
         model = graph.models["bookings_source"]
-        assert len(model.metrics) == 14
+        assert len(model.metrics) == 10
 
     def test_simple_metrics_parsed(self, graph):
         """Simple metrics are parsed as untyped with measure references."""

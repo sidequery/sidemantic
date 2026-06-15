@@ -60,8 +60,6 @@ ADAPTER_FIXTURE_ROOTS = [
 EXPECTED_PARSE_FAILURES = {
     "tests/fixtures/gooddata/ecommerce_demo_analytics.json": GoodDataParseError,
     "tests/fixtures/gooddata/sdk_declarative_analytics_model.json": GoodDataParseError,
-    "tests/fixtures/gooddata/sdk_declarative_ldm.json": ValidationError,
-    "tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json": ValidationError,
     "tests/fixtures/metricflow/sub_daily_grain_to_date_hour.yml": ValidationError,
     "tests/fixtures/metricflow/sub_daily_millisecond.yml": ValidationError,
 }

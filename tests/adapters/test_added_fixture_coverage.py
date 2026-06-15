@@ -8,7 +8,6 @@ from pathlib import Path
 import duckdb
 import pytest
 import sqlglot
-from pydantic import ValidationError
 from sqlglot import exp
 
 from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
@@ -60,6 +59,8 @@ ADDED_FIXTURE_CASES = [
     (CubeAdapter, "tests/fixtures/cube/switch_dimension.yml"),
     (CubeAdapter, "tests/fixtures/cube/visitors_geo_subquery.yaml"),
     (GoodDataAdapter, "tests/fixtures/gooddata/ecommerce_demo_ldm.json"),
+    (GoodDataAdapter, "tests/fixtures/gooddata/sdk_declarative_ldm.json"),
+    (GoodDataAdapter, "tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json"),
     (HexAdapter, "tests/fixtures/hex/employees.yml"),
     (HexAdapter, "tests/fixtures/hex/inventory.yml"),
     (HexAdapter, "tests/fixtures/hex/page_views.yml"),
@@ -166,16 +167,6 @@ ADDED_FIXTURE_EXPECTED_FAILURE_CASES = [
         GoodDataAdapter,
         "tests/fixtures/gooddata/sdk_declarative_analytics_model.json",
         GoodDataParseError,
-    ),
-    (
-        GoodDataAdapter,
-        "tests/fixtures/gooddata/sdk_declarative_ldm.json",
-        ValidationError,
-    ),
-    (
-        GoodDataAdapter,
-        "tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json",
-        ValidationError,
     ),
 ]
 

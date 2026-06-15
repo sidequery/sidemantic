@@ -1,0 +1,17 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='projected_orders' inline='true' version='18.1'>
+  <connection class='postgres' dbname='analytics' server='localhost'>
+    <relation name='Projected' type='project'>
+      <relation name='orders' type='table' table='[public].[orders]' />
+    </relation>
+    <metadata-records>
+      <metadata-record class='column'>
+        <local-name>[Order ID]</local-name>
+        <parent-name>[Projected]</parent-name>
+        <remote-alias>order_id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+    </metadata-records>
+  </connection>
+  <column caption='Order ID' datatype='integer' name='[order_id]' role='dimension' type='ordinal' />
+</datasource>

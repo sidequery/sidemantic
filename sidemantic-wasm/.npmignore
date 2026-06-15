@@ -1,0 +1,6 @@
+# Present so npm does not fall back to .gitignore (which excludes the built
+# wasm/ dir). The package.json "files" allowlist controls what ships; the
+# entries here just keep dev-only paths out of the tarball.
+scripts/
+node_modules/
+*.tgz

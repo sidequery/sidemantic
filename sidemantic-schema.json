@@ -796,6 +796,12 @@
           "description": "SQL expression or formula (accepts 'expr' as alias)",
           "title": "Sql"
         },
+        "sql_is_complete": {
+          "default": false,
+          "description": "When True, treat sql as a complete, opaque expression and skip auto-extraction of aggregations. Used for imported measures (e.g. Cube/Tesseract number_agg/time/string/boolean) whose sql is already the full aggregate expression and must be preserved verbatim with agg=None.",
+          "title": "Sql Is Complete",
+          "type": "boolean"
+        },
         "steps": {
           "anyOf": [
             {
@@ -1997,6 +2003,12 @@
             "description": "SQL expression or formula (accepts 'expr' as alias)",
             "title": "Sql"
           },
+          "sql_is_complete": {
+            "default": false,
+            "description": "When True, treat sql as a complete, opaque expression and skip auto-extraction of aggregations. Used for imported measures (e.g. Cube/Tesseract number_agg/time/string/boolean) whose sql is already the full aggregate expression and must be preserved verbatim with agg=None.",
+            "title": "Sql Is Complete",
+            "type": "boolean"
+          },
           "steps": {
             "anyOf": [
               {
@@ -2921,6 +2933,12 @@
                 "default": null,
                 "description": "SQL expression or formula (accepts 'expr' as alias)",
                 "title": "Sql"
+              },
+              "sql_is_complete": {
+                "default": false,
+                "description": "When True, treat sql as a complete, opaque expression and skip auto-extraction of aggregations. Used for imported measures (e.g. Cube/Tesseract number_agg/time/string/boolean) whose sql is already the full aggregate expression and must be preserved verbatim with agg=None.",
+                "title": "Sql Is Complete",
+                "type": "boolean"
               },
               "steps": {
                 "anyOf": [

@@ -1,4 +1,5 @@
 id: product_events
+type: model
 base_sql_table: analytics.product_events
 description: Product event tracking with visibility controls
 
@@ -91,7 +92,10 @@ measures:
   - id: daily_active_users
     func: count_distinct
     of: user_id
-    semi_additive: last
+    semi_additive:
+      over:
+        - dimension: event_date
+          pick: max
     visibility: public
     description: Daily active users (non-additive across days)
 

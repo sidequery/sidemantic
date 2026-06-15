@@ -1,0 +1,29 @@
+guid: "model-range-only-join"
+export_schema_version: "2"
+model:
+  name: sales_model
+  description: Join with only a range predicate and no equality key
+  model_tables:
+    - name: sales
+      fqn: ANALYTICS.PUBLIC.sales
+      joins:
+        - with: calendar
+          on: "[sales::date] BETWEEN [calendar::start_date] AND [calendar::end_date]"
+          type: INNER
+          cardinality: MANY_TO_ONE
+    - name: calendar
+      fqn: ANALYTICS.PUBLIC.calendar
+  columns:
+    - name: order_id
+      column_id: sales::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: period_name
+      column_id: calendar::period_name
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      column_id: sales::amount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

@@ -1,0 +1,101 @@
+table_name: revenue_by_region
+main_dttm_col: report_date
+description: Multi-catalog revenue dataset spanning catalog.schema.table
+catalog: analytics_catalog
+schema: finance
+sql: null
+cache_timeout: null
+filter_select_enabled: true
+currency_code_column: iso_currency
+version: 1.0.0
+
+folders:
+  - uuid: aaaaaaaa-0000-0000-0000-000000000001
+    type: folder
+    name: Money
+    description: Currency-formatted measures
+    children:
+      - uuid: aaaaaaaa-0000-0000-0000-000000000002
+        type: metric
+        name: total_revenue
+      - uuid: aaaaaaaa-0000-0000-0000-000000000003
+        type: metric
+        name: avg_revenue
+
+metrics:
+  - metric_name: count
+    verbose_name: Records
+    metric_type: count
+    expression: COUNT(*)
+    description: Number of revenue records
+    d3format: null
+    extra: null
+    warning_text: null
+
+  - metric_name: total_revenue
+    verbose_name: Total Revenue
+    metric_type: sum
+    expression: SUM(revenue)
+    description: Total revenue
+    d3format: "$,.2f"
+    currency:
+      symbol: EUR
+      symbolPosition: suffix
+    extra: null
+    warning_text: Preliminary figures, subject to revision
+
+  - metric_name: avg_revenue
+    verbose_name: Average Revenue
+    metric_type: avg
+    expression: AVG(revenue)
+    description: Average revenue per record
+    d3format: ".2f"
+    currency:
+      symbol: GBP
+      symbolPosition: prefix
+    extra: null
+    warning_text: null
+
+columns:
+  - column_name: id
+    verbose_name: ID
+    is_dttm: false
+    is_active: true
+    type: INTEGER
+    groupby: true
+    filterable: true
+    expression: null
+    description: Primary key
+
+  - column_name: report_date
+    verbose_name: Report Date
+    is_dttm: true
+    is_active: true
+    type: DATE
+    groupby: true
+    filterable: true
+    expression: null
+    description: Reporting date
+    python_date_format: "%Y-%m-%d"
+    datetime_format: "%Y-%m-%d"
+
+  - column_name: region
+    verbose_name: Region
+    is_dttm: false
+    is_active: true
+    type: VARCHAR
+    advanced_data_type: country
+    groupby: true
+    filterable: true
+    expression: null
+    description: Sales region
+
+  - column_name: revenue
+    verbose_name: Revenue
+    is_dttm: false
+    is_active: true
+    type: NUMERIC
+    groupby: false
+    filterable: true
+    expression: null
+    description: Revenue amount

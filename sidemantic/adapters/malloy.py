@@ -6,6 +6,7 @@ Uses ANTLR4-generated parser from official Malloy grammar files.
 from __future__ import annotations
 
 import re
+import warnings
 from pathlib import Path
 
 from sidemantic.adapters.base import BaseAdapter
@@ -18,6 +19,7 @@ from sidemantic.core.semantic_graph import SemanticGraph
 
 try:
     from antlr4 import CommonTokenStream, InputStream
+    from antlr4.error.ErrorListener import ErrorListener
 
     from sidemantic.adapters.malloy_grammar import MalloyLexer, MalloyParser, MalloyParserVisitor
 
@@ -26,6 +28,37 @@ except ImportError:
     _ANTLR4_AVAILABLE = False
     MalloyParserVisitor = object  # type: ignore[assignment,misc]
     MalloyParser = None  # type: ignore[assignment]
+    ErrorListener = object  # type: ignore[assignment,misc]
+
+
+class MalloySyntaxError(ValueError):
+    """Raised when a Malloy document contains syntax errors and strict parsing is requested.
+
+    The collected per-error details are available on the ``errors`` attribute as a list
+    of ``(line, column, message)`` tuples.
+    """
+
+    def __init__(self, message: str, errors: list[tuple[int, int, str]]):
+        super().__init__(message)
+        self.errors = errors
+
+
+class _CollectingErrorListener(ErrorListener):  # type: ignore[misc]
+    """ANTLR error listener that collects lexer/parser syntax errors.
+
+    The vendored ANTLR parser previously ran with the default ConsoleErrorListener,
+    which printed errors to stderr and was otherwise invisible: ``parse()`` would
+    silently return a degraded/partial graph built from whatever ANTLR's error
+    recovery managed to salvage. This listener captures those errors so the adapter
+    can surface them (warn or raise) instead of swallowing them.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.errors: list[tuple[int, int, str]] = []
+
+    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):  # noqa: N802, N803
+        self.errors.append((line, column, msg))
 
 
 class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
@@ -35,6 +68,12 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self.models: list[Model] = []
         # Imports: list of (file_path, items) where items is list of (name, alias) or None for import-all
         self.imports: list[tuple[str, list[tuple[str, str | None]] | None]] = []
+        # Exports: top-level `export { a, b }` source names re-exported from this file.
+        self.exports: list[str] = []
+        # User-defined types: top-level `type: name is ...` definitions (name -> definition text).
+        self.user_types: dict[str, str] = {}
+        # Given parameters: top-level `given: name::type` model-input parameters (name -> type text).
+        self.given: dict[str, str] = {}
         self.current_model_name: str | None = None
         self.current_table: str | None = None
         self.current_sql: str | None = None
@@ -64,6 +103,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self._model_tags = []
         self._accept_fields = []
         self._except_fields = []
+        self._virtual = None
+        self._source_type_constraints = []
 
     def _parse_annotations(self, tags_ctx) -> str | None:
         """Parse annotations from tags context, returning description text.
@@ -150,6 +191,60 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             # Import all sources from file
             self.imports.append((file_path, None))
 
+        return self.visitChildren(ctx)
+
+    def visitExportStatement(self, ctx: MalloyParser.ExportStatementContext):  # noqa: N802
+        """Visit top-level `export { a, b }` statement.
+
+        Malloy 0.0.x added `export { ... }` to re-export named sources from a file
+        so importers can pull them. Each item is a source name (an id). We record the
+        names so callers can introspect what a file publicly exports.
+        """
+        for export_item in ctx.exportItem():
+            id_ctx = export_item.id_()
+            if id_ctx:
+                name = self._get_text(id_ctx)
+                if name:
+                    self.exports.append(name)
+        return self.visitChildren(ctx)
+
+    def visitDefineUserTypeStatement(self, ctx: MalloyParser.DefineUserTypeStatementContext):  # noqa: N802
+        """Visit top-level `type: name is <type>` user-defined type statement.
+
+        Malloy added user-defined types so a type can be named once and reused (in
+        source type constraints, casts, parameters, etc.). We record name -> definition
+        text; types are metadata for the semantic layer, not models.
+        """
+        prop_list = ctx.userTypePropertyList()
+        if not prop_list:
+            return self.visitChildren(ctx)
+        for type_def in prop_list.userTypeDefinition():
+            name_def = type_def.userTypeNameDef()
+            type_expr = type_def.userTypeExpr()
+            if name_def:
+                name = self._get_text(name_def)
+                definition = self._get_text(type_expr) if type_expr else ""
+                if name:
+                    self.user_types[name] = definition
+        return self.visitChildren(ctx)
+
+    def visitDefineGivenStatement(self, ctx: MalloyParser.DefineGivenStatementContext):  # noqa: N802
+        """Visit top-level `given: name::type` statement.
+
+        Malloy added `given:` to declare model-level input parameters (similar to source
+        parameters but file-scoped). We record name -> type text.
+        """
+        given_list = ctx.givenDefList()
+        if not given_list:
+            return self.visitChildren(ctx)
+        for given_def in given_list.givenDef():
+            name_def = given_def.givenNameDef()
+            given_type = given_def.givenType()
+            if name_def:
+                name = self._get_text(name_def)
+                type_text = self._get_text(given_type) if given_type else ""
+                if name:
+                    self.given[name] = type_text
         return self.visitChildren(ctx)
 
     def _get_text(self, ctx) -> str:
@@ -571,6 +666,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                         metadata["timezone"] = self._timezone
                     if self._model_tags:
                         metadata["tags"] = self._model_tags
+                    if self._virtual:
+                        metadata["virtual"] = self._virtual
+                    if self._source_type_constraints:
+                        metadata["source_type_constraints"] = list(self._source_type_constraints)
                     model = Model(
                         name=self.current_model_name,
                         table=self.current_table,
@@ -624,6 +723,31 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 table_path = explore_table.tablePath()
                 if table_path:
                     self.current_table = self._extract_string(self._get_text(table_path))
+            return
+
+        # Check for virtual source: connection.virtual('name')
+        # Malloy added virtual() sources (a named source resolved by the connection
+        # rather than a physical table). Treat the virtual name like a table path so
+        # the model still has an identifiable source.
+        if isinstance(ctx, MalloyParser.SQVirtualContext):
+            virtual_source = ctx.virtualSource()
+            if virtual_source:
+                self._process_virtual_source(virtual_source)
+            return
+
+        # Check for source type constraint: base::Type or base::(T1, T2)
+        # Malloy added `source: a is b::T` to assert the source conforms to a user type.
+        # We process the underlying source and record the type constraint as metadata.
+        if isinstance(ctx, MalloyParser.SQTypedSourceContext):
+            base_sq_expr = ctx.sqExpr()
+            if base_sq_expr:
+                self._process_sq_expr(base_sq_expr)
+            constraints = ctx.sourceTypeConstraints()
+            if constraints:
+                names = [self._get_text(n) for n in constraints.userTypeName()]
+                names = [n for n in names if n]
+                if names:
+                    self._source_type_constraints = names
             return
 
         # Check for SQL reference: connection.sql('...')
@@ -709,6 +833,25 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             if inner:
                 self._process_sq_expr(inner)
             return
+
+    def _process_virtual_source(self, ctx: MalloyParser.VirtualSourceContext):
+        """Process a virtual() source: connection.virtual('name').
+
+        Records the connection and stores the virtual source name on metadata. The
+        virtual name doubles as the table reference so the resulting model still has a
+        usable source identifier.
+        """
+        conn_id = ctx.connectionId()
+        if conn_id:
+            id_ctx = conn_id.id_()
+            if id_ctx:
+                self.current_connection = self._get_text(id_ctx)
+        short_string = ctx.shortString()
+        if short_string:
+            virtual_name = self._extract_string(self._get_text(short_string))
+            self._virtual = virtual_name
+            if self.current_table is None:
+                self.current_table = virtual_name
 
     def _process_explore_properties(self, ctx: MalloyParser.ExplorePropertiesContext):
         """Process the extend { ... } block of a source."""
@@ -1171,6 +1314,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             list(self._model_tags),
             list(self._accept_fields),
             list(self._except_fields),
+            self._virtual,
+            list(self._source_type_constraints),
         )
 
         # Reset and process the inline source
@@ -1189,6 +1334,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
         self._model_tags = []
         self._accept_fields = []
         self._except_fields = []
+        self._virtual = None
+        self._source_type_constraints = []
 
         self._process_sq_expr(sq_expr)
 
@@ -1201,6 +1348,10 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
                 metadata["timezone"] = self._timezone
             if self._model_tags:
                 metadata["tags"] = self._model_tags
+            if self._virtual:
+                metadata["virtual"] = self._virtual
+            if self._source_type_constraints:
+                metadata["source_type_constraints"] = list(self._source_type_constraints)
             inline_model = Model(
                 name=join_name,
                 table=self.current_table,
@@ -1233,6 +1384,8 @@ class MalloyModelVisitor(MalloyParserVisitor):  # type: ignore[misc]
             self._model_tags,
             self._accept_fields,
             self._except_fields,
+            self._virtual,
+            self._source_type_constraints,
         ) = saved
 
     def _process_where_as_segment(self, ctx: MalloyParser.WhereStatementContext):
@@ -1264,7 +1417,38 @@ class MalloyAdapter(BaseAdapter):
 
     Note: Views and queries are skipped as they are not part of
     the semantic model definition.
+
+    Error handling:
+        The adapter installs an ANTLR error listener so syntax errors are surfaced
+        instead of being silently swallowed (which previously produced a degraded or
+        empty graph). By default (``strict=False``) errors are collected on
+        ``adapter.errors`` and emitted as a ``UserWarning``; parsing still returns the
+        models ANTLR could recover. With ``strict=True`` any syntax error raises
+        ``MalloySyntaxError``.
     """
+
+    def __init__(self, strict: bool = False, warn_on_errors: bool = True):
+        """Create a Malloy adapter.
+
+        Args:
+            strict: If True, raise ``MalloySyntaxError`` when a parsed file has any
+                syntax error. If False (default), collect errors and continue using
+                ANTLR's recovered parse (backward-compatible behavior).
+            warn_on_errors: If True (default) and not strict, emit a ``UserWarning``
+                summarizing collected syntax errors so they are not silent.
+        """
+        self.strict = strict
+        self.warn_on_errors = warn_on_errors
+        # Collected (file_path, line, column, message) syntax errors from the last parse.
+        self.errors: list[tuple[str, int, int, str]] = []
+        # Newer top-level Malloy constructs collected during the last parse. These are
+        # metadata for the semantic layer rather than models:
+        #   user_types: name -> type definition text (from `type:` statements)
+        #   given:      name -> type text (from `given:` parameter statements)
+        #   exports:    source names re-exported via `export { ... }`
+        self.user_types: dict[str, str] = {}
+        self.given: dict[str, str] = {}
+        self.exports: list[str] = []
 
     def parse(self, source: str | Path) -> SemanticGraph:
         """Parse Malloy files into semantic graph.
@@ -1280,11 +1464,16 @@ class MalloyAdapter(BaseAdapter):
 
         Raises:
             ImportError: If antlr4-python3-runtime is not installed
+            MalloySyntaxError: If ``strict=True`` and a file has syntax errors
         """
         if not _ANTLR4_AVAILABLE:
             raise ImportError(
                 'Malloy support requires antlr4-python3-runtime. Install with: pip install "sidemantic[malloy]"'
             )
+        self.errors = []
+        self.user_types = {}
+        self.given = {}
+        self.exports = []
         graph = SemanticGraph()
         source_path = Path(source)
 
@@ -1339,12 +1528,52 @@ class MalloyAdapter(BaseAdapter):
         token_stream = CommonTokenStream(lexer)
         parser = MalloyParser(token_stream)
 
+        # Install an error listener so syntax errors are surfaced instead of being
+        # silently swallowed. The default ConsoleErrorListener only prints to stderr;
+        # we collect errors so we can warn or raise. We keep ANTLR's error recovery so
+        # a single bad statement does not discard the rest of the (recoverable) parse.
+        error_listener = _CollectingErrorListener()
+        lexer.removeErrorListeners()
+        lexer.addErrorListener(error_listener)
+        parser.removeErrorListeners()
+        parser.addErrorListener(error_listener)
+
         # Parse the document
         tree = parser.malloyDocument()
+
+        if error_listener.errors:
+            self.errors.extend((str(file_path), line, col, msg) for line, col, msg in error_listener.errors)
+            if self.strict:
+                detail = "; ".join(f"line {line}:{col} {msg}" for line, col, msg in error_listener.errors)
+                raise MalloySyntaxError(
+                    f"Malloy syntax error(s) in {file_path}: {detail}",
+                    error_listener.errors,
+                )
+            if self.warn_on_errors:
+                count = len(error_listener.errors)
+                first_line, first_col, first_msg = error_listener.errors[0]
+                # Truncate ANTLR's verbose "expecting {...}" token sets to keep the
+                # warning readable; full details remain on adapter.errors.
+                short_msg = first_msg.split(" expecting ")[0]
+                more = f" (+{count - 1} more)" if count > 1 else ""
+                warnings.warn(
+                    f"Malloy syntax error(s) in {file_path}: "
+                    f"line {first_line}:{first_col} {short_msg}{more}. "
+                    "Parsed models may be incomplete; inspect adapter.errors for details.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Visit the tree to extract models and imports
         visitor = MalloyModelVisitor()
         visitor.visit(tree)
+
+        # Surface newer top-level constructs (type:/given:/export) as adapter metadata.
+        self.user_types.update(visitor.user_types)
+        self.given.update(visitor.given)
+        for export_name in visitor.exports:
+            if export_name not in self.exports:
+                self.exports.append(export_name)
 
         # Process imports first (depth-first) so imported sources are available
         for import_path, import_items in visitor.imports:
@@ -1381,6 +1610,7 @@ class MalloyAdapter(BaseAdapter):
                         metrics=model.metrics,
                         segments=model.segments,
                         pre_aggregations=model.pre_aggregations,
+                        metadata=model.metadata,
                     )
 
             # Add to graph if not already present

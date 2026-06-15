@@ -101,7 +101,7 @@ The scaffold copies readable source from `assets/templates/static-dashboard/` an
 - Existing app: follow its framework, routing, styling, and data-fetch patterns.
 - New product webapp: use Bun, React Router v7 as framework, Tailwind v3, and Hono only when a TypeScript API/proxy is needed.
 - Python-backed analytics app: use `sidemantic.api_server.create_app()` or `start_api_server()` when a FastAPI API is acceptable.
-- Browser-only demo: use Pyodide + DuckDB-WASM or Sidemantic Rust WASM + DuckDB-WASM only for static demos or docs pages that must run without a backend.
+- Browser-only demo: use the `sidemantic-wasm` npm package (Sidemantic Rust WASM) + DuckDB-WASM, or Pyodide + DuckDB-WASM, only for static demos or docs pages that must run without a backend.
 - Notebook or Python embedded view: use `sidemantic.widget.MetricsExplorer` instead of rebuilding the widget.
 - MCP app surface: use `sidemantic mcp-serve --apps --http --port 4100` and existing chart resources when the target is an MCP Apps-compatible host.
 
@@ -216,7 +216,7 @@ After copying assets into a project, treat them as that project's code. Modify t
 Use browser-only Sidemantic execution for static demos, docs, and shareable examples. The UI should still consume the copied static component files; keep runtime adapters separate from components.
 
 - Pyodide variant: install Sidemantic into Pyodide with dependency constraints that match the repo's Pyodide rules.
-- Rust WASM variant: initialize the wasm-bindgen Sidemantic bundle, compile/validate/rewrite with its exported functions, and keep the generated SQL visible in the debug panel.
+- Rust WASM variant: install the `sidemantic-wasm` package (`bun add sidemantic-wasm`), call `createSidemanticRuntime()`, compile/validate/rewrite through it, and keep the generated SQL visible in the debug panel. For a no-bundler static page, vendor the package's bundle (see `examples/sidemantic_wasm_demo`).
 - Keep large data files out of git. Download or cache Parquet at build/runtime.
 - Generate SQL in the browser Sidemantic runtime; execute data queries in DuckDB-WASM.
 - Show loading progress and skeletons because Sidemantic WASM/Pyodide and DuckDB-WASM initialization is visible to users.

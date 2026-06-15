@@ -147,7 +147,7 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
         "RillAdapter",
         "ThoughtSpotAdapter",
     },
-    "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter"},
+    "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter", "RillAdapter"},
     "semantic_only_no_sources": {
         "AtScaleSMLAdapter",
         "LookMLAdapter",

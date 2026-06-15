@@ -77,8 +77,12 @@ class RillAdapter:
         # parse any explicit selectors so the model still validates and round-trips.
         parent = data.get("parent")
 
-        # Get the source table or model. Derived views have no own data source.
-        table = data.get("table") or data.get("model")
+        # Get the source table or model. A derived view has no own data source;
+        # in Rill it inherits the parent metrics view's underlying relation, so we
+        # fall back to the parent name as the table. This keeps the imported model
+        # a valid, queryable representation (otherwise validation rejects a model
+        # with no table/sql/dax/source_uri), while meta preserves the linkage.
+        table = data.get("table") or data.get("model") or parent
 
         # Parse dimensions
         dimensions: list[Dimension] = []

@@ -17,7 +17,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from sidemantic import SemanticLayer
 from sidemantic.adapters.rill import RillAdapter
+from sidemantic.validation import validate_model
 
 # =============================================================================
 # FIXTURES
@@ -134,6 +136,24 @@ class TestDerivedMetricsParsing:
         """A derived view defines no dimensions/measures of its own."""
         assert len(derived_metrics.dimensions) == 0
         assert len(derived_metrics.metrics) == 0
+
+    def test_derived_view_inherits_parent_as_table(self, derived_metrics):
+        """A parent-only derived view falls back to the parent name as its table."""
+        assert derived_metrics.table == "parent_metrics"
+
+    def test_derived_view_passes_validation(self, derived_metrics):
+        """A parent-only derived view is a valid, importable model.
+
+        Without a table/sql/dax/source_uri fallback, validate_model rejects the
+        derived view, breaking the CLI import path (`sidemantic validate`).
+        """
+        assert validate_model(derived_metrics) == []
+
+    def test_derived_view_importable_via_semantic_layer(self, derived_metrics):
+        """The CLI-first path (add_model -> validate_model) accepts the view."""
+        layer = SemanticLayer()
+        layer.add_model(derived_metrics)
+        assert "derived_metrics" in layer.graph.models
 
 
 # =============================================================================

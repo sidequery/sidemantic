@@ -147,6 +147,12 @@ class FuncDeclaration:
 class AmlProperty:
     key: str
     value: AmlValue
+    # Originating file context for this property's definition. Set when a block is
+    # composed across modules (e.g. a Dataset extending a PartialDataset declared
+    # in another file) so property values such as `relationships` qualify their
+    # model/field references against the file that defined them rather than the
+    # consuming file.
+    context: _FileContext | None = None
 
 
 @dataclass
@@ -655,12 +661,16 @@ def _stamp_block_context(block: AmlBlock, context: _FileContext) -> AmlBlock:
     extending a PartialDataset from another file). Each child field (dimension /
     measure / metric) records the file it was authored in so its constants and
     `use` aliases resolve against that file, not the consuming dataset's file.
-    Child blocks that already carry a context keep it (the closest origin wins).
+    Properties (e.g. `relationships`) are stamped too so their model/field
+    references qualify against the authoring file. Child items that already carry
+    a context keep it (the closest origin wins).
     """
     stamped_items: list[AmlItem] = []
     for item in block.items:
         if isinstance(item, AmlBlock):
             stamped_items.append(_stamp_block_context(item, context) if item.context is None else item)
+        elif isinstance(item, AmlProperty):
+            stamped_items.append(item if item.context is not None else AmlProperty(item.key, item.value, context))
         else:
             stamped_items.append(item)
     return AmlBlock(kind=block.kind, name=block.name, items=stamped_items, context=block.context or context)
@@ -1444,10 +1454,22 @@ def _parse_dataset_relationships(
     relationships: list[_AmlRelationship] = []
     refs: list[_RelationshipRef] = []
 
-    properties = _properties_from_items(block.items)
-    relationships_value = properties.get("relationships")
+    relationships_property: AmlProperty | None = None
+    for item in block.items:
+        if isinstance(item, AmlProperty) and item.key == "relationships":
+            relationships_property = item
+    if relationships_property is None:
+        return relationships, refs
+
+    relationships_value = relationships_property.value
     if not isinstance(relationships_value, list):
         return relationships, refs
+
+    # When the `relationships` property was contributed by a PartialDataset from
+    # another module, it carries that module's context so its model/field
+    # references (e.g. `rel(orders.customer_id > customers.id)`) qualify against
+    # the authoring file rather than the consuming dataset's file.
+    context = relationships_property.context or context
 
     for value in relationships_value:
         if isinstance(value, TypedBlock):

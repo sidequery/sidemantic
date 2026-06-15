@@ -531,6 +531,70 @@ Dataset combined = base_part.extend(override)
     assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
 
 
+def test_holistics_extend_partial_preserves_relationship_context(tmp_path):
+    """When a Dataset extends a PartialDataset from another module and that partial
+    contributes a `relationships` property, the relationship refs must qualify
+    against the partial's module. Otherwise `rel(orders.customer_id > customers.id)`
+    resolves against the consuming root file (`orders`/`customers`) instead of the
+    actual `finance.orders`/`finance.customers`, so the join edge is dropped."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # The models and the partial that joins them all live in the `finance` module.
+    # Its relationship refs are written unqualified, relative to that module.
+    (finance_dir / "ds.aml").write_text(
+        """
+Model orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension customer_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Model customers {
+  type: 'table'
+  table_name: 'customers'
+  dimension id { type: 'number' }
+  dimension name { type: 'text' }
+}
+
+PartialDataset joins = PartialDataset {
+  relationships: [
+    rel(orders.customer_id > customers.id, true)
+  ]
+}
+"""
+    )
+
+    # The extending dataset lives at the project root (no module prefix) and pulls
+    # the partial in via a `use` alias.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { joins }
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [finance.orders, finance.customers]
+}
+
+Dataset combined = base_ds.extend(joins)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "finance.orders" in graph.models
+    assert "finance.customers" in graph.models
+    # The relationship from the partial's module resolves against `finance`, so the
+    # join edge lands on finance.orders -> finance.customers rather than being
+    # skipped because `orders`/`customers` don't exist in the graph.
+    rels = graph.models["finance.orders"].relationships
+    assert any(
+        r.name == "finance.customers" and r.type == "many_to_one" and r.foreign_key == "customer_id" for r in rels
+    ), f"expected join edge attached, got {[(r.name, r.type) for r in rels]}"
+
+
 def test_holistics_inline_metric_assignment():
     """A standalone metric written in inline assignment form (Metric x = Metric {...})
     registers as a graph-level metric, matching block-form standalone metrics."""

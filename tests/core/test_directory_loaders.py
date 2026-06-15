@@ -545,3 +545,47 @@ tables:
     snowflake_meta = graph.metadata.get("snowflake", {})
     assert snowflake_meta.get("verified_queries")
     assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
+
+
+def test_load_from_directory_detects_instruction_only_snowflake_sidecar(tmp_path):
+    """A Cortex sidecar with only verified_queries/custom_instructions routes to Snowflake."""
+    # No metrics and no tables: only Snowflake-only top-level sections.
+    (tmp_path / "a_instructions.yaml").write_text(
+        """
+verified_queries:
+  - name: total revenue
+    sql: SELECT SUM(amount) FROM orders
+custom_instructions: Prefer revenue.
+module_custom_instructions:
+  sql_generation: Use explicit columns.
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    snowflake_meta = layer.graph.metadata.get("snowflake", {})
+
+    assert snowflake_meta.get("verified_queries")
+    assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
+    assert "module_custom_instructions" in snowflake_meta

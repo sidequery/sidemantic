@@ -446,32 +446,38 @@ _SNOWFLAKE_TOP_LEVEL_SECTIONS = ("verified_queries", "custom_instructions", "mod
 
 
 def _looks_like_snowflake_metrics_file(data: dict) -> bool:
-    """Detect a Snowflake Cortex file that contains only top-level metrics.
+    """Detect a split Snowflake Cortex sidecar without a ``tables`` section.
 
-    Cortex projects may split top-level ``metrics:`` into their own file without a
-    ``tables`` section. Such a file mixes table-scoped metrics (with ``table``) and
-    graph-level view metrics (without ``table``); both use ``expr`` and never the
-    MetricFlow ``type_params``/``measure`` markers. Route the file to Snowflake when
-    every metric is Cortex-shaped and it carries a Cortex-only signal: at least one
-    ``table`` reference, or a Snowflake-only top-level section (verified_queries /
-    custom instructions). A tableless metrics file with none of these is left to
-    native detection.
+    Cortex projects may split top-level ``metrics:`` and/or the Snowflake-only
+    sections (verified_queries / custom instructions) into their own file. Route
+    such a file to the Snowflake adapter when it carries a Cortex-only signal:
+
+    - a Snowflake-only top-level section (verified_queries / custom instructions),
+      even when no ``metrics`` are present (instruction-only sidecar), or
+    - top-level ``metrics`` with at least one ``table`` reference.
+
+    Any present metrics must be Cortex-shaped (``expr`` with no MetricFlow
+    ``type_params``/``measure`` markers). A tableless metrics file with none of
+    these signals is left to native detection.
     """
     if not isinstance(data, dict) or "tables" in data:
         return False
+
     metrics = data.get("metrics")
-    if not isinstance(metrics, list) or not metrics:
-        return False
     has_table_scoped = False
-    for metric in metrics:
-        if not isinstance(metric, dict):
+    if metrics is not None:
+        if not isinstance(metrics, list) or not metrics:
             return False
-        if "expr" not in metric:
-            return False
-        if "type_params" in metric or "measure" in metric:
-            return False
-        if "table" in metric:
-            has_table_scoped = True
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                return False
+            if "expr" not in metric:
+                return False
+            if "type_params" in metric or "measure" in metric:
+                return False
+            if "table" in metric:
+                has_table_scoped = True
+
     has_snowflake_section = any(section in data for section in _SNOWFLAKE_TOP_LEVEL_SECTIONS)
     return has_table_scoped or has_snowflake_section
 

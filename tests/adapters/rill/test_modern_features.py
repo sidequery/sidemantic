@@ -312,6 +312,38 @@ class TestDerivedMetricsSelectorForms:
         child = graph.models["child"]
         assert {m.name for m in child.metrics} == {"m1"}
 
+    def test_expr_exclude_selector(self):
+        """An `expr: '* EXCLUDE (...)'` selector excludes the named fields."""
+        graph = _parse_project(
+            {
+                "parent.yaml": self.PARENT,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "parent_dimensions": {"expr": "* EXCLUDE (b)"},
+                },
+            }
+        )
+        dim_names = {d.name for d in graph.models["child"].dimensions}
+        assert "a" in dim_names
+        assert "b" not in dim_names
+
+    def test_string_expr_exclude_selector(self):
+        """A bare string `'* EXCLUDE (...)'` selector is also honored."""
+        graph = _parse_project(
+            {
+                "parent.yaml": self.PARENT,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "parent_measures": "* EXCLUDE (m2)",
+                },
+            }
+        )
+        assert {m.name for m in graph.models["child"].metrics} == {"m1"}
+
     def test_inherits_parent_default_time_settings(self):
         """A derived view omitting timeseries inherits the parent's defaults."""
         graph = _parse_project(
@@ -330,6 +362,57 @@ class TestDerivedMetricsSelectorForms:
         assert child.default_grain == "day"
         # The referenced time dimension is materialized so the default resolves.
         assert any(d.name == "day" for d in child.dimensions)
+
+    def test_child_grain_override_preserved(self):
+        """A child-only smallest_time_grain override is kept over the parent grain."""
+        parent = dict(self.PARENT, smallest_time_grain="hour")
+        graph = _parse_project(
+            {
+                "parent.yaml": parent,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "smallest_time_grain": "day",
+                    "parent_measures": ["m1"],
+                },
+            }
+        )
+        child = graph.models["child"]
+        # Parent grain is hourly; the child intends daily and must keep it.
+        assert child.default_grain == "day"
+
+    def test_hidden_dependencies_copied(self):
+        """Selecting a derived measure pulls in its parent deps as hidden fields."""
+        parent = dict(
+            self.PARENT,
+            measures=[
+                {"name": "revenue", "expression": "SUM(x)"},
+                {"name": "orders", "expression": "COUNT(*)"},
+                {
+                    "name": "aov",
+                    "type": "derived",
+                    "expression": "revenue / orders",
+                    "requires": ["revenue", "orders"],
+                },
+            ],
+        )
+        graph = _parse_project(
+            {
+                "parent.yaml": parent,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "parent_measures": ["aov"],
+                },
+            }
+        )
+        metrics = {m.name: m for m in graph.models["child"].metrics}
+        # aov is exposed; its dependencies are inherited but hidden.
+        assert metrics["aov"].public is True
+        assert metrics["revenue"].public is False
+        assert metrics["orders"].public is False
 
 
 # =============================================================================

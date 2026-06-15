@@ -101,6 +101,7 @@ class RillAdapter:
                 existing_dims.add(dim.name)
 
             measure_selected = self._field_selector(meta.get("rill_parent_measures"))
+            parent_metric_names = {m.name for m in parent.metrics}
             for metric in parent.metrics:
                 if not measure_selected(metric.name):
                     continue
@@ -109,6 +110,23 @@ class RillAdapter:
                 model.metrics.append(metric.model_copy(deep=True))
                 existing_metrics.add(metric.name)
 
+            # A selected derived/ratio measure may reference other parent measures
+            # that were not selected (e.g. `aov = revenue / orders`). Pull those
+            # dependencies in as hidden (public=False) measures so the formula
+            # resolves on the child without advertising the extra fields.
+            for metric in list(model.metrics):
+                for dep in metric.get_dependencies(graph, model_context=parent_name):
+                    dep_name = dep.split(".")[-1]
+                    if dep_name in existing_metrics or dep_name not in parent_metric_names:
+                        continue
+                    parent_metric = parent.get_metric(dep_name)
+                    if parent_metric is None:
+                        continue
+                    hidden = parent_metric.model_copy(deep=True)
+                    hidden.public = False
+                    model.metrics.append(hidden)
+                    existing_metrics.add(dep_name)
+
             # Inherit the parent's default time series/grain when the derived view
             # does not define its own, mirroring Rill (derived views inherit the
             # parent's timeseries). Without this, metric-only CLI queries lose the
@@ -116,7 +134,11 @@ class RillAdapter:
             # present on the model.
             if not model.default_time_dimension and parent.default_time_dimension:
                 model.default_time_dimension = parent.default_time_dimension
-                model.default_grain = model.default_grain or parent.default_grain
+                # Honor a child-only smallest_time_grain override before falling
+                # back to the parent's grain.
+                grain_override = meta.get("rill_smallest_time_grain")
+                child_grain = self._map_time_grain(grain_override) if grain_override else None
+                model.default_grain = model.default_grain or child_grain or parent.default_grain
                 if parent.default_time_dimension not in existing_dims:
                     parent_time_dim = parent.get_dimension(parent.default_time_dimension)
                     if parent_time_dim is not None:
@@ -132,12 +154,17 @@ class RillAdapter:
         - a list/tuple/set of names -> select those names
         - a mapping with ``exclude`` (list) -> select all except those names
         - a mapping with ``regex`` (pattern) -> select names matching the pattern
+        - a mapping with ``expr`` (e.g. ``"* EXCLUDE (city)"``) -> evaluate the
+          DuckDB-style star expression
 
         Unrecognized forms fall back to select-all so fields are never silently
         dropped (Rill would still expose them).
         """
         if selector is None or selector == "*":
             return lambda _name: True
+
+        if isinstance(selector, str):
+            return RillAdapter._parse_expr_selector(selector)
 
         if isinstance(selector, (list, tuple, set)):
             names = set(selector)
@@ -152,8 +179,32 @@ class RillAdapter:
 
                 pattern = re.compile(selector["regex"])
                 return lambda name: pattern.search(name) is not None
+            if "expr" in selector:
+                return RillAdapter._parse_expr_selector(selector["expr"])
 
         # Unknown selector form: inherit everything rather than dropping fields.
+        return lambda _name: True
+
+    @staticmethod
+    def _parse_expr_selector(expr: Any):
+        """Build a predicate for a DuckDB-style star selector expression.
+
+        Supports the common Rill/DuckDB forms ``"*"`` and
+        ``"* EXCLUDE (a, b)"`` (case-insensitive). Anything else is treated as
+        select-all so fields are not silently dropped.
+        """
+        if not isinstance(expr, str):
+            return lambda _name: True
+
+        import re
+
+        text = expr.strip()
+        match = re.match(r"^\*\s*EXCLUDE\s*\((?P<names>[^)]*)\)\s*$", text, re.IGNORECASE)
+        if match:
+            excluded = {n.strip().strip('"').strip("'") for n in match.group("names").split(",") if n.strip()}
+            return lambda name: name not in excluded
+
+        # Bare "*" (or unrecognized expression): inherit everything.
         return lambda _name: True
 
     def _parse_file(self, file_path: Path) -> Model | None:
@@ -232,6 +283,11 @@ class RillAdapter:
                 meta["rill_parent_dimensions"] = data.get("parent_dimensions")
             if data.get("parent_measures") is not None:
                 meta["rill_parent_measures"] = data.get("parent_measures")
+            # A derived view can override the grain without redefining the
+            # timeseries. Record that override so parent resolution keeps the
+            # child's coarser/finer grain instead of inheriting the parent's.
+            if smallest_time_grain and not timeseries_column:
+                meta["rill_smallest_time_grain"] = smallest_time_grain
 
         return Model(
             name=model_name,

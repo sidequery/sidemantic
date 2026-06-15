@@ -283,3 +283,59 @@ module_custom_instructions:
     # And a native re-parse keeps them on graph.metadata.
     graph2 = SidemanticAdapter().parse(out)
     assert graph2.metadata["snowflake"]["verified_queries"]
+
+
+def test_load_from_directory_merges_snowflake_metadata_across_files(tmp_path):
+    """Multi-file Cortex projects must accumulate top-level sections, not overwrite."""
+    (tmp_path / "a.yaml").write_text(
+        """
+name: a
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+verified_queries:
+  - name: q1
+    question: x
+    sql: SELECT 1
+custom_instructions: from A
+"""
+    )
+    (tmp_path / "b.yaml").write_text(
+        """
+name: b
+tables:
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+verified_queries:
+  - name: q2
+    question: y
+    sql: SELECT 2
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    merged = graph.metadata["snowflake"]["verified_queries"]
+    assert sorted(q["name"] for q in merged) == ["q1", "q2"]
+    # Dynamic attribute accumulates too.
+    assert len(getattr(graph, "verified_queries", [])) == 2

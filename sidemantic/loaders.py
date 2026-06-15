@@ -790,6 +790,26 @@ def _merge_import_warnings(graph: object, warnings: list[dict[str, object]]) -> 
     graph.import_warnings = merged
 
 
+def _deep_merge_metadata(target: dict, source: dict) -> None:
+    """Recursively merge ``source`` into ``target``.
+
+    Nested dicts are merged, list values are appended (deduplicated by value),
+    and scalars from ``source`` overwrite. This keeps multi-file payloads such as
+    Snowflake Cortex ``verified_queries`` from clobbering one another when several
+    files are loaded from a directory.
+    """
+    for key, value in source.items():
+        existing = target.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            _deep_merge_metadata(existing, value)
+        elif isinstance(existing, list) and isinstance(value, list):
+            for item in value:
+                if item not in existing:
+                    existing.append(copy.deepcopy(item))
+        else:
+            target[key] = copy.deepcopy(value)
+
+
 def _merge_graph_passthrough_metadata(target_graph: object, source_graph: object) -> None:
     for name, value in vars(source_graph).items():
         if not name.startswith("_tmdl_"):
@@ -797,20 +817,28 @@ def _merge_graph_passthrough_metadata(target_graph: object, source_graph: object
         setattr(target_graph, name, copy.deepcopy(value))
 
     # Merge graph-level metadata (e.g. Snowflake Cortex top-level sections) so the
-    # CLI-first load -> export-native path round-trips them.
+    # CLI-first load -> export-native path round-trips them. Deep-merge so multiple
+    # files in a directory each contribute their sections instead of overwriting.
     source_metadata = getattr(source_graph, "metadata", None)
     if isinstance(source_metadata, dict) and source_metadata:
         target_metadata = getattr(target_graph, "metadata", None)
         if not isinstance(target_metadata, dict):
             target_metadata = {}
             target_graph.metadata = target_metadata
-        for key, value in source_metadata.items():
-            target_metadata[key] = copy.deepcopy(value)
+        _deep_merge_metadata(target_metadata, source_metadata)
 
-    # Carry over Snowflake dynamic top-level attributes set by the adapter.
+    # Carry over Snowflake dynamic top-level attributes set by the adapter. Lists
+    # (verified_queries) accumulate across files; scalars take the latest value.
     for attr in ("verified_queries", "custom_instructions", "module_custom_instructions"):
         value = getattr(source_graph, attr, None)
-        if value:
+        if not value:
+            continue
+        existing = getattr(target_graph, attr, None)
+        if isinstance(existing, list) and isinstance(value, list):
+            for item in value:
+                if item not in existing:
+                    existing.append(copy.deepcopy(item))
+        else:
             setattr(target_graph, attr, copy.deepcopy(value))
 
 

@@ -571,3 +571,76 @@ relationships:
         assert rel2.metadata["snowflake"]["name"] == "orders_to_customers"
         metric2 = graph2.models["orders"].get_metric("distinct_orders")
         assert metric2.metadata["snowflake"]["using_relationships"] == ["orders_to_customers"]
+
+    def test_roundtrip_aggregate_metric_with_non_additive_dimensions_stays_metric(self, adapter, tmp_path):
+        """A simple aggregate metric carrying non_additive_dimensions exports as a metric."""
+        source = tmp_path / "na.yaml"
+        source.write_text(
+            """
+name: na_test
+tables:
+  - name: accounts
+    base_table: {database: db, schema: s, table: accounts}
+    primary_key: {columns: [id]}
+    dimensions:
+      - {name: id, expr: id, data_type: number}
+    metrics:
+      - name: max_balance
+        expr: MAX(balance)
+        non_additive_dimensions:
+          - {table: accounts, dimension: snapshot_date}
+"""
+        )
+
+        graph = adapter.parse(source)
+        output_file = tmp_path / "out.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+
+        accounts = next(t for t in data["tables"] if t["name"] == "accounts")
+        # Routed to metrics, not facts, so the metric-only key keeps it a metric.
+        assert "facts" not in accounts or all(f["name"] != "max_balance" for f in accounts["facts"])
+        exported = next(m for m in accounts["metrics"] if m["name"] == "max_balance")
+        assert exported["non_additive_dimensions"][0]["dimension"] == "snapshot_date"
+
+        graph2 = adapter.parse(output_file)
+        metric2 = graph2.models["accounts"].get_metric("max_balance")
+        assert metric2.metadata["snowflake"]["non_additive_dimensions"][0]["dimension"] == "snapshot_date"
+
+    def test_roundtrip_private_access_modifier_maps_to_public_false(self, adapter, tmp_path):
+        """access_modifier: private_access marks the field non-public and round-trips."""
+        source = tmp_path / "priv.yaml"
+        source.write_text(
+            """
+name: priv_test
+tables:
+  - name: orders
+    base_table: {database: db, schema: s, table: orders}
+    primary_key: {columns: [id]}
+    dimensions:
+      - name: ssn
+        expr: ssn
+        data_type: text
+        access_modifier: private_access
+      - name: status
+        expr: status
+        data_type: text
+        access_modifier: public_access
+"""
+        )
+
+        graph = adapter.parse(source)
+        ssn = graph.models["orders"].get_dimension("ssn")
+        status = graph.models["orders"].get_dimension("status")
+        assert ssn.public is False
+        assert status.public is True
+
+        output_file = tmp_path / "out.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+        orders = data["tables"][0]
+        exported_ssn = next(d for d in orders["dimensions"] if d["name"] == "ssn")
+        assert exported_ssn["access_modifier"] == "private_access"
+
+        graph2 = adapter.parse(output_file)
+        assert graph2.models["orders"].get_dimension("ssn").public is False

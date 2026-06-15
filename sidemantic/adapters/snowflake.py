@@ -305,6 +305,7 @@ class SnowflakeAdapter(BaseAdapter):
             sample_values=self._sample_values(dim_def),
             cortex_search_service_name=self._cortex_search_service_name(dim_def),
             metadata=self._dimension_metadata(dim_def),
+            public=self._public_from_access_modifier(dim_def),
         )
 
     def _parse_time_dimension(self, dim_def: dict) -> Dimension | None:
@@ -330,6 +331,7 @@ class SnowflakeAdapter(BaseAdapter):
             sample_values=self._sample_values(dim_def),
             cortex_search_service_name=self._cortex_search_service_name(dim_def),
             metadata=self._dimension_metadata(dim_def),
+            public=self._public_from_access_modifier(dim_def),
         )
 
     def _parse_fact(self, fact_def: dict) -> Metric | None:
@@ -368,6 +370,7 @@ class SnowflakeAdapter(BaseAdapter):
             description=fact_def.get("description"),
             synonyms=fact_def.get("synonyms"),
             metadata=self._measure_metadata(fact_def),
+            public=self._public_from_access_modifier(fact_def),
         )
 
     def _parse_metric(self, metric_def: dict, qualify: bool = True) -> Metric | None:
@@ -423,6 +426,7 @@ class SnowflakeAdapter(BaseAdapter):
                     description=metric_def.get("description"),
                     synonyms=metric_def.get("synonyms"),
                     metadata=self._metric_metadata(metric_def),
+                    public=self._public_from_access_modifier(metric_def),
                 )
 
         # Complex expression (multiple aggregations or couldn't parse simple one)
@@ -437,6 +441,7 @@ class SnowflakeAdapter(BaseAdapter):
             description=metric_def.get("description"),
             synonyms=metric_def.get("synonyms"),
             metadata=self._metric_metadata(metric_def),
+            public=self._public_from_access_modifier(metric_def),
         )
 
     @staticmethod
@@ -455,6 +460,16 @@ class SnowflakeAdapter(BaseAdapter):
         if isinstance(nested, str):
             return nested
         return None
+
+    @staticmethod
+    def _public_from_access_modifier(definition: dict) -> bool:
+        """Map Snowflake ``access_modifier`` onto Sidemantic visibility.
+
+        Snowflake uses ``private_access`` for hidden helper fields. The original
+        modifier is still preserved in metadata, but reflect it on ``public`` so
+        CLI ``info``/catalog and native export treat the field as non-public.
+        """
+        return definition.get("access_modifier") != "private_access"
 
     @staticmethod
     def _sample_values(dim_def: dict) -> list[str] | None:
@@ -751,12 +766,15 @@ class SnowflakeAdapter(BaseAdapter):
         facts = []
         metrics = []
 
+        # Snowflake table `metrics` carry metric-only keys (e.g. using_relationships,
+        # non_additive_dimensions). A simple aggregation that carries one of these
+        # was authored as a metric, so re-export it as a metric (not a fact) to keep
+        # the original representation across a round-trip.
+        metric_only_keys = ("using_relationships", "non_additive_dimensions")
         for metric in model.metrics:
             snowflake_meta = (metric.metadata or {}).get("snowflake", {})
-            # `using_relationships` is a metric-only Snowflake key that facts do
-            # not collect on re-parse, so a simple aggregation carrying it must be
-            # exported as a metric (not a fact) to survive a round-trip.
-            if metric.agg and not metric.type and "using_relationships" not in snowflake_meta:
+            has_metric_only_key = any(key in snowflake_meta for key in metric_only_keys)
+            if metric.agg and not metric.type and not has_metric_only_key:
                 # Simple aggregation -> fact
                 fact = self._export_fact(metric)
                 facts.append(fact)
@@ -849,6 +867,8 @@ class SnowflakeAdapter(BaseAdapter):
         snowflake_meta = (dim.metadata or {}).get("snowflake", {})
         for key, value in snowflake_meta.items():
             dim_def.setdefault(key, value)
+        if not dim.public:
+            dim_def.setdefault("access_modifier", "private_access")
 
     def _export_fact(self, metric: Metric) -> dict:
         """Export metric as Snowflake fact.
@@ -886,6 +906,8 @@ class SnowflakeAdapter(BaseAdapter):
         snowflake_meta = (metric.metadata or {}).get("snowflake", {})
         for key, value in snowflake_meta.items():
             fact.setdefault(key, value)
+        if not metric.public:
+            fact.setdefault("access_modifier", "private_access")
 
         return fact
 
@@ -926,6 +948,8 @@ class SnowflakeAdapter(BaseAdapter):
         snowflake_meta = (metric.metadata or {}).get("snowflake", {})
         for key, value in snowflake_meta.items():
             metric_def.setdefault(key, value)
+        if not metric.public:
+            metric_def.setdefault("access_modifier", "private_access")
 
         return metric_def
 

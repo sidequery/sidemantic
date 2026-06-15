@@ -133,12 +133,17 @@ class TestDerivedMetricsParsing:
         assert meta["rill_parent_measures"] == ["revenue", "orders"]
 
     def test_derived_view_has_no_own_fields(self, derived_metrics):
-        """A derived view defines no dimensions/measures of its own."""
+        """A derived view defines no dimensions/measures of its own.
+
+        When parsed standalone (no parent file available), it keeps zero own
+        fields; parent inheritance only fills these in when the parent metrics
+        view is present in the same project (see TestDerivedMetricsResolution).
+        """
         assert len(derived_metrics.dimensions) == 0
         assert len(derived_metrics.metrics) == 0
 
     def test_derived_view_inherits_parent_as_table(self, derived_metrics):
-        """A parent-only derived view falls back to the parent name as its table."""
+        """A standalone parent-only view falls back to the parent name as its table."""
         assert derived_metrics.table == "parent_metrics"
 
     def test_derived_view_passes_validation(self, derived_metrics):
@@ -154,6 +159,51 @@ class TestDerivedMetricsParsing:
         layer = SemanticLayer()
         layer.add_model(derived_metrics)
         assert "derived_metrics" in layer.graph.models
+
+
+class TestDerivedMetricsResolution:
+    """Parent inheritance when the parent metrics view is in the same project."""
+
+    @pytest.fixture
+    def resolved_derived(self):
+        """Parse the rill fixtures directory so the parent is available."""
+        graph = RillAdapter().parse("tests/fixtures/rill")
+        return graph.models["derived_metrics"]
+
+    def test_inherits_parent_data_source(self, resolved_derived):
+        """The derived view adopts the parent's real table, not the parent name."""
+        assert resolved_derived.table == "sales_model"
+
+    def test_inherits_selected_dimensions(self, resolved_derived):
+        """Only the parent_dimensions selectors are materialized."""
+        dim_names = {d.name for d in resolved_derived.dimensions}
+        assert dim_names == {"region", "channel"}
+        # country_name is on the parent but not selected, so it is excluded.
+        assert "country_name" not in dim_names
+
+    def test_inherits_selected_measures(self, resolved_derived):
+        """Only the parent_measures selectors are materialized."""
+        metric_names = {m.name for m in resolved_derived.metrics}
+        assert metric_names == {"revenue", "orders"}
+
+    def test_resolved_fields_are_queryable(self, resolved_derived):
+        """Inherited measures resolve as fields on the derived model."""
+        revenue = next(m for m in resolved_derived.metrics if m.name == "revenue")
+        assert revenue.agg == "sum"
+        assert revenue.sql == "amount"
+
+    def test_inherited_fields_are_copies(self):
+        """Inherited fields are deep copies, not shared parent instances."""
+        graph = RillAdapter().parse("tests/fixtures/rill")
+        parent = graph.models["parent_metrics"]
+        derived = graph.models["derived_metrics"]
+        parent_revenue = next(m for m in parent.metrics if m.name == "revenue")
+        derived_revenue = next(m for m in derived.metrics if m.name == "revenue")
+        assert derived_revenue is not parent_revenue
+
+    def test_parent_linkage_preserved_after_resolution(self, resolved_derived):
+        """Resolution keeps the parent linkage metadata intact."""
+        assert resolved_derived.meta["rill_parent"] == "parent_metrics"
 
 
 # =============================================================================

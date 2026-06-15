@@ -51,7 +51,63 @@ class RillAdapter:
                 if model:
                     graph.add_model(model)
 
+        # Resolve parent/derived metrics views now that every metrics view in the
+        # project has been parsed. A derived view inherits its fields (and data
+        # source) from its parent, so the selected parent dimensions/measures need
+        # to be materialized on the derived model for it to be queryable.
+        self._resolve_parents(graph)
+
         return graph
+
+    def _resolve_parents(self, graph: SemanticGraph) -> None:
+        """Resolve parent/derived metrics views against their parsed parents.
+
+        Rill `parent` views inherit fields from a parent metrics view via
+        `parent_dimensions` / `parent_measures` selectors (or inherit everything
+        when no selectors are given). When the parent metrics view is available in
+        the same project, copy the selected dimensions/measures onto the derived
+        model and adopt the parent's table so that fields like
+        ``derived_view.revenue`` resolve for CLI ``info`` / ``query``.
+
+        The parent linkage stays in metadata; if the parent is not present in the
+        parsed graph the derived model is left as-is (still valid via the parent
+        name fallback table).
+        """
+        for model in graph.models.values():
+            meta = model.meta or {}
+            parent_name = meta.get("rill_parent")
+            if not parent_name:
+                continue
+
+            parent = graph.models.get(parent_name)
+            if parent is None:
+                continue
+
+            # Inherit the parent's data source so the derived view points at a real
+            # relation rather than just the parent metrics-view name.
+            if parent.table:
+                model.table = parent.table
+
+            existing_dims = {d.name for d in model.dimensions}
+            existing_metrics = {m.name for m in model.metrics}
+
+            selected_dims = meta.get("rill_parent_dimensions")
+            for dim in parent.dimensions:
+                if selected_dims is not None and dim.name not in selected_dims:
+                    continue
+                if dim.name in existing_dims:
+                    continue
+                model.dimensions.append(dim.model_copy(deep=True))
+                existing_dims.add(dim.name)
+
+            selected_measures = meta.get("rill_parent_measures")
+            for metric in parent.metrics:
+                if selected_measures is not None and metric.name not in selected_measures:
+                    continue
+                if metric.name in existing_metrics:
+                    continue
+                model.metrics.append(metric.model_copy(deep=True))
+                existing_metrics.add(metric.name)
 
     def _parse_file(self, file_path: Path) -> Model | None:
         """Parse a single Rill YAML file.

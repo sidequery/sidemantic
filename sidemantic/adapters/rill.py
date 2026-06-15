@@ -390,7 +390,9 @@ class RillAdapter:
           `fmt.Sprintf("measure_%d", i)`).
         - `label:` is a deprecated alias for `display_name:`.
         - `type:` accepts simple / derived / time_comparison. An empty type with
-          `requires:` or `per:` is treated as derived (Rill's default promotion).
+          `requires:` or `per:` is treated as derived (Rill's default promotion)
+          UNLESS the expression is itself a plain aggregation (e.g. `SUM(amount)`),
+          which keeps simple aggregate parsing so it still decomposes correctly.
 
         Args:
             measure_def: Measure definition from Rill YAML
@@ -452,11 +454,21 @@ class RillAdapter:
             base_metric = expression
             comparison_type = "prior_period"
             meta = {"rill_type": "time_comparison"}
-        elif measure_type == "derived" or requires or per:
+        elif measure_type == "derived":
             # "simple" = basic aggregation (None type), "derived" = calculation
-            # referencing other measures. An empty type with requires/per is also
-            # promoted to derived, matching Rill's parser.
+            # referencing other measures.
             metric_type = "derived"
+        elif requires or per:
+            # An empty type with requires/per is promoted to derived ONLY when the
+            # expression is not itself a plain aggregation. A `per` (or `requires`)
+            # measure like `SUM(amount)` is still an ordinary aggregation and must
+            # keep simple aggregate parsing: forcing it to derived would leave the
+            # raw aggregate as the outer formula while the CTE only projects the
+            # decomposed column, producing invalid SQL when a source column name
+            # collides with a measure name. The `per`/`requires` linkage is still
+            # preserved in metadata regardless.
+            if not self._is_simple_aggregate_expression(expression):
+                metric_type = "derived"
 
         if per is not None:
             meta = meta or {}
@@ -483,6 +495,56 @@ class RillAdapter:
             window_frame=window_frame,
             meta=meta,
         )
+
+    @staticmethod
+    def _is_simple_aggregate_expression(expression: Any) -> bool:
+        """Whether a measure expression is a single top-level aggregation.
+
+        Mirrors the decomposition the Metric validator performs: a "simple"
+        aggregation is one whose *top-level* node is a single aggregate function
+        (e.g. ``SUM(amount)``, ``COUNT(*)``, ``COUNT(DISTINCT id)``). Formulas that
+        combine multiple aggregations (e.g. ``SUM(x) / SUM(y)``) or reference other
+        measures are not simple and remain derived.
+
+        Used to decide whether a ``per`` / ``requires`` measure should keep simple
+        aggregate parsing instead of being promoted to a derived formula.
+        """
+        if not isinstance(expression, str) or not expression.strip():
+            return False
+
+        try:
+            import sqlglot
+            from sqlglot import expressions as exp
+
+            parsed = sqlglot.parse_one(expression, read="duckdb")
+        except Exception:
+            return False
+
+        # The top-level node itself must be the aggregation. A wrapping operator
+        # (arithmetic, etc.) means the aggregate is nested inside a formula and the
+        # expression is genuinely derived.
+        if isinstance(parsed, exp.AggFunc):
+            return True
+
+        # Anonymous function nodes for engine-specific aggregates (e.g. dialect
+        # aggregations sqlglot does not model as AggFunc) that the Metric validator
+        # still decomposes.
+        if isinstance(parsed, exp.Func) and (parsed.name or "").lower() in {
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "median",
+            "stddev",
+            "stddev_pop",
+            "variance",
+            "variance_pop",
+            "var_pop",
+            "count",
+        }:
+            return True
+
+        return False
 
     def _map_time_grain(self, grain: str | None) -> str:
         """Map Rill time grain to Sidemantic granularity.

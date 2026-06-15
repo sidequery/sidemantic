@@ -89,10 +89,17 @@ class TestParentMetricsParsing:
         assert metrics["orders"].agg == "count"
 
     def test_per_measure(self, parent_metrics):
-        """`per:` field selector is preserved in metadata and promotes to derived."""
+        """`per:` field selector is preserved in metadata.
+
+        A `per` measure whose expression is a plain aggregation (`SUM(amount)`)
+        keeps simple aggregate parsing rather than being promoted to a derived
+        formula, so it still decomposes to agg/sql and stays queryable.
+        """
         metrics = {m.name: m for m in parent_metrics.metrics}
         m = metrics["revenue_per_region"]
-        assert m.type == "derived"
+        assert m.type is None
+        assert m.agg == "sum"
+        assert m.sql == "amount"
         assert m.meta["rill_per"] == "region"
 
     def test_time_comparison_measure(self, parent_metrics):
@@ -111,6 +118,72 @@ class TestParentMetricsParsing:
         adapter = RillAdapter()
         graph = adapter.parse("tests/fixtures/rill/parent_metrics.yaml")
         assert len(graph.models) == 1
+
+
+# =============================================================================
+# PER-MEASURE AGGREGATE PARSING (regression: per must not break decomposition)
+# =============================================================================
+
+
+class TestPerMeasureAggregateParsing:
+    """A `per` measure whose expression is a plain aggregation stays simple.
+
+    Regression for promoting every `per` measure to a derived formula: when the
+    expression is an ordinary aggregation (e.g. `SUM(amount)`), keeping it as a
+    derived metric leaves the raw `SUM(amount)` in the outer query while the CTE
+    only projects the decomposed column. That generates invalid SQL whenever a
+    source column name also exists as a measure name.
+    """
+
+    def _build_view(self, tmp_path: Path) -> Path:
+        view = {
+            "type": "metrics_view",
+            "model": "sales",
+            "dimensions": [{"name": "region", "column": "region"}],
+            "measures": [
+                # Measure name collides with the source column name `amount`.
+                {"name": "amount", "expression": "SUM(amount)"},
+                # `per` measure over the same plain aggregation.
+                {"name": "amount_per_region", "expression": "SUM(amount)", "per": "region"},
+            ],
+        }
+        path = tmp_path / "sales.yaml"
+        path.write_text(yaml.dump(view, sort_keys=False))
+        return path
+
+    def test_per_aggregate_measure_keeps_simple_parsing(self, tmp_path):
+        """`amount_per_region` decomposes to agg=sum/sql=amount, not a derived formula."""
+        graph = RillAdapter().parse(self._build_view(tmp_path))
+        metrics = {m.name: m for m in graph.models["sales"].metrics}
+
+        per_measure = metrics["amount_per_region"]
+        assert per_measure.type is None
+        assert per_measure.agg == "sum"
+        assert per_measure.sql == "amount"
+        assert per_measure.meta["rill_per"] == "region"
+
+    def test_per_aggregate_measure_compiles_and_runs(self, tmp_path):
+        """The colliding measure-name scenario compiles to valid, executable SQL.
+
+        Before the fix, `amount_per_region` was emitted as a derived `SUM(amount)`
+        in the outer query referencing the raw `amount` column, which the inner CTE
+        did not project under that name -> invalid SQL (Binder error).
+        """
+        graph = RillAdapter().parse(self._build_view(tmp_path))
+
+        layer = SemanticLayer()
+        layer.graph = graph
+        layer.adapter.execute("CREATE TABLE sales (region VARCHAR, amount INT)")
+        layer.adapter.execute("INSERT INTO sales VALUES ('east', 10), ('east', 5), ('west', 7)")
+
+        rows = layer.query(
+            metrics=["sales.amount", "sales.amount_per_region"],
+            dimensions=["sales.region"],
+            order_by=["sales.region"],
+        ).fetchall()
+
+        # region, amount, amount_per_region
+        assert rows == [("east", 15, 15), ("west", 7, 7)]
 
 
 # =============================================================================

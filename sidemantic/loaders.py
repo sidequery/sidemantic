@@ -200,6 +200,13 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 adapter = ThoughtSpotAdapter()
             elif _contains_yaml_key(yaml_data, "worksheet") and _contains_yaml_key(yaml_data, "worksheet_columns"):
                 adapter = ThoughtSpotAdapter()
+            elif (
+                _contains_yaml_key(yaml_data, "model")
+                and _contains_yaml_key(yaml_data, "model_tables")
+                and _contains_yaml_key(yaml_data, "columns")
+            ):
+                # ThoughtSpot TML Model object (export_schema_version v2)
+                adapter = ThoughtSpotAdapter()
             elif _looks_like_bsl_yaml(yaml_data):
                 # BSL format uses _.column syntax for expressions
                 adapter = BSLAdapter()

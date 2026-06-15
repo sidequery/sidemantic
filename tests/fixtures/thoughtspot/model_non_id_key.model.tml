@@ -1,0 +1,29 @@
+guid: "model-non-id-key"
+export_schema_version: "2"
+model:
+  name: orders_model
+  description: Joined model whose base table key is not literally `id`
+  model_tables:
+    - name: orders
+      fqn: ANALYTICS.PUBLIC.orders
+      joins:
+        - with: customers
+          on: "[orders::customer_id] = [customers::id]"
+          type: LEFT_OUTER
+          cardinality: MANY_TO_ONE
+    - name: customers
+      fqn: ANALYTICS.PUBLIC.customers
+  columns:
+    - name: order_key
+      column_id: orders::order_key
+      properties:
+        column_type: ATTRIBUTE
+    - name: customer_name
+      column_id: customers::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      column_id: orders::amount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

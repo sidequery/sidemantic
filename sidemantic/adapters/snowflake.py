@@ -138,24 +138,53 @@ class SnowflakeAdapter(BaseAdapter):
         graph = SemanticGraph()
         source_path = Path(source)
 
+        # Top-level metrics are resolved after every file's tables are loaded, so a
+        # metric referencing a table defined in a later file still attaches to it
+        # regardless of directory traversal order.
+        deferred_metrics: list[dict] = []
+
         if source_path.is_dir():
             # Parse all YAML files in directory
             for yaml_file in source_path.rglob("*.yml"):
-                self._parse_file(yaml_file, graph)
+                self._parse_file(yaml_file, graph, deferred_metrics)
             for yaml_file in source_path.rglob("*.yaml"):
-                self._parse_file(yaml_file, graph)
+                self._parse_file(yaml_file, graph, deferred_metrics)
         else:
             # Parse single file
-            self._parse_file(source_path, graph)
+            self._parse_file(source_path, graph, deferred_metrics)
+
+        self._apply_top_level_metrics(deferred_metrics, graph)
 
         return graph
 
-    def _parse_file(self, file_path: Path, graph: SemanticGraph) -> None:
+    def _apply_top_level_metrics(self, metric_defs: list[dict], graph: SemanticGraph) -> None:
+        """Attach collected top-level metrics once all tables are loaded."""
+        for metric_def in metric_defs:
+            table_name = metric_def.get("table")
+            if table_name and table_name in graph.models:
+                # Table-scoped: bare column refs are local to the table, so qualify
+                # complex expressions with the {model} placeholder.
+                metric = self._parse_metric(metric_def)
+                if metric is None:
+                    continue
+                graph.models[table_name].metrics.append(metric)
+            else:
+                # Graph-level metric: expressions reference other fields as
+                # `model.field` (already qualified), so leave them untouched
+                # instead of corrupting them with the {model} placeholder.
+                metric = self._parse_metric(metric_def, qualify=False)
+                if metric is None:
+                    continue
+                graph.metrics[metric.name] = metric
+
+    def _parse_file(self, file_path: Path, graph: SemanticGraph, deferred_metrics: list[dict]) -> None:
         """Parse a single Snowflake semantic model YAML file.
 
         Args:
             file_path: Path to YAML file
             graph: Semantic graph to add models/metrics to
+            deferred_metrics: Accumulator for top-level metric definitions, resolved
+                after every file's tables are loaded.
         """
         with open(file_path) as f:
             data = yaml.safe_load(f)
@@ -176,24 +205,10 @@ class SnowflakeAdapter(BaseAdapter):
         relationships_def = data.get("relationships") or []
         self._apply_relationships(relationships_def, graph)
 
-        # Parse top-level metrics (semantic-model-scoped metrics referencing tables)
-        for metric_def in data.get("metrics") or []:
-            table_name = metric_def.get("table")
-            if table_name and table_name in graph.models:
-                # Table-scoped: bare column refs are local to the table, so qualify
-                # complex expressions with the {model} placeholder.
-                metric = self._parse_metric(metric_def)
-                if metric is None:
-                    continue
-                graph.models[table_name].metrics.append(metric)
-            else:
-                # Graph-level metric: expressions reference other fields as
-                # `model.field` (already qualified), so leave them untouched
-                # instead of corrupting them with the {model} placeholder.
-                metric = self._parse_metric(metric_def, qualify=False)
-                if metric is None:
-                    continue
-                graph.metrics[metric.name] = metric
+        # Defer top-level metrics (semantic-model-scoped metrics referencing tables)
+        # until all files are parsed, so a metric whose table lives in a later file
+        # still attaches correctly regardless of traversal order.
+        deferred_metrics.extend(data.get("metrics") or [])
 
         # Parse top-level Cortex Analyst sections onto the graph.
         self._apply_top_level_sections(data, graph)

@@ -699,3 +699,46 @@ metrics:
         data = yaml.safe_load(output_file.read_text())
         expr = next(m["expr"] for m in data["metrics"] if m["name"] == "aov")
         assert expr == "orders.revenue / NULLIF(orders.order_count, 0)"
+
+    def test_parse_directory_attaches_top_level_metric_regardless_of_file_order(self, adapter, tmp_path):
+        """A top-level metric must attach to its table even if defined in an earlier file."""
+        # rglob visits files in sorted order, so a_metrics is parsed before z_tables.
+        (tmp_path / "a_metrics.yaml").write_text(
+            """
+name: a_metrics
+metrics:
+  - name: avg_order
+    table: orders
+    expr: SUM(amount) / COUNT(order_id)
+"""
+        )
+        (tmp_path / "z_tables.yaml").write_text(
+            """
+name: z_tables
+tables:
+  - name: orders
+    base_table: {database: db, schema: s, table: orders}
+    primary_key: {columns: [order_id]}
+    dimensions:
+      - {name: order_id, expr: order_id, data_type: number}
+    facts:
+      - {name: amount, expr: amount, data_type: number}
+"""
+        )
+
+        graph = adapter.parse(tmp_path)
+
+        # The metric attaches to its table (not the graph-level branch).
+        orders = graph.models["orders"]
+        assert "avg_order" in [m.name for m in orders.metrics]
+        assert "avg_order" not in graph.metrics
+        # Table-scoped: complex expression is qualified for queryability.
+        assert "{model}" in orders.get_metric("avg_order").sql
+
+        # Export drops the placeholder and keeps the metric under the orders table.
+        output_file = tmp_path / "out.yaml"
+        adapter.export(graph, output_file)
+        data = yaml.safe_load(output_file.read_text())
+        orders_table = next(t for t in data["tables"] if t["name"] == "orders")
+        expr = next(m["expr"] for m in orders_table["metrics"] if m["name"] == "avg_order")
+        assert "{model}" not in expr

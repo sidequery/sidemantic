@@ -2944,8 +2944,12 @@ class SQLGenerator:
 
             if metric.agg == "count":
                 if filter_sql is not None:
-                    # COUNT ignores NULLs, so emit 1 for matching rows and NULL otherwise.
-                    return f"COUNT(CASE WHEN {filter_sql} THEN 1 ELSE NULL END)"
+                    # Count the metric expression (not a constant 1) so a NULL
+                    # expression is skipped exactly as the unfiltered ``COUNT(expr)``
+                    # path does. Only a true row count (``*``) counts every matching
+                    # row, including those with a NULL expression.
+                    counted = "1" if inner_expr == "*" else inner_expr
+                    return f"COUNT(CASE WHEN {filter_sql} THEN {counted} ELSE NULL END)"
                 if inner_expr == "*":
                     return "COUNT(*)"
                 return f"COUNT({inner_expr})"

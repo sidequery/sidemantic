@@ -247,5 +247,85 @@ def test_inline_metric_filter_qualified_in_join():
     assert {r["status"]: r["completed_revenue"] for r in rows} == {"active": 125.0}
 
 
+def test_inline_filtered_count_skips_null_expression():
+    """A filtered ``count`` over an expression skips NULL values like the unfiltered count.
+
+    Regression: the filtered count counted a constant 1 for every matching row,
+    so rows with a NULL counted expression were included even though the
+    unfiltered ``COUNT(expr)`` path skips them. A filtered count over an
+    expression must count the expression (skipping NULLs); only a bare row count
+    counts every matching row.
+    """
+    import tempfile
+    import textwrap
+    from pathlib import Path
+
+    import duckdb
+
+    from tests.utils import fetch_dicts
+
+    yml = textwrap.dedent("""
+        models:
+          - name: orders
+            semantic_model:
+              enabled: true
+              name: orders
+            columns:
+              - name: order_id
+                entity:
+                  type: primary
+                  name: order
+              - name: status
+                dimension:
+                  type: categorical
+              - name: amount
+                dimension:
+                  type: categorical
+            metrics:
+              - name: amount_count
+                type: simple
+                agg: count
+                expr: amount
+              - name: completed_amount_count
+                type: simple
+                agg: count
+                expr: amount
+                filter: "status = 'completed'"
+              - name: completed_row_count
+                type: simple
+                agg: count
+                filter: "status = 'completed'"
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(yml)
+        path = Path(f.name)
+
+    try:
+        graph = MetricFlowAdapter().parse(path)
+    finally:
+        path.unlink(missing_ok=True)
+
+    conn = duckdb.connect(":memory:")
+    # Four completed rows, one with a NULL amount; one pending row.
+    conn.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES "
+        "(1, 'completed', 100.0), (2, 'completed', NULL), (3, 'completed', 50.0), "
+        "(4, 'completed', 25.0), (5, 'pending', 999.0)) "
+        "AS t(order_id, status, amount)"
+    )
+
+    layer = SemanticLayer(auto_register=False)
+    layer.conn = conn
+    layer.graph = graph
+
+    row = fetch_dicts(layer.query(metrics=["amount_count", "completed_amount_count", "completed_row_count"]))[0]
+    # Unfiltered count(amount) skips the single NULL across all five rows.
+    assert row["amount_count"] == 4
+    # Filtered count(amount) keeps completed rows with a non-NULL amount.
+    assert row["completed_amount_count"] == 3
+    # A bare filtered count is a row count: every completed row.
+    assert row["completed_row_count"] == 4
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

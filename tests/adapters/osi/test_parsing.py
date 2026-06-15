@@ -2079,6 +2079,56 @@ def test_parse_directory_skips_generated_osi_artifacts():
         assert "stale_orders" not in graph.models
 
 
+def test_parse_directory_skips_non_osi_json():
+    """Parsing a project root ignores unrelated JSON outside target/.
+
+    A dbt project root commonly contains non-OSI JSON (JSON arrays, JSONC-style
+    editor config, package manifests). Directory parsing must only feed
+    OSI-shaped JSON to the parser; unrelated JSON must neither raise (e.g. a
+    top-level array has no ``.get``) nor overwrite real OSI metadata.
+    """
+    osi_doc = {
+        "version": "0.1.1",
+        "ontology": "real_ontology",
+        "semantic_model": [
+            {
+                "name": "analytics",
+                "datasets": [
+                    {
+                        "name": "orders",
+                        "source": "db.schema.fct_orders",
+                        "fields": [
+                            {
+                                "name": "id",
+                                "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "id"}]},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        (tmp / "OSI").mkdir()
+        (tmp / "OSI" / "model.json").write_text(json.dumps(osi_doc))
+
+        # A top-level JSON array has no ``.get``; feeding it to the parser raises.
+        (tmp / "data.json").write_text(json.dumps([1, 2, 3]))
+        # A non-OSI JSON object that carries a ``version`` key would clobber the
+        # real OSI ``version``/``ontology`` metadata if parsed.
+        (tmp / "config.json").write_text(json.dumps({"version": "9.9.9", "ontology": "bogus", "name": "package"}))
+
+        # Must not raise on the unrelated JSON and must load only the real OSI model.
+        graph = OSIAdapter().parse(tmp)
+
+        assert "orders" in graph.models
+        # OSI metadata reflects the real OSI document, not the unrelated config.
+        assert graph.metadata["osi"]["version"] == "0.1.1"
+        assert graph.metadata["osi"]["ontology"] == "real_ontology"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

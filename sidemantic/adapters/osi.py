@@ -124,6 +124,13 @@ class OSIAdapter(BaseAdapter):
                     # real OSI/ sources when a project root is parsed directly.
                     if _is_generated_artifact(osi_file, source_path):
                         continue
+                    # A dbt project root can contain unrelated JSON (config files,
+                    # JSON arrays, etc.) outside target/. Only feed JSON that looks
+                    # like an OSI document to the parser so unrelated files do not
+                    # raise or overwrite real OSI metadata. This mirrors the
+                    # directory loader's ``_looks_like_osi_json`` shape check.
+                    if osi_file.suffix.lower() == ".json" and not self._looks_like_osi_json(osi_file):
+                        continue
                     self._parse_file(osi_file, graph)
         else:
             self._parse_file(source_path, graph)
@@ -132,6 +139,38 @@ class OSIAdapter(BaseAdapter):
         graph.build_adjacency()
 
         return graph
+
+    @staticmethod
+    def _looks_like_osi_json(file_path: Path) -> bool:
+        """Return True when ``file_path`` is a released-spec OSI JSON document.
+
+        Released OSI ships as JSON with a top-level ``semantic_model`` list whose
+        entries contain ``datasets``. A dbt project root can hold unrelated JSON
+        (config files, JSON arrays) outside ``target/``; this shape check keeps
+        those out of the parser so they neither raise nor overwrite real OSI
+        metadata. Mirrors the directory loader's ``_looks_like_osi_json``.
+
+        Unreadable or invalid JSON is treated as non-OSI so unrelated files are
+        silently skipped rather than aborting a directory parse.
+        """
+        try:
+            text = file_path.read_text()
+        except OSError:
+            return False
+        if not text.strip():
+            return False
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(data, dict) or "semantic_model" not in data:
+            return False
+        models = data.get("semantic_model")
+        if isinstance(models, dict):
+            models = [models]
+        if not isinstance(models, list):
+            return False
+        return any(isinstance(model, dict) and "datasets" in model for model in models)
 
     def _parse_file(self, file_path: Path, graph: SemanticGraph) -> None:
         """Parse a single OSI YAML file.

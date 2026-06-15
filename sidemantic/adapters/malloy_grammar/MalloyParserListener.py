@@ -35,12 +35,156 @@ class MalloyParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by MalloyParser#defineUserTypeStatement.
+    def enterDefineUserTypeStatement(self, ctx:MalloyParser.DefineUserTypeStatementContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#defineUserTypeStatement.
+    def exitDefineUserTypeStatement(self, ctx:MalloyParser.DefineUserTypeStatementContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypePropertyList.
+    def enterUserTypePropertyList(self, ctx:MalloyParser.UserTypePropertyListContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypePropertyList.
+    def exitUserTypePropertyList(self, ctx:MalloyParser.UserTypePropertyListContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeDefinition.
+    def enterUserTypeDefinition(self, ctx:MalloyParser.UserTypeDefinitionContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeDefinition.
+    def exitUserTypeDefinition(self, ctx:MalloyParser.UserTypeDefinitionContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeNameDef.
+    def enterUserTypeNameDef(self, ctx:MalloyParser.UserTypeNameDefContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeNameDef.
+    def exitUserTypeNameDef(self, ctx:MalloyParser.UserTypeNameDefContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeRef.
+    def enterUserTypeRef(self, ctx:MalloyParser.UserTypeRefContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeRef.
+    def exitUserTypeRef(self, ctx:MalloyParser.UserTypeRefContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeInline.
+    def enterUserTypeInline(self, ctx:MalloyParser.UserTypeInlineContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeInline.
+    def exitUserTypeInline(self, ctx:MalloyParser.UserTypeInlineContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeExtend.
+    def enterUserTypeExtend(self, ctx:MalloyParser.UserTypeExtendContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeExtend.
+    def exitUserTypeExtend(self, ctx:MalloyParser.UserTypeExtendContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeShape.
+    def enterUserTypeShape(self, ctx:MalloyParser.UserTypeShapeContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeShape.
+    def exitUserTypeShape(self, ctx:MalloyParser.UserTypeShapeContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeField.
+    def enterUserTypeField(self, ctx:MalloyParser.UserTypeFieldContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeField.
+    def exitUserTypeField(self, ctx:MalloyParser.UserTypeFieldContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeFieldType.
+    def enterUserTypeFieldType(self, ctx:MalloyParser.UserTypeFieldTypeContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeFieldType.
+    def exitUserTypeFieldType(self, ctx:MalloyParser.UserTypeFieldTypeContext):
+        pass
+
+
     # Enter a parse tree produced by MalloyParser#use_top_level_query_defs.
     def enterUse_top_level_query_defs(self, ctx:MalloyParser.Use_top_level_query_defsContext):
         pass
 
     # Exit a parse tree produced by MalloyParser#use_top_level_query_defs.
     def exitUse_top_level_query_defs(self, ctx:MalloyParser.Use_top_level_query_defsContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#defineGivenStatement.
+    def enterDefineGivenStatement(self, ctx:MalloyParser.DefineGivenStatementContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#defineGivenStatement.
+    def exitDefineGivenStatement(self, ctx:MalloyParser.DefineGivenStatementContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#givenDefList.
+    def enterGivenDefList(self, ctx:MalloyParser.GivenDefListContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#givenDefList.
+    def exitGivenDefList(self, ctx:MalloyParser.GivenDefListContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#givenDef.
+    def enterGivenDef(self, ctx:MalloyParser.GivenDefContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#givenDef.
+    def exitGivenDef(self, ctx:MalloyParser.GivenDefContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#givenModifier.
+    def enterGivenModifier(self, ctx:MalloyParser.GivenModifierContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#givenModifier.
+    def exitGivenModifier(self, ctx:MalloyParser.GivenModifierContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#givenNameDef.
+    def enterGivenNameDef(self, ctx:MalloyParser.GivenNameDefContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#givenNameDef.
+    def exitGivenNameDef(self, ctx:MalloyParser.GivenNameDefContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#givenType.
+    def enterGivenType(self, ctx:MalloyParser.GivenTypeContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#givenType.
+    def exitGivenType(self, ctx:MalloyParser.GivenTypeContext):
         pass
 
 
@@ -53,12 +197,48 @@ class MalloyParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by MalloyParser#annotation.
+    def enterAnnotation(self, ctx:MalloyParser.AnnotationContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#annotation.
+    def exitAnnotation(self, ctx:MalloyParser.AnnotationContext):
+        pass
+
+
     # Enter a parse tree produced by MalloyParser#tags.
     def enterTags(self, ctx:MalloyParser.TagsContext):
         pass
 
     # Exit a parse tree produced by MalloyParser#tags.
     def exitTags(self, ctx:MalloyParser.TagsContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#blockAnnotation.
+    def enterBlockAnnotation(self, ctx:MalloyParser.BlockAnnotationContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#blockAnnotation.
+    def exitBlockAnnotation(self, ctx:MalloyParser.BlockAnnotationContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#docAnnotation.
+    def enterDocAnnotation(self, ctx:MalloyParser.DocAnnotationContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#docAnnotation.
+    def exitDocAnnotation(self, ctx:MalloyParser.DocAnnotationContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#docBlockAnnotation.
+    def enterDocBlockAnnotation(self, ctx:MalloyParser.DocBlockAnnotationContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#docBlockAnnotation.
+    def exitDocBlockAnnotation(self, ctx:MalloyParser.DocBlockAnnotationContext):
         pass
 
 
@@ -131,6 +311,24 @@ class MalloyParserListener(ParseTreeListener):
 
     # Exit a parse tree produced by MalloyParser#importURL.
     def exitImportURL(self, ctx:MalloyParser.ImportURLContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#exportStatement.
+    def enterExportStatement(self, ctx:MalloyParser.ExportStatementContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#exportStatement.
+    def exitExportStatement(self, ctx:MalloyParser.ExportStatementContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#exportItem.
+    def enterExportItem(self, ctx:MalloyParser.ExportItemContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#exportItem.
+    def exitExportItem(self, ctx:MalloyParser.ExportItemContext):
         pass
 
 
@@ -212,6 +410,15 @@ class MalloyParserListener(ParseTreeListener):
 
     # Exit a parse tree produced by MalloyParser#exploreTable.
     def exitExploreTable(self, ctx:MalloyParser.ExploreTableContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#virtualSource.
+    def enterVirtualSource(self, ctx:MalloyParser.VirtualSourceContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#virtualSource.
+    def exitVirtualSource(self, ctx:MalloyParser.VirtualSourceContext):
         pass
 
 
@@ -620,6 +827,15 @@ class MalloyParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by MalloyParser#SQTypedSource.
+    def enterSQTypedSource(self, ctx:MalloyParser.SQTypedSourceContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#SQTypedSource.
+    def exitSQTypedSource(self, ctx:MalloyParser.SQTypedSourceContext):
+        pass
+
+
     # Enter a parse tree produced by MalloyParser#SQCompose.
     def enterSQCompose(self, ctx:MalloyParser.SQComposeContext):
         pass
@@ -665,12 +881,39 @@ class MalloyParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by MalloyParser#SQVirtual.
+    def enterSQVirtual(self, ctx:MalloyParser.SQVirtualContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#SQVirtual.
+    def exitSQVirtual(self, ctx:MalloyParser.SQVirtualContext):
+        pass
+
+
     # Enter a parse tree produced by MalloyParser#SQID.
     def enterSQID(self, ctx:MalloyParser.SQIDContext):
         pass
 
     # Exit a parse tree produced by MalloyParser#SQID.
     def exitSQID(self, ctx:MalloyParser.SQIDContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#sourceTypeConstraints.
+    def enterSourceTypeConstraints(self, ctx:MalloyParser.SourceTypeConstraintsContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#sourceTypeConstraints.
+    def exitSourceTypeConstraints(self, ctx:MalloyParser.SourceTypeConstraintsContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#userTypeName.
+    def enterUserTypeName(self, ctx:MalloyParser.UserTypeNameContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#userTypeName.
+    def exitUserTypeName(self, ctx:MalloyParser.UserTypeNameContext):
         pass
 
 
@@ -1268,6 +1511,33 @@ class MalloyParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by MalloyParser#malloyBasicType.
+    def enterMalloyBasicType(self, ctx:MalloyParser.MalloyBasicTypeContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#malloyBasicType.
+    def exitMalloyBasicType(self, ctx:MalloyParser.MalloyBasicTypeContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#malloyRecordType.
+    def enterMalloyRecordType(self, ctx:MalloyParser.MalloyRecordTypeContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#malloyRecordType.
+    def exitMalloyRecordType(self, ctx:MalloyParser.MalloyRecordTypeContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#malloyRecordField.
+    def enterMalloyRecordField(self, ctx:MalloyParser.MalloyRecordFieldContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#malloyRecordField.
+    def exitMalloyRecordField(self, ctx:MalloyParser.MalloyRecordFieldContext):
+        pass
+
+
     # Enter a parse tree produced by MalloyParser#compareOp.
     def enterCompareOp(self, ctx:MalloyParser.CompareOpContext):
         pass
@@ -1610,6 +1880,15 @@ class MalloyParserListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by MalloyParser#exprGivenRef.
+    def enterExprGivenRef(self, ctx:MalloyParser.ExprGivenRefContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#exprGivenRef.
+    def exitExprGivenRef(self, ctx:MalloyParser.ExprGivenRefContext):
+        pass
+
+
     # Enter a parse tree produced by MalloyParser#exprFunc.
     def enterExprFunc(self, ctx:MalloyParser.ExprFuncContext):
         pass
@@ -1778,6 +2057,15 @@ class MalloyParserListener(ParseTreeListener):
 
     # Exit a parse tree produced by MalloyParser#exprLiteralRecord.
     def exitExprLiteralRecord(self, ctx:MalloyParser.ExprLiteralRecordContext):
+        pass
+
+
+    # Enter a parse tree produced by MalloyParser#exprInGiven.
+    def enterExprInGiven(self, ctx:MalloyParser.ExprInGivenContext):
+        pass
+
+    # Exit a parse tree produced by MalloyParser#exprInGiven.
+    def exitExprInGiven(self, ctx:MalloyParser.ExprInGivenContext):
         pass
 
 

@@ -1,0 +1,11 @@
+// Fixture with a deliberate syntax error to exercise the ANTLR error listener.
+// `table('legacy')` lacks the required connection prefix (should be
+// `connection.table('legacy')`), so the parser reports a syntax error. ANTLR's
+// error recovery still yields the valid source below it.
+
+source: ok_source is duckdb.table('valid_table') extend {
+  dimension: x is x
+  measure: c is count()
+}
+
+source: broken_source is table('legacy')

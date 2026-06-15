@@ -1,0 +1,33 @@
+// Fixture exercising Malloy statements that postdate the original vendored grammar:
+//   type:    user-defined types
+//   given:   model-level input parameters
+//   virtual()  connection-resolved virtual sources
+//   source type constraints (source: a is b::T)
+//   export { ... }  top-level re-export
+
+// User-defined type referenced by a source type constraint below.
+type: event_shape is {
+  user_id::string,
+  event_name::string,
+  value::number
+}
+
+// Model-level input parameter.
+given: target_region::string
+
+// A virtual() source resolved by the connection rather than a physical table.
+source: events is duckdb.virtual('event_stream') extend {
+  primary_key: event_id
+  dimension:
+    event_name is event_name
+    region is region
+  measure:
+    event_count is count()
+    unique_users is count(user_id)
+}
+
+// Source type constraint: asserts `events` conforms to `event_shape`.
+source: typed_events is events::event_shape
+
+// Re-export sources from this file.
+export { events, typed_events }

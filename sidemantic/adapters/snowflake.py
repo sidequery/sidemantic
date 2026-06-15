@@ -654,6 +654,20 @@ class SnowflakeAdapter(BaseAdapter):
         its joins and an explicit join takes precedence over a guessed one. Operates
         on the name-keyed ``models`` dict; adjacency is rebuilt later by the loader.
         """
+
+        def _is_duplicate(existing: Relationship) -> bool:
+            # Same Snowflake relationship: matched by the preserved Snowflake name
+            # when both carry one, otherwise by target + join columns. Distinct
+            # named relationships between the same two tables are NOT duplicates and
+            # must all survive so metrics referencing them via ``using_relationships``
+            # keep resolving and alternate joins still round-trip on export.
+            if existing.name != right_table:
+                return False
+            existing_name = existing.metadata.get("snowflake", {}).get("name") if existing.metadata else None
+            if snowflake_name and existing_name:
+                return existing_name == snowflake_name
+            return existing.foreign_key == left_column and existing.primary_key == right_column
+
         for rel_def in relationships_def:
             left_table = rel_def.get("left_table")
             right_table = rel_def.get("right_table")
@@ -678,9 +692,9 @@ class SnowflakeAdapter(BaseAdapter):
             model = models.get(left_table)
             if model is None:
                 continue
-            # Skip if a relationship to the same target already exists (e.g. another
-            # sidecar declared it) to avoid duplicates.
-            if any(r.name == right_table for r in model.relationships):
+            # Skip only an exact duplicate (same Snowflake name, or same join
+            # columns to the same target); keep distinct alternate joins.
+            if any(_is_duplicate(r) for r in model.relationships):
                 continue
             model.relationships.append(
                 Relationship(

@@ -757,6 +757,75 @@ tables:
     assert graph.find_relationship_path("orders", "customers")
 
 
+def test_load_from_directory_keeps_same_target_snowflake_relationships(tmp_path):
+    """Two distinct named relationships between the same tables in a split project
+    must both survive: de-dup is by Snowflake name/columns, not the target table."""
+    (tmp_path / "a_rels.yaml").write_text(
+        """
+relationships:
+  - name: orders_to_customers_billing
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: billing_cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+  - name: orders_to_customers_shipping
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: shipping_cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+      - name: billing_cust_ref
+        expr: billing_cust_ref
+        data_type: number
+      - name: shipping_cust_ref
+        expr: shipping_cust_ref
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cust_pk]
+    dimensions:
+      - name: cust_pk
+        expr: cust_pk
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    orders = layer.graph.models["orders"]
+
+    customer_rels = [r for r in orders.relationships if r.name == "customers"]
+    assert {r.metadata["snowflake"]["name"] for r in customer_rels} == {
+        "orders_to_customers_billing",
+        "orders_to_customers_shipping",
+    }
+    assert {r.foreign_key for r in customer_rels} == {"billing_cust_ref", "shipping_cust_ref"}
+
+
 def test_load_from_directory_detects_view_metric_sidecar_with_snowflake_sections(tmp_path):
     """A tableless Cortex sidecar with verified_queries routes to Snowflake."""
     # Pure view-level metrics (no table) plus Snowflake-only top-level sections.

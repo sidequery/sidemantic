@@ -44,19 +44,18 @@ metrics:
     type_params:
       measure: sales_count
 
-# Note: Saved queries are typically defined separately but shown here for reference
-# saved_queries:
-#   - name: monthly_sales_by_region
-#     description: Monthly sales aggregated by region
-#     query_params:
-#       metrics:
-#         - total_sales
-#         - sales_transactions
-#       group_by:
-#         - TimeDimension('sale_date', 'month')
-#         - Dimension('region')
-#     exports:
-#       - name: monthly_sales_export
-#         config:
-#           export_as: table
-#           schema: analytics
+saved_queries:
+  - name: monthly_sales_by_region
+    description: Monthly sales aggregated by region
+    query_params:
+      metrics:
+        - total_sales
+        - sales_transactions
+      group_by:
+        - TimeDimension('sale_date', 'month')
+        - Dimension('region')
+    exports:
+      - name: monthly_sales_export
+        config:
+          export_as: table
+          schema: analytics

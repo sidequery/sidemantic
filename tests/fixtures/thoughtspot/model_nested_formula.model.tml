@@ -1,0 +1,47 @@
+guid: "model-nested-formula"
+export_schema_version: "2"
+model:
+  name: sales_model
+  description: Joined model whose formula references another formula
+  model_tables:
+    - name: sales
+      fqn: ANALYTICS.PUBLIC.sales
+      joins:
+        - with: customers
+          on: "[sales::customer_id] = [customers::id]"
+          type: LEFT_OUTER
+          cardinality: MANY_TO_ONE
+    - name: customers
+      fqn: ANALYTICS.PUBLIC.customers
+  formulas:
+    - name: net_revenue
+      expr: "[gross_revenue] - [discount]"
+      id: net_rev
+    - name: margin
+      expr: "[net_revenue] / [gross_revenue]"
+      id: margin_f
+  columns:
+    - name: customer_name
+      column_id: customers::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: gross_revenue
+      column_id: sales::gross_revenue
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+    - name: discount
+      column_id: sales::discount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+    - name: net_revenue
+      formula_id: net_rev
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+    - name: margin
+      formula_id: margin_f
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

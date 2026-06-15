@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='store_locations' inline='true' version='18.1'>
+  <connection class='postgres' dbname='analytics' server='localhost'>
+    <relation name='get_store_locations' stored-proc='[dbo].[get_store_locations]' type='stored-proc'>
+      <actual-name>dbo.get_store_locations</actual-name>
+    </relation>
+    <metadata-records>
+      <metadata-record class='column'>
+        <local-name>[Store ID]</local-name>
+        <parent-name>[get_store_locations]</parent-name>
+        <remote-alias>store_id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+      <metadata-record class='column'>
+        <local-name>[Geometry]</local-name>
+        <parent-name>[get_store_locations]</parent-name>
+        <remote-alias>geometry</remote-alias>
+        <local-type>spatial</local-type>
+      </metadata-record>
+    </metadata-records>
+  </connection>
+  <column caption='Store ID' datatype='integer' name='[store_id]' role='dimension' type='ordinal' />
+  <column caption='Geometry' datatype='spatial' name='[geometry]' role='dimension' type='nominal' />
+</datasource>

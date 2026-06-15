@@ -1,0 +1,31 @@
+guid: "model-aliased-table-id-ref"
+export_schema_version: "2"
+model:
+  name: shipments_model
+  description: An aliased table is referenced by its id in a column_id
+  model_tables:
+    - name: orders
+      fqn: ANALYTICS.PUBLIC.orders
+      joins:
+        - with: ship_country
+          on: "[orders::ship_country_id] = [ship_country::id]"
+          type: LEFT_OUTER
+          cardinality: MANY_TO_ONE
+    - name: countries
+      id: countries_tbl
+      alias: ship_country
+      fqn: ANALYTICS.PUBLIC.countries
+  columns:
+    - name: order_id
+      column_id: orders::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: ship_country_name
+      column_id: countries_tbl::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      column_id: orders::amount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

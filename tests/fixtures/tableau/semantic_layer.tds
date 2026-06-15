@@ -1,0 +1,51 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<datasource formatted-name='semantic_model' inline='true' version='2024.2'>
+  <connection class='postgres' dbname='analytics' server='localhost'>
+    <relation name='collection' type='collection'>
+      <relation name='Orders' type='table' table='[public].[orders]' />
+      <relation name='Customers' type='table' table='[public].[customers]' />
+    </relation>
+    <metadata-records>
+      <metadata-record class='column'>
+        <local-name>[Order ID]</local-name>
+        <parent-name>[Orders]</parent-name>
+        <remote-alias>order_id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+      <metadata-record class='column'>
+        <local-name>[Customer ID]</local-name>
+        <parent-name>[Orders]</parent-name>
+        <remote-alias>customer_id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+      <metadata-record class='column'>
+        <local-name>[ID]</local-name>
+        <parent-name>[Customers]</parent-name>
+        <remote-alias>id</remote-alias>
+        <local-type>integer</local-type>
+      </metadata-record>
+      <metadata-record class='column'>
+        <local-name>[Customer Name]</local-name>
+        <parent-name>[Customers]</parent-name>
+        <remote-alias>customer_name</remote-alias>
+        <local-type>string</local-type>
+      </metadata-record>
+    </metadata-records>
+  </connection>
+  <object-graph semantic-layer='true' is-legacy='false'>
+    <objects>
+      <object id='orders' caption='Orders' />
+      <object id='customers' caption='Customers' />
+    </objects>
+    <relationships>
+      <relationship>
+        <first-end-point object-id='orders' />
+        <second-end-point object-id='customers' />
+        <expression op='='>
+          <expression op='[Orders].[Customer ID]' />
+          <expression op='[Customers].[ID]' />
+        </expression>
+      </relationship>
+    </relationships>
+  </object-graph>
+</datasource>

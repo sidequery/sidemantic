@@ -1,0 +1,30 @@
+guid: "model-base-alias"
+export_schema_version: "2"
+model:
+  name: orders_model
+  description: Joined model whose base/source table carries an alias (orders AS o)
+  model_tables:
+    - name: orders
+      alias: o
+      fqn: ANALYTICS.PUBLIC.orders
+      joins:
+        - with: customers
+          on: "[o::customer_id] = [customers::id]"
+          type: LEFT_OUTER
+          cardinality: MANY_TO_ONE
+    - name: customers
+      fqn: ANALYTICS.PUBLIC.customers
+  columns:
+    - name: order_id
+      column_id: o::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: customer_name
+      column_id: customers::name
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      column_id: o::amount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM

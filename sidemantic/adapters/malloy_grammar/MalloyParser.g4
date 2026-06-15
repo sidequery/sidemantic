@@ -1,25 +1,6 @@
 /*
- * Copyright 2023 Google LLC
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 parser grammar MalloyParser;
@@ -29,8 +10,11 @@ malloyDocument: (malloyStatement | SEMI)* EOF;
 
 malloyStatement
   : defineSourceStatement
+  | defineUserTypeStatement
   | defineQuery
+  | defineGivenStatement
   | importStatement
+  | exportStatement
   | runStatement
   | docAnnotations
   | ignoredObjectAnnotations
@@ -41,16 +25,91 @@ defineSourceStatement
   : tags SOURCE sourcePropertyList
   ;
 
+defineUserTypeStatement
+  : tags TYPE userTypePropertyList
+  ;
+
+userTypePropertyList
+  : userTypeDefinition (COMMA? userTypeDefinition)* COMMA?
+  ;
+
+userTypeDefinition
+  : tags userTypeNameDef isDefine userTypeExpr
+  ;
+
+userTypeNameDef: id;
+
+userTypeExpr
+  : userTypeName                            # userTypeRef
+  | userTypeShape                            # userTypeInline
+  | userTypeName EXTEND userTypeShape          # userTypeExtend
+  ;
+
+userTypeShape
+  : OCURLY userTypeField (COMMA userTypeField)* COMMA? CCURLY
+  ;
+
+userTypeField
+  : tags id DOUBLECOLON userTypeFieldType
+  ;
+
+userTypeFieldType
+  : malloyBasicType
+  | userTypeShape
+  | userTypeFieldType OBRACK CBRACK
+  | shortString
+  | userTypeName
+  ;
+
 defineQuery
   : topLevelQueryDefs                 # use_top_level_query_defs
+  ;
+
+defineGivenStatement
+  : tags GIVEN givenDefList
+  ;
+
+givenDefList
+  : givenDef (COMMA? givenDef)* COMMA?
+  ;
+
+givenDef
+  : tags givenModifier? givenNameDef DOUBLECOLON givenType (isDefine fieldExpr)?
+  ;
+
+givenModifier: id;
+
+givenNameDef: id;
+
+givenType
+  : malloyType
+  | FILTER LT malloyBasicType GT
   ;
 
 topLevelAnonQueryDef
   : tags sqExpr
   ;
 
+annotation
+  : ANNOTATION
+  | blockAnnotation
+  ;
+
 tags
-  : ANNOTATION*
+  : annotation*
+  ;
+
+blockAnnotation
+  : BLOCK_ANNOTATION_BEGIN BLOCK_ANNOTATION_TEXT* (BLOCK_ANNOTATION_END | EOF)
+  ;
+
+docAnnotation
+  : DOC_ANNOTATION
+  | docBlockAnnotation
+  ;
+
+docBlockAnnotation
+  : DOC_BLOCK_ANNOTATION_BEGIN BLOCK_ANNOTATION_TEXT* (BLOCK_ANNOTATION_END | EOF)
   ;
 
 isDefine
@@ -87,16 +146,24 @@ importURL
   : string
   ;
 
+exportStatement
+  : EXPORT OCURLY exportItem (COMMA exportItem)* COMMA? CCURLY
+  ;
+
+exportItem
+  : id
+  ;
+
 docAnnotations
-  : DOC_ANNOTATION+
+  : docAnnotation+
   ;
 
 ignoredObjectAnnotations
-  : ANNOTATION+
+  : annotation+
   ;
 
 ignoredModelAnnotations
-  : DOC_ANNOTATION+
+  : docAnnotation+
   ;
 
 topLevelQueryDefs
@@ -118,6 +185,10 @@ sqlSource
 
 exploreTable
   : connectionId DOT TABLE OPAREN tablePath CPAREN
+  ;
+
+virtualSource
+  : connectionId DOT VIRTUAL OPAREN shortString CPAREN
   ;
 
 connectionId
@@ -147,8 +218,8 @@ sourceParameters
   ;
 
 legalParamType
-  : malloyType
-  | FILTER LT malloyType GT;
+  : malloyBasicType
+  | FILTER LT malloyBasicType GT;
 
 sourceParameter
   : parameterNameDef (DOUBLECOLON legalParamType)? (IS fieldExpr)?
@@ -171,7 +242,7 @@ exploreStatement
   | (ACCEPT | EXCEPT) fieldNameList          # defExploreEditField
   | tags accessLabel? VIEW subQueryDefList   # defExploreQuery
   | timezoneStatement                        # defExploreTimezone
-  | ANNOTATION+                              # defExploreAnnotation
+  | annotation+                              # defExploreAnnotation
   | ignoredModelAnnotations                  # defIgnoreModel_stub
   ;
 
@@ -255,9 +326,18 @@ sqExpr
   | sqExpr ARROW segExpr                                     # SQArrow
   | sqExpr (INCLUDE includeBlock)? EXTEND exploreProperties  # SQExtendedSource
   | sqExpr INCLUDE includeBlock                              # SQInclude
+  | sqExpr DOUBLECOLON sourceTypeConstraints                            # SQTypedSource
   | exploreTable                                             # SQTable
+  | virtualSource                                            # SQVirtual
   | sqlSource                                                # SQSQL
   ;
+
+sourceTypeConstraints
+  : userTypeName
+  | OPAREN userTypeName (COMMA userTypeName)* CPAREN
+  ;
+
+userTypeName: id;
 
 includeBlock
   : OCURLY (includeItem | SEMI)* CCURLY
@@ -271,7 +351,7 @@ includeItem
   ;
 
 orphanedAnnotation
-  : ANNOTATION
+  : annotation
   ;
 
 accessLabelProp
@@ -338,8 +418,8 @@ joinFrom
   ;
 
 joinDef
-  : ANNOTATION* joinFrom matrixOperation? WITH fieldExpr        # joinWith
-  | ANNOTATION* joinFrom (matrixOperation? ON joinExpression)?  # joinOn
+  : tags joinFrom matrixOperation? WITH fieldExpr        # joinWith
+  | tags joinFrom (matrixOperation? ON joinExpression)?  # joinOn
   ;
 
 joinExpression: fieldExpr;
@@ -398,7 +478,7 @@ subQueryDefList
 exploreQueryNameDef: id;
 
 exploreQueryDef
-  : ANNOTATION* exploreQueryNameDef isDefine vExpr
+  : tags exploreQueryNameDef isDefine vExpr
   ;
 
 drillStatement
@@ -528,7 +608,7 @@ timezoneStatement
   ;
 
 queryAnnotation
-  : ANNOTATION
+  : annotation
   ;
 
 sampleSpec
@@ -539,7 +619,23 @@ sampleSpec
 
 
 aggregate: SUM | COUNT | AVG | MIN | MAX;
-malloyType: STRING | NUMBER | BOOLEAN | DATE | TIMESTAMP | TIMESTAMPTZ;
+malloyType
+  : malloyBasicType
+  | malloyRecordType
+  | malloyType OBRACK CBRACK
+  ;
+
+malloyBasicType
+  : STRING | NUMBER | BOOLEAN | DATE | TIMESTAMP | TIMESTAMPTZ
+  ;
+
+malloyRecordType
+  : OCURLY malloyRecordField (COMMA malloyRecordField)* COMMA? CCURLY
+  ;
+
+malloyRecordField
+  : id DOUBLECOLON malloyType
+  ;
 compareOp: MATCH | NOT_MATCH | GT | LT | GTE | LTE | EQ | NE;
 
 string
@@ -606,6 +702,7 @@ malloyOrSQLType
 
 fieldExpr
   : fieldPath                                              # exprFieldPath
+  | GIVEN_REF                                              # exprGivenRef
   | literal                                                # exprLiteral
   | OBRACK fieldExpr (COMMA fieldExpr)* COMMA? CBRACK      # exprArrayLiteral
   | OCURLY recordElement (COMMA recordElement)* CCURLY     # exprLiteralRecord
@@ -625,6 +722,7 @@ fieldExpr
   | fieldExpr NOT? LIKE fieldExpr                          # exprWarnLike
   | fieldExpr IS NOT? NULL                                 # exprNullCheck
   | fieldExpr NOT? IN OPAREN fieldExprList CPAREN          # exprWarnIn
+  | fieldExpr NOT? IN GIVEN_REF                            # exprInGiven
   | fieldExpr QMARK partialAllowedFieldExpr                # exprApply
   | NOT fieldExpr                                          # exprNot
   | fieldExpr AND fieldExpr                                # exprLogicalAnd

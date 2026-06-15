@@ -2,3 +2,15 @@ unique_name: kitchen_sink_catalog
 object_type: catalog
 label: Kitchen Sink Catalog
 version: 1.0
+description: Kitchen sink catalog exercising advanced SML features.
+hidden_models:
+  - return_model
+dataset_properties:
+  fact_orders:
+    allow_aggregates: true
+    allow_local_aggs: false
+packages:
+  - name: shared_metrics
+    url: https://github.com/semanticdatalayer/shared-metrics.git
+    branch: main
+    version: commit:abcdef12

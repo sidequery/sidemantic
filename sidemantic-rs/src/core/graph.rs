@@ -87,6 +87,8 @@ pub struct SemanticGraph {
     parameters: HashMap<String, Parameter>,
     /// Adjacency list: model -> edges
     adjacency: HashMap<String, Vec<AdjacencyEdge>>,
+    /// Graph-level metadata payload (e.g. format-specific import/export state).
+    metadata: Option<serde_json::Value>,
 }
 
 impl SemanticGraph {
@@ -282,6 +284,22 @@ impl SemanticGraph {
         self.models.values()
     }
 
+    /// Add a graph-level metric without validating its dependencies.
+    ///
+    /// Use when reconstructing a graph whose metrics were already validated
+    /// elsewhere (e.g. re-exporting a graph built by the Python layer), where
+    /// insertion order may not match dependency order.
+    pub fn add_metric_unvalidated(&mut self, metric: Metric) -> Result<()> {
+        if self.get_metric(&metric.name).is_some() {
+            return Err(SidemanticError::Validation(format!(
+                "Measure '{}' already exists",
+                metric.name
+            )));
+        }
+        self.metrics.insert(metric.name.clone(), metric);
+        Ok(())
+    }
+
     /// Add a graph-level metric.
     pub fn add_metric(&mut self, metric: Metric) -> Result<()> {
         if self.get_metric(&metric.name).is_some() {
@@ -295,7 +313,12 @@ impl SemanticGraph {
         Ok(())
     }
 
-    fn validate_metric_dependencies(&self, metric: &Metric) -> Result<()> {
+    /// Validate that a metric's dependencies resolve against the current graph.
+    ///
+    /// Exposed so callers that register a batch of interdependent metrics out of
+    /// dependency order (e.g. OSI import) can insert them all first, then
+    /// validate once everything is present.
+    pub fn validate_metric_dependencies(&self, metric: &Metric) -> Result<()> {
         for dependency in extract_dependencies(metric, Some(self)) {
             let dependency_name = dependency
                 .rsplit_once('.')
@@ -456,6 +479,21 @@ impl SemanticGraph {
     /// Get all parameters
     pub fn parameters(&self) -> impl Iterator<Item = &Parameter> {
         self.parameters.values()
+    }
+
+    /// Get the graph-level metadata payload, if any.
+    pub fn metadata(&self) -> Option<&serde_json::Value> {
+        self.metadata.as_ref()
+    }
+
+    /// Replace the graph-level metadata payload.
+    pub fn set_metadata(&mut self, metadata: serde_json::Value) {
+        self.metadata = Some(metadata);
+    }
+
+    /// Mutable access to the graph-level metadata payload.
+    pub fn metadata_mut(&mut self) -> &mut Option<serde_json::Value> {
+        &mut self.metadata
     }
 
     /// Rebuild the adjacency list from model relationships

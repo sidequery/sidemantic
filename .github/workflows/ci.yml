@@ -341,6 +341,7 @@ jobs:
           cargo test --features workbench-adbc --test cli_smoke workbench
           cargo test --features workbench-tui --test workbench_pty_smoke
           cargo test --features workbench-adbc --test workbench_pty_smoke
+          cargo test --features workbench-adbc --bin sidemantic
           cargo test --features adbc-exec --test adbc_driver_matrix
           cargo test --features mcp-adbc,runtime-server-adbc --test adbc_duckdb_e2e
 

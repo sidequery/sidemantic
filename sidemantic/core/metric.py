@@ -54,6 +54,15 @@ class Metric(BaseModel):
     expression_language: Literal["sql", "dax"] | None = Field(
         None, description="Expression language for sql/expr/dax authoring"
     )
+    sql_is_complete: bool = Field(
+        False,
+        description=(
+            "When True, treat sql as a complete, opaque expression and skip "
+            "auto-extraction of aggregations. Used for imported measures (e.g. "
+            "Cube/Tesseract number_agg/time/string/boolean) whose sql is already "
+            "the full aggregate expression and must be preserved verbatim with agg=None."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -91,7 +100,16 @@ class Metric(BaseModel):
 
             # Parse if sql is provided and agg is not set
             # Allow parsing for simple metrics (no type) OR cumulative metrics (to support AVG/COUNT windows)
-            if sql_val and language_val != "dax" and not agg_val and (not type_val or type_val == "cumulative"):
+            # Skip entirely when sql_is_complete: the sql is an opaque, complete expression
+            # (e.g. imported Cube/Tesseract aggregate measures) that must be preserved verbatim.
+            sql_is_complete = data.get("sql_is_complete", False)
+            if (
+                sql_val
+                and not sql_is_complete
+                and language_val != "dax"
+                and not agg_val
+                and (not type_val or type_val == "cumulative")
+            ):
                 try:
                     import sqlglot
                     from sqlglot import expressions as exp

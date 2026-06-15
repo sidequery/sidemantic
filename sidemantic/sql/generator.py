@@ -416,9 +416,16 @@ class SQLGenerator:
         models_checked = set()
         for metric_ref in metrics:
             try:
-                model_name, _ = self.graph.resolve_metric_reference(metric_ref)
+                model_name, metric_obj = self.graph.resolve_metric_reference(metric_ref)
             except KeyError:
                 continue
+            # A graph-level cumulative metric (e.g. a MetricFlow ``input_metric``)
+            # resolves to no model, so the default-time-dimension logic below would
+            # skip it and cumulative ordering would fail with "requires a time
+            # dimension for ordering". Resolve the owning model from the metric's
+            # base dependency so the model's default time dimension is applied.
+            if not model_name and metric_obj is not None and metric_obj.type == "cumulative":
+                model_name = self._infer_cumulative_owner_model(metric_obj)
             if not model_name or model_name in models_checked:
                 continue
             models_checked.add(model_name)
@@ -439,6 +446,41 @@ class SQLGenerator:
                     models_with_time_dims.add(model_name)
 
         return dimensions + added_dims
+
+    def _infer_cumulative_owner_model(self, metric_obj, _seen: set[str] | None = None) -> str | None:
+        """Resolve the owning model of a graph-level cumulative metric.
+
+        A cumulative metric's base reference (``sql`` or ``base_metric``) may be a
+        model-qualified measure (``orders.amount`` -> ``orders``) or another
+        graph-level metric (e.g. a MetricFlow inline measure) that itself resolves
+        to a model. Follow that chain so the model's default time dimension can be
+        applied. Guards against reference cycles.
+        """
+        _seen = _seen if _seen is not None else set()
+        base_ref = metric_obj.sql or metric_obj.base_metric
+        if not base_ref or base_ref in _seen:
+            return None
+        _seen.add(base_ref)
+
+        if "." in base_ref:
+            candidate = base_ref.split(".", 1)[0]
+            if candidate in self.graph.models:
+                return candidate
+
+        try:
+            model_name, ref_metric = self.graph.resolve_metric_reference(base_ref)
+        except KeyError:
+            return None
+        if model_name:
+            return model_name
+        if ref_metric is not None:
+            if ref_metric.sql and "." in ref_metric.sql:
+                candidate = ref_metric.sql.split(".", 1)[0]
+                if candidate in self.graph.models:
+                    return candidate
+            if ref_metric.type == "cumulative":
+                return self._infer_cumulative_owner_model(ref_metric, _seen)
+        return None
 
     def generate_view(
         self,
@@ -1208,6 +1250,7 @@ class SQLGenerator:
             """Recursively extract filter columns from a metric and its dependencies."""
             # Extract from the metric's own filters
             if metric.filters:
+                filter_model_name = None
                 deps = metric.get_dependencies(self.graph)
                 for dep in deps:
                     try:
@@ -1215,8 +1258,24 @@ class SQLGenerator:
                     except KeyError:
                         dep_model_name = dep.split(".", 1)[0] if "." in dep else None
                     if dep_model_name:
-                        add_filter_columns(dep_model_name, metric.filters)
+                        filter_model_name = dep_model_name
                         break
+                # A graph-level simple aggregate (``agg`` + ``sql``) has no metric
+                # dependencies, so resolve its owning model from the SQL's column
+                # refs. Without this the filter columns are never projected into
+                # the CTE and the CASE WHEN filter references a missing column.
+                if filter_model_name is None and metric.agg and metric.sql:
+                    try:
+                        parsed = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+                        for col in parsed.find_all(exp.Column):
+                            candidate = col.table.replace("_cte", "") if col.table else None
+                            if candidate and candidate in self.graph.models:
+                                filter_model_name = candidate
+                                break
+                    except Exception:
+                        filter_model_name = None
+                if filter_model_name:
+                    add_filter_columns(filter_model_name, metric.filters)
 
             # For ratio metrics, check numerator and denominator
             if metric.type == "ratio":
@@ -1367,6 +1426,11 @@ class SQLGenerator:
 
         # Include local relationship keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
+            # Custom-SQL joins ({from}/{to}) supply their own key columns via
+            # _custom_join_columns_by_model; skip the default FK/PK passthrough so we
+            # don't inject a non-existent "{name}_id" column for composite/custom joins.
+            if relationship.sql and ("{from}" in relationship.sql or "{to}" in relationship.sql):
+                continue
             if relationship.type == "many_to_one":
                 # Handle multi-column foreign keys
                 for fk in relationship.foreign_key_columns:
@@ -1391,6 +1455,10 @@ class SQLGenerator:
                 if other_model_name not in all_models:
                     continue
                 for other_join in other_model.relationships:
+                    # Custom-SQL joins supply their key columns via the custom-join
+                    # column extraction; don't inject default FK/PK columns for them.
+                    if other_join.sql and ("{from}" in other_join.sql or "{to}" in other_join.sql):
+                        continue
                     if other_join.name == model_name and other_join.type in (
                         "one_to_one",
                         "one_to_many",
@@ -1471,8 +1539,16 @@ class SQLGenerator:
         # Collect all measures needed for metrics
         measures_needed = set()
         extra_metric_sql_columns: set[str] = set()
+        # Opaque complete-sql measures (Cube/Tesseract number_agg/time/string/boolean):
+        # each is projected into the CTE under dedicated raw aliases so the preserved
+        # expression sees raw column values (never dimension-transformed) and honors
+        # measure-level filters. Keyed by measure name.
+        complete_sql_measures: dict[str, object] = {}
 
         def collect_sql_columns_for_model(sql_expr: str) -> None:
+            # Strip the {model} placeholder before parsing so it is not mistaken for
+            # a real column named "model" (e.g. PERCENTILE_CONT(... {model}.amount)).
+            sql_expr = sql_expr.replace("{model}.", "").replace("{model}", "")
             try:
                 parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
                 for col in parsed.find_all(exp.Column):
@@ -1519,6 +1595,12 @@ class SQLGenerator:
                     return
                 measure_name = metric_ref.split(".", 1)[1]
                 measure = resolved_metric
+                if getattr(measure, "sql_is_complete", False) and measure.sql:
+                    # Opaque complete expression - record it so dedicated raw columns
+                    # (filtered + untransformed) are projected, without dependency
+                    # expansion, regardless of whether the sql is an aggregate.
+                    complete_sql_measures[measure_name] = measure
+                    return
                 if (
                     not measure.type
                     and not measure.agg
@@ -1544,6 +1626,10 @@ class SQLGenerator:
                 # First check if it's a measure on the current model
                 measure = model.get_metric(metric_ref)
                 if measure:
+                    if getattr(measure, "sql_is_complete", False) and measure.sql:
+                        # Opaque complete expression - see qualified branch above.
+                        complete_sql_measures[metric_ref] = measure
+                        return
                     if (
                         not measure.type
                         and not measure.agg
@@ -1644,6 +1730,26 @@ class SQLGenerator:
                     measure_sql = base_sql
 
                 select_cols.append(f"{measure_sql} AS {self._quote_alias(f'{measure_name}_raw')}")
+
+        # Project dedicated raw columns for opaque complete-sql measures.
+        # Each referenced column is emitted under a per-measure alias holding the raw,
+        # untransformed value (so a column that is also a time dimension is not
+        # DATE_TRUNC'd) and wrapped in CASE WHEN for any measure-level filters (so the
+        # later aggregate over that column is filtered). Aggregates ignore the NULLs.
+        for measure in complete_sql_measures.values():
+            filter_conditions = []
+            for filter_str in measure.filters or []:
+                filter_conditions.append(filter_str.replace("{model}.", "").replace("{model}", ""))
+            filter_sql = " AND ".join(filter_conditions) if filter_conditions else None
+            for col_name in self._complete_sql_columns(measure):
+                raw_alias = self._complete_sql_raw_alias(measure.name, col_name)
+                if raw_alias in columns_added:
+                    continue
+                raw_expr = f"{model_table_alias}.{col_name}" if model_table_alias else col_name
+                if filter_sql:
+                    raw_expr = f"CASE WHEN {filter_sql} THEN {raw_expr} ELSE NULL END"
+                select_cols.append(f"{raw_expr} AS {self._quote_alias(raw_alias)}")
+                columns_added.add(raw_alias)
 
         # Build FROM clause
         from_clause = self._model_from_clause(model)
@@ -2410,6 +2516,17 @@ class SQLGenerator:
                     output_aliases[metric_ref] = alias
                     output_aliases[measure_name] = alias
 
+                    # Opaque complete-sql measures (Cube/Tesseract number_agg/time/
+                    # string/boolean): build from the dedicated raw columns projected in
+                    # the CTE so filters and raw types are honored; wrap plain-column
+                    # measures in ANY_VALUE() under GROUP BY.
+                    if getattr(measure, "sql_is_complete", False) and measure.sql:
+                        grouped = bool(parsed_dims) and not ungrouped
+                        metric_expr = self._build_complete_sql_expr(measure, model_name, grouped)
+                        metric_expr = self._wrap_with_fill_nulls(metric_expr, measure)
+                        select_exprs.append(f"{metric_expr} AS {self._quote_alias(alias)}")
+                        continue
+
                     # Complex metric types (derived, ratio) can be built inline
                     # Note: cumulative, time_comparison, conversion are handled via special query generators
                     # and won't appear in this code path
@@ -2634,6 +2751,64 @@ class SQLGenerator:
             return f"COALESCE({sql_expr}, {fill_value})"
         return sql_expr
 
+    @staticmethod
+    def _complete_sql_raw_alias(measure_name: str, column: str) -> str:
+        """Stable per-measure raw-column alias for an opaque complete-sql measure.
+
+        Each column referenced by a ``sql_is_complete`` measure is projected into the
+        model CTE under this dedicated alias (preserving the raw, untransformed value
+        and applying any measure-level filters via CASE WHEN). Keying on the measure
+        name keeps independent measures that filter the same column from colliding.
+        """
+        return f"{measure_name}__{column}__cmpl"
+
+    def _complete_sql_columns(self, measure) -> list[str]:
+        """Model-local column names referenced by an opaque complete-sql measure."""
+        sql_expr = (measure.sql or "").replace("{model}.", "").replace("{model}", "")
+        columns: list[str] = []
+        seen: set[str] = set()
+        try:
+            parsed = sqlglot.parse_one(sql_expr, dialect=self.dialect)
+            for col in parsed.find_all(exp.Column):
+                if col.name in seen:
+                    continue
+                seen.add(col.name)
+                columns.append(col.name)
+        except Exception:
+            logging.debug("Failed to parse complete-sql measure for columns: %s", sql_expr, exc_info=True)
+        return columns
+
+    def _build_complete_sql_expr(self, measure, model_name: str, grouped: bool) -> str:
+        """Build the main-SELECT expression for an opaque complete-sql measure.
+
+        The measure's sql is preserved verbatim, with each referenced column rewritten
+        to its dedicated CTE raw alias (so filters and raw types are honored). Plain
+        (non-aggregate) measures are wrapped in ANY_VALUE() in grouped queries so the
+        emitted column is valid under GROUP BY.
+        """
+        cte_alias = self._quote_identifier(self._cte_name(model_name))
+        expr = (measure.sql or "").replace("{model}", cte_alias)
+
+        try:
+            parsed = sqlglot.parse_one(expr, dialect=self.dialect)
+            for col in parsed.find_all(exp.Column):
+                raw_alias = self._complete_sql_raw_alias(measure.name, col.name)
+                col.set("this", exp.to_identifier(raw_alias, quoted=not self._is_simple_identifier(raw_alias)))
+                col.set(
+                    "table",
+                    exp.to_identifier(
+                        self._cte_name(model_name), quoted=not self._is_simple_identifier(self._cte_name(model_name))
+                    ),
+                )
+            expr = parsed.sql(dialect=self.dialect)
+        except Exception:
+            logging.debug("Failed to rewrite complete-sql measure expr: %s", expr, exc_info=True)
+            expr = self._rewrite_model_refs_to_ctes(expr)
+
+        if grouped and not sql_has_aggregate(measure.sql or "", self.dialect):
+            expr = f"ANY_VALUE({expr})"
+        return expr
+
     def _rewrite_model_refs_to_ctes(self, sql_expr: str) -> str:
         """Rewrite qualified model refs (model.col) to CTE refs (model_cte.col)."""
         try:
@@ -2654,6 +2829,55 @@ class SQLGenerator:
                     f"{self._quote_identifier(self._cte_name(model_name))}.",
                 )
             return rewritten
+
+    def _infer_metric_filter_model(self, metric, model_context: str | None) -> str | None:
+        """Infer the owning model of a graph-level simple aggregate metric.
+
+        Used to qualify the metric's unqualified filter columns. Prefers an
+        explicit ``model_context``; otherwise resolves the model from the first
+        qualified column in the metric SQL (e.g. ``orders.amount`` -> ``orders``).
+        """
+        if model_context and model_context in self.graph.models:
+            return model_context
+        if metric.sql:
+            try:
+                parsed = sqlglot.parse_one(metric.sql, dialect=self.dialect)
+                for col in parsed.find_all(exp.Column):
+                    candidate = col.table.replace("_cte", "") if col.table else None
+                    if candidate and candidate in self.graph.models:
+                        return candidate
+            except Exception:
+                return None
+        return None
+
+    def _qualify_metric_filter_sql(self, filter_expr: str, model_name: str | None) -> str:
+        """Qualify a metric filter's columns with the owning model's CTE.
+
+        Already-qualified ``model.col`` refs are rewritten to ``model_cte.col``;
+        unqualified columns are anchored to ``model_name``'s CTE so the predicate
+        is unambiguous when other joined CTEs expose same-named columns. Falls
+        back to plain CTE rewriting when the owning model is unknown.
+        """
+        if model_name is None:
+            return self._rewrite_model_refs_to_ctes(filter_expr)
+        cte_name = self._cte_name(model_name)
+        cte_identifier = exp.to_identifier(cte_name, quoted=not self._is_simple_identifier(cte_name))
+        try:
+            parsed = sqlglot.parse_one(filter_expr, dialect=self.dialect)
+        except Exception:
+            return self._rewrite_model_refs_to_ctes(filter_expr)
+        for col in parsed.find_all(exp.Column):
+            if col.table:
+                ref_model = col.table.replace("_cte", "")
+                if ref_model in self.graph.models:
+                    rewritten = self._cte_name(ref_model)
+                    col.set(
+                        "table",
+                        exp.to_identifier(rewritten, quoted=not self._is_simple_identifier(rewritten)),
+                    )
+            else:
+                col.set("table", cte_identifier.copy())
+        return parsed.sql(dialect=self.dialect)
 
     def _build_measure_aggregation_sql(self, model_name: str, measure) -> str:
         """Build SQL aggregation expression for a measure.
@@ -2815,6 +3039,26 @@ class SQLGenerator:
                 "DAX lowering is not available in this build."
             )
 
+        # Opaque complete expression (e.g. imported Cube/Tesseract
+        # number_agg/time/string/boolean measures). Emit the sql verbatim with the
+        # {model} placeholder resolved to the model's CTE alias - never parse it for
+        # dependencies. Handles both aggregate sql (MAX({model}.created_at)) and plain
+        # column sql (status), which would otherwise be mis-resolved as metric refs.
+        if getattr(metric, "sql_is_complete", False) and metric.sql:
+            metric_model_name = model_context
+            if not metric_model_name:
+                for m_name, m in self.graph.models.items():
+                    if any(metric is mm for mm in m.metrics):
+                        metric_model_name = m_name
+                        break
+            formula = metric.sql
+            if metric_model_name:
+                cte_alias = self._quote_identifier(self._cte_name(metric_model_name))
+                formula = formula.replace("{model}", cte_alias)
+            else:
+                formula = formula.replace("{model}.", "")
+            return self._rewrite_model_refs_to_ctes(formula)
+
         if metric.type == "ratio":
             # numerator / NULLIF(denominator, 0)
             if not metric.numerator or not metric.denominator:
@@ -2858,13 +3102,43 @@ class SQLGenerator:
             if inner_expr != "*":
                 inner_expr = self._rewrite_model_refs_to_ctes(inner_expr)
 
+            # Metric-level filters scope the aggregation to matching rows. Apply
+            # them via CASE WHEN so the filter only affects this metric (mirrors
+            # the model-scoped measure path in _build_model_cte). Without this a
+            # filtered simple metric like a MetricFlow inline measure with
+            # ``filter: status = 'completed'`` would silently aggregate every row.
+            filter_sql = None
+            if metric.filters:
+                # Qualify unqualified filter columns with the metric's owning model
+                # CTE so a filter like ``status = 'completed'`` is not ambiguous
+                # when a joined model's CTE also exposes a ``status`` column.
+                filter_model = self._infer_metric_filter_model(metric, model_context)
+                conditions = []
+                for filter_str in metric.filters:
+                    condition = filter_str.replace("{model}.", "").replace("{model}", "")
+                    conditions.append(self._qualify_metric_filter_sql(condition, filter_model))
+                if conditions:
+                    filter_sql = " AND ".join(conditions)
+
             if metric.agg == "count":
+                if filter_sql is not None:
+                    # Count the metric expression (not a constant 1) so a NULL
+                    # expression is skipped exactly as the unfiltered ``COUNT(expr)``
+                    # path does. Only a true row count (``*``) counts every matching
+                    # row, including those with a NULL expression.
+                    counted = "1" if inner_expr == "*" else inner_expr
+                    return f"COUNT(CASE WHEN {filter_sql} THEN {counted} ELSE NULL END)"
                 if inner_expr == "*":
                     return "COUNT(*)"
                 return f"COUNT({inner_expr})"
             if metric.agg == "count_distinct":
+                if filter_sql is not None:
+                    return f"COUNT(DISTINCT CASE WHEN {filter_sql} THEN {inner_expr} ELSE NULL END)"
                 return f"COUNT(DISTINCT {inner_expr})"
-            return f"{self._agg_sql_name(metric.agg)}({inner_expr})"
+            agg_arg = (
+                f"CASE WHEN {filter_sql} THEN {inner_expr} ELSE NULL END" if filter_sql is not None else inner_expr
+            )
+            return f"{self._agg_sql_name(metric.agg)}({agg_arg})"
 
         elif metric.type == "derived" or (not metric.type and not metric.agg and metric.sql):
             # Parse formula and replace metric references (handles both typed "derived" and untyped metrics with sql)

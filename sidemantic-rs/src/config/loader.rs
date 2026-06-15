@@ -494,7 +494,7 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                 all_top_level_metrics.extend(top_level_metrics);
                 all_top_level_parameters.extend(top_level_parameters);
                 all_graph_metrics.extend(graph_metrics);
-                merge_osi_metadata(&mut merged_graph_metadata, graph_metadata);
+                merge_graph_metadata(&mut merged_graph_metadata, graph_metadata);
             }
             Some("sql") => {
                 let content = fs::read_to_string(&path).map_err(|e| {
@@ -590,39 +590,37 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
 
 /// Merge an OSI `{ "osi": { ... } }` metadata payload into the accumulator,
 /// concatenating `semantic_models` and keeping the first `version`/`ontology`.
-fn merge_osi_metadata(acc: &mut Option<serde_json::Value>, incoming: Option<serde_json::Value>) {
+fn merge_graph_metadata(acc: &mut Option<serde_json::Value>, incoming: Option<serde_json::Value>) {
     let Some(incoming) = incoming else {
         return;
     };
-    let Some(incoming_osi) = incoming.get("osi").and_then(|v| v.as_object()).cloned() else {
-        return;
-    };
-
-    let acc_value =
-        acc.get_or_insert_with(|| serde_json::json!({ "osi": { "semantic_models": [] } }));
-    let Some(acc_osi) = acc_value
-        .as_object_mut()
-        .and_then(|m| m.get_mut("osi"))
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return;
-    };
-
-    if let Some(serde_json::Value::Array(incoming_models)) = incoming_osi.get("semantic_models") {
-        let entry = acc_osi
-            .entry("semantic_models")
-            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-        if let serde_json::Value::Array(acc_models) = entry {
-            acc_models.extend(incoming_models.iter().cloned());
-        }
+    match acc {
+        Some(existing) => deep_merge_json(existing, incoming),
+        None => *acc = Some(incoming),
     }
+}
 
-    for key in ["version", "ontology"] {
-        if !acc_osi.contains_key(key) {
-            if let Some(value) = incoming_osi.get(key) {
-                acc_osi.insert(key.to_string(), value.clone());
+/// Recursively merge `incoming` into `target`: objects merge, arrays append, and
+/// scalars keep the existing (first-wins) value. This preserves OSI accumulation
+/// (semantic_models arrays append, version/ontology keep first) while also merging
+/// non-OSI payloads such as `metadata.snowflake` from Python `export-native` files.
+fn deep_merge_json(target: &mut serde_json::Value, incoming: serde_json::Value) {
+    match (target, incoming) {
+        (serde_json::Value::Object(target_map), serde_json::Value::Object(incoming_map)) => {
+            for (key, value) in incoming_map {
+                match target_map.get_mut(&key) {
+                    Some(existing) => deep_merge_json(existing, value),
+                    None => {
+                        target_map.insert(key, value);
+                    }
+                }
             }
         }
+        (serde_json::Value::Array(target_arr), serde_json::Value::Array(incoming_arr)) => {
+            target_arr.extend(incoming_arr);
+        }
+        // Scalars (or type mismatches): keep the existing value.
+        _ => {}
     }
 }
 
@@ -1873,6 +1871,65 @@ models:
         assert!(orders.get_dimension("status").is_some());
         assert!(orders.get_metric("revenue").is_some());
         assert!(orders.get_metric("net_revenue").is_some());
+    }
+
+    #[test]
+    fn test_load_from_directory_merges_non_osi_root_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "sidemantic-rs-loader-metadata-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        // Python `export-native` writes root `metadata.snowflake` (no `osi` key).
+        fs::write(
+            dir.join("a.yml"),
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+metadata:
+  snowflake:
+    custom_instructions: Prefer revenue.
+    verified_queries:
+      - name: q1
+"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("b.yml"),
+            r#"
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+metadata:
+  snowflake:
+    verified_queries:
+      - name: q2
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_from_directory_with_metadata(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        let metadata = loaded.graph.metadata().expect("graph metadata preserved");
+        let snowflake = &metadata["snowflake"];
+        assert_eq!(snowflake["custom_instructions"], "Prefer revenue.");
+        // verified_queries from both files accumulate.
+        let names: Vec<&str> = snowflake["verified_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"q1"));
+        assert!(names.contains(&"q2"));
     }
 
     #[test]

@@ -589,3 +589,68 @@ tables:
     assert snowflake_meta.get("verified_queries")
     assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
     assert "module_custom_instructions" in snowflake_meta
+
+
+def test_load_from_directory_same_named_scoped_metrics_on_different_tables(tmp_path):
+    """Same-named table-scoped metrics on different tables must not overwrite each other."""
+    # Two metric sidecars each define a metric named "total" for a different table.
+    (tmp_path / "a_metrics.yaml").write_text(
+        """
+metrics:
+  - name: total
+    table: orders
+    expr: SUM(amount)
+"""
+    )
+    (tmp_path / "b_metrics.yaml").write_text(
+        """
+metrics:
+  - name: total
+    table: customers
+    expr: SUM(balance)
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+    facts:
+      - name: balance
+        expr: balance
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    # Both scoped metrics attach to their respective tables.
+    assert "total" in [m.name for m in graph.models["orders"].metrics]
+    assert "total" in [m.name for m in graph.models["customers"].metrics]

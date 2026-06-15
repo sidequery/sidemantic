@@ -54,6 +54,9 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     all_models = {}
     all_metrics = {}
     all_parameters = {}
+    # Snowflake table-scoped metrics whose table lives in another file, held as
+    # (table_name, Metric) pairs so same-named scoped metrics never collide.
+    all_pending_table_metrics: list = []
     import_warnings: list[dict[str, object]] = []
 
     # Check for SML repository (catalog.yml/atscale.yml or object_type files)
@@ -237,6 +240,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 all_models.update(graph.models)
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
+                all_pending_table_metrics.extend(getattr(graph, "_pending_table_metrics", []))
             except Exception as e:
                 _append_import_warning(
                     import_warnings,
@@ -258,7 +262,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     # Attach Snowflake top-level metrics whose referenced table was defined in a
     # different file (each Snowflake file is parsed separately, so the table may
     # not have been known when the metric file was parsed).
-    _resolve_snowflake_pending_table_metrics(all_models, all_metrics)
+    _resolve_snowflake_pending_table_metrics(all_models, all_metrics, all_pending_table_metrics)
 
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
@@ -843,13 +847,18 @@ def _merge_import_warnings(graph: object, warnings: list[dict[str, object]]) -> 
     graph.import_warnings = merged
 
 
-def _resolve_snowflake_pending_table_metrics(all_models: dict, all_metrics: dict) -> None:
+def _resolve_snowflake_pending_table_metrics(all_models: dict, all_metrics: dict, pending: list) -> None:
     """Re-attach Snowflake top-level metrics to tables defined in other files."""
-    if not any((metric.metadata or {}).get("snowflake", {}).get("pending_table") for metric in all_metrics.values()):
+    if not pending:
         return
     from sidemantic.adapters.snowflake import SnowflakeAdapter
 
-    SnowflakeAdapter.resolve_pending_table_metrics(all_models, all_metrics)
+    SnowflakeAdapter.resolve_pending_table_metrics(all_models, pending)
+    # Any metric whose table is still unknown falls back to a graph-level metric
+    # so it is not silently dropped.
+    for _table_name, metric in pending:
+        all_metrics.setdefault(metric.name, metric)
+    pending.clear()
 
 
 def _deep_merge_metadata(target: dict, source: dict) -> None:

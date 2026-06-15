@@ -9,6 +9,7 @@ Sidemantic equivalent and are preserved under ``meta['superset']``:
 - Metric: ``currency`` (``{symbol, symbolPosition}``), ``d3format``, ``warning_text``.
 """
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -163,6 +164,66 @@ class TestNestedCurrencyCodeColumn:
             reparsed = adapter.parse(Path(tmpdir) / "international_sales.yaml")
             reloaded = reparsed.models["international_sales"]
             assert reloaded.meta["superset"]["currency_code_column"] == "currency_code"
+
+
+# =============================================================================
+# JSON-STRING extra payload (Superset serializes `extra` as a JSON string)
+# =============================================================================
+
+
+class TestJsonStringExtra:
+    """Superset commonly serializes the dataset ``extra`` field as a JSON string
+    (e.g. ``extra: '{"currency_code_column": "ccy"}'``) rather than a mapping.
+    ``currency_code_column`` nested inside such a payload must still be imported
+    and survive a roundtrip; otherwise dynamic currency formatting is dropped."""
+
+    def _parse_dataset_dict(self, adapter, tmpdir, dataset):
+        path = Path(tmpdir) / "json_extra.yaml"
+        path.write_text(yaml.dump(dataset))
+        return adapter.parse(path).models["json_extra"]
+
+    def test_json_string_extra_currency_imported(self):
+        adapter = SupersetAdapter()
+        dataset = {
+            "table_name": "json_extra",
+            "extra": json.dumps({"currency_code_column": "ccy"}),
+            "columns": [{"column_name": "id", "type": "INT"}],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = self._parse_dataset_dict(adapter, tmpdir, dataset)
+            assert model.meta["superset"]["currency_code_column"] == "ccy"
+
+    def test_malformed_json_string_extra_ignored(self):
+        adapter = SupersetAdapter()
+        dataset = {
+            "table_name": "json_extra",
+            "extra": "{not valid json",
+            "columns": [{"column_name": "id", "type": "INT"}],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = self._parse_dataset_dict(adapter, tmpdir, dataset)
+            assert model.meta is None or "currency_code_column" not in model.meta.get("superset", {})
+
+    def test_json_string_extra_currency_roundtrip(self):
+        adapter = SupersetAdapter()
+        dataset = {
+            "table_name": "json_extra",
+            "extra": json.dumps({"currency_code_column": "ccy"}),
+            "columns": [{"column_name": "id", "type": "INT"}],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = self._parse_dataset_dict(adapter, tmpdir, dataset)
+
+            graph = SemanticGraph()
+            graph.add_model(model)
+            out_dir = Path(tmpdir) / "out"
+            adapter.export(graph, out_dir)
+            with open(out_dir / "json_extra.yaml") as f:
+                exported = yaml.safe_load(f)
+            assert exported["extra"]["currency_code_column"] == "ccy"
+
+            reloaded = adapter.parse(out_dir / "json_extra.yaml").models["json_extra"]
+            assert reloaded.meta["superset"]["currency_code_column"] == "ccy"
 
 
 # =============================================================================

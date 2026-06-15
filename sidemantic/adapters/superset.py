@@ -1,5 +1,6 @@
 """Superset adapter for importing/exporting Apache Superset datasets."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -117,7 +118,13 @@ class SupersetAdapter(BaseAdapter):
         # `currency_code_column` enables dynamic per-row currency formatting.
         # Real Superset exports nest it under `extra.currency_code_column`; some
         # flattened payloads put it top-level. Accept both, preferring top-level.
+        # Superset also serializes `extra` as a JSON string, so parse that too.
         extra = dataset.get("extra")
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except (TypeError, ValueError):
+                extra = None
         currency_code_column = dataset.get("currency_code_column")
         if currency_code_column is None and isinstance(extra, dict):
             currency_code_column = extra.get("currency_code_column")

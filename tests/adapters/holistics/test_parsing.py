@@ -471,6 +471,66 @@ Dataset combined = base_ds.extend(reusable)
     assert graph.models["combined"].get_metric("reusable_rev").sql == "SUM(base_orders.amount)"
 
 
+def test_holistics_extend_override_preserves_defining_context(tmp_path):
+    """When a PartialDataset from another module overrides an existing field of
+    the same name, the merged child block must keep the overriding partial's
+    defining context. Otherwise the field's `definition: rev_def` const resolves
+    against the consuming dataset's file (where `rev_def` is unknown) and imports
+    as the literal `rev_def` identifier instead of the const's AQL."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # The overriding partial and the const it references live in the `finance`
+    # module. It redefines `revenue` with a definition built from `rev_def`.
+    (finance_dir / "rev.aml").write_text(
+        """
+const rev_def = @aql sum(base_orders.amount);;
+
+PartialDataset override = PartialDataset {
+  metric revenue {
+    label: 'Finance Revenue'
+    type: 'number'
+    definition: rev_def
+  }
+}
+"""
+    )
+
+    # The root file declares a base partial that already defines `revenue`, then
+    # extends it with the `finance` partial which overrides that same field.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { override }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+PartialDataset base_part = PartialDataset {
+  metric revenue {
+    label: 'Base Revenue'
+    type: 'number'
+    definition: @aql count(base_orders.order_id);;
+  }
+}
+
+Dataset combined = base_part.extend(override)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "combined" in graph.models
+    assert "revenue" in graph.metrics
+    # The overriding field wins and its const from the `finance` module resolves,
+    # rather than falling back to the consuming file and importing as a literal.
+    assert graph.metrics["revenue"].sql == "SUM(base_orders.amount)"
+    assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
 def test_holistics_inline_metric_assignment():
     """A standalone metric written in inline assignment form (Metric x = Metric {...})
     registers as a graph-level metric, matching block-form standalone metrics."""

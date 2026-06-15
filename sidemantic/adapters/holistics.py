@@ -702,7 +702,16 @@ def _merge_blocks(base: AmlBlock, extension: AmlBlock) -> AmlBlock:
 
         merged_items.append(item)
 
-    return AmlBlock(kind=base.kind, name=base.name, items=merged_items)
+    # Preserve the defining context so child fields composed across modules keep
+    # resolving constants/`use` aliases against their authoring file. The
+    # extension wins when it overrides the base (its block is the one taking
+    # effect), falling back to the base's context.
+    return AmlBlock(
+        kind=base.kind,
+        name=base.name,
+        items=merged_items,
+        context=extension.context or base.context,
+    )
 
 
 def _qualify_declared_name(name: str, module_prefix: str | None) -> str:

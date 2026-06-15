@@ -139,10 +139,15 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
             elif (
                 '"semantic_model"' in content
                 and '"datasets"' in content
+                and _is_under_osi_tree(file_path, directory)
                 and not _is_generated_artifact(file_path, directory)
             ):
                 # Released-spec OSI profile (dbt OSI consumer) ships as JSON in an
-                # OSI/ directory. Mirror the YAML detection (semantic_model + datasets).
+                # OSI/ directory at the project root. Mirror the YAML detection
+                # (semantic_model + datasets), but only inside that OSI/ tree:
+                # dbt's OSI consumer scans only ``<project_root>/OSI/``, so an
+                # archived or scratch OSI .json elsewhere under the project must
+                # not add stale models or collide with the real sources.
                 # Skip dbt-generated copies (e.g. target/osi_document.json) so a
                 # `dbt compile` artifact never shadows the real OSI/ sources.
                 try:
@@ -463,6 +468,33 @@ def _is_generated_artifact(file_path: "Path", directory: "Path") -> bool:
     except ValueError:
         relative_parts = file_path.parts
     return any(part in _GENERATED_ARTIFACT_DIRS for part in relative_parts[:-1])
+
+
+# dbt's OSI consumer (dbt Core 1.12+) only ingests released ``.json`` documents
+# placed in an ``OSI/`` directory at the project root. Mirroring that scope keeps
+# an archived or scratch OSI document under some other folder (e.g.
+# ``backups/old_osi.json``) from quietly adding stale models or colliding with
+# the real sources during ``sidemantic validate .``.
+_OSI_TREE_DIR = "OSI"
+
+
+def _is_under_osi_tree(file_path: "Path", directory: "Path") -> bool:
+    """Return True when ``file_path`` lives under the project-root ``OSI/`` tree.
+
+    The OSI directory must be a top-level child of the loaded project root, so
+    only the first relative path component is checked (case-insensitively, to
+    match dbt accepting ``OSI`` regardless of filesystem case-folding). A JSON
+    file sitting directly at the project root or under any non-``OSI/`` folder is
+    rejected even when it is OSI-shaped.
+    """
+    try:
+        relative_parts = file_path.relative_to(directory).parts
+    except ValueError:
+        return False
+    # Need at least one directory component plus the file name.
+    if len(relative_parts) < 2:
+        return False
+    return relative_parts[0].casefold() == _OSI_TREE_DIR.casefold()
 
 
 def _is_hex_resource_mapping(data: object) -> bool:

@@ -542,6 +542,60 @@ def test_load_from_directory_skips_generated_osi_json(tmp_path):
     assert "stale_orders" not in layer.graph.models
 
 
+def test_load_from_directory_skips_osi_json_outside_osi_tree(tmp_path):
+    """OSI-shaped JSON outside the project-root OSI/ tree is ignored.
+
+    dbt's OSI consumer only scans ``<project_root>/OSI/``. An archived or scratch
+    OSI document under another folder (or sitting at the project root) must not
+    add stale models or collide with the real OSI/ sources during
+    ``sidemantic validate .``.
+    """
+
+    def _osi_json(dataset_name: str, source: str) -> str:
+        return f"""
+{{
+  "version": "0.1.1",
+  "semantic_model": [
+    {{
+      "name": "analytics",
+      "datasets": [
+        {{
+          "name": "{dataset_name}",
+          "source": "{source}",
+          "primary_key": ["id"],
+          "fields": [
+            {{
+              "name": "id",
+              "expression": {{"dialects": [{{"dialect": "ANSI_SQL", "expression": "id"}}]}}
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(_osi_json("orders", "db.schema.fct_orders"))
+
+    # An archived OSI document under a non-OSI/ folder.
+    backups_dir = tmp_path / "backups"
+    backups_dir.mkdir()
+    (backups_dir / "old_osi.json").write_text(_osi_json("stale_orders", "db.schema.old_orders"))
+
+    # A scratch OSI document sitting directly at the project root.
+    (tmp_path / "scratch_osi.json").write_text(_osi_json("scratch_orders", "db.schema.scratch_orders"))
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    assert "stale_orders" not in layer.graph.models
+    assert "scratch_orders" not in layer.graph.models
+
+
 def test_load_from_directory_surfaces_malformed_osi_json(tmp_path):
     """Malformed OSI JSON is reported as a parse error, not silently skipped."""
     import pytest

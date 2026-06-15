@@ -327,5 +327,47 @@ def test_inline_filtered_count_skips_null_expression():
     assert row["completed_row_count"] == 4
 
 
+def test_cumulative_metric_uses_input_metric_model_time_dimension():
+    """A cumulative metric over an inline metric inherits the model's default time dim.
+
+    Regression: a latest-spec cumulative metric (promoted ``input_metric``) is a
+    graph-level metric, so default-time-dimension resolution skipped it and a CLI
+    query raised ``requires a time dimension for ordering`` even though the
+    underlying ``orders`` model declares ``agg_time_dimension: ordered_at``. The
+    cumulative metric must resolve its owning model through the input metric and
+    pick up that model's default time dimension.
+    """
+    import duckdb
+
+    from tests.utils import fetch_dicts
+
+    graph = MetricFlowAdapter().parse("tests/fixtures/metricflow/latest_spec_models.yml")
+
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES "
+        "(1, 10, DATE '2024-01-05', 'completed', 100.0), "
+        "(2, 11, DATE '2024-01-20', 'completed', 50.0), "
+        "(3, 10, DATE '2024-02-10', 'pending', 25.0)) "
+        "AS t(order_id, customer_id, ordered_at, order_status, amount)"
+    )
+    conn.execute(
+        "CREATE TABLE customers AS SELECT * FROM (VALUES "
+        "(10, DATE '2024-01-01', 'US'), (11, DATE '2024-01-15', 'EU')) "
+        "AS t(customer_id, first_ordered_at, region)"
+    )
+
+    layer = SemanticLayer(auto_register=False)
+    layer.conn = conn
+    layer.graph = graph
+
+    # The model's default time dimension is auto-added so cumulative ordering works.
+    for metric_name in ("rolling_30d_revenue", "revenue_mtd"):
+        sql = layer.compile(metrics=[metric_name])
+        assert "ordered_at" in sql
+        rows = fetch_dicts(layer.query(metrics=[metric_name]))
+        assert rows  # query binds and returns rows
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

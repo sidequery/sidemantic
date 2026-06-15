@@ -416,9 +416,16 @@ class SQLGenerator:
         models_checked = set()
         for metric_ref in metrics:
             try:
-                model_name, _ = self.graph.resolve_metric_reference(metric_ref)
+                model_name, metric_obj = self.graph.resolve_metric_reference(metric_ref)
             except KeyError:
                 continue
+            # A graph-level cumulative metric (e.g. a MetricFlow ``input_metric``)
+            # resolves to no model, so the default-time-dimension logic below would
+            # skip it and cumulative ordering would fail with "requires a time
+            # dimension for ordering". Resolve the owning model from the metric's
+            # base dependency so the model's default time dimension is applied.
+            if not model_name and metric_obj is not None and metric_obj.type == "cumulative":
+                model_name = self._infer_cumulative_owner_model(metric_obj)
             if not model_name or model_name in models_checked:
                 continue
             models_checked.add(model_name)
@@ -439,6 +446,41 @@ class SQLGenerator:
                     models_with_time_dims.add(model_name)
 
         return dimensions + added_dims
+
+    def _infer_cumulative_owner_model(self, metric_obj, _seen: set[str] | None = None) -> str | None:
+        """Resolve the owning model of a graph-level cumulative metric.
+
+        A cumulative metric's base reference (``sql`` or ``base_metric``) may be a
+        model-qualified measure (``orders.amount`` -> ``orders``) or another
+        graph-level metric (e.g. a MetricFlow inline measure) that itself resolves
+        to a model. Follow that chain so the model's default time dimension can be
+        applied. Guards against reference cycles.
+        """
+        _seen = _seen if _seen is not None else set()
+        base_ref = metric_obj.sql or metric_obj.base_metric
+        if not base_ref or base_ref in _seen:
+            return None
+        _seen.add(base_ref)
+
+        if "." in base_ref:
+            candidate = base_ref.split(".", 1)[0]
+            if candidate in self.graph.models:
+                return candidate
+
+        try:
+            model_name, ref_metric = self.graph.resolve_metric_reference(base_ref)
+        except KeyError:
+            return None
+        if model_name:
+            return model_name
+        if ref_metric is not None:
+            if ref_metric.sql and "." in ref_metric.sql:
+                candidate = ref_metric.sql.split(".", 1)[0]
+                if candidate in self.graph.models:
+                    return candidate
+            if ref_metric.type == "cumulative":
+                return self._infer_cumulative_owner_model(ref_metric, _seen)
+        return None
 
     def generate_view(
         self,

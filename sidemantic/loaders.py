@@ -445,26 +445,29 @@ def _yaml_has_top_level_key(data: dict, key: str) -> bool:
 def _looks_like_snowflake_metrics_file(data: dict) -> bool:
     """Detect a Snowflake Cortex file that contains only top-level metrics.
 
-    Cortex projects may split top-level ``metrics:`` (entries with ``table`` and
-    ``expr``) into their own file without any ``tables`` section. Such a file must
-    route to the Snowflake adapter so the metrics can be deferred and attached to
-    tables defined in sibling files. MetricFlow metrics use ``type``/``type_params``
-    /``measure`` instead, so require Cortex-only ``table`` + ``expr`` keys and the
-    absence of those MetricFlow markers.
+    Cortex projects may split top-level ``metrics:`` into their own file without a
+    ``tables`` section. Such a file mixes table-scoped metrics (with ``table``) and
+    graph-level view metrics (without ``table``); both use ``expr`` and never the
+    MetricFlow ``type_params``/``measure`` markers. Require every metric to use
+    ``expr`` with no MetricFlow markers, plus at least one ``table`` reference so
+    native detection (which already handles tableless graph metrics) keeps those.
     """
     if not isinstance(data, dict) or "tables" in data:
         return False
     metrics = data.get("metrics")
     if not isinstance(metrics, list) or not metrics:
         return False
+    has_table_scoped = False
     for metric in metrics:
         if not isinstance(metric, dict):
             return False
-        if "table" not in metric or "expr" not in metric:
+        if "expr" not in metric:
             return False
         if "type_params" in metric or "measure" in metric:
             return False
-    return True
+        if "table" in metric:
+            has_table_scoped = True
+    return has_table_scoped
 
 
 def _contains_yaml_key(value: object, key: str) -> bool:

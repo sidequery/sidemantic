@@ -444,3 +444,53 @@ tables:
     assert "avg_order" in [m.name for m in orders.metrics]
     assert "avg_order" not in graph.metrics
     assert "{model}" in orders.get_metric("avg_order").sql
+
+
+def test_load_from_directory_detects_mixed_snowflake_metrics_file(tmp_path):
+    """A metrics-only Cortex file may mix table-scoped and tableless view metrics."""
+    # No tables section; one metric has table (table-scoped), one omits it (graph-level).
+    (tmp_path / "a_metrics.yaml").write_text(
+        """
+metrics:
+  - name: avg_order
+    table: orders
+    expr: SUM(amount) / COUNT(order_id)
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tables_model
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    # Table-scoped metric attaches to its table; tableless metric stays graph-level.
+    assert "avg_order" in [m.name for m in graph.models["orders"].metrics]
+    assert "global_ratio" in graph.metrics
+    assert "avg_order" not in graph.metrics

@@ -111,8 +111,15 @@ class MetricFlowAdapter(BaseAdapter):
             if not isinstance(model_def, dict) or "semantic_model" not in model_def:
                 continue
             model = self._parse_model_spec(model_def)
-            if model:
-                graph.add_model(model)
+            if not model:
+                # ``semantic_model.enabled: false`` (or an otherwise unparseable
+                # model) yields no model. Its inline metrics are model-local and
+                # fold a measure on that model, so without the owning model they
+                # have no SQL context and a CLI query for one would raise
+                # ``No models found for query``. Skip them so the graph never
+                # exposes a metric that cannot be queried.
+                continue
+            graph.add_model(model)
             # Inline metrics on a latest-spec model. A ``type: simple`` metric
             # folds a model measure (``agg`` + ``expr``); its expression refers
             # to columns on the owning model. Qualify the SQL with the model name
@@ -124,7 +131,7 @@ class MetricFlowAdapter(BaseAdapter):
                 metric = self._parse_metric(metric_def)
                 if not metric:
                     continue
-                if model and metric_def.get("type", "simple") == "simple" and metric.agg is not None:
+                if metric_def.get("type", "simple") == "simple" and metric.agg is not None:
                     primary_key_ref = f"{model.name}.{model.primary_key}"
                     if metric.sql is not None:
                         qualified = self._qualify_measure_sql(metric.sql, model.name)

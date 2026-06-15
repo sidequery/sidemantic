@@ -1189,5 +1189,66 @@ def test_metricflow_period_agg_and_offset_metadata():
     assert any(i.get("offset_window") == "1 week" for i in inputs)
 
 
+def test_metricflow_disabled_model_skips_inline_metrics():
+    """Inline metrics on a disabled semantic model are not registered.
+
+    ``semantic_model.enabled: false`` produces no model, so its inline
+    model-local metrics have no SQL/model context. Registering them anyway would
+    leave queryable-looking metrics in the graph that raise ``No models found for
+    query`` when selected. The disabled model's metrics must be skipped while a
+    sibling enabled model's metrics remain queryable.
+    """
+    import tempfile
+    import textwrap
+
+    yml = textwrap.dedent("""
+        models:
+          - name: events
+            semantic_model:
+              enabled: false
+              name: events
+            columns:
+              - name: event_id
+                entity:
+                  type: primary
+                  name: event
+            metrics:
+              - name: event_count
+                type: simple
+                agg: count
+          - name: orders
+            semantic_model:
+              enabled: true
+              name: orders
+            columns:
+              - name: order_id
+                entity:
+                  type: primary
+                  name: order
+            metrics:
+              - name: order_count
+                type: simple
+                agg: count
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(yml)
+        path = Path(f.name)
+
+    try:
+        graph = MetricFlowAdapter().parse(path)
+
+        # Disabled model and its inline metric are absent.
+        assert "events" not in graph.models
+        assert "event_count" not in graph.metrics
+
+        # Sibling enabled model and its inline metric remain queryable.
+        assert "orders" in graph.models
+        assert "order_count" in graph.metrics
+        sql = SQLGenerator(graph).generate(metrics=["order_count"])
+        assert "orders" in sql.lower()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

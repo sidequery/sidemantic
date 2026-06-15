@@ -531,6 +531,65 @@ Dataset combined = base_part.extend(override)
     assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
 
 
+def test_holistics_merge_preserves_per_property_context(tmp_path):
+    """When a partial from another module defines a field whose `definition`
+    references a const from that module, and a consuming partial overrides only a
+    sibling property (e.g. `label`), the merged field block carries the consumer's
+    block-level context. Each property must still resolve against its own authoring
+    file, so `definition: rev_def` resolves to the finance const's AQL instead of
+    importing as the literal `rev_def` identifier."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # The const and the field that uses it live in the `finance` module.
+    (finance_dir / "rev.aml").write_text(
+        """
+const rev_def = @aql sum(base_orders.amount);;
+
+PartialDataset finance_part = PartialDataset {
+  metric revenue {
+    label: 'Finance Revenue'
+    type: 'number'
+    definition: rev_def
+  }
+}
+"""
+    )
+
+    # The root partial overrides ONLY the label of `revenue`, leaving the finance
+    # `definition` property untouched in the merged block.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { finance_part }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+PartialDataset root_over = PartialDataset {
+  metric revenue {
+    label: 'Root Label Override'
+  }
+}
+
+Dataset combined = finance_part.extend(root_over)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "combined" in graph.models
+    assert "revenue" in graph.metrics
+    # The override applies to the label, but the finance `definition` property keeps
+    # resolving against the finance module rather than the consuming root file.
+    assert graph.metrics["revenue"].label == "Root Label Override"
+    assert graph.metrics["revenue"].sql == "SUM(base_orders.amount)"
+    assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
 def test_holistics_extend_partial_preserves_relationship_context(tmp_path):
     """When a Dataset extends a PartialDataset from another module and that partial
     contributes a `relationships` property, the relationship refs must qualify

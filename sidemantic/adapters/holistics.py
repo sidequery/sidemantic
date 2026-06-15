@@ -1109,15 +1109,19 @@ def _parse_dimension_block(
         return None, False
 
     properties = _properties_from_items(block.items)
+    prop_contexts = _property_contexts_from_items(block.items)
 
-    dim_type_raw = _value_as_string(properties.get("type"), constants, context)
-    label = _value_as_string(properties.get("label"), constants, context)
-    description = _value_as_string(properties.get("description"), constants, context)
-    fmt = _value_as_string(properties.get("format"), constants, context)
+    def ctx_for(key: str) -> _FileContext:
+        return prop_contexts.get(key) or context
+
+    dim_type_raw = _value_as_string(properties.get("type"), constants, ctx_for("type"))
+    label = _value_as_string(properties.get("label"), constants, ctx_for("label"))
+    description = _value_as_string(properties.get("description"), constants, ctx_for("description"))
+    fmt = _value_as_string(properties.get("format"), constants, ctx_for("format"))
     is_primary = _value_as_bool(properties.get("primary_key")) is True
 
     dim_type, granularity = _map_dimension_type(dim_type_raw)
-    sql_expr = _normalize_definition(properties.get("definition"), constants, context)
+    sql_expr = _normalize_definition(properties.get("definition"), constants, ctx_for("definition"))
     if sql_expr == block.name:
         sql_expr = None
 
@@ -1140,13 +1144,19 @@ def _parse_measure_block(block: AmlBlock, constants: dict[str, AmlValue], contex
         return None
 
     properties = _properties_from_items(block.items)
+    prop_contexts = _property_contexts_from_items(block.items)
 
-    label = _value_as_string(properties.get("label"), constants, context)
-    description = _value_as_string(properties.get("description"), constants, context)
-    fmt = _value_as_string(properties.get("format"), constants, context)
+    def ctx_for(key: str) -> _FileContext:
+        return prop_contexts.get(key) or context
 
-    aggregation_type = _normalize_agg_type(_value_as_string(properties.get("aggregation_type"), constants, context))
-    expr = _normalize_definition(properties.get("definition"), constants, context)
+    label = _value_as_string(properties.get("label"), constants, ctx_for("label"))
+    description = _value_as_string(properties.get("description"), constants, ctx_for("description"))
+    fmt = _value_as_string(properties.get("format"), constants, ctx_for("format"))
+
+    aggregation_type = _normalize_agg_type(
+        _value_as_string(properties.get("aggregation_type"), constants, ctx_for("aggregation_type"))
+    )
+    expr = _normalize_definition(properties.get("definition"), constants, ctx_for("definition"))
 
     agg_map = {
         "count": "count",
@@ -1681,6 +1691,22 @@ def _properties_from_items(items: Iterable[AmlItem]) -> dict[str, AmlValue]:
         if isinstance(item, AmlProperty):
             props[item.key] = item.value
     return props
+
+
+def _property_contexts_from_items(items: Iterable[AmlItem]) -> dict[str, _FileContext | None]:
+    """Map each property key to the file context it was authored in.
+
+    When a field block is composed across modules (a PartialDataset metric from
+    one file extended/overridden by a partial in another), individual properties
+    carry their own origin context. Resolving each property against that context
+    keeps constants/`use` aliases (e.g. `definition: rev_def`) bound to the file
+    that defined them rather than the file that overrode a sibling property.
+    """
+    contexts: dict[str, _FileContext | None] = {}
+    for item in items:
+        if isinstance(item, AmlProperty):
+            contexts[item.key] = item.context
+    return contexts
 
 
 def _normalize_definition(

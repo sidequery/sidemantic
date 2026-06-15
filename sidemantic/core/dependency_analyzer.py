@@ -44,6 +44,13 @@ def extract_metric_dependencies(metric_obj, graph=None, model_context=None) -> s
     """
     deps = set()
 
+    # Opaque complete expression (e.g. imported Cube/Tesseract number_agg/time/
+    # string/boolean measures). The sql is preserved verbatim and must NOT be
+    # parsed for metric references - bare column names like ``status`` are real
+    # columns, not dependencies.
+    if getattr(metric_obj, "sql_is_complete", False):
+        return deps
+
     # Ratio metric - depends on numerator and denominator
     if metric_obj.type == "ratio":
         if metric_obj.numerator:

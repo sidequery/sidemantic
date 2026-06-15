@@ -135,10 +135,36 @@ class CubeAdapter(BaseAdapter):
                 if child_model:
                     _apply_hierarchies(child_model, pending_hierarchies[parent_name])
 
-        # Parse views after all cubes are loaded and inheritance resolved
-        for view_def in pending_views:
-            model = self._parse_view(view_def, graph)
+        # Parse views after all cubes are loaded and inheritance resolved.
+        # Resolve view-level `extends` in dependency order so a view can inherit
+        # members and folders from a parent view defined earlier or later.
+        view_defs_by_name = {v["name"]: v for v in pending_views if v.get("name")}
+        built_views: dict[str, Model] = {}
+
+        def _build_view(view_name: str, _stack: tuple[str, ...] = ()) -> Model | None:
+            if view_name in built_views:
+                return built_views[view_name]
+            if view_name in _stack:
+                # Guard against circular extends chains
+                return None
+            view_def = view_defs_by_name.get(view_name)
+            if view_def is None:
+                return None
+            parent_name = view_def.get("extends")
+            parent_model = None
+            if parent_name:
+                parent_model = _build_view(parent_name, _stack + (view_name,))
+            model = self._parse_view(view_def, graph, parent_model)
             if model:
+                built_views[view_name] = model
+            return model
+
+        for view_def in pending_views:
+            view_name = view_def.get("name")
+            if not view_name:
+                continue
+            model = _build_view(view_name)
+            if model and model.name not in graph.models:
                 graph.add_model(model)
 
         return graph
@@ -185,6 +211,14 @@ class CubeAdapter(BaseAdapter):
         # Collect views for deferred parsing (need all cubes loaded first)
         for view_def in data.get("views") or []:
             pending_views.append(view_def)
+
+        # Top-level view_groups: a UI grouping of views. Sidemantic has no
+        # first-class equivalent, so preserve the raw definitions on graph
+        # metadata for consumers that care about view organization.
+        view_groups = data.get("view_groups")
+        if view_groups:
+            existing = graph.metadata.get("cube_view_groups") or []
+            graph.metadata["cube_view_groups"] = existing + list(view_groups)
 
     def _convert_cube_join(
         self, join_sql: str, self_name: str, join_name: str
@@ -405,6 +439,7 @@ class CubeAdapter(BaseAdapter):
             "number": "numeric",
             "time": "time",
             "boolean": "categorical",
+            "switch": "categorical",  # enum-like dimension with a predefined values list
         }
 
         sidemantic_type = type_mapping.get(dim_type, "categorical")
@@ -442,6 +477,20 @@ class CubeAdapter(BaseAdapter):
         label = dim_def.get("title")
         meta = dim_def.get("meta")
         public = dim_def.get("shown", dim_def.get("public", True))
+
+        # Store Cube-specific params (switch values, mask, currency) on meta so
+        # they survive the import even though Sidemantic has no first-class field.
+        switch_values = dim_def.get("values") if dim_type == "switch" else None
+        mask = dim_def.get("mask")
+        currency = dim_def.get("currency")
+        if switch_values is not None or mask is not None or currency is not None:
+            meta = dict(meta) if meta else {}
+            if switch_values is not None:
+                meta["switch_values"] = switch_values
+            if mask is not None:
+                meta["mask"] = mask
+            if currency is not None:
+                meta["currency"] = currency
 
         return Dimension(
             name=name,
@@ -492,6 +541,9 @@ class CubeAdapter(BaseAdapter):
 
         agg_type = type_mapping.get(measure_type)
         metric_type = None
+        # When True, the sql holds a complete expression that must be preserved
+        # verbatim (no auto-extraction of aggregations into agg=).
+        sql_is_complete = False
 
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
@@ -503,6 +555,23 @@ class CubeAdapter(BaseAdapter):
                 meta["cube_type"] = "rank"
                 meta["order_by"] = measure_def.get("order_by")
                 meta["reduce_by"] = measure_def.get("reduce_by")
+            elif measure_type == "number_agg":
+                # Custom SQL aggregate (e.g., PERCENTILE_CONT). The sql field holds
+                # the complete aggregate expression, so leave agg=None and preserve
+                # the SQL verbatim. Record the original Cube type for consumers.
+                agg_type = None
+                sql_is_complete = True
+                meta = meta.copy() if meta else {}
+                meta["cube_type"] = "number_agg"
+            elif measure_type in ("string", "time", "boolean"):
+                # Non-numeric measure types (Tesseract). The sql is a complete
+                # expression (often itself an aggregate, e.g. type: time with
+                # MAX({CUBE}.created_at)). Preserve it verbatim with agg=None and
+                # record the original Cube type rather than forcing a count.
+                agg_type = None
+                sql_is_complete = True
+                meta = meta.copy() if meta else {}
+                meta["cube_type"] = measure_type
             else:
                 # Truly unknown types fall back to count
                 agg_type = "count"
@@ -606,11 +675,30 @@ class CubeAdapter(BaseAdapter):
 
                     measure_sql = re.sub(r"\$\{(\w+)\}", replace_measure_ref, measure_sql)
 
+        # Preserve Cube-specific measure params that have no first-class Sidemantic
+        # equivalent: mask/currency, and multi-stage group_by/add_group_by used for
+        # percent-of-total style calculations.
+        mask = measure_def.get("mask")
+        currency = measure_def.get("currency")
+        group_by = measure_def.get("group_by")
+        add_group_by = measure_def.get("add_group_by")
+        if any(v is not None for v in (mask, currency, group_by, add_group_by)):
+            meta = dict(meta) if meta else {}
+            if mask is not None:
+                meta["mask"] = mask
+            if currency is not None:
+                meta["currency"] = currency
+            if group_by is not None:
+                meta["group_by"] = group_by
+            if add_group_by is not None:
+                meta["add_group_by"] = add_group_by
+
         return Metric(
             name=name,
             type=metric_type,
             agg=agg_type,
             sql=measure_sql,
+            sql_is_complete=sql_is_complete,
             numerator=numerator,
             denominator=denominator,
             window=window,
@@ -733,7 +821,7 @@ class CubeAdapter(BaseAdapter):
             build_range_end=build_range_end,
         )
 
-    def _parse_view(self, view_def: dict, graph: SemanticGraph) -> Model | None:
+    def _parse_view(self, view_def: dict, graph: SemanticGraph, parent_model: Model | None = None) -> Model | None:
         """Parse a Cube view into a composite Model.
 
         Views project and rename members from existing cubes via join_path,
@@ -742,6 +830,8 @@ class CubeAdapter(BaseAdapter):
         Args:
             view_def: View definition dictionary
             graph: Semantic graph with already-parsed cubes
+            parent_model: Already-built view model referenced via view-level
+                ``extends`` (its members and folders are inherited).
 
         Returns:
             Model instance or None
@@ -752,6 +842,14 @@ class CubeAdapter(BaseAdapter):
 
         dimensions = []
         metrics = []
+        inherited_folders: list = []
+
+        # View-level extends: seed members and folders from the parent view.
+        if parent_model is not None:
+            dimensions.extend(d.model_copy() for d in parent_model.dimensions)
+            metrics.extend(m.model_copy() for m in parent_model.metrics)
+            if parent_model.meta:
+                inherited_folders = list(parent_model.meta.get("folders") or [])
 
         for cube_spec in view_def.get("cubes", []):
             join_path = cube_spec.get("join_path", "")
@@ -831,15 +929,47 @@ class CubeAdapter(BaseAdapter):
             dimensions.extend(dims)
             metrics.extend(mets)
 
+        # Deduplicate by name, keeping the last definition so a child view's
+        # own members override inherited (extended) ones.
+        def _dedupe(items):
+            by_name: dict[str, object] = {}
+            for item in items:
+                by_name[item.name] = item
+            return list(by_name.values())
+
+        dimensions = _dedupe(dimensions)
+        metrics = _dedupe(metrics)
+
         # Only create a model if the view resolved at least some members
         if not dimensions and not metrics:
             return None
+
+        meta: dict = {"cube_type": "view"}
+
+        # Folders: nested member grouping for UI organization. Merge the view's
+        # own folders onto any inherited from the extended parent.
+        own_folders = view_def.get("folders") or []
+        folders = inherited_folders + list(own_folders)
+        if folders:
+            meta["folders"] = folders
+
+        # default_filters: enforced query filters; preserve raw definitions.
+        default_filters = view_def.get("default_filters")
+        if default_filters:
+            meta["default_filters"] = default_filters
+
+        # meta.default_ui_filters: pre-populated (editable) workbench filters.
+        view_meta = view_def.get("meta")
+        if view_meta:
+            default_ui_filters = view_meta.get("default_ui_filters")
+            if default_ui_filters is not None:
+                meta["default_ui_filters"] = default_ui_filters
 
         return Model(
             name=name,
             dimensions=dimensions,
             metrics=metrics,
-            meta={"cube_type": "view"},
+            meta=meta,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:

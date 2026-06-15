@@ -8,7 +8,6 @@ from pathlib import Path
 import duckdb
 import pytest
 import sqlglot
-from pydantic import ValidationError
 from sqlglot import exp
 
 from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
@@ -60,6 +59,8 @@ ADDED_FIXTURE_CASES = [
     (CubeAdapter, "tests/fixtures/cube/switch_dimension.yml"),
     (CubeAdapter, "tests/fixtures/cube/visitors_geo_subquery.yaml"),
     (GoodDataAdapter, "tests/fixtures/gooddata/ecommerce_demo_ldm.json"),
+    (GoodDataAdapter, "tests/fixtures/gooddata/sdk_declarative_ldm.json"),
+    (GoodDataAdapter, "tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json"),
     (HexAdapter, "tests/fixtures/hex/employees.yml"),
     (HexAdapter, "tests/fixtures/hex/inventory.yml"),
     (HexAdapter, "tests/fixtures/hex/page_views.yml"),
@@ -99,6 +100,7 @@ ADDED_FIXTURE_CASES = [
     (MetricFlowAdapter, "tests/fixtures/metricflow/ambiguous_resolution_manifest.yaml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/cyclic_join_manifest.yaml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/extended_date_manifest.yaml"),
+    (MetricFlowAdapter, "tests/fixtures/metricflow/latest_spec_models.yml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/name_edge_case_manifest.yaml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/scd_listings.yaml"),
     (MetricFlowAdapter, "tests/fixtures/metricflow/scd_metrics.yaml"),
@@ -167,16 +169,6 @@ ADDED_FIXTURE_EXPECTED_FAILURE_CASES = [
         "tests/fixtures/gooddata/sdk_declarative_analytics_model.json",
         GoodDataParseError,
     ),
-    (
-        GoodDataAdapter,
-        "tests/fixtures/gooddata/sdk_declarative_ldm.json",
-        ValidationError,
-    ),
-    (
-        GoodDataAdapter,
-        "tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json",
-        ValidationError,
-    ),
 ]
 
 ADDED_EXPECTED_EMPTY_GRAPH_FIXTURES = {
@@ -193,6 +185,11 @@ ADDED_EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/lookml/segment_attribution_model.model.lkml",
     "tests/fixtures/omni/estore/model.yaml",
     "tests/fixtures/omni/estore/relationships.yaml",
+    # Topic files reference views but define no models of their own; parsed
+    # standalone they yield an empty graph.
+    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
+    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
+    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
     "tests/fixtures/rill/bids_canvas.yaml",
     "tests/fixtures/rill/bids_explore.yaml",
     "tests/fixtures/rill/nyc_trips_dashboard.yaml",
@@ -210,9 +207,6 @@ ADDED_EXPECTED_LOW_SIGNAL_FIXTURES = {
     "tests/fixtures/malloy/ecommerce_malloydata.malloy",
     "tests/fixtures/malloy/flights_cube.malloy",
     "tests/fixtures/malloy/ga4_config.malloy",
-    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
-    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
-    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
 }
 
 ADDED_EXPECTED_NO_COMPILE_QUERY_FIXTURES = {
@@ -250,16 +244,11 @@ ADDED_EXPECTED_NO_COMPILE_QUERY_FIXTURES = {
     "tests/fixtures/metricflow/scd_metrics.yaml",
     "tests/fixtures/omni/estore/model.yaml",
     "tests/fixtures/omni/estore/relationships.yaml",
-    "tests/fixtures/omni/estore/snapshots/snap_user_rfm.view.yaml",
     "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
     "tests/fixtures/omni/estore/topics/Events.topic.yaml",
     "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
-    "tests/fixtures/omni/estore/views/dim_categories.view.yaml",
-    "tests/fixtures/omni/estore/views/dim_products.view.yaml",
-    "tests/fixtures/omni/estore/views/dim_user_rfm.view.yaml",
-    "tests/fixtures/omni/estore/views/dim_users.view.yaml",
-    "tests/fixtures/omni/estore/views/fct_events.view.yaml",
-    "tests/fixtures/omni/estore/views/fct_sessions.view.yaml",
+    # Note: views/*.view.yaml and snapshots/*.view.yaml now compile (named
+    # {schema}__{table}, no dot in name).
     "tests/fixtures/rill/bids_canvas.yaml",
     "tests/fixtures/rill/bids_explore.yaml",
     "tests/fixtures/rill/nyc_trips_dashboard.yaml",

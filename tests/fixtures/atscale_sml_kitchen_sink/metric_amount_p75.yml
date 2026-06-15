@@ -1,0 +1,8 @@
+unique_name: amount_p75
+object_type: metric
+calculation_method: percentile
+dataset: fact_orders
+column: total_amount
+custom_quantiles:
+  - 0.75
+compression: 10000

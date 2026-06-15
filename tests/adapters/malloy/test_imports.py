@@ -60,6 +60,9 @@ def test_aliased_import():
     assert crm_customers.table == "customers.parquet"
     assert crm_customers.primary_key == "customer_id"
 
+    # Aliased clone must preserve source metadata (e.g. connection / virtual info)
+    assert crm_customers.metadata == {"connection": "duckdb"}
+
     # Verify sales references the aliased model
     sales = graph.get_model("sales")
     crm_rel = next((r for r in sales.relationships if r.name == "crm_customers"), None)

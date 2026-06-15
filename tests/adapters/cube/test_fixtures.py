@@ -476,6 +476,21 @@ class TestMultiStageTimeShift:
         assert currency is not None
         assert currency.type == "categorical"
 
+    def test_switch_dimension_values_stored(self, graph):
+        """The switch dimension's values list is preserved in meta."""
+        switch_model = graph.get_model("orders_with_switch")
+        currency = switch_model.get_dimension("currency")
+        assert currency.meta is not None
+        assert currency.meta.get("switch_values") == ["USD", "EUR", "GBP"]
+
+    def test_multi_stage_group_by_stored(self, graph):
+        """Multi-stage group_by (percent-of-total) is preserved in meta."""
+        pot = graph.get_model("percent_of_total")
+        country_rev = pot.get_metric("country_revenue")
+        assert country_rev is not None
+        assert country_rev.meta is not None
+        assert country_rev.meta.get("group_by") == ["country"]
+
     def test_switch_model_measures(self, graph):
         switch_model = graph.get_model("orders_with_switch")
         assert len(switch_model.metrics) >= 4
@@ -666,3 +681,376 @@ class TestCaseSwitchDimensions:
         assert "users_to_orders" in graph.models
         view = graph.get_model("users_to_orders")
         assert view.meta == {"cube_type": "view"}
+
+
+# ---------------------------------------------------------------------------
+# Switch Dimension (standalone fixture)
+# ---------------------------------------------------------------------------
+
+
+class TestSwitchDimension:
+    """type: switch dimension with a values list (enum-like)."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = CubeAdapter()
+        return adapter.parse(FIXTURES_DIR / "switch_dimension.yml")
+
+    def test_parses_without_error(self, graph):
+        assert graph is not None
+        assert "orders" in graph.models
+
+    def test_switch_dimension_is_categorical(self, graph):
+        orders = graph.get_model("orders")
+        currency = orders.get_dimension("currency")
+        assert currency is not None
+        assert currency.type == "categorical"
+
+    def test_switch_values_preserved(self, graph):
+        orders = graph.get_model("orders")
+        currency = orders.get_dimension("currency")
+        assert currency.meta is not None
+        assert currency.meta.get("switch_values") == ["USD", "EUR", "GBP"]
+
+    def test_non_switch_dimensions_have_no_switch_values(self, graph):
+        orders = graph.get_model("orders")
+        status = orders.get_dimension("status")
+        assert status is not None
+        # status is a plain string dimension; no switch metadata added
+        assert not (status.meta and "switch_values" in status.meta)
+
+
+# ---------------------------------------------------------------------------
+# Folders, View Extends (standalone fixture)
+# ---------------------------------------------------------------------------
+
+
+class TestViewFoldersAndExtends:
+    """View folders (nested member grouping) and view-level extends."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = CubeAdapter()
+        return adapter.parse(FIXTURES_DIR / "folders.yml")
+
+    def test_all_views_imported(self, graph):
+        for view_name in ("test_view", "test_view2", "test_view3", "test_view4"):
+            assert view_name in graph.models, f"missing {view_name}"
+            assert graph.get_model(view_name).meta.get("cube_type") == "view"
+
+    def test_view_folders_stored(self, graph):
+        view = graph.get_model("test_view")
+        folders = view.meta.get("folders")
+        assert folders is not None
+        names = [f.get("name") for f in folders]
+        assert names == ["folder1", "folder2"]
+
+    def test_nested_folder_structure_preserved(self, graph):
+        """Nested folders (folder containing sub-folders) parse verbatim."""
+        view = graph.get_model("test_view4")
+        folders = view.meta.get("folders")
+        folder3 = next(f for f in folders if f.get("name") == "folder3")
+        # folder3 has nested folder dicts inside its includes
+        nested = [inc for inc in folder3["includes"] if isinstance(inc, dict)]
+        nested_names = {inc["name"] for inc in nested}
+        assert {"inner folder 4", "inner folder 5"} <= nested_names
+
+    def test_view_extends_inherits_members(self, graph):
+        """A view extending another inherits its projected members."""
+        parent = graph.get_model("test_view3")
+        child = graph.get_model("test_view4")
+        # test_view4 only adds a folder; all members come from test_view3
+        parent_dim_names = {d.name for d in parent.dimensions}
+        child_dim_names = {d.name for d in child.dimensions}
+        assert parent_dim_names <= child_dim_names
+
+    def test_view_extends_inherits_folders(self, graph):
+        """Extending a view also inherits its folders (parent first)."""
+        child = graph.get_model("test_view4")
+        folder_names = [f.get("name") for f in child.meta.get("folders")]
+        # folder1 from test_view2, folder2 from test_view3, folder3 from test_view4
+        assert folder_names == ["folder1", "folder2", "folder3"]
+
+
+# ---------------------------------------------------------------------------
+# Tesseract-era measure/dimension params and view metadata
+# ---------------------------------------------------------------------------
+
+
+class TestTesseractFeatures:
+    """number_agg / non-numeric measures, mask, currency, view_groups, default filters."""
+
+    @pytest.fixture()
+    def graph(self):
+        adapter = CubeAdapter()
+        return adapter.parse(FIXTURES_DIR / "tesseract_features.yml")
+
+    def test_parses_without_error(self, graph):
+        assert graph is not None
+        assert "orders" in graph.models
+
+    def test_number_agg_measure(self, graph):
+        """number_agg measures keep the full SQL aggregate; agg stays None."""
+        orders = graph.get_model("orders")
+        p95 = orders.get_metric("amount_p95")
+        assert p95 is not None
+        assert p95.agg is None
+        assert p95.type is None
+        assert p95.sql is not None
+        assert "PERCENTILE_CONT" in p95.sql
+        assert p95.meta.get("cube_type") == "number_agg"
+
+    def test_non_numeric_measure_types(self, graph):
+        """string / time / boolean measures preserve sql and record cube_type."""
+        orders = graph.get_model("orders")
+        for mname, ctype in (("last_status", "string"), ("last_order_time", "time"), ("any_completed", "boolean")):
+            m = orders.get_metric(mname)
+            assert m is not None, mname
+            assert m.agg is None, mname
+            assert m.meta.get("cube_type") == ctype
+            assert m.sql is not None
+
+    def test_aggregate_expression_measures_preserved_verbatim(self, graph):
+        """Measures whose sql is itself a top-level aggregate must not be re-parsed.
+
+        Without sql_is_complete, Metric.handle_expr_and_parse_agg would extract the
+        aggregation (agg=max) and rewrite the sql, corrupting the {model} placeholder
+        (e.g. into "{'model': model}.created_at"). The import must stay lossless.
+        """
+        orders = graph.get_model("orders")
+
+        latest = orders.get_metric("latest_order_at")
+        assert latest is not None
+        assert latest.agg is None
+        assert latest.type is None
+        assert latest.meta.get("cube_type") == "time"
+        # sql preserved verbatim with the {model} placeholder intact
+        assert latest.sql == "MAX({model}.created_at)"
+
+        total_agg = orders.get_metric("amount_total_agg")
+        assert total_agg is not None
+        assert total_agg.agg is None
+        assert total_agg.type is None
+        assert total_agg.meta.get("cube_type") == "number_agg"
+        assert total_agg.sql == "SUM({model}.amount)"
+
+    def test_complete_sql_measures_have_no_dependencies(self, graph):
+        """sql_is_complete measures are opaque - never dependency-expanded.
+
+        A plain-column measure like ``last_status`` (sql: status) must NOT treat
+        ``status`` as a metric reference, otherwise compilation raises
+        "Metric status not found".
+        """
+        orders = graph.get_model("orders")
+        for mname in ("last_status", "last_order_time", "amount_p95", "latest_order_at"):
+            m = orders.get_metric(mname)
+            assert m.sql_is_complete is True, mname
+            assert m.get_dependencies(graph, "orders") == set(), mname
+
+    def test_aggregate_complete_measures_queryable(self, graph):
+        """number_agg / aggregate string|time|boolean measures compile and execute.
+
+        Regression: the {model} placeholder must not be collected as a real column
+        named "model" in the CTE (which produced "SELECT amount AS amount, model AS
+        model FROM public.orders" and failed on tables without a model column).
+        """
+        import duckdb
+
+        from sidemantic import SemanticLayer
+        from sidemantic.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',100.0,TIMESTAMP '2024-01-01'),"
+            "(2,'pending',50.0,TIMESTAMP '2024-02-01'),"
+            "(3,'completed',200.0,TIMESTAMP '2024-03-01')) "
+            "t(id,status,amount,created_at)"
+        )
+
+        for mref in ("orders.amount_p95", "orders.latest_order_at", "orders.any_completed", "orders.amount_total_agg"):
+            sql = gen.generate(metrics=[mref]).split("-- sidemantic")[0]
+            assert "model AS model" not in sql, mref
+            # Must execute against a real table that has no "model" column.
+            con.execute(sql).fetchall()
+
+        # Also exercise the public SemanticLayer.compile path used by the CLI.
+        layer = SemanticLayer()
+        layer.add_model(graph.get_model("orders"))
+        layer.compile(metrics=["orders.amount_total_agg"])
+
+    def test_plain_non_numeric_measures_queryable(self, graph):
+        """type: string / time measures with plain-column sql are queryable.
+
+        Regression: these import as type=None, agg=None, sql_is_complete=True and
+        previously raised "Metric status not found" during dependency expansion.
+        """
+        import duckdb
+
+        from sidemantic.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',TIMESTAMP '2024-01-01'),"
+            "(2,'pending',TIMESTAMP '2024-02-01')) t(id,status,created_at)"
+        )
+
+        # Ungrouped: plain column projected directly.
+        for mref in ("orders.last_status", "orders.last_order_time"):
+            sql = gen.generate(metrics=[mref], ungrouped=True).split("-- sidemantic")[0]
+            con.execute(sql).fetchall()
+
+        # Grouped by the same dimension also compiles and executes.
+        sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.status"]).split("-- sidemantic")[0]
+        con.execute(sql).fetchall()
+
+    def test_complete_measure_preserves_raw_timestamp(self, graph):
+        """Complete-sql time measures return the raw timestamp, not a truncated date.
+
+        Regression: ``created_at`` is also a time dimension, so the CTE projected
+        ``DATE_TRUNC('DAY', created_at)`` and the measure aggregated/selected the
+        truncated value, returning dates instead of timestamps. The measure must
+        reference a dedicated raw column.
+        """
+        import duckdb
+
+        from sidemantic.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',100.0,TIMESTAMP '2024-01-01 10:30:00'),"
+            "(2,'pending',50.0,TIMESTAMP '2024-03-01 09:15:00')) "
+            "t(id,status,amount,created_at)"
+        )
+
+        # plain-column time measure (ungrouped) keeps the time-of-day
+        sql = gen.generate(metrics=["orders.last_order_time"], ungrouped=True).split("-- sidemantic")[0]
+        rows = sorted(con.execute(sql).fetchall())
+        assert rows[0][0].hour == 10 and rows[0][0].minute == 30
+        assert rows[1][0].hour == 9 and rows[1][0].minute == 15
+
+        # aggregate time measure (MAX) returns the full raw timestamp
+        sql = gen.generate(metrics=["orders.latest_order_at"]).split("-- sidemantic")[0]
+        (latest,) = con.execute(sql).fetchone()
+        assert latest.hour == 9 and latest.minute == 15
+
+    def test_complete_measure_applies_filters(self, graph):
+        """A complete-sql measure with filters restricts the aggregate to matching rows.
+
+        Regression: the opaque early-return bypassed the CASE WHEN measure-filter
+        wrapping, so a filtered aggregate ran over all rows and returned the
+        unfiltered total.
+        """
+        import duckdb
+
+        from sidemantic.core.metric import Metric
+        from sidemantic.sql.generator import SQLGenerator
+
+        orders = graph.get_model("orders")
+        orders.metrics.append(
+            Metric(
+                name="completed_total",
+                agg=None,
+                sql="SUM({model}.amount)",
+                sql_is_complete=True,
+                filters=["{model}.status = 'completed'"],
+            )
+        )
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',100.0,TIMESTAMP '2024-01-01'),"
+            "(2,'pending',50.0,TIMESTAMP '2024-02-01'),"
+            "(3,'completed',200.0,TIMESTAMP '2024-03-01')) "
+            "t(id,status,amount,created_at)"
+        )
+
+        sql = gen.generate(metrics=["orders.completed_total"]).split("-- sidemantic")[0]
+        (total,) = con.execute(sql).fetchone()
+        assert float(total) == 300.0  # 100 + 200, not 350
+
+    def test_plain_complete_measure_grouped_by_other_dimension(self, graph):
+        """Plain-column complete measures stay valid when grouped by another dimension.
+
+        Regression: ``metrics=[orders.last_status], dimensions=[orders.id]`` emitted a
+        bare ``status`` column that was neither grouped nor aggregated, which DuckDB/
+        Postgres reject. The plain measure must be wrapped (ANY_VALUE) under GROUP BY.
+        """
+        import duckdb
+
+        from sidemantic.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(graph)
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA IF NOT EXISTS public")
+        con.execute(
+            "CREATE TABLE public.orders AS SELECT * FROM (VALUES "
+            "(1,'completed',TIMESTAMP '2024-01-01'),"
+            "(2,'pending',TIMESTAMP '2024-02-01')) t(id,status,created_at)"
+        )
+
+        sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.id"]).split("-- sidemantic")[0]
+        rows = sorted(con.execute(sql).fetchall())
+        assert rows == [(1, "completed"), (2, "pending")]
+
+    def test_measure_mask_and_currency(self, graph):
+        orders = graph.get_model("orders")
+        total = orders.get_metric("total_amount")
+        assert total is not None
+        assert total.agg == "sum"
+        assert total.meta.get("mask") == 0
+        assert total.meta.get("currency") == "USD"
+
+    def test_dimension_mask(self, graph):
+        orders = graph.get_model("orders")
+        ssn = orders.get_dimension("ssn")
+        assert ssn is not None
+        assert ssn.meta is not None
+        assert "mask" in ssn.meta
+
+    def test_dimension_currency(self, graph):
+        orders = graph.get_model("orders")
+        amount = orders.get_dimension("amount")
+        assert amount is not None
+        assert amount.meta.get("currency") == "USD"
+
+    def test_view_folders(self, graph):
+        view = graph.get_model("orders_view")
+        names = [f.get("name") for f in view.meta.get("folders")]
+        assert names == ["Identifiers", "Financials"]
+
+    def test_view_default_filters(self, graph):
+        view = graph.get_model("orders_view")
+        df = view.meta.get("default_filters")
+        assert df is not None
+        assert df[0]["member"] == "status"
+        assert df[0]["operator"] == "equals"
+
+    def test_view_default_ui_filters(self, graph):
+        view = graph.get_model("orders_view")
+        duf = view.meta.get("default_ui_filters")
+        assert duf is not None
+        assert duf[0]["member"] == "status"
+
+    def test_view_extends_appends_folders(self, graph):
+        view = graph.get_model("orders_view_extended")
+        names = [f.get("name") for f in view.meta.get("folders")]
+        # inherited Identifiers/Financials plus own Extra
+        assert names == ["Identifiers", "Financials", "Extra"]
+
+    def test_view_groups_preserved(self, graph):
+        groups = graph.metadata.get("cube_view_groups")
+        assert groups is not None
+        assert groups[0]["name"] == "Sales"
+        assert "orders_view" in groups[0]["views"]

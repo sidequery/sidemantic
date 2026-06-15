@@ -1,4 +1,5 @@
 id: saas_analytics
+type: model
 base_sql_query: |
   SELECT
     s.id,
@@ -135,7 +136,10 @@ measures:
     name: Current MRR
     func: sum
     of: mrr
-    semi_additive: end_of_period
+    semi_additive:
+      over:
+        - dimension: subscription_quarter
+          pick: max
     description: MRR as of end of period (semi-additive)
 
   - id: enterprise_mrr

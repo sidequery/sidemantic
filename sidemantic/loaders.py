@@ -152,12 +152,24 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
             try:
                 yaml_data = _load_yaml_mapping(content)
             except Exception as e:
-                if _looks_like_semantic_yaml_text(content):
+                # Current Hex Semantic Authoring files are multi-document YAML
+                # (``---``-separated, typed resources). ``yaml.safe_load`` rejects
+                # those before any single-document detection runs, so check for
+                # Hex explicitly here before treating the file as unparseable.
+                if _looks_like_hex_yaml(content):
+                    adapter = HexAdapter()
+                elif _looks_like_semantic_yaml_text(content):
                     _handle_parse_error(file_path, e, strict=strict)
-                continue
+                    continue
+                else:
+                    continue
+                yaml_data = None
             # Check for MetricFlow before Sidemantic native since
             # "semantic_models:" contains "models:" as a substring
-            if _yaml_has_top_level_key(yaml_data, "semantic_models"):
+            if yaml_data is None:
+                # Format already resolved on the multi-document fallback path.
+                pass
+            elif _yaml_has_top_level_key(yaml_data, "semantic_models"):
                 adapter = MetricFlowAdapter()
             elif _yaml_has_top_level_key(yaml_data, "semantic_model") and _yaml_has_top_level_key(
                 yaml_data, "datasets"
@@ -174,7 +186,9 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 adapter = SidemanticAdapter()
             elif _yaml_has_top_level_key(yaml_data, "metrics") and "type: " in content:
                 adapter = MetricFlowAdapter()
-            elif _contains_yaml_key(yaml_data, "base_sql_table") and _contains_yaml_key(yaml_data, "measures"):
+            elif _is_hex_resource_mapping(yaml_data):
+                # Single-document Hex (legacy ``base_sql_table``/``measures`` form
+                # or a current typed ``type: model``/``type: view`` resource).
                 adapter = HexAdapter()
             elif (
                 _contains_yaml_key(yaml_data, "table")
@@ -384,6 +398,40 @@ def _load_yaml_mapping(content: str) -> dict:
     """Parse YAML content and return a mapping, or an empty mapping for scalar/list YAML."""
     data = yaml.safe_load(content)
     return data if isinstance(data, dict) else {}
+
+
+def _is_hex_resource_mapping(data: object) -> bool:
+    """Return True when a single YAML mapping is a Hex Semantic Authoring resource.
+
+    Covers both the legacy single-document form (``base_sql_table``/
+    ``base_sql_query`` + ``measures``) and the current typed form where each
+    resource carries a ``type: model`` / ``type: view`` discriminator alongside
+    an ``id``.
+    """
+    if not isinstance(data, dict):
+        return False
+    if data.get("type") in ("model", "view") and "id" in data:
+        return True
+    # ``HexAdapter`` accepts query-backed models (``base_sql_query``) in addition
+    # to table-backed ones; both must be recognized so directory auto-discovery
+    # does not silently skip query-backed Hex models on the CLI/MCP path.
+    if not _contains_yaml_key(data, "measures"):
+        return False
+    return _contains_yaml_key(data, "base_sql_table") or _contains_yaml_key(data, "base_sql_query")
+
+
+def _looks_like_hex_yaml(content: str) -> bool:
+    """Detect Hex YAML, including multi-document (``---``-separated) files.
+
+    Current Hex Semantic Authoring projects emit multiple typed resources in one
+    file separated by ``---``. ``yaml.safe_load`` rejects those, so this helper
+    uses ``safe_load_all`` and returns True when any document is a Hex resource.
+    """
+    try:
+        documents = list(yaml.safe_load_all(content))
+    except Exception:
+        return False
+    return any(_is_hex_resource_mapping(doc) for doc in documents)
 
 
 def _looks_like_semantic_yaml_text(content: str) -> bool:

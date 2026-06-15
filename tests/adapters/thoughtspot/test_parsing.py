@@ -674,3 +674,1062 @@ def test_import_tpch_liveboard_skipped():
     adapter = ThoughtSpotAdapter()
     graph = adapter.parse("tests/fixtures/thoughtspot/tpch_liveboard.liveboard.tml")
     assert len(graph.models) == 0
+
+
+# =============================================================================
+# TML MODEL OBJECT (export_schema_version v2)
+# =============================================================================
+
+
+def test_import_thoughtspot_model():
+    """Parse a first-class TML Model object (model_tables + columns + nested joins)."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/sales.model.tml")
+
+    assert "sales_model" in graph.models
+    model = graph.models["sales_model"]
+
+    # Nested model_tables joins produce a joined SQL and relationships.
+    assert model.sql is not None
+    assert "JOIN customers" in model.sql
+    assert "JOIN regions" in model.sql
+    # Composite ON predicate from the regions join is preserved.
+    assert "country_code" in model.sql
+
+    relationships = {rel.name: rel for rel in model.relationships}
+    # cardinality: MANY_TO_ONE
+    assert relationships["customers"].type == "many_to_one"
+    assert relationships["customers"].foreign_key == "customer_id"
+    assert relationships["customers"].primary_key == "id"
+    # cardinality: ONE_TO_ONE with a composite ON predicate. Sidemantic treats
+    # one_to_one (like one_to_many) as an edge where the related model owns the
+    # foreign key and the local model owns the primary key, so the parsed
+    # source-side FK/PK are stored swapped. Both key pairs from the composite
+    # predicate are preserved.
+    assert relationships["regions"].type == "one_to_one"
+    assert relationships["regions"].foreign_key == ["id", "country_code"]
+    assert relationships["regions"].primary_key == ["region_id", "country_code"]
+
+    # A joined model becomes a derived table. Its `SELECT *` is rewritten into an
+    # explicit projection that aliases each inner `table.column` to a stable,
+    # unqualified output name so the columns stay in scope when queried.
+    assert "SELECT *" not in model.sql
+    assert "sales.id AS sales__id" in model.sql
+    assert "customers.name AS customers__name" in model.sql
+
+    # Dimensions reference the unqualified aliased output names, not inner
+    # `table.column` qualifiers that are out of scope in the derived subquery.
+    order_id = model.get_dimension("order_id")
+    assert order_id is not None
+    assert order_id.sql == "sales__id"
+    assert order_id.description == "Order identifier"
+
+    order_date = model.get_dimension("order_date")
+    assert order_date is not None
+    assert order_date.type == "time"
+    assert order_date.granularity == "day"
+    assert order_date.label == "Order Date"
+
+    is_active = model.get_dimension("is_active")
+    assert is_active is not None
+    assert is_active.type == "boolean"
+
+    # Column from a joined table resolves to that table's aliased output name.
+    customer_name = model.get_dimension("customer_name")
+    assert customer_name is not None
+    assert customer_name.sql == "customers__name"
+    assert customer_name.label == "Customer"
+
+    region_name = model.get_dimension("region_name")
+    assert region_name is not None
+    assert region_name.sql == "regions__name"
+
+    # Simple aggregated measure.
+    gross_revenue = model.get_metric("gross_revenue")
+    assert gross_revenue is not None
+    assert gross_revenue.agg == "sum"
+    assert gross_revenue.format == "$#,##0.00"
+    assert gross_revenue.sql == "sales__gross_revenue"
+
+    # Formula-backed measures.
+    net_revenue = model.get_metric("net_revenue")
+    assert net_revenue is not None
+    assert net_revenue.agg == "sum"
+    assert "gross_revenue" in (net_revenue.sql or "")
+
+    avg_order_value = model.get_metric("avg_order_value")
+    assert avg_order_value is not None
+    assert avg_order_value.agg == "avg"
+    assert "/" in (avg_order_value.sql or "")
+
+    # Aggregation coverage.
+    assert model.get_metric("distinct_customers").agg == "count_distinct"
+    assert model.get_metric("order_count").agg == "count"
+    assert model.get_metric("min_order_value").agg == "min"
+    assert model.get_metric("max_order_value").agg == "max"
+    assert model.get_metric("median_order_value").agg == "median"
+
+    # Unsupported aggregation falls back to a derived metric.
+    revenue_stddev = model.get_metric("revenue_stddev")
+    assert revenue_stddev is not None
+    assert revenue_stddev.type == "derived"
+    assert "STDDEV" in (revenue_stddev.sql or "")
+
+
+def test_import_thoughtspot_model_alias():
+    """Parse a TML Model with id-based tables and an aliased (role-playing) join."""
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_alias.model.tml")
+
+    assert "orders_model" in graph.models
+    model = graph.models["orders_model"]
+
+    # The alias `ship_country` is the role identifier and is preserved as the
+    # join relation (`countries AS ship_country`) and relationship name, instead
+    # of being resolved away to the backing `countries` table.
+    assert model.sql is not None
+    assert "JOIN countries AS ship_country" in model.sql
+
+    relationships = {rel.name: rel for rel in model.relationships}
+    assert "ship_country" in relationships
+    assert relationships["ship_country"].type == "many_to_one"
+    assert relationships["ship_country"].foreign_key == "ship_country_id"
+    assert relationships["ship_country"].primary_key == "id"
+
+    ship_country = model.get_dimension("ship_country_name")
+    assert ship_country is not None
+    assert ship_country.sql == "ship_country__name"
+
+    # `column_id` paths that use the table `name` (even when an `id` exists)
+    # keep their table qualifier instead of collapsing to a bare column; the
+    # qualifier is carried through to the aliased output name.
+    order_id = model.get_dimension("order_id")
+    assert order_id is not None
+    assert order_id.sql == "orders__id"
+
+    amount = model.get_metric("amount")
+    assert amount is not None
+    assert amount.agg == "sum"
+    assert amount.sql == "orders__amount"
+
+
+def test_thoughtspot_joined_model_is_queryable():
+    """A joined Model TML compiles to SQL that executes (columns stay in scope).
+
+    Regression: joined models were exported as `FROM (SELECT * FROM sales JOIN ...) AS t`
+    while dimensions/metrics kept inner qualifiers like `sales.gross_revenue`, so a
+    normal query produced `SELECT sales.gross_revenue FROM (...) AS t` and failed with
+    "table sales not found".
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/sales.model.tml")
+
+    layer = SemanticLayer()
+    for model in graph.models.values():
+        layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE sales (id INT, order_date DATE, is_active BOOL, gross_revenue DOUBLE, "
+        "discount DOUBLE, order_count INT, customer_id INT, region_id INT, country_code VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO sales VALUES (1, DATE '2024-01-01', true, 100.0, 10.0, 2, 5, 7, 'US'), "
+        "(2, DATE '2024-01-01', true, 50.0, 5.0, 1, 5, 7, 'US')"
+    )
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+    con.execute("CREATE TABLE regions (id INT, country_code VARCHAR, name VARCHAR)")
+    con.execute("INSERT INTO regions VALUES (7, 'US', 'West')")
+
+    sql = layer.compile(
+        metrics=["sales_model.gross_revenue", "sales_model.net_revenue", "sales_model.order_count"],
+        dimensions=["sales_model.order_date", "sales_model.customer_name", "sales_model.region_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [(__import__("datetime").date(2024, 1, 1), "Acme", "West", 150.0, 135.0, 2)]
+
+
+def test_thoughtspot_role_playing_joins_stay_distinct():
+    """Two aliases backed by the same table become distinct role-playing joins.
+
+    Regression: resolving `with:` aliases to the backing table name collapsed
+    `ship_country` and `bill_country` (both backed by `countries`) into a single
+    ambiguous `countries` join/relationship.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/role_playing.model.tml")
+    model = graph.models["shipments_model"]
+
+    # Both aliases survive as distinct, aliased joins and relationships.
+    assert "JOIN countries AS ship_country" in model.sql
+    assert "JOIN countries AS bill_country" in model.sql
+    rel_names = {rel.name for rel in model.relationships}
+    assert {"ship_country", "bill_country"} <= rel_names
+    assert model.get_dimension("ship_country_name").sql == "ship_country__name"
+    assert model.get_dimension("bill_country_name").sql == "bill_country__name"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE, ship_country_id INT, bill_country_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 7, 8)")
+    con.execute("CREATE TABLE countries (id INT, name VARCHAR)")
+    con.execute("INSERT INTO countries VALUES (7, 'US'), (8, 'CA')")
+
+    sql = layer.compile(
+        metrics=["shipments_model.amount"],
+        dimensions=["shipments_model.ship_country_name", "shipments_model.bill_country_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    # The two roles resolve to different countries (US shipped, CA billed).
+    assert rows == [("US", "CA", 100.0)]
+
+
+def test_thoughtspot_unqualified_formula_ref_is_queryable():
+    """A joined-model formula using an unqualified column ref stays queryable.
+
+    Regression: ThoughtSpot formulas often use the unqualified reference form,
+    e.g. `[gross_revenue] - [sales::discount]`. The derived projection exposed
+    `sales.gross_revenue AS sales__gross_revenue`, but the metric SQL kept the
+    bare `gross_revenue`, so a normal query failed with
+    `Referenced column "gross_revenue" not found`. The bare ref must resolve to
+    the projected output alias.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_unqualified_formula.model.tml")
+    model = graph.models["sales_model"]
+
+    # The unqualified `gross_revenue` ref resolves to the projected output alias,
+    # and the qualified `sales::discount` ref to its alias.
+    net_revenue = model.get_metric("net_revenue")
+    assert net_revenue is not None
+    assert net_revenue.sql == "sales__gross_revenue - sales__discount"
+
+    # A string literal that matches a column name (`'status'`) must NOT be
+    # rewritten; only the bare column reference `status` is qualified.
+    is_open = model.get_dimension("is_open")
+    assert is_open is not None
+    assert is_open.sql == "sales__status = 'status'"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, gross_revenue DOUBLE, discount DOUBLE, customer_id INT, status VARCHAR)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0, 5, 'status'), (2, 50.0, 5.0, 5, 'closed')")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(
+        metrics=["sales_model.gross_revenue", "sales_model.net_revenue"],
+        dimensions=["sales_model.customer_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    # gross_revenue = 150, net_revenue = (100-10) + (50-5) = 135
+    assert rows == [("Acme", 150.0, 135.0)]
+
+
+def test_thoughtspot_aliased_base_table_is_queryable():
+    """A joined model whose base/source table is aliased stays queryable.
+
+    Regression: aliases were applied only to the joined `right` relation, so a
+    base table declared as `name: orders, alias: o` (with `column_id: o::amount`
+    and an `on` clause using `[o::id]`) emitted `FROM orders` while the columns
+    referenced `o.*`, failing with `Referenced table "o" not found`.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_base_alias.model.tml")
+    model = graph.models["orders_model"]
+
+    # The base table is aliased in the FROM clause so the `o` qualifier resolves.
+    assert model.sql is not None
+    assert "FROM orders AS o" in model.sql
+    # Base-table columns are projected under stable aliases keyed on the alias.
+    assert model.get_dimension("order_id").sql == "o__id"
+    assert model.get_metric("amount").sql == "o__amount"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(
+        metrics=["orders_model.amount"],
+        dimensions=["orders_model.customer_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_single_aliased_table_is_queryable():
+    """A single (join-less) aliased table stays queryable.
+
+    Regression: `model_tables` with one entry `name: orders, alias: o` and
+    columns like `o::amount` converted fields to `o.amount` but emitted
+    `table=orders` with no SQL, so the compiled query selected `o.amount` from
+    `orders` with no `o` alias in scope. The base table must be aliased.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_single_table_alias.model.tml")
+    model = graph.models["orders_model"]
+
+    # The alias is in scope: SQL wraps the single table as `orders AS o`.
+    assert model.sql is not None
+    assert "FROM orders AS o" in model.sql
+    assert model.get_metric("amount").sql == "o__amount"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0), (2, 25.0)")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.order_id"])
+    rows = sorted(con.execute(sql).fetchall())
+    assert rows == [(1, 100.0), (2, 25.0)]
+
+
+def test_thoughtspot_renamed_column_formula_ref_is_queryable():
+    """A formula referencing a TML column whose backing DB column differs stays queryable.
+
+    Regression: a column `gross_revenue` mapped to `column_id: sales::gross_amt`
+    is projected as `sales.gross_amt AS sales__gross_amt`, but the bare-reference
+    map was keyed only on DB column names. A formula `[gross_revenue] - [discount]`
+    kept the bare model names `gross_revenue`/`discount`, which are out of scope in
+    the derived subquery, so a normal query failed. The bare model names must
+    resolve to their projected output aliases.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_renamed_formula.model.tml")
+    model = graph.models["sales_model"]
+
+    # The formula's bare model-name refs resolve to the projected DB-column aliases.
+    net_revenue = model.get_metric("net_revenue")
+    assert net_revenue is not None
+    assert net_revenue.sql == "sales__gross_amt - sales__disc_amt"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, gross_amt DOUBLE, disc_amt DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0, 5), (2, 50.0, 5.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(
+        metrics=["sales_model.gross_revenue", "sales_model.net_revenue"],
+        dimensions=["sales_model.customer_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    # gross_revenue = 150, net_revenue = (100-10) + (50-5) = 135
+    assert rows == [("Acme", 150.0, 135.0)]
+
+
+def test_thoughtspot_relationship_fk_is_projected_for_cross_model_query():
+    """A relationship foreign key is exposed even when it is not also a column.
+
+    Regression: the derived projection only emitted columns referenced by
+    dimensions/metrics plus the primary key. When this model joined a separately
+    loaded related model, the SQL generator selected the relationship's foreign
+    key (e.g. `region_id`) as a bare column from the derived subquery, but it was
+    never projected, so the cross-model query failed with "Column region_id ...
+    cannot be referenced before it is defined".
+    """
+    import duckdb
+
+    from sidemantic.core.dimension import Dimension
+    from sidemantic.core.model import Model
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_relationship_fk.model.tml")
+    sales_model = graph.models["sales_model"]
+
+    # The foreign key is projected from the base table under its bare name even
+    # though no dimension/metric references it.
+    assert sales_model.sql is not None
+    assert "sales.region_id AS region_id" in sales_model.sql
+    rel = {r.name: r for r in sales_model.relationships}["regions"]
+    assert rel.foreign_key == "region_id"
+
+    # A separately loaded `regions` model joined via the parsed relationship.
+    regions = Model(
+        name="regions",
+        table="regions",
+        primary_key="id",
+        dimensions=[Dimension(name="name", type="categorical", sql="name")],
+    )
+
+    layer = SemanticLayer()
+    layer.add_model(sales_model)
+    layer.add_model(regions)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, region_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 7), (2, 25.0, 7)")
+    con.execute("CREATE TABLE regions (id INT, name VARCHAR)")
+    con.execute("INSERT INTO regions VALUES (7, 'West')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["regions.name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("West", 125.0)]
+
+
+def test_thoughtspot_single_table_renamed_formula_ref_is_queryable():
+    """A join-less model's formula referencing a renamed column stays queryable.
+
+    Regression: the renamed-column rewrite only ran on the derived (joined) SQL
+    path. For a single-table model (`sql is None`), a formula like
+    `[gross_revenue] - [discount]` kept the bare model names, so the compiled
+    `SELECT gross_revenue - discount FROM sales` failed because the table only has
+    the backing columns `gross_amt`/`disc_amt`.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_single_table_renamed_formula.model.tml")
+    model = graph.models["sales_model"]
+
+    # No join, so the model queries the base table directly; the formula's bare
+    # model-name refs are rewritten to the backing DB columns.
+    assert model.sql is None
+    assert model.table == "sales"
+    assert model.get_metric("net_revenue").sql == "gross_amt - disc_amt"
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, gross_amt DOUBLE, disc_amt DOUBLE)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0), (2, 50.0, 5.0)")
+
+    sql = layer.compile(
+        metrics=["sales_model.gross_revenue", "sales_model.net_revenue"],
+        dimensions=["sales_model.order_id"],
+    )
+    rows = sorted(con.execute(sql).fetchall())
+    # net_revenue = gross_amt - disc_amt
+    assert rows == [(1, 100.0, 90.0), (2, 50.0, 45.0)]
+
+
+def test_thoughtspot_one_to_many_join_keys_match_direction():
+    """A `one_to_many` join maps the foreign key to the related (child) model.
+
+    Regression: keys were assigned with the `many_to_one` convention (foreign key
+    on the local/source side). For a `one_to_many` join `[customers::id] =
+    [orders::customer_id]`, Sidemantic expects `foreign_key` on the related model
+    (`orders.customer_id`) and `primary_key` on the local model (`customers.id`),
+    so cross-model queries joined the wrong columns before this fix.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_one_to_many.model.tml")
+    model = graph.models["customers_model"]
+
+    rel = {r.name: r for r in model.relationships}["orders"]
+    assert rel.type == "one_to_many"
+    # Related (child) model holds the FK; local model holds the PK.
+    assert rel.foreign_key == "customer_id"
+    assert rel.primary_key == "id"
+
+    layer = SemanticLayer()
+    for m in graph.models.values():
+        layer.add_model(m)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+    con.execute("CREATE TABLE orders (id INT, customer_id INT, amount DOUBLE)")
+    con.execute("INSERT INTO orders VALUES (1, 5, 100.0), (2, 5, 25.0)")
+
+    sql = layer.compile(
+        metrics=["customers_model.order_amount"],
+        dimensions=["customers_model.customer_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_one_to_one_join_keys_match_direction():
+    """A `one_to_one` join with a source-side FK joins correctly cross-model.
+
+    Regression: `one_to_one` keys were stored in the `many_to_one` positions
+    (FK on the source/local side). Sidemantic reads `one_to_one` like a has-one
+    edge where the related model owns the foreign key, so a cross-model query with
+    a separately loaded `regions` model joined `regions.region_id` to
+    `sales_model.id` and failed instead of joining `regions.id` to
+    `sales_model.region_id`.
+    """
+    import duckdb
+
+    from sidemantic.core.dimension import Dimension
+    from sidemantic.core.model import Model
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_one_to_one.model.tml")
+    sales_model = graph.models["sales_model"]
+
+    rel = {r.name: r for r in sales_model.relationships}["regions"]
+    assert rel.type == "one_to_one"
+    # Related model owns the FK (regions.id), local model owns the PK (region_id).
+    assert rel.foreign_key == "id"
+    assert rel.primary_key == "region_id"
+
+    # A separately loaded `regions` model joined via the parsed relationship.
+    regions = Model(
+        name="regions",
+        table="regions",
+        primary_key="id",
+        dimensions=[Dimension(name="zone", type="categorical", sql="zone")],
+    )
+
+    layer = SemanticLayer()
+    layer.add_model(sales_model)
+    layer.add_model(regions)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, region_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 7), (2, 25.0, 7)")
+    con.execute("CREATE TABLE regions (id INT, name VARCHAR, zone VARCHAR)")
+    con.execute("INSERT INTO regions VALUES (7, 'West', 'PACIFIC')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["regions.zone"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("PACIFIC", 125.0)]
+
+
+def test_thoughtspot_non_id_primary_key_is_queryable():
+    """A joined model whose key is not literally `id` stays queryable.
+
+    Regression: `primary_key` defaulted to `id`, and the derived projection
+    injected `orders.id AS id`. The SQL generator always selects the primary key
+    from derived models, so even a basic aggregate failed with
+    `Table "orders" does not have a column named "id"`. The key must be inferred
+    from a real base-table column (here `order_key`).
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_non_id_key.model.tml")
+    model = graph.models["orders_model"]
+
+    # The primary key is inferred from a real base-table column, not the default.
+    assert model.primary_key == "order_key"
+    assert model.sql is not None
+    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.id AS id" not in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (order_key INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_composite_join_keys_are_preserved():
+    """A composite-key join keeps every key pair instead of dropping all but one.
+
+    Regression: only the first `left = right` pair of a composite ON predicate was
+    stored, so `[sales::region_id] = [regions::id] AND [sales::country_code] =
+    [regions::country_code]` became `region_id -> id` only. Cross-model joins then
+    used a truncated key and could mis-join rows.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_composite_key.model.tml")
+    model = graph.models["sales_model"]
+
+    rel = {r.name: r for r in model.relationships}["regions"]
+    assert rel.type == "many_to_one"
+    # Both key pairs are preserved as composite lists.
+    assert rel.foreign_key == ["region_id", "country_code"]
+    assert rel.primary_key == ["id", "country_code"]
+
+    # Both join columns are projected by the derived subquery so a composite
+    # cross-model join stays in scope.
+    assert model.sql is not None
+    assert "sales.region_id AS region_id" in model.sql
+    assert "sales.country_code AS country_code" in model.sql
+
+    # The model still compiles and runs standalone.
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, region_id INT, country_code VARCHAR)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 7, 'US'), (2, 25.0, 7, 'US')")
+    con.execute("CREATE TABLE regions (id INT, country_code VARCHAR, name VARCHAR)")
+    con.execute("INSERT INTO regions VALUES (7, 'US', 'West')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["sales_model.region_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("West", 125.0)]
+
+
+def test_thoughtspot_nested_formula_ref_is_inlined_and_queryable():
+    """A formula referencing another formula inlines the nested expression.
+
+    Regression: a formula like `[net_revenue] / [gross_revenue]` (where
+    `net_revenue` is itself a formula) kept the bare `net_revenue` token, which the
+    derived subquery never projected, so the query failed with
+    `Referenced column "net_revenue" not found`. The nested formula must be
+    expanded inline so the expression resolves to physical columns.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_nested_formula.model.tml")
+    model = graph.models["sales_model"]
+
+    # The nested `net_revenue` formula is inlined into `margin`.
+    assert model.get_metric("net_revenue").sql == "sales__gross_revenue - sales__discount"
+    assert model.get_metric("margin").sql == "(sales__gross_revenue - sales__discount) / sales__gross_revenue"
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, gross_revenue DOUBLE, discount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 10.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["sales_model.margin"], dimensions=["sales_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    # margin = (100 - 10) / 100 = 0.9
+    assert rows == [("Acme", 0.9)]
+
+
+def test_thoughtspot_formula_ref_prefers_tml_field_over_physical_name():
+    """A bare formula ref resolves to the TML field, not a colliding physical name.
+
+    Regression: physical column names were recorded first, so adding TML field
+    names could mark a valid reference ambiguous and drop it. With
+    `gross_revenue -> sales::amount` and `amount -> sales::cost`, the formula
+    `[amount] + [gross_revenue]` must resolve the bare `amount` to `sales__cost`
+    (the TML field), not be dropped because `amount` also names a physical column.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_name_collision.model.tml")
+    model = graph.models["sales_model"]
+
+    # The bare `amount` ref resolves to the TML field's backing column (cost),
+    # not the physical `amount` column.
+    assert model.get_metric("total").sql == "sales__cost + sales__amount"
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, cost DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 30.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["sales_model.total"], dimensions=["sales_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    # total = cost (30) + amount (100) = 130
+    assert rows == [("Acme", 130.0)]
+
+
+def test_thoughtspot_renamed_id_key_uses_backing_column():
+    """A semantic column named `id` backed by another column resolves to it.
+
+    Regression: `_infer_model_primary_key` returned the semantic name `id` even
+    when the column mapped to a different physical column (`column_id:
+    orders::order_key`). The derived projection then injected `orders.id AS id`,
+    failing because the base table only has `order_key`.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_renamed_id_key.model.tml")
+    model = graph.models["orders_model"]
+
+    # The primary key resolves to the backing physical column, not the name `id`.
+    assert model.primary_key == "order_key"
+    assert model.sql is not None
+    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.id AS id" not in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (order_key INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_joined_id_dimension_is_not_used_as_primary_key():
+    """A joined-table column named `id` is not treated as the base model's key.
+
+    Regression: `_infer_model_primary_key` returned the backing column of the
+    first dimension named `id` even when it came from a joined table
+    (`customers::id`). The derived projection then emitted `orders.id AS id`,
+    failing because the base `orders` table has no `id` (its key is `order_key`).
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_joined_id_key.model.tml")
+    model = graph.models["orders_model"]
+
+    # The joined-table id is skipped; the base-table column is used as the key.
+    assert model.primary_key == "order_key"
+    assert model.sql is not None
+    assert "orders.order_key AS order_key" in model.sql
+    assert "orders.id AS id" not in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (order_key INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT)")
+    con.execute("INSERT INTO customers VALUES (5)")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.order_key"])
+    rows = sorted(con.execute(sql).fetchall())
+    assert rows == [(1, 100.0), (2, 25.0)]
+
+
+def test_thoughtspot_non_equi_join_predicate_is_not_a_relationship_key():
+    """A range predicate in a join ON clause is not mistaken for an equality key.
+
+    Regression: the composite-key extractor paired every two consecutive refs, so
+    `[sales::region_id] = [regions::id] AND [sales::date] BETWEEN
+    [regions::start_date] AND [regions::end_date]` produced bogus extra keys
+    (`date -> start_date`). Only the real equality conjunct should become the
+    relationship key; the range predicate stays in the join SQL but is ignored as
+    a key.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_non_equi_join.model.tml")
+    model = graph.models["sales_model"]
+
+    rel = {r.name: r for r in model.relationships}["regions"]
+    # Only the equality key pair is captured; the BETWEEN refs are not keys.
+    assert rel.foreign_key == "region_id"
+    assert rel.primary_key == "id"
+
+    # The range predicate is preserved in the join SQL, but its columns are not
+    # projected as spurious key columns.
+    assert model.sql is not None
+    assert "BETWEEN regions.start_date AND regions.end_date" in model.sql
+    assert "AS start_date" not in model.sql
+    assert "AS date" not in model.sql
+
+    # The model still compiles and runs.
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, region_id INT, date DATE)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, 7, DATE '2024-06-15'), (2, 25.0, 7, DATE '2024-06-20')")
+    con.execute("CREATE TABLE regions (id INT, name VARCHAR, start_date DATE, end_date DATE)")
+    con.execute("INSERT INTO regions VALUES (7, 'West', DATE '2024-06-01', DATE '2024-06-30')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["sales_model.region_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("West", 125.0)]
+
+
+def test_thoughtspot_aliased_table_referenced_by_id_is_queryable():
+    """An aliased table referenced by its id resolves to the alias, not the table.
+
+    Regression: a `model_tables` entry `id: countries_tbl, alias: ship_country`
+    referenced by `column_id: countries_tbl::name` resolved to `countries.name`,
+    but the SQL emits `JOIN countries AS ship_country`, so `countries` is not in
+    scope. The id/name tokens of an aliased entry must resolve to the alias.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_aliased_table_id_ref.model.tml")
+    model = graph.models["shipments_model"]
+
+    # The id-qualified field resolves to the alias relation, which is in scope.
+    assert model.get_dimension("ship_country_name").sql == "ship_country__name"
+    assert model.sql is not None
+    assert "JOIN countries AS ship_country" in model.sql
+    assert "ship_country.name AS ship_country__name" in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE, ship_country_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 7), (2, 25.0, 7)")
+    con.execute("CREATE TABLE countries (id INT, name VARCHAR)")
+    con.execute("INSERT INTO countries VALUES (7, 'US')")
+
+    sql = layer.compile(
+        metrics=["shipments_model.amount"],
+        dimensions=["shipments_model.ship_country_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [("US", 125.0)]
+
+
+def test_thoughtspot_join_target_by_id_resolves_to_alias():
+    """A join whose `with:` target is an aliased table id resolves to the alias.
+
+    Regression: after id/name refs mapped to the alias, the join-flatten step
+    still resolved `with: countries_tbl` to the backing table name, so the SQL
+    emitted `JOIN countries ON ... ship_country.id` (alias not in scope) and the
+    relationship was named `countries`. The join target must resolve to the alias.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_join_target_by_id.model.tml")
+    model = graph.models["shipments_model"]
+
+    # The join uses the alias as the relation name, matching the ON clause.
+    assert model.sql is not None
+    assert "JOIN countries AS ship_country" in model.sql
+    assert {r.name for r in model.relationships} == {"ship_country"}
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (id INT, amount DOUBLE, ship_country_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 7), (2, 25.0, 7)")
+    con.execute("CREATE TABLE countries (id INT, name VARCHAR)")
+    con.execute("INSERT INTO countries VALUES (7, 'US')")
+
+    sql = layer.compile(
+        metrics=["shipments_model.amount"],
+        dimensions=["shipments_model.ship_country_name"],
+    )
+    rows = con.execute(sql).fetchall()
+    assert rows == [("US", 125.0)]
+
+
+def test_thoughtspot_measure_key_column_is_inferred_as_primary_key():
+    """A base-table key exported as a measure is still inferred as the primary key.
+
+    Regression: `_infer_model_primary_key` only scanned dimensions, but
+    ThoughtSpot often exports key columns as measures. With `order_key` as a
+    MEASURE and no physical `orders.id`, the primary key defaulted to `id` and the
+    derived projection injected a non-existent `orders.id AS id`, breaking even a
+    plain aggregate query.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_measure_key.model.tml")
+    model = graph.models["orders_model"]
+
+    # The measure-backed base-table column is used as the key.
+    assert model.primary_key == "order_key"
+    assert model.sql is not None
+    assert "orders.id AS id" not in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (order_key INT, amount DOUBLE, customer_id INT)")
+    con.execute("INSERT INTO orders VALUES (1, 100.0, 5), (2, 25.0, 5)")
+    con.execute("CREATE TABLE customers (id INT, name VARCHAR)")
+    con.execute("INSERT INTO customers VALUES (5, 'Acme')")
+
+    sql = layer.compile(metrics=["orders_model.amount"], dimensions=["orders_model.customer_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_range_only_join_emits_no_relationship():
+    """A join with only a range predicate emits no cross-model relationship.
+
+    Regression: a join with no equality key (e.g. `[sales::date] BETWEEN
+    [calendar::start_date] AND [calendar::end_date]`) still appended a relationship
+    with unset keys, which Sidemantic defaults to `calendar_id`/`id` (non-existent
+    columns). No relationship should be emitted; the predicate stays in the join.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_range_only_join.model.tml")
+    model = graph.models["sales_model"]
+
+    # No relationship is created from a key-less range join.
+    assert model.relationships == []
+    # The range predicate is preserved in the derived join SQL.
+    assert model.sql is not None
+    assert "BETWEEN calendar.start_date AND calendar.end_date" in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE sales (id INT, amount DOUBLE, date DATE)")
+    con.execute("INSERT INTO sales VALUES (1, 100.0, DATE '2024-06-15'), (2, 25.0, DATE '2024-06-20')")
+    con.execute("CREATE TABLE calendar (period_name VARCHAR, start_date DATE, end_date DATE)")
+    con.execute("INSERT INTO calendar VALUES ('June', DATE '2024-06-01', DATE '2024-06-30')")
+
+    sql = layer.compile(metrics=["sales_model.amount"], dimensions=["sales_model.period_name"])
+    rows = con.execute(sql).fetchall()
+    assert rows == [("June", 125.0)]
+
+
+def test_thoughtspot_wrapped_equality_is_not_a_relationship_key():
+    """A function-wrapped equality (e.g. LOWER()) is not stored as a join key.
+
+    Regression: `LOWER([users::email]) = LOWER([contacts::email])` matched the
+    "two refs, one `=`" heuristic and stored a plain `email -> email` key. A
+    cross-model query would then use a case-sensitive `email = email` join that
+    differs from the `LOWER()` predicate. Only bare-ref equalities are keys.
+    """
+    import duckdb
+
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_wrapped_join_key.model.tml")
+    model = graph.models["users_model"]
+
+    # The wrapped equality does not become a relationship key.
+    assert model.relationships == []
+    # The LOWER() predicate is preserved in the derived join SQL.
+    assert model.sql is not None
+    assert "LOWER(users.email) = LOWER(contacts.email)" in model.sql
+
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE users (id INT, amount DOUBLE, email VARCHAR)")
+    con.execute("INSERT INTO users VALUES (1, 100.0, 'A@X.COM'), (2, 25.0, 'A@X.COM')")
+    con.execute("CREATE TABLE contacts (name VARCHAR, email VARCHAR)")
+    con.execute("INSERT INTO contacts VALUES ('Acme', 'a@x.com')")
+
+    sql = layer.compile(metrics=["users_model.amount"], dimensions=["users_model.contact_name"])
+    rows = con.execute(sql).fetchall()
+    # The case-insensitive join still matches via the preserved LOWER() predicate.
+    assert rows == [("Acme", 125.0)]
+
+
+def test_thoughtspot_parenthesized_equality_is_a_relationship_key():
+    """An equality wrapped in harmless parentheses still becomes a join key.
+
+    Regression: requiring each equality side to be a bare ref dropped valid keys
+    when the predicate was parenthesized (e.g. `([sales::customer_id] =
+    [customers::id])`), since the sides reached the matcher as `([sales::...]` /
+    `[customers::id])`. Surrounding parentheses must be stripped first.
+    """
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse("tests/fixtures/thoughtspot/model_parenthesized_join.model.tml")
+    model = graph.models["sales_model"]
+
+    rel = {r.name: r for r in model.relationships}["customers"]
+    assert rel.type == "many_to_one"
+    assert rel.foreign_key == "customer_id"
+    assert rel.primary_key == "id"
+
+
+def test_thoughtspot_model_auto_detect_loader():
+    """A model + model_tables + columns YAML file is auto-detected as ThoughtSpot."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tml_file = Path(tmpdir) / "sales.model.yaml"
+        tml_file.write_text(
+            """
+model:
+  name: sales_model
+  description: Sales model
+  model_tables:
+    - name: sales
+      fqn: ANALYTICS.PUBLIC.sales
+  columns:
+    - name: order_id
+      column_id: sales::id
+      properties:
+        column_type: ATTRIBUTE
+    - name: amount
+      column_id: sales::amount
+      properties:
+        column_type: MEASURE
+        aggregation: SUM
+"""
+        )
+
+        layer = SemanticLayer()
+        load_from_directory(layer, tmpdir)
+
+        assert "sales_model" in layer.graph.models
+        model = layer.graph.models["sales_model"]
+        assert model.get_metric("amount").agg == "sum"
+
+
+def test_thoughtspot_legacy_model_key_still_worksheet():
+    """Legacy worksheet content nested under `model:` still parses as a worksheet."""
+    adapter = ThoughtSpotAdapter()
+    tml_def = {
+        "model": {
+            "name": "legacy_sheet",
+            "tables": [{"name": "orders"}],
+            "worksheet_columns": [
+                {
+                    "name": "amount",
+                    "column_id": "orders::amount",
+                    "properties": {"column_type": "MEASURE", "aggregation": "SUM"},
+                },
+            ],
+        }
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tml", delete=False) as f:
+        yaml.safe_dump(tml_def, f, sort_keys=False)
+        temp_path = Path(f.name)
+
+    try:
+        graph = adapter.parse(temp_path)
+        assert "legacy_sheet" in graph.models
+        model = graph.models["legacy_sheet"]
+        assert model.get_metric("amount").agg == "sum"
+    finally:
+        temp_path.unlink(missing_ok=True)

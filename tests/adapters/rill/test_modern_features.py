@@ -488,6 +488,85 @@ class TestDerivedMetricsSelectorForms:
         assert metrics["orders"].public is False
 
 
+class TestDerivedViewRejectsChildFields:
+    """A derived view (parent: ...) must not define its own dimensions/measures.
+
+    Rill's own validation rejects such a project: a derived view may only select
+    inherited parent fields via parent_dimensions/parent_measures. The importer
+    must reject it too rather than producing a model that exposes non-existent
+    child fields against the parent table.
+    """
+
+    PARENT = {
+        "type": "metrics_view",
+        "name": "parent",
+        "model": "src",
+        "dimensions": [{"name": "a", "column": "a"}],
+        "measures": [{"name": "m1", "expression": "SUM(x)"}],
+    }
+
+    def test_child_dimensions_rejected(self):
+        """A parent view defining its own dimensions errors."""
+        with pytest.raises(ValueError, match="defines its own dimensions"):
+            _parse_project(
+                {
+                    "parent.yaml": self.PARENT,
+                    "child.yaml": {
+                        "type": "metrics_view",
+                        "name": "child",
+                        "parent": "parent",
+                        "dimensions": [{"name": "bogus", "column": "bogus"}],
+                    },
+                }
+            )
+
+    def test_child_measures_rejected(self):
+        """A parent view defining its own measures errors."""
+        with pytest.raises(ValueError, match="defines its own measures"):
+            _parse_project(
+                {
+                    "parent.yaml": self.PARENT,
+                    "child.yaml": {
+                        "type": "metrics_view",
+                        "name": "child",
+                        "parent": "parent",
+                        "measures": [{"name": "bogus", "expression": "SUM(z)"}],
+                    },
+                }
+            )
+
+    def test_child_dimensions_and_measures_rejected(self):
+        """Defining both child dimensions and measures is rejected together."""
+        with pytest.raises(ValueError, match="dimensions and measures"):
+            _parse_project(
+                {
+                    "parent.yaml": self.PARENT,
+                    "child.yaml": {
+                        "type": "metrics_view",
+                        "name": "child",
+                        "parent": "parent",
+                        "dimensions": [{"name": "bogus", "column": "bogus"}],
+                        "measures": [{"name": "bogus_m", "expression": "SUM(z)"}],
+                    },
+                }
+            )
+
+    def test_selector_only_child_still_allowed(self):
+        """A derived view that only selects parent fields stays valid."""
+        graph = _parse_project(
+            {
+                "parent.yaml": self.PARENT,
+                "child.yaml": {
+                    "type": "metrics_view",
+                    "name": "child",
+                    "parent": "parent",
+                    "parent_measures": ["m1"],
+                },
+            }
+        )
+        assert {m.name for m in graph.models["child"].metrics} == {"m1"}
+
+
 # =============================================================================
 # UNIT TESTS: name derivation, ignore flag, time_comparison promotion
 # =============================================================================

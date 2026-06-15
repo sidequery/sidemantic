@@ -231,6 +231,21 @@ class RillAdapter:
         # parse any explicit selectors so the model still validates and round-trips.
         parent = data.get("parent")
 
+        # Rill rejects a derived view (parent: ...) that defines its own
+        # dimensions/measures: a derived view may only *select* inherited parent
+        # fields via parent_dimensions/parent_measures. Parsing child-defined
+        # fields here would let the importer accept a project that `rill validate`
+        # rejects and expose non-existent fields against the parent table, so fail
+        # loudly to match Rill's own validation.
+        if parent:
+            child_fields = [key for key in ("dimensions", "measures") if data.get(key)]
+            if child_fields:
+                raise ValueError(
+                    f"Rill metrics view '{model_name}' sets parent: '{parent}' but also defines its own "
+                    f"{' and '.join(child_fields)}. A derived view may only select inherited parent fields "
+                    f"via parent_dimensions/parent_measures."
+                )
+
         # Get the source table or model. A derived view has no own data source;
         # in Rill it inherits the parent metrics view's underlying relation, so we
         # fall back to the parent name as the table. This keeps the imported model

@@ -877,6 +877,55 @@ tables:
     assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
 
 
+def test_load_from_directory_detects_named_view_metric_sidecar(tmp_path):
+    """A Cortex sidecar with a root ``name`` and only tableless view metrics (no
+    Snowflake-only key or section) still routes to Snowflake, not silently dropped.
+
+    The root ``name`` is the sole Cortex signal: native detection rejects ``name``
+    so the file is not native-compatible, and without this routing the view metric
+    is lost on the CLI load_from_directory / export-native path.
+    """
+    (tmp_path / "a_sidecar.yaml").write_text(
+        """
+name: view_metrics
+metrics:
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "global_ratio" in layer.graph.metrics
+
+
 def test_load_from_directory_explicit_snowflake_relationship_beats_inference(tmp_path):
     """An explicit Cortex relationship takes precedence over a guessed foreign key."""
     # orders has customer_id (inferable to customers) AND an explicit Snowflake join.

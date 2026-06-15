@@ -545,17 +545,20 @@ def _looks_like_snowflake_metrics_file(data: dict) -> bool:
     - Snowflake-shaped top-level ``relationships`` (relationship-only sidecar), or
     - top-level ``metrics`` carrying a Snowflake-only metric key (``table`` or per-
       metric ``access_modifier``/``labels``/``tags``/``non_additive_dimensions``/
-      ``using_relationships``).
+      ``using_relationships``), or
+    - a root ``name`` alongside Cortex-shaped ``metrics`` -- a tableless view-metric
+      sidecar whose only Cortex signal is the root ``name`` the native format rejects.
 
     Any present metrics must be Cortex-shaped (``expr`` with no MetricFlow
-    ``type_params``/``measure`` markers). A tableless metrics file with none of
-    these signals is left to native detection.
+    ``type_params``/``measure`` markers). A tableless metrics file with no root
+    ``name`` and none of these signals is left to native detection.
     """
     if not isinstance(data, dict) or "tables" in data:
         return False
 
     metrics = data.get("metrics")
     has_snowflake_metric_key = False
+    has_cortex_metrics = False
     if metrics is not None:
         if not isinstance(metrics, list) or not metrics:
             return False
@@ -568,9 +571,21 @@ def _looks_like_snowflake_metrics_file(data: dict) -> bool:
                 return False
             if any(key in metric for key in _SNOWFLAKE_METRIC_KEYS):
                 has_snowflake_metric_key = True
+        has_cortex_metrics = True
 
     has_snowflake_section = any(section in data for section in _SNOWFLAKE_TOP_LEVEL_SECTIONS)
-    return has_snowflake_metric_key or has_snowflake_section or _looks_like_snowflake_relationships(data)
+    # A tableless Cortex sidecar may carry only a root ``name`` plus view-level
+    # metrics (no per-metric Snowflake key, no Snowflake sections). The root
+    # ``name`` is a Cortex semantic-model field the native format rejects, so its
+    # presence alongside Cortex-shaped metrics is a reliable Snowflake signal --
+    # without it the file is dropped by both native and Snowflake detection.
+    has_snowflake_root_name = has_cortex_metrics and isinstance(data.get("name"), str)
+    return (
+        has_snowflake_metric_key
+        or has_snowflake_section
+        or has_snowflake_root_name
+        or _looks_like_snowflake_relationships(data)
+    )
 
 
 def _contains_yaml_key(value: object, key: str) -> bool:

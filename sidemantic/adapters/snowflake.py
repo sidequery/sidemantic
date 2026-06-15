@@ -138,21 +138,23 @@ class SnowflakeAdapter(BaseAdapter):
         graph = SemanticGraph()
         source_path = Path(source)
 
-        # Top-level metrics are resolved after every file's tables are loaded, so a
-        # metric referencing a table defined in a later file still attaches to it
-        # regardless of directory traversal order.
+        # Top-level metrics and relationships are resolved after every file's tables
+        # are loaded, so a metric or relationship referencing a table defined in a
+        # later file still resolves regardless of directory traversal order.
         deferred_metrics: list[dict] = []
+        deferred_relationships: list[dict] = []
 
         if source_path.is_dir():
             # Parse all YAML files in directory
             for yaml_file in source_path.rglob("*.yml"):
-                self._parse_file(yaml_file, graph, deferred_metrics)
+                self._parse_file(yaml_file, graph, deferred_metrics, deferred_relationships)
             for yaml_file in source_path.rglob("*.yaml"):
-                self._parse_file(yaml_file, graph, deferred_metrics)
+                self._parse_file(yaml_file, graph, deferred_metrics, deferred_relationships)
         else:
             # Parse single file
-            self._parse_file(source_path, graph, deferred_metrics)
+            self._parse_file(source_path, graph, deferred_metrics, deferred_relationships)
 
+        self._apply_relationships(deferred_relationships, graph)
         self._apply_top_level_metrics(deferred_metrics, graph)
 
         # For a directory parse every file is seen here, so resolve pending metrics
@@ -223,7 +225,13 @@ class SnowflakeAdapter(BaseAdapter):
                     continue
                 graph.metrics[metric.name] = metric
 
-    def _parse_file(self, file_path: Path, graph: SemanticGraph, deferred_metrics: list[dict]) -> None:
+    def _parse_file(
+        self,
+        file_path: Path,
+        graph: SemanticGraph,
+        deferred_metrics: list[dict],
+        deferred_relationships: list[dict],
+    ) -> None:
         """Parse a single Snowflake semantic model YAML file.
 
         Args:
@@ -231,6 +239,8 @@ class SnowflakeAdapter(BaseAdapter):
             graph: Semantic graph to add models/metrics to
             deferred_metrics: Accumulator for top-level metric definitions, resolved
                 after every file's tables are loaded.
+            deferred_relationships: Accumulator for top-level relationship
+                definitions, applied after every file's tables are loaded.
         """
         with open(file_path) as f:
             data = yaml.safe_load(f)
@@ -247,9 +257,9 @@ class SnowflakeAdapter(BaseAdapter):
             if model:
                 graph.add_model(model)
 
-        # Parse relationships (defined at semantic model level, not table level)
-        relationships_def = data.get("relationships") or []
-        self._apply_relationships(relationships_def, graph)
+        # Defer relationships (defined at the semantic-model level) until all files'
+        # tables are loaded so they resolve regardless of traversal order.
+        deferred_relationships.extend(data.get("relationships") or [])
 
         # Defer top-level metrics (semantic-model-scoped metrics referencing tables)
         # until all files are parsed, so a metric whose table lives in a later file
@@ -636,6 +646,14 @@ class SnowflakeAdapter(BaseAdapter):
             description=filter_def.get("description"),
         )
 
+    def apply_pending_relationships(self, relationships_def: list, graph: SemanticGraph) -> None:
+        """Apply relationship definitions collected from separately-parsed files.
+
+        Used by the directory loader after every file's models are loaded so a
+        relationship-only Cortex sidecar still attaches its joins.
+        """
+        self._apply_relationships(relationships_def, graph)
+
     def _apply_relationships(self, relationships_def: list, graph: SemanticGraph) -> None:
         """Apply relationships from semantic model to models in graph.
 
@@ -687,6 +705,13 @@ class SnowflakeAdapter(BaseAdapter):
                 model.relationships.append(relationship)
                 # Rebuild adjacency after adding relationship
                 graph.build_adjacency()
+            else:
+                # The left table is not in this graph (a multi-file CLI load parses
+                # each file separately). Hold the definition so the directory loader
+                # can apply it once that table is loaded.
+                if not hasattr(graph, "_pending_relationships"):
+                    graph._pending_relationships = []
+                graph._pending_relationships.append(rel_def)
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to Snowflake semantic model YAML format.

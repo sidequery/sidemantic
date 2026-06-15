@@ -654,3 +654,61 @@ tables:
     # Both scoped metrics attach to their respective tables.
     assert "total" in [m.name for m in graph.models["orders"].metrics]
     assert "total" in [m.name for m in graph.models["customers"].metrics]
+
+
+def test_load_from_directory_detects_relationship_only_snowflake_sidecar(tmp_path):
+    """A Cortex sidecar with only top-level relationships routes to Snowflake and attaches joins."""
+    # Non-standard join columns so foreign-key inference would NOT recreate the join.
+    (tmp_path / "a_rels.yaml").write_text(
+        """
+relationships:
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+      - name: cust_ref
+        expr: cust_ref
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cust_pk]
+    dimensions:
+      - name: cust_pk
+        expr: cust_pk
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    orders = graph.models["orders"]
+    rel = next(r for r in orders.relationships if r.name == "customers")
+    assert rel.metadata["snowflake"]["name"] == "orders_to_customers"
+    assert rel.foreign_key == "cust_ref"
+    assert graph.find_relationship_path("orders", "customers")

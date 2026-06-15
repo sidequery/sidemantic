@@ -57,6 +57,8 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     # Snowflake table-scoped metrics whose table lives in another file, held as
     # (table_name, Metric) pairs so same-named scoped metrics never collide.
     all_pending_table_metrics: list = []
+    # Snowflake relationship definitions whose tables live in other files.
+    all_pending_relationships: list = []
     import_warnings: list[dict[str, object]] = []
 
     # Check for SML repository (catalog.yml/atscale.yml or object_type files)
@@ -241,6 +243,7 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 all_metrics.update(graph.metrics)
                 all_parameters.update(graph.parameters)
                 all_pending_table_metrics.extend(getattr(graph, "_pending_table_metrics", []))
+                all_pending_relationships.extend(getattr(graph, "_pending_relationships", []))
             except Exception as e:
                 _append_import_warning(
                     import_warnings,
@@ -271,6 +274,10 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     for model in all_models.values():
         if model.name not in layer.graph.models:
             layer.add_model(model)
+
+    # Apply Snowflake relationships declared in a separate file now that every
+    # referenced table is loaded.
+    _apply_snowflake_pending_relationships(layer.graph, all_pending_relationships)
 
     # Register graph-level metrics and parameters after models.
     for metric in all_metrics.values():
@@ -449,15 +456,28 @@ def _yaml_has_top_level_key(data: dict, key: str) -> bool:
 _SNOWFLAKE_TOP_LEVEL_SECTIONS = ("verified_queries", "custom_instructions", "module_custom_instructions")
 
 
+def _looks_like_snowflake_relationships(data: dict) -> bool:
+    """Return True when a file's top-level ``relationships`` are Snowflake-shaped."""
+    relationships = data.get("relationships")
+    if not isinstance(relationships, list) or not relationships:
+        return False
+    return all(
+        isinstance(rel, dict) and "left_table" in rel and "right_table" in rel and "relationship_columns" in rel
+        for rel in relationships
+    )
+
+
 def _looks_like_snowflake_metrics_file(data: dict) -> bool:
     """Detect a split Snowflake Cortex sidecar without a ``tables`` section.
 
-    Cortex projects may split top-level ``metrics:`` and/or the Snowflake-only
-    sections (verified_queries / custom instructions) into their own file. Route
-    such a file to the Snowflake adapter when it carries a Cortex-only signal:
+    Cortex projects may split top-level ``metrics:``, ``relationships:`` and/or the
+    Snowflake-only sections (verified_queries / custom instructions) into their own
+    file. Route such a file to the Snowflake adapter when it carries a Cortex-only
+    signal:
 
     - a Snowflake-only top-level section (verified_queries / custom instructions),
-      even when no ``metrics`` are present (instruction-only sidecar), or
+      even when no ``metrics`` are present (instruction-only sidecar),
+    - Snowflake-shaped top-level ``relationships`` (relationship-only sidecar), or
     - top-level ``metrics`` with at least one ``table`` reference.
 
     Any present metrics must be Cortex-shaped (``expr`` with no MetricFlow
@@ -483,7 +503,7 @@ def _looks_like_snowflake_metrics_file(data: dict) -> bool:
                 has_table_scoped = True
 
     has_snowflake_section = any(section in data for section in _SNOWFLAKE_TOP_LEVEL_SECTIONS)
-    return has_table_scoped or has_snowflake_section
+    return has_table_scoped or has_snowflake_section or _looks_like_snowflake_relationships(data)
 
 
 def _contains_yaml_key(value: object, key: str) -> bool:
@@ -858,6 +878,16 @@ def _resolve_snowflake_pending_table_metrics(all_models: dict, all_metrics: dict
     # so it is not silently dropped.
     for _table_name, metric in pending:
         all_metrics.setdefault(metric.name, metric)
+    pending.clear()
+
+
+def _apply_snowflake_pending_relationships(graph: object, pending: list) -> None:
+    """Apply Snowflake relationship definitions whose tables live in other files."""
+    if not pending:
+        return
+    from sidemantic.adapters.snowflake import SnowflakeAdapter
+
+    SnowflakeAdapter().apply_pending_relationships(pending, graph)
     pending.clear()
 
 

@@ -385,10 +385,11 @@ class TestSupersetDirectoryParse:
         assert "project_management" in graph.models
         assert "video_game_sales" in graph.models
         assert "cleaned_sales_data" in graph.models
+        assert "revenue_by_region" in graph.models
 
     def test_total_model_count(self, graph):
         """All fixture files produce models."""
-        assert len(graph.models) == 11
+        assert len(graph.models) == 12
 
     def test_virtual_and_physical_datasets(self, graph):
         """Both virtual and physical datasets coexist."""

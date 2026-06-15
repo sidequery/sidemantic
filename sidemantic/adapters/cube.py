@@ -1,6 +1,7 @@
 """Cube adapter for importing Cube.js semantic models."""
 
 import re
+import warnings
 from pathlib import Path
 
 import yaml
@@ -45,6 +46,25 @@ def _normalize_cube_sql(sql: str | None, cube_name: str | None = None) -> str | 
         result = result.replace(f"{{{cube_name}}}", "{model}")
 
     return result
+
+
+# Matches a Cube member reference: ${cube.col}, {cube.col}, ${CUBE}.col, {cube}.col, etc.
+# group(1) = content inside braces, group(2) = optional trailing ".column".
+_CUBE_MEMBER_RE = re.compile(r"\$?\{([^}]+)\}(?:\.(\w+))?")
+
+
+def _split_cube_ref(inner: str, trailing: str | None) -> tuple[str, str | None]:
+    """Split a Cube member reference into ``(cube_name, column)``.
+
+    Handles both ``${cube.col}`` / ``{cube.col}`` (column inside the braces) and
+    ``${cube}.col`` / ``${CUBE}.col`` (column trailing the braces).
+    """
+    if trailing is not None:
+        return inner, trailing
+    if "." in inner:
+        head, col = inner.split(".", 1)
+        return head, col
+    return inner, None
 
 
 class CubeAdapter(BaseAdapter):
@@ -115,10 +135,36 @@ class CubeAdapter(BaseAdapter):
                 if child_model:
                     _apply_hierarchies(child_model, pending_hierarchies[parent_name])
 
-        # Parse views after all cubes are loaded and inheritance resolved
-        for view_def in pending_views:
-            model = self._parse_view(view_def, graph)
+        # Parse views after all cubes are loaded and inheritance resolved.
+        # Resolve view-level `extends` in dependency order so a view can inherit
+        # members and folders from a parent view defined earlier or later.
+        view_defs_by_name = {v["name"]: v for v in pending_views if v.get("name")}
+        built_views: dict[str, Model] = {}
+
+        def _build_view(view_name: str, _stack: tuple[str, ...] = ()) -> Model | None:
+            if view_name in built_views:
+                return built_views[view_name]
+            if view_name in _stack:
+                # Guard against circular extends chains
+                return None
+            view_def = view_defs_by_name.get(view_name)
+            if view_def is None:
+                return None
+            parent_name = view_def.get("extends")
+            parent_model = None
+            if parent_name:
+                parent_model = _build_view(parent_name, _stack + (view_name,))
+            model = self._parse_view(view_def, graph, parent_model)
             if model:
+                built_views[view_name] = model
+            return model
+
+        for view_def in pending_views:
+            view_name = view_def.get("name")
+            if not view_name:
+                continue
+            model = _build_view(view_name)
+            if model and model.name not in graph.models:
                 graph.add_model(model)
 
         return graph
@@ -166,35 +212,112 @@ class CubeAdapter(BaseAdapter):
         for view_def in data.get("views") or []:
             pending_views.append(view_def)
 
-    def _extract_fk_from_join_sql(self, join_sql: str, relationship_type: str, join_name: str) -> str | None:
-        """Extract foreign key column from Cube join SQL.
+        # Top-level view_groups: a UI grouping of views. Sidemantic has no
+        # first-class equivalent, so preserve the raw definitions on graph
+        # metadata for consumers that care about view organization.
+        view_groups = data.get("view_groups")
+        if view_groups:
+            existing = graph.metadata.get("cube_view_groups") or []
+            graph.metadata["cube_view_groups"] = existing + list(view_groups)
 
-        Parses join SQL to extract the foreign key column name based on relationship type:
-        - many_to_one: Extract from ${CUBE}.column (e.g., "${CUBE}.company_id = ${companies.id}" -> "company_id")
-        - one_to_many: Extract from ${join_name.column} (e.g., "${CUBE}.id = ${project_assignments.project_id}" -> "project_id")
+    def _convert_cube_join(
+        self, join_sql: str, self_name: str, join_name: str
+    ) -> tuple[str | None, str | None, str | None]:
+        """Convert a Cube join condition into Sidemantic form.
 
-        Args:
-            join_sql: Join SQL expression from Cube definition
-            relationship_type: Type of relationship (many_to_one or one_to_many)
-            join_name: Name of the joined model
+        Cube expresses joins as a SQL equality condition referencing members with
+        ``${CUBE}.col`` (this cube), ``${target.col}`` (the joined cube), and the
+        single-brace ``{cube.col}`` variants. Sidemantic represents the same thing
+        with ``{from}`` / ``{to}`` placeholders.
 
-        Returns:
-            Foreign key column name, or None if parsing fails
+        Returns ``(native_sql, from_col, to_col)`` where:
+        - ``native_sql`` is the condition rewritten with ``{from}`` / ``{to}``
+          placeholders, or ``None`` if it references a cube other than this one or
+          the join target (and therefore cannot be represented faithfully).
+        - ``from_col`` / ``to_col`` are the single columns on each side when the
+          condition is a plain ``a = b`` equality, otherwise ``None``.
         """
-        if relationship_type == "one_to_many":
-            # For one_to_many, extract from ${join_name.column}
-            # Example: "${CUBE}.id = ${project_assignments.project_id}" -> "project_id"
-            match = re.search(rf"\$\{{{re.escape(join_name)}\.(\w+)\}}", join_sql)
-            if match:
-                return match.group(1)
-        else:
-            # For many_to_one (default), extract from ${CUBE}.column
-            # Example: "${CUBE}.company_id = ${companies.id}" -> "company_id"
-            match = re.search(r"\$\{CUBE\}\.(\w+)", join_sql)
-            if match:
-                return match.group(1)
+        refs: list[tuple[str, str | None]] = []  # (side, column) in order of appearance
+        untranslatable = False
 
-        return None
+        def repl(match: re.Match) -> str:
+            nonlocal untranslatable
+            head, col = _split_cube_ref(match.group(1), match.group(2))
+            if head in ("CUBE", self_name):
+                side = "from"
+            elif head == join_name:
+                side = "to"
+            else:
+                # References a third cube: cannot be expressed with {from}/{to}.
+                untranslatable = True
+                return match.group(0)
+            refs.append((side, col))
+            return f"{{{side}}}.{col}" if col else f"{{{side}}}"
+
+        native_sql = _CUBE_MEMBER_RE.sub(repl, join_sql)
+        if untranslatable or not refs:
+            return None, None, None
+
+        # Detect a plain single-column equality: exactly two members (one per side)
+        # joined by a single '=' with nothing else around them.
+        residual = re.sub(r"\s+", "", _CUBE_MEMBER_RE.sub("@", join_sql))
+        is_simple_equality = (
+            residual == "@=@"
+            and len(refs) == 2
+            and {side for side, _ in refs} == {"from", "to"}
+            and all(col for _, col in refs)
+        )
+        if is_simple_equality:
+            from_col = next(col for side, col in refs if side == "from")
+            to_col = next(col for side, col in refs if side == "to")
+            return native_sql, from_col, to_col
+        return native_sql, None, None
+
+    def _relationship_from_join(self, join_def: dict, self_name: str) -> Relationship | None:
+        """Build a Relationship from a Cube ``joins`` entry."""
+        join_name = join_def.get("name")
+        if not join_name:
+            return None
+
+        rel_type = join_def.get("relationship", "many_to_one")
+        join_sql = join_def.get("sql", "") or ""
+
+        native_sql, from_col, to_col = self._convert_cube_join(join_sql, self_name, join_name)
+
+        # Plain single-column equality on many_to_one / one_to_many -> structured keys.
+        # Both Sidemantic (Python) and the Rust engine agree on the join direction for
+        # these, so structured keys round-trip cleanly to Cube's simple join form.
+        # one_to_one is deliberately excluded: the two engines interpret its FK/PK
+        # direction differently, so we preserve the explicit condition instead.
+        if from_col and to_col and rel_type in ("many_to_one", "one_to_many"):
+            if rel_type == "many_to_one":
+                return Relationship(name=join_name, type=rel_type, foreign_key=from_col, primary_key=to_col)
+            # one_to_many: FK lives on the related model, local key on this one.
+            return Relationship(name=join_name, type=rel_type, foreign_key=to_col, primary_key=from_col)
+
+        # Composite / non-equality / one_to_one condition -> preserve the full predicate.
+        if native_sql:
+            return Relationship(name=join_name, type=rel_type, sql=native_sql)
+
+        # Unparseable (references another cube, or no recognizable members): fall back
+        # to Cube's naming convention, but warn instead of silently faking a join.
+        warnings.warn(
+            f"Could not parse Cube join '{self_name}' -> '{join_name}' from SQL {join_sql!r}; "
+            f"falling back to foreign key '{join_name}_id'.",
+            stacklevel=2,
+        )
+        return Relationship(name=join_name, type=rel_type, foreign_key=f"{join_name}_id")
+
+    @staticmethod
+    def _native_join_sql_to_cube(native_sql: str, join_name: str) -> str:
+        """Translate a ``{from}`` / ``{to}`` join condition back to Cube placeholders.
+
+        ``{from}.col`` -> ``${CUBE}.col`` and ``{to}.col`` -> ``${join_name.col}``.
+        """
+        result = re.sub(r"\{to\}\.(\w+)", rf"${{{join_name}.\1}}", native_sql)
+        result = result.replace("{to}", f"${{{join_name}}}")
+        result = result.replace("{from}", "${CUBE}")
+        return result
 
     def _parse_cube(self, cube_def: dict) -> Model | None:
         """Parse a Cube definition into a Model.
@@ -258,19 +381,9 @@ class CubeAdapter(BaseAdapter):
         # Parse joins to create relationships
         relationships = []
         for join_def in cube_def.get("joins") or []:
-            join_name = join_def.get("name")
-            if join_name:
-                # Get relationship type from join definition, default to many_to_one
-                rel_type = join_def.get("relationship", "many_to_one")
-
-                # Extract foreign key from join SQL, fallback to convention
-                join_sql = join_def.get("sql", "")
-                fk_column = self._extract_fk_from_join_sql(join_sql, rel_type, join_name)
-                if not fk_column:
-                    # Fallback to conventional naming if parsing fails
-                    fk_column = f"{join_name}_id"
-
-                relationships.append(Relationship(name=join_name, type=rel_type, foreign_key=fk_column))
+            relationship = self._relationship_from_join(join_def, name)
+            if relationship is not None:
+                relationships.append(relationship)
 
         # Parse pre-aggregations (handle None from empty YAML section)
         pre_aggregations = []
@@ -326,6 +439,7 @@ class CubeAdapter(BaseAdapter):
             "number": "numeric",
             "time": "time",
             "boolean": "categorical",
+            "switch": "categorical",  # enum-like dimension with a predefined values list
         }
 
         sidemantic_type = type_mapping.get(dim_type, "categorical")
@@ -363,6 +477,20 @@ class CubeAdapter(BaseAdapter):
         label = dim_def.get("title")
         meta = dim_def.get("meta")
         public = dim_def.get("shown", dim_def.get("public", True))
+
+        # Store Cube-specific params (switch values, mask, currency) on meta so
+        # they survive the import even though Sidemantic has no first-class field.
+        switch_values = dim_def.get("values") if dim_type == "switch" else None
+        mask = dim_def.get("mask")
+        currency = dim_def.get("currency")
+        if switch_values is not None or mask is not None or currency is not None:
+            meta = dict(meta) if meta else {}
+            if switch_values is not None:
+                meta["switch_values"] = switch_values
+            if mask is not None:
+                meta["mask"] = mask
+            if currency is not None:
+                meta["currency"] = currency
 
         return Dimension(
             name=name,
@@ -413,6 +541,9 @@ class CubeAdapter(BaseAdapter):
 
         agg_type = type_mapping.get(measure_type)
         metric_type = None
+        # When True, the sql holds a complete expression that must be preserved
+        # verbatim (no auto-extraction of aggregations into agg=).
+        sql_is_complete = False
 
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
@@ -424,6 +555,23 @@ class CubeAdapter(BaseAdapter):
                 meta["cube_type"] = "rank"
                 meta["order_by"] = measure_def.get("order_by")
                 meta["reduce_by"] = measure_def.get("reduce_by")
+            elif measure_type == "number_agg":
+                # Custom SQL aggregate (e.g., PERCENTILE_CONT). The sql field holds
+                # the complete aggregate expression, so leave agg=None and preserve
+                # the SQL verbatim. Record the original Cube type for consumers.
+                agg_type = None
+                sql_is_complete = True
+                meta = meta.copy() if meta else {}
+                meta["cube_type"] = "number_agg"
+            elif measure_type in ("string", "time", "boolean"):
+                # Non-numeric measure types (Tesseract). The sql is a complete
+                # expression (often itself an aggregate, e.g. type: time with
+                # MAX({CUBE}.created_at)). Preserve it verbatim with agg=None and
+                # record the original Cube type rather than forcing a count.
+                agg_type = None
+                sql_is_complete = True
+                meta = meta.copy() if meta else {}
+                meta["cube_type"] = measure_type
             else:
                 # Truly unknown types fall back to count
                 agg_type = "count"
@@ -527,11 +675,30 @@ class CubeAdapter(BaseAdapter):
 
                     measure_sql = re.sub(r"\$\{(\w+)\}", replace_measure_ref, measure_sql)
 
+        # Preserve Cube-specific measure params that have no first-class Sidemantic
+        # equivalent: mask/currency, and multi-stage group_by/add_group_by used for
+        # percent-of-total style calculations.
+        mask = measure_def.get("mask")
+        currency = measure_def.get("currency")
+        group_by = measure_def.get("group_by")
+        add_group_by = measure_def.get("add_group_by")
+        if any(v is not None for v in (mask, currency, group_by, add_group_by)):
+            meta = dict(meta) if meta else {}
+            if mask is not None:
+                meta["mask"] = mask
+            if currency is not None:
+                meta["currency"] = currency
+            if group_by is not None:
+                meta["group_by"] = group_by
+            if add_group_by is not None:
+                meta["add_group_by"] = add_group_by
+
         return Metric(
             name=name,
             type=metric_type,
             agg=agg_type,
             sql=measure_sql,
+            sql_is_complete=sql_is_complete,
             numerator=numerator,
             denominator=denominator,
             window=window,
@@ -654,7 +821,7 @@ class CubeAdapter(BaseAdapter):
             build_range_end=build_range_end,
         )
 
-    def _parse_view(self, view_def: dict, graph: SemanticGraph) -> Model | None:
+    def _parse_view(self, view_def: dict, graph: SemanticGraph, parent_model: Model | None = None) -> Model | None:
         """Parse a Cube view into a composite Model.
 
         Views project and rename members from existing cubes via join_path,
@@ -663,6 +830,8 @@ class CubeAdapter(BaseAdapter):
         Args:
             view_def: View definition dictionary
             graph: Semantic graph with already-parsed cubes
+            parent_model: Already-built view model referenced via view-level
+                ``extends`` (its members and folders are inherited).
 
         Returns:
             Model instance or None
@@ -673,6 +842,14 @@ class CubeAdapter(BaseAdapter):
 
         dimensions = []
         metrics = []
+        inherited_folders: list = []
+
+        # View-level extends: seed members and folders from the parent view.
+        if parent_model is not None:
+            dimensions.extend(d.model_copy() for d in parent_model.dimensions)
+            metrics.extend(m.model_copy() for m in parent_model.metrics)
+            if parent_model.meta:
+                inherited_folders = list(parent_model.meta.get("folders") or [])
 
         for cube_spec in view_def.get("cubes", []):
             join_path = cube_spec.get("join_path", "")
@@ -752,15 +929,47 @@ class CubeAdapter(BaseAdapter):
             dimensions.extend(dims)
             metrics.extend(mets)
 
+        # Deduplicate by name, keeping the last definition so a child view's
+        # own members override inherited (extended) ones.
+        def _dedupe(items):
+            by_name: dict[str, object] = {}
+            for item in items:
+                by_name[item.name] = item
+            return list(by_name.values())
+
+        dimensions = _dedupe(dimensions)
+        metrics = _dedupe(metrics)
+
         # Only create a model if the view resolved at least some members
         if not dimensions and not metrics:
             return None
+
+        meta: dict = {"cube_type": "view"}
+
+        # Folders: nested member grouping for UI organization. Merge the view's
+        # own folders onto any inherited from the extended parent.
+        own_folders = view_def.get("folders") or []
+        folders = inherited_folders + list(own_folders)
+        if folders:
+            meta["folders"] = folders
+
+        # default_filters: enforced query filters; preserve raw definitions.
+        default_filters = view_def.get("default_filters")
+        if default_filters:
+            meta["default_filters"] = default_filters
+
+        # meta.default_ui_filters: pre-populated (editable) workbench filters.
+        view_meta = view_def.get("meta")
+        if view_meta:
+            default_ui_filters = view_meta.get("default_ui_filters")
+            if default_ui_filters is not None:
+                meta["default_ui_filters"] = default_ui_filters
 
         return Model(
             name=name,
             dimensions=dimensions,
             metrics=metrics,
-            meta={"cube_type": "view"},
+            meta=meta,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -993,17 +1202,24 @@ class CubeAdapter(BaseAdapter):
             # Find target model from resolved models (inheritance-applied)
             target_model = resolved_models.get(relationship.name)
             if target_model:
-                # Use ${CUBE} for local side and ${target.col} for remote side
-                # so _extract_fk_from_join_sql can re-parse the exported SQL
-                if relationship.type in ("many_to_one", "one_to_one"):
+                if relationship.sql:
+                    # Custom predicate (composite keys, one_to_one, non-equality):
+                    # preserve it by translating {from}/{to} back to Cube placeholders.
+                    join_sql = self._native_join_sql_to_cube(relationship.sql, relationship.name)
+                elif relationship.type == "many_to_one":
+                    # ${CUBE}.fk = ${target.pk}
                     local_key = relationship.sql_expr or relationship.foreign_key
                     remote_key = relationship.primary_key or target_model.primary_key
                     if isinstance(remote_key, list):
                         remote_key = remote_key[0]
                     join_sql = f"${{CUBE}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
                 else:
-                    # one_to_many: ${CUBE}.pk = ${target.fk}
-                    local_key = model.primary_key if isinstance(model.primary_key, str) else model.primary_key[0]
+                    # one_to_many / one_to_one: ${CUBE}.pk = ${target.fk}.
+                    # The local key is this model's key (relationship.primary_key when set,
+                    # else the model's primary key); the FK lives on the related model.
+                    local_key = relationship.primary_key or model.primary_key
+                    if isinstance(local_key, list):
+                        local_key = local_key[0]
                     remote_key = relationship.sql_expr or relationship.foreign_key
                     join_sql = f"${{CUBE}}.{local_key} = ${{{relationship.name}}}.{remote_key}"
 

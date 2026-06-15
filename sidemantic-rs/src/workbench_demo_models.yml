@@ -1,0 +1,77 @@
+models:
+  - name: orders
+    table: orders
+    description: Customer orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+        description: Order status
+      - name: created_at
+        type: time
+        sql: created_at
+        granularity: day
+        description: Order timestamp
+    metrics:
+      - name: order_count
+        agg: count
+        description: Number of orders
+      - name: total_amount
+        agg: sum
+        sql: amount
+        description: Total order amount
+      - name: avg_amount
+        agg: avg
+        sql: amount
+        description: Average order amount
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+      - name: products
+        type: many_to_one
+        foreign_key: product_id
+
+  - name: customers
+    table: customers
+    description: Customers who place orders
+    primary_key: id
+    dimensions:
+      - name: name
+        type: categorical
+        sql: name
+      - name: region
+        type: categorical
+        sql: region
+        description: Customer region
+      - name: signup_date
+        type: time
+        sql: signup_date
+        granularity: day
+        description: Customer signup date
+    metrics:
+      - name: customer_count
+        agg: count
+        description: Number of customers
+
+  - name: products
+    table: products
+    description: Products available for purchase
+    primary_key: id
+    dimensions:
+      - name: name
+        type: categorical
+        sql: name
+      - name: category
+        type: categorical
+        sql: category
+        description: Product category
+    metrics:
+      - name: product_count
+        agg: count
+        description: Number of products
+      - name: avg_price
+        agg: avg
+        sql: price
+        description: Average product price

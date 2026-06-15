@@ -178,12 +178,11 @@ class TestSaasAnalyticsParsing:
         assert stddev is not None
         assert stddev.agg is not None
 
-    @pytest.mark.xfail(reason="semi_additive not yet supported in adapter")
     def test_semi_additive_measure(self, model):
         """Semi-additive measures preserve semi_additive setting."""
         current_mrr = model.get_metric("current_mrr")
-        # Semi-additive measures should have non_additive_dimension or similar
-        assert current_mrr.non_additive_dimension is not None
+        # Semi-additive measures map to non_additive_dimension (the 'over' dimension)
+        assert current_mrr.non_additive_dimension == "subscription_quarter"
 
     def test_count_if_aggregation(self, model):
         """count_if func is parsed as conditional count."""
@@ -310,26 +309,25 @@ class TestProductEventsParsing:
         assert conv.filters is not None
         assert len(conv.filters) > 0
 
-    @pytest.mark.xfail(reason="semi_additive not yet supported in adapter")
     def test_semi_additive_daily_active_users(self, model):
         """Semi-additive DAU measure preserves non-additivity."""
         dau = model.get_metric("daily_active_users")
-        assert dau.non_additive_dimension is not None
+        assert dau.non_additive_dimension == "event_date"
 
-    @pytest.mark.xfail(reason="visibility not yet mapped to model metadata")
     def test_dimension_visibility(self, model):
         """Visibility settings are preserved on dimensions."""
-        # Visibility would be stored in dimension meta
+        # Visibility is stored in dimension meta and reflected in public flag
         session_dim = model.get_dimension("session_id")
         assert session_dim.meta is not None
         assert session_dim.meta.get("visibility") == "internal"
+        assert session_dim.public is False
 
-    @pytest.mark.xfail(reason="visibility not yet mapped to metric metadata")
     def test_measure_visibility(self, model):
         """Visibility settings are preserved on measures."""
         unique_sessions = model.get_metric("unique_sessions")
         assert unique_sessions.meta is not None
         assert unique_sessions.meta.get("visibility") == "internal"
+        assert unique_sessions.public is False
 
     def test_multiple_relations(self, model):
         """Multiple relations are parsed."""
@@ -372,10 +370,17 @@ class TestHexDirectoryParse:
         assert "employees" in graph.models
         assert "support_tickets" in graph.models
         assert "page_views" in graph.models
+        # Multi-document typed fixture contributes a model and a view.
+        assert "subscriptions" in graph.models
+        assert "revenue_overview" in graph.models
 
     def test_total_model_count(self, graph):
-        """All 9 fixture files produce 9 models."""
-        assert len(graph.models) == 9
+        """All fixture files produce the expected number of resources.
+
+        The multi-document `subscriptions_project.yml` adds two resources
+        (a model + a view), so 9 legacy files + 2 = 11 resources.
+        """
+        assert len(graph.models) == 11
 
     def test_cross_model_measure_reference(self, graph):
         """Organizations model has cross-model measure referencing users."""

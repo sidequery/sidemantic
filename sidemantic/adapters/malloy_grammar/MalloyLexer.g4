@@ -1,27 +1,32 @@
 /*
- * Copyright 2023 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Copyright Contributors to the Malloy project
+ * SPDX-License-Identifier: MIT
  */
 
 lexer grammar MalloyLexer;
+
+@members {
+_blockAnnotationColumn = 0
+_blockAnnotationCloser = '|#'
+
+def isBlockAnnotationCloseLine(self):
+    col = self._blockAnnotationColumn
+    closer = self._blockAnnotationCloser
+    # Characters before the expected closer must be whitespace only
+    for i in range(col):
+        c = self._input.LA(i + 1)
+        if c != 0x20 and c != 0x09:
+            return False
+    # Check closer string at the expected column
+    for j in range(len(closer)):
+        if self._input.LA(col + j + 1) != ord(closer[j]):
+            return False
+    # For |# closer, ensure it is not actually |##
+    if closer == '|#':
+        if self._input.LA(col + len(closer) + 1) == 0x23:
+            return False
+    return True
+}
 
 fragment SPACE_CHAR: [ \u000B\t\r\n\u00A0];
 
@@ -36,6 +41,7 @@ DIMENSION: D I M E N S I O N SPACE_CHAR* ':';
 DRILL: D R I L L SPACE_CHAR* ':';
 EXCEPT: E X C E P T SPACE_CHAR* ':';
 EXTENDQ: E X T E N D SPACE_CHAR* ':';
+GIVEN: G I V E N SPACE_CHAR* ':';
 GROUP_BY: G R O U P '_' B Y SPACE_CHAR* ':';
 GROUPED_BY: G R O U P E D '_' B Y SPACE_CHAR* ':';
 HAVING: H A V I N G SPACE_CHAR* ':';
@@ -59,6 +65,7 @@ RUN: R U N SPACE_CHAR* ':';
 SAMPLE: S A M P L E SPACE_CHAR* ':';
 SELECT: S E L E C T SPACE_CHAR* ':';
 SOURCE: S O U R C E SPACE_CHAR* ':';
+TYPE: T Y P E SPACE_CHAR* ':';
 TOP: T O P SPACE_CHAR* ':';
 WHERE: W H E R E SPACE_CHAR* ':';
 VIEW: V I E W SPACE_CHAR* ':' ;
@@ -84,6 +91,7 @@ DISTINCT: D I S T I N C T ;
 ELSE: E L S E ;
 END: E N D ;
 EXCLUDE: E X C L U D E;
+EXPORT: E X P O R T ;
 EXTEND: E X T E N D ;
 FALSE: F A L S E;
 FILTER: F I L T E R;
@@ -135,6 +143,7 @@ WHEN: W H E N ;
 WITH: W I T H ;
 YEAR: Y E A R S?;
 UNGROUPED: U N G R O U P E D;
+VIRTUAL: V I R T U A L;
 
 fragment SQ: '\'';
 fragment BQ: '`';
@@ -168,6 +177,20 @@ DQ_STRING: DQ (STR_CHAR | ['`])* DQ;
 BQ_STRING: BQ (STR_CHAR | ['"])* BQ;
 
 fragment F_TO_EOL: ~[\r\n]* (('\r'? '\n') | EOF);
+
+// Block annotation openers — must precede single-line rules so #| and ##| match first
+DOC_BLOCK_ANNOTATION_BEGIN
+  : '##|' ~[\r\n]* (('\r'? '\n') | EOF)
+    {self._blockAnnotationColumn = self._tokenStartColumn; self._blockAnnotationCloser = '|##'}
+  -> pushMode(BLOCK_ANNOTATION_MODE)
+  ;
+
+BLOCK_ANNOTATION_BEGIN
+  : '#|' ~[\r\n]* (('\r'? '\n') | EOF)
+    {self._blockAnnotationColumn = self._tokenStartColumn; self._blockAnnotationCloser = '|#'}
+  -> pushMode(BLOCK_ANNOTATION_MODE)
+  ;
+
 DOC_ANNOTATION: '##' F_TO_EOL;
 ANNOTATION: '#' F_TO_EOL;
 
@@ -222,6 +245,8 @@ LITERAL_MONTH:   '@' F_YEAR '-' F_DD;
 LITERAL_WEEK:    '@' F_YEAR '-' F_DD '-' F_DD '-' W K;
 LITERAL_YEAR:    '@' F_YEAR;
 
+GIVEN_REF: '$' ID_CHAR ( ID_CHAR | DIGIT )*;
+
 IDENTIFIER: ID_CHAR ( ID_CHAR | DIGIT )*;
 
 PERCENT_LITERAL: DIGIT+ '%' ;
@@ -264,3 +289,13 @@ fragment SQL_CHAR
 
 OPEN_CODE: SQL_CHAR*? '%{' -> pushMode(DEFAULT_MODE);
 SQL_END: SQL_CHAR*? '"""' -> popMode;
+
+mode BLOCK_ANNOTATION_MODE;
+
+BLOCK_ANNOTATION_END
+  : {self.isBlockAnnotationCloseLine()}? ~[\r\n]* (('\r'? '\n') | EOF) -> popMode
+  ;
+
+BLOCK_ANNOTATION_TEXT
+  : ~[\r\n]* (('\r'? '\n') | EOF)
+  ;

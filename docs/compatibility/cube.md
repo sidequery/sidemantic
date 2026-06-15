@@ -50,7 +50,7 @@ Not mapped: `title`, `rewrite_queries`, `context_members`.
 | `type: time` | Supported (maps to `time`, default granularity `day`) |
 | `type: boolean` | Supported (maps to `categorical`) |
 | `type: geo` | Partial support: parses without error but latitude/longitude sub-fields are not stored. Maps to `categorical`. |
-| `type: switch` | Partial support: parses without error. The `values` list is not stored. Maps to `categorical`. |
+| `type: switch` | Supported (maps to `categorical`; the `values` list is preserved in `Dimension.meta["switch_values"]`). |
 | `sql: ${CUBE}.column` | Supported (`${CUBE}` replaced with `{model}` placeholder) |
 | `sql: {CUBE}.column` (no dollar sign) | Supported (also replaced with `{model}`) |
 | `sql: ${cube_name}.column` | Supported (cube-name references replaced with `{model}`) |
@@ -60,6 +60,8 @@ Not mapped: `title`, `rewrite_queries`, `context_members`.
 | `format` | Supported (stored on `Dimension.format`) |
 | `shown` / `public` | Supported (stored as `Dimension.public`) |
 | `meta` | Supported (stored on `Dimension.meta`) |
+| `mask` | Supported (preserved in `Dimension.meta["mask"]`; static value or SQL expression stored verbatim) |
+| `currency` | Supported (3-letter ISO 4217 code preserved in `Dimension.meta["currency"]`) |
 | Cross-cube dimension references (`${other_cube.field}`) | Supported (preserved as-is in SQL) |
 | Path-qualified references (`{b.d.id}`) | Supported (preserved as-is in SQL) |
 | `case: { when: [...] }` (case dimensions) | Supported (converted to SQL `CASE WHEN ... THEN ... ELSE ... END` expression) |
@@ -82,6 +84,10 @@ Not mapped: `propagate_filters_to_sub_query`.
 | `type: min` | Supported |
 | `type: max` | Supported |
 | `type: number` (calculated/derived) | Supported (see Derived Measures below) |
+| `type: number_agg` (custom SQL aggregate, Tesseract) | Supported (the full `sql` aggregate expression is preserved with `agg=None`; original type recorded in `Metric.meta["cube_type"]`) |
+| `type: string` | Supported (non-aggregating measure: `sql` preserved, `agg=None`, type recorded in `Metric.meta["cube_type"]`) |
+| `type: time` | Supported (non-aggregating measure: `sql` preserved, `agg=None`, type recorded in `Metric.meta["cube_type"]`) |
+| `type: boolean` | Supported (non-aggregating measure: `sql` preserved, `agg=None`, type recorded in `Metric.meta["cube_type"]`) |
 | `sql: ${CUBE}.column` | Supported (normalized to `{model}` placeholder) |
 | `sql: ${dimension_ref}` (referencing a dimension) | Supported (preserved for resolution) |
 | `description` | Supported |
@@ -89,10 +95,10 @@ Not mapped: `propagate_filters_to_sub_query`.
 | `format` | Supported (stored on `Metric.format`) |
 | `shown` / `public` | Supported (stored as `Metric.public`) |
 | `meta` | Supported (stored on `Metric.meta`) |
+| `mask` | Supported (preserved in `Metric.meta["mask"]`; static value or SQL expression stored verbatim) |
+| `currency` | Supported (3-letter ISO 4217 code preserved in `Metric.meta["currency"]`) |
 | `drill_members` | Supported (stored as `Metric.drill_fields`) |
 | `type: rank` | Partial support: stored as `type=derived` with rank semantics (`order_by`, `reduce_by`) preserved in `Metric.meta["cube_type"]`. Does not execute rank window function. |
-| `type: string` | Unsupported (no mapping; falls back to `count`) |
-| `type: boolean` | Unsupported (no mapping; falls back to `count`) |
 | `type: running_total` | Unsupported (no mapping) |
 
 Not mapped: `drill_filters`.
@@ -213,11 +219,17 @@ Supported. The `views:` top-level section in Cube YAML is parsed after all cubes
 | `alias` on cube entry | Supported (used as prefix when `prefix: true`) |
 | View-only files (no `cubes:` section) | Supported (views that reference cubes from other files resolve correctly when parsed from a directory) |
 | Empty view (no resolvable cubes) | Supported (silently skipped, no model created) |
-| `extends` on views | Unsupported |
-| `folders` | Unsupported (UI grouping concept) |
+| `extends` on views | Supported (the child view inherits all projected members and folders from the parent view; the child's own members and folders are appended, with same-named members overriding) |
+| `folders` (incl. nested folders and `join_path` includes) | Supported (the raw folder definitions are preserved in `Model.meta["folders"]` for UI grouping) |
+| `default_filters` | Supported (raw filter definitions preserved in `Model.meta["default_filters"]`) |
+| `meta.default_ui_filters` | Supported (preserved in `Model.meta["default_ui_filters"]`) |
 | View-level `access_policy` | Unsupported |
 
-View models are marked with `meta={"cube_type": "view"}` and are excluded from Cube export.
+View models are marked with `meta={"cube_type": "view"}` and are excluded from Cube export. View-level metadata (folders, default filters) is stored alongside `cube_type` in `Model.meta`.
+
+### View Groups (top-level `view_groups`)
+
+The top-level `view_groups:` block (a UI grouping of views) is parsed and the raw definitions are preserved in `SemanticGraph.metadata["cube_view_groups"]`. Sidemantic has no first-class equivalent, so the definitions are kept verbatim for consumers that organize views.
 
 ---
 
@@ -253,7 +265,8 @@ Partial support. The `multi_stage: true` flag on measures is parsed by YAML with
 | Feature | Status |
 |---------|--------|
 | `time_shift: [{ time_dimension, interval, type: prior }]` | Supported (maps to `Metric.type="time_comparison"` with `comparison_type` and `time_offset`) |
-| `group_by` (percent-of-total grouping) | Unsupported |
+| `group_by` (percent-of-total grouping) | Partial support: the dimension list is preserved in `Metric.meta["group_by"]`. Multi-stage execution semantics are not reproduced. |
+| `add_group_by` | Partial support: the dimension list is preserved in `Metric.meta["add_group_by"]`. |
 | `order_by` / `reduce_by` (ranking) | Partial support: stored in `Metric.meta` for `type: rank` measures |
 | `case` / `switch` / `when` / `else` on measures | Unsupported |
 

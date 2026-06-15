@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from sidemantic.adapters.superset import SupersetAdapter
 
@@ -72,6 +73,43 @@ def test_superset_roundtrip_metric_properties():
             m2 = orders2.get_metric(m1.name)
             assert m2 is not None, f"Metric {m1.name} missing after roundtrip"
             assert_metric_equivalent(m1, m2)
+
+
+@pytest.mark.parametrize(
+    "dataset_extra, expected_table",
+    [
+        ({"catalog": "warehouse", "schema": None}, "warehouse.events"),
+        ({"catalog": "warehouse", "schema": "public"}, "warehouse.public.events"),
+        ({"schema": "public"}, "public.events"),
+        ({}, "events"),
+    ],
+)
+def test_superset_catalog_schema_roundtrip(dataset_extra, expected_table):
+    """Test catalog/schema qualifiers survive a Superset roundtrip.
+
+    A catalog-only (schema null) reference must not be re-emitted with the
+    catalog duplicated into ``schema`` (regression: ``cat.table`` -> ``cat.cat.table``).
+    """
+    dataset = {
+        "table_name": "events",
+        "columns": [{"column_name": "id", "type": "INT"}],
+        **dataset_extra,
+    }
+
+    adapter = SupersetAdapter()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = Path(tmpdir) / "events.yaml"
+        input_path.write_text(yaml.dump(dataset))
+
+        graph1 = adapter.parse(input_path)
+        assert graph1.models["events"].table == expected_table
+
+        out_dir = Path(tmpdir) / "out"
+        adapter.export(graph1, out_dir)
+        graph2 = adapter.parse(out_dir / "events.yaml")
+
+        assert graph2.models["events"].table == expected_table
 
 
 if __name__ == "__main__":

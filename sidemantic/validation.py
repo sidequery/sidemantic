@@ -69,7 +69,16 @@ def validate_model(model: "Model") -> list[str]:
         errors.append(f"Model '{model.name}' must have a primary_key defined")
 
     # Check for a physical, SQL, DAX, or externally sourced model definition.
-    if not model.table and not model.sql and not getattr(model, "source_uri", None) and not getattr(model, "dax", None):
+    # Hex ``view`` resources are presentation layers over a base model and are
+    # intentionally table-less, so they are exempt from this requirement.
+    is_hex_view = bool((getattr(model, "meta", None) or {}).get("hex_resource_type") == "view")
+    if (
+        not is_hex_view
+        and not model.table
+        and not model.sql
+        and not getattr(model, "source_uri", None)
+        and not getattr(model, "dax", None)
+    ):
         errors.append(f"Model '{model.name}' must have one of 'table', 'sql', 'dax', or 'source_uri' defined")
 
     for label, items in [
@@ -121,6 +130,11 @@ def validate_model(model: "Model") -> list[str]:
         if measure.agg in valid_aggs:
             continue
         if measure.agg is None and measure.sql and sql_has_aggregate(measure.sql):
+            continue
+        # Opaque complete expressions (e.g. imported Cube/Tesseract
+        # number_agg/time/string/boolean measures) preserve their sql verbatim
+        # with agg=None and are valid even when the sql is a plain column.
+        if measure.agg is None and getattr(measure, "sql_is_complete", False) and measure.sql:
             continue
         if measure.agg not in valid_aggs:
             valid_aggs_str = ", ".join(sorted(valid_aggs))

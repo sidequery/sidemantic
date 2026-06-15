@@ -31,9 +31,16 @@ def write_models(root: Path) -> Path:
     return path
 
 
+ROWS, COLS = 32, 120
+
+# Cumulative raw bytes (decoded) read from each PTY, keyed by fd. The screen is
+# rebuilt from the full stream because a TUI repaints only changed cells.
+_SESSION_RAW = {}
+
+
 def spawn_pty(args, env=None):
     master_fd, slave_fd = pty.openpty()
-    winsize = struct.pack("HHHH", 32, 120, 0, 0)
+    winsize = struct.pack("HHHH", ROWS, COLS, 0, 0)
     fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
     proc = subprocess.Popen(
         args,
@@ -45,6 +52,7 @@ def spawn_pty(args, env=None):
     )
     os.close(slave_fd)
     os.set_blocking(master_fd, False)
+    _SESSION_RAW[master_fd] = ""
     return proc, master_fd
 
 
@@ -66,15 +74,69 @@ def read_available(fd):
     return b"".join(chunks).decode(errors="replace")
 
 
+def render_screen(raw):
+    """Reconstruct the visible terminal grid from a raw ANSI byte stream.
+
+    A TUI like ratatui only repaints cells that changed since the last frame,
+    so a single word can be split across cursor-move escapes in the byte stream
+    (with unchanged cells omitted entirely). Replaying the cumulative stream
+    onto a grid recovers what is actually on screen.
+    """
+    grid = [[" "] * COLS for _ in range(ROWS)]
+    row = col = 0
+    i = 0
+    length = len(raw)
+    while i < length:
+        ch = raw[i]
+        if ch == "\x1b":
+            if i + 1 < length and raw[i + 1] == "[":
+                j = i + 2
+                while j < length and (raw[j].isdigit() or raw[j] in ";?"):
+                    j += 1
+                if j >= length:
+                    break  # incomplete escape; recovered on the next read
+                final = raw[j]
+                params = raw[i + 2 : j].lstrip("?")
+                if final in ("H", "f"):
+                    parts = params.split(";")
+                    r = int(parts[0]) if parts and parts[0] else 1
+                    c = int(parts[1]) if len(parts) > 1 and parts[1] else 1
+                    row = min(ROWS - 1, max(0, r - 1))
+                    col = min(COLS - 1, max(0, c - 1))
+                elif final == "J" and params in ("2", "3"):
+                    grid = [[" "] * COLS for _ in range(ROWS)]
+                    row = col = 0
+                elif final == "K":
+                    start = 0 if params == "2" else col
+                    for x in range(start, COLS):
+                        grid[row][x] = " "
+                # other finals (SGR "m", cursor visibility "h"/"l", ...) ignored
+                i = j + 1
+                continue
+            i += 2  # non-CSI escape; skip ESC and the following byte
+            continue
+        if ch == "\r":
+            col = 0
+        elif ch == "\n":
+            row = min(ROWS - 1, row + 1)
+            col = 0
+        else:
+            if 0 <= row < ROWS and 0 <= col < COLS:
+                grid[row][col] = ch
+            col = min(COLS - 1, col + 1)
+        i += 1
+    return "\n".join("".join(cells).rstrip() for cells in grid)
+
+
 def wait_for(fd, needle, timeout=5):
     deadline = time.time() + timeout
-    output = ""
     while time.time() < deadline:
-        output += read_available(fd)
-        if needle in output:
-            return output
+        _SESSION_RAW[fd] = _SESSION_RAW.get(fd, "") + read_available(fd)
+        screen = render_screen(_SESSION_RAW[fd])
+        if needle in screen:
+            return screen
         time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for {needle!r}; output={output!r}")
+    raise AssertionError(f"timed out waiting for {needle!r}; screen=\n{render_screen(_SESSION_RAW.get(fd, ''))}")
 
 
 def send_key(fd, data):
@@ -116,7 +178,9 @@ def run_no_db_workbench(binary: str, models_path: Path):
     try:
         first = wait_for(fd, "Workbench")
         assert "connection=none" in first, first
-        assert "SQL Input" in first, first
+        # The SQL editor renders lower in the frame than the header, so it may
+        # arrive in a later read chunk than the one that first showed "Workbench".
+        wait_for(fd, "SQL Input")
 
         send_key(fd, b"\x05")
         wait_for(fd, "configured")
@@ -161,7 +225,7 @@ def seed_duckdb(binary: str, models_path: Path, db_path: Path, driver: str):
 
 def write_driver_manifest(root: Path, driver: str) -> Path:
     driver_dir = root / "adbc-drivers"
-    driver_dir.mkdir()
+    driver_dir.mkdir(exist_ok=True)
     (driver_dir / "adbc_driver_duckdb.toml").write_text(
         f"""
 manifest_version = 1
@@ -204,6 +268,36 @@ def run_db_workbench(binary: str, models_path: Path, root: Path):
         close_pty_process(proc, fd)
 
 
+def run_demo_workbench(binary: str, root: Path):
+    """End-to-end `workbench --demo`: the embedded native models load, the demo
+    database seeds via ADBC, and the starter query returns seeded rows."""
+    driver = os.environ.get("SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER")
+    if not driver:
+        raise AssertionError("SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER is required for workbench-adbc PTY test")
+
+    driver_dir = write_driver_manifest(root, driver)
+    env = os.environ.copy()
+    existing = env.get("ADBC_DRIVER_PATH")
+    env["ADBC_DRIVER_PATH"] = str(driver_dir) if not existing else f"{driver_dir}{os.pathsep}{existing}"
+
+    proc, fd = spawn_pty([binary, "workbench", "--demo"], env=env)
+    try:
+        first = wait_for(fd, "Workbench")
+        assert "connection=duckdb:///" in first, first
+        # Embedded native demo models loaded into the model browser.
+        wait_for(fd, "customers")
+
+        # Run the starter query against the freshly seeded demo data.
+        send_key(fd, b"\x05")
+        wait_for(fd, "Alice")  # seeded customer name proves the query executed
+
+        send_key(fd, b"\x1b")
+        proc.wait(timeout=5)
+        assert proc.returncode == 0, f"workbench demo quit failed: {proc.returncode}"
+    finally:
+        close_pty_process(proc, fd)
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: workbench_pty_smoke.py <sidemantic-binary>")
@@ -216,6 +310,7 @@ def main():
         run_no_db_workbench(binary, models_path)
         if os.environ.get("SIDEMANTIC_WORKBENCH_PTY_EXPECT_ADBC") == "1":
             run_db_workbench(binary, models_path, root)
+            run_demo_workbench(binary, root)
 
 
 if __name__ == "__main__":

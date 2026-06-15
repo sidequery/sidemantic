@@ -226,3 +226,227 @@ accounts:
     events_sql = layer.compile(metrics=["events.count"], dimensions=["events_user.name"])
     assert "events_user_cte" in events_sql
     assert "FROM accounts" in events_sql
+
+
+def test_load_from_directory_detects_multi_document_hex(tmp_path):
+    """Multi-document (``---``-separated) typed Hex files load via auto-discovery.
+
+    ``yaml.safe_load`` rejects multi-document files, so without explicit Hex
+    detection the documented CLI workflow could not load current Hex projects.
+    """
+    hex_file = tmp_path / "subscriptions_project.yml"
+    hex_file.write_text(
+        """
+id: subscriptions
+type: model
+base_sql_table: analytics.subscriptions
+dimensions:
+  - id: customer_id
+    type: string
+    unique: true
+  - id: snapshot_date
+    type: date
+measures:
+  - id: total_mrr
+    func: sum
+    of: mrr
+  - id: current_mrr
+    func: sum
+    of: mrr
+    semi_additive:
+      over:
+        - dimension: snapshot_date
+          pick: max
+---
+id: revenue_overview
+type: view
+base: subscriptions
+contents:
+  - name: Revenue
+    measures:
+      - total_mrr
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    # Both the model and the table-less view resource are registered.
+    assert "subscriptions" in layer.graph.models
+    assert "revenue_overview" in layer.graph.models
+
+    view = layer.graph.models["revenue_overview"]
+    assert view.meta.get("hex_resource_type") == "view"
+    assert view.table is None
+
+    # The typed model's semi-additive config survives through the CLI load path.
+    assert layer.graph.models["subscriptions"].get_metric("current_mrr").non_additive_dimension == "snapshot_date"
+
+
+def test_load_from_directory_detects_exported_hex_view(tmp_path):
+    """A standalone exported ``type: view`` Hex file is detected by auto-discovery."""
+    view_file = tmp_path / "revenue_overview.yml"
+    view_file.write_text(
+        """
+id: revenue_overview
+type: view
+base: subscriptions
+contents:
+  - name: Revenue
+    measures:
+      - total_mrr
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "revenue_overview" in layer.graph.models
+    assert layer.graph.models["revenue_overview"].meta.get("hex_resource_type") == "view"
+
+
+def test_load_from_directory_detects_query_backed_hex(tmp_path):
+    """Untyped query-backed Hex models (``base_sql_query``) load via auto-discovery.
+
+    ``HexAdapter`` accepts ``base_sql_query`` as well as ``base_sql_table``, but
+    directory auto-discovery previously required ``base_sql_table`` to select the
+    Hex adapter, so query-backed Hex models were silently skipped on the
+    documented CLI/MCP load path.
+    """
+    hex_file = tmp_path / "support_tickets.yml"
+    hex_file.write_text(
+        """
+id: support_tickets
+base_sql_query: |
+  SELECT id, customer_id, status
+  FROM support.tickets
+dimensions:
+  - id: id
+    type: number
+    unique: true
+  - id: customer_id
+    type: number
+  - id: status
+    type: string
+measures:
+  - id: ticket_count
+    func: count
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "support_tickets" in layer.graph.models
+    model = layer.graph.models["support_tickets"]
+    assert model._source_format == "Hex"
+    # The query-backed model carries its SQL, not a physical table reference.
+    assert model.sql is not None
+    assert model.table is None
+    assert model.get_metric("ticket_count") is not None
+
+
+_HEX_VIEW_BASE_MODEL = """
+id: subscriptions
+type: model
+base_sql_table: analytics.subscriptions
+dimensions:
+  - id: id
+    type: number
+    unique: true
+measures:
+  - id: total
+    func: count
+---
+"""
+
+
+def test_validate_directory_flags_missing_hex_view_base(tmp_path):
+    """A Hex view without a `base` reference is reported as an error, not a pass.
+
+    Views are exempt from the physical-source check, so an omitted base would
+    otherwise let `sidemantic validate` report Validation Passed for an
+    unresolvable view.
+    """
+    from sidemantic.validation_runner import validate_directory
+
+    (tmp_path / "project.yml").write_text(
+        _HEX_VIEW_BASE_MODEL
+        + """
+id: revenue_overview
+type: view
+contents:
+  - name: Revenue
+    measures:
+      - total
+"""
+    )
+
+    report = validate_directory(tmp_path)
+    assert not report.passed
+    assert any("must have a 'base'" in err and "revenue_overview" in err for err in report.errors)
+
+
+def test_validate_directory_flags_unknown_hex_view_base(tmp_path):
+    """A Hex view whose `base` names no loaded model is reported as an error."""
+    from sidemantic.validation_runner import validate_directory
+
+    (tmp_path / "project.yml").write_text(
+        _HEX_VIEW_BASE_MODEL
+        + """
+id: revenue_overview
+type: view
+base: subscriptionz
+contents:
+  - name: Revenue
+    measures:
+      - total
+"""
+    )
+
+    report = validate_directory(tmp_path)
+    assert not report.passed
+    assert any("subscriptionz" in err and "doesn't exist" in err for err in report.errors)
+
+
+def test_validate_directory_flags_hex_view_without_contents(tmp_path):
+    """A Hex view with a valid `base` but no `contents` is reported as an error.
+
+    Hex views require `contents`; without this check a view that omits it would
+    report Validation Passed because views are exempt from the source check.
+    """
+    from sidemantic.validation_runner import validate_directory
+
+    (tmp_path / "project.yml").write_text(
+        _HEX_VIEW_BASE_MODEL
+        + """
+id: revenue_overview
+type: view
+base: subscriptions
+"""
+    )
+
+    report = validate_directory(tmp_path)
+    assert not report.passed
+    assert any("contents" in err and "revenue_overview" in err for err in report.errors)
+
+
+def test_validate_directory_accepts_valid_hex_view_base(tmp_path):
+    """A Hex view with a `base` naming a loaded model emits no view errors."""
+    from sidemantic.validation_runner import validate_directory
+
+    (tmp_path / "project.yml").write_text(
+        _HEX_VIEW_BASE_MODEL
+        + """
+id: revenue_overview
+type: view
+base: subscriptions
+contents:
+  - name: Revenue
+    measures:
+      - total
+"""
+    )
+
+    report = validate_directory(tmp_path)
+    assert not any("view" in err.lower() for err in report.errors)

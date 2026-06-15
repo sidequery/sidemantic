@@ -60,8 +60,6 @@ ADAPTER_FIXTURE_ROOTS = [
 EXPECTED_PARSE_FAILURES = {
     "tests/fixtures/gooddata/ecommerce_demo_analytics.json": GoodDataParseError,
     "tests/fixtures/gooddata/sdk_declarative_analytics_model.json": GoodDataParseError,
-    "tests/fixtures/gooddata/sdk_declarative_ldm.json": ValidationError,
-    "tests/fixtures/gooddata/sdk_declarative_ldm_with_sql_dataset.json": ValidationError,
     "tests/fixtures/metricflow/sub_daily_grain_to_date_hour.yml": ValidationError,
     "tests/fixtures/metricflow/sub_daily_millisecond.yml": ValidationError,
 }
@@ -79,6 +77,8 @@ EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/atscale_sml_kitchen_sink/model_internet_sales.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/model_orders.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/model_returns.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/package_shared_dims.yml",
+    "tests/fixtures/atscale_sml_kitchen_sink/packages/shared_repos.yml",
     "tests/fixtures/atscale_sml_kitchen_sink/row_security_country.yml",
     "tests/fixtures/cube/rbac_views.yaml",
     "tests/fixtures/holistics/ecommerce.dataset.aml",
@@ -98,6 +98,11 @@ EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/lookml/segment_attribution_model.model.lkml",
     "tests/fixtures/omni/estore/model.yaml",
     "tests/fixtures/omni/estore/relationships.yaml",
+    # Topic files reference views but define no models of their own; parsed
+    # standalone they yield an empty graph.
+    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
+    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
+    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
     "tests/fixtures/omni/model.yaml",
     "tests/fixtures/rill/bids_canvas.yaml",
     "tests/fixtures/rill/bids_explore.yaml",
@@ -125,9 +130,6 @@ EXPECTED_LOW_SIGNAL_FIXTURES = {
     "tests/fixtures/malloy/ecommerce_malloydata.malloy",
     "tests/fixtures/malloy/flights_cube.malloy",
     "tests/fixtures/malloy/ga4_config.malloy",
-    "tests/fixtures/omni/estore/topics/Customers.topic.yaml",
-    "tests/fixtures/omni/estore/topics/Events.topic.yaml",
-    "tests/fixtures/omni/estore/topics/sessions.topic.yaml",
     "tests/fixtures/tableau/real_world/document_api_tableau10.tds",
     "tests/fixtures/tableau/real_world/document_api_tableau93.tds",
 }

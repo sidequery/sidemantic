@@ -47,12 +47,17 @@ class TestBookingsSource:
         assert model.table == "fct_bookings"
 
     def test_measure_count(self, graph):
-        """All 14 measures are imported."""
+        """Representable measures are imported; percentile measures are skipped.
+
+        The fixture declares 14 measures, but the 4 ``agg: percentile`` measures
+        have no Sidemantic equivalent and are skipped rather than coerced to sum,
+        leaving 10.
+        """
         model = graph.models["bookings_source"]
-        assert len(model.metrics) == 14
+        assert len(model.metrics) == 10
 
     def test_measure_names(self, graph):
-        """All measure names are present."""
+        """Representable measure names are present; percentile measures are absent."""
         model = graph.models["bookings_source"]
         names = {m.name for m in model.metrics}
         expected = {
@@ -66,12 +71,13 @@ class TestBookingsSource:
             "booking_payments",
             "referred_bookings",
             "median_booking_value",
-            "booking_value_p99",
-            "discrete_booking_value_p99",
-            "approximate_continuous_booking_value_p99",
-            "approximate_discrete_booking_value_p99",
         }
         assert names == expected
+        # ``agg: percentile`` measures cannot be represented and are skipped.
+        assert "booking_value_p99" not in names
+        assert "discrete_booking_value_p99" not in names
+        assert "approximate_continuous_booking_value_p99" not in names
+        assert "approximate_discrete_booking_value_p99" not in names
 
     def test_sum_boolean_maps_to_sum(self, graph):
         """sum_boolean aggregation maps to sum."""
@@ -85,11 +91,15 @@ class TestBookingsSource:
         median = model.get_metric("median_booking_value")
         assert median.agg == "median"
 
-    def test_percentile_aggregation_fallback(self, graph):
-        """percentile aggregation falls through to default (sum) since not in type_mapping."""
+    def test_percentile_aggregation_skipped(self, graph):
+        """percentile aggregation is skipped, not silently coerced to sum.
+
+        Sidemantic has no percentile aggregation. Coercing it to ``sum`` would
+        register ``SUM(booking_value)`` under the percentile measure's name and
+        return a wrong value, so the measure is dropped instead.
+        """
         model = graph.models["bookings_source"]
-        p99 = model.get_metric("booking_value_p99")
-        assert p99.agg == "sum"
+        assert model.get_metric("booking_value_p99") is None
 
     def test_count_distinct(self, graph):
         """count_distinct aggregation is mapped correctly."""
@@ -659,9 +669,13 @@ class TestSimpleManifestMetrics:
         assert "bookings_source" in graph.models
 
     def test_measure_count(self, graph):
-        """All 14 measures are imported from the semantic model."""
+        """Representable measures are imported; percentile measures are skipped.
+
+        Of the 14 declared measures, the 4 ``agg: percentile`` flavors have no
+        Sidemantic equivalent and are skipped rather than coerced to sum.
+        """
         model = graph.models["bookings_source"]
-        assert len(model.metrics) == 14
+        assert len(model.metrics) == 10
 
     def test_simple_metrics_parsed(self, graph):
         """Simple metrics are parsed as untyped with measure references."""
@@ -773,11 +787,14 @@ class TestSimpleManifestMetrics:
         assert "booking_value_sub_instant" in nested.sql
 
     def test_derived_with_alias(self, graph):
-        """Derived metric with alias on input parses."""
+        """Derived metric with non-offset alias rewrites the alias to its input metric."""
         pct = graph.get_metric("non_referred_bookings_pct")
         assert pct is not None
         assert pct.type == "derived"
-        assert "ref_bookings" in pct.sql
+        # The non-offset alias ``ref_bookings`` is rewritten back to its real
+        # input metric ``referred_bookings`` so the metric is queryable.
+        assert pct.sql == "(bookings - referred_bookings) * 1.0 / bookings"
+        assert pct.get_dependencies(graph) == {"bookings", "referred_bookings"}
 
     def test_derived_with_filtered_input(self, graph):
         """Derived metric with filter on input metric parses."""
@@ -806,14 +823,17 @@ class TestSimpleManifestMetrics:
         assert twice.type == "derived"
 
     def test_derived_shared_aliases(self, graph):
-        """Derived metrics with shared alias names parse independently."""
+        """Derived metrics with shared alias names rewrite to their own input metrics."""
+        # Same alias name (``shared_alias``) maps to a different underlying metric
+        # in each derived metric; each is rewritten independently.
         a = graph.get_metric("derived_shared_alias_1a")
         assert a is not None
         assert a.type == "derived"
-        assert "shared_alias" in a.sql
+        assert a.sql == "bookings - 10"
 
         b = graph.get_metric("derived_shared_alias_2")
         assert b is not None
+        assert b.sql == "instant_bookings + 10"
 
     def test_derived_fill_nulls(self, graph):
         """Derived metrics with fill_nulls inputs parse."""
@@ -850,16 +870,39 @@ class TestSimpleManifestMetrics:
         assert ratio.type == "ratio"
         assert ratio.filters is not None
 
-    def test_conversion_metrics_skipped(self, graph):
-        """Conversion metrics are skipped (unsupported type)."""
+    def test_conversion_metrics_parsed(self, graph):
+        """Conversion metrics are retained as non-queryable metadata.
+
+        MetricFlow conversion metrics reference base/conversion *measures*, which
+        cannot be faithfully mapped to Sidemantic's event-filter conversion
+        funnel, so they are captured in metadata rather than registered as
+        broken queryable metrics.
+        """
         assert "visit_buy_conversion_rate_7days" not in graph.metrics
         assert "visit_buy_conversion_rate" not in graph.metrics
         assert "visit_buy_conversions" not in graph.metrics
         assert "visit_buy_conversion_rate_by_session" not in graph.metrics
 
+        conv_specs = graph.metadata["metricflow_conversion_metrics"]
+
+        rate_7d = conv_specs["visit_buy_conversion_rate_7days"]
+        assert rate_7d["entity"] == "user"
+        assert rate_7d["base_measure"] == "visits"
+        assert rate_7d["conversion_measure"] == "buys"
+        assert rate_7d["window"] == "7 days"
+        assert rate_7d["calculation"] == "conversion_rate"
+
+        # conversions count flavor with a dict conversion_measure (fill_nulls_with)
+        conversions = conv_specs["visit_buy_conversions"]
+        assert conversions["conversion_measure"] == "buys"
+        assert conversions["calculation"] == "conversions"
+
+        # constant_properties retained in metadata
+        by_session = conv_specs["visit_buy_conversion_rate_by_session"]
+        assert by_session["constant_properties"] == [{"base_property": "session", "conversion_property": "session_id"}]
+
     def test_total_metric_count(self, graph):
-        """Verify total number of parsed metrics (simple + cumulative + derived + ratio, excluding conversion)."""
-        # Conversion metrics are skipped, so we count only supported types
+        """Verify total number of parsed metrics (simple + cumulative + derived + ratio + conversion)."""
         assert len(graph.metrics) >= 50
 
 
@@ -942,7 +985,7 @@ class TestSimpleManifestSavedQueries:
         return adapter.parse(FIXTURES / "simple_manifest_saved_queries.yaml")
 
     def test_parse_succeeds(self, graph):
-        """Fixture parses without errors (saved_queries key is ignored gracefully)."""
+        """Fixture parses without errors."""
         assert graph is not None
 
     def test_model_exists(self, graph):
@@ -950,9 +993,32 @@ class TestSimpleManifestSavedQueries:
         assert "sales_for_saved_queries" in graph.models
 
     def test_saved_queries_not_in_metrics(self, graph):
-        """saved_queries are not parsed into graph.metrics (not yet supported)."""
+        """saved_queries are kept separate from graph.metrics."""
         assert "p0_booking" not in graph.metrics
         assert "p0_booking_with_order_by_and_limit" not in graph.metrics
+
+    def test_saved_queries_captured_in_metadata(self, graph):
+        """saved_queries are parsed into graph.metadata['saved_queries']."""
+        saved = graph.metadata.get("saved_queries")
+        assert saved is not None
+        assert "p0_booking" in saved
+        assert "p0_booking_with_order_by_and_limit" in saved
+        assert "dimensions_only" in saved
+
+        p0 = saved["p0_booking"]
+        assert p0["metrics"] == ["bookings", "instant_bookings"]
+        assert p0["group_by"] == [
+            "TimeDimension('metric_time', 'day')",
+            "Dimension('listing__capacity_latest')",
+        ]
+        assert p0["where"] == ["{{ Dimension('listing__capacity_latest') }} > 3"]
+
+    def test_saved_query_order_by_and_limit(self, graph):
+        """order_by and limit are retained on the saved query."""
+        saved = graph.metadata["saved_queries"]
+        ordered = saved["p0_booking_with_order_by_and_limit"]
+        assert ordered["limit"] == 10
+        assert ordered["order_by"] is not None
 
 
 # =============================================================================

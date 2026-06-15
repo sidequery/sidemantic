@@ -172,6 +172,12 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 adapter = SidemanticAdapter()
             elif _looks_like_native_sidemantic_yaml(yaml_data):
                 adapter = SidemanticAdapter()
+            elif _yaml_has_top_level_key(yaml_data, "tables") and _contains_yaml_key(yaml_data, "base_table"):
+                # Snowflake Cortex Semantic Model format. Checked before the generic
+                # MetricFlow `metrics:` + `type:` heuristic because a Cortex file may
+                # carry top-level `metrics:` and `data_type:` while `base_table` is a
+                # Snowflake-only signal MetricFlow never has.
+                adapter = SnowflakeAdapter()
             elif _yaml_has_top_level_key(yaml_data, "metrics") and "type: " in content:
                 adapter = MetricFlowAdapter()
             elif _contains_yaml_key(yaml_data, "base_sql_table") and _contains_yaml_key(yaml_data, "measures"):
@@ -184,9 +190,6 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 adapter = ThoughtSpotAdapter()
             elif _contains_yaml_key(yaml_data, "worksheet") and _contains_yaml_key(yaml_data, "worksheet_columns"):
                 adapter = ThoughtSpotAdapter()
-            elif _yaml_has_top_level_key(yaml_data, "tables") and _contains_yaml_key(yaml_data, "base_table"):
-                # Snowflake Cortex Semantic Model format
-                adapter = SnowflakeAdapter()
             elif _looks_like_bsl_yaml(yaml_data):
                 # BSL format uses _.column syntax for expressions
                 adapter = BSLAdapter()
@@ -246,6 +249,11 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
     # aliases after all files have been loaded so aliases can target models
     # declared in separate files.
     _finalize_bsl_join_aliases(all_models)
+
+    # Attach Snowflake top-level metrics whose referenced table was defined in a
+    # different file (each Snowflake file is parsed separately, so the table may
+    # not have been known when the metric file was parsed).
+    _resolve_snowflake_pending_table_metrics(all_models, all_metrics)
 
     # Infer cross-model relationships based on naming conventions
     _infer_relationships(all_models)
@@ -788,6 +796,15 @@ def _merge_import_warnings(graph: object, warnings: list[dict[str, object]]) -> 
                 merged.append(dict(warning))
     merged.extend(warnings)
     graph.import_warnings = merged
+
+
+def _resolve_snowflake_pending_table_metrics(all_models: dict, all_metrics: dict) -> None:
+    """Re-attach Snowflake top-level metrics to tables defined in other files."""
+    if not any((metric.metadata or {}).get("snowflake", {}).get("pending_table") for metric in all_metrics.values()):
+        return
+    from sidemantic.adapters.snowflake import SnowflakeAdapter
+
+    SnowflakeAdapter.resolve_pending_table_metrics(all_models, all_metrics)
 
 
 def _deep_merge_metadata(target: dict, source: dict) -> None:

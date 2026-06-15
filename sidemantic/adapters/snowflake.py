@@ -157,6 +157,32 @@ class SnowflakeAdapter(BaseAdapter):
 
         return graph
 
+    @staticmethod
+    def resolve_pending_table_metrics(models: dict, metrics: dict) -> None:
+        """Attach graph-level metrics that reference a now-loaded table.
+
+        Multi-file CLI loads parse each Snowflake file separately, so a top-level
+        metric with ``table: orders`` defined before the file that declares
+        ``orders`` lands in ``metrics`` with a ``pending_table`` marker. Once every
+        file's models are loaded, move such a metric onto its table and re-qualify
+        its expression with the ``{model}`` placeholder. ``models``/``metrics`` are
+        the name-keyed dicts accumulated during directory loading.
+        """
+        for name in list(metrics.keys()):
+            metric = metrics[name]
+            snowflake_meta = (metric.metadata or {}).get("snowflake") or {}
+            table_name = snowflake_meta.get("pending_table")
+            if not table_name:
+                continue
+            cleaned_meta = {k: v for k, v in snowflake_meta.items() if k != "pending_table"}
+            metric.metadata = {**(metric.metadata or {}), "snowflake": cleaned_meta} if cleaned_meta else None
+            model = models.get(table_name)
+            if model is not None:
+                if metric.type == "derived" and metric.sql:
+                    metric.sql = _qualify_columns(metric.sql)
+                del metrics[name]
+                model.metrics.append(metric)
+
     def _apply_top_level_metrics(self, metric_defs: list[dict], graph: SemanticGraph) -> None:
         """Attach collected top-level metrics once all tables are loaded."""
         for metric_def in metric_defs:
@@ -175,6 +201,15 @@ class SnowflakeAdapter(BaseAdapter):
                 metric = self._parse_metric(metric_def, qualify=False)
                 if metric is None:
                     continue
+                if table_name:
+                    # The referenced table is not in this graph (multi-file CLI load
+                    # parses each file separately); record it so the directory loader
+                    # can re-attach the metric once that table is loaded.
+                    metadata = metric.metadata or {}
+                    snowflake_meta = dict(metadata.get("snowflake") or {})
+                    snowflake_meta["pending_table"] = table_name
+                    metadata = {**metadata, "snowflake": snowflake_meta}
+                    metric.metadata = metadata
                 graph.metrics[metric.name] = metric
 
     def _parse_file(self, file_path: Path, graph: SemanticGraph, deferred_metrics: list[dict]) -> None:

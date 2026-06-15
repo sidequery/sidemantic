@@ -339,3 +339,65 @@ verified_queries:
     assert sorted(q["name"] for q in merged) == ["q1", "q2"]
     # Dynamic attribute accumulates too.
     assert len(getattr(graph, "verified_queries", [])) == 2
+
+
+def test_load_from_directory_attaches_snowflake_metric_to_table_in_another_file(tmp_path):
+    """A Snowflake top-level metric attaches to its table even if defined in another file."""
+    # File A is Snowflake-detected (tables + base_table) and carries a top-level
+    # metric referencing `orders`, which lives in file B.
+    (tmp_path / "a_model.yaml").write_text(
+        """
+name: a_model
+tables:
+  - name: products
+    base_table:
+      database: db
+      schema: s
+      table: products
+    primary_key:
+      columns: [id]
+    dimensions:
+      - name: id
+        expr: id
+        data_type: number
+metrics:
+  - name: avg_order
+    table: orders
+    expr: SUM(amount) / COUNT(order_id)
+"""
+    )
+    (tmp_path / "b_model.yaml").write_text(
+        """
+name: b_model
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    assert set(graph.models) == {"products", "orders"}
+    orders = graph.models["orders"]
+    assert "avg_order" in [m.name for m in orders.metrics]
+    assert "avg_order" not in graph.metrics
+    metric = orders.get_metric("avg_order")
+    # Table-scoped: complex expression re-qualified for queryability.
+    assert "{model}" in metric.sql
+    # The internal pending marker is cleaned up after attachment.
+    assert (metric.metadata or {}).get("snowflake", {}).get("pending_table") is None

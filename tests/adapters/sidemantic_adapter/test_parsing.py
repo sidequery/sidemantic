@@ -920,6 +920,46 @@ PARAMETER (
     assert graph.parameters["status_filter"].type == "string"
 
 
+def test_parse_native_sql_metadata_only_frontmatter_preserves_graph_definitions(tmp_path):
+    """Root-only metadata frontmatter must not swallow graph-level SQL metrics/params."""
+    adapter = SidemanticAdapter()
+    sql_path = tmp_path / "metrics.sql"
+    sql_path.write_text(
+        """
+---
+version: 1
+metadata:
+  description: Top-level Cortex sections
+  owner: analytics
+---
+
+METRIC (
+  name order_count,
+  agg count
+);
+
+PARAMETER (
+  name status_filter,
+  type string,
+  default_value 'paid'
+);
+"""
+    )
+
+    graph = adapter.parse(sql_path)
+
+    # No model is created from root-only metadata frontmatter.
+    assert len(graph.models) == 0
+    # Graph-level metric and parameter still load.
+    assert "order_count" in graph.metrics
+    assert graph.metrics["order_count"].agg == "count"
+    assert "status_filter" in graph.parameters
+    assert graph.parameters["status_filter"].type == "string"
+    # Root metadata is preserved on the graph.
+    assert graph.metadata.get("description") == "Top-level Cortex sections"
+    assert graph.metadata.get("owner") == "analytics"
+
+
 def test_parse_native_sql_frontmatter_rejects_unsupported_version(tmp_path):
     """Test unsupported native SQL frontmatter versions fail early."""
     adapter = SidemanticAdapter()

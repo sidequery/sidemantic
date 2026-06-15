@@ -286,6 +286,10 @@ def normalize_sql_frontmatter(frontmatter: dict) -> dict:
     normalized.pop("connection", None)
     normalized.pop("models", None)
     normalized.pop("parameters", None)
+    # ``metadata`` is a root-only native field (graph-level), so it must not by
+    # itself make the frontmatter look like a model definition. Graph metadata is
+    # extracted separately by the caller before this decision.
+    normalized.pop("metadata", None)
     return normalized
 
 
@@ -356,9 +360,13 @@ class SidemanticAdapter(BaseAdapter):
                     raise ValueError(f"{source_path}: invalid SQL definitions: {exc}") from exc
 
                 # Parse frontmatter as a model only when it still contains model fields
-                # after native contract metadata such as `version` is removed.
+                # after native contract metadata such as `version`/`metadata` is removed.
                 normalized_frontmatter = normalize_sql_frontmatter(frontmatter) if frontmatter else {}
                 if normalized_frontmatter:
+                    # ``metadata`` is a valid model field, so re-attach it when the
+                    # frontmatter is a model so the model keeps its own metadata.
+                    if frontmatter.get("metadata") is not None:
+                        normalized_frontmatter["metadata"] = frontmatter["metadata"]
                     model = self._parse_model(normalized_frontmatter, source_path=source_path)
                     if model:
                         # Add SQL-defined metrics/segments to the model
@@ -368,7 +376,12 @@ class SidemanticAdapter(BaseAdapter):
                             model.pre_aggregations.extend(sql_preaggs)
                         graph.add_model(model)
                 else:
-                    # No frontmatter - treat as graph-level metrics/segments
+                    # No model frontmatter - treat as graph-level metrics/segments.
+                    # Root-only ``metadata`` (e.g. Snowflake Cortex top-level
+                    # sections) is preserved on the graph here.
+                    graph_metadata = frontmatter.get("metadata") if frontmatter else None
+                    if isinstance(graph_metadata, dict):
+                        graph.metadata.update(graph_metadata)
                     for metric in sql_metrics:
                         graph.add_metric(metric)
                     for param in sql_parameters:

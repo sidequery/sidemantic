@@ -1006,7 +1006,9 @@ class SnowflakeAdapter(BaseAdapter):
         for key, value in snowflake_meta.items():
             dim_def.setdefault(key, value)
         if not dim.public:
-            dim_def.setdefault("access_modifier", "private_access")
+            # Override any stale ``public_access`` carried over in metadata so the
+            # Sidemantic visibility flag wins.
+            dim_def["access_modifier"] = "private_access"
 
     def _export_fact(self, metric: Metric) -> dict:
         """Export metric as Snowflake fact.
@@ -1045,7 +1047,9 @@ class SnowflakeAdapter(BaseAdapter):
         for key, value in snowflake_meta.items():
             fact.setdefault(key, value)
         if not metric.public:
-            fact.setdefault("access_modifier", "private_access")
+            # Override any stale ``public_access`` carried over in metadata so the
+            # Sidemantic visibility flag wins.
+            fact["access_modifier"] = "private_access"
 
         return fact
 
@@ -1111,7 +1115,9 @@ class SnowflakeAdapter(BaseAdapter):
         for key, value in snowflake_meta.items():
             metric_def.setdefault(key, value)
         if not metric.public:
-            metric_def.setdefault("access_modifier", "private_access")
+            # Override any stale ``public_access`` carried over in metadata so the
+            # Sidemantic visibility flag wins.
+            metric_def["access_modifier"] = "private_access"
 
         return metric_def
 

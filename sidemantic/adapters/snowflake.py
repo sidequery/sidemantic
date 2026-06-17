@@ -1000,9 +1000,22 @@ class SnowflakeAdapter(BaseAdapter):
             dim_def["synonyms"] = dim.synonyms
         if dim.sample_values:
             dim_def["sample_values"] = dim.sample_values
+        snowflake_meta = dict((dim.metadata or {}).get("snowflake", {}))
+        # Snowflake documents the nested ``cortex_search_service`` object as
+        # replacing the deprecated flat ``cortex_search_service_name`` string, so
+        # emit only one shape. Prefer the nested object (it can carry extra keys
+        # like ``literal_column``/``database``/``schema``) and keep its ``service``
+        # in sync with the first-class ``cortex_search_service_name`` so a user
+        # edit to the native name wins instead of leaving a stale nested value.
+        nested = snowflake_meta.pop("cortex_search_service", None)
         if dim.cortex_search_service_name:
-            dim_def["cortex_search_service_name"] = dim.cortex_search_service_name
-        snowflake_meta = (dim.metadata or {}).get("snowflake", {})
+            if isinstance(nested, dict):
+                nested = {**nested, "service": dim.cortex_search_service_name}
+            else:
+                nested = {"service": dim.cortex_search_service_name}
+            dim_def["cortex_search_service"] = nested
+        elif nested is not None:
+            dim_def["cortex_search_service"] = nested
         for key, value in snowflake_meta.items():
             dim_def.setdefault(key, value)
         if not dim.public:

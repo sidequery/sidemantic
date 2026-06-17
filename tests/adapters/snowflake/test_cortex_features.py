@@ -154,6 +154,50 @@ class TestRoundtrip:
 
         assert len(graph2.verified_queries) == 1
 
+    def _exported_customer_name(self, adapter, graph, tmp_path):
+        output = tmp_path / "out.yaml"
+        adapter.export(graph, output)
+        data = yaml.safe_load(output.read_text())
+        for table in data["tables"]:
+            for dim in table.get("dimensions", []):
+                if dim["name"] == "customer_name":
+                    return dim
+        raise AssertionError("customer_name dimension missing from export")
+
+    def test_cortex_search_service_exports_only_nested_shape(self, adapter, graph, tmp_path):
+        """A dimension imported from the nested ``cortex_search_service`` must export
+        only that nested shape, never the deprecated flat ``cortex_search_service_name``.
+
+        Snowflake documents ``cortex_search_service`` as replacing the deprecated
+        ``cortex_search_service_name``, so round-tripped YAML must not carry both
+        keys (a stale flat/nested pair can conflict once a user edits one).
+        """
+        dim = self._exported_customer_name(adapter, graph, tmp_path)
+
+        # Only the nested object is emitted; the flat deprecated key is gone.
+        assert "cortex_search_service_name" not in dim
+        nested = dim["cortex_search_service"]
+        assert nested["service"] == "customer_name_search"
+        # Extra nested keys from the source survive.
+        assert nested["literal_column"] == "customer_name"
+        assert nested["database"] == "analytics"
+        assert nested["schema"] == "sales"
+
+    def test_edited_native_search_service_name_wins_over_stale_nested(self, adapter, graph, tmp_path):
+        """Editing the first-class ``cortex_search_service_name`` updates the nested
+        ``service`` on export instead of leaving a stale conflicting value."""
+        cust = graph.models["orders"].get_dimension("customer_name")
+        cust.cortex_search_service_name = "renamed_search"
+
+        dim = self._exported_customer_name(adapter, graph, tmp_path)
+
+        assert "cortex_search_service_name" not in dim
+        nested = dim["cortex_search_service"]
+        # The edited native name wins; the nested ``service`` is not stale.
+        assert nested["service"] == "renamed_search"
+        # Other nested keys are still preserved.
+        assert nested["database"] == "analytics"
+
     def test_top_level_sections_survive_native_roundtrip(self, adapter, graph, tmp_path):
         """Snowflake -> native (export-native) -> Snowflake preserves top-level sections."""
         from sidemantic.adapters.sidemantic import SidemanticAdapter

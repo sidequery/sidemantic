@@ -417,6 +417,59 @@ Dataset combined = base_ds.extend(reusable)
         temp_path.unlink()
 
 
+def test_holistics_partial_dataset_metric_reference_shorthand():
+    """The reusable-metric-store shorthand `metric name: standalone_metric`
+    references a top-level Metric by name rather than redefining it inline. The
+    parser represents that reference as a property (not a block), so a Dataset
+    that extends a PartialDataset whose only contribution is such a reference
+    must still surface as a model carrying the resolved standalone metric,
+    instead of producing no model at all."""
+    aml_content = """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  measure order_count { type: 'number' aggregation_type: 'count' }
+}
+
+Metric total_orders {
+  label: 'Total Orders'
+  type: 'number'
+  definition: @aql count(base_orders.order_id) ;;
+}
+
+PartialDataset partial_metrics = PartialDataset {
+  metric total_orders: total_orders
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset d = base_ds.extend(partial_metrics)
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aml", delete=False) as f:
+        f.write(aml_content)
+        temp_path = Path(f.name)
+
+    try:
+        graph = HolisticsAdapter().parse(temp_path)
+
+        # The standalone metric registers at graph scope.
+        assert "total_orders" in graph.metrics
+
+        # The extending dataset must surface as a model even though its only
+        # field is a reference to a standalone metric.
+        assert "d" in graph.models
+        d_model = graph.models["d"]
+        # The referenced standalone metric is resolved onto the dataset.
+        assert d_model.get_metric("total_orders").sql == "COUNT(base_orders.order_id)"
+    finally:
+        temp_path.unlink()
+
+
 def test_holistics_extend_partial_preserves_defining_context(tmp_path):
     """A Dataset that extends a PartialDataset declared in another module must
     resolve the partial's field definitions against the partial's own file. A

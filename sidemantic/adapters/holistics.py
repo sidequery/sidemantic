@@ -1313,10 +1313,21 @@ def _resolve_dataset_artifacts(
                 return resolved_blocks[name]
         return None
 
+    # Standalone Metric blocks become graph-level metrics. Resolved before
+    # datasets so a dataset/partial that references one via the reusable
+    # "metric name: standalone_metric" shorthand can pull it onto the dataset.
+    standalone_metrics: dict[str, Metric] = {}
+    for name, (block, context) in metric_blocks.items():
+        metric_block = AmlBlock(kind="metric", name=block.name, items=block.items)
+        metric = _parse_measure_block(metric_block, constants, context)
+        if metric:
+            metric.name = name
+            standalone_metrics[name] = metric
+
     dataset_models: dict[str, Model] = {}
 
     for name, (block, context) in dataset_blocks.items():
-        model = _parse_dataset_block(block, constants, context)
+        model = _parse_dataset_block(block, constants, context, standalone_metrics)
         if model and model.name not in existing_models:
             dataset_models[model.name] = model
 
@@ -1335,31 +1346,69 @@ def _resolve_dataset_artifacts(
             continue
         block_with_name = AmlBlock(kind="Dataset", name=name, items=block.items)
         assignment_dataset_blocks.append((block_with_name, context))
-        model = _parse_dataset_block(block_with_name, constants, context)
+        model = _parse_dataset_block(block_with_name, constants, context, standalone_metrics)
         if model and model.name not in existing_models:
             dataset_models[model.name] = model
-
-    # Standalone Metric blocks become graph-level metrics.
-    standalone_metrics: dict[str, Metric] = {}
-    for name, (block, context) in metric_blocks.items():
-        metric_block = AmlBlock(kind="metric", name=block.name, items=block.items)
-        metric = _parse_measure_block(metric_block, constants, context)
-        if metric:
-            metric.name = name
-            standalone_metrics[name] = metric
 
     return dataset_models, standalone_metrics, assignment_dataset_blocks
 
 
-def _parse_dataset_block(block: AmlBlock, constants: dict[str, AmlValue], context: _FileContext) -> Model | None:
+def _resolve_standalone_metric_reference(
+    item: AmlProperty,
+    standalone_metrics: dict[str, Metric],
+    context: _FileContext,
+) -> Metric | None:
+    """Resolve a `metric name: standalone_metric` shorthand reference.
+
+    The reusable-metric-store shorthand parses to a property whose value is a
+    bare identifier/reference naming a top-level Metric. When it resolves to a
+    known standalone metric, return a copy renamed to the property key (the
+    dataset-local name); otherwise return None so genuine properties such as
+    `label`/`description`/`models` are left untouched.
+    """
+    if not standalone_metrics:
+        return None
+
+    value = item.value
+    if isinstance(value, Identifier):
+        name = value.name
+    elif isinstance(value, Reference):
+        name = ".".join(value.parts)
+    else:
+        return None
+
+    # Try the name as written, then qualified against the referencing file's
+    # module prefix / `use` aliases, matching how standalone metrics are keyed.
+    candidates = [name, _qualify_name(name, context)]
+    for candidate in candidates:
+        referenced = standalone_metrics.get(candidate)
+        if referenced is not None:
+            resolved = referenced.model_copy(deep=True)
+            resolved.name = item.key
+            return resolved
+    return None
+
+
+def _parse_dataset_block(
+    block: AmlBlock,
+    constants: dict[str, AmlValue],
+    context: _FileContext,
+    standalone_metrics: dict[str, Metric] | None = None,
+) -> Model | None:
     """Parse a Dataset block's dataset-level dimension/metric blocks into a Model.
 
     Dataset dimensions and metrics use cross-model AQL definitions (the only
     style Holistics allows in datasets). They are surfaced on a synthetic model
     named after the dataset so they are not silently dropped.
+
+    `standalone_metrics` lets the reusable-metric-store shorthand
+    (`metric name: standalone_metric`) resolve the referenced top-level Metric
+    onto the dataset instead of dropping the reference.
     """
     if not block.name:
         return None
+
+    standalone_metrics = standalone_metrics or {}
 
     properties = _properties_from_items(block.items)
     label = _value_as_string(properties.get("label"), constants, context)
@@ -1369,6 +1418,16 @@ def _parse_dataset_block(block: AmlBlock, constants: dict[str, AmlValue], contex
     metrics: list[Metric] = []
 
     for item in block.items:
+        # Reusable-metric-store shorthand: `metric name: standalone_metric`
+        # parses to a property whose value names a top-level Metric. Resolve the
+        # referenced standalone metric onto the dataset (renamed to the local
+        # key) instead of dropping it, so a dataset that only references
+        # standalone metrics still produces a model.
+        if isinstance(item, AmlProperty):
+            referenced = _resolve_standalone_metric_reference(item, standalone_metrics, item.context or context)
+            if referenced is not None:
+                metrics.append(referenced)
+            continue
         if not isinstance(item, AmlBlock):
             continue
         # A child field carries its own defining context when the dataset was

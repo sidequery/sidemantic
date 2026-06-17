@@ -85,9 +85,7 @@ EXPECTED_EMPTY_GRAPH_FIXTURES = {
     "tests/fixtures/holistics/relationships.aml",
     "tests/fixtures/holistics_kitchen_sink/constants.aml",
     "tests/fixtures/holistics_kitchen_sink/extensions.aml",
-    "tests/fixtures/holistics_kitchen_sink/kitchen_sink.dataset.aml",
     "tests/fixtures/holistics_kitchen_sink/relationships.aml",
-    "tests/fixtures/holistics_kitchen_sink/transactions.dataset.aml",
     "tests/fixtures/lookml/ecommerce_explores.lkml",
     "tests/fixtures/lookml/kitchen_sink_explores.lkml",
     "tests/fixtures/lookml/lkml_model_all_fields.model.lkml",
@@ -152,6 +150,7 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
     "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter", "RillAdapter"},
     "semantic_only_no_sources": {
         "AtScaleSMLAdapter",
+        "HolisticsAdapter",
         "LookMLAdapter",
         "MalloyAdapter",
         "OmniAdapter",

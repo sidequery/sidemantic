@@ -1,0 +1,46 @@
+// Reusable metric store pattern from docs.holistics.io:
+//   - standalone top-level Metric blocks (graph-level, independently reusable)
+//   - a PartialDataset grouping reusable metrics
+//   - a base Dataset extended with the PartialDataset via .extend()
+// Also exercises richer AQL functions: where(), filter(), group(),
+// of_all(), exclude(), and relative_period() (period-over-period).
+
+Metric kitchen_global_revenue {
+  label: 'Global Revenue'
+  type: 'number'
+  definition: @aql sum(kitchen_orders.amount) ;;
+}
+
+PartialDataset kitchen_reusable_metrics {
+  metric reusable_order_count {
+    label: 'Reusable Order Count'
+    type: 'number'
+    definition: @aql count(kitchen_orders.order_id) ;;
+  }
+
+  metric high_value_orders {
+    label: 'High Value Orders'
+    type: 'number'
+    definition: @aql kitchen_orders | where(kitchen_orders.amount > 100) | count(kitchen_orders.order_id) ;;
+  }
+
+  metric revenue_share {
+    label: 'Revenue Share'
+    type: 'number'
+    definition: @aql sum(kitchen_orders.amount) | of_all(kitchen_products) ;;
+  }
+
+  metric revenue_last_month {
+    label: 'Revenue Last Month'
+    type: 'number'
+    definition: @aql sum(kitchen_orders.amount) | relative_period(kitchen_orders.order_date, interval(-1 month)) ;;
+  }
+}
+
+Dataset kitchen_metric_base {
+  label: 'Metric Store Base'
+  data_source_name: 'demo'
+  models: [kitchen_orders, kitchen_products]
+}
+
+Dataset kitchen_metric_store = kitchen_metric_base.extend(kitchen_reusable_metrics)

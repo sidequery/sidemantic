@@ -1,0 +1,14 @@
+# Synthetic fixture for a Rill derived (parent) metrics view.
+# Verified against rilldata/rill runtime/parser/parse_metrics_view.go:
+#   a derived metrics view sets `parent` and selects fields via
+#   `parent_dimensions` / `parent_measures` instead of defining its own.
+
+type: metrics_view
+display_name: Regional Sales
+parent: parent_metrics
+parent_dimensions:
+  - region
+  - channel
+parent_measures:
+  - revenue
+  - orders

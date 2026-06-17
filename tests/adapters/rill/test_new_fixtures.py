@@ -85,19 +85,19 @@ class TestAdBidsAdvancedParsing:
         assert ad_bids_advanced.table == "ad_bids"
 
     def test_dimension_count(self, ad_bids_advanced):
-        """4 expression dims + 1 auto-created timestamp = 5 total.
+        """3 property-shorthand dims + 4 expression dims + 1 auto-created timestamp = 8.
 
-        Dimensions using 'property:' shorthand are skipped (no expression/column).
+        Dimensions using the deprecated 'property:' shorthand resolve to a column.
         """
-        assert len(ad_bids_advanced.dimensions) == 5
+        assert len(ad_bids_advanced.dimensions) == 8
 
-    def test_property_shorthand_dims_skipped(self, ad_bids_advanced):
-        """property: field shorthand is not recognized; those dims are skipped."""
-        dim_names = {d.name for d in ad_bids_advanced.dimensions}
-        # pub, dom, nolabel_pub use property: which maps to neither column nor expression
-        assert "pub" not in dim_names
-        assert "dom" not in dim_names
-        assert "nolabel_pub" not in dim_names
+    def test_property_shorthand_dims_parsed(self, ad_bids_advanced):
+        """property: is a deprecated shorthand alias for column: and is recognized."""
+        dims = {d.name: d for d in ad_bids_advanced.dimensions}
+        # pub, dom, nolabel_pub use property: which maps to the underlying column.
+        assert dims["pub"].sql == "publisher"
+        assert dims["dom"].sql == "domain"
+        assert dims["nolabel_pub"].sql == "publisher"
 
     def test_expression_dimensions_parsed(self, ad_bids_advanced):
         """Dimensions with expression: field are parsed correctly."""
@@ -144,14 +144,19 @@ class TestAdBidsAdvancedParsing:
         assert ad_bids_advanced.default_grain == "day"
 
     def test_metric_count(self, ad_bids_advanced):
-        """4 measures parsed (measure without name is skipped)."""
-        assert len(ad_bids_advanced.metrics) == 4
+        """5 measures parsed (measure without name gets an index-based fallback)."""
+        assert len(ad_bids_advanced.metrics) == 5
 
-    def test_measure_without_name_skipped(self, ad_bids_advanced):
-        """Measure with display_name but no name field is skipped."""
-        metric_names = {m.name for m in ad_bids_advanced.metrics}
-        # The "Average bid price" measure has no name field
-        assert len(metric_names) == 4
+    def test_measure_without_name_gets_index_fallback(self, ad_bids_advanced):
+        """Measure with display_name but no name field falls back to measure_<i>.
+
+        The "Average bid price" measure is the 2nd entry (index 1), so Rill names
+        it measure_1.
+        """
+        metrics = {m.name: m for m in ad_bids_advanced.metrics}
+        assert "measure_1" in metrics
+        assert metrics["measure_1"].agg == "avg"
+        assert metrics["measure_1"].label == "Average bid price"
 
     def test_count_star_metric(self, ad_bids_advanced):
         """count(*) decomposed correctly."""
@@ -201,16 +206,19 @@ class TestAdBidsPolicyParsing:
         assert ad_bids_policy.table == "ad_bids_mini"
 
     def test_dimension_count(self, ad_bids_policy):
-        """1 expression dim + 1 auto-created timestamp = 2.
+        """1 expression dim + 1 column dim + 1 auto-created timestamp = 3.
 
-        Dimension without name (Domain) is skipped.
+        Dimension without name (Domain) derives its name from its column.
         """
-        assert len(ad_bids_policy.dimensions) == 2
+        assert len(ad_bids_policy.dimensions) == 3
 
-    def test_dimension_without_name_skipped(self, ad_bids_policy):
-        """Dimension with display_name but no name is skipped."""
-        dim_names = {d.name for d in ad_bids_policy.dimensions}
-        assert "Domain" not in dim_names
+    def test_dimension_without_name_derives_from_column(self, ad_bids_policy):
+        """Dimension with display_name but no name derives name from its column."""
+        dims = {d.name: d for d in ad_bids_policy.dimensions}
+        # The "Domain" dim has column: domain and no name, so name becomes "domain".
+        assert "domain" in dims
+        assert dims["domain"].sql == "domain"
+        assert dims["domain"].label == "Domain"
 
     def test_expression_dimension(self, ad_bids_policy):
         """upper(publisher) expression parsed."""
@@ -311,18 +319,18 @@ class TestMetricsGeospatialParsing:
         assert "metrics_geospatial" in graph.models
 
     def test_dimension_count(self, metrics_geospatial):
-        """Only 1 dimension parsed: time auto-created from timeseries.
+        """4 dimensions: 3 column-derived (country, coordinates, area) + time.
 
-        Dims with column but no name are skipped (country, coordinates, area).
+        Dims with a column but no name derive their name from the column.
         """
-        assert len(metrics_geospatial.dimensions) == 1
+        assert len(metrics_geospatial.dimensions) == 4
 
-    def test_column_only_dims_skipped(self, metrics_geospatial):
-        """Dimensions with column but no name field are skipped."""
-        dim_names = {d.name for d in metrics_geospatial.dimensions}
-        assert "country" not in dim_names
-        assert "coordinates" not in dim_names
-        assert "area" not in dim_names
+    def test_column_only_dims_derive_name_from_column(self, metrics_geospatial):
+        """Dimensions with column but no name derive their name from the column."""
+        dims = {d.name: d for d in metrics_geospatial.dimensions}
+        assert dims["country"].sql == "country"
+        assert dims["coordinates"].sql == "coordinates"
+        assert dims["area"].sql == "area"
 
     def test_timeseries_auto_created(self, metrics_geospatial):
         """time dimension auto-created from timeseries field."""
@@ -357,8 +365,8 @@ class TestMetricsAnnotationsParsing:
         assert "metrics_annotations" in graph.models
 
     def test_dimension_count(self, metrics_annotations):
-        """Only timeseries auto-dim; column-only dim (country) is skipped."""
-        assert len(metrics_annotations.dimensions) == 1
+        """2 dims: column-derived country + auto-created timeseries."""
+        assert len(metrics_annotations.dimensions) == 2
 
     def test_metric_count(self, metrics_annotations):
         """3 measures parsed: count, sum, mes_for_grain_annotation."""
@@ -397,8 +405,8 @@ class TestMetricsNullFillingParsing:
         assert "metrics_null_filling" in graph.models
 
     def test_dimension_count(self, metrics_null_filling):
-        """Only timeseries auto-dim; column-only dim (country) is skipped."""
-        assert len(metrics_null_filling.dimensions) == 1
+        """2 dims: column-derived country + auto-created timeseries."""
+        assert len(metrics_null_filling.dimensions) == 2
 
     def test_metric_count(self, metrics_null_filling):
         """8 measures parsed."""

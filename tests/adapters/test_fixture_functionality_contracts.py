@@ -132,6 +132,8 @@ EXPECTED_LOW_SIGNAL_FIXTURES = {
     "tests/fixtures/malloy/ecommerce_malloydata.malloy",
     "tests/fixtures/malloy/flights_cube.malloy",
     "tests/fixtures/malloy/ga4_config.malloy",
+    # Rill derived (parent) metrics view: selects fields from a parent, defines none itself.
+    "tests/fixtures/rill/derived_metrics.yaml",
     "tests/fixtures/tableau/real_world/document_api_tableau10.tds",
     "tests/fixtures/tableau/real_world/document_api_tableau93.tds",
 }
@@ -147,12 +149,13 @@ NON_EXECUTION_REASON_ALLOWED_ADAPTERS = {
         "RillAdapter",
         "ThoughtSpotAdapter",
     },
-    "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter"},
+    "source_fragments_without_fields": {"AtScaleSMLAdapter", "MalloyAdapter", "RillAdapter"},
     "semantic_only_no_sources": {
         "AtScaleSMLAdapter",
         "LookMLAdapter",
         "MalloyAdapter",
         "OmniAdapter",
+        "RillAdapter",
         "TableauAdapter",
     },
     "complex_or_nonportable_sql_fields": {"LookMLAdapter"},

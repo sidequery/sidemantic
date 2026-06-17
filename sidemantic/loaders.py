@@ -141,6 +141,30 @@ def load_from_directory(layer: "SemanticLayer", directory: str | Path, *, strict
                 adapter = GoodDataAdapter()
             elif '"datasets"' in content and ('"dataSourceTableId"' in content or '"data_source_table_id"' in content):
                 adapter = GoodDataAdapter()
+            elif (
+                '"semantic_model"' in content
+                and '"datasets"' in content
+                and _is_under_osi_tree(file_path, directory)
+                and not _is_generated_artifact(file_path, directory)
+            ):
+                # Released-spec OSI profile (dbt OSI consumer) ships as JSON in an
+                # OSI/ directory at the project root. Mirror the YAML detection
+                # (semantic_model + datasets), but only inside that OSI/ tree:
+                # dbt's OSI consumer scans only ``<project_root>/OSI/``, so an
+                # archived or scratch OSI .json elsewhere under the project must
+                # not add stale models or collide with the real sources.
+                # Skip dbt-generated copies (e.g. target/osi_document.json) so a
+                # `dbt compile` artifact never shadows the real OSI/ sources.
+                try:
+                    is_osi = _looks_like_osi_json(content)
+                except ValueError as e:
+                    # The file textually looks like OSI (semantic_model + datasets)
+                    # but is malformed JSON. Surface it as a parse error instead of
+                    # silently skipping, mirroring the malformed-YAML handling above.
+                    _handle_parse_error(file_path, e, strict=strict)
+                    continue
+                if is_osi:
+                    adapter = OSIAdapter()
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
 
@@ -423,6 +447,79 @@ def _load_yaml_mapping(content: str) -> dict:
     """Parse YAML content and return a mapping, or an empty mapping for scalar/list YAML."""
     data = yaml.safe_load(content)
     return data if isinstance(data, dict) else {}
+
+
+def _looks_like_osi_json(content: str) -> bool:
+    """Return True for a released-spec OSI JSON document (dbt OSI consumer).
+
+    Released OSI ships as JSON with a top-level ``semantic_model`` list whose
+    entries contain ``datasets``. This mirrors the YAML OSI detection and avoids
+    routing unrelated JSON (e.g. GoodData) to the OSI adapter.
+
+    Raises ``ValueError`` when ``content`` is not valid JSON so callers that have
+    already confirmed the OSI text markers can surface a parse error instead of
+    silently skipping a malformed OSI document.
+    """
+    import json
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}") from e
+    if not isinstance(data, dict) or "semantic_model" not in data:
+        return False
+    models = data.get("semantic_model")
+    if isinstance(models, dict):
+        models = [models]
+    if not isinstance(models, list):
+        return False
+    return any(isinstance(model, dict) and "datasets" in model for model in models)
+
+
+# Directories that hold generated/compiled artifacts rather than source models.
+# dbt writes a copy of the OSI document to ``target/`` on ``dbt compile``; routing
+# those to the OSI adapter would resurrect deleted or stale models, so skip them.
+_GENERATED_ARTIFACT_DIRS = frozenset({"target", "dbt_packages"})
+
+
+def _is_generated_artifact(file_path: "Path", directory: "Path") -> bool:
+    """Return True when ``file_path`` lives under a generated-artifact directory.
+
+    Only path components *below* ``directory`` are considered so that loading a
+    directory literally named ``target`` still works.
+    """
+    try:
+        relative_parts = file_path.relative_to(directory).parts
+    except ValueError:
+        relative_parts = file_path.parts
+    return any(part in _GENERATED_ARTIFACT_DIRS for part in relative_parts[:-1])
+
+
+# dbt's OSI consumer (dbt Core 1.12+) only ingests released ``.json`` documents
+# placed in an ``OSI/`` directory at the project root. Mirroring that scope keeps
+# an archived or scratch OSI document under some other folder (e.g.
+# ``backups/old_osi.json``) from quietly adding stale models or colliding with
+# the real sources during ``sidemantic validate .``.
+_OSI_TREE_DIR = "OSI"
+
+
+def _is_under_osi_tree(file_path: "Path", directory: "Path") -> bool:
+    """Return True when ``file_path`` lives under the project-root ``OSI/`` tree.
+
+    The OSI directory must be a top-level child of the loaded project root, so
+    only the first relative path component is checked (case-insensitively, to
+    match dbt accepting ``OSI`` regardless of filesystem case-folding). A JSON
+    file sitting directly at the project root or under any non-``OSI/`` folder is
+    rejected even when it is OSI-shaped.
+    """
+    try:
+        relative_parts = file_path.relative_to(directory).parts
+    except ValueError:
+        return False
+    # Need at least one directory component plus the file name.
+    if len(relative_parts) < 2:
+        return False
+    return relative_parts[0].casefold() == _OSI_TREE_DIR.casefold()
 
 
 def _is_hex_resource_mapping(data: object) -> bool:

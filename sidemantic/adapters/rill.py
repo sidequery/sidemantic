@@ -51,7 +51,161 @@ class RillAdapter:
                 if model:
                     graph.add_model(model)
 
+        # Resolve parent/derived metrics views now that every metrics view in the
+        # project has been parsed. A derived view inherits its fields (and data
+        # source) from its parent, so the selected parent dimensions/measures need
+        # to be materialized on the derived model for it to be queryable.
+        self._resolve_parents(graph)
+
         return graph
+
+    def _resolve_parents(self, graph: SemanticGraph) -> None:
+        """Resolve parent/derived metrics views against their parsed parents.
+
+        Rill `parent` views inherit fields from a parent metrics view via
+        `parent_dimensions` / `parent_measures` selectors (or inherit everything
+        when no selectors are given). When the parent metrics view is available in
+        the same project, copy the selected dimensions/measures onto the derived
+        model and adopt the parent's table so that fields like
+        ``derived_view.revenue`` resolve for CLI ``info`` / ``query``.
+
+        The parent linkage stays in metadata; if the parent is not present in the
+        parsed graph the derived model is left as-is (still valid via the parent
+        name fallback table).
+        """
+        for model in graph.models.values():
+            meta = model.meta or {}
+            parent_name = meta.get("rill_parent")
+            if not parent_name:
+                continue
+
+            parent = graph.models.get(parent_name)
+            if parent is None:
+                continue
+
+            # Inherit the parent's data source so the derived view points at a real
+            # relation rather than just the parent metrics-view name.
+            if parent.table:
+                model.table = parent.table
+
+            existing_dims = {d.name for d in model.dimensions}
+            existing_metrics = {m.name for m in model.metrics}
+
+            dim_selected = self._field_selector(meta.get("rill_parent_dimensions"))
+            for dim in parent.dimensions:
+                if not dim_selected(dim.name):
+                    continue
+                if dim.name in existing_dims:
+                    continue
+                model.dimensions.append(dim.model_copy(deep=True))
+                existing_dims.add(dim.name)
+
+            measure_selected = self._field_selector(meta.get("rill_parent_measures"))
+            parent_metric_names = {m.name for m in parent.metrics}
+            for metric in parent.metrics:
+                if not measure_selected(metric.name):
+                    continue
+                if metric.name in existing_metrics:
+                    continue
+                model.metrics.append(metric.model_copy(deep=True))
+                existing_metrics.add(metric.name)
+
+            # A selected derived/ratio measure may reference other parent measures
+            # that were not selected (e.g. `aov = revenue / orders`). Pull those
+            # dependencies in as hidden (public=False) measures so the formula
+            # resolves on the child without advertising the extra fields.
+            for metric in list(model.metrics):
+                for dep in metric.get_dependencies(graph, model_context=parent_name):
+                    dep_name = dep.split(".")[-1]
+                    if dep_name in existing_metrics or dep_name not in parent_metric_names:
+                        continue
+                    parent_metric = parent.get_metric(dep_name)
+                    if parent_metric is None:
+                        continue
+                    hidden = parent_metric.model_copy(deep=True)
+                    hidden.public = False
+                    model.metrics.append(hidden)
+                    existing_metrics.add(dep_name)
+
+            # Inherit the parent's default time series/grain when the derived view
+            # does not define its own, mirroring Rill (derived views inherit the
+            # parent's timeseries). Without this, metric-only CLI queries lose the
+            # parent's time dimension. Ensure the referenced time dimension is also
+            # present on the model.
+            if not model.default_time_dimension and parent.default_time_dimension:
+                model.default_time_dimension = parent.default_time_dimension
+                # Honor a child-only smallest_time_grain override before falling
+                # back to the parent's grain.
+                grain_override = meta.get("rill_smallest_time_grain")
+                child_grain = self._map_time_grain(grain_override) if grain_override else None
+                model.default_grain = model.default_grain or child_grain or parent.default_grain
+                if parent.default_time_dimension not in existing_dims:
+                    parent_time_dim = parent.get_dimension(parent.default_time_dimension)
+                    if parent_time_dim is not None:
+                        model.dimensions.append(parent_time_dim.model_copy(deep=True))
+                        existing_dims.add(parent_time_dim.name)
+
+    @staticmethod
+    def _field_selector(selector: Any):
+        """Build a predicate deciding whether a parent field name is inherited.
+
+        Normalizes Rill's `parent_dimensions` / `parent_measures` selector forms:
+        - ``None`` (omitted) or ``"*"`` -> select all fields
+        - a list/tuple/set of names -> select those names
+        - a mapping with ``exclude`` (list) -> select all except those names
+        - a mapping with ``regex`` (pattern) -> select names matching the pattern
+        - a mapping with ``expr`` (e.g. ``"* EXCLUDE (city)"``) -> evaluate the
+          DuckDB-style star expression
+
+        Unrecognized forms fall back to select-all so fields are never silently
+        dropped (Rill would still expose them).
+        """
+        if selector is None or selector == "*":
+            return lambda _name: True
+
+        if isinstance(selector, str):
+            return RillAdapter._parse_expr_selector(selector)
+
+        if isinstance(selector, (list, tuple, set)):
+            names = set(selector)
+            return lambda name: name in names
+
+        if isinstance(selector, dict):
+            if "exclude" in selector:
+                excluded = set(selector.get("exclude") or [])
+                return lambda name: name not in excluded
+            if "regex" in selector:
+                import re
+
+                pattern = re.compile(selector["regex"])
+                return lambda name: pattern.search(name) is not None
+            if "expr" in selector:
+                return RillAdapter._parse_expr_selector(selector["expr"])
+
+        # Unknown selector form: inherit everything rather than dropping fields.
+        return lambda _name: True
+
+    @staticmethod
+    def _parse_expr_selector(expr: Any):
+        """Build a predicate for a DuckDB-style star selector expression.
+
+        Supports the common Rill/DuckDB forms ``"*"`` and
+        ``"* EXCLUDE (a, b)"`` (case-insensitive). Anything else is treated as
+        select-all so fields are not silently dropped.
+        """
+        if not isinstance(expr, str):
+            return lambda _name: True
+
+        import re
+
+        text = expr.strip()
+        match = re.match(r"^\*\s*EXCLUDE\s*\((?P<names>[^)]*)\)\s*$", text, re.IGNORECASE)
+        if match:
+            excluded = {n.strip().strip('"').strip("'") for n in match.group("names").split(",") if n.strip()}
+            return lambda name: name not in excluded
+
+        # Bare "*" (or unrecognized expression): inherit everything.
+        return lambda _name: True
 
     def _parse_file(self, file_path: Path) -> Model | None:
         """Parse a single Rill YAML file.
@@ -69,19 +223,43 @@ class RillAdapter:
             return None
 
         model_name = data.get("name") or file_path.stem
-        data.get("display_name")
         description = data.get("description")
 
-        # Get the source table or model
-        table = data.get("table") or data.get("model")
+        # Parent / derived metrics views: a metrics view can inherit from a parent
+        # (parent + parent_dimensions/parent_measures). The parent's fields aren't
+        # available here (separate file), so we record the linkage in metadata and
+        # parse any explicit selectors so the model still validates and round-trips.
+        parent = data.get("parent")
+
+        # Rill rejects a derived view (parent: ...) that defines its own
+        # dimensions/measures: a derived view may only *select* inherited parent
+        # fields via parent_dimensions/parent_measures. Parsing child-defined
+        # fields here would let the importer accept a project that `rill validate`
+        # rejects and expose non-existent fields against the parent table, so fail
+        # loudly to match Rill's own validation.
+        if parent:
+            child_fields = [key for key in ("dimensions", "measures") if data.get(key)]
+            if child_fields:
+                raise ValueError(
+                    f"Rill metrics view '{model_name}' sets parent: '{parent}' but also defines its own "
+                    f"{' and '.join(child_fields)}. A derived view may only select inherited parent fields "
+                    f"via parent_dimensions/parent_measures."
+                )
+
+        # Get the source table or model. A derived view has no own data source;
+        # in Rill it inherits the parent metrics view's underlying relation, so we
+        # fall back to the parent name as the table. This keeps the imported model
+        # a valid, queryable representation (otherwise validation rejects a model
+        # with no table/sql/dax/source_uri), while meta preserves the linkage.
+        table = data.get("table") or data.get("model") or parent
 
         # Parse dimensions
         dimensions: list[Dimension] = []
         timeseries_column = data.get("timeseries")
         smallest_time_grain = data.get("smallest_time_grain")
 
-        for dim_def in data.get("dimensions") or []:
-            dimension = self._parse_dimension(dim_def, timeseries_column, smallest_time_grain)
+        for i, dim_def in enumerate(data.get("dimensions") or []):
+            dimension = self._parse_dimension(dim_def, i, timeseries_column, smallest_time_grain)
             if dimension:
                 dimensions.append(dimension)
 
@@ -99,8 +277,8 @@ class RillAdapter:
 
         # Parse measures
         metrics: list[Metric] = []
-        for measure_def in data.get("measures") or []:
-            metric = self._parse_measure(measure_def)
+        for i, measure_def in enumerate(data.get("measures") or []):
+            metric = self._parse_measure(measure_def, i)
             if metric:
                 metrics.append(metric)
 
@@ -111,6 +289,21 @@ class RillAdapter:
             default_time_dimension = timeseries_column
             default_grain = self._map_time_grain(smallest_time_grain)
 
+        # Preserve parent/derived-view linkage and selectors in metadata so the
+        # relationship survives import (Rill resolves the parent at a separate layer).
+        meta: dict[str, Any] | None = None
+        if parent:
+            meta = {"rill_parent": parent}
+            if data.get("parent_dimensions") is not None:
+                meta["rill_parent_dimensions"] = data.get("parent_dimensions")
+            if data.get("parent_measures") is not None:
+                meta["rill_parent_measures"] = data.get("parent_measures")
+            # A derived view can override the grain without redefining the
+            # timeseries. Record that override so parent resolution keeps the
+            # child's coarser/finer grain instead of inheriting the parent's.
+            if smallest_time_grain and not timeseries_column:
+                meta["rill_smallest_time_grain"] = smallest_time_grain
+
         return Model(
             name=model_name,
             description=description,
@@ -119,37 +312,79 @@ class RillAdapter:
             metrics=metrics,
             default_time_dimension=default_time_dimension,
             default_grain=default_grain,
+            meta=meta,
         )
 
     def _parse_dimension(
         self,
         dim_def: dict[str, Any],
+        index: int,
         timeseries_column: str | None,
         smallest_time_grain: str | None,
     ) -> Dimension | None:
         """Parse a Rill dimension into a Sidemantic Dimension.
 
+        Mirrors Rill's own backwards-compatibility handling
+        (runtime/parser/parse_metrics_view.go):
+        - `property:` is a deprecated shorthand alias for `column:`.
+        - When `name` is missing, derive it from `column`, otherwise fall back
+          to `dimension_<i>` (matching Rill's `fmt.Sprintf("dimension_%d", i)`).
+        - `label:` is a deprecated alias for `display_name:`.
+        - `lookup_table` dimensions resolve their value via a lookup table; we
+          keep the keyed column as the SQL expression and record lookup config in
+          metadata so the dimension is preserved rather than dropped.
+
         Args:
             dim_def: Dimension definition from Rill YAML
+            index: Position of the dimension in the dimensions list (for name fallback)
             timeseries_column: Name of the timeseries column
             smallest_time_grain: Smallest time grain for time dimensions
 
         Returns:
             Dimension or None if parsing fails
         """
-        name = dim_def.get("name")
-        if not name:
+        # Rill ignores dimensions explicitly marked with `ignore: true`.
+        if dim_def.get("ignore"):
             return None
 
-        label = dim_def.get("display_name")  # Rill uses display_name, Sidemantic uses label
+        # `property:` is a deprecated shorthand alias for `column:`.
+        column = dim_def.get("column")
+        if not column and dim_def.get("property"):
+            column = dim_def.get("property")
+
+        expression = dim_def.get("expression")
+
+        # Lookup dimensions resolve a value from a lookup table keyed off a column.
+        lookup_table = dim_def.get("lookup_table")
+        lookup_key_column = dim_def.get("lookup_key_column")
+
+        # Derive name following Rill's rules: name -> column -> dimension_<i>.
+        name = dim_def.get("name")
+        if not name:
+            name = column or lookup_key_column or f"dimension_{index}"
+
+        # `label` is the deprecated alias for `display_name`.
+        label = dim_def.get("display_name") or dim_def.get("label")
         description = dim_def.get("description")
-        sql = dim_def.get("expression") or dim_def.get("column")
+
+        # SQL expression: prefer expression, then column, then the lookup key column.
+        sql = expression or column or lookup_key_column
 
         if not sql:
             return None
 
         # Determine if this is the timeseries dimension
         is_timeseries = timeseries_column and (sql == timeseries_column or name == timeseries_column)
+
+        meta = None
+        if lookup_table:
+            meta = {
+                "rill_lookup_table": lookup_table,
+                "rill_lookup_key_column": lookup_key_column,
+                "rill_lookup_value_column": dim_def.get("lookup_value_column"),
+            }
+            if dim_def.get("lookup_default_expression") is not None:
+                meta["rill_lookup_default_expression"] = dim_def.get("lookup_default_expression")
 
         return Dimension(
             name=name,
@@ -158,26 +393,46 @@ class RillAdapter:
             sql=sql,
             type="time" if is_timeseries else "categorical",
             granularity=self._map_time_grain(smallest_time_grain) if is_timeseries else None,
+            meta=meta,
         )
 
-    def _parse_measure(self, measure_def: dict[str, Any]) -> Metric | None:
+    def _parse_measure(self, measure_def: dict[str, Any], index: int) -> Metric | None:
         """Parse a Rill measure into a Sidemantic Metric.
+
+        Mirrors Rill's own backwards-compatibility handling
+        (runtime/parser/parse_metrics_view.go):
+        - When `name` is missing, fall back to `measure_<i>` (matching Rill's
+          `fmt.Sprintf("measure_%d", i)`).
+        - `label:` is a deprecated alias for `display_name:`.
+        - `type:` accepts simple / derived / time_comparison. An empty type with
+          `requires:` or `per:` is treated as derived (Rill's default promotion)
+          UNLESS the expression is itself a plain aggregation (e.g. `SUM(amount)`),
+          which keeps simple aggregate parsing so it still decomposes correctly.
 
         Args:
             measure_def: Measure definition from Rill YAML
+            index: Position of the measure in the measures list (for name fallback)
 
         Returns:
             Metric or None if parsing fails
         """
-        name = measure_def.get("name")
-        expression = measure_def.get("expression")
-
-        if not name or not expression:
+        # Rill ignores measures explicitly marked with `ignore: true`.
+        if measure_def.get("ignore"):
             return None
 
-        label = measure_def.get("display_name")  # Rill uses display_name, Sidemantic uses label
+        expression = measure_def.get("expression")
+        if not expression:
+            return None
+
+        # Derive name following Rill's rule: name -> measure_<i>.
+        name = measure_def.get("name") or f"measure_{index}"
+
+        # `label` is the deprecated alias for `display_name`.
+        label = measure_def.get("display_name") or measure_def.get("label")
         description = measure_def.get("description")
-        measure_type = measure_def.get("type", "simple")
+        measure_type = (measure_def.get("type") or "").lower()
+        requires = measure_def.get("requires")
+        per = measure_def.get("per")
 
         # Parse formatting - prefer format_d3 over format_preset
         format_d3 = measure_def.get("format_d3")
@@ -190,6 +445,9 @@ class RillAdapter:
         window_order = None
         window_frame = None
         metric_type = None
+        base_metric = None
+        comparison_type = None
+        meta: dict[str, Any] | None = None
 
         if window_def:
             # Rill window syntax:
@@ -200,10 +458,40 @@ class RillAdapter:
             if isinstance(window_def, dict):
                 window_order = window_def.get("order")
                 window_frame = window_def.get("frame")
-        elif measure_type == "derived" or measure_def.get("requires"):
-            # Determine metric type based on Rill's type
-            # "simple" = basic aggregation (None type), "derived" = calculation using other measures
+        elif measure_type == "time_comparison":
+            # Rill time_comparison measures compute a period-over-period value from a
+            # base measure (the expression names that base measure). Map to
+            # Sidemantic's native time_comparison so it queries as an actual
+            # comparison; treating it as a derived metric would silently resolve to
+            # the current-period value of the base measure instead. Rill compares
+            # against the immediately prior period, so default to prior_period.
+            metric_type = "time_comparison"
+            base_metric = expression
+            comparison_type = "prior_period"
+            meta = {"rill_type": "time_comparison"}
+        elif measure_type == "derived":
+            # "simple" = basic aggregation (None type), "derived" = calculation
+            # referencing other measures.
             metric_type = "derived"
+        elif requires or per:
+            # An empty type with requires/per is promoted to derived ONLY when the
+            # expression is not itself a plain aggregation. A `per` (or `requires`)
+            # measure like `SUM(amount)` is still an ordinary aggregation and must
+            # keep simple aggregate parsing: forcing it to derived would leave the
+            # raw aggregate as the outer formula while the CTE only projects the
+            # decomposed column, producing invalid SQL when a source column name
+            # collides with a measure name. The `per`/`requires` linkage is still
+            # preserved in metadata regardless.
+            if not self._is_simple_aggregate_expression(expression):
+                metric_type = "derived"
+
+        if per is not None:
+            meta = meta or {}
+            meta["rill_per"] = per
+
+        # A native time_comparison carries its base measure via base_metric, not
+        # sql (the expression is the referenced measure name, not an aggregation).
+        metric_sql = None if metric_type == "time_comparison" else expression
 
         # Let the Metric class handle aggregation parsing via its model_validator.
         # This properly handles complex expressions like SUM(x) / SUM(y) and
@@ -212,13 +500,66 @@ class RillAdapter:
             name=name,
             label=label,
             description=description,
-            sql=expression,  # Pass full expression, Metric will parse aggregations
+            sql=metric_sql,  # Pass full expression, Metric will parse aggregations
             type=metric_type,
+            base_metric=base_metric,
+            comparison_type=comparison_type,
             format=format_str,
             value_format_name=value_format_name,
             window_order=window_order,
             window_frame=window_frame,
+            meta=meta,
         )
+
+    @staticmethod
+    def _is_simple_aggregate_expression(expression: Any) -> bool:
+        """Whether a measure expression is a single top-level aggregation.
+
+        Mirrors the decomposition the Metric validator performs: a "simple"
+        aggregation is one whose *top-level* node is a single aggregate function
+        (e.g. ``SUM(amount)``, ``COUNT(*)``, ``COUNT(DISTINCT id)``). Formulas that
+        combine multiple aggregations (e.g. ``SUM(x) / SUM(y)``) or reference other
+        measures are not simple and remain derived.
+
+        Used to decide whether a ``per`` / ``requires`` measure should keep simple
+        aggregate parsing instead of being promoted to a derived formula.
+        """
+        if not isinstance(expression, str) or not expression.strip():
+            return False
+
+        try:
+            import sqlglot
+            from sqlglot import expressions as exp
+
+            parsed = sqlglot.parse_one(expression, read="duckdb")
+        except Exception:
+            return False
+
+        # The top-level node itself must be the aggregation. A wrapping operator
+        # (arithmetic, etc.) means the aggregate is nested inside a formula and the
+        # expression is genuinely derived.
+        if isinstance(parsed, exp.AggFunc):
+            return True
+
+        # Anonymous function nodes for engine-specific aggregates (e.g. dialect
+        # aggregations sqlglot does not model as AggFunc) that the Metric validator
+        # still decomposes.
+        if isinstance(parsed, exp.Func) and (parsed.name or "").lower() in {
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "median",
+            "stddev",
+            "stddev_pop",
+            "variance",
+            "variance_pop",
+            "var_pop",
+            "count",
+        }:
+            return True
+
+        return False
 
     def _map_time_grain(self, grain: str | None) -> str:
         """Map Rill time grain to Sidemantic granularity.

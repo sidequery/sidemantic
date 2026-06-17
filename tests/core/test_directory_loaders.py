@@ -452,6 +452,183 @@ contents:
     assert not any("view" in err.lower() for err in report.errors)
 
 
+def test_load_from_directory_detects_released_osi_json(tmp_path):
+    """Released-spec OSI .json (dbt OSI consumer) is routed to the OSI adapter."""
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(
+        """
+{
+  "version": "0.1.1",
+  "semantic_model": [
+    {
+      "name": "released_analytics",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "db.schema.fct_orders",
+          "primary_key": ["order_id"],
+          "fields": [
+            {
+              "name": "order_id",
+              "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]}
+            }
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "name": "order_count",
+          "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "COUNT(*)"}]}
+        }
+      ]
+    }
+  ]
+}
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    orders = layer.graph.models["orders"]
+    assert orders.table.endswith("fct_orders")
+    assert getattr(orders, "_source_format", None) == "OSI"
+    assert "order_count" in layer.graph.metrics
+
+
+def test_load_from_directory_skips_generated_osi_json(tmp_path):
+    """A dbt-generated target/ OSI document must not be loaded as a source model."""
+
+    def _osi_json(dataset_name: str, source: str) -> str:
+        return f"""
+{{
+  "version": "0.1.1",
+  "semantic_model": [
+    {{
+      "name": "analytics",
+      "datasets": [
+        {{
+          "name": "{dataset_name}",
+          "source": "{source}",
+          "primary_key": ["id"],
+          "fields": [
+            {{
+              "name": "id",
+              "expression": {{"dialects": [{{"dialect": "ANSI_SQL", "expression": "id"}}]}}
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(_osi_json("orders", "db.schema.fct_orders"))
+
+    # Simulate a stale `dbt compile` artifact containing a deleted/old model.
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    (target_dir / "osi_document.json").write_text(_osi_json("stale_orders", "db.schema.old_orders"))
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    assert "stale_orders" not in layer.graph.models
+
+
+def test_load_from_directory_skips_osi_json_outside_osi_tree(tmp_path):
+    """OSI-shaped JSON outside the project-root OSI/ tree is ignored.
+
+    dbt's OSI consumer only scans ``<project_root>/OSI/``. An archived or scratch
+    OSI document under another folder (or sitting at the project root) must not
+    add stale models or collide with the real OSI/ sources during
+    ``sidemantic validate .``.
+    """
+
+    def _osi_json(dataset_name: str, source: str) -> str:
+        return f"""
+{{
+  "version": "0.1.1",
+  "semantic_model": [
+    {{
+      "name": "analytics",
+      "datasets": [
+        {{
+          "name": "{dataset_name}",
+          "source": "{source}",
+          "primary_key": ["id"],
+          "fields": [
+            {{
+              "name": "id",
+              "expression": {{"dialects": [{{"dialect": "ANSI_SQL", "expression": "id"}}]}}
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(_osi_json("orders", "db.schema.fct_orders"))
+
+    # An archived OSI document under a non-OSI/ folder.
+    backups_dir = tmp_path / "backups"
+    backups_dir.mkdir()
+    (backups_dir / "old_osi.json").write_text(_osi_json("stale_orders", "db.schema.old_orders"))
+
+    # A scratch OSI document sitting directly at the project root.
+    (tmp_path / "scratch_osi.json").write_text(_osi_json("scratch_orders", "db.schema.scratch_orders"))
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    assert "stale_orders" not in layer.graph.models
+    assert "scratch_orders" not in layer.graph.models
+
+
+def test_load_from_directory_surfaces_malformed_osi_json(tmp_path):
+    """Malformed OSI JSON is reported as a parse error, not silently skipped."""
+    import pytest
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    # OSI text markers (semantic_model + datasets) present, but the JSON is
+    # truncated/malformed (trailing comma, missing closing braces).
+    (osi_dir / "model.json").write_text(
+        """
+{
+  "version": "0.1.1",
+  "semantic_model": [
+    {
+      "name": "broken",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "db.schema.fct_orders",
+        }
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="model.json"):
+        load_from_directory(layer, tmp_path, strict=True)
+
+    # Non-strict mode must not raise and must not load anything from the bad file.
+    non_strict_layer = SemanticLayer()
+    load_from_directory(non_strict_layer, tmp_path, strict=False)
+    assert "orders" not in non_strict_layer.graph.models
+
+
 def test_load_from_directory_attaches_snowflake_metric_to_table_in_another_file(tmp_path):
     """A Snowflake top-level metric attaches to its table even if defined in another file."""
     # File A is Snowflake-detected (tables + base_table) and carries a top-level
@@ -699,6 +876,55 @@ tables:
     assert "avg_order" not in graph.metrics
 
 
+def test_load_from_directory_detects_named_view_metric_sidecar(tmp_path):
+    """A Cortex sidecar with a root ``name`` and only tableless view metrics (no
+    Snowflake-only key or section) still routes to Snowflake, not silently dropped.
+
+    The root ``name`` is the sole Cortex signal: native detection rejects ``name``
+    so the file is not native-compatible, and without this routing the view metric
+    is lost on the CLI load_from_directory / export-native path.
+    """
+    (tmp_path / "a_sidecar.yaml").write_text(
+        """
+name: view_metrics
+metrics:
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "global_ratio" in layer.graph.metrics
+
+
 def test_load_from_directory_detects_relationship_only_snowflake_sidecar(tmp_path):
     """A Cortex sidecar with only top-level relationships routes to Snowflake and attaches joins."""
     # Non-standard join columns so foreign-key inference would NOT recreate the join.
@@ -755,6 +981,117 @@ tables:
     assert rel.metadata["snowflake"]["name"] == "orders_to_customers"
     assert rel.foreign_key == "cust_ref"
     assert graph.find_relationship_path("orders", "customers")
+
+
+def test_load_from_directory_detects_view_metric_sidecar_with_snowflake_sections(tmp_path):
+    """A tableless Cortex sidecar with verified_queries routes to Snowflake."""
+    # Pure view-level metrics (no table) plus Snowflake-only top-level sections.
+    (tmp_path / "a_sidecar.yaml").write_text(
+        """
+metrics:
+  - name: global_ratio
+    expr: orders.revenue / orders.order_count
+verified_queries:
+  - name: total revenue
+    sql: SELECT SUM(amount) FROM orders
+custom_instructions: Prefer revenue.
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+    facts:
+      - name: amount
+        expr: amount
+        data_type: number
+    metrics:
+      - name: revenue
+        expr: SUM(amount)
+      - name: order_count
+        expr: COUNT(order_id)
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    graph = layer.graph
+
+    assert "global_ratio" in graph.metrics
+    snowflake_meta = graph.metadata.get("snowflake", {})
+    assert snowflake_meta.get("verified_queries")
+    assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
+
+
+def test_load_from_directory_explicit_snowflake_relationship_beats_inference(tmp_path):
+    """An explicit Cortex relationship takes precedence over a guessed foreign key."""
+    # orders has customer_id (inferable to customers) AND an explicit Snowflake join.
+    (tmp_path / "a_rels.yaml").write_text(
+        """
+relationships:
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: cust_ref
+        right_column: cust_pk
+    relationship_type: many_to_one
+"""
+    )
+    (tmp_path / "z_tables.yaml").write_text(
+        """
+name: tm
+tables:
+  - name: orders
+    base_table:
+      database: db
+      schema: s
+      table: orders
+    primary_key:
+      columns: [order_id]
+    dimensions:
+      - name: order_id
+        expr: order_id
+        data_type: number
+      - name: customer_id
+        expr: customer_id
+        data_type: number
+      - name: cust_ref
+        expr: cust_ref
+        data_type: number
+  - name: customers
+    base_table:
+      database: db
+      schema: s
+      table: customers
+    primary_key:
+      columns: [cust_pk]
+    dimensions:
+      - name: cust_pk
+        expr: cust_pk
+        data_type: number
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+    orders = layer.graph.models["orders"]
+
+    customer_rels = [r for r in orders.relationships if r.name == "customers"]
+    assert len(customer_rels) == 1
+    assert customer_rels[0].foreign_key == "cust_ref"
+    assert customer_rels[0].metadata["snowflake"]["name"] == "orders_to_customers"
 
 
 def test_load_from_directory_keeps_same_target_snowflake_relationships(tmp_path):
@@ -824,166 +1161,6 @@ tables:
         "orders_to_customers_shipping",
     }
     assert {r.foreign_key for r in customer_rels} == {"billing_cust_ref", "shipping_cust_ref"}
-
-
-def test_load_from_directory_detects_view_metric_sidecar_with_snowflake_sections(tmp_path):
-    """A tableless Cortex sidecar with verified_queries routes to Snowflake."""
-    # Pure view-level metrics (no table) plus Snowflake-only top-level sections.
-    (tmp_path / "a_sidecar.yaml").write_text(
-        """
-metrics:
-  - name: global_ratio
-    expr: orders.revenue / orders.order_count
-verified_queries:
-  - name: total revenue
-    sql: SELECT SUM(amount) FROM orders
-custom_instructions: Prefer revenue.
-"""
-    )
-    (tmp_path / "z_tables.yaml").write_text(
-        """
-name: tm
-tables:
-  - name: orders
-    base_table:
-      database: db
-      schema: s
-      table: orders
-    primary_key:
-      columns: [order_id]
-    dimensions:
-      - name: order_id
-        expr: order_id
-        data_type: number
-    facts:
-      - name: amount
-        expr: amount
-        data_type: number
-    metrics:
-      - name: revenue
-        expr: SUM(amount)
-      - name: order_count
-        expr: COUNT(order_id)
-"""
-    )
-
-    layer = SemanticLayer()
-    load_from_directory(layer, tmp_path)
-    graph = layer.graph
-
-    assert "global_ratio" in graph.metrics
-    snowflake_meta = graph.metadata.get("snowflake", {})
-    assert snowflake_meta.get("verified_queries")
-    assert snowflake_meta.get("custom_instructions") == "Prefer revenue."
-
-
-def test_load_from_directory_detects_named_view_metric_sidecar(tmp_path):
-    """A Cortex sidecar with a root ``name`` and only tableless view metrics (no
-    Snowflake-only key or section) still routes to Snowflake, not silently dropped.
-
-    The root ``name`` is the sole Cortex signal: native detection rejects ``name``
-    so the file is not native-compatible, and without this routing the view metric
-    is lost on the CLI load_from_directory / export-native path.
-    """
-    (tmp_path / "a_sidecar.yaml").write_text(
-        """
-name: view_metrics
-metrics:
-  - name: global_ratio
-    expr: orders.revenue / orders.order_count
-"""
-    )
-    (tmp_path / "z_tables.yaml").write_text(
-        """
-name: tm
-tables:
-  - name: orders
-    base_table:
-      database: db
-      schema: s
-      table: orders
-    primary_key:
-      columns: [order_id]
-    dimensions:
-      - name: order_id
-        expr: order_id
-        data_type: number
-    facts:
-      - name: amount
-        expr: amount
-        data_type: number
-    metrics:
-      - name: revenue
-        expr: SUM(amount)
-      - name: order_count
-        expr: COUNT(order_id)
-"""
-    )
-
-    layer = SemanticLayer()
-    load_from_directory(layer, tmp_path)
-
-    assert "global_ratio" in layer.graph.metrics
-
-
-def test_load_from_directory_explicit_snowflake_relationship_beats_inference(tmp_path):
-    """An explicit Cortex relationship takes precedence over a guessed foreign key."""
-    # orders has customer_id (inferable to customers) AND an explicit Snowflake join.
-    (tmp_path / "a_rels.yaml").write_text(
-        """
-relationships:
-  - name: orders_to_customers
-    left_table: orders
-    right_table: customers
-    relationship_columns:
-      - left_column: cust_ref
-        right_column: cust_pk
-    relationship_type: many_to_one
-"""
-    )
-    (tmp_path / "z_tables.yaml").write_text(
-        """
-name: tm
-tables:
-  - name: orders
-    base_table:
-      database: db
-      schema: s
-      table: orders
-    primary_key:
-      columns: [order_id]
-    dimensions:
-      - name: order_id
-        expr: order_id
-        data_type: number
-      - name: customer_id
-        expr: customer_id
-        data_type: number
-      - name: cust_ref
-        expr: cust_ref
-        data_type: number
-  - name: customers
-    base_table:
-      database: db
-      schema: s
-      table: customers
-    primary_key:
-      columns: [cust_pk]
-    dimensions:
-      - name: cust_pk
-        expr: cust_pk
-        data_type: number
-"""
-    )
-
-    layer = SemanticLayer()
-    load_from_directory(layer, tmp_path)
-    orders = layer.graph.models["orders"]
-
-    customer_rels = [r for r in orders.relationships if r.name == "customers"]
-    assert len(customer_rels) == 1
-    assert customer_rels[0].foreign_key == "cust_ref"
-    assert customer_rels[0].metadata["snowflake"]["name"] == "orders_to_customers"
 
 
 def test_load_from_directory_merges_snowflake_metadata_across_files(tmp_path):

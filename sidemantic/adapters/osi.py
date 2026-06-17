@@ -1,9 +1,22 @@
-"""OSI (Open Semantic Interchange) adapter for importing and exporting OSI YAML files.
+"""OSI (Open Semantic Interchange) adapter for importing and exporting OSI files.
 
 OSI is a vendor-agnostic semantic model specification designed to enable
 interoperability between data analytics, AI, and BI tools.
 
+Two profiles are supported:
+
+- The in-development profile (default): the ``0.2.0.dev0`` schema serialized as
+  YAML (``.yml``/``.yaml``).
+- The released interop profile: a ``0.1.x`` document serialized as JSON
+  (``.json``), matching what dbt's OSI consumer (dbt Core 1.12+) ingests from an
+  ``OSI/`` directory at a project root.
+
+Both profiles share the same ``version`` + ``semantic_model`` structure, so a
+single parser/exporter handles them; only the serialization and version string
+differ. Import auto-detects the format from the file extension.
+
 Spec: https://github.com/open-semantic-interchange/OSI
+dbt consumer: https://docs.getdbt.com/docs/build/osi-semantic-models
 """
 
 import json
@@ -19,6 +32,25 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 
+# Directories that hold generated/compiled artifacts rather than source models.
+# dbt writes a copy of the OSI document to ``target/`` on ``dbt compile``; parsing
+# those would duplicate or resurrect deleted/stale models, so they are skipped
+# when an OSI directory (e.g. a dbt project root) is parsed.
+_GENERATED_ARTIFACT_DIRS = frozenset({"target", "dbt_packages"})
+
+
+def _is_generated_artifact(file_path: Path, directory: Path) -> bool:
+    """Return True when ``file_path`` lives under a generated-artifact directory.
+
+    Only path components *below* ``directory`` are considered so that parsing a
+    directory literally named ``target`` still works.
+    """
+    try:
+        relative_parts = file_path.relative_to(directory).parts
+    except ValueError:
+        relative_parts = file_path.parts
+    return any(part in _GENERATED_ARTIFACT_DIRS for part in relative_parts[:-1])
+
 
 class OSIAdapter(BaseAdapter):
     """Adapter for importing/exporting OSI (Open Semantic Interchange) YAML files.
@@ -32,6 +64,24 @@ class OSIAdapter(BaseAdapter):
     """
 
     OSI_VERSION = "0.2.0.dev0"
+
+    # Released OSI versions accepted by downstream consumers such as dbt's OSI
+    # consumer (dbt Core 1.12+). dbt only ingests released 0.1.x ``.json`` files
+    # placed in an ``OSI/`` directory and raises on any other version string.
+    RELEASED_OSI_VERSION = "0.1.1"
+    RELEASED_OSI_VERSIONS = ("0.1.0", "0.1.1")
+
+    # The released 0.1.x JSON Schema constrains custom_extensions[].vendor_name to
+    # this enum (core-spec/osi-schema.json $defs/Vendor). dbt's OSI consumer
+    # validates against it, so a released JSON export must not emit any other
+    # vendor (e.g. the local "SIDEMANTIC" wrapper) or the document fails parsing.
+    RELEASED_OSI_VENDORS = ("COMMON", "SNOWFLAKE", "SALESFORCE", "DBT", "DATABRICKS", "GOODDATA")
+    # Vendor used to carry Sidemantic-owned / unknown-vendor extension payloads in
+    # released JSON. COMMON is the OSI-blessed cross-vendor bucket.
+    RELEASED_OSI_FALLBACK_VENDOR = "COMMON"
+
+    # Output formats supported by export().
+    SUPPORTED_EXPORT_FORMATS = ("yaml", "json")
 
     # OSI dialect preference order for extracting SQL expressions
     DIALECT_PREFERENCE = ["ANSI_SQL", "SNOWFLAKE", "DATABRICKS", "MAQL", "TABLEAU", "MDX"]
@@ -65,10 +115,23 @@ class OSIAdapter(BaseAdapter):
         graph = SemanticGraph()
 
         if source_path.is_dir():
-            for yaml_file in source_path.rglob("*.yml"):
-                self._parse_file(yaml_file, graph)
-            for yaml_file in source_path.rglob("*.yaml"):
-                self._parse_file(yaml_file, graph)
+            # Accept both the in-development YAML profile (.yml/.yaml) and the
+            # released JSON profile (.json) consumed by dbt's OSI consumer.
+            for pattern in ("*.yml", "*.yaml", "*.json"):
+                for osi_file in source_path.rglob(pattern):
+                    # Skip dbt-generated copies (e.g. target/osi_document.json) so
+                    # a `dbt compile` artifact never duplicates or resurrects the
+                    # real OSI/ sources when a project root is parsed directly.
+                    if _is_generated_artifact(osi_file, source_path):
+                        continue
+                    # A dbt project root can contain unrelated JSON (config files,
+                    # JSON arrays, etc.) outside target/. Only feed JSON that looks
+                    # like an OSI document to the parser so unrelated files do not
+                    # raise or overwrite real OSI metadata. This mirrors the
+                    # directory loader's ``_looks_like_osi_json`` shape check.
+                    if osi_file.suffix.lower() == ".json" and not self._looks_like_osi_json(osi_file):
+                        continue
+                    self._parse_file(osi_file, graph)
         else:
             self._parse_file(source_path, graph)
 
@@ -76,6 +139,38 @@ class OSIAdapter(BaseAdapter):
         graph.build_adjacency()
 
         return graph
+
+    @staticmethod
+    def _looks_like_osi_json(file_path: Path) -> bool:
+        """Return True when ``file_path`` is a released-spec OSI JSON document.
+
+        Released OSI ships as JSON with a top-level ``semantic_model`` list whose
+        entries contain ``datasets``. A dbt project root can hold unrelated JSON
+        (config files, JSON arrays) outside ``target/``; this shape check keeps
+        those out of the parser so they neither raise nor overwrite real OSI
+        metadata. Mirrors the directory loader's ``_looks_like_osi_json``.
+
+        Unreadable or invalid JSON is treated as non-OSI so unrelated files are
+        silently skipped rather than aborting a directory parse.
+        """
+        try:
+            text = file_path.read_text()
+        except OSError:
+            return False
+        if not text.strip():
+            return False
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(data, dict) or "semantic_model" not in data:
+            return False
+        models = data.get("semantic_model")
+        if isinstance(models, dict):
+            models = [models]
+        if not isinstance(models, list):
+            return False
+        return any(isinstance(model, dict) and "datasets" in model for model in models)
 
     def _parse_file(self, file_path: Path, graph: SemanticGraph) -> None:
         """Parse a single OSI YAML file.
@@ -85,7 +180,13 @@ class OSIAdapter(BaseAdapter):
             graph: Semantic graph to add models/metrics to
         """
         with open(file_path) as f:
-            data = yaml.safe_load(f)
+            if file_path.suffix.lower() == ".json":
+                # Released-spec OSI profile (dbt consumer) ships as JSON.
+                text = f.read()
+                data = json.loads(text) if text.strip() else None
+            else:
+                # In-development OSI profile ships as YAML (the default).
+                data = yaml.safe_load(f)
 
         if not data:
             return
@@ -427,17 +528,34 @@ class OSIAdapter(BaseAdapter):
         graph: SemanticGraph,
         output_path: str | Path,
         dialects: list[str] | None = None,
+        format: str | None = None,
+        version: str | None = None,
     ) -> None:
-        """Export semantic graph to OSI YAML format.
+        """Export semantic graph to OSI format.
+
+        By default this emits the in-development OSI profile: the
+        ``0.2.0.dev0`` schema as YAML. Passing ``format="json"`` (or a ``.json``
+        output path) emits the released-spec interop profile consumed by dbt's
+        OSI consumer (dbt Core 1.12+): a ``0.1.x`` document written as JSON,
+        suitable for an ``OSI/`` directory at a dbt project root.
 
         Args:
             graph: Semantic graph to export
-            output_path: Path to output YAML file
+            output_path: Path to output file. ``.json`` extensions default the
+                         format to JSON; otherwise YAML is used.
             dialects: List of OSI dialects to generate SQL expressions for.
                       Default is ["ANSI_SQL"]. Options: ANSI_SQL, SNOWFLAKE, DATABRICKS.
                       When multiple dialects specified, sqlglot is used for transpilation.
+            format: Output format, ``"yaml"`` (default) or ``"json"``. When
+                    omitted it is inferred from the output path extension.
+            version: OSI schema version string to emit. Defaults to
+                     ``0.2.0.dev0`` for YAML and the released ``0.1.1`` for JSON.
+                     Released JSON exports must use a ``0.1.x`` version.
         """
         output_path = Path(output_path)
+
+        format = self._resolve_export_format(format, output_path)
+        version = self._resolve_export_version(version, format, graph)
 
         if not dialects:
             dialects = ["ANSI_SQL"]
@@ -448,6 +566,9 @@ class OSIAdapter(BaseAdapter):
 
         # Store dialects for use in export methods
         self._export_dialects = dialects
+        # Released JSON validates against the 0.1.x enum-constrained schema; flag
+        # it so extension export can coerce non-enum vendors to a released vendor.
+        self._export_released_json = format == "json"
 
         # Resolve inheritance first
         from sidemantic.core.inheritance import resolve_model_inheritance
@@ -457,12 +578,39 @@ class OSIAdapter(BaseAdapter):
         # Build OSI semantic model
         semantic_model = self._export_semantic_model(resolved_models, graph)
 
-        data = {"version": self._export_version(graph), "semantic_model": [semantic_model]}
+        data = {"version": version, "semantic_model": [semantic_model]}
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w") as f:
-            yaml.dump(data, f, sort_keys=False, default_flow_style=False)
+            if format == "json":
+                json.dump(data, f, indent=2, sort_keys=False)
+            else:
+                yaml.dump(data, f, sort_keys=False, default_flow_style=False)
+
+    def _resolve_export_format(self, format: str | None, output_path: Path) -> str:
+        """Determine the export format, inferring from the path extension."""
+        if format is None:
+            format = "json" if output_path.suffix.lower() == ".json" else "yaml"
+        format = format.lower()
+        if format not in self.SUPPORTED_EXPORT_FORMATS:
+            supported = ", ".join(self.SUPPORTED_EXPORT_FORMATS)
+            raise ValueError(f"Unsupported OSI export format: {format}. Supported: {supported}")
+        return format
+
+    def _resolve_export_version(self, version: str | None, format: str, graph: SemanticGraph) -> str:
+        """Determine the OSI version string to emit for a given format."""
+        if version is not None:
+            if format == "json" and version not in self.RELEASED_OSI_VERSIONS:
+                supported = ", ".join(self.RELEASED_OSI_VERSIONS)
+                raise ValueError(
+                    f"Released OSI JSON export requires a released version ({supported}); got {version!r}."
+                )
+            return version
+        if format == "json":
+            # Released-spec JSON: emit the latest released version dbt accepts.
+            return self.RELEASED_OSI_VERSION
+        return self._export_version(graph)
 
     def _generate_dialect_expressions(self, sql_expr: str) -> list[dict[str, str]]:
         """Generate expressions for multiple SQL dialects using sqlglot.
@@ -737,20 +885,57 @@ class OSIAdapter(BaseAdapter):
                 if data is None:
                     data = {key: value for key, value in item.items() if key not in {"vendor_name", "vendor"}}
                 normalized.append({"vendor_name": str(vendor_name), "data": self._extension_data_to_string(data)})
-            return normalized
+            return self._coerce_extension_vendors_for_export(normalized)
 
         if isinstance(custom_extensions, dict) and {"vendor_name", "data"} <= set(custom_extensions):
-            return [
-                {
-                    "vendor_name": str(custom_extensions["vendor_name"]),
-                    "data": self._extension_data_to_string(custom_extensions["data"]),
-                }
-            ]
+            return self._coerce_extension_vendors_for_export(
+                [
+                    {
+                        "vendor_name": str(custom_extensions["vendor_name"]),
+                        "data": self._extension_data_to_string(custom_extensions["data"]),
+                    }
+                ]
+            )
 
-        return [{"vendor_name": "SIDEMANTIC", "data": self._extension_data_to_string(custom_extensions)}]
+        return self._coerce_extension_vendors_for_export(
+            [{"vendor_name": "SIDEMANTIC", "data": self._extension_data_to_string(custom_extensions)}]
+        )
+
+    def _coerce_extension_vendors_for_export(self, extensions: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Map non-enum vendors to a released vendor when emitting released JSON.
+
+        The released 0.1.x JSON Schema constrains ``vendor_name`` to
+        :attr:`RELEASED_OSI_VENDORS`, so dbt's OSI consumer rejects any other
+        vendor (notably the local ``SIDEMANTIC`` wrapper). For released JSON we
+        relabel unsupported vendors to the cross-vendor ``COMMON`` bucket while
+        preserving the original vendor inside ``data`` so a round-trip can
+        restore it. The in-development YAML profile is left untouched.
+        """
+        if not getattr(self, "_export_released_json", False):
+            return extensions
+
+        coerced = []
+        for ext in extensions:
+            vendor = ext.get("vendor_name")
+            if vendor in self.RELEASED_OSI_VENDORS:
+                coerced.append(ext)
+                continue
+            payload = {"original_vendor_name": vendor, "data": ext.get("data")}
+            coerced.append(
+                {
+                    "vendor_name": self.RELEASED_OSI_FALLBACK_VENDOR,
+                    "data": self._extension_data_to_string(payload),
+                }
+            )
+        return coerced
 
     def _decode_custom_extensions(self, custom_extensions: Any) -> Any:
         """Decode Sidemantic-owned extension wrappers while preserving standard OSI lists."""
+        # Released JSON export relabels non-enum vendors to COMMON and stashes the
+        # original under ``original_vendor_name``. Undo that first so the original
+        # vendor/payload is restored before the SIDEMANTIC unwrap below.
+        custom_extensions = self._restore_coerced_extension_vendors(custom_extensions)
+
         if (
             isinstance(custom_extensions, list)
             and len(custom_extensions) == 1
@@ -765,6 +950,40 @@ class OSIAdapter(BaseAdapter):
                     return data
             return data
         return custom_extensions
+
+    def _restore_coerced_extension_vendors(self, custom_extensions: Any) -> Any:
+        """Reverse :meth:`_coerce_extension_vendors_for_export` on import.
+
+        A coerced extension is a ``COMMON`` entry whose ``data`` decodes to a dict
+        carrying ``original_vendor_name``. Restore the original ``vendor_name`` and
+        inner ``data`` so the released JSON path round-trips identically to YAML.
+        """
+        if not isinstance(custom_extensions, list):
+            return custom_extensions
+
+        restored = []
+        changed = False
+        for ext in custom_extensions:
+            if (
+                isinstance(ext, dict)
+                and ext.get("vendor_name") == self.RELEASED_OSI_FALLBACK_VENDOR
+                and isinstance(ext.get("data"), str)
+            ):
+                try:
+                    payload = json.loads(ext["data"])
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict) and "original_vendor_name" in payload:
+                    restored.append(
+                        {
+                            "vendor_name": payload.get("original_vendor_name"),
+                            "data": payload.get("data"),
+                        }
+                    )
+                    changed = True
+                    continue
+            restored.append(ext)
+        return restored if changed else custom_extensions
 
     def _extension_data_to_string(self, data: Any) -> str:
         """Convert custom extension data to the string required by OSI."""

@@ -323,13 +323,13 @@ def test_rill_parse_empty_measures():
         temp_path.unlink()
 
 
-def test_rill_dimension_without_name():
-    """Test dimension without name is skipped."""
+def test_rill_dimension_without_name_derives_from_column():
+    """Test dimension without name derives its name from its column (like Rill)."""
     rill_yaml = {
         "type": "metrics_view",
         "name": "test",
         "model": "test_model",
-        "dimensions": [{"column": "status"}],  # Missing name
+        "dimensions": [{"column": "status"}],  # Missing name -> derived from column
     }
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -339,18 +339,24 @@ def test_rill_dimension_without_name():
     try:
         adapter = RillAdapter()
         graph = adapter.parse(temp_path)
-        assert len(graph.models["test"].dimensions) == 0
+        dims = graph.models["test"].dimensions
+        assert len(dims) == 1
+        assert dims[0].name == "status"
+        assert dims[0].sql == "status"
     finally:
         temp_path.unlink()
 
 
-def test_rill_measure_without_name():
-    """Test measure without name is skipped."""
+def test_rill_dimension_without_name_or_column_uses_index():
+    """Test dimension with neither name nor column falls back to dimension_<i>."""
     rill_yaml = {
         "type": "metrics_view",
         "name": "test",
         "model": "test_model",
-        "measures": [{"expression": "COUNT(*)"}],  # Missing name
+        "dimensions": [
+            {"column": "country"},
+            {"expression": "upper(status)"},  # No name, no column -> dimension_1
+        ],
     }
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -360,7 +366,37 @@ def test_rill_measure_without_name():
     try:
         adapter = RillAdapter()
         graph = adapter.parse(temp_path)
-        assert len(graph.models["test"].metrics) == 0
+        dims = {d.name: d for d in graph.models["test"].dimensions}
+        assert "country" in dims
+        assert "dimension_1" in dims
+        assert dims["dimension_1"].sql == "upper(status)"
+    finally:
+        temp_path.unlink()
+
+
+def test_rill_measure_without_name_uses_index():
+    """Test measure without name falls back to measure_<i> (like Rill)."""
+    rill_yaml = {
+        "type": "metrics_view",
+        "name": "test",
+        "model": "test_model",
+        "measures": [
+            {"name": "total", "expression": "SUM(amount)"},
+            {"expression": "COUNT(*)"},  # Missing name -> measure_1
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(rill_yaml, f)
+        temp_path = Path(f.name)
+
+    try:
+        adapter = RillAdapter()
+        graph = adapter.parse(temp_path)
+        metrics = {m.name: m for m in graph.models["test"].metrics}
+        assert "total" in metrics
+        assert "measure_1" in metrics
+        assert metrics["measure_1"].agg == "count"
     finally:
         temp_path.unlink()
 

@@ -481,17 +481,30 @@ _OSI_TREE_DIR = "OSI"
 def _is_under_osi_tree(file_path: "Path", directory: "Path") -> bool:
     """Return True when ``file_path`` lives under the project-root ``OSI/`` tree.
 
-    The OSI directory must be a top-level child of the loaded project root, so
-    only the first relative path component is checked (case-insensitively, to
-    match dbt accepting ``OSI`` regardless of filesystem case-folding). A JSON
-    file sitting directly at the project root or under any non-``OSI/`` folder is
-    rejected even when it is OSI-shaped.
+    Two layouts count as "inside the OSI tree":
+
+    * A top-level ``OSI/`` child of the loaded project root (``validate .`` from
+      the project root). Only the first relative path component is checked
+      (case-insensitively, to match dbt accepting ``OSI`` regardless of
+      filesystem case-folding).
+    * The loaded ``directory`` *itself* being the ``OSI/`` directory (``validate
+      OSI/`` pointed straight at the folder dbt users are told to drop these
+      files in). Here the file sits directly in ``directory`` with no leading
+      ``OSI/`` component, so the directory name is what identifies the tree.
+
+    A JSON file sitting directly at a non-``OSI/`` project root or under any
+    non-``OSI/`` subfolder is rejected even when it is OSI-shaped.
     """
     try:
         relative_parts = file_path.relative_to(directory).parts
     except ValueError:
         return False
-    # Need at least one directory component plus the file name.
+    # ``validate OSI/`` points the loader root straight at the OSI directory, so
+    # the file sits directly inside it (relative_parts == ("model.json",)) with
+    # no leading ``OSI/`` component. Accept it when the root is itself named OSI.
+    if len(relative_parts) == 1:
+        return directory.name.casefold() == _OSI_TREE_DIR.casefold()
+    # Otherwise require a top-level ``OSI/`` directory plus the file name.
     if len(relative_parts) < 2:
         return False
     return relative_parts[0].casefold() == _OSI_TREE_DIR.casefold()

@@ -691,5 +691,60 @@ def test_time_comparison_type_records_metadata():
     assert m.meta["rill_type"] == "time_comparison"
 
 
+def test_unnamed_timeseries_expression_dimension_stays_addressable():
+    """An unnamed expression dimension that IS the timeseries keeps the timeseries name.
+
+    Regression: with `timeseries: order_date` and an unnamed expression dimension
+    `{expression: order_date}`, the name fallback produced `dimension_0`. The
+    auto-create check then saw `sql == timeseries_column` and skipped creating an
+    `order_date` dimension, while `default_time_dimension` stayed `order_date` ->
+    validate_model rejected the model because the default time dimension referenced
+    no dimension. The dimension must be addressable under the timeseries name so the
+    default time dimension resolves.
+    """
+    graph = _parse_inline(
+        {
+            "type": "metrics_view",
+            "name": "test",
+            "model": "m",
+            "timeseries": "order_date",
+            "smallest_time_grain": "day",
+            "dimensions": [{"expression": "order_date"}],
+        }
+    )
+    model = graph.models["test"]
+
+    # The unnamed expression dimension is named after the timeseries column, and
+    # exactly one time dimension exists (no duplicate dimension_0 + order_date).
+    time_dim = model.get_dimension("order_date")
+    assert time_dim is not None
+    assert time_dim.sql == "order_date"
+    assert time_dim.type == "time"
+    assert not any(d.name == "dimension_0" for d in model.dimensions)
+
+    # default_time_dimension now resolves, so the model validates.
+    assert model.default_time_dimension == "order_date"
+    assert validate_model(model) == []
+
+
+def test_unnamed_timeseries_expression_dimension_importable_via_semantic_layer():
+    """The CLI-first path (add_model -> validate_model) accepts the model."""
+    graph = _parse_inline(
+        {
+            "type": "metrics_view",
+            "name": "orders",
+            "model": "orders_tbl",
+            "timeseries": "order_date",
+            "smallest_time_grain": "day",
+            "dimensions": [{"expression": "order_date"}],
+            "measures": [{"name": "revenue", "expression": "SUM(amount)"}],
+        }
+    )
+    layer = SemanticLayer()
+    # add_model runs validate_model and raises on failure.
+    layer.add_model(graph.models["orders"])
+    assert layer.get_model("orders").default_time_dimension == "order_date"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

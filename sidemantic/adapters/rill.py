@@ -359,9 +359,21 @@ class RillAdapter:
         lookup_key_column = dim_def.get("lookup_key_column")
 
         # Derive name following Rill's rules: name -> column -> dimension_<i>.
+        # When an unnamed dimension's SQL expression *is* the timeseries column
+        # (e.g. `dimensions: [{expression: order_date}]` alongside
+        # `timeseries: order_date`), name it after the timeseries column rather
+        # than the positional `dimension_<i>` fallback. Otherwise the generated
+        # time dimension stays addressable only as `dimension_<i>`, the later
+        # auto-create check sees the column already present and skips it, and
+        # `default_time_dimension` (set to the timeseries column) resolves to no
+        # dimension -- causing validate_model to reject the model.
         name = dim_def.get("name")
         if not name:
-            name = column or lookup_key_column or f"dimension_{index}"
+            sql_expr = expression or column or lookup_key_column
+            if timeseries_column and sql_expr == timeseries_column:
+                name = timeseries_column
+            else:
+                name = column or lookup_key_column or f"dimension_{index}"
 
         # `label` is the deprecated alias for `display_name`.
         label = dim_def.get("display_name") or dim_def.get("label")

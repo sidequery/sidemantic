@@ -450,3 +450,180 @@ contents:
 
     report = validate_directory(tmp_path)
     assert not any("view" in err.lower() for err in report.errors)
+
+
+def test_load_from_directory_detects_released_osi_json(tmp_path):
+    """Released-spec OSI .json (dbt OSI consumer) is routed to the OSI adapter."""
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(
+        """
+{
+  "version": "0.1.1",
+  "semantic_model": [
+    {
+      "name": "released_analytics",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "db.schema.fct_orders",
+          "primary_key": ["order_id"],
+          "fields": [
+            {
+              "name": "order_id",
+              "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]}
+            }
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "name": "order_count",
+          "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "COUNT(*)"}]}
+        }
+      ]
+    }
+  ]
+}
+"""
+    )
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    orders = layer.graph.models["orders"]
+    assert orders.table.endswith("fct_orders")
+    assert getattr(orders, "_source_format", None) == "OSI"
+    assert "order_count" in layer.graph.metrics
+
+
+def test_load_from_directory_skips_generated_osi_json(tmp_path):
+    """A dbt-generated target/ OSI document must not be loaded as a source model."""
+
+    def _osi_json(dataset_name: str, source: str) -> str:
+        return f"""
+{{
+  "version": "0.1.1",
+  "semantic_model": [
+    {{
+      "name": "analytics",
+      "datasets": [
+        {{
+          "name": "{dataset_name}",
+          "source": "{source}",
+          "primary_key": ["id"],
+          "fields": [
+            {{
+              "name": "id",
+              "expression": {{"dialects": [{{"dialect": "ANSI_SQL", "expression": "id"}}]}}
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(_osi_json("orders", "db.schema.fct_orders"))
+
+    # Simulate a stale `dbt compile` artifact containing a deleted/old model.
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    (target_dir / "osi_document.json").write_text(_osi_json("stale_orders", "db.schema.old_orders"))
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    assert "stale_orders" not in layer.graph.models
+
+
+def test_load_from_directory_skips_osi_json_outside_osi_tree(tmp_path):
+    """OSI-shaped JSON outside the project-root OSI/ tree is ignored.
+
+    dbt's OSI consumer only scans ``<project_root>/OSI/``. An archived or scratch
+    OSI document under another folder (or sitting at the project root) must not
+    add stale models or collide with the real OSI/ sources during
+    ``sidemantic validate .``.
+    """
+
+    def _osi_json(dataset_name: str, source: str) -> str:
+        return f"""
+{{
+  "version": "0.1.1",
+  "semantic_model": [
+    {{
+      "name": "analytics",
+      "datasets": [
+        {{
+          "name": "{dataset_name}",
+          "source": "{source}",
+          "primary_key": ["id"],
+          "fields": [
+            {{
+              "name": "id",
+              "expression": {{"dialects": [{{"dialect": "ANSI_SQL", "expression": "id"}}]}}
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"""
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(_osi_json("orders", "db.schema.fct_orders"))
+
+    # An archived OSI document under a non-OSI/ folder.
+    backups_dir = tmp_path / "backups"
+    backups_dir.mkdir()
+    (backups_dir / "old_osi.json").write_text(_osi_json("stale_orders", "db.schema.old_orders"))
+
+    # A scratch OSI document sitting directly at the project root.
+    (tmp_path / "scratch_osi.json").write_text(_osi_json("scratch_orders", "db.schema.scratch_orders"))
+
+    layer = SemanticLayer()
+    load_from_directory(layer, tmp_path)
+
+    assert "orders" in layer.graph.models
+    assert "stale_orders" not in layer.graph.models
+    assert "scratch_orders" not in layer.graph.models
+
+
+def test_load_from_directory_surfaces_malformed_osi_json(tmp_path):
+    """Malformed OSI JSON is reported as a parse error, not silently skipped."""
+    import pytest
+
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    # OSI text markers (semantic_model + datasets) present, but the JSON is
+    # truncated/malformed (trailing comma, missing closing braces).
+    (osi_dir / "model.json").write_text(
+        """
+{
+  "version": "0.1.1",
+  "semantic_model": [
+    {
+      "name": "broken",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "db.schema.fct_orders",
+        }
+"""
+    )
+
+    layer = SemanticLayer()
+    with pytest.raises(ValueError, match="model.json"):
+        load_from_directory(layer, tmp_path, strict=True)
+
+    # Non-strict mode must not raise and must not load anything from the bad file.
+    non_strict_layer = SemanticLayer()
+    load_from_directory(non_strict_layer, tmp_path, strict=False)
+    assert "orders" not in non_strict_layer.graph.models

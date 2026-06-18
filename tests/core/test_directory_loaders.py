@@ -551,6 +551,53 @@ def test_load_from_directory_accepts_osi_dir_as_loader_root(tmp_path):
     assert "order_count" in layer.graph.metrics
 
 
+def test_load_from_directory_accepts_osi_dir_root_subdirectory(tmp_path):
+    """When the loader root IS the ``OSI/`` directory, a document in a SUBDIRECTORY
+    of it must also load. ``validate OSI/`` and ``validate <project>`` (which rglobs
+    and only checks the leading ``OSI/`` component) must accept the same nested file.
+    """
+    sub = tmp_path / "OSI" / "models"
+    sub.mkdir(parents=True)
+    (sub / "model.json").write_text(
+        """
+{
+  "version": "0.1.1",
+  "semantic_model": [
+    {
+      "name": "released_analytics",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "db.schema.fct_orders",
+          "primary_key": ["order_id"],
+          "fields": [
+            {
+              "name": "order_id",
+              "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]}
+            }
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "name": "order_count",
+          "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "COUNT(*)"}]}
+        }
+      ]
+    }
+  ]
+}
+"""
+    )
+
+    layer = SemanticLayer()
+    # Load the OSI directory directly; the document lives one level deeper.
+    load_from_directory(layer, tmp_path / "OSI")
+
+    assert "orders" in layer.graph.models
+    assert "order_count" in layer.graph.metrics
+
+
 def test_load_from_directory_skips_generated_osi_json(tmp_path):
     """A dbt-generated target/ OSI document must not be loaded as a source model."""
 

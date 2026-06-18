@@ -1377,9 +1377,12 @@ def _resolve_standalone_metric_reference(
     else:
         return None
 
-    # Try the name as written, then qualified against the referencing file's
-    # module prefix / `use` aliases, matching how standalone metrics are keyed.
-    candidates = [name, _qualify_name(name, context)]
+    # Prefer the name qualified against the referencing file's module prefix /
+    # `use` aliases before the bare name, matching how standalone metrics are
+    # keyed and how other resolver paths qualify in context first. This lets a
+    # local same-named metric (e.g. finance.revenue) win over a root metric of
+    # the same name instead of silently resolving to the global one.
+    candidates = [_qualify_name(name, context), name]
     for candidate in candidates:
         referenced = standalone_metrics.get(candidate)
         if referenced is not None:

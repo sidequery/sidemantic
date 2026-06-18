@@ -470,6 +470,67 @@ Dataset d = base_ds.extend(partial_metrics)
         temp_path.unlink()
 
 
+def test_holistics_metric_reference_shorthand_prefers_local_metric(tmp_path):
+    """The reusable-metric-store shorthand `metric name: standalone_metric` must
+    resolve the reference against the referencing file's module context before
+    falling back to a bare global name. When both a root `Metric revenue` and a
+    `modules/finance` `Metric revenue` exist, a finance PartialDataset that
+    references `revenue` must pull in the local `finance.revenue`, not the
+    same-named root metric."""
+    finance_dir = tmp_path / "modules" / "finance"
+    finance_dir.mkdir(parents=True)
+
+    # Both modules define a standalone `revenue` metric with different SQL, and the
+    # finance partial references the bare name `revenue` via the shorthand.
+    (finance_dir / "rev.aml").write_text(
+        """
+Metric revenue {
+  label: 'Finance Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount) ;;
+}
+
+PartialDataset finance_part = PartialDataset {
+  metric revenue: revenue
+}
+"""
+    )
+
+    # The root file declares its own same-named standalone `revenue` and builds
+    # the consuming dataset by extending the finance partial.
+    (tmp_path / "root.aml").write_text(
+        """
+use finance { finance_part }
+
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric revenue {
+  label: 'Root Revenue'
+  type: 'number'
+  definition: @aql count(base_orders.order_id) ;;
+}
+
+Dataset base_ds {
+  label: 'Base DS'
+  models: [base_orders]
+}
+
+Dataset combined = base_ds.extend(finance_part)
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    assert "combined" in graph.models
+    # The local finance metric wins over the root metric of the same name.
+    assert graph.models["combined"].get_metric("revenue").sql == "SUM(base_orders.amount)"
+
+
 def test_holistics_extend_partial_preserves_defining_context(tmp_path):
     """A Dataset that extends a PartialDataset declared in another module must
     resolve the partial's field definitions against the partial's own file. A

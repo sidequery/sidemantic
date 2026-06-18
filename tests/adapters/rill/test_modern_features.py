@@ -746,5 +746,49 @@ def test_unnamed_timeseries_expression_dimension_importable_via_semantic_layer()
     assert layer.get_model("orders").default_time_dimension == "order_date"
 
 
+def test_repeated_unnamed_timeseries_expression_dimensions_keep_unique_names():
+    """Two unnamed expression dimensions matching the timeseries stay distinct.
+
+    Regression: the timeseries-name fallback renamed *every* unnamed expression
+    dimension whose expression equalled the timeseries column to the timeseries
+    name, so two such dimensions both became `order_date` -> validate_model
+    rejected the duplicate dimension names and add_model failed on an otherwise
+    parseable Rill project. Only the first match may claim the timeseries name;
+    later matches keep their positional `dimension_<i>` name (Rill's own
+    fallback).
+    """
+    graph = _parse_inline(
+        {
+            "type": "metrics_view",
+            "name": "orders",
+            "model": "orders_tbl",
+            "timeseries": "order_date",
+            "smallest_time_grain": "day",
+            "dimensions": [
+                {"expression": "order_date"},
+                {"expression": "order_date"},
+            ],
+            "measures": [{"name": "revenue", "expression": "SUM(amount)"}],
+        }
+    )
+    model = graph.models["orders"]
+
+    # Exactly one dimension claims the timeseries name; the repeat keeps its
+    # positional name. No duplicate dimension names.
+    names = [d.name for d in model.dimensions]
+    assert names.count("order_date") == 1
+    assert "dimension_1" in names
+    assert len(names) == len(set(names))
+
+    # The timeseries dimension is still the time dimension that backs the default.
+    assert model.get_dimension("order_date").type == "time"
+    assert model.default_time_dimension == "order_date"
+
+    # The CLI-first path (add_model -> validate_model) accepts the model.
+    assert validate_model(model) == []
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

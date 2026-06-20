@@ -9,7 +9,7 @@ The universal metrics layer for consistent metrics across your data stack. Compa
 
 ![Jupyter Widget Preview](preview.png)
 
-Sidemantic ships a Claude Code plugin with two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
+Sidemantic ships Claude Code and Codex plugin metadata for two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
 
 ## Quickstart
 
@@ -375,25 +375,35 @@ curl -s http://localhost:4400/sql \
 
 ## Agent Plugin
 
-Sidemantic ships a [Claude Code plugin](plugins/sidemantic/) with two skills:
+Sidemantic ships a [plugin bundle](plugins/sidemantic/) with Claude Code and Codex metadata for two skills:
 
-- **`modeler`** — build, validate, and query semantic models (`/sidemantic:modeler`)
-- **`webapp-builder`** — generate analytics webapps from your models (`/sidemantic:webapp-builder`)
+- **`modeler`** — build, validate, and query semantic models
+- **`webapp-builder`** — generate analytics webapps from your models
 
 **Install in Claude Code:**
 
-```
-/plugin marketplace add sidequery/sidemantic
-/plugin install sidemantic@sidequery
+```bash
+claude plugin marketplace add sidequery/sidemantic && claude plugin install sidemantic@sidequery
 ```
 
-**Try it locally without installing** (from a clone):
+**Install in Codex:**
+
+```bash
+codex plugin marketplace add sidequery/sidemantic && codex plugin add sidemantic@sidequery
+```
+
+**Use a local clone while developing:**
 
 ```bash
 claude --plugin-dir ./plugins/sidemantic
+codex plugin marketplace add . && codex plugin add sidemantic@sidequery
 ```
 
-The skills also work with Codex and other `SKILL.md`-compatible agents by pointing them at `plugins/sidemantic/skills/`.
+The Claude Code plugin manifest lives at `plugins/sidemantic/.claude-plugin/plugin.json`, and its marketplace lives at `.claude-plugin/marketplace.json`.
+
+The Codex plugin manifest lives at `plugins/sidemantic/.codex-plugin/plugin.json`, and its repo-local marketplace lives at `.agents/plugins/marketplace.json`.
+
+The skills also work with other `SKILL.md`-compatible agents by pointing them at `plugins/sidemantic/skills/`.
 
 ## How mature is Sidemantic?
 

@@ -1,0 +1,20 @@
+{
+  "name": "sidequery",
+  "interface": {
+    "displayName": "Sidequery"
+  },
+  "plugins": [
+    {
+      "name": "sidemantic",
+      "source": {
+        "source": "local",
+        "path": "./plugins/sidemantic"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Data & Analytics"
+    }
+  ]
+}

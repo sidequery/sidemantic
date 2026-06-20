@@ -5,7 +5,7 @@ This demo runs fully in the browser:
 - Sidemantic Rust WASM compiles and validates semantic YAML.
 - DuckDB-WASM creates local tables and executes the generated SQL.
 - No Pyodide, Python server, API server, or backend process is used for query work.
-- The UI uses the copied static component kit from `skills/sidemantic-webapp-builder`: metric cards, sparklines, filter pills, query debug, data preview, and dimension leaderboards.
+- The UI uses the copied static component kit from `plugins/sidemantic/skills/webapp-builder`: metric cards, sparklines, filter pills, query debug, data preview, and dimension leaderboards.
 - The data/model vocabulary matches the repo's e-commerce demo: `orders`, `customers`, and `products`.
 
 ## Run

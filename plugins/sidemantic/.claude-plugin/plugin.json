@@ -1,0 +1,11 @@
+{
+  "name": "sidemantic",
+  "description": "Build, validate, and query Sidemantic semantic models, and generate analytics webapps from them. Ships the modeler and webapp-builder skills.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Sidemantic"
+  },
+  "homepage": "https://sidemantic.com",
+  "repository": "https://github.com/sidequery/sidemantic",
+  "license": "Apache-2.0"
+}

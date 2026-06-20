@@ -30,7 +30,7 @@ function parseArgs(argv) {
 
 function usage() {
   return `Usage:
-  bunx --bun -p playwright node ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_interactions.mjs --url http://127.0.0.1:4519/
+  bunx --bun -p playwright node \${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_interactions.mjs --url http://127.0.0.1:4519/
 
 Options:
   --url <url>       App URL to test.

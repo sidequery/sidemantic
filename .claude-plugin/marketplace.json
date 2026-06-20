@@ -1,0 +1,14 @@
+{
+  "name": "sidequery",
+  "owner": {
+    "name": "Sidequery",
+    "email": "hello@sidemantic.com"
+  },
+  "plugins": [
+    {
+      "name": "sidemantic",
+      "source": "./plugins/sidemantic",
+      "description": "Build, validate, and query Sidemantic semantic models, and generate analytics webapps from them. Ships the modeler and webapp-builder skills."
+    }
+  ]
+}

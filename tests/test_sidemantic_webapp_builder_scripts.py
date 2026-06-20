@@ -9,7 +9,15 @@ from types import SimpleNamespace
 
 
 def _load_script_module(script_name: str, module_name: str):
-    path = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "scripts" / script_name
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "sidemantic"
+        / "skills"
+        / "webapp-builder"
+        / "scripts"
+        / script_name
+    )
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
@@ -206,8 +214,10 @@ def test_static_scaffold_preserves_requested_model_candidate(tmp_path: Path) -> 
 def test_interaction_verifier_waits_for_rendered_metric_cards() -> None:
     path = (
         Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "sidemantic"
         / "skills"
-        / "sidemantic-webapp-builder"
+        / "webapp-builder"
         / "scripts"
         / "verify_static_interactions.mjs"
     )
@@ -315,7 +325,15 @@ def test_static_verifier_allows_explicit_identifier_leaderboard_dimension(tmp_pa
 
 
 def test_column_chart_components_support_negative_values() -> None:
-    root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
+    root = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "sidemantic"
+        / "skills"
+        / "webapp-builder"
+        / "assets"
+        / "components"
+    )
     static_source = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
     static_css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
     react_source = (root / "react-tailwind" / "column-chart.tsx").read_text(encoding="utf-8")
@@ -332,7 +350,15 @@ def test_column_chart_components_support_negative_values() -> None:
 
 
 def test_metric_sparklines_visually_distinguish_selected_state() -> None:
-    root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
+    root = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "sidemantic"
+        / "skills"
+        / "webapp-builder"
+        / "assets"
+        / "components"
+    )
     static_css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
 
     assert '.sdm-metric-card[data-selected="true"] .sdm-sparkline-wrap' in static_css
@@ -345,7 +371,15 @@ def test_metric_sparklines_visually_distinguish_selected_state() -> None:
 def test_static_component_aliases_preserve_time_grain_suffixes() -> None:
     root = Path(__file__).resolve().parents[1]
     component_paths = [
-        root / "skills" / "sidemantic-webapp-builder" / "assets" / "components" / "static" / "sidemantic-components.js",
+        root
+        / "plugins"
+        / "sidemantic"
+        / "skills"
+        / "webapp-builder"
+        / "assets"
+        / "components"
+        / "static"
+        / "sidemantic-components.js",
         root / "examples" / "sidemantic_wasm_demo" / "src" / "components" / "sidemantic" / "sidemantic-components.js",
         root / "examples" / "sidemantic_wasm_demo" / "src" / "queries.js",
     ]
@@ -361,7 +395,15 @@ def test_static_component_aliases_preserve_time_grain_suffixes() -> None:
 def test_static_filter_helpers_normalize_nullish_values() -> None:
     root = Path(__file__).resolve().parents[1]
     component_paths = [
-        root / "skills" / "sidemantic-webapp-builder" / "assets" / "components" / "static" / "sidemantic-components.js",
+        root
+        / "plugins"
+        / "sidemantic"
+        / "skills"
+        / "webapp-builder"
+        / "assets"
+        / "components"
+        / "static"
+        / "sidemantic-components.js",
         root / "examples" / "sidemantic_wasm_demo" / "src" / "components" / "sidemantic" / "sidemantic-components.js",
     ]
 
@@ -377,7 +419,15 @@ def test_static_filter_helpers_normalize_nullish_values() -> None:
         assert "const stringValue = String(value);" not in source
 
     static_app = (
-        root / "skills" / "sidemantic-webapp-builder" / "assets" / "templates" / "static-dashboard" / "app.js"
+        root
+        / "plugins"
+        / "sidemantic"
+        / "skills"
+        / "webapp-builder"
+        / "assets"
+        / "templates"
+        / "static-dashboard"
+        / "app.js"
     ).read_text(encoding="utf-8")
     assert "normalizeFilterValue," in static_app
     assert "new Set((values || []).map(normalizeFilterValue))" in static_app
@@ -387,7 +437,15 @@ def test_static_filter_helpers_normalize_nullish_values() -> None:
 
 
 def test_leaderboard_components_support_negative_values() -> None:
-    root = Path(__file__).resolve().parents[1] / "skills" / "sidemantic-webapp-builder" / "assets" / "components"
+    root = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "sidemantic"
+        / "skills"
+        / "webapp-builder"
+        / "assets"
+        / "components"
+    )
     static_source = (root / "static" / "sidemantic-components.js").read_text(encoding="utf-8")
     static_css = (root / "static" / "sidemantic-components.css").read_text(encoding="utf-8")
     react_source = (root / "react-tailwind" / "leaderboard.tsx").read_text(encoding="utf-8")

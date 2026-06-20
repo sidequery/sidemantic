@@ -1,5 +1,5 @@
 ---
-name: sidemantic-webapp-builder
+name: webapp-builder
 description: Build interactive analytics webapps, demos, dashboards, or embedded app surfaces from Sidemantic semantic models using copyable component primitives and deterministic query inspection. Use when asked to create a web UI around Sidemantic models, generate a metric explorer, copy reusable analytics components into a project, connect a frontend to Sidemantic query APIs, build a Pyodide/DuckDB-WASM or Sidemantic Rust WASM/DuckDB-WASM demo, expose Sidemantic through an app server, or adapt the Sidemantic widget/UI patterns into a product webapp.
 ---
 
@@ -14,7 +14,7 @@ Treat `assets/components/` like a small shadcn-style source library for analytic
 Copy React + Tailwind components for product apps:
 
 ```bash
-uv run skills/sidemantic-webapp-builder/scripts/copy_components.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
   --kind react-tailwind \
   --target src/components/sidemantic
 ```
@@ -22,7 +22,7 @@ uv run skills/sidemantic-webapp-builder/scripts/copy_components.py \
 Copy the static component files for plain HTML demos or generated scaffolds:
 
 ```bash
-uv run skills/sidemantic-webapp-builder/scripts/copy_components.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
   --kind static \
   --target public/sidemantic-components
 ```
@@ -59,7 +59,7 @@ Use those static helpers before writing one-off DOM wiring. They are intentional
 
 ```bash
 uv run sidemantic info path/to/models
-uv run skills/sidemantic-webapp-builder/scripts/inspect_layer.py path/to/models \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py path/to/models \
   --db path/to/data.duckdb \
   --require-execute
 ```
@@ -67,7 +67,7 @@ uv run skills/sidemantic-webapp-builder/scripts/inspect_layer.py path/to/models 
 2. Generate an app inventory:
 
 ```bash
-uv run skills/sidemantic-webapp-builder/scripts/inspect_layer.py path/to/models \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py path/to/models \
   --db path/to/data.duckdb \
   --require-execute \
   --output docs/sidemantic-app-spec.json
@@ -78,7 +78,7 @@ Use `--leaderboard-dimension field_name` when domain judgment says one dimension
 3. Copy component source into the project before building UI:
 
 ```bash
-uv run skills/sidemantic-webapp-builder/scripts/copy_components.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/copy_components.py \
   --kind react-tailwind \
   --target src/components/sidemantic
 ```
@@ -88,7 +88,7 @@ Adapt imports, class names, and styling conventions after copying. Preserve the 
 For a minimal static app scaffold from the executed spec:
 
 ```bash
-uv run skills/sidemantic-webapp-builder/scripts/scaffold_static_app.py \
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/scaffold_static_app.py \
   docs/sidemantic-app-spec.json \
   --output dist/sidemantic-dashboard \
   --title "Metrics Dashboard"
@@ -131,10 +131,10 @@ If a control is visible, it must change the app state or data. Do not satisfy in
 
 ```bash
 uv run sidemantic info path/to/models
-uv run skills/sidemantic-webapp-builder/scripts/inspect_layer.py path/to/models --db path/to/data.duckdb --require-execute
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/inspect_layer.py path/to/models --db path/to/data.duckdb --require-execute
 uv run sidemantic query "SELECT metric_name FROM model_name LIMIT 5" --models path/to/models --db path/to/data.duckdb
-uv run skills/sidemantic-webapp-builder/scripts/verify_static_app.py dist/sidemantic-dashboard
-bunx --bun -p playwright node skills/sidemantic-webapp-builder/scripts/verify_static_interactions.mjs --url http://127.0.0.1:5174/
+uv run ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_app.py dist/sidemantic-dashboard
+bunx --bun -p playwright node ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_interactions.mjs --url http://127.0.0.1:5174/
 bun run build
 ```
 
@@ -152,7 +152,7 @@ For static dashboards that use the bundled component contracts, use the smoke-te
 
 ```bash
 bunx --bun -p playwright playwright install chromium  # first run only, if Playwright reports a missing browser
-bunx --bun -p playwright node skills/sidemantic-webapp-builder/scripts/verify_static_interactions.mjs \
+bunx --bun -p playwright node ${CLAUDE_PLUGIN_ROOT}/skills/webapp-builder/scripts/verify_static_interactions.mjs \
   --url http://127.0.0.1:4519/
 ```
 

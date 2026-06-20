@@ -1,5 +1,5 @@
 ---
-name: sidemantic-modeler
+name: modeler
 description: "Build, validate, and manage semantic models using Sidemantic. Use when asked to create a semantic layer, define metrics/dimensions, model a database schema, generate models from SQL queries, import from Cube/dbt/LookML, or set up analytics definitions. Prioritizes CLI-first workflows, with YAML and optional Python API usage for advanced automation."
 license: Apache-2.0
 metadata:

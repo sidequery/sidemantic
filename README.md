@@ -9,7 +9,7 @@ The universal metrics layer for consistent metrics across your data stack. Compa
 
 ![Jupyter Widget Preview](preview.png)
 
-The installer downloads the skill to `~/.agents/skills/sidemantic-modeler` and symlinks it into `~/.claude/skills/`.
+Sidemantic ships a Claude Code plugin with two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
 
 ## Quickstart
 
@@ -373,23 +373,27 @@ curl -s http://localhost:4400/sql \
   -d '{"query":"SELECT status, total_amount FROM orders ORDER BY status"}'
 ```
 
-## Agent Skill
+## Agent Plugin
 
-Sidemantic ships an [agent skill](skills/sidemantic-modeler/) that teaches Claude Code, Codex, and other `SKILL.md`-compatible agents to build, validate, and query semantic models.
+Sidemantic ships a [Claude Code plugin](plugins/sidemantic/) with two skills:
 
-**One-liner install (no clone required):**
+- **`modeler`** — build, validate, and query semantic models (`/sidemantic:modeler`)
+- **`webapp-builder`** — generate analytics webapps from your models (`/sidemantic:webapp-builder`)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/sidequery/sidemantic/main/skills/install.sh | bash
+**Install in Claude Code:**
+
+```
+/plugin marketplace add sidequery/sidemantic
+/plugin install sidemantic@sidequery
 ```
 
-**npx / bunx:**
+**Try it locally without installing** (from a clone):
 
 ```bash
-npx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
-# or
-bunx skills add https://github.com/sidequery/sidemantic --skill sidemantic-modeler
+claude --plugin-dir ./plugins/sidemantic
 ```
+
+The skills also work with Codex and other `SKILL.md`-compatible agents by pointing them at `plugins/sidemantic/skills/`.
 
 ## How mature is Sidemantic?
 

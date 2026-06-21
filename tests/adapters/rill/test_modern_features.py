@@ -790,5 +790,78 @@ def test_repeated_unnamed_timeseries_expression_dimensions_keep_unique_names():
     layer.add_model(model)
 
 
+def test_unnamed_timeseries_expression_dimension_yields_to_natural_owner():
+    """An expression dimension yields the timeseries name to a column-named sibling.
+
+    Regression: with `timeseries: order_date` and
+    `dimensions: [{expression: order_date}, {column: order_date}]`, the
+    expression dimension was renamed to `order_date` while the column dimension
+    also naturally derived `order_date` (Rill's name->column fallback). Both
+    shared the name -> validate_model rejected the duplicates and add_model
+    failed on an otherwise parseable Rill project. Rill keeps the unnamed
+    expression dimension as `dimension_0`; only the column dimension owns the
+    timeseries name. The special-case rename must defer to that natural owner.
+    """
+    graph = _parse_inline(
+        {
+            "type": "metrics_view",
+            "name": "orders",
+            "model": "orders_tbl",
+            "timeseries": "order_date",
+            "smallest_time_grain": "day",
+            "dimensions": [
+                {"expression": "order_date"},
+                {"column": "order_date"},
+            ],
+            "measures": [{"name": "revenue", "expression": "SUM(amount)"}],
+        }
+    )
+    model = graph.models["orders"]
+
+    # The column dimension owns the timeseries name; the expression dimension
+    # keeps its positional name. No duplicate dimension names.
+    names = [d.name for d in model.dimensions]
+    assert names.count("order_date") == 1
+    assert "dimension_0" in names
+    assert len(names) == len(set(names))
+
+    # The timeseries dimension is the time dimension backing the default.
+    assert model.get_dimension("order_date").type == "time"
+    assert model.default_time_dimension == "order_date"
+
+    # The CLI-first path (add_model -> validate_model) accepts the model.
+    assert validate_model(model) == []
+    layer = SemanticLayer()
+    layer.add_model(model)
+
+
+def test_unnamed_timeseries_expression_before_named_owner_stays_distinct():
+    """The natural owner is honored even when it appears before the expression dim."""
+    graph = _parse_inline(
+        {
+            "type": "metrics_view",
+            "name": "orders",
+            "model": "orders_tbl",
+            "timeseries": "order_date",
+            "smallest_time_grain": "day",
+            "dimensions": [
+                {"column": "order_date"},
+                {"expression": "order_date"},
+            ],
+            "measures": [{"name": "revenue", "expression": "SUM(amount)"}],
+        }
+    )
+    model = graph.models["orders"]
+
+    names = [d.name for d in model.dimensions]
+    assert names.count("order_date") == 1
+    assert "dimension_1" in names
+    assert len(names) == len(set(names))
+    assert model.get_dimension("order_date").type == "time"
+    assert model.default_time_dimension == "order_date"
+    assert validate_model(model) == []
+    SemanticLayer().add_model(model)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

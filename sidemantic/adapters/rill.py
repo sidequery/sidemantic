@@ -258,13 +258,23 @@ class RillAdapter:
         timeseries_column = data.get("timeseries")
         smallest_time_grain = data.get("smallest_time_grain")
 
-        # Track whether an unnamed expression dimension has already claimed the
-        # timeseries name. Rill keeps repeated unnamed expression dimensions
-        # distinct as `dimension_<i>`, so only the first match may take the
-        # timeseries name -- otherwise two of them collide and validate_model
-        # rejects the duplicate dimension names.
-        timeseries_name_taken = False
-        for i, dim_def in enumerate(data.get("dimensions") or []):
+        # An unnamed expression dimension whose SQL is the timeseries column gets
+        # renamed to the timeseries name so the default time dimension resolves.
+        # That rename must not collide with a dimension that *already* owns the
+        # timeseries name through Rill's own derivation (an explicit `name`, or a
+        # `column`/key matching the timeseries column -- which can appear at any
+        # position), nor with an earlier expression dimension that already claimed
+        # it. Otherwise two dimensions share a name and validate_model rejects the
+        # duplicates. Pre-scan the natural names so the special-case only fires
+        # when nothing else claims the name, and gate repeats with a running flag.
+        dim_defs = list(data.get("dimensions") or [])
+        # A pure unnamed-expression dimension derives to `dimension_<i>`, so it is
+        # never a "natural" owner here -- only explicit names and column/key
+        # fallbacks that equal the timeseries column count as already claiming it.
+        timeseries_name_taken = bool(timeseries_column) and any(
+            self._natural_dimension_name(d, i) == timeseries_column for i, d in enumerate(dim_defs)
+        )
+        for i, dim_def in enumerate(dim_defs):
             dimension = self._parse_dimension(dim_def, i, timeseries_column, smallest_time_grain, timeseries_name_taken)
             if dimension:
                 dimensions.append(dimension)
@@ -322,6 +332,30 @@ class RillAdapter:
             default_grain=default_grain,
             meta=meta,
         )
+
+    @staticmethod
+    def _natural_dimension_name(dim_def: dict[str, Any], index: int) -> str | None:
+        """Derive the name Rill itself assigns, ignoring the timeseries special-case.
+
+        Mirrors Rill's `name -> column -> dimension_<i>` derivation
+        (`property:` is the deprecated alias for `column:`). Returns ``None`` for
+        dimensions Rill drops entirely (`ignore: true`, or no resolvable SQL).
+        Used to detect when another dimension already owns the timeseries name so
+        an unnamed expression dimension does not collide by also claiming it.
+        """
+        if dim_def.get("ignore"):
+            return None
+
+        column = dim_def.get("column") or dim_def.get("property")
+        lookup_key_column = dim_def.get("lookup_key_column")
+        # Match `_parse_dimension`'s drop condition: no expression/column/key -> None.
+        if not (dim_def.get("expression") or column or lookup_key_column):
+            return None
+
+        name = dim_def.get("name")
+        if name:
+            return name
+        return column or lookup_key_column or f"dimension_{index}"
 
     def _parse_dimension(
         self,

@@ -741,6 +741,70 @@ impl<'a> SqlGenerator<'a> {
         Ok(refs)
     }
 
+    /// Derive the output columns (alias + Postgres data type) a structured query projects,
+    /// matching `generate()`'s aliasing: bare leaf, or `{model}_{leaf}` on a leaf collision.
+    pub fn result_schema(&self, query: &SemanticQuery) -> Result<Vec<(String, String)>> {
+        let dimension_refs = self.parse_dimension_refs(&query.dimensions)?;
+        let metric_refs = self.parse_metric_refs(&query.metrics)?;
+
+        let mut alias_collisions: HashMap<String, usize> = HashMap::new();
+        for dim_ref in &dimension_refs {
+            *alias_collisions.entry(dim_ref.alias.clone()).or_insert(0) += 1;
+        }
+        for metric_ref in &metric_refs {
+            *alias_collisions
+                .entry(metric_ref.alias.clone())
+                .or_insert(0) += 1;
+        }
+
+        let mut columns: Vec<(String, String)> = Vec::new();
+        for dim_ref in &dimension_refs {
+            let alias = self.output_alias(&dim_ref.model, &dim_ref.alias, &alias_collisions);
+            columns.push((alias, self.dimension_ref_data_type(dim_ref).to_string()));
+        }
+        for metric_ref in &metric_refs {
+            let alias = self.output_alias(&metric_ref.model, &metric_ref.alias, &alias_collisions);
+            columns.push((alias, self.metric_ref_data_type(metric_ref).to_string()));
+        }
+        Ok(columns)
+    }
+
+    fn dimension_ref_data_type(&self, dim_ref: &DimensionRef) -> &'static str {
+        use crate::core::DimensionType;
+        let dimension = self
+            .graph
+            .get_model(&dim_ref.model)
+            .and_then(|model| model.get_dimension(&dim_ref.name));
+        let granularity = dim_ref
+            .granularity
+            .as_deref()
+            .or_else(|| dimension.and_then(|dimension| dimension.granularity.as_deref()));
+        match dimension.map(|dimension| &dimension.r#type) {
+            Some(DimensionType::Time) => match granularity {
+                Some("day" | "week" | "month" | "quarter" | "year") => "DATE",
+                _ => "TIMESTAMP",
+            },
+            Some(DimensionType::Numeric) => "NUMERIC",
+            Some(DimensionType::Boolean) => "BOOLEAN",
+            _ => "VARCHAR",
+        }
+    }
+
+    fn metric_ref_data_type(&self, metric_ref: &MetricRef) -> &'static str {
+        if metric_ref.graph_metric {
+            return "NUMERIC";
+        }
+        let aggregation = self
+            .graph
+            .get_model(&metric_ref.model)
+            .and_then(|model| model.get_metric(&metric_ref.name))
+            .and_then(|metric| metric.agg.as_ref());
+        match aggregation {
+            Some(Aggregation::Count) | Some(Aggregation::CountDistinct) => "BIGINT",
+            _ => "NUMERIC",
+        }
+    }
+
     fn validate_time_granularity(
         &self,
         model_name: &str,

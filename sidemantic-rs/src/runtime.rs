@@ -1062,6 +1062,29 @@ pub fn compile_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<String> {
         .map_err(|e| SidemanticError::SqlGeneration(format!("failed to compile SQL: {e}")))
 }
 
+/// Derive the result-column schema (output name + Postgres data type) for the metrics
+/// and dimensions selected by a structured query, mirroring `compile()`'s output aliases.
+pub fn result_schema_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<String> {
+    let runtime = SidemanticRuntime::from_yaml(yaml)
+        .map_err(|e| SidemanticError::Validation(format!("failed to load YAML models: {e}")))?;
+    let payload: RuntimeQueryPayload = serde_yaml::from_str(query_yaml)
+        .map_err(|e| SidemanticError::Validation(format!("failed to parse query payload: {e}")))?;
+    let query = SemanticQuery::new()
+        .with_metrics(payload.metrics)
+        .with_dimensions(payload.dimensions);
+    let columns = SqlGenerator::new(runtime.graph())
+        .result_schema(&query)
+        .map_err(|e| {
+            SidemanticError::SqlGeneration(format!("failed to derive result schema: {e}"))
+        })?;
+    let rows: Vec<serde_json::Value> = columns
+        .into_iter()
+        .map(|(name, data_type)| serde_json::json!({ "name": name, "data_type": data_type }))
+        .collect();
+    serde_json::to_string(&rows)
+        .map_err(|e| SidemanticError::Validation(format!("failed to serialize result schema: {e}")))
+}
+
 /// Validate query references using graph and query YAML payloads.
 pub fn validate_query_references_with_yaml(
     yaml: &str,
@@ -1084,9 +1107,7 @@ pub fn validate_query_with_yaml(yaml: &str, query_yaml: &str) -> Result<Vec<Stri
 pub fn load_graph_with_yaml(yaml: &str) -> Result<String> {
     let runtime = SidemanticRuntime::from_yaml(yaml)
         .map_err(|e| SidemanticError::Validation(format!("failed to load YAML models: {e}")))?;
-    let payload = runtime.loaded_graph_payload();
-    serde_json::to_string(&payload)
-        .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
+    serialize_decorated_payload(runtime.loaded_graph_payload())
 }
 
 /// Load graph definitions from a directory and serialize runtime payload.
@@ -1094,8 +1115,7 @@ pub fn load_graph_from_directory(path: &str) -> Result<String> {
     let runtime = SidemanticRuntime::from_directory(path).map_err(|e| {
         SidemanticError::Validation(format!("failed to load directory models: {e}"))
     })?;
-    serde_json::to_string(&runtime.loaded_graph_payload())
-        .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
+    serialize_decorated_payload(runtime.loaded_graph_payload())
 }
 
 /// Export a graph to OSI YAML using the requested dialects.
@@ -1158,8 +1178,7 @@ pub fn load_graph_with_sql(sql_content: &str) -> Result<String> {
         loaded.original_model_metrics,
         loaded.model_sources,
     );
-    serde_json::to_string(&runtime.loaded_graph_payload())
-        .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
+    serialize_decorated_payload(runtime.loaded_graph_payload())
 }
 
 /// Parse SQL metric/segment definitions and return serialized payload.
@@ -4871,6 +4890,89 @@ fn catalog_metric_data_type(aggregation: Option<&str>) -> &'static str {
         ) => "NUMERIC",
         _ => "NUMERIC",
     }
+}
+
+fn default_time_granularities() -> Vec<String> {
+    [
+        "second", "minute", "hour", "day", "week", "month", "quarter", "year",
+    ]
+    .iter()
+    .map(|grain| grain.to_string())
+    .collect()
+}
+
+/// Inject serialize-only computed fields (`return_type`, `effective_granularities`) into the
+/// serialized graph payload so JS/TS codegen sees authoritative metric result types and
+/// time-dimension grain sets. Computed from the JSON, so no config struct carries these.
+fn decorate_loaded_graph_payload(value: &mut serde_json::Value) {
+    if let Some(models) = value
+        .get_mut("models")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for model in models {
+            if let Some(metrics) = model
+                .get_mut("metrics")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                metrics.iter_mut().for_each(decorate_metric_json);
+            }
+            if let Some(dimensions) = model
+                .get_mut("dimensions")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                dimensions.iter_mut().for_each(decorate_dimension_json);
+            }
+        }
+    }
+    if let Some(metrics) = value
+        .get_mut("top_level_metrics")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        metrics.iter_mut().for_each(decorate_metric_json);
+    }
+}
+
+fn decorate_metric_json(metric: &mut serde_json::Value) {
+    let return_type =
+        catalog_metric_data_type(metric.get("agg").and_then(serde_json::Value::as_str));
+    if let Some(object) = metric.as_object_mut() {
+        object.insert(
+            "return_type".to_string(),
+            serde_json::Value::from(return_type),
+        );
+    }
+}
+
+fn decorate_dimension_json(dimension: &mut serde_json::Value) {
+    if dimension.get("type").and_then(serde_json::Value::as_str) != Some("time") {
+        return;
+    }
+    let grains = dimension
+        .get("supported_granularities")
+        .and_then(serde_json::Value::as_array)
+        .filter(|values| !values.is_empty())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(default_time_granularities);
+    if let Some(object) = dimension.as_object_mut() {
+        object.insert(
+            "effective_granularities".to_string(),
+            serde_json::json!(grains),
+        );
+    }
+}
+
+fn serialize_decorated_payload(payload: LoadedGraphPayload) -> Result<String> {
+    let mut value = serde_json::to_value(payload).map_err(|e| {
+        SidemanticError::Validation(format!("failed to serialize graph payload: {e}"))
+    })?;
+    decorate_loaded_graph_payload(&mut value);
+    serde_json::to_string(&value)
+        .map_err(|e| SidemanticError::Validation(format!("failed to serialize graph payload: {e}")))
 }
 
 impl SidemanticRuntime {

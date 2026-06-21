@@ -26,6 +26,11 @@ dashboard_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(dashboard_app, name="dashboard")
+gen_app = typer.Typer(
+    help="Generate typed TypeScript clients from the semantic layer",
+    no_args_is_help=True,
+)
+app.add_typer(gen_app, name="gen")
 
 # Global state for config (set in callback, used in commands)
 _loaded_config: SidemanticConfig | None = None
@@ -880,6 +885,70 @@ def dashboard_types(
             typer.echo(f"Dashboard TypeScript definitions written to {output}", err=True)
         else:
             typer.echo(rendered)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@gen_app.command("types")
+def gen_types(
+    models: Path = typer.Option(".", "--models", "-m", help="Directory or file with semantic layer definitions"),
+    output: Path = typer.Option(None, "--out", "--output", "-o", help="TypeScript output file; defaults to stdout"),
+    no_yaml: bool = typer.Option(False, "--no-yaml", help="Omit the embedded SCHEMA_YAML constant"),
+):
+    """Generate a typed query-client schema from the semantic layer.
+
+    Emits an `as const` schema (field types per model) for use with `createClient`
+    from `sidemantic-wasm/client`.
+    """
+    try:
+        from sidemantic.codegen import generate_client_schema_ts
+
+        layer = _load_query_layer(models)
+        rendered = generate_client_schema_ts(layer, include_yaml=not no_yaml)
+        if output:
+            output.write_text(rendered)
+            typer.echo(f"Client schema written to {output}", err=True)
+        else:
+            typer.echo(rendered)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@gen_app.command("sql")
+def gen_sql(
+    sources: list[str] = typer.Argument(None, help="TypeScript files, directories, or globs to scan"),
+    models: Path = typer.Option(".", "--models", "-m", help="Directory or file with semantic layer definitions"),
+    output: Path = typer.Option(None, "--out", "--output", "-o", help="TypeScript output file; defaults to stdout"),
+    call: str = typer.Option("query", "--call", help="Call name whose first string-literal argument is semantic SQL"),
+):
+    """Generate typed bindings for semantic SQL literals in TypeScript sources (sqlx-style).
+
+    Emits a `GeneratedQueries` interface for use with `createSqlClient`. Each query is
+    validated against the semantic layer (a bad reference fails the build). v1 limits:
+    static string/template literals only (no `${}` interpolation); arbitrary SELECT
+    expressions and min/max/derived metric value types are approximate.
+    """
+    try:
+        from sidemantic.codegen import expand_sources, extract_sql_literals, generate_sql_types_ts
+
+        if not sources:
+            typer.echo("Error: provide at least one TypeScript source file, directory, or glob", err=True)
+            raise typer.Exit(1)
+        layer = _load_query_layer(models)
+        literals = extract_sql_literals(expand_sources(sources), call=call)
+        if not literals:
+            typer.echo(f"Error: no `{call}(...)` semantic SQL literals found in the given sources", err=True)
+            raise typer.Exit(1)
+        rendered = generate_sql_types_ts(layer, literals)
+        if output:
+            output.write_text(rendered)
+            typer.echo(f"Typed query bindings ({len(literals)}) written to {output}", err=True)
+        else:
+            typer.echo(rendered)
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)

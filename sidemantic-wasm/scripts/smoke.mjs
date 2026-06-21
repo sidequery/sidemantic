@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { createSidemanticRuntime } from "../index.js";
+import { createClient, createSqlClient } from "../client.js";
+import { createWasmTransport } from "../adapters/wasm.js";
 
 const wasmPath = fileURLToPath(new URL("../wasm/sidemantic_bg.wasm", import.meta.url));
 const wasmBytes = readFileSync(wasmPath);
@@ -46,6 +48,42 @@ assert(/revenue/i.test(sql) && /status/i.test(sql), `expected metric and dimensi
 
 const graph = sidemantic.loadGraph(models);
 assert(graph && typeof graph === "object", "expected a parsed graph object");
+
+// Typed client over the wasm transport (compile + caller-provided executor).
+const schema = {
+  models: {
+    orders: {
+      dimensions: { status: { kind: "categorical", ts: "string" } },
+      metrics: { revenue: { agg: "sum", ts: "number" } },
+    },
+  },
+  topMetrics: [],
+};
+
+let lastSql = null;
+const execute = async (executedSql) => {
+  lastSql = executedSql;
+  return [{ revenue: 42, status: "completed" }];
+};
+const transport = await createWasmTransport({ models, execute, wasmUrl: wasmBytes });
+
+const client = createClient(schema, { run: transport.run });
+const rows = await client.query({ metrics: ["orders.revenue"], dimensions: ["orders.status"] });
+assert(rows.length === 1 && rows[0].revenue === 42, "client.query should return executor rows");
+assert(typeof lastSql === "string" && /select/i.test(lastSql), `client.query should compile to SELECT, got: ${lastSql}`);
+
+let rejectedUnknown = false;
+try {
+  await client.query({ metrics: ["orders.nope"] });
+} catch {
+  rejectedUnknown = true;
+}
+assert(rejectedUnknown, "client.query should reject an unknown metric");
+
+const sqlClient = createSqlClient({ run: transport.runSql });
+const sqlRows = await sqlClient.query("SELECT revenue, status FROM orders");
+assert(sqlRows.length === 1, "sqlClient.query should return executor rows");
+assert(/select/i.test(lastSql), `sqlClient.query should rewrite to SQL, got: ${lastSql}`);
 
 console.log("compiled SQL:\n" + sql);
 console.log("SMOKE_OK");

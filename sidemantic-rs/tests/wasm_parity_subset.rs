@@ -3,15 +3,15 @@ use sidemantic::runtime::{
     dimension_with_granularity_with_yaml, extract_column_references,
     extract_preaggregation_patterns, find_models_for_query, find_relationship_path_with_yaml,
     generate_preaggregation_definition, generate_preaggregation_name, generate_time_comparison_sql,
-    interpolate_sql_with_parameters_with_yaml, is_relative_date, metric_is_simple_aggregation,
-    metric_sql_expr, metric_to_sql, model_get_hierarchy_path_with_yaml,
-    parse_simple_metric_aggregation, parse_sql_definitions_payload,
-    parse_sql_graph_definitions_payload, parse_sql_model_payload,
+    interpolate_sql_with_parameters_with_yaml, is_relative_date, load_graph_with_yaml,
+    metric_is_simple_aggregation, metric_sql_expr, metric_to_sql,
+    model_get_hierarchy_path_with_yaml, parse_simple_metric_aggregation,
+    parse_sql_definitions_payload, parse_sql_graph_definitions_payload, parse_sql_model_payload,
     recommend_preaggregation_patterns, relationship_sql_expr_with_yaml, render_sql_template,
-    resolve_metric_inheritance, resolve_model_inheritance_with_yaml, segment_get_sql_with_yaml,
-    summarize_preaggregation_patterns, trailing_period_sql_interval, validate_metric_payload,
-    validate_model_payload, validate_parameter_payload, validate_table_calculation_payload,
-    validate_table_formula_expression, SidemanticRuntime,
+    resolve_metric_inheritance, resolve_model_inheritance_with_yaml, result_schema_with_yaml_query,
+    segment_get_sql_with_yaml, summarize_preaggregation_patterns, trailing_period_sql_interval,
+    validate_metric_payload, validate_model_payload, validate_parameter_payload,
+    validate_table_calculation_payload, validate_table_formula_expression, SidemanticRuntime,
 };
 use sidemantic::sql::SemanticQuery;
 #[cfg(feature = "wasm")]
@@ -210,6 +210,131 @@ parameter_values:
     let sql = compile_with_yaml_query(yaml, query_yaml).unwrap();
     assert!(sql.contains("SUM("));
     assert!(sql.contains("'complete'"));
+}
+
+#[test]
+fn wasm_parity_subset_result_schema_with_yaml_query() {
+    let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+      - name: region
+        type: categorical
+      - name: created_at
+        type: time
+        granularity: day
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+        sql: id
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: region
+        type: categorical
+    metrics: []
+"#;
+
+    let schema = result_schema_with_yaml_query(
+        yaml,
+        "metrics: [orders.revenue, orders.order_count]\ndimensions: [orders.status, orders.created_at__month]\n",
+    )
+    .unwrap();
+    let columns: Vec<serde_json::Value> = serde_json::from_str(&schema).unwrap();
+    let data_type = |name: &str| {
+        columns
+            .iter()
+            .find(|column| column["name"] == name)
+            .and_then(|column| column["data_type"].as_str())
+            .map(str::to_string)
+    };
+    assert_eq!(data_type("status").as_deref(), Some("VARCHAR"));
+    assert_eq!(data_type("created_at__month").as_deref(), Some("DATE"));
+    assert_eq!(data_type("revenue").as_deref(), Some("NUMERIC"));
+    assert_eq!(data_type("order_count").as_deref(), Some("BIGINT"));
+
+    // A leaf shared by two selected models is renamed to {model}_{leaf}.
+    let collision = result_schema_with_yaml_query(
+        yaml,
+        "metrics: [orders.revenue]\ndimensions: [orders.region, customers.region]\n",
+    )
+    .unwrap();
+    let collision_columns: Vec<serde_json::Value> = serde_json::from_str(&collision).unwrap();
+    let names: Vec<&str> = collision_columns
+        .iter()
+        .map(|column| column["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"orders_region"));
+    assert!(names.contains(&"customers_region"));
+}
+
+#[test]
+fn wasm_parity_subset_load_graph_payload_has_computed_fields() {
+    let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: day
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+        sql: id
+"#;
+    let payload: serde_json::Value =
+        serde_json::from_str(&load_graph_with_yaml(yaml).unwrap()).unwrap();
+    let orders = payload["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["name"] == "orders")
+        .unwrap();
+    let metric = |name: &str| {
+        orders["metrics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|metric| metric["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(metric("revenue")["return_type"], "NUMERIC");
+    assert_eq!(metric("order_count")["return_type"], "BIGINT");
+
+    let dimension = |name: &str| {
+        orders["dimensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|dimension| dimension["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let grains: Vec<String> = dimension("created_at")["effective_granularities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+    assert!(grains.contains(&"month".to_string()));
+    // Non-time dimensions get no grain set.
+    assert!(dimension("status").get("effective_granularities").is_none());
 }
 
 #[test]

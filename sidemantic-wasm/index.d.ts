@@ -43,6 +43,8 @@ export interface SidemanticRuntime {
   loadGraph(models: string): SemanticGraph;
   /** Generate catalog metadata for the model set under a schema name. */
   generateCatalogMetadata(models: string, schema?: string): string;
+  /** Derive the result-column schema for a structured query (output name + Postgres data type). */
+  resultSchema(models: string, query: SidemanticQueryInput): Array<{ name: string; data_type: string }>;
 }
 
 /** Initialize the underlying wasm module. Idempotent. */

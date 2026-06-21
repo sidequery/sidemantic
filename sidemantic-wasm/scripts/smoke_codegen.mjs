@@ -1,0 +1,119 @@
+// Smoke test for wasm-backed codegen (B1/B2). Verifies:
+//  - generateClientSchema matches the committed Python `gen types` output (cross-gen parity)
+//  - the wasm graph carries the computed fidelity fields (metric return_type, time grains)
+//  - the result-schema export types columns and applies the {model}_{leaf} collision rename
+// Needs a built wasm bundle (bash scripts/build.sh).
+//
+// Run: node scripts/smoke_codegen.mjs
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import { createSidemanticRuntime } from "../index.js";
+import { extractSqlLiterals, generateClientSchema, generateSqlTypes } from "../codegen.js";
+
+function assert(condition, message) {
+  if (!condition) {
+    console.error(`FAIL: ${message}`);
+    process.exit(1);
+  }
+}
+
+const wasmBytes = readFileSync(fileURLToPath(new URL("../wasm/sidemantic_bg.wasm", import.meta.url)));
+const modelsPath = fileURLToPath(new URL("../../examples/headless_dashboard/models.yml", import.meta.url));
+const committedPath = fileURLToPath(new URL("../../examples/headless_dashboard/sidemantic.client.generated.ts", import.meta.url));
+
+// 1. Cross-generator parity: JS output is byte-identical to the committed Python output.
+const models = readFileSync(modelsPath, "utf8");
+const generated = await generateClientSchema(models, { includeYaml: false, wasmUrl: wasmBytes });
+assert(generated === readFileSync(committedPath, "utf8"), "generateClientSchema must match the committed Python `gen types` output");
+
+const TWO_MODELS = `
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: status
+        type: categorical
+        sql: status
+      - name: region
+        type: categorical
+        sql: region
+      - name: created_at
+        type: time
+        granularity: day
+        sql: created_at
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+        sql: id
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: region
+        type: categorical
+        sql: region
+    metrics:
+      - name: customer_count
+        agg: count
+        sql: id
+`;
+
+const runtime = await createSidemanticRuntime({ wasmUrl: wasmBytes });
+
+// 2. Computed wire fields injected into the loaded graph.
+const graph = runtime.loadGraph(TWO_MODELS);
+const orders = graph.models.find((model) => model.name === "orders");
+assert(orders.metrics.find((m) => m.name === "revenue").return_type === "NUMERIC", "sum metric return_type should be NUMERIC");
+assert(orders.metrics.find((m) => m.name === "order_count").return_type === "BIGINT", "count metric return_type should be BIGINT");
+const createdAt = orders.dimensions.find((d) => d.name === "created_at");
+assert(
+  Array.isArray(createdAt.effective_granularities) && createdAt.effective_granularities.includes("month"),
+  "time dim effective_granularities should be populated",
+);
+
+// 3. result-schema export types output columns.
+const rs = runtime.resultSchema(TWO_MODELS, {
+  metrics: ["orders.revenue", "orders.order_count"],
+  dimensions: ["orders.status", "orders.created_at__month"],
+});
+const types = Object.fromEntries(rs.map((column) => [column.name, column.data_type]));
+assert(types.revenue === "NUMERIC", `revenue type: ${JSON.stringify(rs)}`);
+assert(types.order_count === "BIGINT", `order_count type: ${JSON.stringify(rs)}`);
+assert(types.status === "VARCHAR", `status type: ${JSON.stringify(rs)}`);
+assert(types.created_at__month === "DATE", `created_at__month type: ${JSON.stringify(rs)}`);
+
+// 4. {model}_{leaf} collision rename when two models share a selected leaf.
+const collide = runtime.resultSchema(TWO_MODELS, {
+  metrics: ["orders.revenue"],
+  dimensions: ["orders.region", "customers.region"],
+});
+const collideNames = collide.map((column) => column.name);
+assert(collideNames.includes("orders_region") && collideNames.includes("customers_region"), `collision aliases: ${JSON.stringify(collide)}`);
+
+// 5. JS gen sql is byte-identical to the committed Python `gen sql` output.
+const queriesSource = readFileSync(fileURLToPath(new URL("../../examples/headless_dashboard/queries.ts", import.meta.url)), "utf8");
+const committedSql = readFileSync(fileURLToPath(new URL("../../examples/headless_dashboard/sidemantic.queries.generated.ts", import.meta.url)), "utf8");
+const generatedSql = await generateSqlTypes(models, extractSqlLiterals([queriesSource]), { wasmUrl: wasmBytes });
+assert(generatedSql === committedSql, "generateSqlTypes must match the committed Python `gen sql` output");
+
+// 6. Explicit `AS` aliases are carried into the generated row type (matches the runtime + Python).
+const aliased = await generateSqlTypes(models, ["SELECT orders.revenue AS sales, orders.region FROM orders"], { wasmUrl: wasmBytes });
+assert(aliased.includes('"sales": number') && aliased.includes('"region": string'), `alias not preserved: ${aliased}`);
+
+// 7. Malformed SQL is rejected at generation time (the whole query is validated via the engine,
+// not just the projection list).
+let rejectedMalformed = false;
+try {
+  await generateSqlTypes(models, ["SELCT orders.revenue FRM orders"], { wasmUrl: wasmBytes });
+} catch {
+  rejectedMalformed = true;
+}
+assert(rejectedMalformed, "malformed SQL should be rejected at generation time");
+
+console.log("SMOKE_CODEGEN_OK");

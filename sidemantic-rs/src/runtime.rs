@@ -1071,7 +1071,8 @@ pub fn result_schema_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<Str
         .map_err(|e| SidemanticError::Validation(format!("failed to parse query payload: {e}")))?;
     let query = SemanticQuery::new()
         .with_metrics(payload.metrics)
-        .with_dimensions(payload.dimensions);
+        .with_dimensions(payload.dimensions)
+        .with_skip_default_time_dimensions(payload.skip_default_time_dimensions);
     let columns = SqlGenerator::new(runtime.graph())
         .result_schema(&query)
         .map_err(|e| {
@@ -6068,6 +6069,66 @@ skip_default_time_dimensions: true
         let compiled = compile_with_yaml_query(yaml, query_yaml).unwrap();
         assert!(!compiled.contains("created_at"));
         assert!(compiled.contains("status"));
+    }
+
+    #[test]
+    fn test_runtime_result_schema_with_yaml_query_matches_default_time_dimensions() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    default_time_dimension: created_at
+    default_grain: month
+    dimensions:
+      - name: created_at
+        type: time
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"#;
+        let query_yaml = r#"
+metrics: [orders.revenue]
+"#;
+
+        let schema_json = result_schema_with_yaml_query(yaml, query_yaml).unwrap();
+        let schema: serde_json::Value = serde_json::from_str(&schema_json).unwrap();
+        assert_eq!(schema[0]["name"], "created_at__month");
+        assert_eq!(schema[0]["data_type"], "DATE");
+        assert_eq!(schema[1]["name"], "revenue");
+    }
+
+    #[test]
+    fn test_runtime_result_schema_with_yaml_query_skips_default_time_dimensions_when_requested() {
+        let yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    default_time_dimension: created_at
+    default_grain: month
+    dimensions:
+      - name: created_at
+        type: time
+      - name: status
+        type: categorical
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+"#;
+        let query_yaml = r#"
+metrics: [orders.revenue]
+skip_default_time_dimensions: true
+"#;
+
+        let schema_json = result_schema_with_yaml_query(yaml, query_yaml).unwrap();
+        let schema: serde_json::Value = serde_json::from_str(&schema_json).unwrap();
+        assert_eq!(schema.as_array().unwrap().len(), 1);
+        assert_eq!(schema[0]["name"], "revenue");
     }
 
     #[test]

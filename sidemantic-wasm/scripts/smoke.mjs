@@ -92,6 +92,9 @@ assert(typeof lastSql === "string" && /select/i.test(lastSql), `client.query sho
 await client.query({ metrics: ["orders.revenue"] });
 assert(!lastSql.includes("created_at"), `typed client should skip default time dimensions, got: ${lastSql}`);
 
+const dimensionRows = await client.query({ dimensions: ["orders.status"] });
+assert(dimensionRows.length === 1 && dimensionRows[0].status === "completed", "client.query should allow dimension-only queries");
+
 let rejectedUnknown = false;
 try {
   await client.query({ metrics: ["orders.nope"] });

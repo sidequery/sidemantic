@@ -744,7 +744,12 @@ impl<'a> SqlGenerator<'a> {
     /// Derive the output columns (alias + Postgres data type) a structured query projects,
     /// matching `generate()`'s aliasing: bare leaf, or `{model}_{leaf}` on a leaf collision.
     pub fn result_schema(&self, query: &SemanticQuery) -> Result<Vec<(String, String)>> {
-        let dimension_refs = self.parse_dimension_refs(&query.dimensions)?;
+        let effective_dimensions = if query.skip_default_time_dimensions {
+            query.dimensions.clone()
+        } else {
+            self.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+        };
+        let dimension_refs = self.parse_dimension_refs(&effective_dimensions)?;
         let metric_refs = self.parse_metric_refs(&query.metrics)?;
 
         let mut alias_collisions: HashMap<String, usize> = HashMap::new();

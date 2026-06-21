@@ -54,8 +54,33 @@ export type DimRef<S extends SchemaShape> = {
   }[keyof S["models"][M]["dimensions"] & string];
 }[ModelName<S>];
 
-export interface SidemanticQuery<S extends SchemaShape> {
-  readonly metrics: readonly MetricRef<S>[];
+interface SidemanticQueryOptions {
+  /** Raw SQL filter expressions, e.g. `"orders.status = 'completed'"`. Not type-checked. */
+  readonly filters?: readonly string[];
+  readonly order_by?: readonly string[];
+  readonly limit?: number;
+  readonly ungrouped?: boolean;
+  /**
+   * Typed structured queries always skip implicit model default time dimensions
+   * so `Row<S, Q>` only includes explicitly selected fields.
+   */
+  readonly skip_default_time_dimensions?: true;
+}
+
+export type SidemanticQuery<S extends SchemaShape> = SidemanticQueryOptions &
+  (
+    | {
+        readonly metrics: readonly MetricRef<S>[];
+        readonly dimensions?: readonly DimRef<S>[];
+      }
+    | {
+        readonly metrics?: readonly MetricRef<S>[];
+        readonly dimensions: readonly DimRef<S>[];
+      }
+  );
+
+export interface SidemanticQueryShape<S extends SchemaShape> {
+  readonly metrics?: readonly MetricRef<S>[];
   readonly dimensions?: readonly DimRef<S>[];
   /** Raw SQL filter expressions, e.g. `"orders.status = 'completed'"`. Not type-checked. */
   readonly filters?: readonly string[];
@@ -99,14 +124,15 @@ type CellOf<S extends SchemaShape, R extends string> = R extends `${infer M}.${i
 // Extract the selected dimension union only when `dimensions` is present, so a metrics-only
 // query (with no `dimensions` key) still types its metric columns instead of collapsing.
 type SelectedDimensions<Q> = Q extends { dimensions: readonly (infer D)[] } ? D : never;
+type SelectedMetrics<Q> = Q extends { metrics: readonly (infer M)[] } ? M : never;
 
 export type Row<S extends SchemaShape, Q extends SidemanticQuery<S>> = {
-  [R in (Q["metrics"][number] | SelectedDimensions<Q>) as Leaf<R & string>]: CellOf<S, R & string>;
+  [R in (SelectedMetrics<Q> | SelectedDimensions<Q>) as Leaf<R & string>]: CellOf<S, R & string>;
 };
 
 /** Plain query payload handed to a transport's `run`. */
 export interface QueryPayload {
-  metrics: readonly string[];
+  metrics?: readonly string[];
   dimensions?: readonly string[];
   filters?: readonly string[];
   order_by?: readonly string[];

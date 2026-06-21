@@ -470,6 +470,45 @@ Dataset d = base_ds.extend(partial_metrics)
         temp_path.unlink()
 
 
+def test_holistics_metadata_property_matching_metric_name_is_not_a_reference(tmp_path):
+    """An ordinary dataset property whose value is a bare identifier that happens to
+    match a standalone metric name (e.g. `label: revenue`) must NOT be treated as
+    the `metric name: standalone_metric` shorthand. The shorthand is only the
+    bare `metric` keyword marker followed by a property; without gating on that
+    marker, a metadata-only dataset would gain a bogus metric (named after the
+    property key) and wrongly surface as a model."""
+    (tmp_path / "root.aml").write_text(
+        """
+Model base_orders {
+  type: 'table'
+  table_name: 'orders'
+  dimension order_id { type: 'number' }
+  dimension amount { type: 'number' }
+}
+
+Metric revenue {
+  label: 'Revenue'
+  type: 'number'
+  definition: @aql sum(base_orders.amount) ;;
+}
+
+Dataset meta_only {
+  label: revenue
+  models: [base_orders]
+}
+"""
+    )
+
+    graph = HolisticsAdapter().parse(tmp_path)
+
+    # The standalone metric still registers at graph scope.
+    assert "revenue" in graph.metrics
+    # The metadata-only dataset has no dataset-level fields, so it does not surface
+    # as a model and never gains a bogus `label` metric.
+    if "meta_only" in graph.models:
+        assert "label" not in {m.name for m in graph.models["meta_only"].metrics}
+
+
 def test_holistics_metric_reference_shorthand_prefers_local_metric(tmp_path):
     """The reusable-metric-store shorthand `metric name: standalone_metric` must
     resolve the reference against the referencing file's module context before

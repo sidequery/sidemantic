@@ -683,6 +683,17 @@ def _stamp_block_context(block: AmlBlock, context: _FileContext) -> AmlBlock:
 
 
 _FIELD_KEYWORDS = {"metric", "measure", "dimension"}
+_METRIC_MARKER_KEYWORDS = {"metric", "measure"}
+
+
+def _is_metric_marker(item: AmlItem | None) -> bool:
+    """True if `item` is the bare `metric`/`measure` keyword that the grammar emits
+    just before a reusable-reference shorthand property (`metric name: ref`)."""
+    return (
+        isinstance(item, ExpressionStatement)
+        and isinstance(item.value, Identifier)
+        and item.value.name in _METRIC_MARKER_KEYWORDS
+    )
 
 
 def _field_units(items: list[AmlItem]) -> list[tuple[tuple[str, str] | None, list[AmlItem]]]:
@@ -1472,19 +1483,26 @@ def _parse_dataset_block(
     dimensions: list[Dimension] = []
     metrics: list[Metric] = []
 
+    prev_item: AmlItem | None = None
     for item in block.items:
         # Reusable-metric-store shorthand: `metric name: standalone_metric`
-        # parses to a property whose value names a top-level Metric. Resolve the
-        # referenced standalone metric onto the dataset (renamed to the local
-        # key) instead of dropping it, so a dataset that only references
-        # standalone metrics still produces a model.
+        # parses to a bare `metric` keyword marker (an ExpressionStatement)
+        # immediately followed by a property naming a top-level Metric. Resolve the
+        # referenced standalone metric onto the dataset (renamed to the local key)
+        # only when that marker is present, so an ordinary metadata property such
+        # as `label: some_identifier` is never misread as a metric reference even
+        # if its value coincidentally matches a standalone metric name.
         if isinstance(item, AmlProperty):
-            referenced = _resolve_standalone_metric_reference(item, standalone_metrics, item.context or context)
-            if referenced is not None:
-                metrics.append(referenced)
+            if _is_metric_marker(prev_item):
+                referenced = _resolve_standalone_metric_reference(item, standalone_metrics, item.context or context)
+                if referenced is not None:
+                    metrics.append(referenced)
+            prev_item = item
             continue
         if not isinstance(item, AmlBlock):
+            prev_item = item
             continue
+        prev_item = item
         # A child field carries its own defining context when the dataset was
         # composed across modules (Dataset extending a PartialDataset from another
         # file); resolve its constants/`use` aliases against that file.

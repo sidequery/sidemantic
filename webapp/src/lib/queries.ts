@@ -67,10 +67,21 @@ export function metricTotals(metrics: FieldRef[], filters: string[]): Structured
   return { metrics, filters };
 }
 
+// Upper bound on buckets per grain — generous enough to cover any realistic range (so the series
+// is never truncated to its oldest 500 buckets) while still bounding the points sent to the chart.
+const GRAIN_BUCKET_CAP: Record<Grain, number> = {
+  hour: 9600, // ~13 months hourly
+  day: 4000, // ~11 years daily
+  week: 800,
+  month: 240,
+  quarter: 120,
+  year: 60,
+};
+
 /** A metric time series bucketed by `grain` on `timeRef`, ordered ascending. */
 export function metricSeries(metrics: FieldRef[], timeRef: FieldRef, grain: Grain, filters: string[]): StructuredQuery {
   const timeDim = `${timeRef}__${grain}`;
-  return { metrics, dimensions: [timeDim], filters, orderBy: [`${timeDim} ASC`], limit: 500 };
+  return { metrics, dimensions: [timeDim], filters, orderBy: [`${timeDim} ASC`], limit: GRAIN_BUCKET_CAP[grain] ?? 2000 };
 }
 
 /** Top-N values of one dimension ranked by a metric (a leaderboard panel). */

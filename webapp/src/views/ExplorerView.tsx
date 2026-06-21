@@ -8,7 +8,7 @@ import { EmptyState, ErrorState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue } from "../lib/format";
 import { composeFilters, dimTypes, metricSeries, metricTotals } from "../lib/queries";
-import { dateOnly, endOfBucket, previousRange } from "../lib/time";
+import { bucketOffset, dateOnly, endOfBucket, previousRange } from "../lib/time";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 
@@ -80,9 +80,24 @@ export function ExplorerView() {
   const chartTotal = totalsRow && mAlias ? Number(totalsRow[mAlias]) : NaN;
   const chartPrevTotal = prevRow && mAlias ? Number(prevRow[mAlias]) : undefined;
   const chartPoints = mAlias ? seriesRows.map((row) => ({ x: String(row[tAlias] ?? ""), y: Number(row[mAlias]) })) : [];
-  const chartComparison = mAlias
-    ? (prevSeries.result?.rows ?? []).map((row) => ({ x: String(row[tAlias] ?? ""), y: Number(row[mAlias]) }))
-    : [];
+  // Align the previous-period series to the current buckets by position (bucketOffset), so a missing
+  // bucket in either period doesn't shift the dashed overlay or hover delta onto the wrong bucket.
+  const prevRows = prevSeries.result?.rows ?? [];
+  const chartComparison =
+    mAlias && chartPoints.length > 0 && prevRows.length > 0
+      ? (() => {
+          const prevFirst = String(prevRows[0][tAlias] ?? "");
+          const curFirst = chartPoints[0].x;
+          const prevByOffset = new Map<number, number>();
+          for (const row of prevRows) {
+            prevByOffset.set(bucketOffset(prevFirst, String(row[tAlias] ?? ""), state.grain), Number(row[mAlias]));
+          }
+          return chartPoints.map((point) => ({
+            x: point.x,
+            y: prevByOffset.get(bucketOffset(curFirst, point.x, state.grain)) ?? NaN,
+          }));
+        })()
+      : [];
 
   function onBrush(range: BrushRange | null) {
     if (!range) dispatch({ type: "setDateRange", range: undefined });

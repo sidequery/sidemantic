@@ -66,6 +66,21 @@ export function TimeSeriesChart({
 
   const pathFor = (series: SeriesPoint[]) =>
     series.map((point, index) => `${xAt(index).toFixed(1)},${yAt(point.y).toFixed(1)}`).join(" L ");
+  // Gap-aware path: breaks the line at non-finite points (missing aligned buckets in the overlay).
+  const gappedPath = (series: SeriesPoint[]) => {
+    const segments: string[] = [];
+    let run: string[] = [];
+    series.forEach((point, index) => {
+      if (Number.isFinite(point.y)) {
+        run.push(`${xAt(index).toFixed(1)},${yAt(point.y).toFixed(1)}`);
+      } else if (run.length) {
+        segments.push(run.join(" L "));
+        run = [];
+      }
+    });
+    if (run.length) segments.push(run.join(" L "));
+    return segments.map((segment) => `M ${segment}`).join(" ");
+  };
   const line = pathFor(points);
   const area = empty ? "" : `M ${xAt(0).toFixed(1)},${yAt(min).toFixed(1)} L ${line} L ${xAt(count - 1).toFixed(1)},${yAt(min).toFixed(1)} Z`;
 
@@ -112,7 +127,8 @@ export function TimeSeriesChart({
   // Guard against a stale hover index left over from a larger/previous series (grain or filter change).
   const safeHover = hover != null && hover >= 0 && hover < count ? hover : null;
   const hoverCur = safeHover != null ? points[safeHover] : null;
-  const hoverPrev = safeHover != null ? (comparison?.[safeHover] ?? null) : null;
+  const hoverPrevRaw = safeHover != null ? (comparison?.[safeHover] ?? null) : null;
+  const hoverPrev = hoverPrevRaw && Number.isFinite(hoverPrevRaw.y) ? hoverPrevRaw : null;
   const tooltipLeft = safeHover != null ? clamp(xAt(safeHover), 80, width - 80) : 0;
   const delta =
     hoverCur && hoverPrev && hoverPrev.y !== 0 ? ((hoverCur.y - hoverPrev.y) / Math.abs(hoverPrev.y)) * 100 : null;
@@ -163,7 +179,7 @@ export function TimeSeriesChart({
             ))}
 
             {comparison && comparison.length >= 2 ? (
-              <path d={`M ${pathFor(comparison)}`} fill="none" className="stroke-faint" strokeWidth={1.25} strokeDasharray="4 3" />
+              <path d={gappedPath(comparison)} fill="none" className="stroke-faint" strokeWidth={1.25} strokeDasharray="4 3" />
             ) : null}
 
             <path d={area} fill="url(#ts-fill)" />

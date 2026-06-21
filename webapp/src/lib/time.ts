@@ -69,6 +69,30 @@ export function timeFilters(ref: string, range: DateRange): string[] {
   return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
 }
 
+/** Whole-grain-unit offset of bucket `label` from bucket `first`. Used to align a previous-period
+ *  series to the current one by bucket position rather than ordinal index, so missing (sparse)
+ *  buckets in either period don't shift the overlay. */
+export function bucketOffset(first: string, label: string, grain: Grain): number {
+  if (grain === "hour") {
+    return Math.round((Date.parse(label) - Date.parse(first)) / 3_600_000);
+  }
+  const a = parseISO(first);
+  const b = parseISO(label);
+  const months = (b.getUTCFullYear() - a.getUTCFullYear()) * 12 + (b.getUTCMonth() - a.getUTCMonth());
+  switch (grain) {
+    case "week":
+      return Math.round((b.getTime() - a.getTime()) / (7 * 86_400_000));
+    case "month":
+      return months;
+    case "quarter":
+      return Math.round(months / 3);
+    case "year":
+      return b.getUTCFullYear() - a.getUTCFullYear();
+    default:
+      return Math.round((b.getTime() - a.getTime()) / 86_400_000); // day
+  }
+}
+
 /** Inclusive last calendar day of the bucket that starts at `start` for a given grain.
  *  Used to turn a brushed bucket range into a precise date filter. */
 export function endOfBucket(start: string, grain: Grain): string {

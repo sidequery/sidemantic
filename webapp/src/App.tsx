@@ -31,6 +31,27 @@ function QueryStatus() {
   );
 }
 
+// Allow a bearer token for auth-gated backends: `?token=…` (persisted to localStorage and stripped
+// from the URL) or a previously stored token. Resolved once at module load.
+function resolveApiToken(): string | undefined {
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get("token");
+  try {
+    if (fromUrl) {
+      localStorage.setItem("sidemantic-token", fromUrl);
+      params.delete("token");
+      const query = params.toString();
+      window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+      return fromUrl;
+    }
+    return localStorage.getItem("sidemantic-token") ?? undefined;
+  } catch {
+    return fromUrl ?? undefined; // storage unavailable (e.g. private mode)
+  }
+}
+
+const API_TOKEN = resolveApiToken();
+
 function CopyLinkButton() {
   const [copied, setCopied] = useState(false);
   return (
@@ -134,7 +155,7 @@ function Shell() {
 }
 
 export function App() {
-  const backend = useMemo(() => new HttpBackend({ transport: "json" }), []);
+  const backend = useMemo(() => new HttpBackend({ transport: "json", token: API_TOKEN }), []);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [error, setError] = useState<string | null>(null);
 

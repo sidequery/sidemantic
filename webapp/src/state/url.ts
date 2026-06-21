@@ -7,13 +7,24 @@ import type { ExplorerState, ViewKind } from "./explorerState";
 
 const VIEWS: ViewKind[] = ["explore", "pivot"];
 
-function parseJson<T>(value: string | null): T | undefined {
+function parseJson(value: string | null): unknown {
   if (!value) return undefined;
   try {
-    return JSON.parse(value) as T;
+    return JSON.parse(value);
   } catch {
     return undefined;
   }
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+// Reject hand-edited/malformed URLs (e.g. {"orders.status":"CA"}) so the dashboard hydrates with a
+// valid filter map instead of crashing downstream on `values.map(...)`.
+function isFilterState(value: unknown): value is FilterState {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return Object.values(value as Record<string, unknown>).every(isStringArray);
 }
 
 export function encodeState(state: ExplorerState): string {
@@ -50,12 +61,12 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
   const to = params.get("to");
   if (from && to) next.dateRange = { from, to } satisfies DateRange;
 
-  const filters = parseJson<FilterState>(params.get("filters"));
-  if (filters) next.filters = filters;
-  const pdims = parseJson<string[]>(params.get("pdims"));
-  if (pdims) next.pivotDims = pdims;
-  const pmetrics = parseJson<string[]>(params.get("pmetrics"));
-  if (pmetrics) next.pivotMetrics = pmetrics;
+  const filters = parseJson(params.get("filters"));
+  if (isFilterState(filters)) next.filters = filters;
+  const pdims = parseJson(params.get("pdims"));
+  if (isStringArray(pdims)) next.pivotDims = pdims;
+  const pmetrics = parseJson(params.get("pmetrics"));
+  if (isStringArray(pmetrics)) next.pivotMetrics = pmetrics;
 
   return next;
 }

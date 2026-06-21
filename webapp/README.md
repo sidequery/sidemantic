@@ -49,10 +49,13 @@ bun run dev            # http://localhost:4321
 The Rust backend (`sidemantic-server`, built with the `runtime-server` feature) exposes the same
 contract — set `SIDEMANTIC_API` to its address to develop against it instead.
 
-## Build
+## Build / embed
 
 ```bash
-bun run build   # type-checks, then emits dist/ (base="./" so it embeds under any path)
+bun run build                      # type-checks, then emits dist/ (base="./")
+
+# Or build + sync the bundle into both backends for embedding (run from the repo root):
+uv run scripts/build_webapp.py     # -> sidemantic/ui/static and sidemantic-rs/ui (committed)
 ```
 
 ## Architecture
@@ -66,8 +69,16 @@ bun run build   # type-checks, then emits dist/ (base="./" so it embeds under an
   (stale-response-guarded).
 - `src/components/`, `src/views/` — presentational components and the three views.
 
-## Embedding (planned)
+## Embedding
 
-The built `dist/` is intended to be served by either backend: FastAPI `StaticFiles` + SPA fallback
-on the Python side, and `rust-embed` baked into the `sidemantic-server` binary on the Rust side.
-See the project plan for the embedding/build-ordering details.
+The built bundle is served by either backend from a single process:
+
+- **Python** — `sidemantic api-serve` serves the UI at `/` by default (`--no-ui` to disable). The
+  bundle lives at `sidemantic/ui/static/` (force-included in the wheel); UI routes are public while
+  the data endpoints stay token-gated.
+- **Rust** — `sidemantic-server` (built with the `runtime-server` feature) bakes the bundle into the
+  binary via `rust-embed` and serves it from a router fallback registered after the auth layer.
+
+Both copies are committed (synced by `scripts/build_webapp.py`), so neither backend build needs a JS
+toolchain. The Rust server has no `/describe` yet, so the UI runs on its names-only `/graph` catalog
+there until that endpoint lands.

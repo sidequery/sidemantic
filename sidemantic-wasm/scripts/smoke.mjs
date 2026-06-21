@@ -56,6 +56,10 @@ const schema = {
       dimensions: { status: { kind: "categorical", ts: "string" } },
       metrics: { revenue: { agg: "sum", ts: "number" } },
     },
+    customers: {
+      dimensions: { status: { kind: "categorical", ts: "string" } },
+      metrics: {},
+    },
   },
   topMetrics: [],
 };
@@ -79,6 +83,17 @@ try {
   rejectedUnknown = true;
 }
 assert(rejectedUnknown, "client.query should reject an unknown metric");
+
+let rejectedCollision = false;
+try {
+  await client.query({
+    metrics: ["orders.revenue"],
+    dimensions: ["orders.status", "customers.status"],
+  });
+} catch {
+  rejectedCollision = true;
+}
+assert(rejectedCollision, "client.query should reject duplicate output leaf names");
 
 const sqlClient = createSqlClient({ run: transport.runSql });
 const sqlRows = await sqlClient.query("SELECT revenue, status FROM orders");

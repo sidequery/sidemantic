@@ -86,9 +86,9 @@ type CellOf<S extends SchemaShape, R extends string> = R extends `${infer M}.${i
 
 /**
  * Row shape inferred from a query: output columns are aliased to the bare last
- * segment (`orders.total_revenue` -> `total_revenue`). NOTE: when two selected
- * models share a leaf name the engine renames to `{model}_{leaf}`; disambiguate
- * those queries with explicit aliases.
+ * segment (`orders.total_revenue` -> `total_revenue`). The typed client rejects
+ * structured queries that select multiple refs with the same output leaf name;
+ * use semantic SQL with explicit aliases for those selections.
  */
 // Extract the selected dimension union only when `dimensions` is present, so a metrics-only
 // query (with no `dimensions` key) still types its metric columns instead of collapsing.

@@ -505,7 +505,12 @@ def _is_under_osi_tree(file_path: "Path", directory: "Path") -> bool:
     # depth (a file directly in it, or under a subfolder of it). This keeps the
     # two documented entrypoints in agreement: loading the parent project accepts
     # the same files by their leading ``OSI/`` component.
-    if directory.name.casefold() == _OSI_TREE_DIR.casefold():
+    #
+    # Resolve the loader root before reading its name so the OSI directory is
+    # recognized even when it is the current working directory: ``cd OSI &&
+    # sidemantic validate`` (or ``load_from_directory(layer, ".")`` after
+    # ``chdir``) passes ``Path(".")``, whose raw ``.name`` is empty.
+    if directory.resolve().name.casefold() == _OSI_TREE_DIR.casefold():
         return True
     # Otherwise require a top-level ``OSI/`` directory plus the file name.
     if len(relative_parts) < 2:

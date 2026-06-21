@@ -551,6 +551,60 @@ def test_load_from_directory_accepts_osi_dir_as_loader_root(tmp_path):
     assert "order_count" in layer.graph.metrics
 
 
+def test_load_from_directory_accepts_osi_dir_as_cwd_loader_root(tmp_path, monkeypatch):
+    """Running from inside ``OSI/`` with the default ``.`` path still routes to OSI.
+
+    ``cd project/OSI && sidemantic validate`` (or ``load_from_directory(layer, ".")``
+    after ``chdir``) passes ``Path(".")``, whose raw ``.name`` is empty. The loader
+    must resolve the root before checking for the ``OSI/`` name so the document is
+    not skipped as "No models found".
+    """
+    osi_dir = tmp_path / "OSI"
+    osi_dir.mkdir()
+    (osi_dir / "model.json").write_text(
+        """
+{
+  "version": "0.1.1",
+  "semantic_model": [
+    {
+      "name": "released_analytics",
+      "datasets": [
+        {
+          "name": "orders",
+          "source": "db.schema.fct_orders",
+          "primary_key": ["order_id"],
+          "fields": [
+            {
+              "name": "order_id",
+              "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id"}]}
+            }
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "name": "order_count",
+          "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "COUNT(*)"}]}
+        }
+      ]
+    }
+  ]
+}
+"""
+    )
+
+    layer = SemanticLayer()
+    # Emulate ``cd project/OSI && sidemantic validate`` (default path ".").
+    monkeypatch.chdir(osi_dir)
+    load_from_directory(layer, ".")
+
+    assert "orders" in layer.graph.models
+    orders = layer.graph.models["orders"]
+    assert orders.table.endswith("fct_orders")
+    assert getattr(orders, "_source_format", None) == "OSI"
+    assert "order_count" in layer.graph.metrics
+
+
 def test_load_from_directory_accepts_osi_dir_root_subdirectory(tmp_path):
     """When the loader root IS the ``OSI/`` directory, a document in a SUBDIRECTORY
     of it must also load. ``validate OSI/`` and ``validate <project>`` (which rglobs

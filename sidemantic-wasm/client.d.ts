@@ -62,6 +62,11 @@ export interface SidemanticQuery<S extends SchemaShape> {
   readonly order_by?: readonly string[];
   readonly limit?: number;
   readonly ungrouped?: boolean;
+  /**
+   * Typed structured queries always skip implicit model default time dimensions
+   * so `Row<S, Q>` only includes explicitly selected fields.
+   */
+  readonly skip_default_time_dimensions?: true;
 }
 
 type Leaf<R extends string> = R extends `${string}.${infer Rest}` ? Rest : R;
@@ -88,7 +93,8 @@ type CellOf<S extends SchemaShape, R extends string> = R extends `${infer M}.${i
  * Row shape inferred from a query: output columns are aliased to the bare last
  * segment (`orders.total_revenue` -> `total_revenue`). The typed client rejects
  * structured queries that select multiple refs with the same output leaf name;
- * use semantic SQL with explicit aliases for those selections.
+ * use semantic SQL with explicit aliases for those selections. It also skips
+ * model default time dimensions so rows only contain explicitly selected fields.
  */
 // Extract the selected dimension union only when `dimensions` is present, so a metrics-only
 // query (with no `dimensions` key) still types its metric columns instead of collapsing.
@@ -106,6 +112,7 @@ export interface QueryPayload {
   order_by?: readonly string[];
   limit?: number;
   ungrouped?: boolean;
+  skip_default_time_dimensions?: true;
 }
 
 export type RunFn = (query: QueryPayload) => Promise<Record<string, unknown>[]>;

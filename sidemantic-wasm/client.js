@@ -67,7 +67,7 @@ export function createClient(schema, options) {
         }
       }
       assertNoOutputLeafCollisions(metrics, dimensions);
-      const payload = { metrics };
+      const payload = { metrics, skip_default_time_dimensions: true };
       if (dimensions.length) payload.dimensions = dimensions;
       if (query.filters && query.filters.length) payload.filters = query.filters;
       if (query.order_by && query.order_by.length) payload.order_by = query.order_by;

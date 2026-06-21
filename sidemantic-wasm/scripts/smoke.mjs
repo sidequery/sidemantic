@@ -18,10 +18,16 @@ models:
   - name: orders
     table: orders
     primary_key: id
+    default_time_dimension: created_at
+    default_grain: month
     dimensions:
       - name: status
         type: categorical
         sql: status
+      - name: created_at
+        type: time
+        sql: created_at
+        supported_granularities: [day, week, month, quarter, year]
     metrics:
       - name: revenue
         agg: sum
@@ -53,7 +59,14 @@ assert(graph && typeof graph === "object", "expected a parsed graph object");
 const schema = {
   models: {
     orders: {
-      dimensions: { status: { kind: "categorical", ts: "string" } },
+      dimensions: {
+        status: { kind: "categorical", ts: "string" },
+        created_at: {
+          kind: "time",
+          ts: "string",
+          grains: ["day", "week", "month", "quarter", "year"],
+        },
+      },
       metrics: { revenue: { agg: "sum", ts: "number" } },
     },
     customers: {
@@ -75,6 +88,9 @@ const client = createClient(schema, { run: transport.run });
 const rows = await client.query({ metrics: ["orders.revenue"], dimensions: ["orders.status"] });
 assert(rows.length === 1 && rows[0].revenue === 42, "client.query should return executor rows");
 assert(typeof lastSql === "string" && /select/i.test(lastSql), `client.query should compile to SELECT, got: ${lastSql}`);
+
+await client.query({ metrics: ["orders.revenue"] });
+assert(!lastSql.includes("created_at"), `typed client should skip default time dimensions, got: ${lastSql}`);
 
 let rejectedUnknown = false;
 try {
